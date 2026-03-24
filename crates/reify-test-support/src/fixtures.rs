@@ -1,10 +1,10 @@
-use reify_compiler::CompiledModule;
+use reify_compiler::{CompiledModule, RequirementKind};
 use reify_syntax::ParsedModule;
 use reify_types::{BinOp, ContentHash, DimensionVector, ModulePath, SourceSpan, Type, Value};
 
 use crate::builders::{
     range_constraint, CompiledFieldBuilder, CompiledModuleBuilder, CompiledPurposeBuilder,
-    CompiledTraitBuilder, TopologyTemplateBuilder,
+    CompiledTraitBuilder, TopologyTemplateBuilder, TraitDefBuilder,
 };
 
 /// The canonical bracket source code for end-to-end testing.
@@ -411,6 +411,138 @@ pub fn bracket_compiled_module() -> CompiledModule {
         .build()
 }
 
+/// Create a `CompiledModule` with a `Beam` structure with multiple dimensional and labeled constraints.
+///
+/// Structure `Beam`:
+///   - `param width: Scalar(LENGTH) = 50mm`
+///   - `param height: Scalar(LENGTH) = 100mm`
+///   - range constraints on width: `width > 10mm` and `width < 500mm`
+///   - range constraints on height: `height > 10mm` and `height < 1000mm`
+///   - ratio constraint: `height > 2 * width` (labeled "slender")
+///
+/// Used to test constraint checking with dimensional and labeled constraints.
+/// Create a `CompiledModule` with `Rigid` and `Container<T: Rigid>` traits and conforming structures.
+///
+/// Traits:
+///   - `Rigid`: requires `param mass: Mass`
+///   - `Container<T: Rigid>`: requires `param count: Int`
+///
+/// Structures:
+///   - `Bolt: Rigid` with `param mass: Mass = 1kg`
+///   - `Crate: Container` with `param count: Int = 1`
+///
+/// Used to test generic trait conformance checking.
+pub fn generic_container_module() -> CompiledModule {
+    use reify_types::{DimensionVector, TraitBound, TraitRef, TypeParam};
+
+    let mass_type = Type::Scalar { dimension: DimensionVector::MASS };
+
+    // Rigid trait: requires param mass: Mass
+    let rigid_trait = TraitDefBuilder::new("Rigid")
+        .requirement("mass", RequirementKind::Param(mass_type.clone()))
+        .build();
+
+    // Container<T: Rigid> trait: requires param count: Int
+    let t_param = TypeParam {
+        name: "T".to_string(),
+        bounds: vec![TraitBound {
+            trait_ref: TraitRef {
+                name: "Rigid".to_string(),
+                type_args: vec![],
+            },
+        }],
+        default: None,
+    };
+    let container_trait = TraitDefBuilder::new("Container")
+        .type_param(t_param)
+        .requirement("count", RequirementKind::Param(Type::Int))
+        .build();
+
+    // Bolt: Rigid with param mass = 1kg
+    let bolt_template = TopologyTemplateBuilder::new("Bolt")
+        .trait_bound("Rigid")
+        .param("Bolt", "mass", mass_type, Some(crate::builders::literal(Value::Scalar {
+            si_value: 1.0,
+            dimension: DimensionVector::MASS,
+        })))
+        .build();
+
+    // Crate: Container with param count = 1
+    let crate_template = TopologyTemplateBuilder::new("Crate")
+        .trait_bound("Container")
+        .param("Crate", "count", Type::Int, Some(crate::builders::literal(Value::Int(1))))
+        .build();
+
+    CompiledModuleBuilder::new(ModulePath::single("generic_container"))
+        .trait_def(rigid_trait)
+        .trait_def(container_trait)
+        .template(bolt_template)
+        .template(crate_template)
+        .build()
+}
+
+/// Create a `CompiledModule` with the `Rigid` trait and a `Bolt` structure that conforms to it.
+///
+/// Trait `Rigid`:
+///   - requires `param mass: Mass` (DimensionVector::MASS)
+///   - provides default constraint: `mass > 0kg`
+///
+/// Structure `Bolt: Rigid`:
+///   - `param mass: Mass = 1kg` (default 1.0 SI = 1 kg)
+///
+/// Used to test trait conformance checking.
+pub fn rigid_trait_module() -> CompiledModule {
+    use reify_compiler::DefaultKind;
+    use reify_syntax::{ConstraintDecl, Expr, ExprKind};
+    use reify_types::DimensionVector;
+
+    let mass_type = Type::Scalar { dimension: DimensionVector::MASS };
+
+    // Rigid trait: requires param mass: Mass; default constraint mass > 0kg
+    let mass_constraint_decl = ConstraintDecl {
+        label: Some("mass_positive".to_string()),
+        expr: Expr {
+            kind: ExprKind::BinOp {
+                op: ">".to_string(),
+                left: Box::new(Expr {
+                    kind: ExprKind::Ident("mass".to_string()),
+                    span: SourceSpan::new(0, 0),
+                }),
+                right: Box::new(Expr {
+                    kind: ExprKind::QuantityLiteral {
+                        value: 0.0,
+                        unit: "kg".to_string(),
+                    },
+                    span: SourceSpan::new(0, 0),
+                }),
+            },
+            span: SourceSpan::new(0, 0),
+        },
+        where_clause: None,
+        span: SourceSpan::new(0, 0),
+        content_hash: ContentHash::of_str("constraint mass > 0kg"),
+    };
+
+    let rigid_trait = TraitDefBuilder::new("Rigid")
+        .requirement("mass", RequirementKind::Param(mass_type.clone()))
+        .add_default(Some("mass_positive"), DefaultKind::Constraint(mass_constraint_decl))
+        .build();
+
+    // Bolt: Rigid with param mass: Mass = 1kg (1.0 SI)
+    let bolt_template = TopologyTemplateBuilder::new("Bolt")
+        .trait_bound("Rigid")
+        .param("Bolt", "mass", mass_type, Some(crate::builders::literal(Value::Scalar {
+            si_value: 1.0,
+            dimension: DimensionVector::MASS,
+        })))
+        .build();
+
+    CompiledModuleBuilder::new(ModulePath::single("rigid_trait"))
+        .trait_def(rigid_trait)
+        .template(bolt_template)
+        .build()
+}
+
 /// Return a `CompiledModule` containing a "Rigid" trait and a "Plate" structure.
 ///
 /// The "Rigid" trait requires a `thickness: Scalar(LENGTH)` parameter.
@@ -606,6 +738,79 @@ mod tests {
         assert!(source.contains("let body = box("));
     }
 
+    // step-15: failing test for constrained_structure_module fixture
+    #[test]
+    fn multi_constraint_fixture_structure() {
+        let module = constrained_structure_module();
+        assert_eq!(module.templates.len(), 1);
+        let beam = &module.templates[0];
+        assert_eq!(beam.name, "Beam");
+        // Beam has width and height params
+        let width = beam.value_cells.iter().find(|vc| vc.id.member == "width");
+        let height = beam.value_cells.iter().find(|vc| vc.id.member == "height");
+        assert!(width.is_some(), "Beam should have param width");
+        assert!(height.is_some(), "Beam should have param height");
+        // At least 4 constraints: range on width (2) + range on height (2)
+        assert!(beam.constraints.len() >= 4, "expected at least 4 constraints, got {}", beam.constraints.len());
+        // The ratio constraint should have label "slender"
+        let slender = beam.constraints.iter().find(|c| c.label.as_deref() == Some("slender"));
+        assert!(slender.is_some(), "expected labeled constraint 'slender'");
+    }
+
+    // step-11: failing test for generic_container_module fixture
+    #[test]
+    fn generic_container_module_structure() {
+        let module = generic_container_module();
+        // 2 traits: Rigid and Container
+        assert_eq!(module.trait_defs.len(), 2);
+        let rigid = module.trait_defs.iter().find(|t| t.name == "Rigid");
+        let container = module.trait_defs.iter().find(|t| t.name == "Container");
+        assert!(rigid.is_some(), "should have Rigid trait");
+        let container = container.expect("should have Container trait");
+        // Container has type_param T with Rigid bound
+        assert_eq!(container.type_params.len(), 1);
+        assert_eq!(container.type_params[0].name, "T");
+        assert_eq!(container.type_params[0].bounds[0].trait_ref.name, "Rigid");
+        // Container requires param count: Int
+        assert_eq!(container.required_members.len(), 1);
+        assert_eq!(container.required_members[0].name, "count");
+        // 2 templates: Bolt and Crate
+        assert_eq!(module.templates.len(), 2);
+        let bolt = module.templates.iter().find(|t| t.name == "Bolt");
+        let crate_t = module.templates.iter().find(|t| t.name == "Crate");
+        let bolt = bolt.expect("should have Bolt template");
+        // Bolt conforms to Rigid
+        assert!(bolt.trait_bounds.contains(&"Rigid".to_string()), "Bolt should have Rigid trait bound");
+        let crate_t = crate_t.expect("should have Crate template");
+        // Crate conforms to Container
+        assert!(crate_t.trait_bounds.contains(&"Container".to_string()));
+    }
+
+    // step-9: failing test for rigid_trait_module fixture
+    #[test]
+    fn rigid_trait_module_structure() {
+        let module = rigid_trait_module();
+        // 1 trait: Rigid
+        assert_eq!(module.trait_defs.len(), 1);
+        let rigid = &module.trait_defs[0];
+        assert_eq!(rigid.name, "Rigid");
+        // Rigid requires param mass: Mass
+        assert_eq!(rigid.required_members.len(), 1);
+        assert_eq!(rigid.required_members[0].name, "mass");
+        // Rigid has 1 default: constraint mass > 0kg
+        assert_eq!(rigid.defaults.len(), 1);
+        // 1 template: Bolt
+        assert_eq!(module.templates.len(), 1);
+        let bolt = &module.templates[0];
+        assert_eq!(bolt.name, "Bolt");
+        // Bolt conforms to Rigid
+        assert_eq!(bolt.trait_bounds.len(), 1);
+        assert_eq!(bolt.trait_bounds[0], "Rigid");
+        // Bolt has param mass
+        let mass_cell = bolt.value_cells.iter().find(|vc| vc.id.member == "mass");
+        assert!(mass_cell.is_some(), "Bolt should have param mass");
+    }
+
     // --- Annotated entity fixture tests (step-21) ---
 
     #[test]
@@ -701,6 +906,51 @@ mod tests {
         assert_eq!(parent.sub_components[0].args.len(), 1);
         assert_eq!(parent.sub_components[0].args[0].0, "height");
     }
+
+    // step-21: failing test for recursive_tree_module fixture
+    #[test]
+    fn recursive_tree_module_structure() {
+        let module = recursive_tree_module();
+        assert_eq!(module.templates.len(), 1);
+        let tree = &module.templates[0];
+        assert_eq!(tree.name, "TreeNode");
+        // Has param value: Int
+        let value_cell = tree.value_cells.iter().find(|vc| vc.id.member == "value");
+        assert!(value_cell.is_some(), "TreeNode should have param value");
+        // Has two sub-components: left and right, both referencing TreeNode
+        assert_eq!(tree.sub_components.len(), 2, "TreeNode should have 2 sub-components");
+        let left = tree.sub_components.iter().find(|sc| sc.name == "left");
+        let right = tree.sub_components.iter().find(|sc| sc.name == "right");
+        assert!(left.is_some(), "TreeNode should have sub left");
+        assert!(right.is_some(), "TreeNode should have sub right");
+        assert_eq!(left.unwrap().structure_name, "TreeNode", "left should reference TreeNode");
+        assert_eq!(right.unwrap().structure_name, "TreeNode", "right should reference TreeNode");
+    }
+
+    // step-23: failing test for mutual_recursion_module fixture
+    #[test]
+    fn mutual_recursion_module_structure() {
+        let module = mutual_recursion_module();
+        assert_eq!(module.templates.len(), 2);
+        let node_a = module.templates.iter().find(|t| t.name == "NodeA");
+        let node_b = module.templates.iter().find(|t| t.name == "NodeB");
+        assert!(node_a.is_some(), "should have NodeA template");
+        assert!(node_b.is_some(), "should have NodeB template");
+        let node_a = node_a.unwrap();
+        let node_b = node_b.unwrap();
+        // NodeA has param a_val: Int and sub child = NodeB
+        let a_val = node_a.value_cells.iter().find(|vc| vc.id.member == "a_val");
+        assert!(a_val.is_some(), "NodeA should have param a_val");
+        assert_eq!(node_a.sub_components.len(), 1);
+        assert_eq!(node_a.sub_components[0].name, "child");
+        assert_eq!(node_a.sub_components[0].structure_name, "NodeB");
+        // NodeB has param b_val: Int and sub ref_back = NodeA
+        let b_val = node_b.value_cells.iter().find(|vc| vc.id.member == "b_val");
+        assert!(b_val.is_some(), "NodeB should have param b_val");
+        assert_eq!(node_b.sub_components.len(), 1);
+        assert_eq!(node_b.sub_components[0].name, "ref_back");
+        assert_eq!(node_b.sub_components[0].structure_name, "NodeA");
+    }
 }
 
 /// Create a `CompiledModule` with a parent/child relationship for sub-component testing.
@@ -756,5 +1006,53 @@ pub fn parent_child_module() -> CompiledModule {
     CompiledModuleBuilder::new(ModulePath::single("parent_child"))
         .template(child_template)
         .template(parent_template)
+        .build()
+}
+
+/// Create a `CompiledModule` with a self-referencing `TreeNode` structure.
+///
+/// Structure `TreeNode`:
+///   - `param value: Int = 0`
+///   - `sub left = TreeNode` (recursive left child, no args)
+///   - `sub right = TreeNode` (recursive right child, no args)
+///
+/// Both sub-components reference `"TreeNode"` as their `structure_name`, creating
+/// a self-referencing topology used to test cycle detection and recursive evaluation.
+pub fn recursive_tree_module() -> CompiledModule {
+    let e = "TreeNode";
+
+    let tree_template = TopologyTemplateBuilder::new(e)
+        .param(e, "value", Type::Int, Some(crate::builders::literal(Value::Int(0))))
+        .sub_component("left", "TreeNode", vec![])
+        .sub_component("right", "TreeNode", vec![])
+        .build();
+
+    CompiledModuleBuilder::new(ModulePath::single("recursive_tree"))
+        .template(tree_template)
+        .build()
+}
+
+/// Create a `CompiledModule` with two mutually recursive structures.
+///
+/// Structures:
+///   - `NodeA`: `param a_val: Int = 0`, `sub child = NodeB`
+///   - `NodeB`: `param b_val: Int = 0`, `sub ref_back = NodeA`
+///
+/// The two structures form a mutual recursion cycle (NodeA → NodeB → NodeA),
+/// used to test cycle detection algorithms in the evaluation engine.
+pub fn mutual_recursion_module() -> CompiledModule {
+    let node_a = TopologyTemplateBuilder::new("NodeA")
+        .param("NodeA", "a_val", Type::Int, Some(crate::builders::literal(Value::Int(0))))
+        .sub_component("child", "NodeB", vec![])
+        .build();
+
+    let node_b = TopologyTemplateBuilder::new("NodeB")
+        .param("NodeB", "b_val", Type::Int, Some(crate::builders::literal(Value::Int(0))))
+        .sub_component("ref_back", "NodeA", vec![])
+        .build();
+
+    CompiledModuleBuilder::new(ModulePath::single("mutual_recursion"))
+        .template(node_a)
+        .template(node_b)
         .build()
 }
