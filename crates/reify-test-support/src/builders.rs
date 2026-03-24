@@ -1410,6 +1410,22 @@ mod constraint_helper_tests {
     use super::*;
 
     #[test]
+    fn equality_constraint_returns_single_bool_expr() {
+        let exprs = equality_constraint(
+            "Beam",
+            "ratio",
+            Type::Real,
+            literal(Value::Real(2.0)),
+        );
+        assert_eq!(exprs.len(), 1, "equality_constraint should return exactly 1 expr");
+        assert_eq!(exprs[0].result_type, Type::Bool, "expr should be Bool");
+        assert!(
+            matches!(&exprs[0].kind, CompiledExprKind::BinOp { op: BinOp::Eq, .. }),
+            "expr should be Eq"
+        );
+    }
+
+    #[test]
     fn range_constraint_returns_two_bool_exprs() {
         let exprs = range_constraint(
             "Beam",
