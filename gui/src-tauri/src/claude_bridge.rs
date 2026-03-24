@@ -38,6 +38,12 @@ pub enum InboundMessage {
     },
     Abort,
     ClearSession,
+    /// Tool result sent back to the sidecar after in-process MCP tool execution.
+    ToolResult {
+        id: String,
+        tool_name: String,
+        result: Value,
+    },
 }
 
 /// Outbound messages sent from the sidecar to the GUI (over sidecar stdout).
@@ -139,40 +145,116 @@ pub enum SidecarState {
 /// Counter for generating unique message IDs per session.
 static MSG_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+/// Shared stdin writer type — Arc<Mutex<>> so the reader task can write back tool results.
+type SharedStdin = Arc<Mutex<Box<dyn AsyncWrite + Unpin + Send>>>;
+
 /// Handle to a running sidecar process.
 ///
 /// Uses `tokio::sync::Mutex` because operations (send, abort) are async
 /// and the lock must be held across await points.
 pub struct SidecarHandle {
-    stdin: Box<dyn AsyncWrite + Unpin + Send>,
+    stdin: SharedStdin,
     reader_handle: JoinHandle<()>,
     state: Arc<Mutex<SidecarState>>,
 }
 
 impl SidecarHandle {
     /// Construct a SidecarHandle from pre-existing I/O parts.
-    /// The reader task is spawned immediately; it processes outbound messages
-    /// and transitions state to Ready when it receives the "ready" message.
-    pub fn from_parts<W, R>(
-        writer: W,
-        reader: R,
-        state: Arc<Mutex<SidecarState>>,
-    ) -> Self
+    /// The reader task handles Ready state transitions and crash detection.
+    /// Use [`from_parts_with_mcp`] to also wire up event emission and MCP interception.
+    pub fn from_parts<W, R>(writer: W, reader: R, state: Arc<Mutex<SidecarState>>) -> Self
     where
         W: AsyncWrite + Unpin + Send + 'static,
         R: AsyncBufRead + Unpin + Send + 'static,
     {
+        let stdin: SharedStdin = Arc::new(Mutex::new(Box::new(writer)));
+        Self::new_inner::<R, fn(String, Value)>(stdin, reader, state, None)
+    }
+
+    /// Construct a SidecarHandle with full event and MCP wiring.
+    ///
+    /// The reader task will:
+    /// - Transition state to Ready on ready message
+    /// - Emit all outbound messages to `event_sink` via [`outbound_to_event`]
+    /// - For `tool_call` messages with a `reify_` prefix, call [`crate::mcp_context::mcp_tool_call_impl`]
+    ///   and write the result back to the sidecar as a `tool_result` inbound message
+    pub fn from_parts_with_mcp<W, R, F>(
+        writer: W,
+        reader: R,
+        state: Arc<Mutex<SidecarState>>,
+        engine: Arc<std::sync::Mutex<crate::engine::EngineSession>>,
+        event_sink: F,
+    ) -> Self
+    where
+        W: AsyncWrite + Unpin + Send + 'static,
+        R: AsyncBufRead + Unpin + Send + 'static,
+        F: Fn(String, Value) + Send + Sync + 'static,
+    {
+        let stdin: SharedStdin = Arc::new(Mutex::new(Box::new(writer)));
+        Self::new_inner(stdin, reader, state, Some((engine, event_sink)))
+    }
+
+    /// Internal constructor shared by `from_parts` and `from_parts_with_mcp`.
+    fn new_inner<R, F>(
+        stdin: SharedStdin,
+        reader: R,
+        state: Arc<Mutex<SidecarState>>,
+        mcp_config: Option<(Arc<std::sync::Mutex<crate::engine::EngineSession>>, F)>,
+    ) -> Self
+    where
+        R: AsyncBufRead + Unpin + Send + 'static,
+        F: Fn(String, Value) + Send + Sync + 'static,
+    {
         let state_for_ready = Arc::clone(&state);
         let state_for_crash = Arc::clone(&state);
+        let stdin_for_reader = Arc::clone(&stdin);
+
         let reader_handle = tokio::spawn(async move {
             read_sidecar_output(
                 reader,
                 move |msg| {
+                    // 1. State transition: Ready message
                     if let OutboundMessage::Ready = &msg {
                         let state_inner = Arc::clone(&state_for_ready);
                         tokio::spawn(async move {
                             *state_inner.lock().await = SidecarState::Ready;
                         });
+                    }
+
+                    // 2. Event emission and MCP interception
+                    if let Some((ref engine, ref sink)) = mcp_config {
+                        let (event_name, payload) = outbound_to_event(&msg);
+                        sink(event_name, payload);
+
+                        // 3. MCP tool interception for reify_ prefixed tool calls
+                        if let OutboundMessage::ToolCall { id, tool_name, tool_input } = &msg {
+                            if tool_name.starts_with("reify_") {
+                                let id = id.clone();
+                                let tool_name = tool_name.clone();
+                                let tool_input = tool_input.clone();
+                                let engine_clone = Arc::clone(engine);
+                                let stdin_clone = Arc::clone(&stdin_for_reader);
+                                tokio::spawn(async move {
+                                    let ctx = crate::mcp_context::TauriToolContext::new(engine_clone);
+                                    let result = crate::mcp_context::mcp_tool_call_impl(
+                                        &tool_name,
+                                        tool_input,
+                                        &ctx,
+                                    );
+                                    let result_val = match result {
+                                        Ok(v) => v,
+                                        Err(e) => serde_json::json!({ "error": e }),
+                                    };
+                                    let response = InboundMessage::ToolResult {
+                                        id,
+                                        tool_name,
+                                        result: result_val,
+                                    };
+                                    let mut writer = stdin_clone.lock().await;
+                                    write_to_sidecar(&mut *writer, &response).await.ok();
+                                });
+                            }
+                        }
                     }
                 },
                 move || {
@@ -189,11 +271,7 @@ impl SidecarHandle {
             .await;
         });
 
-        SidecarHandle {
-            stdin: Box::new(writer),
-            reader_handle,
-            state,
-        }
+        SidecarHandle { stdin, reader_handle, state }
     }
 
     /// Get a reference to the state mutex.
@@ -209,12 +287,14 @@ impl SidecarHandle {
 
     /// Send an abort signal to the sidecar (cancels the current message).
     pub async fn abort(&mut self) -> Result<(), String> {
-        write_to_sidecar(&mut self.stdin, &InboundMessage::Abort).await
+        let mut writer = self.stdin.lock().await;
+        write_to_sidecar(&mut *writer, &InboundMessage::Abort).await
     }
 
     /// Send a clear_session signal to the sidecar (resets conversation history).
     pub async fn clear_session(&mut self) -> Result<(), String> {
-        write_to_sidecar(&mut self.stdin, &InboundMessage::ClearSession).await
+        let mut writer = self.stdin.lock().await;
+        write_to_sidecar(&mut *writer, &InboundMessage::ClearSession).await
     }
 
     /// Send a user message to the sidecar. Returns the generated message ID.
@@ -232,8 +312,58 @@ impl SidecarHandle {
             text: text.to_string(),
             context,
         };
-        write_to_sidecar(&mut self.stdin, &msg).await?;
+        let mut writer = self.stdin.lock().await;
+        write_to_sidecar(&mut *writer, &msg).await?;
         Ok(id)
+    }
+}
+
+// --- High-level command implementations ---
+
+/// Send a message to the sidecar. Returns the generated message ID.
+///
+/// Returns an error if the sidecar is not started or not in the Ready state.
+pub async fn claude_send_message_impl(
+    sidecar: &Mutex<Option<SidecarHandle>>,
+    text: &str,
+    context: Option<MessageContext>,
+) -> Result<String, String> {
+    let mut guard = sidecar.lock().await;
+    match guard.as_mut() {
+        None => Err("sidecar not started".to_string()),
+        Some(handle) => {
+            let state = handle.state().lock().await.clone();
+            match state {
+                SidecarState::Ready => handle.send_message(text, context).await,
+                SidecarState::Crashed(msg) => Err(format!("sidecar crashed: {}", msg)),
+                SidecarState::NotStarted => Err("sidecar not started".to_string()),
+                SidecarState::Starting => Err("sidecar not ready (still starting)".to_string()),
+            }
+        }
+    }
+}
+
+/// Send an abort signal to the sidecar.
+///
+/// Returns an error if the sidecar is not started.
+pub async fn claude_abort_impl(sidecar: &Mutex<Option<SidecarHandle>>) -> Result<(), String> {
+    let mut guard = sidecar.lock().await;
+    match guard.as_mut() {
+        None => Err("sidecar not started".to_string()),
+        Some(handle) => handle.abort().await,
+    }
+}
+
+/// Clear the conversation session in the sidecar.
+///
+/// Returns an error if the sidecar is not started.
+pub async fn claude_clear_session_impl(
+    sidecar: &Mutex<Option<SidecarHandle>>,
+) -> Result<(), String> {
+    let mut guard = sidecar.lock().await;
+    match guard.as_mut() {
+        None => Err("sidecar not started".to_string()),
+        Some(handle) => handle.clear_session().await,
     }
 }
 
