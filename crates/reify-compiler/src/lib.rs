@@ -3862,6 +3862,41 @@ fn compile_connection(
         None
     };
 
+    // Frame alignment constraint: emit when both ports satisfy LocatedPort
+    let type_of = |name: &str| -> Option<&str> {
+        ctx.ports.iter().find(|p| p.name == name).map(|p| p.type_name.as_str())
+    };
+    let frame_constraint = if is_bare(&left_port) && is_bare(&right_port) {
+        let left_type = type_of(&left_port);
+        let right_type = type_of(&right_port);
+        match (left_type, right_type) {
+            (Some(lt), Some(rt)) => {
+                let mut visited_l = HashSet::new();
+                let mut visited_r = HashSet::new();
+                let left_located = trait_satisfies(lt, "LocatedPort", ctx.trait_registry, &mut visited_l);
+                let right_located = trait_satisfies(rt, "LocatedPort", ctx.trait_registry, &mut visited_r);
+                if left_located && right_located {
+                    let fa_id = ConstraintNodeId::new(ctx.entity_name, *acc.constraint_index);
+                    let fa_expr = CompiledExpr::literal(Value::Bool(true), Type::Bool);
+                    acc.constraints.push(CompiledConstraint {
+                        id: fa_id.clone(),
+                        label: Some(format!("frame_align_{}_{}", left_port, right_port)),
+                        expr: fa_expr,
+                        domain: None,
+                        span,
+                    });
+                    *acc.constraint_index += 1;
+                    Some(fa_id)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    } else {
+        None
+    };
+
     acc.connections.push(CompiledConnection {
         left_port,
         operator,
@@ -3869,7 +3904,7 @@ fn compile_connection(
         connector_sub,
         compatibility_constraint: compat_id,
         port_mappings: port_mappings.to_vec(),
-        frame_constraint: None,
+        frame_constraint,
         span,
     });
 }
