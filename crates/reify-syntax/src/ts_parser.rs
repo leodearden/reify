@@ -711,10 +711,10 @@ impl<'a> Lowering<'a> {
         let mut args = Vec::new();
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
-            if child.kind() == "pragma_arg" {
-                if let Some(arg) = self.lower_pragma_arg(child) {
-                    args.push(arg);
-                }
+            if child.kind() == "pragma_arg"
+                && let Some(arg) = self.lower_pragma_arg(child)
+            {
+                args.push(arg);
             }
         }
 
