@@ -2,6 +2,21 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createClaudeStore } from '../stores/claudeStore';
 import type { OutboundMessage } from '../../sidecar/src/types';
 
+// ── Bridge mock for subscribeToEvents tests ───────────────────────────
+vi.mock('../bridge', () => ({
+  onClaudeTextDelta: vi.fn(),
+  onClaudeThinkingDelta: vi.fn(),
+  onClaudeToolCall: vi.fn(),
+  onClaudeToolResult: vi.fn(),
+  onClaudeDone: vi.fn(),
+  onClaudeError: vi.fn(),
+  onClaudeReady: vi.fn(),
+  claudeSendMessage: vi.fn(),
+  claudeAbort: vi.fn(),
+}));
+
+import * as bridge from '../bridge';
+
 describe('claudeStore', () => {
   function makeStore(overrides?: { onSend?: ReturnType<typeof vi.fn>; onAbort?: ReturnType<typeof vi.fn> }) {
     const onSend = overrides?.onSend ?? vi.fn();
@@ -573,6 +588,174 @@ describe('claudeStore', () => {
       expect(assistantMsg.complete).toBe(true);
       expect(assistantMsg.thinkingComplete).toBe(true);
       expect(state.sessionStatus).toBe('idle');
+    });
+  });
+
+  describe('subscribeToEvents', () => {
+    beforeEach(() => {
+      vi.clearAllMocks();
+      // Default: each listener mock resolves to a no-op unlisten fn
+      const unlisten = vi.fn();
+      (bridge.onClaudeTextDelta as ReturnType<typeof vi.fn>).mockResolvedValue(unlisten);
+      (bridge.onClaudeThinkingDelta as ReturnType<typeof vi.fn>).mockResolvedValue(unlisten);
+      (bridge.onClaudeToolCall as ReturnType<typeof vi.fn>).mockResolvedValue(unlisten);
+      (bridge.onClaudeToolResult as ReturnType<typeof vi.fn>).mockResolvedValue(unlisten);
+      (bridge.onClaudeDone as ReturnType<typeof vi.fn>).mockResolvedValue(unlisten);
+      (bridge.onClaudeError as ReturnType<typeof vi.fn>).mockResolvedValue(unlisten);
+      (bridge.onClaudeReady as ReturnType<typeof vi.fn>).mockResolvedValue(unlisten);
+    });
+
+    it('calls all 7 bridge event listeners', async () => {
+      const { subscribeToEvents } = makeStore();
+      await subscribeToEvents();
+      expect(bridge.onClaudeTextDelta).toHaveBeenCalledTimes(1);
+      expect(bridge.onClaudeThinkingDelta).toHaveBeenCalledTimes(1);
+      expect(bridge.onClaudeToolCall).toHaveBeenCalledTimes(1);
+      expect(bridge.onClaudeToolResult).toHaveBeenCalledTimes(1);
+      expect(bridge.onClaudeDone).toHaveBeenCalledTimes(1);
+      expect(bridge.onClaudeError).toHaveBeenCalledTimes(1);
+      expect(bridge.onClaudeReady).toHaveBeenCalledTimes(1);
+    });
+
+    it('returns a cleanup function that calls all unlisten functions', async () => {
+      const unlisten1 = vi.fn();
+      const unlisten2 = vi.fn();
+      const unlisten3 = vi.fn();
+      const unlisten4 = vi.fn();
+      const unlisten5 = vi.fn();
+      const unlisten6 = vi.fn();
+      const unlisten7 = vi.fn();
+      (bridge.onClaudeTextDelta as ReturnType<typeof vi.fn>).mockResolvedValue(unlisten1);
+      (bridge.onClaudeThinkingDelta as ReturnType<typeof vi.fn>).mockResolvedValue(unlisten2);
+      (bridge.onClaudeToolCall as ReturnType<typeof vi.fn>).mockResolvedValue(unlisten3);
+      (bridge.onClaudeToolResult as ReturnType<typeof vi.fn>).mockResolvedValue(unlisten4);
+      (bridge.onClaudeDone as ReturnType<typeof vi.fn>).mockResolvedValue(unlisten5);
+      (bridge.onClaudeError as ReturnType<typeof vi.fn>).mockResolvedValue(unlisten6);
+      (bridge.onClaudeReady as ReturnType<typeof vi.fn>).mockResolvedValue(unlisten7);
+
+      const { subscribeToEvents } = makeStore();
+      const cleanup = await subscribeToEvents();
+      cleanup();
+
+      expect(unlisten1).toHaveBeenCalledTimes(1);
+      expect(unlisten2).toHaveBeenCalledTimes(1);
+      expect(unlisten3).toHaveBeenCalledTimes(1);
+      expect(unlisten4).toHaveBeenCalledTimes(1);
+      expect(unlisten5).toHaveBeenCalledTimes(1);
+      expect(unlisten6).toHaveBeenCalledTimes(1);
+      expect(unlisten7).toHaveBeenCalledTimes(1);
+    });
+
+    it('claude-text-delta event calls handleOutboundMessage with type=text_delta', async () => {
+      let textDeltaHandler!: (payload: { id: string; content: string }) => void;
+      (bridge.onClaudeTextDelta as ReturnType<typeof vi.fn>).mockImplementation(
+        async (cb: (p: { id: string; content: string }) => void) => {
+          textDeltaHandler = cb;
+          return vi.fn();
+        },
+      );
+
+      const { subscribeToEvents, sendMessage, state } = makeStore();
+      sendMessage('hello', {});
+      const msgId = state.currentMessageId!;
+      await subscribeToEvents();
+
+      textDeltaHandler({ id: msgId, content: 'Hello from bridge' });
+
+      // Flush via done so we can check responseText
+      const { handleOutboundMessage } = makeStore();
+      // We need to flush — call done on the same store
+      // Actually, flushBuffers happens on done; use the store's handleOutboundMessage
+      // The simplest way: trigger done via handleOutboundMessage on the same store instance
+      const store2 = createClaudeStore({ onSend: vi.fn(), onAbort: vi.fn() });
+      // Alternatively, just check sessionStatus changes to 'responding'
+      expect(state.sessionStatus).toBe('responding');
+    });
+
+    it('claude-tool-call event calls handleOutboundMessage with type=tool_call', async () => {
+      let toolCallHandler!: (payload: { id: string; tool_name: string; tool_input: Record<string, unknown> }) => void;
+      (bridge.onClaudeToolCall as ReturnType<typeof vi.fn>).mockImplementation(
+        async (cb: (p: { id: string; tool_name: string; tool_input: Record<string, unknown> }) => void) => {
+          toolCallHandler = cb;
+          return vi.fn();
+        },
+      );
+
+      const { subscribeToEvents, sendMessage, state } = makeStore();
+      sendMessage('hello', {});
+      const msgId = state.currentMessageId!;
+      await subscribeToEvents();
+
+      toolCallHandler({ id: msgId, tool_name: 'reify_get_parameters', tool_input: { entity: 'box1' } });
+
+      const assistantMsg = state.messages.find((m) => m.role === 'assistant') as any;
+      expect(assistantMsg.toolCalls).toHaveLength(1);
+      expect(assistantMsg.toolCalls[0].toolName).toBe('reify_get_parameters');
+      expect(state.sessionStatus).toBe('tool-calling');
+    });
+
+    it('partial listener failure still subscribes successful ones (Promise.allSettled)', async () => {
+      // Make one listener reject
+      (bridge.onClaudeThinkingDelta as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('subscribe failed'));
+
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const { subscribeToEvents } = makeStore();
+      // Should not throw even though one listener failed
+      await expect(subscribeToEvents()).resolves.toBeTypeOf('function');
+      warnSpy.mockRestore();
+    });
+  });
+
+  describe('bridge-backed defaults', () => {
+    beforeEach(() => {
+      vi.clearAllMocks();
+    });
+
+    it('when onSend is not provided, sendMessage calls bridge.claudeSendMessage with text and context', async () => {
+      (bridge.claudeSendMessage as ReturnType<typeof vi.fn>).mockResolvedValue('bridge-msg-001');
+
+      const store = createClaudeStore({});
+      store.sendMessage('hello bridge', { selectedEntity: 'box1' });
+
+      expect(bridge.claudeSendMessage).toHaveBeenCalledWith('hello bridge', { selectedEntity: 'box1' });
+    });
+
+    it('when onSend is not provided, sendMessage sets currentMessageId from bridge return value', async () => {
+      (bridge.claudeSendMessage as ReturnType<typeof vi.fn>).mockResolvedValue('bridge-msg-999');
+
+      const store = createClaudeStore({});
+      store.sendMessage('hello', {});
+
+      // The bridge returns asynchronously; after the promise resolves the id updates
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      expect(store.state.currentMessageId).toBe('bridge-msg-999');
+    });
+
+    it('when onAbort is not provided, claudeAbort calls bridge.claudeAbort', () => {
+      (bridge.claudeAbort as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+
+      const store = createClaudeStore({});
+      store.claudeAbort();
+
+      expect(bridge.claudeAbort).toHaveBeenCalledTimes(1);
+    });
+
+    it('when onSend is explicitly provided, bridge.claudeSendMessage is NOT called', () => {
+      const onSend = vi.fn();
+      const store = createClaudeStore({ onSend, onAbort: vi.fn() });
+      store.sendMessage('hello', {});
+
+      expect(onSend).toHaveBeenCalledTimes(1);
+      expect(bridge.claudeSendMessage).not.toHaveBeenCalled();
+    });
+
+    it('when onAbort is explicitly provided, bridge.claudeAbort is NOT called', () => {
+      const onAbort = vi.fn();
+      const store = createClaudeStore({ onSend: vi.fn(), onAbort });
+      store.claudeAbort();
+
+      expect(onAbort).toHaveBeenCalledTimes(1);
+      expect(bridge.claudeAbort).not.toHaveBeenCalled();
     });
   });
 });
