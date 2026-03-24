@@ -237,4 +237,21 @@ mod tests {
             "empty source should still have built-in functions"
         );
     }
+
+    // --- linalg builtin completions (step-11) ---
+
+    #[test]
+    fn completions_include_linalg_functions() {
+        let source = reify_test_support::bracket_source();
+        let items = compute_completions(source, &test_uri(), Position::new(1, 0));
+        let func_labels: Vec<&str> = items
+            .iter()
+            .filter(|i| i.kind == Some(CompletionItemKind::FUNCTION))
+            .map(|f| f.label.as_str())
+            .collect();
+        assert!(func_labels.contains(&"dot"), "should include 'dot'");
+        assert!(func_labels.contains(&"cross"), "should include 'cross'");
+        assert!(func_labels.contains(&"normalize"), "should include 'normalize'");
+        assert!(func_labels.contains(&"magnitude"), "should include 'magnitude'");
+    }
 }
