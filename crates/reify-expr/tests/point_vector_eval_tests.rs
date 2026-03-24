@@ -1,0 +1,196 @@
+//! Point/Vector component access evaluation tests (.x, .y, .z).
+
+use reify_expr::{eval_expr, EvalContext};
+use reify_types::{CompiledExpr, Type, Value, ValueCellId, ValueMap};
+
+// ─── step-1: Basic .x / .y / .z on Point3<Scalar[m]> ───
+
+/// .x on a Point3 Tensor returns component[0].
+#[test]
+fn eval_point3_x_returns_first_component() {
+    let tensor = CompiledExpr::literal(
+        Value::Tensor(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]),
+        Type::point3(Type::length()),
+    );
+    let expr = CompiledExpr::method_call(tensor, "x".to_string(), vec![], Type::length());
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::length(1.0));
+}
+
+/// .y on a Point3 Tensor returns component[1].
+#[test]
+fn eval_point3_y_returns_second_component() {
+    let tensor = CompiledExpr::literal(
+        Value::Tensor(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]),
+        Type::point3(Type::length()),
+    );
+    let expr = CompiledExpr::method_call(tensor, "y".to_string(), vec![], Type::length());
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::length(2.0));
+}
+
+/// .z on a Point3 Tensor returns component[2].
+#[test]
+fn eval_point3_z_returns_third_component() {
+    let tensor = CompiledExpr::literal(
+        Value::Tensor(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]),
+        Type::point3(Type::length()),
+    );
+    let expr = CompiledExpr::method_call(tensor, "z".to_string(), vec![], Type::length());
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::length(3.0));
+}
+
+// ─── step-3: Vector component access and dimension preservation ───
+
+/// .x on a Vector3<Scalar[m]> returns the first component.
+/// Verifies that Vector and Point share the same Tensor runtime representation.
+#[test]
+fn eval_vector3_x_returns_first_component() {
+    let tensor = CompiledExpr::literal(
+        Value::Tensor(vec![
+            Value::length(10.0),
+            Value::length(20.0),
+            Value::length(30.0),
+        ]),
+        Type::vec3(Type::length()),
+    );
+    let expr = CompiledExpr::method_call(tensor, "x".to_string(), vec![], Type::length());
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::length(10.0));
+}
+
+/// .x and .y on a Vector2<Scalar[angle]> preserve the angle dimension.
+#[test]
+fn eval_vector2_xy_preserves_angle_dimension() {
+    let tensor = CompiledExpr::literal(
+        Value::Tensor(vec![
+            Value::angle(0.5),
+            Value::angle(1.0),
+        ]),
+        Type::vec2(Type::angle()),
+    );
+    let expr_x = CompiledExpr::method_call(tensor.clone(), "x".to_string(), vec![], Type::angle());
+    let expr_y = CompiledExpr::method_call(tensor, "y".to_string(), vec![], Type::angle());
+    let values = ValueMap::new();
+    assert_eq!(eval_expr(&expr_x, &EvalContext::simple(&values)), Value::angle(0.5));
+    assert_eq!(eval_expr(&expr_y, &EvalContext::simple(&values)), Value::angle(1.0));
+}
+
+/// .x on a Point2<Scalar[m]> returns the first component (2D types work for valid components).
+#[test]
+fn eval_point2_x_returns_first_component() {
+    let tensor = CompiledExpr::literal(
+        Value::Tensor(vec![
+            Value::length(5.0),
+            Value::length(6.0),
+        ]),
+        Type::point2(Type::length()),
+    );
+    let expr = CompiledExpr::method_call(tensor, "x".to_string(), vec![], Type::length());
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::length(5.0));
+}
+
+// ─── step-4: Bounds-checking and error cases ───
+
+/// .z on a Point2 (N=2, index 2 out of bounds) returns Undef.
+#[test]
+fn eval_point2_z_out_of_bounds_returns_undef() {
+    let tensor = CompiledExpr::literal(
+        Value::Tensor(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+        ]),
+        Type::point2(Type::length()),
+    );
+    let expr = CompiledExpr::method_call(tensor, "z".to_string(), vec![], Type::length());
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::Undef);
+}
+
+/// .y on a 1-component Tensor (N=1, index 1 out of bounds) returns Undef.
+#[test]
+fn eval_tensor1_y_out_of_bounds_returns_undef() {
+    let tensor = CompiledExpr::literal(
+        Value::Tensor(vec![Value::length(1.0)]),
+        Type::point2(Type::length()), // type annotation irrelevant to eval
+    );
+    let expr = CompiledExpr::method_call(tensor, "y".to_string(), vec![], Type::length());
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::Undef);
+}
+
+/// .z on a 1-component Tensor (N=1, index 2 out of bounds) returns Undef.
+#[test]
+fn eval_tensor1_z_out_of_bounds_returns_undef() {
+    let tensor = CompiledExpr::literal(
+        Value::Tensor(vec![Value::length(1.0)]),
+        Type::point2(Type::length()),
+    );
+    let expr = CompiledExpr::method_call(tensor, "z".to_string(), vec![], Type::length());
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::Undef);
+}
+
+/// .x on a non-Tensor value (Value::Int) returns Undef.
+#[test]
+fn eval_x_on_non_tensor_int_returns_undef() {
+    let int_val = CompiledExpr::literal(Value::Int(42), Type::Int);
+    let expr = CompiledExpr::method_call(int_val, "x".to_string(), vec![], Type::length());
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::Undef);
+}
+
+/// .x on a Value::List (distinct from Tensor) returns Undef.
+/// Verifies we only match Value::Tensor, not Value::List.
+#[test]
+fn eval_x_on_list_returns_undef() {
+    let list_val = CompiledExpr::literal(
+        Value::List(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]),
+        Type::List(Box::new(Type::length())),
+    );
+    let expr = CompiledExpr::method_call(list_val, "x".to_string(), vec![], Type::length());
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::Undef);
+}
+
+// ─── step-5: Undef object propagation ───
+
+/// .x on an Undef object (missing ValueRef) returns Undef.
+/// Verifies the existing Undef short-circuit in MethodCall dispatch applies to component access.
+#[test]
+fn eval_x_on_undef_object_returns_undef() {
+    let missing_id = ValueCellId::new("S", "missing_point");
+    let obj = CompiledExpr::value_ref(missing_id, Type::point3(Type::length()));
+    let expr = CompiledExpr::method_call(obj, "x".to_string(), vec![], Type::length());
+    let values = ValueMap::new(); // empty — missing_point is not in the map
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::Undef);
+}

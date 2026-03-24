@@ -593,6 +593,20 @@ fn eval_method_call(obj: &Value, method: &str, args: &[Value], result_type: &Typ
                 _ => Value::Undef,
             }
         },
+        "x" | "y" | "z" => {
+            let index = match method {
+                "x" => 0,
+                "y" => 1,
+                "z" => 2,
+                _ => unreachable!(),
+            };
+            match obj {
+                Value::Tensor(components) => {
+                    components.get(index).cloned().unwrap_or(Value::Undef)
+                }
+                _ => Value::Undef,
+            }
+        },
         _ => Value::Undef,
     }
 }
