@@ -2469,6 +2469,59 @@ mod tests {
         ]).is_undef());
     }
 
+    // ── orient_euler compound rotation tests (step-16) ───────────────────
+
+    #[test]
+    fn orient_euler_xyz_two_nonzero_angles() {
+        // orient_euler('xyz', π/2, π/2, 0): q_x(π/2) * q_y(π/2) * q_z(0)
+        // Two non-zero angles exercise quat_mul with non-identity operands.
+        // Expected: (0.5, 0.5, 0.5, 0.5)
+        assert_orientation_approx!(
+            eval_builtin("orient_euler", &[
+                Value::String("xyz".into()),
+                Value::Real(std::f64::consts::FRAC_PI_2),
+                Value::Real(std::f64::consts::FRAC_PI_2),
+                Value::Real(0.0),
+            ]),
+            0.5, 0.5, 0.5, 0.5
+        );
+    }
+
+    #[test]
+    fn orient_euler_zyx_three_nonzero_angles() {
+        // orient_euler('zyx', π/3, π/4, π/6): q_z(π/3) * q_y(π/4) * q_x(π/6)
+        // Three non-zero angles exercise full three-way quat_mul composition.
+        // Analytically computed via Hamilton product of elementary rotations.
+        assert_orientation_approx!(
+            eval_builtin("orient_euler", &[
+                Value::String("zyx".into()),
+                Value::Real(std::f64::consts::FRAC_PI_3),
+                Value::Real(std::f64::consts::FRAC_PI_4),
+                Value::Real(std::f64::consts::FRAC_PI_6),
+            ]),
+            0.82236317190599939,
+            0.02226002671473384,
+            0.43967973954090955,
+            0.36042340565035591
+        );
+    }
+
+    #[test]
+    fn orient_euler_xzx_proper_euler_compound() {
+        // orient_euler('xzx', π/2, π/2, 0): q_x(π/2) * q_z(π/2) * q_x(0)
+        // Proper Euler convention with compound rotation.
+        // Expected: (0.5, 0.5, -0.5, 0.5)
+        assert_orientation_approx!(
+            eval_builtin("orient_euler", &[
+                Value::String("xzx".into()),
+                Value::Real(std::f64::consts::FRAC_PI_2),
+                Value::Real(std::f64::consts::FRAC_PI_2),
+                Value::Real(0.0),
+            ]),
+            0.5, 0.5, -0.5, 0.5
+        );
+    }
+
     // ── orient_basis tests (step-14) ──────────────────────────────────────
 
     #[test]
