@@ -1134,3 +1134,22 @@ async fn claude_clear_session_impl_errors_when_sidecar_is_none() {
         msg
     );
 }
+
+#[test]
+fn inbound_tool_result_serialization_round_trip() {
+    let msg = InboundMessage::ToolResult {
+        id: "msg-42".to_string(),
+        tool_name: "reify_get_shape".to_string(),
+        result: json!({"status": "ok", "vertices": 8}),
+    };
+    let json_val: Value = serde_json::to_value(&msg).unwrap();
+    assert_eq!(json_val["type"], "tool_result");
+    assert_eq!(json_val["id"], "msg-42");
+    assert_eq!(json_val["tool_name"], "reify_get_shape");
+    assert_eq!(json_val["result"]["status"], "ok");
+    assert_eq!(json_val["result"]["vertices"], 8);
+
+    // Round-trip: deserialize back and assert equality
+    let deserialized: InboundMessage = serde_json::from_value(json_val).unwrap();
+    assert_eq!(deserialized, msg);
+}
