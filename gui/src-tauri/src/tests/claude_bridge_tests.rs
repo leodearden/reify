@@ -355,26 +355,19 @@ async fn from_parts_with_mcp_intercepts_reify_tool_calls() {
         .await
         .unwrap();
 
-    // Allow reader task to process the tool_call and run the spawned MCP handler
-    for _ in 0..100 {
-        tokio::task::yield_now().await;
-    }
-
-    // Verify the tool_call event was emitted to the event sink
-    let emitted = events.lock().unwrap();
-    assert!(
-        emitted.iter().any(|(name, _)| name == "claude-tool-call"),
-        "Expected claude-tool-call event in sink, got: {:?}",
-        emitted.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>()
-    );
-    drop(emitted);
-
-    // Verify tool_result was written back to sidecar stdin
+    // Await the tool_result write to sidecar stdin — this is the natural synchronization
+    // point. Events are emitted synchronously (inside on_message) before the MCP handler
+    // is spawned. Once the MCP handler writes the tool_result, all prior events are done.
     let mut buf = vec![0u8; 4096];
-    let n = stdin_reader.read(&mut buf).await.unwrap_or(0);
+    let n = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        stdin_reader.read(&mut buf),
+    )
+    .await
+    .expect("Timeout: tool_result was never written back to sidecar stdin")
+    .unwrap_or(0);
     assert!(n > 0, "Expected tool_result to be written back to sidecar stdin");
     let written = std::str::from_utf8(&buf[..n]).unwrap();
-    // The response should be a tool_result JSON line
     let json_val: serde_json::Value =
         serde_json::from_str(written.trim()).unwrap_or(serde_json::json!(null));
     assert_eq!(
@@ -384,6 +377,16 @@ async fn from_parts_with_mcp_intercepts_reify_tool_calls() {
     );
     assert_eq!(json_val["tool_name"], "reify_get_diagnostics");
 
+    // Verify the tool_call event was emitted to the event sink.
+    // Events are emitted synchronously before the MCP spawn, so by the time
+    // we reach here (after awaiting tool_result), they're already recorded.
+    let emitted = events.lock().unwrap();
+    assert!(
+        emitted.iter().any(|(name, _)| name == "claude-tool-call"),
+        "Expected claude-tool-call event in sink, got: {:?}",
+        emitted.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>()
+    );
+    drop(emitted);
     drop(stdout_writer);
 }
 
