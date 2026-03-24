@@ -198,3 +198,56 @@ structure S {
         other => panic!("expected BinOp(And) at top level, got {:?}", other),
     }
 }
+
+/// step-9: middle expression compiled once.
+/// `constraint a < b + c < d` — the middle expression `b + c` should appear as BinOp(Add)
+/// in both the right side of the first comparison and the left side of the second,
+/// and both occurrences should have the same content_hash (cloned, not recompiled).
+#[test]
+fn middle_expression_compiled_once() {
+    let source = r#"
+structure S {
+    param a : Int = 1
+    param b : Int = 2
+    param c : Int = 3
+    param d : Int = 10
+    constraint a < b + c < d
+}
+"#;
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    assert!(!template.constraints.is_empty(), "should have at least one constraint");
+
+    let expr = &template.constraints[0].expr;
+    match &expr.kind {
+        CompiledExprKind::BinOp { op, left, right } => {
+            assert_eq!(*op, BinOp::And, "top-level op should be And");
+            // left: Lt(a, b+c) — extract right side (b+c)
+            let left_rhs_hash = match &left.kind {
+                CompiledExprKind::BinOp { op: lop, right: lr, .. } => {
+                    assert_eq!(*lop, BinOp::Lt);
+                    assert!(matches!(&lr.kind, CompiledExprKind::BinOp { op: addop, .. } if *addop == BinOp::Add),
+                        "left rhs should be Add(b,c)");
+                    lr.content_hash
+                }
+                other => panic!("expected BinOp(Lt) for left, got {:?}", other),
+            };
+            // right: Lt(b+c, d) — extract left side (b+c)
+            let right_lhs_hash = match &right.kind {
+                CompiledExprKind::BinOp { op: rop, left: rl, .. } => {
+                    assert_eq!(*rop, BinOp::Lt);
+                    assert!(matches!(&rl.kind, CompiledExprKind::BinOp { op: addop, .. } if *addop == BinOp::Add),
+                        "right lhs should be Add(b,c)");
+                    rl.content_hash
+                }
+                other => panic!("expected BinOp(Lt) for right, got {:?}", other),
+            };
+            assert_eq!(left_rhs_hash, right_lhs_hash,
+                "middle expression b+c should have identical content_hash in both comparisons");
+        }
+        other => panic!("expected BinOp(And) at step-9 top level, got {:?}", other),
+    }
+}
