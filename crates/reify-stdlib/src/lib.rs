@@ -430,7 +430,7 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
                 if ad != bd {
                     return Value::Undef;
                 }
-                Value::Complex { re: ar + br, im: ai + bi, dimension: *ad }
+                sanitize_value(Value::Complex { re: ar + br, im: ai + bi, dimension: *ad })
             }
             _ => Value::Undef,
         }),
@@ -692,6 +692,9 @@ fn sanitize_value(v: Value) -> Value {
     match &v {
         Value::Real(x) if x.is_nan() || x.is_infinite() => Value::Undef,
         Value::Scalar { si_value, .. } if si_value.is_nan() || si_value.is_infinite() => {
+            Value::Undef
+        }
+        Value::Complex { re, im, .. } if re.is_nan() || re.is_infinite() || im.is_nan() || im.is_infinite() => {
             Value::Undef
         }
         _ => v,
