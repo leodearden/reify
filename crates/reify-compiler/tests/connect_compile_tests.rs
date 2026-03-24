@@ -417,6 +417,41 @@ structure def S2 {
     );
 }
 
+// ── step-3: frame_alignment_none_when_ports_not_located ──────────────
+
+#[test]
+fn frame_alignment_none_when_ports_not_located() {
+    let source = r#"
+trait T {}
+structure def S {
+    port a : out T {}
+    port b : in T {}
+    connect a -> b
+}
+"#;
+
+    let (template, diagnostics) = compile_first_template(source);
+    let errors: Vec<_> = diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    // frame_constraint should be None when ports do not satisfy LocatedPort
+    assert!(
+        template.connections[0].frame_constraint.is_none(),
+        "expected frame_constraint to be None when ports are not LocatedPort"
+    );
+
+    // No constraint with frame_align label should exist
+    let frame_align_constraints: Vec<_> = template.constraints
+        .iter()
+        .filter(|c| c.label.as_deref().map(|l| l.contains("frame_align")).unwrap_or(false))
+        .collect();
+    assert!(
+        frame_align_constraints.is_empty(),
+        "expected no frame_align constraints, but found: {:?}",
+        frame_align_constraints.iter().map(|c| &c.label).collect::<Vec<_>>()
+    );
+}
+
 // ── step-1: frame_alignment_constraint_when_both_ports_located ───────
 
 #[test]
