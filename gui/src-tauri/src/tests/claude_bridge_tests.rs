@@ -799,6 +799,80 @@ fn outbound_to_event_ready() {
     assert!(payload.as_object().unwrap().is_empty());
 }
 
+// --- SidecarHandle::wait_ready tests (step-26) ---
+
+#[tokio::test]
+async fn wait_ready_returns_ok_when_ready_message_arrives() {
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::io::{AsyncWriteExt, BufReader};
+    use tokio::sync::Mutex;
+
+    let state = Arc::new(Mutex::new(SidecarState::Starting));
+    let (mut data_writer, data_reader) = tokio::io::duplex(1024);
+    let reader = BufReader::new(data_reader);
+    let (writer, _writer_end) = tokio::io::duplex(1024);
+
+    let handle = SidecarHandle::from_parts(writer, reader, state.clone());
+
+    // Write the ready message so the reader task processes it
+    data_writer.write_all(b"{\"type\":\"ready\"}\n").await.unwrap();
+
+    // wait_ready should return Ok once the ready message is processed
+    let result = handle.wait_ready(Duration::from_secs(5)).await;
+    assert!(result.is_ok(), "wait_ready should return Ok when sidecar sends ready: {:?}", result);
+
+    // State should now be Ready
+    assert!(matches!(*handle.state().lock().await, SidecarState::Ready));
+    drop(data_writer);
+}
+
+#[tokio::test]
+async fn wait_ready_returns_err_on_timeout() {
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::io::BufReader;
+    use tokio::sync::Mutex;
+
+    let state = Arc::new(Mutex::new(SidecarState::Starting));
+    // Use a duplex that stays open but never sends ready
+    let (_data_writer, data_reader) = tokio::io::duplex(1024);
+    let reader = BufReader::new(data_reader);
+    let (writer, _writer_end) = tokio::io::duplex(1024);
+
+    let handle = SidecarHandle::from_parts(writer, reader, state);
+
+    // Short timeout - sidecar never sends ready so it should time out
+    let result = handle.wait_ready(Duration::from_millis(100)).await;
+    assert!(result.is_err(), "wait_ready should return Err on timeout");
+    let msg = result.unwrap_err();
+    assert!(
+        msg.contains("timeout") || msg.contains("timed out") || msg.contains("Timeout"),
+        "Error should mention timeout: {}",
+        msg
+    );
+}
+
+#[tokio::test]
+async fn wait_ready_returns_ok_immediately_when_already_ready() {
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::io::BufReader;
+    use tokio::sync::Mutex;
+
+    // State is already Ready before calling wait_ready
+    let state = Arc::new(Mutex::new(SidecarState::Ready));
+    let data: &[u8] = b"";
+    let reader = BufReader::new(data);
+    let (writer, _writer_end) = tokio::io::duplex(1024);
+
+    let handle = SidecarHandle::from_parts(writer, reader, state);
+
+    // Should return immediately without blocking
+    let result = handle.wait_ready(Duration::from_secs(1)).await;
+    assert!(result.is_ok(), "wait_ready should return Ok immediately when state is already Ready: {:?}", result);
+}
+
 // --- format_inbound tests (step-3) ---
 
 #[test]
