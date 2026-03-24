@@ -570,8 +570,8 @@ fn eval_method_call(obj: &Value, method: &str, args: &[Value], result_type: &Typ
                         match pred {
                             Value::Bool(true) => results.push(item.clone()),
                             Value::Bool(false) => {} // skip
-                            Value::Undef => return Value::Undef,
-                            _ => return Value::Undef,
+                            Value::Undef => results.push(item.clone()), // conservative: retain when predicate is unknown
+                            _ => return Value::Undef, // type error: non-Bool predicate
                         }
                     }
                     Value::List(results)
