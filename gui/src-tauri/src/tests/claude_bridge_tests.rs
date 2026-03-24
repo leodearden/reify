@@ -1306,6 +1306,56 @@ async fn event_sink_accepts_str_ref() {
 }
 
 // --- S3: subscribe_ready() owned future tests (step-8/step-9) ---
+// --- Post-review: subscribe_ready race condition fix (step-11/step-12) ---
+
+/// Regression test for the notify_waiters → notify_one fix.
+///
+/// subscribe_ready() returns `async move { notify.notified().await }`.
+/// The Notified future's waiter is only registered on first poll, not when
+/// subscribe_ready() is called. notify_waiters() only wakes *currently-registered*
+/// waiters and stores no permit. If notify_waiters() fires before the returned
+/// future is first polled, the notification is permanently lost.
+///
+/// This test exercises that window: we obtain the future, then drive the ready
+/// message through the reader task *before* polling the future.  With
+/// notify_waiters() the future would hang until the 500 ms timeout.  With
+/// notify_one() a permit is stored and the future resolves immediately.
+#[tokio::test]
+async fn subscribe_ready_does_not_miss_notification_fired_before_poll() {
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::io::{AsyncWriteExt, BufReader};
+
+    let state = Arc::new(std::sync::Mutex::new(SidecarState::Starting));
+    let (mut data_writer, data_reader) = tokio::io::duplex(1024);
+    let reader = BufReader::new(data_reader);
+    let (writer, _writer_end) = tokio::io::duplex(1024);
+
+    let handle = SidecarHandle::from_parts(writer, reader, state);
+
+    // Step 1: Obtain the subscribe_ready future WITHOUT polling it.
+    // notified() is deferred inside the async move block, so no waiter is
+    // registered at this point.
+    let ready_future = handle.subscribe_ready();
+
+    // Step 2: Write the ready message so the reader task can process it.
+    data_writer.write_all(b"{\"type\":\"ready\"}\n").await.unwrap();
+
+    // Step 3: Yield control long enough for the reader task to read the
+    // message and call notify on the Notify (i.e. trigger the race window).
+    tokio::task::yield_now().await;
+    tokio::task::yield_now().await;
+    tokio::time::sleep(Duration::from_millis(10)).await;
+
+    // Step 4: Now poll the future. The notification has already fired.
+    // With notify_waiters(): no permit was stored → this times out (BUG).
+    // With notify_one():     permit is stored     → resolves immediately (FIXED).
+    tokio::time::timeout(Duration::from_millis(500), ready_future)
+        .await
+        .expect("subscribe_ready future must not miss a notification fired before first poll");
+
+    drop(data_writer);
+}
 
 #[tokio::test]
 async fn subscribe_ready_returns_awaitable_future() {
