@@ -623,6 +623,7 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
         // These produce Value::Tensor since Value::Point/Vector are not runtime variants.
         "point2" => construct_point_or_vector(args, 2),
         "point3" => construct_point_or_vector(args, 3),
+        "vec2"   => construct_point_or_vector(args, 2),
         "vec3"   => construct_point_or_vector(args, 3),
 
         // --- Field operations (stubs) ---
