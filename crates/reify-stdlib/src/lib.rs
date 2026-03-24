@@ -3405,4 +3405,26 @@ mod tests {
             "complex_magnitude with f64::MAX components must return Undef (Inf overflow)"
         );
     }
+
+    // --- point3 ---
+
+    #[test]
+    fn point3_basic() {
+        // point3(1m, 2m, 3m) → Value::Tensor([Scalar(1,L), Scalar(2,L), Scalar(3,L)])
+        let args = vec![
+            Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 2.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 3.0, dimension: DimensionVector::LENGTH },
+        ];
+        let result = eval_builtin("point3", &args);
+        match result {
+            Value::Tensor(ref items) => {
+                assert_eq!(items.len(), 3);
+                assert_scalar_approx!(items[0].clone(), 1.0, DimensionVector::LENGTH);
+                assert_scalar_approx!(items[1].clone(), 2.0, DimensionVector::LENGTH);
+                assert_scalar_approx!(items[2].clone(), 3.0, DimensionVector::LENGTH);
+            }
+            other => panic!("expected Tensor, got {:?}", other),
+        }
+    }
 }
