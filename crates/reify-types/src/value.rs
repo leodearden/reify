@@ -2432,4 +2432,59 @@ mod tests {
         };
         let _ = format!("{}", r);
     }
+
+    // ── Value::Matrix tests (step-3) ─────────────────────────────────────────
+
+    #[test]
+    fn value_matrix_construction_and_partial_eq() {
+        // (a) same rows equal
+        let m1 = Value::Matrix(vec![
+            vec![Value::Int(1), Value::Int(2), Value::Int(3)],
+            vec![Value::Int(4), Value::Int(5), Value::Int(6)],
+        ]);
+        let m2 = Value::Matrix(vec![
+            vec![Value::Int(1), Value::Int(2), Value::Int(3)],
+            vec![Value::Int(4), Value::Int(5), Value::Int(6)],
+        ]);
+        assert_eq!(m1, m2);
+
+        // different element — not equal
+        let m3 = Value::Matrix(vec![
+            vec![Value::Int(1), Value::Int(2), Value::Int(3)],
+            vec![Value::Int(4), Value::Int(5), Value::Int(7)],
+        ]);
+        assert_ne!(m1, m3);
+
+        // different shape — not equal
+        let m4 = Value::Matrix(vec![
+            vec![Value::Int(1), Value::Int(2)],
+            vec![Value::Int(3), Value::Int(4)],
+        ]);
+        assert_ne!(m1, m4);
+
+        // cross-variant: Matrix != List
+        let list = Value::List(vec![Value::Int(1), Value::Int(2)]);
+        assert_ne!(Value::Matrix(vec![vec![Value::Int(1), Value::Int(2)]]), list);
+
+        // cross-variant: Matrix != Tensor
+        let tensor = Value::Tensor(vec![Value::Int(1), Value::Int(2)]);
+        assert_ne!(Value::Matrix(vec![vec![Value::Int(1), Value::Int(2)]]), tensor);
+    }
+
+    #[test]
+    fn value_matrix_display_2x3() {
+        // (b) 2x3 matrix: [[1, 2, 3], [4, 5, 6]]
+        let m = Value::Matrix(vec![
+            vec![Value::Int(1), Value::Int(2), Value::Int(3)],
+            vec![Value::Int(4), Value::Int(5), Value::Int(6)],
+        ]);
+        assert_eq!(format!("{}", m), "[[1, 2, 3], [4, 5, 6]]");
+    }
+
+    #[test]
+    fn value_matrix_display_1x1() {
+        // (b) 1x1 matrix: [[1]]
+        let m = Value::Matrix(vec![vec![Value::Int(1)]]);
+        assert_eq!(format!("{}", m), "[[1]]");
+    }
 }
