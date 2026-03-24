@@ -166,14 +166,30 @@ export class SidecarSession {
 
           if (event.type === 'assistant' && event.message?.content) {
             for (const block of event.message.content) {
-              if (block.type === 'text' && block.text && block.text.length > lastTextLen) {
-                const delta = block.text.slice(lastTextLen);
-                lastTextLen = block.text.length;
-                this.onOutput({ type: 'text_delta', id, content: delta });
-              } else if (block.type === 'thinking' && block.thinking && block.thinking.length > lastThinkingLen) {
-                const delta = block.thinking.slice(lastThinkingLen);
-                lastThinkingLen = block.thinking.length;
-                this.onOutput({ type: 'thinking_delta', id, content: delta });
+              // Detect new turn: if text/thinking length decreased, counters
+              // from the previous turn carry over — reset them so deltas emit correctly.
+              if (block.type === 'text' && block.text) {
+                if (block.text.length < lastTextLen) {
+                  lastTextLen = 0;
+                  lastThinkingLen = 0;
+                  toolNameById.clear();
+                }
+                if (block.text.length > lastTextLen) {
+                  const delta = block.text.slice(lastTextLen);
+                  lastTextLen = block.text.length;
+                  this.onOutput({ type: 'text_delta', id, content: delta });
+                }
+              } else if (block.type === 'thinking' && block.thinking) {
+                if (block.thinking.length < lastThinkingLen) {
+                  lastTextLen = 0;
+                  lastThinkingLen = 0;
+                  toolNameById.clear();
+                }
+                if (block.thinking.length > lastThinkingLen) {
+                  const delta = block.thinking.slice(lastThinkingLen);
+                  lastThinkingLen = block.thinking.length;
+                  this.onOutput({ type: 'thinking_delta', id, content: delta });
+                }
               } else if (block.type === 'tool_use' && block.id && !toolNameById.has(block.id)) {
                 toolNameById.set(block.id, block.name);
                 this.onOutput({
