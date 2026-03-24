@@ -232,7 +232,12 @@ impl SidecarHandle {
                     // 1. State transition: Ready message
                     if let OutboundMessage::Ready = &msg {
                         *state_for_ready.lock().unwrap() = SidecarState::Ready;
-                        notify_for_reader.notify_waiters();
+                        // Use notify_one() rather than notify_waiters() so that a
+                        // permit is stored when no waiter is currently registered.
+                        // subscribe_ready() defers notified() to first poll, so the
+                        // notification may fire before the future is polled — a race
+                        // window where notify_waiters() would silently lose the signal.
+                        notify_for_reader.notify_one();
                     }
 
                     // 2. Event emission and MCP interception
@@ -274,8 +279,11 @@ impl SidecarHandle {
                         if !matches!(*s, SidecarState::NotStarted) {
                             *s = SidecarState::Crashed("sidecar exited unexpectedly".to_string());
                         }
-                    } // guard dropped before notify_waiters
-                    notify_for_crash.notify_waiters();
+                    } // guard dropped before notify_one
+                    // Same reasoning as the Ready case above: notify_one() stores a
+                    // permit so subscribe_ready() callers that haven't polled yet
+                    // still see the crash signal immediately when first polled.
+                    notify_for_crash.notify_one();
                 },
             )
             .await;
@@ -292,9 +300,15 @@ impl SidecarHandle {
     /// Subscribe to the ready notification.
     ///
     /// Returns an owned `'static` future that resolves when the sidecar sends
-    /// the "ready" message (i.e. when [`Notify::notify_waiters`] is called).
+    /// the "ready" message (i.e. when [`Notify::notify_one`] is called).
     /// The future clones the `Arc<Notify>` internally, so it is safe to hold
     /// across lock boundaries without keeping a reference to the handle.
+    ///
+    /// `notify_one` is used (not `notify_waiters`) so that a permit is stored
+    /// when no waiter is currently registered.  The returned future defers
+    /// calling `notified()` to first poll, so if the "ready" message arrives
+    /// before the caller first polls the future the notification must be
+    /// preserved — `notify_one` guarantees this.
     pub fn subscribe_ready(&self) -> impl std::future::Future<Output = ()> + Send + 'static {
         let notify = Arc::clone(&self.ready_notify);
         async move { notify.notified().await }

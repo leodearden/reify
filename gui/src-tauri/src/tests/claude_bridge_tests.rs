@@ -447,7 +447,7 @@ async fn crash_detection_sets_state_to_crashed_on_eof() {
     let handle = SidecarHandle::from_parts(writer, reader, state);
 
     // wait_ready returns Err when the sidecar crashes — deterministic sync
-    // (on_exit fires notify_waiters, wait_ready wakes and sees Crashed state).
+    // (on_exit fires notify_one, wait_ready wakes and sees Crashed state).
     let result = handle.wait_ready(Duration::from_secs(5)).await;
     assert!(result.is_err(), "Expected Err since sidecar crashed (EOF)");
     assert!(matches!(*handle.state().lock().unwrap(), SidecarState::Crashed(_)));
