@@ -639,8 +639,8 @@ fn eval_binop(op: BinOp, left: &CompiledExpr, right: &CompiledExpr, ctx: &EvalCo
         _ => {}
     }
 
-    let lv = eval_expr(left, ctx);
-    let rv = eval_expr(right, ctx);
+    let lv = eval_expr(left, ctx).canonicalize_matrix();
+    let rv = eval_expr(right, ctx).canonicalize_matrix();
 
     // Strict undef propagation for arithmetic/comparison
     if lv.is_undef() || rv.is_undef() {
@@ -1178,6 +1178,9 @@ fn eval_cmp(lv: &Value, rv: &Value, cmp: fn(f64, f64) -> bool) -> Value {
 /// vectors and rank-2 matrices represented as Tensor-of-Tensors).  Returns
 /// `Value::Undef` for any variant that cannot be negated.
 fn neg_value(v: Value) -> Value {
+    // Canonicalize Value::Matrix to nested Tensor before dispatch so the
+    // arithmetic engine (which only knows Tensor) can handle it.
+    let v = v.canonicalize_matrix();
     match v {
         Value::Int(i) => Value::Int(-i),
         Value::Real(r) => Value::Real(-r),
