@@ -1,220 +1,154 @@
 {
-  "task_id": "307",
-  "title": "Stdlib: wire boolean operations \u2014 union, intersection, difference",
+  "task_id": "222",
+  "title": "Point/Vector: Type variants",
   "files": [
-    "crates/reify-compiler/src/lib.rs",
-    "crates/reify-eval/src/lib.rs",
-    "crates/reify-eval/tests/boolean_ops_e2e.rs"
+    "crates/reify-types/src/ty.rs",
+    "crates/reify-types/tests/exports.rs"
   ],
   "modules": [
-    "crates/reify-compiler",
-    "crates/reify-eval"
+    "crates/reify-types"
   ],
-  "analysis": "The boolean operations infrastructure is fully built at every layer EXCEPT the compiler's function recognition and compilation. Specifically: (1) CompiledGeometryOp::Boolean { op: BooleanOp, left: GeomRef, right: GeomRef } already exists in the compiler types. (2) BooleanOp::{Union,Difference,Intersection} enum exists. (3) The eval layer's compile_geometry_op() already resolves Boolean ops via GeomRef::Step \u2192 step_handles lookup. (4) GeometryOp::{Union,Difference,Intersection} runtime variants exist in reify-types. (5) The OCCT kernel already dispatches to boolean_fuse/cut/common FFI. (6) OCCT FFI is proven working (boundary4_geometry.rs tests boolean_difference at kernel level). The ONLY gap is: is_geometry_function() doesn't include 'union'/'intersection'/'difference'/'union_all'/'intersection_all', and compile_geometry_call() has no match arms for them. The key design challenge is that boolean ops take geometry operands (not scalars), so compilation must recursively compile each arg as a geometry op chain, tracking step indices for GeomRef references. The eval engine accumulates step_handles across all operations in a flat vector, so GeomRef::Step(i) indices must be globally correct within the realization's ops list.\n\nREVIEW FIX: The compiler always passes step_offset: 0 per realization, making GeomRef::Step indices realization-local. However, the eval engine passes the full accumulated step_handles vector (which spans ALL realizations) to compile_geometry_op. When a second realization has boolean ops, Step(0) resolves to the first realization's handle instead of the current realization's first handle. The fix is to pass &step_handles[handle_start..] in all three eval code paths (tessellate_from_values at line 2650, and the two build methods at lines 2461 and 2535), making step_handles lookup realization-local to match the compiler's indexing.",
+  "analysis": "The Type enum in crates/reify-types/src/ty.rs currently has 15 variants with #[derive(Debug, Clone, PartialEq, Eq, Hash)]. Display is manually implemented in the same file. Factory methods (length(), angle(), dimensionless_scalar()) follow a consistent pattern of constructing Type variants with preset fields. The only exhaustive match on Type is the Display impl itself \u2014 all other match sites in the codebase (cpsat.rs, compiler, etc.) use wildcard catch-all arms, so adding two new variants will only require updating ty.rs and the exports integration test. No content_hash impl exists for Type (it uses derived Hash), so no hash tag assignments needed. The new Point { n, quantity } and Vector { n, quantity } variants follow the same structural pattern as List(Box<Type>) and Set(Box<Type>) \u2014 a container with an inner type \u2014 but additionally carry a dimensionality parameter n:usize. Display will follow the format Point{n}<{quantity}> (e.g., Point3<Scalar[m]>) and Vector{n}<{quantity}> consistent with the existing angle-bracket convention for generic types.",
   "prerequisites": [],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing inline tests in reify-compiler asserting is_geometry_function returns true for 'union', 'intersection', 'difference', 'union_all', 'intersection_all'",
-      "status": "done",
-      "commit": "bfc1da2"
+      "description": "Write failing tests for Point variant Display: assert Point { n:3, quantity: Type::length() } displays as 'Point3<Scalar[m]>', Point { n:2, quantity: Type::Real } as 'Point2<Real>', Point { n:1, quantity: Type::Int } as 'Point1<Int>'",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Add 'union' | 'intersection' | 'difference' | 'union_all' | 'intersection_all' to is_geometry_function() match arms",
-      "status": "done",
-      "commit": "4186230"
+      "description": "Add Point { n: usize, quantity: Box<Type> } variant to Type enum and add Display match arm: write!(f, 'Point{}<{}>', n, quantity)",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing inline test: parse 'let r = union(box(10mm,10mm,10mm), box(20mm,20mm,20mm))' \u2192 realization with 3 ops: 2 Primitive::Box + 1 Boolean{Union, Step(0), Step(1)}",
-      "status": "done",
-      "commit": "cf101cd"
+      "description": "Write failing tests for Vector variant Display: assert Vector { n:3, quantity: Type::length() } displays as 'Vector3<Scalar[m]>', Vector { n:2, quantity: Type::Real } as 'Vector2<Real>'",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Add match arms for 'union'|'intersection'|'difference' in compile_geometry_call: validate 2 args, recursively compile each arg via compile_geometry_call, compute step indices, emit CompiledGeometryOp::Boolean with correct GeomRef::Step references. Include error diagnostics for wrong arity and non-geometry args.",
-      "status": "done",
-      "commit": "b228162"
+      "description": "Add Vector { n: usize, quantity: Box<Type> } variant to Type enum and add Display match arm: write!(f, 'Vector{}<{}>', n, quantity)",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write inline test: 'let r = difference(box(20mm,20mm,20mm), box(10mm,10mm,10mm))' \u2192 realization with 3 ops ending in Boolean{Difference}. Should pass from step-4.",
-      "status": "done",
-      "commit": "97bea24"
+      "description": "Write failing tests for factory methods: assert Type::point2(Type::length()) == Type::Point { n:2, quantity: Box::new(Type::length()) } and Type::point3(Type::Real) == Type::Point { n:3, quantity: Box::new(Type::Real) }",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-6",
-      "type": "test",
-      "description": "Write inline test: 'let r = intersection(box(10mm,10mm,10mm), box(10mm,10mm,10mm))' \u2192 realization with 3 ops ending in Boolean{Intersection}. Should pass from step-4.",
-      "status": "done",
-      "commit": "97bea24"
+      "type": "impl",
+      "description": "Implement pub fn point2(quantity: Type) -> Self and pub fn point3(quantity: Type) -> Self factory methods on Type impl block",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing inline test: 'let r = union_all(box(10mm,10mm,10mm), box(10mm,10mm,10mm), box(10mm,10mm,10mm))' \u2192 realization with 5 ops: 3 Primitive::Box + 2 Boolean{Union} (left-fold pattern: Union(Union(box0,box1),box2))",
-      "status": "done",
-      "commit": "ff28ca0"
+      "description": "Write failing tests for factory methods: assert Type::vec2(Type::length()) == Type::Vector { n:2, quantity: Box::new(Type::length()) } and Type::vec3(Type::Real) == Type::Vector { n:3, quantity: Box::new(Type::Real) }",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Add match arms for 'union_all'|'intersection_all' in compile_geometry_call: validate >=2 args, recursively compile each arg, left-fold with binary Boolean ops tracking accumulated step indices",
-      "status": "done",
-      "commit": "a4040e3"
+      "description": "Implement pub fn vec2(quantity: Type) -> Self and pub fn vec3(quantity: Type) -> Self factory methods on Type impl block",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write inline test: 'let r = union(box(10mm,10mm,10mm))' with 1 arg \u2192 compile_geometry_call returns None and emits 'expects 2 arguments' diagnostic",
-      "status": "done",
-      "commit": "130cf04"
+      "description": "Write tests for Eq and Hash: (a) Point3<Length> == Point3<Length>, (b) Point3<Length> != Point2<Length>, (c) Point3<Length> != Point3<Real>, (d) Point3<Length> != Vector3<Length>, (e) same assertions for Vector, (f) Hash consistency: equal types produce equal hashes via HashMap insert+lookup",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-10",
-      "type": "test",
-      "description": "Write inline test: 'let r = union(42, box(10mm,10mm,10mm))' with non-geometry first arg \u2192 compile_geometry_call returns None and emits diagnostic about geometry argument required",
-      "status": "done",
-      "commit": "130cf04"
+      "type": "impl",
+      "description": "Verify Eq/Hash tests pass (derived automatically \u2014 no code change expected). Also add test asserting Point and Vector are not numeric via is_numeric(), which should pass from the existing match wildcard-free is_numeric() using matches!() macro",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write inline test for nested boolean: 'let r = union(difference(box(...), cylinder(...)), sphere(...))' \u2192 realization with 5 ops: Box, Cylinder, Boolean{Difference}, Sphere, Boolean{Union} with correct step indices",
-      "status": "done",
-      "commit": "07af798"
+      "description": "Add Point and Vector variant construction to the all_m5_types_exported test in tests/exports.rs: construct Type::Point and Type::Vector variants, use Type::point3() and Type::vec3() factories, verify accessible from crate root",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-12",
-      "type": "test",
-      "description": "Create crates/reify-eval/tests/boolean_ops_e2e.rs with OCCT-guarded test: parse+compile+eval 'union(box(10mm,10mm,10mm), box(10mm,10mm,10mm))' through Engine with OcctKernel, verify non-empty STEP output containing ISO-10303-21",
-      "status": "done",
-      "commit": "46be438"
-    },
-    {
-      "id": "step-13",
       "type": "impl",
-      "description": "Verify full eval+kernel path works end-to-end. The compile_geometry_op Boolean handler and OCCT kernel boolean ops are already implemented \u2014 fix any issues if e2e test fails.",
-      "status": "done",
-      "commit": "46be438"
-    },
-    {
-      "id": "step-14",
-      "type": "test",
-      "description": "Add OCCT-guarded e2e test: difference(box(20mm,20mm,20mm), cylinder(5mm,20mm)) \u2192 valid STEP export (box with hole)",
-      "status": "done",
-      "commit": "46be438"
-    },
-    {
-      "id": "step-15",
-      "type": "test",
-      "description": "Add OCCT-guarded e2e test: intersection(box(10mm,10mm,10mm), box(10mm,10mm,10mm)) \u2192 valid STEP export",
-      "status": "done",
-      "commit": "46be438"
-    },
-    {
-      "id": "step-16",
-      "type": "test",
-      "description": "Add OCCT-guarded e2e test: union_all with 5 boxes at different positions (nested translates or direct) \u2192 valid STEP export",
-      "status": "done",
-      "commit": "46be438"
-    },
-    {
-      "id": "step-17",
-      "type": "test",
-      "description": "Write failing OCCT-guarded e2e test in boolean_ops_e2e.rs: structure with two geometry let bindings 'let r1 = box(10mm, 10mm, 10mm)' and 'let r2 = union(box(20mm, 20mm, 20mm), box(30mm, 30mm, 30mm))'. Use Engine::tessellate_realizations() (or build()) and verify both realizations produce valid geometry. This test exposes the multi-realization step index bug: r2's Boolean{Union, Step(0), Step(1)} resolves Step(0) to r1's handle instead of r2's first box handle because the eval engine passes the full global step_handles vector instead of a realization-local slice.",
-      "status": "done",
-      "commit": "4a08e78"
-    },
-    {
-      "id": "step-18",
-      "type": "impl",
-      "description": "Fix all three geometry eval loops in Engine (crates/reify-eval/src/lib.rs) to pass realization-local step_handles slice to compile_geometry_op. (1) In tessellate_from_values (line ~2650): change '&step_handles' to '&step_handles[handle_start..]' \u2014 handle_start already tracked at line 2644. (2) In the eval-then-build method (line ~2461): add 'let handle_start = step_handles.len()' before the per-realization op loop, then pass '&step_handles[handle_start..]'. (3) In the full build() method (line ~2535): same pattern \u2014 add handle_start tracking and pass realization-local slice. This makes GeomRef::Step indices resolve relative to the current realization, matching the compiler's step_offset: 0 convention.",
-      "status": "done",
-      "commit": "a737b43"
-    },
-    {
-      "id": "step-19",
-      "type": "test",
-      "description": "Write OCCT-guarded e2e test for multi-realization with nested booleans: 'let r1 = difference(box(20mm,20mm,20mm), cylinder(5mm, 20mm))' and 'let r2 = union(box(10mm,10mm,10mm), sphere(8mm))'. Verify both realizations tessellate to non-empty meshes. This exercises the fix with nested boolean ops where step indices would be even more wrong without the realization-local slice (r2's ops would start at step index 3 globally but the compiler emits Step(0), Step(1), Step(2)).",
-      "status": "done",
-      "commit": "b27abde"
+      "description": "No impl change expected for exports \u2014 Type is already re-exported. Run full cargo test -p reify-types to verify everything passes end-to-end.",
+      "status": "pending",
+      "commit": null
     }
   ],
   "design_decisions": [
     {
-      "decision": "Recursive geometry arg compilation for boolean ops",
-      "rationale": "Boolean ops take geometry operands, not scalar values. Each arg (e.g., box(10,10,10)) must be recursively compiled via compile_geometry_call into geometry ops, then referenced by GeomRef::Step index. This reuses the existing compilation infrastructure and produces a flat ops list within one realization."
+      "decision": "Use Point{n}<{quantity}> Display format (e.g., Point3<Scalar[m]>) rather than domain-specific names like Point3<Length>",
+      "rationale": "Consistent with existing generic type Display conventions (List<Int>, Set<String>, Field<Real, Real>). The inner type's Display is reused verbatim. If a friendlier 'Length' alias is desired, that would be a Type alias feature, not a Point-specific Display hack."
     },
     {
-      "decision": "Left-fold pattern for union_all/intersection_all",
-      "rationale": "union_all(a,b,c,d) compiles to Union(Union(Union(a,b),c),d). This maps naturally to binary BooleanOp and accumulates step indices correctly. Left-fold is standard for associative operations and matches OCCT's pairwise boolean API."
+      "decision": "Use Vector{n}<{quantity}> as Display format, not Vec{n}<...>",
+      "rationale": "Avoids ambiguity with Rust's Vec<T> and is more explicit for the CAD/engineering domain. The variant name in the enum is Vector, so Display should match."
     },
     {
-      "decision": "No geometry variable references in boolean args (only nested calls)",
-      "rationale": "Supporting references to named geometry let bindings (e.g., union(my_box, my_sphere)) would require cross-realization handle resolution at compile time, which the current architecture doesn't support \u2014 each geometry let becomes a separate realization. Nested calls (union(box(...), cylinder(...))) are the natural syntax and fully supported by recursive compilation."
+      "decision": "Both Point and Vector store n:usize + quantity:Box<Type> with identical structure",
+      "rationale": "Mathematically a Point and a Vector in an affine space are distinct types even though they share the same representation (n-tuple of quantities). Keeping them as separate variants enables the type checker to distinguish them, which is important for geometric correctness (you can subtract points to get a vector, but cannot add two points)."
     },
     {
-      "decision": "No separate surface boolean handling",
-      "rationale": "OCCT's boolean_fuse/cut/common work identically on solids and surfaces (BRepAlgoAPI handles both). The same GeometryOp::Union/Difference/Intersection variants and kernel dispatch path handle both cases without any surface-specific code."
+      "decision": "Factory methods only for n=2 and n=3 (point2, point3, vec2, vec3)",
+      "rationale": "Task specifies these four. The general variant Type::Point { n, quantity } supports arbitrary dimensions, but 2D and 3D are the common cases in CAD that deserve convenience constructors."
     },
     {
-      "decision": "Use compile_geometry_call for arg validation instead of type checking",
-      "rationale": "Non-geometry args (like scalar literals) are detected when compile_geometry_call returns None for the arg. This produces a clear diagnostic without requiring a separate type-checking pass, keeping the implementation simple and consistent with the existing pattern."
+      "decision": "Eq and Hash are derived, no custom implementation needed",
+      "rationale": "Both new variants contain only usize (which derives Eq/Hash trivially) and Box<Type> (which delegates to Type's derived Eq/Hash). The derive macro handles this correctly with structural equality and deterministic hashing."
     },
     {
-      "decision": "Fix multi-realization step indices in eval engine (not compiler)",
-      "rationale": "The compiler correctly emits realization-local step indices (step_offset: 0 per realization). The bug is in the eval engine which passes the full global step_handles vector to compile_geometry_op instead of a realization-local slice. Fixing in eval by passing &step_handles[handle_start..] is minimal (3 call-sites), preserves the compiler's clean per-realization indexing, and matches the existing handle_start tracking in tessellate_from_values. The alternative (making the compiler emit globally-offset indices) would require the compiler to know about other realizations' op counts, coupling compilation order to eval order."
+      "decision": "Steps 9-10 test Eq/Hash even though it's derived",
+      "rationale": "Explicit tests document the contract and catch regressions if someone later changes the derive to a manual implementation. Following the pattern of existing tests (e.g., type_field_variant tests equality)."
     }
   ],
   "reuse": [
     {
-      "what": "CompiledGeometryOp::Boolean { op, left, right } variant",
-      "where": "crates/reify-compiler/src/lib.rs line 300",
-      "how": "Already defined with BooleanOp enum and GeomRef fields \u2014 emit directly from compile_geometry_call match arms"
+      "what": "Existing #[derive(Debug, Clone, PartialEq, Eq, Hash)] on Type enum",
+      "where": "crates/reify-types/src/ty.rs line 4",
+      "how": "New Point and Vector variants get Eq/Hash for free from the derive macro \u2014 no manual implementation needed."
     },
     {
-      "what": "BooleanOp::{Union, Difference, Intersection} enum",
-      "where": "crates/reify-compiler/src/lib.rs line 340",
-      "how": "Map function name to enum variant: 'union'\u2192Union, 'difference'\u2192Difference, 'intersection'\u2192Intersection"
+      "what": "Factory method pattern from Type::length(), Type::angle()",
+      "where": "crates/reify-types/src/ty.rs lines 42-60",
+      "how": "Follow identical pattern: pub fn point3(quantity: Type) -> Self { Type::Point { n: 3, quantity: Box::new(quantity) } }"
     },
     {
-      "what": "compile_geometry_op Boolean handler in eval",
-      "where": "crates/reify-eval/src/lib.rs line 2869",
-      "how": "Already resolves GeomRef::Step(idx) \u2192 step_handles[idx] for left/right, maps to GeometryOp::Union/Difference/Intersection \u2014 no changes needed to the function itself, only to the slice passed to it"
+      "what": "Display arm pattern from List/Set/Field variants",
+      "where": "crates/reify-types/src/ty.rs lines 206-216",
+      "how": "Point/Vector Display follows the same write!(f, ...) pattern, using the inner type's Display trait via {} format."
     },
     {
-      "what": "OCCT kernel boolean dispatch",
-      "where": "crates/reify-kernel-occt/src/lib.rs line 174",
-      "how": "Already handles GeometryOp::Union\u2192boolean_fuse, Difference\u2192boolean_cut, Intersection\u2192boolean_common \u2014 no changes needed"
+      "what": "Test patterns from existing type_field_variant and type_list_display tests",
+      "where": "crates/reify-types/src/ty.rs lines 77-189",
+      "how": "New tests follow the same assert_eq!(format!('{}', ty), expected) and equality assertion patterns."
     },
     {
-      "what": "Existing inline test pattern for geometry compilation",
-      "where": "crates/reify-compiler/src/lib.rs line 4670",
-      "how": "Follow exact pattern: parse source string with reify_syntax::parse, compile with compile(), assert realization count and op types via matches!() macro"
-    },
-    {
-      "what": "compile_geometry_call recursive call pattern",
-      "where": "Function already accepts &Expr and returns Option<Vec<CompiledGeometryOp>>",
-      "how": "Call compile_geometry_call(&args[i], scope, enum_defs, functions, diagnostics) on each raw syntax arg to recursively compile nested geometry calls"
-    },
-    {
-      "what": "e2e test pattern with OCCT kernel",
-      "where": "crates/reify-eval/tests/e2e_bracket.rs",
-      "how": "Follow pattern: parse\u2192compile\u2192DispatchPlanner+OcctKernelHandle\u2192Engine::new\u2192build\u2192verify STEP output"
-    },
-    {
-      "what": "handle_start tracking pattern in tessellate_from_values",
-      "where": "crates/reify-eval/src/lib.rs line 2644",
-      "how": "Already computes handle_start = step_handles.len() before each realization's op loop. Reuse this exact pattern in the two build methods that currently lack it, and change all three call-sites to pass &step_handles[handle_start..] for realization-local indexing."
+      "what": "Integration test pattern from all_m5_types_exported",
+      "where": "crates/reify-types/tests/exports.rs lines 47-142",
+      "how": "Add Point/Vector variant construction under a new section in the existing test function, following the same let _var = reify_types::Type::Variant pattern."
     }
   ],
-  "_session_id": "307-a6974930",
-  "_created_at": "2026-03-24T07:25:08.162380+00:00"
+  "_session_id": "222-f112dec9",
+  "_created_at": "2026-03-24T07:45:46.897202+00:00"
 }
