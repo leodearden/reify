@@ -130,6 +130,27 @@
       "description": "Add orient_basis match arm: extract 3 axis vectors via tensor_components_f64 (each must be 3 components), verify approximate orthonormality (dot products near zero, magnitudes near 1, within tolerance), build rotation matrix from basis vectors, convert rotation matrix to quaternion using Shepperd's method, return via normalize_quaternion. Return Undef for non-orthonormal input.",
       "status": "done",
       "commit": "8128684"
+    },
+    {
+      "id": "step-16",
+      "type": "test",
+      "description": "Review fix [untested_core_behavior]: Add orient_euler compound rotation tests that exercise quat_mul with multiple non-identity operands. (1) orient_euler('xyz', \u03c0/2, \u03c0/2, 0) \u2014 two non-zero angles \u2014 verifies q_x(\u03c0/2)*q_y(\u03c0/2) composition yields (0.5, 0.5, 0.5, 0.5); (2) orient_euler('zyx', \u03c0/3, \u03c0/4, \u03c0/6) \u2014 three non-zero angles \u2014 verifies full three-way quat_mul composition against analytically computed result; (3) orient_euler('xzx', \u03c0/2, \u03c0/2, 0) \u2014 proper Euler convention with compound rotation. These tests validate the quat_mul Hamilton product and composition ordering that single-axis tests cannot catch.",
+      "status": "done",
+      "commit": "f6f42ca"
+    },
+    {
+      "id": "step-17",
+      "type": "test",
+      "description": "Review fix [missing_validation]: Add orient_basis left-handed (improper rotation) rejection tests. (1) x=(1,0,0), y=(0,1,0), z=(0,0,-1) \u2014 reflection through XY plane, det=-1 \u2014 must return Undef; (2) x=(1,0,0), y=(0,0,1), z=(0,1,0) \u2014 another left-handed basis, det=-1 \u2014 must return Undef; (3) verify that a valid right-handed basis near tolerance still passes (sanity check). These tests will FAIL against the current implementation because orient_basis only checks orthonormality but not handedness (determinant).",
+      "status": "done",
+      "commit": "c6a14f3"
+    },
+    {
+      "id": "step-18",
+      "type": "impl",
+      "description": "Review fix [missing_validation]: Add handedness validation to orient_basis. After the dot-product orthonormality checks (line ~448), compute the scalar triple product (determinant): det = xc[0]*(yc[1]*zc[2] - yc[2]*zc[1]) + xc[1]*(yc[2]*zc[0] - yc[0]*zc[2]) + xc[2]*(yc[0]*zc[1] - yc[1]*zc[0]). Return Value::Undef if (det - 1.0).abs() > tol. This rejects left-handed orthonormal bases (det=-1), reflections, and improper rotations that pass orthonormality checks but are not in SO(3).",
+      "status": "done",
+      "commit": "359be1c"
     }
   ],
   "design_decisions": [
@@ -168,6 +189,10 @@
     {
       "decision": "Use Shepperd's method for rotation-matrix-to-quaternion conversion in orient_basis",
       "rationale": "Shepperd's method is numerically stable for all rotation matrices (avoids the singularity at trace=-1 that affects naive methods). Well-established algorithm used in production rotation libraries."
+    },
+    {
+      "decision": "orient_basis validates handedness via scalar triple product (determinant)",
+      "rationale": "Review fix: orthonormality alone is necessary but not sufficient for a valid rotation basis. A left-handed orthonormal basis (det=-1) passes unit-magnitude and perpendicularity checks but represents an improper rotation (reflection), not a member of SO(3). Shepperd's method silently produces a geometrically meaningless quaternion for such inputs. The determinant check (det \u2248 +1.0 within tolerance) ensures only proper rotations are accepted; improper inputs return Undef to keep errors noisy."
     }
   ],
   "reuse": [
@@ -210,8 +235,13 @@
       "what": "Complex domain classifier arm",
       "where": "crates/reify-constraints/src/classifier.rs:92",
       "how": "Add Orientation to the same multi-pattern arm as Complex/Tensor/Lambda/Field \u2014 orientations don't contribute to domain classification."
+    },
+    {
+      "what": "Existing orthonormality tolerance (tol = 1e-6) in orient_basis",
+      "where": "crates/reify-stdlib/src/lib.rs:436",
+      "how": "Reuse the same tolerance for the determinant check \u2014 (det - 1.0).abs() > tol. Consistent with existing dot-product and magnitude tolerance."
     }
   ],
   "_session_id": "233-1146333e",
-  "_created_at": "2026-03-24T16:05:56.274721+00:00"
+  "_created_at": "2026-03-24T16:30:52.734413+00:00"
 }
