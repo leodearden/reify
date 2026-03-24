@@ -190,6 +190,21 @@ mod tests {
     }
 
     #[test]
+    fn type_vector_display() {
+        let v3_length = Type::Vector {
+            n: 3,
+            quantity: Box::new(Type::length()),
+        };
+        assert_eq!(format!("{}", v3_length), "Vector3<Scalar[m]>");
+
+        let v2_real = Type::Vector {
+            n: 2,
+            quantity: Box::new(Type::Real),
+        };
+        assert_eq!(format!("{}", v2_real), "Vector2<Real>");
+    }
+
+    #[test]
     fn type_point_display() {
         let p3_length = Type::Point {
             n: 3,
