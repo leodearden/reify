@@ -361,6 +361,17 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
                 Value::Undef
             }
         }
+        "orient_quaternion" => {
+            if args.len() != 4 {
+                return Value::Undef;
+            }
+            match (args[0].as_f64(), args[1].as_f64(), args[2].as_f64(), args[3].as_f64()) {
+                (Some(w), Some(x), Some(y), Some(z)) => {
+                    normalize_quaternion(w, x, y, z).unwrap_or(Value::Undef)
+                }
+                _ => Value::Undef,
+            }
+        }
 
         // --- Field operations (stubs) ---
         // These are handled by reify-expr's eval_expr FunctionCall interceptor
@@ -381,6 +392,25 @@ fn unary(args: &[Value], f: impl FnOnce(&Value) -> Value) -> Value {
         return Value::Undef;
     }
     f(&args[0])
+}
+
+/// Normalize a quaternion (w, x, y, z) to unit length.
+///
+/// Returns `None` if any component is non-finite or the quaternion has zero length.
+fn normalize_quaternion(w: f64, x: f64, y: f64, z: f64) -> Option<Value> {
+    if !w.is_finite() || !x.is_finite() || !y.is_finite() || !z.is_finite() {
+        return None;
+    }
+    let norm = (w * w + x * x + y * y + z * z).sqrt();
+    if norm == 0.0 {
+        return None;
+    }
+    Some(Value::Orientation {
+        w: w / norm,
+        x: x / norm,
+        y: y / norm,
+        z: z / norm,
+    })
 }
 
 /// Convert non-finite f64 values (NaN, inf) to Undef.
