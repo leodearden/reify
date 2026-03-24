@@ -5053,6 +5053,59 @@ mod tests {
         );
     }
 
+    // --- Nested boolean compilation test (step-11) ---
+
+    #[test]
+    fn compile_nested_boolean_produces_five_ops() {
+        // union(difference(box, cylinder), sphere)
+        // Expected flat ops:
+        //   0: Box
+        //   1: Cylinder
+        //   2: Boolean{Difference, Step(0), Step(1)}
+        //   3: Sphere
+        //   4: Boolean{Union, Step(2), Step(3)}
+        let source = r#"structure S {
+    let r = union(difference(box(20mm, 20mm, 20mm), cylinder(5mm, 20mm)), sphere(10mm))
+}"#;
+        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_nested_bool"));
+        assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+        let compiled = compile(&parsed);
+        let template = &compiled.templates[0];
+        assert_eq!(template.realizations.len(), 1, "expected 1 realization");
+        let ops = &template.realizations[0].operations;
+        assert_eq!(
+            ops.len(), 5,
+            "expected 5 ops for nested boolean, got {}: {:?}",
+            ops.len(), ops
+        );
+        assert!(
+            matches!(ops[0], CompiledGeometryOp::Primitive { kind: PrimitiveKind::Box, .. }),
+            "ops[0] expected Box, got {:?}", ops[0]
+        );
+        assert!(
+            matches!(ops[1], CompiledGeometryOp::Primitive { kind: PrimitiveKind::Cylinder, .. }),
+            "ops[1] expected Cylinder, got {:?}", ops[1]
+        );
+        assert!(
+            matches!(
+                ops[2],
+                CompiledGeometryOp::Boolean { op: BooleanOp::Difference, left: GeomRef::Step(0), right: GeomRef::Step(1) }
+            ),
+            "ops[2] expected Boolean{{Difference,0,1}}, got {:?}", ops[2]
+        );
+        assert!(
+            matches!(ops[3], CompiledGeometryOp::Primitive { kind: PrimitiveKind::Sphere, .. }),
+            "ops[3] expected Sphere, got {:?}", ops[3]
+        );
+        assert!(
+            matches!(
+                ops[4],
+                CompiledGeometryOp::Boolean { op: BooleanOp::Union, left: GeomRef::Step(2), right: GeomRef::Step(3) }
+            ),
+            "ops[4] expected Boolean{{Union,2,3}}, got {:?}", ops[4]
+        );
+    }
+
     // --- Error case tests for boolean arg validation (step-9, step-10) ---
 
     #[test]
