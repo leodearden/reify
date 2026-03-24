@@ -1604,4 +1604,40 @@ mod tests {
             "dot of non-Tensor args should be Undef"
         );
     }
+
+    // --- dot() tests: dimensioned vectors (step-2) ---
+
+    #[test]
+    fn dot_length_force_vectors() {
+        // dot([1m, 0, 0], [1N, 0, 0]) -> Scalar { si_value: 1.0, dimension: Length*Force }
+        let length_force = DimensionVector::LENGTH.mul(&reify_types::dimension::FORCE);
+        let a = Value::Tensor(vec![
+            Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
+        ]);
+        let b = Value::Tensor(vec![
+            Value::Scalar { si_value: 1.0, dimension: reify_types::dimension::FORCE },
+            Value::Scalar { si_value: 0.0, dimension: reify_types::dimension::FORCE },
+            Value::Scalar { si_value: 0.0, dimension: reify_types::dimension::FORCE },
+        ]);
+        assert_scalar_approx!(eval_builtin("dot", &[a, b]), 1.0, length_force);
+    }
+
+    #[test]
+    fn dot_mixed_component_dimensions_returns_undef() {
+        // A Tensor with mixed dimensions is not a valid physical vector
+        let a = Value::Tensor(vec![
+            Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 0.0, dimension: DimensionVector::MASS },
+        ]);
+        let b = Value::Tensor(vec![
+            Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
+        ]);
+        assert!(
+            eval_builtin("dot", &[a, b]).is_undef(),
+            "dot of vector with mixed component dimensions should be Undef"
+        );
+    }
 }
