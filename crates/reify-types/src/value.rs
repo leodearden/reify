@@ -61,6 +61,8 @@ pub enum Value {
         lower_inclusive: bool,
         upper_inclusive: bool,
     },
+    /// m-by-n matrix: m rows each containing n Values.
+    Matrix(Vec<Vec<Value>>),
     /// Undefined — not yet determined or computation failed.
     Undef,
 }
@@ -270,6 +272,10 @@ impl Value {
                 }
                 h
             }
+            Value::Matrix(_rows) => {
+                // Stub — replaced in step-6 with tag=18 implementation
+                ContentHash::of(&[0])
+            }
             Value::Undef => ContentHash::of(&[5]),
         }
     }
@@ -345,6 +351,7 @@ impl PartialEq for Value {
                 );
                 al == bl && au == bu && ali == bli && aui == bui
             }
+            (Value::Matrix(a), Value::Matrix(b)) => a == b,
             (Value::Undef, Value::Undef) => true,
             _ => false,
         }
@@ -384,6 +391,7 @@ impl Ord for Value {
                 Value::Complex { .. } => 14,
                 Value::Orientation { .. } => 15,
                 Value::Range { .. } => 16,
+                Value::Matrix(_) => 255, // Stub — replaced in step-8 with tag=17
             }
         }
 
@@ -480,6 +488,7 @@ impl Ord for Value {
                     .then_with(|| aui.cmp(bui))
                     .then_with(|| au.cmp(bu))
             }
+            (Value::Matrix(a), Value::Matrix(b)) => a.cmp(b), // step-8 will adjust type_tag
             _ => unreachable!("same type tag but different variants"),
         }
     }
@@ -610,6 +619,23 @@ impl std::fmt::Display for Value {
                     Some(v) => format!("{}", v),
                 };
                 write!(f, "{}{}..{}{}", lb, lower_str, upper_str, ub)
+            }
+            Value::Matrix(rows) => {
+                write!(f, "[")?;
+                for (i, row) in rows.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "[")?;
+                    for (j, elem) in row.iter().enumerate() {
+                        if j > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{}", elem)?;
+                    }
+                    write!(f, "]")?;
+                }
+                write!(f, "]")
             }
             Value::Undef => write!(f, "undef"),
         }
