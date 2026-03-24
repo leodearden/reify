@@ -6,11 +6,12 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 use tokio::task::JoinHandle;
 
 // --- IPC types mirroring gui/sidecar/src/types.ts ---
@@ -156,6 +157,8 @@ pub struct SidecarHandle {
     stdin: SharedStdin,
     reader_handle: JoinHandle<()>,
     state: Arc<Mutex<SidecarState>>,
+    /// Notified when the sidecar sends the "ready" message.
+    ready_notify: Arc<Notify>,
 }
 
 impl SidecarHandle {
@@ -205,9 +208,11 @@ impl SidecarHandle {
         R: AsyncBufRead + Unpin + Send + 'static,
         F: Fn(String, Value) + Send + Sync + 'static,
     {
+        let ready_notify = Arc::new(Notify::new());
         let state_for_ready = Arc::clone(&state);
         let state_for_crash = Arc::clone(&state);
         let stdin_for_reader = Arc::clone(&stdin);
+        let notify_for_reader = Arc::clone(&ready_notify);
 
         let reader_handle = tokio::spawn(async move {
             read_sidecar_output(
@@ -216,8 +221,10 @@ impl SidecarHandle {
                     // 1. State transition: Ready message
                     if let OutboundMessage::Ready = &msg {
                         let state_inner = Arc::clone(&state_for_ready);
+                        let notify_inner = Arc::clone(&notify_for_reader);
                         tokio::spawn(async move {
                             *state_inner.lock().await = SidecarState::Ready;
+                            notify_inner.notify_waiters();
                         });
                     }
 
@@ -270,12 +277,42 @@ impl SidecarHandle {
             .await;
         });
 
-        SidecarHandle { stdin, reader_handle, state }
+        SidecarHandle { stdin, reader_handle, state, ready_notify }
     }
 
     /// Get a reference to the state mutex.
     pub fn state(&self) -> &Arc<Mutex<SidecarState>> {
         &self.state
+    }
+
+    /// Get a reference to the ready notify so callers can await it without
+    /// holding the outer sidecar lock.
+    pub fn ready_notify(&self) -> &Arc<Notify> {
+        &self.ready_notify
+    }
+
+    /// Wait until the sidecar transitions to the Ready state or the timeout expires.
+    ///
+    /// Fast path: if state is already Ready, returns immediately.
+    /// Slow path: awaits `ready_notify` with the given timeout.
+    pub async fn wait_ready(&self, timeout: Duration) -> Result<(), String> {
+        // Fast path: already Ready
+        if matches!(*self.state.lock().await, SidecarState::Ready) {
+            return Ok(());
+        }
+
+        // Slow path: subscribe before checking again to avoid the race between
+        // checking state and the notification being fired.
+        let notified = self.ready_notify.notified();
+        // Re-check under the subscription to avoid missing a notification that
+        // arrived between the fast-path check and the subscribe.
+        if matches!(*self.state.lock().await, SidecarState::Ready) {
+            return Ok(());
+        }
+
+        tokio::time::timeout(timeout, notified)
+            .await
+            .map_err(|_| format!("Timeout waiting for sidecar ready after {}ms", timeout.as_millis()))
     }
 
     /// Kill the sidecar: abort the reader task and reset state to NotStarted.
