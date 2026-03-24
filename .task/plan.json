@@ -1,146 +1,114 @@
 {
-  "task_id": "240",
-  "title": "Connector params: parser verification",
+  "task_id": "354",
+  "title": "Claude bridge: test quality improvements",
   "files": [
-    "crates/reify-syntax/tests/connect_chain_tests.rs",
-    "crates/reify-syntax/src/ts_parser.rs",
-    "tree-sitter-reify/grammar.js"
+    "gui/src-tauri/src/tests/claude_bridge_tests.rs"
   ],
   "modules": [
-    "crates/reify-syntax"
+    "gui/src-tauri/src/tests"
   ],
-  "analysis": "Task 240 is a verification task: confirm that `: TypeName { param = value, ... }` after connect statements parses fully, and that both `=` assignments (connector params) and `->` mappings (port mappings) are correctly distinguished in the AST.\n\nThe grammar (grammar.js lines 475-507) defines `connect_statement` with optional `connector_type` (via `: identifier`) and optional `connect_body` (via `{ repeat(choice(port_mapping, connect_param_assignment)) }`). The parser (ts_parser.rs `lower_connect_body` at line 1400) iterates children, dispatching on node kind to populate separate `params: Vec<(String, Expr)>` and `port_mappings: Vec<(String, String)>` vectors. The AST (lib.rs `ConnectDecl` at line 179) stores these in distinct fields.\n\nExisting tests (connect_chain_tests.rs, 7 tests) cover: simple connect, single param with type, single port mapping without type, bidirectional, reverse, member access, and chain. The critical gaps are:\n1. Mixed body with BOTH params AND port mappings (the primary task requirement)\n2. Multiple params in a single body\n3. Connector type without body\n4. Connector type with only port mappings (no params)\n5. Complex expression values in params (binary ops, not just literals)\n6. Rich integration test combining member-access ports, connector type, multiple params, multiple port mappings\n\nSince the grammar uses `repeat(choice(...))` and the parser iterates all children, all cases should already work. The primary deliverable is comprehensive test coverage. Impl steps are conditional — only needed if a test reveals a bug.",
+  "analysis": "This task is ALREADY FULLY IMPLEMENTED on main. All 9 commits addressing the task 139 test analyst review suggestions are ancestors of the current HEAD. 75 claude_bridge tests pass (0 failures).\n\n**Issue 1 — Vacuous assertion (commit e2906293):**\nTest `sidecar_handle_state_starts_as_starting` originally used `BufReader::new(&b\"\"[..])` which causes immediate EOF → on_exit fires → Crashed state. The old assertion `Starting | NotStarted | Crashed` matched everything except Ready, making it vacuous. The fix uses `tokio::io::duplex(1024)` to keep the reader open (no EOF) and asserts exactly `SidecarState::Starting`.\n\n**Issue 2 — Flaky yield-loop synchronization (3 commits: c6906cae, 35f875e8, a12e86b8):**\nThree tests originally used fixed-count `yield_now()` loops (50-100 iterations) to wait for async state transitions. Replaced with proper synchronization:\n- `sidecar_handle_transitions_to_ready_on_ready_message`: now uses `handle.wait_ready(Duration::from_secs(5))` which awaits the Notify.\n- `crash_detection_sets_state_to_crashed_on_eof`: now uses `handle.wait_ready(Duration::from_secs(5))` which returns Err when crash notify fires.\n- `from_parts_with_mcp_intercepts_reify_tool_calls`: now uses `tokio::time::timeout(5s, stdin_reader.read(...))` to await the tool_result write — a natural I/O synchronization point.\n\nNote: The remaining `yield_now()` calls in `subscribe_ready_does_not_miss_notification_fired_before_poll` (lines 1346-1347) are *intentional* — they deliberately create a race window to test that `notify_one()` stores a permit. These are not the fixed-count loops flagged in the review.\n\n**Issue 3 — Missing test coverage (5 commits: 12c84015, 7d49da54, 96af873a, 35282182, 93356a7f):**\n- `claude_abort_impl_errors_when_sidecar_is_none`: verifies error contains 'not started'\n- `claude_clear_session_impl_errors_when_sidecar_is_none`: verifies error contains 'not started'\n- `inbound_tool_result_serialization_round_trip`: serialize → deserialize InboundMessage::ToolResult, assert equality\n- `claude_send_message_impl_errors_when_sidecar_crashed`: verifies error propagates crash reason\n- `wait_ready_handles_notify_registration_race`: writes ready before calling wait_ready, verifies Ok regardless of scheduling\n\nSince everything is already implemented and tested, the steps below are verification-only — each confirms existing code and tests are correct.",
   "prerequisites": [],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write test `parse_connect_mixed_body` verifying connector type with BOTH params and port mappings: `connect a -> b : BoltSet { grade = 8.8  shaft -> input_bore }`. Assert connector_type=Some(\"BoltSet\"), params has 1 entry (\"grade\", NumberLiteral(8.8)), port_mappings has 1 entry (\"shaft\", \"input_bore\"). This is the primary verification target from the task description — confirming `=` and `->` forms are distinguished in the AST.",
+      "description": "Verify vacuous assertion fix: `sidecar_handle_state_starts_as_starting` uses `tokio::io::duplex` (not b\"\" reader) and asserts exactly `matches!(*handle.state().lock().unwrap(), SidecarState::Starting)`. Run test and confirm it passes.",
       "status": "done",
-      "commit": "db631c15"
+      "commit": "8340c09196e0be5a0273372b93b6b74ae9039a5a"
     },
     {
       "id": "step-2",
-      "type": "impl",
-      "description": "If step-1 test fails, fix parser or grammar to correctly handle mixed bodies containing both param assignments and port mappings. Most likely issue would be in `lower_connect_body` child iteration or grammar ambiguity between `->` in port_mapping vs connect_operator. Skip this step if step-1 passes.",
+      "type": "test",
+      "description": "Verify yield-loop fix #1: `sidecar_handle_transitions_to_ready_on_ready_message` uses `handle.wait_ready(Duration::from_secs(5)).await.unwrap()` instead of yield_now loop. Run test and confirm it passes.",
       "status": "done",
-      "commit": "db631c15"
+      "commit": "8340c09196e0be5a0273372b93b6b74ae9039a5a"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write test `parse_connect_multiple_params` verifying multiple params: `connect a -> b : BoltSet { grade = 8.8  count = 4 }`. Assert params.len()==2, params[0]=(\"grade\", NumberLiteral(8.8)), params[1]=(\"count\", NumberLiteral(4.0)), port_mappings is empty.",
+      "description": "Verify yield-loop fix #2: `crash_detection_sets_state_to_crashed_on_eof` uses `handle.wait_ready(Duration::from_secs(5)).await` (expects Err) instead of yield_now loop. Run test and confirm it passes.",
       "status": "done",
-      "commit": "db631c15"
+      "commit": "8340c09196e0be5a0273372b93b6b74ae9039a5a"
     },
     {
       "id": "step-4",
-      "type": "impl",
-      "description": "If step-3 test fails, fix parser to correctly accumulate multiple connect_param_assignment nodes. Skip if step-3 passes.",
+      "type": "test",
+      "description": "Verify yield-loop fix #3: `from_parts_with_mcp_intercepts_reify_tool_calls` uses `tokio::time::timeout(5s, stdin_reader.read(...))` for synchronization instead of yield_now loop. Run test and confirm it passes.",
       "status": "done",
-      "commit": "db631c15"
+      "commit": "8340c09196e0be5a0273372b93b6b74ae9039a5a"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write test `parse_connect_type_only` verifying connector type without body: `connect a -> b : BoltSet`. Assert connector_type=Some(\"BoltSet\"), params is empty, port_mappings is empty. Verifies the grammar's independent optionals (connector_type without connect_body).",
+      "description": "Verify missing coverage: `claude_abort_impl_errors_when_sidecar_is_none` — constructs Mutex<None>, calls claude_abort_impl, asserts Err containing 'not started'. Run test.",
       "status": "done",
-      "commit": "db631c15"
+      "commit": "8340c09196e0be5a0273372b93b6b74ae9039a5a"
     },
     {
       "id": "step-6",
-      "type": "impl",
-      "description": "If step-5 test fails, fix grammar or parser to handle `: TypeName` without a following `{`. The grammar has these as independent optionals so this should work. Skip if step-5 passes.",
+      "type": "test",
+      "description": "Verify missing coverage: `claude_clear_session_impl_errors_when_sidecar_is_none` — constructs Mutex<None>, calls claude_clear_session_impl, asserts Err containing 'not started'. Run test.",
       "status": "done",
-      "commit": "db631c15"
+      "commit": "8340c09196e0be5a0273372b93b6b74ae9039a5a"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write test `parse_connect_type_with_port_mappings_only` verifying connector type with only port mappings (no params): `connect a -> b : Adapter { shaft -> bore  flange -> face }`. Assert connector_type=Some(\"Adapter\"), params is empty, port_mappings.len()==2 with correct from/to pairs (\"shaft\"/\"bore\", \"flange\"/\"face\").",
+      "description": "Verify missing coverage: `inbound_tool_result_serialization_round_trip` — constructs InboundMessage::ToolResult, serializes to JSON, verifies type/id/tool_name/result fields, deserializes back, asserts equality. Run test.",
       "status": "done",
-      "commit": "db631c15"
+      "commit": "8340c09196e0be5a0273372b93b6b74ae9039a5a"
     },
     {
       "id": "step-8",
-      "type": "impl",
-      "description": "If step-7 test fails, fix parser to handle connect_body containing only port_mapping nodes when connector_type is also present. Skip if step-7 passes.",
+      "type": "test",
+      "description": "Verify missing coverage: `claude_send_message_impl_errors_when_sidecar_crashed` — creates SidecarHandle with Crashed state, calls claude_send_message_impl, asserts Err containing 'crashed'. Run test.",
       "status": "done",
-      "commit": "db631c15"
+      "commit": "8340c09196e0be5a0273372b93b6b74ae9039a5a"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write test `parse_connect_complex_param_expr` verifying complex expression values in params: `connect a -> b : Spring { stiffness = k * 2.0 }`. Assert params[0].0==\"stiffness\", params[0].1 is ExprKind::BinOp with op=Mul, left=Ident(\"k\"), right=NumberLiteral(2.0). Confirms the grammar's `$._expression` for param values handles binary operators.",
+      "description": "Verify missing coverage: `wait_ready_handles_notify_registration_race` — writes ready message BEFORE calling wait_ready to exercise the subscribe-before-recheck pattern, asserts Ok and Ready state. Run test.",
       "status": "done",
-      "commit": "db631c15"
-    },
-    {
-      "id": "step-10",
-      "type": "impl",
-      "description": "If step-9 test fails, fix parser's lower_expr call within lower_connect_body. The grammar uses `$._expression` for values so arbitrary expressions should work. Skip if step-9 passes.",
-      "status": "done",
-      "commit": "db631c15"
-    },
-    {
-      "id": "step-11",
-      "type": "test",
-      "description": "Write test `parse_connect_rich_mixed_body` as comprehensive integration verification: `connect m.shaft -> c.driver : BoltSet { grade = 8.8  count = 4  shaft -> bore  flange -> face }`. Assert: member-access port refs (m.shaft, c.driver), connector_type=Some(\"BoltSet\"), params.len()==2, port_mappings.len()==2. Validates all features combined.",
-      "status": "done",
-      "commit": "db631c15"
-    },
-    {
-      "id": "step-12",
-      "type": "impl",
-      "description": "If step-11 test fails, fix parser or grammar for the full combination of member-access ports, connector type, multiple params, and multiple port mappings. Skip if step-11 passes.",
-      "status": "done",
-      "commit": "db631c15"
+      "commit": "8340c09196e0be5a0273372b93b6b74ae9039a5a"
     }
   ],
   "design_decisions": [
     {
-      "decision": "All new tests go in the existing connect_chain_tests.rs file",
-      "rationale": "Follows the established pattern — connector/chain tests are already consolidated in this file. No reason to create a separate file."
+      "decision": "All work was completed as part of task 139's review fix cycle",
+      "rationale": "The test quality issues were identified during task 139 review and fixed in 9 commits directly on main (e2906293 through 0f635b7a). Task 354 was filed to track these improvements but the work preceded the task filing. All 9 commits are ancestors of the task/354 branch."
     },
     {
-      "decision": "Even-numbered impl steps are conditional (skip if corresponding test passes)",
-      "rationale": "This is a verification task. The grammar and parser appear to already handle all cases correctly. Impl steps exist as safety nets in case any test reveals a bug."
+      "decision": "Intentional yield_now in subscribe_ready race test is NOT a yield-loop",
+      "rationale": "The 2 yield_now calls + 10ms sleep in subscribe_ready_does_not_miss_notification_fired_before_poll are intentional race-window creation, not the 50-100 iteration synchronization loops flagged in the review. They test that notify_one() stores a permit when no waiter is registered."
     },
     {
-      "decision": "Test both param count/values AND port_mapping count/values in every mixed-body test",
-      "rationale": "The task specifically requires verifying that `=` assignments and `->` mappings are DISTINGUISHED in the AST. Checking both fields confirms they aren't cross-contaminated."
+      "decision": "Duplex reader replaces empty b\"\" reader for non-EOF tests",
+      "rationale": "Using b\"\" as a BufReader source causes immediate EOF which triggers on_exit → Crashed state transition asynchronously. Duplex channels keep the reader open indefinitely, preventing unwanted state transitions and enabling deterministic assertions."
     },
     {
-      "decision": "Include ts_parser.rs and grammar.js in files list despite expecting no changes",
-      "rationale": "If any verification test fails, these are the files that would need fixes. Including them in the concurrency lock prevents conflicts if a bug is found."
-    },
-    {
-      "decision": "Use the parse_decls() helper pattern consistent with existing tests",
-      "rationale": "All existing tests in the file use the same helper function and structure-extraction pattern. Maintaining consistency makes the test file easy to read and maintain."
+      "decision": "wait_ready() as the canonical synchronization primitive for tests",
+      "rationale": "wait_ready() uses Notify internally with subscribe-before-recheck pattern, making it deterministic. Tests that need to wait for Ready or Crashed state transitions use wait_ready() instead of yield loops, as it naturally handles both happy path (Ready) and error path (Crashed/timeout)."
     }
   ],
   "reuse": [
     {
-      "what": "parse_decls() helper function",
-      "where": "crates/reify-syntax/tests/connect_chain_tests.rs line 8",
-      "how": "Reuse the existing helper to parse source into (Vec<Declaration>, Vec<ParseError>) for all new tests."
+      "what": "SidecarHandle::wait_ready()",
+      "where": "gui/src-tauri/src/claude_bridge.rs line 321-347",
+      "how": "Production wait_ready() method doubles as the test synchronization primitive, replacing ad-hoc yield_now loops. Uses Notify with subscribe-before-recheck pattern to handle all scheduling orderings."
     },
     {
-      "what": "Structure-member extraction pattern",
-      "where": "crates/reify-syntax/tests/connect_chain_tests.rs lines 21-35",
-      "how": "Follow the established pattern: match Declaration::Structure, then match MemberDecl::Connect to extract ConnectDecl for assertions."
+      "what": "tokio::io::duplex()",
+      "where": "Tests throughout claude_bridge_tests.rs",
+      "how": "Standard tokio duplex channels simulate sidecar I/O without real processes. Writer end kept alive prevents EOF, giving deterministic state control."
     },
     {
-      "what": "ExprKind matching patterns for assertions",
-      "where": "crates/reify-syntax/tests/connect_chain_tests.rs lines 38-41, 80-83, 185-205",
-      "how": "Reuse existing patterns for matching ExprKind::Ident, ExprKind::NumberLiteral, ExprKind::MemberAccess to verify expression values in params and port refs."
-    },
-    {
-      "what": "Test source format with inline structure",
-      "where": "crates/reify-syntax/tests/connect_chain_tests.rs all existing tests",
-      "how": "All tests wrap connect statements inside `structure S { port a : out T  port b : in T  connect ... }` — follow this same pattern for new tests requiring port declarations."
+      "what": "tokio::time::timeout() for I/O synchronization",
+      "where": "from_parts_with_mcp_intercepts_reify_tool_calls test",
+      "how": "Instead of yield loops, await the actual I/O (stdin_reader.read) with a timeout. The tool_result write to stdin is the natural synchronization point — all prior synchronous events have already fired by then."
     }
   ],
-  "_session_id": "240-14819566",
-  "_created_at": "2026-03-24T22:16:11.994149+00:00"
+  "_session_id": "354-dda4cf8c",
+  "_created_at": "2026-03-24T22:16:31.206489+00:00"
 }
