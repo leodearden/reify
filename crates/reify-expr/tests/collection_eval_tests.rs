@@ -2067,6 +2067,26 @@ fn eval_method_concat_two_args() {
 // ─── task-168: generate as FunctionCall ───
 
 #[test]
+fn eval_method_generate_real_count() {
+    // [].generate(3.0, |i| i) -> Undef (Real count not supported, only Int)
+    let i_id = ValueCellId::new("$lambda_real_gen.S", "i");
+    let body = CompiledExpr::value_ref(i_id.clone(), Type::Int);
+    let lambda_arg = lambda_literal(vec![("i", i_id)], body, ValueMap::new());
+
+    let list = CompiledExpr::list_literal(vec![], Type::List(Box::new(Type::Int)));
+    let count_arg = CompiledExpr::literal(Value::Real(3.0), Type::Real);
+    let expr = CompiledExpr::method_call(
+        list,
+        "generate".to_string(),
+        vec![count_arg, lambda_arg],
+        Type::List(Box::new(Type::Int)),
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert!(result.is_undef(), "generate with Real count should return Undef");
+}
+
+#[test]
 fn eval_method_generate_negative_count() {
     // [].generate(-3, |i| i) -> [] (Rust range 0..-3 is empty)
     let i_id = ValueCellId::new("$lambda_neg_gen.S", "i");
