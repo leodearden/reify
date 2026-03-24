@@ -80,3 +80,37 @@ pub fn format_inbound(msg: &InboundMessage) -> String {
 pub fn parse_outbound(line: &str) -> Result<OutboundMessage, String> {
     serde_json::from_str(line.trim()).map_err(|e| format!("parse_outbound: {}", e))
 }
+
+/// Map an OutboundMessage to a Tauri event name and JSON payload.
+pub fn outbound_to_event(msg: &OutboundMessage) -> (String, Value) {
+    match msg {
+        OutboundMessage::TextDelta { id, content } => (
+            "claude-text-delta".to_string(),
+            serde_json::json!({ "id": id, "content": content }),
+        ),
+        OutboundMessage::ThinkingDelta { id, content } => (
+            "claude-thinking-delta".to_string(),
+            serde_json::json!({ "id": id, "content": content }),
+        ),
+        OutboundMessage::ToolCall { id, tool_name, tool_input } => (
+            "claude-tool-call".to_string(),
+            serde_json::json!({ "id": id, "tool_name": tool_name, "tool_input": tool_input }),
+        ),
+        OutboundMessage::ToolResult { id, tool_name, result } => (
+            "claude-tool-result".to_string(),
+            serde_json::json!({ "id": id, "tool_name": tool_name, "result": result }),
+        ),
+        OutboundMessage::Done { id } => (
+            "claude-done".to_string(),
+            serde_json::json!({ "id": id }),
+        ),
+        OutboundMessage::ErrorMessage { id, message } => (
+            "claude-error".to_string(),
+            serde_json::json!({ "id": id, "message": message }),
+        ),
+        OutboundMessage::Ready => (
+            "claude-ready".to_string(),
+            serde_json::json!({}),
+        ),
+    }
+}

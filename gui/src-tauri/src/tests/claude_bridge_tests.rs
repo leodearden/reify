@@ -249,6 +249,80 @@ fn parse_outbound_missing_required_field_returns_err() {
     assert!(result.is_err());
 }
 
+// --- outbound_to_event tests (step-7) ---
+
+#[test]
+fn outbound_to_event_text_delta() {
+    let msg = OutboundMessage::TextDelta { id: "msg-1".to_string(), content: "hi".to_string() };
+    let (name, payload) = outbound_to_event(&msg);
+    assert_eq!(name, "claude-text-delta");
+    assert_eq!(payload["id"], "msg-1");
+    assert_eq!(payload["content"], "hi");
+}
+
+#[test]
+fn outbound_to_event_thinking_delta() {
+    let msg = OutboundMessage::ThinkingDelta { id: "msg-2".to_string(), content: "...".to_string() };
+    let (name, payload) = outbound_to_event(&msg);
+    assert_eq!(name, "claude-thinking-delta");
+    assert_eq!(payload["id"], "msg-2");
+    assert_eq!(payload["content"], "...");
+}
+
+#[test]
+fn outbound_to_event_tool_call() {
+    let msg = OutboundMessage::ToolCall {
+        id: "msg-3".to_string(),
+        tool_name: "reify_list".to_string(),
+        tool_input: json!({"filter": "all"}),
+    };
+    let (name, payload) = outbound_to_event(&msg);
+    assert_eq!(name, "claude-tool-call");
+    assert_eq!(payload["id"], "msg-3");
+    assert_eq!(payload["tool_name"], "reify_list");
+    assert_eq!(payload["tool_input"]["filter"], "all");
+}
+
+#[test]
+fn outbound_to_event_tool_result() {
+    let msg = OutboundMessage::ToolResult {
+        id: "msg-3".to_string(),
+        tool_name: "reify_list".to_string(),
+        result: json!(["cube1", "cube2"]),
+    };
+    let (name, payload) = outbound_to_event(&msg);
+    assert_eq!(name, "claude-tool-result");
+    assert_eq!(payload["id"], "msg-3");
+    assert_eq!(payload["tool_name"], "reify_list");
+    assert_eq!(payload["result"][0], "cube1");
+}
+
+#[test]
+fn outbound_to_event_done() {
+    let msg = OutboundMessage::Done { id: "msg-4".to_string() };
+    let (name, payload) = outbound_to_event(&msg);
+    assert_eq!(name, "claude-done");
+    assert_eq!(payload["id"], "msg-4");
+}
+
+#[test]
+fn outbound_to_event_error() {
+    let msg = OutboundMessage::ErrorMessage { id: "msg-5".to_string(), message: "oops".to_string() };
+    let (name, payload) = outbound_to_event(&msg);
+    assert_eq!(name, "claude-error");
+    assert_eq!(payload["id"], "msg-5");
+    assert_eq!(payload["message"], "oops");
+}
+
+#[test]
+fn outbound_to_event_ready() {
+    let msg = OutboundMessage::Ready;
+    let (name, payload) = outbound_to_event(&msg);
+    assert_eq!(name, "claude-ready");
+    // payload should be empty object
+    assert!(payload.as_object().unwrap().is_empty());
+}
+
 // --- format_inbound tests (step-3) ---
 
 #[test]
