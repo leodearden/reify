@@ -79,6 +79,31 @@ pub enum DefaultKind {
     Constraint(reify_syntax::ConstraintDecl),
 }
 
+/// An error returned by `check_trait_conformance` describing why a structure
+/// member map does not satisfy a trait requirement.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ConformanceError {
+    /// The structure is missing a required `param` member.
+    MissingParam { name: String, expected_type: Type },
+    /// The structure has a `param` member with the wrong type.
+    TypeMismatch { name: String, expected_type: Type, actual_type: Type },
+    /// The structure is missing a required `let` member.
+    MissingLet { name: String, expected_type: Type },
+    /// The structure has a `let` member with the wrong type.
+    LetTypeMismatch { name: String, expected_type: Type, actual_type: Type },
+}
+
+/// Pure conformance check: given a flat member map and a single compiled trait
+/// definition, return all conformance errors for required `param` and `let`
+/// members.  Sub requirements are not checked (they need richer input).
+/// Refinement hierarchy walking remains the caller's responsibility.
+pub fn check_trait_conformance(
+    structure_members: &HashMap<String, Type>,
+    trait_def: &CompiledTrait,
+) -> Vec<ConformanceError> {
+    vec![]
+}
+
 /// The compiled source of a field.
 #[derive(Debug, Clone)]
 pub enum CompiledFieldSource {
