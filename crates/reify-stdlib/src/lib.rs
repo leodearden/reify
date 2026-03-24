@@ -3159,4 +3159,46 @@ mod tests {
         let expected_phase = (-25.0_f64).atan2(50.0);
         assert_scalar_approx!(eval_builtin("phase", &[z.clone()]), expected_phase, DimensionVector::ANGLE);
     }
+
+    // ── sanitize_value Complex arm tests (step-20) ────────────────────────────
+
+    #[test]
+    fn complex_mul_overflow_returns_undef() {
+        // (f64::MAX + f64::MAX*i) * (f64::MAX + f64::MAX*i)
+        // re = MAX*MAX - MAX*MAX = 0 (actually NaN-ish), im = MAX*MAX + MAX*MAX = +Inf
+        // Either component going Inf/NaN must produce Undef.
+        let a = Value::Complex {
+            re: f64::MAX,
+            im: f64::MAX,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let b = Value::Complex {
+            re: f64::MAX,
+            im: f64::MAX,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            eval_builtin("complex_mul", &[a, b]).is_undef(),
+            "complex_mul with f64::MAX components must return Undef (Inf overflow)"
+        );
+    }
+
+    #[test]
+    fn complex_add_overflow_returns_undef() {
+        // f64::MAX + f64::MAX = +Inf overflow
+        let a = Value::Complex {
+            re: f64::MAX,
+            im: f64::MAX,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let b = Value::Complex {
+            re: f64::MAX,
+            im: f64::MAX,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            eval_builtin("complex_add", &[a, b]).is_undef(),
+            "complex_add with f64::MAX components must return Undef (Inf overflow)"
+        );
+    }
 }
