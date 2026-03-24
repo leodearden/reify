@@ -3436,6 +3436,23 @@ mod tests {
         );
     }
 
+    // --- vec2 ---
+
+    #[test]
+    fn vec2_basic() {
+        // vec2(9.0, 10.0) → Value::Tensor([Real(9.0), Real(10.0)])
+        let args = vec![Value::Real(9.0), Value::Real(10.0)];
+        let result = eval_builtin("vec2", &args);
+        match result {
+            Value::Tensor(ref items) => {
+                assert_eq!(items.len(), 2);
+                assert!(matches!(&items[0], Value::Real(v) if (*v - 9.0).abs() < 1e-12));
+                assert!(matches!(&items[1], Value::Real(v) if (*v - 10.0).abs() < 1e-12));
+            }
+            other => panic!("expected Tensor, got {:?}", other),
+        }
+    }
+
     // --- point2 ---
 
     #[test]
