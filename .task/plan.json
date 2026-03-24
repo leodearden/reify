@@ -1,70 +1,147 @@
 {
-  "task_id": "355",
-  "title": "Rework range_constraint/equality_constraint API and reorganize TraitDefBuilder tests",
+  "task_id": "229",
+  "title": "Matrix: Type and Value",
   "files": [
-    "crates/reify-test-support/src/builders.rs"
+    "crates/reify-types/src/ty.rs",
+    "crates/reify-types/src/value.rs",
+    "crates/reify-types/tests/exports.rs"
   ],
   "modules": [
-    "crates/reify-test-support"
+    "crates/reify-types"
   ],
-  "analysis": "Thorough codebase exploration reveals that 2 of the 3 deferred issues from task 218 review (S1 and S2) have ALREADY been resolved in the current code. Only S6 (test reorganization) remains.\n\n**S1 (range_constraint API rework) - ALREADY DONE:** The current `range_constraint` at builders.rs:353 returns `Vec<CompiledExpr>` (not `Vec<CompiledConstraint>`). It does NOT hardcode ConstraintNodeId indices -- callers assign their own indices via `TopologyTemplateBuilder::constraint()`. Tests at lines 1796-1843 in `mod constraint_helper_tests` verify composability (`range_constraint_composable_for_multiple_members`) and correctness (`range_constraint_returns_two_bool_exprs`).\n\n**S2 (equality_constraint/range_constraint asymmetry) - ALREADY DONE:** Both `range_constraint` (line 353) and `equality_constraint` (line 369) return `Vec<CompiledExpr>`, making them symmetric. The `constrained_structure_module()` fixture at line 640 uses `range_constraint` for both width and height -- no hand-rolling. Test `equality_constraint_returns_single_bool_expr` (line 1781) verifies the equality helper.\n\n**S6 (test module organization) - REMAINING WORK:** 9 TraitDefBuilder tests (lines 795-931) are inside `mod tests` at line 688, which is the general test module positioned between TopologyTemplateBuilder (line 392) and TraitDefBuilder (line 1184). These tests are above the struct they test, which violates the file's own convention where each builder's tests live in a dedicated module near its definition. Existing examples of correct placement: `mod purpose_builder_tests` (line 1659) near CompiledPurposeBuilder (line 1482), `mod trait_builder_tests` (line 1722) near CompiledTraitBuilder (line 1579), `mod constraint_helper_tests` (line 1777) near the constraint helpers (line 342).\n\nThe 9 tests to move:\n1. trait_def_builder_minimal (line 797)\n2. trait_def_builder_with_requirement (line 811)\n3. trait_def_builder_with_refinement (line 823)\n4. trait_def_builder_with_type_param (line 832)\n5. trait_def_builder_is_pub (line 854)\n6. trait_def_builder_content_hash_differs_by_name (line 860)\n7. trait_def_builder_with_default (line 867)\n8. trait_def_content_hash_differs_by_type_param (line 888)\n9. trait_def_content_hash_differs_by_default (line 910)\n\nThe `mod tests` module (lines 688-1179) also contains tests for literal expressions, TopologyTemplateBuilder, collection expressions, conditional/fn_call/user_fn_call/method_call/lambda expressions, field operations, and CompiledFieldBuilder -- all of which stay.",
-  "prerequisites": [
-    {
-      "id": "pre-1",
-      "description": "Run `cargo test -p reify-test-support` to establish baseline -- confirm all existing tests pass before reorganization. Record the test count to verify after the move.",
-      "status": "done",
-      "commit": "baseline-117-tests",
-      "tests": [
-        "cargo test -p reify-test-support"
-      ]
-    }
-  ],
+  "analysis": "Task 229 adds a Matrix type and value to the reify type system. The Matrix type is structurally similar to the existing Tensor variant: `Matrix { m: usize, n: usize, quantity: Box<Type> }` where m=rows, n=cols. Matrix values use `Vec<Vec<Value>>` (m rows of n elements each), unlike Tensor's flat `Vec<Value>` with recursive nesting. The implementation touches three files: ty.rs (Type enum variant + factory + Display), value.rs (Value enum variant + PartialEq + Ord + Display + content_hash), and tests/exports.rs (integration test). The Type enum derives Eq/Hash so no manual impl needed there. The Value enum has custom PartialEq, Ord, Display, and content_hash that all require explicit new arms. Content hash will use tag 18 (next after Range=17). Ord type_tag will use 17 (next after Range=16). The existing Tensor implementation serves as the closest pattern to follow. is_numeric already returns false via wildcard miss, and as_name returns None via wildcard catch-all — no changes needed for those methods, just test coverage.",
+  "prerequisites": [],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Create new `#[cfg(test)] mod trait_def_builder_tests` after TraitDefBuilder impl block (after line ~1275, before CompiledModuleBuilder at line 1277). Copy all 9 TraitDefBuilder tests into this module. The module needs `use super::*;` plus specific imports used by the tests: `use reify_types::{CompiledExprKind, ContentHash, DimensionVector, TypeParam, TraitBound, TraitRef, SourceSpan};` and `use reify_compiler::{DefaultKind, RequirementKind};`. Verify the new module compiles and all 9 tests pass with `cargo test -p reify-test-support trait_def_builder_tests`. At this point duplicate tests exist in both `mod tests` and `mod trait_def_builder_tests` -- both should pass.",
+      "description": "Write failing tests in ty.rs for Type::Matrix: (a) direct construction and equality — Matrix{3,2,Real} == Matrix{3,2,Real}, != Matrix{2,3,Real}, != Matrix{3,2,Int}, != Tensor{2,3,Real}; (b) factory method — Type::matrix(3,2,Real) == Type::Matrix{m:3,n:2,quantity:Real}; (c) hash consistency via HashMap insert+lookup; (d) Display — Matrix3x2<Real>, Matrix4x4<Scalar[m]>; (e) is_numeric returns false; (f) as_name returns None",
       "status": "done",
-      "commit": "61ae66db"
+      "commit": "c5a7ba2c"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Remove the 9 TraitDefBuilder tests from `mod tests` (lines 795-931). After removal, the `mod tests` module retains: literal expression tests (lines 694-779), auto_param_builder (line 782), TopologyTemplateBuilder trait extension tests (line 933+), collection expression tests, conditional/fn_call/method_call/lambda tests, field operation tests, and CompiledFieldBuilder tests. Run `cargo test -p reify-test-support` to verify total test count is unchanged (tests moved, not removed). Verify `cargo test -p reify-test-support tests::trait_def` returns 0 results (no TraitDefBuilder tests in old module).",
+      "description": "Add `Matrix { m: usize, n: usize, quantity: Box<Type> }` variant to Type enum after Range. Add `Type::matrix(m, n, q)` factory method after range(). Add Display arm: `write!(f, \"Matrix{}x{}<{}>\", m, n, quantity)`. No changes needed for is_numeric or as_name (wildcard patterns).",
       "status": "done",
-      "commit": "pending"
+      "commit": "a748e95b"
+    },
+    {
+      "id": "step-3",
+      "type": "test",
+      "description": "Write failing tests in value.rs for Value::Matrix: (a) construction with Vec<Vec<Value>> and PartialEq — same rows equal, different rows not equal, cross-variant with List/Tensor returns false; (b) Display format — `[[1, 2, 3], [4, 5, 6]]` for 2x3 matrix, `[[1]]` for 1x1",
+      "status": "done",
+      "commit": "ccc8c1fc"
+    },
+    {
+      "id": "step-4",
+      "type": "impl",
+      "description": "Add `Matrix(Vec<Vec<Value>>)` variant to Value enum after Range. Add PartialEq arm: `(Value::Matrix(a), Value::Matrix(b)) => a == b`. Add Display arm: outer `[` then comma-separated rows each formatted as `[v1, v2, ...]`, closing `]`.",
+      "status": "done",
+      "commit": "3eb2307e"
+    },
+    {
+      "id": "step-5",
+      "type": "test",
+      "description": "Write failing tests in value.rs for Value::Matrix content_hash: (a) determinism — same matrix produces same hash; (b) different values — [[1,2],[3,4]] != [[1,3],[2,4]] (transposed); (c) distinct from Tensor — Matrix([[1,2]]) hash != Tensor([1,2]) hash due to different tag",
+      "status": "done",
+      "commit": "f7f3495e"
+    },
+    {
+      "id": "step-6",
+      "type": "impl",
+      "description": "Add content_hash arm for Value::Matrix with tag=18: `let mut h = ContentHash::of(&[18]); h = h.combine(rows.len()); for each row: h = h.combine(row.len()); for each elem: h = h.combine(elem.content_hash())`",
+      "status": "done",
+      "commit": "048e2ffa"
+    },
+    {
+      "id": "step-7",
+      "type": "test",
+      "description": "Write failing tests in value.rs for Value::Matrix Ord: (a) cross-type ordering — Matrix (tag 17) > Range (tag 16), Matrix < Undef would be wrong since Undef=0; (b) within-type lexicographic ordering on rows — [[1,2],[3,4]] < [[1,2],[3,5]]",
+      "status": "done",
+      "commit": "d2a7d90e"
+    },
+    {
+      "id": "step-8",
+      "type": "impl",
+      "description": "Add `Value::Matrix(_) => 17` to type_tag fn in Ord impl. Add within-type arm: `(Value::Matrix(a), Value::Matrix(b)) => a.cmp(b)` leveraging Vec<Vec<Value>>'s derived lexicographic Ord.",
+      "status": "done",
+      "commit": "6b75cd12"
+    },
+    {
+      "id": "step-9",
+      "type": "test",
+      "description": "Add Matrix entries to tests/exports.rs all_m5_types_exported: Type::Matrix direct construction, Type::matrix() factory method, Value::Matrix construction with Vec<Vec<Value>>",
+      "status": "done",
+      "commit": "22687aac"
+    },
+    {
+      "id": "step-10",
+      "type": "impl",
+      "description": "The export test entries are written in step-9 (test IS the impl for integration tests). Verify `cargo test -p reify-types` passes all tests including new Matrix tests.",
+      "status": "done",
+      "commit": "22687aac"
     }
   ],
   "design_decisions": [
     {
-      "decision": "S1 and S2 are already resolved -- no code changes needed for constraint API",
-      "rationale": "The current `range_constraint` (line 353) and `equality_constraint` (line 369) both return `Vec<CompiledExpr>`, making them symmetric and free of hardcoded ConstraintNodeId indices. The `constrained_structure_module()` fixture uses the helper for both width and height. Tests in `mod constraint_helper_tests` verify composability and correctness. These fixes were applied during the task 218 review merge cycle."
+      "decision": "Matrix value stored as Vec<Vec<Value>> (not flat Vec<Value>)",
+      "rationale": "Task specifies 'm rows x n cols' as Vec<Vec<Value>>. This differs from Tensor's flat Vec<Value> with recursive nesting. The 2D structure makes row/column access O(1) and matrix operations natural. Each inner Vec is one row of n elements."
     },
     {
-      "decision": "Place new `mod trait_def_builder_tests` immediately after TraitDefBuilder impl block, before CompiledModuleBuilder",
-      "rationale": "Follows the established file convention where each builder's tests are in a dedicated module positioned near the builder's definition. Examples: `mod purpose_builder_tests` (line 1659) near CompiledPurposeBuilder (line 1482), `mod trait_builder_tests` (line 1722) near CompiledTraitBuilder (line 1579). Placing after TraitDefBuilder's impl (line 1275) and before CompiledModuleBuilder (line 1277) maintains this proximity pattern."
+      "decision": "Display format: Type as `Matrix{m}x{n}<{quantity}>`, Value as `[[r1c1, r1c2], [r2c1, r2c2]]`",
+      "rationale": "Type Display follows the Tensor pattern (`Tensor{rank}x{n}<{quantity}>`). Value Display uses nested bracket notation matching the Vec<Vec<Value>> structure, which is the standard mathematical notation for matrix literals."
     },
     {
-      "decision": "Two-step move: copy to new location first, then remove from old location",
-      "rationale": "Creating the tests in the new module first (step-1) and removing from the old module second (step-2) ensures each step is independently compilable and testable. After step-1, duplicate tests exist but all pass -- proving the new module is correct. After step-2, duplicates are eliminated. This is safer than a single atomic move where an error could lose test coverage."
+      "decision": "Content hash tag = 18, Ord type_tag = 17",
+      "rationale": "Sequential allocation after the last used tags: content_hash tags go 0-17 (Range=17), so Matrix=18. Ord type_tags go 0-16 (Range=16), so Matrix=17. Both follow the established pattern of sequential tag assignment."
     },
     {
-      "decision": "Use `use super::*` as primary import in new test module",
-      "rationale": "All other test modules in builders.rs use `use super::*` as their base import. The TraitDefBuilder tests additionally need specific types from reify_types (TraitBound, TraitRef, TypeParam) and reify_compiler (DefaultKind, RequirementKind) which require explicit use statements, matching the pattern used by other test modules like `trait_builder_tests` which imports `use reify_compiler::{CompiledTrait, RequirementKind};`."
+      "decision": "Content hash includes both row count and per-row column count",
+      "rationale": "Hashing both dimensions ensures that a 2x3 matrix and a 3x2 matrix with the same elements in different arrangement produce different hashes. Per-row col count (rather than a single n) handles the Vec<Vec> structure faithfully even if rows could theoretically vary in length."
+    },
+    {
+      "decision": "Ord within-type comparison delegates to Vec<Vec<Value>>::cmp",
+      "rationale": "Since Value implements Ord, Vec<Value> and Vec<Vec<Value>> automatically get lexicographic Ord. This is consistent with how List and Tensor delegate to Vec<Value>::cmp."
     }
   ],
   "reuse": [
     {
-      "what": "Existing test module organizational pattern",
-      "where": "builders.rs lines 1656-1772 (purpose_builder_tests, trait_builder_tests)",
-      "how": "Follow the exact same pattern: `#[cfg(test)]` attribute, section comment header (e.g. `// --- Tests for TraitDefBuilder ---`), descriptive module name, `use super::*` import. The new module mirrors this structure exactly."
+      "what": "Tensor Type variant pattern",
+      "where": "crates/reify-types/src/ty.rs lines 42-43",
+      "how": "Matrix { m, n, quantity } mirrors Tensor { rank, n, quantity } — same Box<Type> wrapping for quantity, same struct-variant style"
     },
     {
-      "what": "Existing TraitDefBuilder test code (9 tests, lines 795-931)",
-      "where": "builders.rs `mod tests` block",
-      "how": "Move verbatim with no logic changes. Tests use TraitDefBuilder::new(), RequirementKind, DefaultKind, TypeParam, TraitBound, TraitRef, ContentHash, DimensionVector, SourceSpan -- all accessible from the new module position via `use super::*` plus targeted imports from reify_types and reify_compiler."
+      "what": "Type::tensor() factory method pattern",
+      "where": "crates/reify-types/src/ty.rs lines 94-97",
+      "how": "Type::matrix(m, n, q) follows exact same pattern as Type::tensor(rank, n, q) — construct variant with Box::new(quantity)"
+    },
+    {
+      "what": "Tensor Display format pattern",
+      "where": "crates/reify-types/src/ty.rs line 641",
+      "how": "Matrix Display `Matrix{m}x{n}<{quantity}>` follows Tensor's `Tensor{rank}x{n}<{quantity}>` format string pattern"
+    },
+    {
+      "what": "Tensor/List content_hash iteration pattern",
+      "where": "crates/reify-types/src/value.rs lines 221-228",
+      "how": "Matrix content_hash uses the same tag + length + item-hashes pattern, extended to two nesting levels for Vec<Vec<Value>>"
+    },
+    {
+      "what": "Tensor test structure in ty.rs",
+      "where": "crates/reify-types/src/ty.rs lines 314-382",
+      "how": "Matrix tests follow the same pattern: display tests, factory tests, eq_and_hash tests, not_numeric test — mirroring the Tensor test block"
+    },
+    {
+      "what": "List/Tensor Value Display pattern",
+      "where": "crates/reify-types/src/value.rs lines 508-527",
+      "how": "Matrix Value Display reuses the bracket-delimited comma-separated format, nested one level deeper for the row structure"
+    },
+    {
+      "what": "exports.rs Tensor test pattern",
+      "where": "crates/reify-types/tests/exports.rs lines 163-179",
+      "how": "Matrix export test follows same structure: direct Type construction, factory method, Value construction"
     }
   ],
-  "_session_id": "355-bfa0192c",
-  "_created_at": "2026-03-24T22:16:59.429290+00:00"
+  "_session_id": "229-5956ad39",
+  "_created_at": "2026-03-24T22:39:09.047733+00:00"
 }
