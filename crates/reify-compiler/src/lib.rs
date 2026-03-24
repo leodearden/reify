@@ -623,6 +623,42 @@ fn format_fn_signature(f: &CompiledFunction) -> String {
     )
 }
 
+// --- Chained comparison helpers ---
+
+/// Returns true if `op` is a comparison operator that participates in chaining.
+fn is_comparison_op(op: &str) -> bool {
+    matches!(op, "<" | "<=" | ">" | ">=" | "==" | "!=")
+}
+
+/// Flatten a left-nested comparison chain into (operands, operators).
+///
+/// Given `BinOp(op2, BinOp(op1, a, b), c)` where both op1 and op2 are comparison
+/// operators, returns `([a, b, c], [op1, op2])`.
+///
+/// `outer_op`, `left`, and `right` are the components of the outermost BinOp.
+/// Precondition: `outer_op` is a comparison op and `left` is a comparison BinOp.
+fn flatten_comparison_chain<'a>(
+    outer_op: &'a str,
+    left: &'a reify_syntax::Expr,
+    right: &'a reify_syntax::Expr,
+) -> (Vec<&'a reify_syntax::Expr>, Vec<&'a str>) {
+    match &left.kind {
+        reify_syntax::ExprKind::BinOp { op: inner_op, left: ll, right: lr }
+            if is_comparison_op(inner_op) =>
+        {
+            // Recurse: flatten the left subtree first, then append current right and op
+            let (mut operands, mut ops) = flatten_comparison_chain(inner_op, ll, lr);
+            operands.push(right);
+            ops.push(outer_op);
+            (operands, ops)
+        }
+        _ => {
+            // Base case: left is not a comparison chain; operands = [left, right], ops = [outer_op]
+            (vec![left, right], vec![outer_op])
+        }
+    }
+}
+
 // --- BinOp resolution ---
 
 /// Parse a string operator into a `BinOp`.
@@ -836,6 +872,45 @@ fn compile_expr_guarded(
             }
         }
         reify_syntax::ExprKind::BinOp { op, left, right } => {
+            // Chained comparison desugaring: `a < b < c` → `And(Lt(a,b), Lt(b,c))`.
+            // Detect when the outer op is a comparison and the left operand is also a comparison BinOp.
+            if is_comparison_op(op)
+                && let reify_syntax::ExprKind::BinOp { op: inner_op, .. } = &left.kind
+                && is_comparison_op(inner_op)
+            {
+                let (operands, ops) = flatten_comparison_chain(op, left, right);
+                // Compile each operand exactly once
+                let compiled_operands: Vec<CompiledExpr> = operands
+                    .iter()
+                    .map(|e| compile_expr_guarded(e, scope, enum_defs, functions, diagnostics, current_guard, lambda_counter))
+                    .collect();
+                // Build pairwise comparison nodes
+                let mut pairs: Vec<CompiledExpr> = Vec::new();
+                for (i, op_str) in ops.iter().enumerate() {
+                    match resolve_binop(op_str) {
+                        Some(bin_op) => {
+                            let lhs = compiled_operands[i].clone();
+                            let rhs = compiled_operands[i + 1].clone();
+                            let result_type = infer_binop_type(bin_op, &lhs.result_type, &rhs.result_type);
+                            pairs.push(CompiledExpr::binop(bin_op, lhs, rhs, result_type));
+                        }
+                        None => {
+                            diagnostics.push(
+                                Diagnostic::error(format!("unknown operator: {}", op_str))
+                                    .with_label(DiagnosticLabel::new(expr.span, "unrecognized operator")),
+                            );
+                            return CompiledExpr::literal(Value::Undef, Type::Real);
+                        }
+                    }
+                }
+                // Left-fold pairs into And-chain
+                let mut acc = pairs.remove(0);
+                for pair in pairs {
+                    acc = CompiledExpr::binop(BinOp::And, acc, pair, Type::Bool);
+                }
+                return acc;
+            }
+
             let compiled_left = compile_expr_guarded(left, scope, enum_defs, functions, diagnostics, current_guard, lambda_counter);
             let compiled_right = compile_expr_guarded(right, scope, enum_defs, functions, diagnostics, current_guard, lambda_counter);
             match resolve_binop(op) {

@@ -1,181 +1,211 @@
 {
-  "task_id": "286",
-  "title": "Complex<Q>: Type and Value",
+  "task_id": "157",
+  "title": "Chained comparisons: desugaring",
   "files": [
-    "crates/reify-types/src/ty.rs",
-    "crates/reify-types/src/value.rs",
-    "crates/reify-constraints/src/classifier.rs",
-    "crates/reify-lsp/src/analysis.rs"
+    "crates/reify-compiler/src/lib.rs",
+    "crates/reify-compiler/tests/chained_comparison_tests.rs"
   ],
   "modules": [
-    "crates/reify-types",
-    "crates/reify-constraints",
-    "crates/reify-lsp"
+    "crates/reify-compiler"
   ],
-  "analysis": "Task adds complex number support to the Reify type system at the foundational reify-types level. The Type enum (ty.rs) currently has 18 variants with #[derive(Debug, Clone, PartialEq, Eq, Hash)]; adding Complex(Box<Type>) follows the established compound-type pattern used by List, Set, Option, Point, Vector, Tensor. The Value enum (value.rs) currently has 14 variants with manual PartialEq, Ord, Display, and content_hash implementations; each must gain a Complex arm. Content hash tags 0-14 are allocated (10 reserved for Satisfaction), so Complex gets tag 15. Ord type_tag values 0-13 are allocated, so Complex gets tag 14. The f64 comparison pattern (to_bits for equality, NaN canonicalization for hashing) is well-established via Real and Scalar and will be applied to both re and im components. The dimension field follows Scalar's pattern \u2014 both re and im share one DimensionVector (e.g., complex impedance in ohms). Factory method Type::complex(q) follows the vec2/vec3/point2/point3/tensor pattern. All changes are confined to crates/reify-types; downstream crates with exhaustive matches on Type/Value will need separate wildcard or explicit arms (out of scope for this task but noted: reify-lsp/analysis.rs, reify-constraints/classifier.rs, reify-expr/lib.rs, reify-stdlib/lib.rs, reify-eval/lib.rs, reify-compiler/lib.rs, reify-constraints/cpsat.rs, reify-constraints/solver.rs). Post-review: two downstream files (classifier.rs and analysis.rs) contain bugs introduced by this task's Complex variant that must be fixed here \u2014 the classifier incorrectly routes Complex literals as numeric (violating the is_numeric() design contract), and format_value produces malformed output for negative imaginary parts.",
+  "analysis": "The Reify grammar already parses chained comparisons as left-nested BinOp nodes due to left-associative precedence: `a < b < c` becomes `BinOp(\"<\", BinOp(\"<\", a, b), c)`. Currently the compiler compiles this as-is, which would attempt to compare a Bool result (from `a < b`) with `c` — producing a type-nonsensical expression. The fix is to detect this pattern in `compile_expr_guarded()` and desugar it into an And-chain of pairwise comparisons. No grammar, parser, or evaluator changes are needed — the grammar already produces the detectable left-nested structure, and the evaluator already handles `BinOp::And` with short-circuit Kleene logic.\n\nThe algorithm works by flattening the left-nested comparison chain from the parsed AST into a flat list of operands and operators, compiling each operand exactly once, then building the And-chain from compiled pairwise comparisons. Middle operands are cloned at the `CompiledExpr` level (safe because Reify expressions are pure/side-effect-free and the evaluator uses content-hash-based caching for dedup).\n\nKey code locations:\n- `compile_expr_guarded()` at lib.rs:769 — expression compilation dispatch\n- `ExprKind::BinOp` handling at lib.rs:838 — where chain detection will be inserted\n- `resolve_binop()` at lib.rs:629 — operator string-to-enum mapping\n- `infer_binop_type()` at lib.rs:661 — type inference (comparisons produce Bool, already handled)\n- `CompiledExpr::binop()` in reify-types/expr.rs:177 — constructor with content hashing",
   "prerequisites": [],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing tests in ty.rs::tests for Type::Complex: (a) Display format \u2014 Complex<Real>, Complex<Scalar[m]>, nested Complex<Complex<Real>>; (b) factory method Type::complex(q) == Type::Complex(Box::new(q)); (c) Eq/Hash consistency via HashMap insert+lookup for complex(Real) vs complex(Int); (d) is_numeric() returns false; (e) as_name() returns None.",
+      "description": "Write failing test: simple two-element chain `a < b < c` desugars to `And(Lt(a,b), Lt(b,c))`. Create new test file `chained_comparison_tests.rs` with `compile_first_template()` helper. Parse+compile a structure with `constraint a < b < c` and assert the constraint expression is `BinOp(And, BinOp(Lt, a, b), BinOp(Lt, b, c))` by pattern-matching on CompiledExprKind.",
       "status": "done",
-      "commit": "adedeee"
+      "commit": "b94f8a4"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Add Complex(Box<Type>) variant to Type enum in ty.rs. Add Display arm: Complex(inner) => write!(f, \"Complex<{}>\", inner). Add factory: pub fn complex(q: Type) -> Self { Type::Complex(Box::new(q)) }. No changes needed for is_numeric or as_name (existing catch-alls and non-matching patterns handle them correctly).",
+      "description": "Implement chain detection and desugaring in `compile_expr_guarded()`. Add helper `is_comparison_op(op: &str) -> bool` that returns true for <, <=, >, >=, ==, !=. Add `flatten_comparison_chain(expr: &Expr) -> Option<(Vec<&Expr>, Vec<&str>)>` that walks leftward through nested BinOps with comparison operators, collecting operands and operators into flat vectors. In the `ExprKind::BinOp` match arm, before existing logic, call `flatten_comparison_chain` — if it returns Some with >2 operands, compile each operand once, clone middle CompiledExprs, and build the left-folded And-chain of pairwise comparisons. Otherwise fall through to existing BinOp logic.",
       "status": "done",
-      "commit": "05a589a"
+      "commit": "d42cd38"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing tests in value.rs::tests for Value::Complex Display: (a) dimensionless positive imaginary \u2014 Complex { re: 3.0, im: 4.0, dimension: DIMENSIONLESS } displays as '3+4i'; (b) negative imaginary \u2014 re: 3.0, im: -4.0 displays as '3-4i'; (c) fractional parts \u2014 re: 3.5, im: 4.2 displays as '3.5+4.2i'; (d) dimensioned with LENGTH \u2014 (3+4i) m; (e) zero imaginary \u2014 3+0i; (f) negative real \u2014 -3-4i.",
+      "description": "Write failing test: mixed comparison operators `a < b <= c` desugars to `And(Lt(a,b), Le(b,c))`. Verify both operator variants are preserved correctly in the desugared output.",
       "status": "done",
-      "commit": "3188bef"
+      "commit": "357590b"
     },
     {
       "id": "step-4",
-      "type": "test",
-      "description": "Write failing tests in value.rs::tests for Value::Complex PartialEq: (a) equal values with same re/im/dimension; (b) different re not equal; (c) different im not equal; (d) different dimension not equal; (e) -0.0 vs 0.0 distinguished via to_bits; (f) Complex != Real with same numeric value; (g) Complex != Scalar with same value and dimension.",
+      "type": "impl",
+      "description": "Verify step-3 test passes with existing implementation (should pass already since flatten handles all comparison ops). If not, fix the operator handling in the flatten/desugar logic.",
       "status": "done",
-      "commit": "3188bef"
+      "commit": "357590b"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing tests in value.rs::tests for Value::Complex Ord: (a) Complex sorts after Tensor (type_tag 14 > 13); (b) Complex sorts before Undef conceptually \u2014 verify relative to known-order types; (c) within-type: dimension compared first; (d) same dimension: re bits compared second; (e) same dimension+re: im bits compared third; (f) PartialOrd consistent with Ord.",
+      "description": "Write failing test: three-operator chain `a < b < c < d` desugars to `And(And(Lt(a,b), Lt(b,c)), Lt(c,d))`. Verify the recursive left-folded And structure with 3 pairwise comparisons sharing middle operands.",
       "status": "done",
-      "commit": "3188bef"
+      "commit": "9181fbd"
     },
     {
       "id": "step-6",
-      "type": "test",
-      "description": "Write failing tests in value.rs::tests for Value::Complex content_hash: (a) determinism \u2014 same value produces same hash across two calls; (b) NaN re canonicalized \u2014 two NaN-re values produce same hash; (c) hash-equality consistency \u2014 equal values produce equal hashes; (d) different re produces different hash; (e) different dimension produces different hash; (f) Complex(3.0, 0.0, DIMENSIONLESS) hash differs from Scalar(3.0, DIMENSIONLESS) hash (tag 15 vs 4).",
+      "type": "impl",
+      "description": "Verify step-5 test passes with existing implementation (should pass since flatten handles arbitrary depth). If not, fix the And-chain construction to left-fold correctly.",
       "status": "done",
-      "commit": "3188bef"
+      "commit": "9181fbd"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing test in value.rs::tests for Value::dimension(): Complex { re: 1.0, im: 2.0, dimension: LENGTH }.dimension() returns LENGTH, not DIMENSIONLESS.",
+      "description": "Write failing test: equality chain `a == b == c` desugars to `And(Eq(a,b), Eq(b,c))`. Confirms that equality operators participate in chaining per the spec.",
       "status": "done",
-      "commit": "3188bef"
+      "commit": "0e6c7b2"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Add Complex { re: f64, im: f64, dimension: DimensionVector } variant to Value enum in value.rs. Add arms in all five trait/method implementations: (1) Display \u2014 format each component with Real's whole-number convention, join with +/- sign, append 'i', wrap in parens with dimension suffix if non-dimensionless; (2) PartialEq \u2014 compare re.to_bits(), im.to_bits(), and dimension; (3) Ord \u2014 type_tag=14 in type_tag(), within-type compare dimension.cmp then re.to_bits().cmp then im.to_bits().cmp; (4) content_hash \u2014 tag byte 15, 17-byte buffer [tag, re_bits(8), im_bits(8)] with NaN canonicalization, combine with dimension.content_hash(); (5) dimension() \u2014 match Complex { dimension, .. } => *dimension.",
+      "description": "Verify step-7 test passes. If not, ensure == and != are included in is_comparison_op().",
       "status": "done",
-      "commit": "cd49fdb"
+      "commit": "0e6c7b2"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write tests in classifier.rs::tests for Complex literal classification that expose the design contract violation: (a) `literal_complex_is_dimensional_via_default` \u2014 a standalone Complex literal expression should classify as ConstraintDomain::Dimensional (via the no-flags-set default path, not via has_numeric); (b) `literal_complex_with_bool_is_logical_not_cross_domain` \u2014 a binop combining a Complex literal and a Bool literal should classify as ConstraintDomain::Logical (only has_logical set), NOT CrossDomain (which would require has_numeric+has_logical). These tests will initially fail because the current code sets has_numeric=true for Complex literals, causing (b) to return CrossDomain instead of Logical.",
+      "description": "Write test: middle expression compiled once — verify that a chain like `a < b + c < d` compiles correctly with the complex middle expression `b + c` appearing as a BinOp(Add) in both the right side of the first comparison and the left side of the second. Assert both sub-expressions have the same content_hash, confirming they are cloned from a single compilation rather than compiled independently.",
       "status": "done",
-      "commit": "ad23040"
+      "commit": "b3a5c4e"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Fix classifier.rs collect_flags(): Remove `Value::Complex { .. }` from the has_numeric match arm (lines 77-81). Move it into the no-op catch-all group alongside Field/Lambda/Tensor with a comment: 'Complex is not numeric (Type::is_numeric() returns false for Complex); needs its own domain if special routing is required.' Update the DomainFlags docstring for has_numeric to clarify it covers 'Scalar, Real, Int' only. This makes the Literal path consistent with the ValueRef path (which uses Type::is_numeric() and correctly excludes Complex).",
+      "description": "Verify step-9 test passes. The flatten-then-compile-once approach should naturally ensure middle operands are compiled once and cloned. If the content_hash assertion fails, fix the clone logic.",
       "status": "done",
-      "commit": "d24aeb6"
+      "commit": "b3a5c4e"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write tests in analysis.rs::tests for format_value with Complex values: (a) `format_value_complex_positive_im` \u2014 Complex { re: 3.0, im: 4.0, dimension: DIMENSIONLESS } \u2192 '3 + 4i'; (b) `format_value_complex_negative_im` \u2014 Complex { re: 3.0, im: -4.0, dimension: DIMENSIONLESS } \u2192 '3 - 4i' (NOT '3 + -4i'); (c) `format_value_complex_dimensioned` \u2014 Complex { re: 3.0, im: 4.0, dimension: LENGTH } \u2192 '3 + 4i m'. Test (b) will fail against the current implementation which produces '3 + -4i'.",
+      "description": "Write test: non-comparison binary op on left does NOT trigger chaining. E.g., `(a + b) < c` should compile as a normal `Lt(Add(a,b), c)` without any And-wrapping. Verifies that only comparison operators in the left operand trigger the chain detection.",
       "status": "done",
-      "commit": "74246d6"
+      "commit": "c1bde9d"
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "Fix format_value in analysis.rs for Value::Complex: Replace `format!(\"{re} + {im}i\")` with conditional sign handling \u2014 if im < 0.0, format as `\"{re} - {}i\", im.abs()`, else `\"{re} + {im}i\"`. Apply same logic for the dimensioned branch. This ensures negative imaginary parts display as '3 - 4i' instead of '3 + -4i', consistent with the canonical Display impl in value.rs.",
-      "status": "pending",
-      "commit": null
+      "description": "Verify step-11 passes. The is_comparison_op() check should naturally exclude arithmetic ops. If not, fix the predicate.",
+      "status": "done",
+      "commit": "c1bde9d"
+    },
+    {
+      "id": "step-13",
+      "type": "test",
+      "description": "Write test: single comparison (no chain) `a < b` still compiles as plain `Lt(a,b)`. Regression test ensuring the desugaring only activates for actual chains (>2 operands), not single comparisons.",
+      "status": "done",
+      "commit": "983c376"
+    },
+    {
+      "id": "step-14",
+      "type": "impl",
+      "description": "Verify step-13 passes. The flatten function should return None for single comparisons (only 2 operands). If not, adjust the threshold check.",
+      "status": "done",
+      "commit": "983c376"
+    },
+    {
+      "id": "step-15",
+      "type": "test",
+      "description": "Write integration test: chained comparison in a constraint with Scalar quantities — `constraint 2mm < thickness < 10mm`. Compile the structure and verify: (1) no error diagnostics, (2) the constraint is an And of two comparisons, (3) result_type is Bool. This tests the real-world use case of range constraints in engineering.",
+      "status": "done",
+      "commit": "c51caf9"
+    },
+    {
+      "id": "step-16",
+      "type": "impl",
+      "description": "Verify step-15 passes. May require no changes if types flow correctly through the desugared form. If dimension checking triggers false errors on the desugared form, investigate and fix.",
+      "status": "done",
+      "commit": "c51caf9"
+    },
+    {
+      "id": "step-17",
+      "type": "test",
+      "description": "Write test: chained comparison in a let binding — `let in_range = 0 < x < 100`. Verify the let cell's initializer expression is desugared to an And-chain and has type Bool.",
+      "status": "done",
+      "commit": "56f53b9"
+    },
+    {
+      "id": "step-18",
+      "type": "impl",
+      "description": "Verify step-17 passes. Let-binding compilation uses the same compile_expr_guarded() path, so desugaring should apply automatically.",
+      "status": "done",
+      "commit": "56f53b9"
+    },
+    {
+      "id": "step-19",
+      "type": "test",
+      "description": "Write test: cross-precedence chain `a < b == c` (< at grammar prec 4, == at prec 3). Due to grammar precedence, this parses as `(a < b) == c`, which the compiler should desugar to `And(Lt(a,b), Eq(b,c))`. Verify correct desugaring across precedence boundaries.",
+      "status": "done",
+      "commit": "56f53b9"
+    },
+    {
+      "id": "step-20",
+      "type": "impl",
+      "description": "Verify step-19 passes. The left-flattening approach handles this since (a < b) is a comparison in the left position of == c. If not, fix.",
+      "status": "done",
+      "commit": "56f53b9"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Complex is NOT numeric (is_numeric returns false)",
-      "rationale": "is_numeric() gates single-f64 scalar arithmetic paths. Complex needs distinct two-component arithmetic and cannot be losslessly converted via as_f64(). Keeping it non-numeric prevents silent misuse in scalar contexts and avoids breaking existing numeric dispatch."
+      "decision": "Compiler-only desugaring — no grammar or parser changes",
+      "rationale": "The Tree-sitter grammar already parses chained comparisons as left-nested BinOp nodes due to prec.left(4) for ordering ops and prec.left(3) for equality ops. The compiler can detect this pattern (comparison op with comparison on left side) and desugar without any new AST variants or grammar rules. This minimizes the change surface and avoids touching the parser crate."
     },
     {
-      "decision": "Content hash tag 15, Ord type_tag 14",
-      "rationale": "Sequential allocation after existing tags. Content hash tags 0-14 are used (10 reserved for Satisfaction). Ord type_tags 0-13 are used (Tensor=13). Complex sorts after Tensor in cross-type ordering."
+      "decision": "Left-only chain flattening",
+      "rationale": "Only detect chains by walking leftward through nested BinOps. This handles all cases the grammar produces for same-precedence chains (a < b < c) and higher-to-lower precedence chains (a < b == c). The right-nested case (a == (b < c)) is NOT treated as a chain because it arises from different precedence levels and the user likely intends to compare a value with a boolean result. This matches Python's chaining semantics and natural mathematical reading."
     },
     {
-      "decision": "Display format: re\u00b1im\u00b7i with Real-style whole-number formatting, parenthesized with dimension if non-dimensionless",
-      "rationale": "Follows Real's convention (whole numbers without trailing .0, e.g. 3 not 3.0). Negative imaginary uses minus sign directly (3-4i not 3+-4i). Dimensioned values use parentheses \u2014 (3+4i) m \u2014 to avoid ambiguity between 3+4i\u00b7m and (3+4i)\u00b7m. Dimensionless values omit dimension entirely for clean output."
+      "decision": "Clone middle CompiledExprs instead of adding synthetic let bindings",
+      "rationale": "Reify expressions are pure (no side effects), so cloning middle operands at the CompiledExpr level is semantically equivalent to single-evaluation. The evaluator's content-hash-based caching ensures that identical sub-expressions (same content_hash) are efficiently deduplicated at evaluation time. Adding a Let variant to CompiledExprKind would require changes to the evaluator (reify-expr) and constraint solver (reify-constraints), which is disproportionate for this feature. The compile-once-then-clone approach naturally avoids re-compilation of middle expressions while keeping the compiled representation flat."
     },
     {
-      "decision": "Both re and im share one DimensionVector",
-      "rationale": "Follows physics convention: complex impedance is Z = R + jX where both R and X are in ohms. The dimension applies to the complex number as a whole, not separately to real and imaginary parts. This matches the task specification."
+      "decision": "All six comparison operators participate in chaining",
+      "rationale": "Per the task spec ('All comparison operators may chain'), the operators <, <=, >, >=, ==, != all participate in is_comparison_op(). This enables useful patterns like `a == b == c` (all pairwise equal), `a < b == c` (a less than b, and b equals c), and mixed ordering/equality chains."
     },
     {
-      "decision": "dimension() method gets explicit arm for Complex rather than relying on catch-all",
-      "rationale": "The existing catch-all returns DIMENSIONLESS, which would silently lose dimension information for Complex values. An explicit arm ensures dimensioned Complex values correctly report their dimension."
-    },
-    {
-      "decision": "f64 comparison uses to_bits() for both re and im, with NaN canonicalization in content_hash",
-      "rationale": "Mirrors the established Scalar pattern exactly. Preserves -0.0 vs 0.0 distinction for cache coherency. NaN values are equal to themselves via to_bits(), satisfying Rust's Hash contract (a == b implies hash(a) == hash(b)). NaN canonicalization in content_hash prevents different NaN bit patterns from producing different hashes."
-    },
-    {
-      "decision": "Complex literals in classifier set no domain flag (not has_numeric), matching ValueRef path",
-      "rationale": "The Literal arm in collect_flags() must mirror the ValueRef arm's use of Type::is_numeric() which returns false for Complex. Setting has_numeric for Complex literals would route Complex+Bool expressions to CrossDomain while the equivalent ValueRef path would route to Logical \u2014 an internal inconsistency. Complex literals with no flag set fall through to Dimensional (the default), which is the same end result as the ValueRef path and leaves room for a dedicated Complex domain later."
-    },
-    {
-      "decision": "format_value uses conditional sign formatting for Complex imaginary part, not delegation to Display",
-      "rationale": "format_value in analysis.rs uses spaces around operators ('3 + 4i') for LSP readability, while the canonical Display impl in value.rs uses compact format ('3+4i'). Delegating to Display would change the established LSP presentation style. Instead, apply the same sign-handling logic (im < 0 \u2192 minus with abs) to keep spaced format consistent."
+      "decision": "And-chain is left-folded",
+      "rationale": "For a chain `a op1 b op2 c op3 d`, the result is `And(And(op1(a,b), op2(b,c)), op3(c,d))`. Left-folding matches the natural left-to-right evaluation order and is consistent with how the evaluator's short-circuit And works — earlier comparisons are evaluated first, and if any fails, later ones are skipped via Kleene logic."
     }
   ],
   "reuse": [
     {
-      "what": "Box<Type> compound-type pattern",
-      "where": "ty.rs \u2014 List(Box<Type>), Set(Box<Type>), Option(Box<Type>), Point/Vector/Tensor all use Box<Type>",
-      "how": "Complex(Box<Type>) follows the identical pattern for recursive type nesting with the inner type as the quantity parameter"
+      "what": "resolve_binop() function",
+      "where": "crates/reify-compiler/src/lib.rs:629",
+      "how": "Used to convert string operators to BinOp enum when building the desugared comparison pairs. Already handles all six comparison operators plus logical ops."
     },
     {
-      "what": "Factory method pattern",
-      "where": "ty.rs impl Type \u2014 vec2(q), vec3(q), point2(q), point3(q), tensor(r,n,q) all wrap q in Box::new",
-      "how": "Type::complex(q) wraps q in Box::new identically: pub fn complex(q: Type) -> Self { Type::Complex(Box::new(q)) }"
+      "what": "CompiledExpr::binop() constructor",
+      "where": "crates/reify-types/src/expr.rs:177",
+      "how": "Used to build both the pairwise comparison nodes (Lt, Le, etc.) and the And-chain nodes. Automatically computes content hashing for deduplication."
     },
     {
-      "what": "f64 to_bits() equality and NaN canonicalization patterns",
-      "where": "value.rs \u2014 PartialEq for Real uses a.to_bits() == b.to_bits(); Scalar uses same for si_value + dimension check; content_hash canonicalizes NaN via if r.is_nan() { f64::NAN.to_bits() } else { r.to_bits() }",
-      "how": "Apply identical to_bits() comparison for both re and im in PartialEq; use identical NaN canonicalization for both re and im in content_hash"
+      "what": "infer_binop_type() function",
+      "where": "crates/reify-compiler/src/lib.rs:661",
+      "how": "Already returns Type::Bool for all comparison and logical operators. Used for each desugared BinOp node to produce correct result types."
     },
     {
-      "what": "ContentHash tag + bits + dimension.content_hash() composition",
-      "where": "value.rs \u2014 Scalar content_hash builds [tag=4, si_value_bits(8)] then combines with dimension.content_hash()",
-      "how": "Complex builds [tag=15, re_bits(8), im_bits(8)] then combines with dimension.content_hash() \u2014 same pattern extended to two f64 fields"
+      "what": "compile_first_template() test helper pattern",
+      "where": "crates/reify-compiler/tests/guard_compilation.rs:10",
+      "how": "Reuse this parse-compile-extract-template pattern in the new test file. Standard pattern across 6+ existing test files."
     },
     {
-      "what": "Ord type_tag discriminant dispatch",
-      "where": "value.rs \u2014 type_tag() function maps each variant to u8, cross-type ordering by tag, within-type match for same-tag comparison",
-      "how": "Add type_tag 14 for Complex; within-type comparison mirrors Scalar: dimension.cmp().then_with(|| re_bits.cmp()).then_with(|| im_bits.cmp())"
+      "what": "CompiledExprKind pattern matching in tests",
+      "where": "crates/reify-compiler/tests/quantifier_compile_tests.rs:30-50",
+      "how": "Reuse the nested match + assert pattern for inspecting compiled expression trees. Standard assertion pattern for verifying compiled expression structure."
     },
     {
-      "what": "DimensionVector type, constants, and is_dimensionless() method",
-      "where": "dimension.rs \u2014 DIMENSIONLESS, LENGTH, ANGLE constants; is_dimensionless() check; content_hash() method",
-      "how": "Used for Complex's dimension field storage, Display conditional formatting, and content_hash composition"
-    },
-    {
-      "what": "Classifier no-op catch-all pattern for non-domain types",
-      "where": "classifier.rs \u2014 Field, Lambda, Tensor already grouped in the no-op arm with comment explaining they don't contribute to domain classification",
-      "how": "Complex joins this group with an explanatory comment referencing the is_numeric() design contract"
-    },
-    {
-      "what": "Existing format_value test patterns in analysis.rs",
-      "where": "analysis.rs::tests \u2014 format_value_scalar_length, format_value_bool, etc. all follow assert_eq!(format_value(&value), expected_string) pattern",
-      "how": "New Complex format_value tests follow the same pattern with Value::Complex struct literals and expected string assertions"
+      "what": "ExprKind::BinOp string-based operator representation",
+      "where": "crates/reify-syntax/src/lib.rs:413",
+      "how": "The parsed AST stores operators as strings, which is what is_comparison_op() will match against. No new enum needed — just string matching on the existing op field."
     }
   ],
-  "_session_id": "286-84c537bb",
-  "_created_at": "2026-03-24T10:02:50.516916+00:00"
+  "_session_id": "157-a541e41b",
+  "_created_at": "2026-03-24T10:09:56.082670+00:00"
 }
