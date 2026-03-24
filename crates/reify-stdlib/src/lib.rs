@@ -60,6 +60,36 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
         }),
         "pow" => binary_f64(args, |x, y| Value::Real(x.powf(y))),
 
+        // --- Three-arg numeric functions ---
+        "clamp" => ternary(args, |x, lo, hi| match (x, lo, hi) {
+            (Value::Int(x), Value::Int(lo), Value::Int(hi)) => Value::Int(*x.clamp(lo, hi)),
+            (Value::Real(x), Value::Real(lo), Value::Real(hi)) => {
+                sanitize_value(Value::Real(x.clamp(*lo, *hi)))
+            }
+            (
+                Value::Scalar { si_value: x, dimension: d1 },
+                Value::Scalar { si_value: lo, dimension: d2 },
+                Value::Scalar { si_value: hi, dimension: d3 },
+            ) if d1 == d2 && d2 == d3 => {
+                sanitize_value(Value::Scalar { si_value: x.clamp(*lo, *hi), dimension: *d1 })
+            }
+            _ => {
+                // Fallback: require all three to have the same dimension
+                let dx = x.dimension();
+                let dlo = lo.dimension();
+                let dhi = hi.dimension();
+                if dx != dlo || dlo != dhi {
+                    return Value::Undef;
+                }
+                match (x.as_f64(), lo.as_f64(), hi.as_f64()) {
+                    (Some(xv), Some(lov), Some(hiv)) => {
+                        sanitize_value(Value::Real(xv.clamp(lov, hiv)))
+                    }
+                    _ => Value::Undef,
+                }
+            }
+        }),
+
         // --- Trig functions: accept Angle Scalar or bare Real (radians) ---
         "sin" => unary(args, |v| trig_input(v).map_or(Value::Undef, |r| Value::Real(r.sin()))),
         "cos" => unary(args, |v| trig_input(v).map_or(Value::Undef, |r| Value::Real(r.cos()))),
