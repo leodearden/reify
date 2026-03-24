@@ -416,6 +416,61 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
             let q = quat_mul(q12, q3);
             normalize_quaternion(q.0, q.1, q.2, q.3).unwrap_or(Value::Undef)
         }
+        "orient_basis" => {
+            if args.len() != 3 {
+                return Value::Undef;
+            }
+            let (xc, _) = match tensor_components_f64(&args[0]) {
+                Some(c) if c.0.len() == 3 => c,
+                _ => return Value::Undef,
+            };
+            let (yc, _) = match tensor_components_f64(&args[1]) {
+                Some(c) if c.0.len() == 3 => c,
+                _ => return Value::Undef,
+            };
+            let (zc, _) = match tensor_components_f64(&args[2]) {
+                Some(c) if c.0.len() == 3 => c,
+                _ => return Value::Undef,
+            };
+            // Verify approximate orthonormality
+            let tol = 1e-6;
+            let mag_x = (xc[0]*xc[0] + xc[1]*xc[1] + xc[2]*xc[2]).sqrt();
+            let mag_y = (yc[0]*yc[0] + yc[1]*yc[1] + yc[2]*yc[2]).sqrt();
+            let mag_z = (zc[0]*zc[0] + zc[1]*zc[1] + zc[2]*zc[2]).sqrt();
+            if (mag_x - 1.0).abs() > tol || (mag_y - 1.0).abs() > tol || (mag_z - 1.0).abs() > tol {
+                return Value::Undef;
+            }
+            let dot_xy = xc[0]*yc[0] + xc[1]*yc[1] + xc[2]*yc[2];
+            let dot_xz = xc[0]*zc[0] + xc[1]*zc[1] + xc[2]*zc[2];
+            let dot_yz = yc[0]*zc[0] + yc[1]*zc[1] + yc[2]*zc[2];
+            if dot_xy.abs() > tol || dot_xz.abs() > tol || dot_yz.abs() > tol {
+                return Value::Undef;
+            }
+            // Rotation matrix from basis vectors (columns are the new axes)
+            // R = [xc | yc | zc], where row i, col j = R[i][j]
+            // R[0][0]=xc[0], R[1][0]=xc[1], R[2][0]=xc[2]
+            // R[0][1]=yc[0], R[1][1]=yc[1], R[2][1]=yc[2]
+            // R[0][2]=zc[0], R[1][2]=zc[1], R[2][2]=zc[2]
+            let r00 = xc[0]; let r01 = yc[0]; let r02 = zc[0];
+            let r10 = xc[1]; let r11 = yc[1]; let r12 = zc[1];
+            let r20 = xc[2]; let r21 = yc[2]; let r22 = zc[2];
+            // Shepperd's method: find the largest of the 4 diagonal sums
+            let trace = r00 + r11 + r22;
+            let (w, x, y, z) = if trace > 0.0 {
+                let s = (trace + 1.0).sqrt() * 2.0; // s = 4*w
+                (0.25 * s, (r21 - r12) / s, (r02 - r20) / s, (r10 - r01) / s)
+            } else if r00 > r11 && r00 > r22 {
+                let s = (1.0 + r00 - r11 - r22).sqrt() * 2.0; // s = 4*x
+                ((r21 - r12) / s, 0.25 * s, (r01 + r10) / s, (r02 + r20) / s)
+            } else if r11 > r22 {
+                let s = (1.0 - r00 + r11 - r22).sqrt() * 2.0; // s = 4*y
+                ((r02 - r20) / s, (r01 + r10) / s, 0.25 * s, (r12 + r21) / s)
+            } else {
+                let s = (1.0 - r00 - r11 + r22).sqrt() * 2.0; // s = 4*z
+                ((r10 - r01) / s, (r02 + r20) / s, (r12 + r21) / s, 0.25 * s)
+            };
+            normalize_quaternion(w, x, y, z).unwrap_or(Value::Undef)
+        }
         "orient_axis_angle" => {
             if args.len() != 2 {
                 return Value::Undef;
