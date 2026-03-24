@@ -380,8 +380,8 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
             Value::Complex { re, im, dimension: dim_re }
         }
 
-        // re(z): extract real part. Returns Real if DIMENSIONLESS, Scalar otherwise.
-        "re" => unary(args, |v| match v {
+        // re(z) / real(z): extract real part. Returns Real if DIMENSIONLESS, Scalar otherwise.
+        "re" | "real" => unary(args, |v| match v {
             Value::Complex { re, dimension, .. } => {
                 if *dimension == DimensionVector::DIMENSIONLESS {
                     Value::Real(*re)
@@ -392,8 +392,8 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
             _ => Value::Undef,
         }),
 
-        // im(z): extract imaginary part. Returns Real if DIMENSIONLESS, Scalar otherwise.
-        "im" => unary(args, |v| match v {
+        // im(z) / imag(z): extract imaginary part. Returns Real if DIMENSIONLESS, Scalar otherwise.
+        "im" | "imag" => unary(args, |v| match v {
             Value::Complex { im, dimension, .. } => {
                 if *dimension == DimensionVector::DIMENSIONLESS {
                     Value::Real(*im)
@@ -417,6 +417,21 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
             Value::Complex { re, im, .. } => {
                 let angle = im.atan2(*re);
                 sanitize_value(Value::Scalar { si_value: angle, dimension: DimensionVector::ANGLE })
+            }
+            _ => Value::Undef,
+        }),
+
+        // complex_magnitude(z): compute sqrt(re²+im²) for Complex inputs only.
+        // Returns Real if DIMENSIONLESS, Scalar otherwise.
+        // Returns Undef for non-Complex inputs (unlike generic `magnitude` which handles Tensors).
+        "complex_magnitude" => unary(args, |v| match v {
+            Value::Complex { re, im, dimension } => {
+                let mag = (re * re + im * im).sqrt();
+                if *dimension == DimensionVector::DIMENSIONLESS {
+                    sanitize_value(Value::Real(mag))
+                } else {
+                    sanitize_value(Value::Scalar { si_value: mag, dimension: *dimension })
+                }
             }
             _ => Value::Undef,
         }),
@@ -3163,6 +3178,111 @@ mod tests {
         assert_scalar_approx!(eval_builtin("phase", &[z.clone()]), expected_phase, DimensionVector::ANGLE);
     }
 
+    // ── Voltage dimension spec tests (step-7) ────────────────────────────────
+
+    /// Build Voltage dimension: V = kg·m²·s⁻³·A⁻¹
+    fn voltage_dim() -> DimensionVector {
+        let mass = DimensionVector::MASS;
+        let length = DimensionVector::LENGTH;
+        let area = length.mul(&length);
+        let mass_area = mass.mul(&area);
+        let time3 = DimensionVector::TIME.pow(3);
+        let current1 = DimensionVector::CURRENT.pow(1);
+        mass_area.div(&time3).div(&current1)
+    }
+
+    #[test]
+    fn complex_voltage_preserves_dimension() {
+        // complex(Scalar{3,V}, Scalar{4,V}) → Complex{3,4,V}
+        let v = voltage_dim();
+        let z = eval_builtin(
+            "complex",
+            &[
+                Value::Scalar { si_value: 3.0, dimension: v },
+                Value::Scalar { si_value: 4.0, dimension: v },
+            ],
+        );
+        match &z {
+            Value::Complex { re, im, dimension } => {
+                assert!((re - 3.0).abs() < 1e-12, "re={}", re);
+                assert!((im - 4.0).abs() < 1e-12, "im={}", im);
+                assert_eq!(*dimension, v, "dimension should be Voltage");
+            }
+            other => panic!("expected Complex{{3,4,V}}, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn real_voltage_returns_scalar() {
+        // real(complex_voltage) → Scalar{3, V}
+        let v = voltage_dim();
+        let z = Value::Complex { re: 3.0, im: 4.0, dimension: v };
+        assert_scalar_approx!(eval_builtin("real", &[z]), 3.0, v);
+    }
+
+    #[test]
+    fn imag_voltage_returns_scalar() {
+        // imag(complex_voltage) → Scalar{4, V}
+        let v = voltage_dim();
+        let z = Value::Complex { re: 3.0, im: 4.0, dimension: v };
+        assert_scalar_approx!(eval_builtin("imag", &[z]), 4.0, v);
+    }
+
+    #[test]
+    fn complex_magnitude_voltage() {
+        // complex_magnitude(Complex{3,4,V}) → Scalar{5.0, V}
+        let v = voltage_dim();
+        let z = Value::Complex { re: 3.0, im: 4.0, dimension: v };
+        assert_scalar_approx!(eval_builtin("complex_magnitude", &[z]), 5.0, v);
+    }
+
+    #[test]
+    fn conjugate_voltage_preserves_dim() {
+        // conjugate flips im sign, preserves voltage dimension
+        let v = voltage_dim();
+        let z = Value::Complex { re: 3.0, im: 4.0, dimension: v };
+        let result = eval_builtin("conjugate", &[z]);
+        match result {
+            Value::Complex { re, im, dimension } => {
+                assert!((re - 3.0).abs() < 1e-12, "re={}", re);
+                assert!((im - (-4.0)).abs() < 1e-12, "im={}", im);
+                assert_eq!(dimension, v, "dimension should be Voltage");
+            }
+            other => panic!("expected Complex{{3,-4,V}}, got {:?}", other),
+        }
+    }
+
+    // ── Dimension mismatch spec test (step-8) ─────────────────────────────────
+
+    #[test]
+    fn complex_voltage_current_mismatch_returns_undef() {
+        // complex(Scalar{3, Voltage}, Scalar{4, Current}) → Undef (mismatched dims)
+        let voltage = voltage_dim();
+        // Current dimension: A (SI base, exponent 1 in CURRENT slot)
+        let current = DimensionVector::CURRENT;
+        let result = eval_builtin(
+            "complex",
+            &[
+                Value::Scalar { si_value: 3.0, dimension: voltage },
+                Value::Scalar { si_value: 4.0, dimension: current },
+            ],
+        );
+        assert!(result.is_undef(), "expected Undef for V/A mismatch, got {:?}", result);
+    }
+
+    // ── Phase degree-equivalent spec test (step-9) ───────────────────────────
+
+    #[test]
+    fn phase_1_plus_i_approx_45_deg() {
+        // phase(1+i) = atan2(1,1) = π/4 ≈ 0.7854 rad (45°)
+        let z = Value::Complex { re: 1.0, im: 1.0, dimension: DimensionVector::DIMENSIONLESS };
+        assert_scalar_approx!(
+            eval_builtin("phase", &[z]),
+            std::f64::consts::FRAC_PI_4, // π/4 ≈ 0.7854 rad ≈ 45°
+            DimensionVector::ANGLE
+        );
+    }
+
     // ── sanitize_value Complex arm tests (step-20) ────────────────────────────
 
     #[test]
@@ -3203,5 +3323,69 @@ mod tests {
             eval_builtin("complex_add", &[a, b]).is_undef(),
             "complex_add with f64::MAX components must return Undef (Inf overflow)"
         );
+    }
+
+    // ── real() alias tests (step-1) ───────────────────────────────────────────
+
+    #[test]
+    fn real_dimensionless_returns_real() {
+        // real(Complex{3,4,DIMLESS}) → Real(3.0)
+        let z = Value::Complex { re: 3.0, im: 4.0, dimension: DimensionVector::DIMENSIONLESS };
+        assert_real_approx!(eval_builtin("real", &[z]), 3.0);
+    }
+
+    #[test]
+    fn real_dimensioned_returns_scalar() {
+        // real(Complex{5,3,LENGTH}) → Scalar{5.0, LENGTH}
+        let z = Value::Complex { re: 5.0, im: 3.0, dimension: DimensionVector::LENGTH };
+        assert_scalar_approx!(eval_builtin("real", &[z]), 5.0, DimensionVector::LENGTH);
+    }
+
+    #[test]
+    fn real_non_complex_returns_undef() {
+        assert!(eval_builtin("real", &[Value::Real(3.0)]).is_undef());
+    }
+
+    // ── imag() alias tests (step-3) ───────────────────────────────────────────
+
+    #[test]
+    fn imag_dimensionless_returns_real() {
+        // imag(Complex{3,4,DIMLESS}) → Real(4.0)
+        let z = Value::Complex { re: 3.0, im: 4.0, dimension: DimensionVector::DIMENSIONLESS };
+        assert_real_approx!(eval_builtin("imag", &[z]), 4.0);
+    }
+
+    #[test]
+    fn imag_dimensioned_returns_scalar() {
+        // imag(Complex{5,3,LENGTH}) → Scalar{3.0, LENGTH}
+        let z = Value::Complex { re: 5.0, im: 3.0, dimension: DimensionVector::LENGTH };
+        assert_scalar_approx!(eval_builtin("imag", &[z]), 3.0, DimensionVector::LENGTH);
+    }
+
+    #[test]
+    fn imag_non_complex_returns_undef() {
+        assert!(eval_builtin("imag", &[Value::Real(3.0)]).is_undef());
+    }
+
+    // ── complex_magnitude() tests (step-5) ───────────────────────────────────
+
+    #[test]
+    fn complex_magnitude_3_4_returns_5() {
+        // complex_magnitude(Complex{3,4,DIMLESS}) → Real(5.0)
+        let z = Value::Complex { re: 3.0, im: 4.0, dimension: DimensionVector::DIMENSIONLESS };
+        assert_real_approx!(eval_builtin("complex_magnitude", &[z]), 5.0);
+    }
+
+    #[test]
+    fn complex_magnitude_dimensioned_returns_scalar() {
+        // complex_magnitude(Complex{3,4,LENGTH}) → Scalar{5.0, LENGTH}
+        let z = Value::Complex { re: 3.0, im: 4.0, dimension: DimensionVector::LENGTH };
+        assert_scalar_approx!(eval_builtin("complex_magnitude", &[z]), 5.0, DimensionVector::LENGTH);
+    }
+
+    #[test]
+    fn complex_magnitude_non_complex_returns_undef() {
+        // unlike generic magnitude which handles Tensors, complex_magnitude rejects non-Complex
+        assert!(eval_builtin("complex_magnitude", &[Value::Real(5.0)]).is_undef());
     }
 }
