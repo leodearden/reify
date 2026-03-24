@@ -182,6 +182,18 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
             }
         }),
 
+        "remap" => {
+            // Dimension-aware path handled in step-18; for now use quinary_f64 fallback.
+            // Will be extended with Scalar arms before falling through here.
+            quinary_f64(args, |x, from_lo, from_hi, to_lo, to_hi| {
+                if from_lo == from_hi {
+                    return Value::Undef; // early-exit: division by zero
+                }
+                let result = to_lo + (x - from_lo) * (to_hi - to_lo) / (from_hi - from_lo);
+                Value::Real(result)
+            })
+        }
+
         // --- Trig functions: accept Angle Scalar or bare Real (radians) ---
         "sin" => unary(args, |v| trig_input(v).map_or(Value::Undef, |r| Value::Real(r.sin()))),
         "cos" => unary(args, |v| trig_input(v).map_or(Value::Undef, |r| Value::Real(r.cos()))),
