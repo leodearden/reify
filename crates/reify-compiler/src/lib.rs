@@ -4115,6 +4115,22 @@ fn check_trait_conformance(
         );
     }
 
+    // Build a map of available default names from all_defaults (non-constraint, named).
+    // Used to cross-check requirements: a requirement is satisfied if the structure
+    // provides the member OR if another trait in the bound set provides a matching default.
+    let available_defaults: HashMap<String, Type> = all_defaults
+        .iter()
+        .filter_map(|d| {
+            let name = d.name.as_deref()?;
+            let ty = match &d.kind {
+                DefaultKind::Param { cell_type, .. } => cell_type.clone(),
+                DefaultKind::Let { cell_type, .. } => cell_type.clone(),
+                DefaultKind::Constraint(_) => return None,
+            };
+            Some((name.to_string(), ty))
+        })
+        .collect();
+
     // Check each requirement against structure members.
     for req in &all_requirements {
         match &req.kind {
@@ -4135,16 +4151,39 @@ fn check_trait_conformance(
                         }
                     }
                     None => {
-                        diagnostics.push(
-                            Diagnostic::error(format!(
-                                "missing required member '{}' (expected type: {})",
-                                req.name, expected_type
-                            ))
-                            .with_label(DiagnosticLabel::new(
-                                structure.span,
-                                "required by trait",
-                            )),
-                        );
+                        // Check if a matching default from another trait satisfies this requirement.
+                        match available_defaults.get(&req.name) {
+                            Some(default_type) if default_type == expected_type => {
+                                // Default satisfies the requirement — no error.
+                            }
+                            Some(default_type) => {
+                                // Default exists but has wrong type → type mismatch.
+                                diagnostics.push(
+                                    Diagnostic::error(format!(
+                                        "type mismatch for trait member '{}': \
+                                         requirement expects {}, available default has {}",
+                                        req.name, expected_type, default_type
+                                    ))
+                                    .with_label(DiagnosticLabel::new(
+                                        structure.span,
+                                        "type mismatch",
+                                    )),
+                                );
+                            }
+                            None => {
+                                // No default available — truly missing.
+                                diagnostics.push(
+                                    Diagnostic::error(format!(
+                                        "missing required member '{}' (expected type: {})",
+                                        req.name, expected_type
+                                    ))
+                                    .with_label(DiagnosticLabel::new(
+                                        structure.span,
+                                        "required by trait",
+                                    )),
+                                );
+                            }
+                        }
                     }
                 }
             }
