@@ -884,6 +884,37 @@ async fn kill_with_child_terminates_process_and_clears_child() {
     assert!(matches!(*handle.state().lock().await, SidecarState::NotStarted));
 }
 
+// --- spawn_sidecar_impl tests (step-1, step-3) ---
+
+#[tokio::test]
+async fn spawn_sidecar_impl_returns_error_for_missing_binary() {
+    use std::path::Path;
+    use std::sync::Arc;
+    use reify_constraints::SimpleConstraintChecker;
+    use reify_test_support::MockGeometryKernel;
+    use crate::engine::EngineSession;
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let engine = Arc::new(std::sync::Mutex::new(session));
+
+    let result = spawn_sidecar_impl(
+        Path::new("/tmp/no-such-sidecar-binary"),
+        engine,
+        |_name: String, _payload: serde_json::Value| {},
+    )
+    .await;
+
+    assert!(result.is_err(), "Expected error for missing binary, got Ok");
+    let err = result.unwrap_err();
+    assert!(
+        err.contains("Failed to spawn sidecar"),
+        "Error should mention 'Failed to spawn sidecar': {}",
+        err
+    );
+}
+
 // --- SidecarHandle::wait_ready tests (step-26) ---
 
 #[tokio::test]
