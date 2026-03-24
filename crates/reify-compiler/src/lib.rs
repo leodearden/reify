@@ -1839,6 +1839,10 @@ pub fn compile(
     let mut trait_refs: Vec<&reify_syntax::TraitDecl> = Vec::new();
     let mut field_refs: Vec<&reify_syntax::FieldDef> = Vec::new();
     let mut seen_field_names: HashMap<String, SourceSpan> = HashMap::new();
+    // Unified entity namespace tracker (spec §4.2.1): structures, occurrences,
+    // and constraints share the entity name space. Fields are added in step-8.
+    // Maps name → (first_span, first_kind_label).
+    let mut seen_entity_names: HashMap<String, (SourceSpan, &'static str)> = HashMap::new();
 
     for decl in &parsed.declarations {
         match decl {
@@ -1876,7 +1880,28 @@ pub fn compile(
                     field_refs.push(field_def);
                 }
             }
-            // Structure, Occurrence, Import, Purpose handled in pass 2 / purpose pass
+            reify_syntax::Declaration::Structure(structure) => {
+                if let Some((first_span, first_kind)) = seen_entity_names.get(&structure.name) {
+                    // Duplicate entity name — emit error; pass 2 will skip compilation.
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "duplicate entity definition '{}'",
+                            structure.name
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            structure.span,
+                            "structure defined here",
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            *first_span,
+                            format!("first defined as {} here", first_kind),
+                        )),
+                    );
+                } else {
+                    seen_entity_names.insert(structure.name.clone(), (structure.span, "structure"));
+                }
+            }
+            // Occurrence, Import, Purpose, Constraint handled in pass 2 / purpose pass
             _ => {}
         }
     }
@@ -1920,9 +1945,16 @@ pub fn compile(
     for decl in &parsed.declarations {
         match decl {
             reify_syntax::Declaration::Structure(structure) => {
-                let entity_ref = EntityDefRef::from(structure);
-                let template = compile_entity(&entity_ref, EntityKind::Structure, &enum_defs, &functions, &trait_registry, &field_registry, &mut pending_bound_checks, &mut diagnostics, &templates);
-                templates.push(template);
+                // Only compile the first definition; duplicates have a different
+                // span than the one recorded in seen_entity_names.
+                let is_first_def = seen_entity_names
+                    .get(&structure.name)
+                    .map_or(true, |(first_span, _)| *first_span == structure.span);
+                if is_first_def {
+                    let entity_ref = EntityDefRef::from(structure);
+                    let template = compile_entity(&entity_ref, EntityKind::Structure, &enum_defs, &functions, &trait_registry, &field_registry, &mut pending_bound_checks, &mut diagnostics, &templates);
+                    templates.push(template);
+                }
             }
             reify_syntax::Declaration::Enum(_) => {
                 // Already collected in pre-pass above.
