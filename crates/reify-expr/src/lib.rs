@@ -206,6 +206,12 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             eval_method_call(&obj, method, &evaluated_args, &expr.result_type, ctx)
         }
 
+        // OptionNone stub — will be replaced in step-2
+        CompiledExprKind::OptionNone => Value::Undef,
+
+        // OptionSome stub — will be replaced in step-4
+        CompiledExprKind::OptionSome(_inner) => Value::Undef,
+
         CompiledExprKind::Quantifier { kind, variable_id, collection, predicate, .. } => {
             let coll_val = eval_expr(collection, ctx);
             if coll_val.is_undef() {

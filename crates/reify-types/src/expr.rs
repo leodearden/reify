@@ -83,6 +83,11 @@ pub enum CompiledExprKind {
         collection: Box<CompiledExpr>,
         predicate: Box<CompiledExpr>,
     },
+    /// Option-some: wraps an inner expression in Value::Option(Some(...)).
+    /// Does NOT propagate Undef — some(undef) == Value::Option(Some(Value::Undef)).
+    OptionSome(Box<CompiledExpr>),
+    /// Option-none: the intentional absence value Value::Option(None).
+    OptionNone,
 }
 
 /// The kind of quantifier: universal (forall) or existential (exists).
@@ -268,6 +273,10 @@ impl CompiledExpr {
                 collection.walk(f);
                 predicate.walk(f);
             }
+            CompiledExprKind::OptionSome(inner) => {
+                inner.walk(f);
+            }
+            CompiledExprKind::OptionNone => {}
         }
     }
 
@@ -371,6 +380,10 @@ impl CompiledExpr {
                     }
                 }
             }
+            CompiledExprKind::OptionSome(inner) => {
+                inner.collect_value_refs_inner(refs);
+            }
+            CompiledExprKind::OptionNone => {}
         }
     }
 
@@ -491,6 +504,28 @@ impl CompiledExpr {
         }
     }
 
+    /// Create an `option_some` expression wrapping an inner expression.
+    /// Note: result_type should be Type::Option(Box::new(inner.result_type.clone())).
+    pub fn option_some(inner: CompiledExpr, result_type: Type) -> Self {
+        let content_hash = ContentHash::of(&[14]).combine(inner.content_hash);
+        CompiledExpr {
+            kind: CompiledExprKind::OptionSome(Box::new(inner)),
+            result_type,
+            content_hash,
+        }
+    }
+
+    /// Create an `option_none` expression.
+    /// Note: result_type should be Type::Option(Box::new(inner_type)).
+    pub fn option_none(result_type: Type) -> Self {
+        let content_hash = ContentHash::of(&[15]);
+        CompiledExpr {
+            kind: CompiledExprKind::OptionNone,
+            result_type,
+            content_hash,
+        }
+    }
+
     /// Rewrite all `ValueRef` cell IDs whose entity matches `from_entity`,
     /// replacing the entity part with `to_entity`. This is used during purpose
     /// activation to remap compiled references from the purpose's parameter
@@ -594,6 +629,10 @@ impl CompiledExpr {
                 collection.remap_entity(from_entity, to_entity);
                 predicate.remap_entity(from_entity, to_entity);
             }
+            CompiledExprKind::OptionSome(inner) => {
+                inner.remap_entity(from_entity, to_entity);
+            }
+            CompiledExprKind::OptionNone => {}
         }
     }
 
