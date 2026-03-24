@@ -1,75 +1,187 @@
 {
-  "task_id": "362",
-  "title": "Fix silent Type::Real default for fully-unbounded Range in test builders",
+  "task_id": "311",
+  "title": "Stdlib: wire translate, rotate + add scale through compiler",
   "files": [
-    "crates/reify-test-support/src/builders.rs"
+    "crates/reify-compiler/src/lib.rs",
+    "crates/reify-types/src/geometry.rs",
+    "crates/reify-kernel-occt/src/ffi.rs",
+    "crates/reify-kernel-occt/cpp/occt_wrapper.h",
+    "crates/reify-kernel-occt/cpp/occt_wrapper.cpp",
+    "crates/reify-kernel-occt/src/lib.rs",
+    "crates/reify-eval/src/lib.rs",
+    "crates/reify-eval/tests/boundary4_geometry.rs"
   ],
   "modules": [
-    "crates/reify-test-support"
+    "crates/reify-compiler",
+    "crates/reify-types",
+    "crates/reify-kernel-occt",
+    "crates/reify-kernel-occt/cpp",
+    "crates/reify-eval"
   ],
-  "analysis": "The `infer_value_type` function in `crates/reify-test-support/src/builders.rs` (line 49-56) handles `Value::Range { lower, upper, .. }` by chaining `lower.map(infer_value_type).or_else(|| upper.map(infer_value_type)).unwrap_or(Type::Real)`. When both bounds are `None` (fully-unbounded range), this silently defaults to `Type::Real`, violating the project convention against silent defaults (feedback_silent_defaults_pattern.md). The `Value::Tensor` arm at line 44-46 already correctly panics with a descriptive message directing users to `CompiledExpr::literal(value, type)`. The fix mirrors this pattern for Range. Only one file is affected since both the implementation and tests live in `builders.rs`. No callers currently construct fully-unbounded ranges via `literal()`, so this is a safety net against future misuse.",
-  "prerequisites": [],
+  "analysis": "GeometryOp::Translate and GeometryOp::Rotate already exist in reify-types, and their FFI functions (translate_shape, rotate_shape) are fully implemented in the OCCT kernel with C++ wrappers. The eval layer already dispatches TransformKind::Translate and TransformKind::Rotate. However, these functions are NOT in is_geometry_function() and have no compile_geometry_call() match arms, meaning they cannot be called from .ri source files. The task requires: (1) wiring existing translate/rotate through the compiler, (2) adding scale as a new FFI function (gp_Trsf::SetScale), (3) adding rotate_around as a compound translate-rotate-translate operation. The approach follows the established pattern: positional scalar args at .ri source level, compiled to CompiledGeometryOp::Transform with named args, evaluated to GeometryOp variants, dispatched to OCCT FFI calls. Scale uses origin center (0,0,0) for uniform scaling. RotateAround gets a dedicated C++ function that composes gp_Trsf transforms internally for a single BRepBuilderAPI_Transform call.",
+  "prerequisites": [
+    {
+      "id": "pre-1",
+      "description": "Add RotateAround and Scale variants to TransformKind enum in crates/reify-compiler/src/lib.rs (lines 364-368). These are data-only enum variants needed before tests can reference them.",
+      "status": "done",
+      "commit": "c2f5e179",
+      "tests": []
+    },
+    {
+      "id": "pre-2",
+      "description": "Add Scale { target: GeometryHandleId, factor: f64 } and RotateAround { target: GeometryHandleId, point: [f64; 3], axis: [f64; 3], angle_rad: f64 } variants to GeometryOp enum in crates/reify-types/src/geometry.rs (after line 92).",
+      "status": "done",
+      "commit": "e9bb4e49",
+      "tests": []
+    },
+    {
+      "id": "pre-3",
+      "description": "Implement scale_shape C++ function in occt_wrapper.cpp using gp_Trsf::SetScale(gp_Pnt(cx,cy,cz), factor) + BRepBuilderAPI_Transform. Add declaration to occt_wrapper.h. Add FFI bridge declaration fn scale_shape(shape: &OcctShape, factor: f64, cx: f64, cy: f64, cz: f64) -> Result<UniquePtr<OcctShape>> to ffi.rs.",
+      "status": "done",
+      "commit": "881edfe7",
+      "tests": []
+    },
+    {
+      "id": "pre-4",
+      "description": "Implement rotate_around_shape C++ function in occt_wrapper.cpp: compose gp_Trsf translate(-point) * rotate(axis, angle) * translate(+point) into a single BRepBuilderAPI_Transform. Add declaration to occt_wrapper.h. Add FFI bridge declaration fn rotate_around_shape(shape: &OcctShape, px: f64, py: f64, pz: f64, ax: f64, ay: f64, az: f64, angle_rad: f64) -> Result<UniquePtr<OcctShape>> to ffi.rs.",
+      "status": "done",
+      "commit": "881edfe7",
+      "tests": []
+    }
+  ],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write a `#[test]` `#[should_panic(expected = \"literal() cannot infer Range element type\")]` test named `literal_fully_unbounded_range_panics` that calls `literal(Value::Range { lower: None, upper: None, lower_inclusive: false, upper_inclusive: false })`. This test will FAIL because the current code silently returns Type::Real instead of panicking. Place it in the existing `mod tests` block near line 715, after the other literal_* tests.",
+      "description": "Write failing tests in compiler mod tests: assert is_geometry_function returns true for 'translate', 'rotate', 'rotate_around', 'scale'. Four #[test] functions following the pattern at line 5446 (compile_geometry_linear_pattern_recognized). All four will fail since these names are not in the match.",
       "status": "done",
-      "commit": "d29f313"
+      "commit": "c2f5e179"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "In the `Value::Range` arm of `infer_value_type` (line 54), replace `.unwrap_or(Type::Real)` with `.unwrap_or_else(|| panic!(\"literal() cannot infer Range element type for fully unbounded range. Use CompiledExpr::literal(value, type) directly.\"))`. This mirrors the Tensor arm's panic pattern at line 45. The step-1 test now passes.",
+      "description": "Add 'translate' | 'rotate' | 'rotate_around' | 'scale' to the is_geometry_function() match expression (lines 396-412 in crates/reify-compiler/src/lib.rs). Tests from step-1 pass.",
       "status": "done",
-      "commit": "0017317"
+      "commit": "c2f5e179"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Add positive test `literal_range_with_lower_bound_infers_type` verifying `literal(Value::Range { lower: Some(Box::new(Value::Int(1))), upper: None, lower_inclusive: true, upper_inclusive: false })` produces `Type::Range(Box::new(Type::Int))`. Ensures the lower-bound inference path still works.",
+      "description": "Write failing compiler tests that parse+compile .ri source containing translate(w, 1, 0, 0), rotate(w, 0, 0, 1, 90), scale(w, 2), rotate_around(w, 1, 0, 0, 0, 0, 1, 90) calls and assert each produces a realization with CompiledGeometryOp::Transform of the correct TransformKind. Four tests following the compile_linear_pattern_produces_realization pattern (line 5483). Will fail with 'unsupported geometry function' diagnostic since no compile_geometry_call arms exist yet.",
       "status": "done",
-      "commit": "402f66c"
+      "commit": "c2f5e179"
     },
     {
       "id": "step-4",
-      "type": "test",
-      "description": "Add positive test `literal_range_with_upper_bound_only_infers_type` verifying `literal(Value::Range { lower: None, upper: Some(Box::new(Value::Real(5.0))), lower_inclusive: false, upper_inclusive: true })` produces `Type::Range(Box::new(Type::Real))`. Covers the or_else fallback branch (upper bound used when lower is None).",
+      "type": "impl",
+      "description": "Add match arms in compile_geometry_call() (before the _ fallback at line 5391) for: 'translate' (4 args: target, dx, dy, dz -> Transform/Translate), 'rotate' (5 args: target, axis_x, axis_y, axis_z, angle -> Transform/Rotate), 'rotate_around' (8 args: target, px, py, pz, axis_x, axis_y, axis_z, angle -> Transform/RotateAround), 'scale' (2 args: target, factor -> Transform/Scale). Follow existing pattern: first arg is target compiled as named arg, target field is GeomRef::Step(0).",
       "status": "done",
-      "commit": "402f66c"
+      "commit": "c2f5e179"
+    },
+    {
+      "id": "step-5",
+      "type": "test",
+      "description": "Write failing kernel test in crates/reify-kernel-occt/src/lib.rs: create a 10mm box, execute GeometryOp::Scale { target, factor: 2.0 }, query volume, assert volume approx 8e-6 m^3 (8x original 1e-6). Also test scale(1.0) preserves volume. Guard with OCCT_AVAILABLE. Tests fail because OcctKernel::execute() has no Scale match arm.",
+      "status": "done",
+      "commit": "088e5af8"
+    },
+    {
+      "id": "step-6",
+      "type": "impl",
+      "description": "Add GeometryOp::Scale dispatch in OcctKernel::execute() (after the Rotate arm around line 250): validate factor is finite and non-zero, call ffi::ffi::scale_shape(shape, *factor, 0.0, 0.0, 0.0) with center at origin. Map errors with .map_err(|e| GeometryError::OperationFailed(e.to_string())).",
+      "status": "done",
+      "commit": "088e5af8"
+    },
+    {
+      "id": "step-7",
+      "type": "test",
+      "description": "Write failing kernel test: create a 10mm box at origin, execute GeometryOp::RotateAround with point=(0.05, 0, 0), axis=(0,0,1), angle=PI/2. Query centroid and verify it differs from a simple rotate around origin. Guard with OCCT_AVAILABLE. Test fails because no RotateAround dispatch in execute().",
+      "status": "done",
+      "commit": "088e5af8"
+    },
+    {
+      "id": "step-8",
+      "type": "impl",
+      "description": "Add GeometryOp::RotateAround dispatch in OcctKernel::execute(): validate point/axis components are finite, axis non-zero. Call ffi::ffi::rotate_around_shape(shape, point[0..2], axis[0..2], angle_rad). Map errors.",
+      "status": "done",
+      "commit": "088e5af8"
+    },
+    {
+      "id": "step-9",
+      "type": "test",
+      "description": "Write failing eval tests: construct CompiledGeometryOp::Transform with kind TransformKind::Scale and named args [(target,...), (factor, literal 2.0)], call compile_geometry_op, assert it returns Some(GeometryOp::Scale { factor: 2.0 }). Similarly for TransformKind::RotateAround with point/axis/angle args. Tests fail because eval match is exhaustive on TransformKind and new variants cause compile error or unmatched arm.",
+      "status": "done",
+      "commit": "fbed8e54"
+    },
+    {
+      "id": "step-10",
+      "type": "impl",
+      "description": "Add eval dispatch in compile_geometry_op() in crates/reify-eval/src/lib.rs (after the Rotate arm at line 2982): TransformKind::Scale -> GeometryOp::Scale { target: target_id, factor: eval_arg_f64('factor') }. TransformKind::RotateAround -> GeometryOp::RotateAround { target: target_id, point: [eval_arg_f64('px'), eval_arg_f64('py'), eval_arg_f64('pz')], axis: [eval_arg_f64('axis_x'), eval_arg_f64('axis_y'), eval_arg_f64('axis_z')], angle_rad: eval_arg_f64('angle') }.",
+      "status": "done",
+      "commit": "fbed8e54"
+    },
+    {
+      "id": "step-11",
+      "type": "test",
+      "description": "Write integration tests in boundary4_geometry.rs exercising the full stack: (1) translate 10mm box by 50mm in x via GeometryOp::Translate, verify centroid x approx 0.05 (confirms existing kernel path), (2) rotate box 90deg around Z, verify volume preserved, (3) scale box by 2.0, verify volume = 8x, (4) rotate_around non-origin point, verify centroid at expected position, (5) scale(box, 1.0) = identity (volume unchanged). All should pass with prior implementations.",
+      "status": "done",
+      "commit": "fbed8e54"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Use `unwrap_or_else(|| panic!(...))` instead of restructuring the match arm",
-      "rationale": "Keeps the existing chain structure (lower → upper → panic) readable and minimally invasive. The panic only triggers when both bounds are None, preserving the valid inference paths intact."
+      "decision": "Use decomposed positional scalar args at .ri source level (translate(geo, dx, dy, dz) not translate(geo, vec3(...)))",
+      "rationale": "Matches the established pattern used by linear_pattern, circular_pattern, mirror, etc. where direction/position components are passed as separate scalar args. Avoids needing vector-decomposition logic in the eval layer. Vector API can be added as syntactic sugar later."
     },
     {
-      "decision": "Panic message mirrors the Tensor arm's wording pattern",
-      "rationale": "Consistency with the existing Tensor panic at line 45: 'literal() cannot infer X type (reason). Use CompiledExpr::literal(value, type) directly.' Both direct users to the explicit-type alternative."
+      "decision": "Implement rotate_around as a dedicated C++ FFI function with composed gp_Trsf transforms rather than emitting 3 separate GeometryOps",
+      "rationale": "compile_geometry_op returns Option<GeometryOp> (single op). Changing to Vec would be a wider refactor. A single compound transform via gp_Trsf composition (translate * rotate * translate) applied in one BRepBuilderAPI_Transform call is also more efficient and numerically stable."
     },
     {
-      "decision": "Add positive tests for lower-only and upper-only Range bounds alongside the panic test",
-      "rationale": "The change modifies a code path handling three cases (lower present, upper present, neither). Testing both valid paths ensures no regression from the change, and the panic test covers the invalid third case."
+      "decision": "scale_shape FFI takes (shape, factor, cx, cy, cz) but GeometryOp::Scale only stores factor, with center hardcoded to origin in kernel dispatch",
+      "rationale": "Task specifies 'Uniform only' for scale. The FFI is designed with flexibility for future center-point support, but the .ri API and GeometryOp keep it simple. Adding a center parameter later is backward-compatible."
+    },
+    {
+      "decision": "Add Scale and RotateAround as new GeometryOp variants rather than reusing compound operations from existing Translate+Rotate",
+      "rationale": "Each variant maps cleanly to a single FFI call. Scale requires new OCCT wrapper (gp_Trsf::SetScale). RotateAround needs composed transforms that are best done atomically in C++. Separate variants also give kernel implementations the chance to validate parameters independently."
+    },
+    {
+      "decision": "translate/rotate .ri signatures: translate(geo, dx, dy, dz) with 4 args, rotate(geo, ax, ay, az, angle) with 5 args",
+      "rationale": "Existing eval layer already handles TransformKind::Translate extracting (dx, dy, dz) and TransformKind::Rotate extracting (axis_x, axis_y, axis_z, angle). The compile_geometry_call just needs to map positional args to these same named args. Zero changes needed in eval for translate/rotate — only compiler wiring."
     }
   ],
   "reuse": [
     {
-      "what": "Existing Tensor panic pattern",
-      "where": "crates/reify-test-support/src/builders.rs line 44-46",
-      "how": "Mirror the panic message format: 'literal() cannot infer X type (reason). Use CompiledExpr::literal(value, type) directly.'"
+      "what": "Existing translate_shape/rotate_shape FFI and C++ implementations",
+      "where": "crates/reify-kernel-occt/src/ffi.rs lines 50-62, cpp/occt_wrapper.cpp lines 222-263",
+      "how": "translate and rotate from .ri compile through existing TransformKind::Translate/Rotate -> eval dispatch (lines 2964-2982) -> GeometryOp::Translate/Rotate -> OcctKernel::execute() (lines 211-249). Only compiler wiring (is_geometry_function + compile_geometry_call) is needed."
     },
     {
-      "what": "Existing literal_* test patterns in mod tests",
-      "where": "crates/reify-test-support/src/builders.rs lines 663-715",
-      "how": "Follow the same structure: construct a Value, call literal(), assert on result_type. Add #[should_panic] for the panic test."
+      "what": "Existing TransformKind::Translate/Rotate eval dispatch",
+      "where": "crates/reify-eval/src/lib.rs lines 2952-2983",
+      "how": "The eval layer already handles CompiledGeometryOp::Transform for Translate and Rotate kinds. New Scale and RotateAround kinds follow the exact same pattern with eval_arg_f64() extraction."
     },
     {
-      "what": "Value::Range struct shape",
-      "where": "crates/reify-types/src/value.rs line 58-62",
-      "how": "Construct Range values directly in tests using Value::Range { lower, upper, lower_inclusive, upper_inclusive } matching the struct definition."
+      "what": "BRepBuilderAPI_Transform + gp_Trsf C++ pattern",
+      "where": "cpp/occt_wrapper.cpp lines 222-263 (translate_shape, rotate_shape)",
+      "how": "scale_shape and rotate_around_shape follow identical pattern: create gp_Trsf, configure transform (SetScale/SetRotation+SetTranslation composition), pass to BRepBuilderAPI_Transform, check IsDone(), return wrapped shape. Same error handling with Standard_Failure catch."
+    },
+    {
+      "what": "compile_geometry_call positional-arg-to-named-arg pattern",
+      "where": "crates/reify-compiler/src/lib.rs lines 5229-5370 (linear_pattern, mirror, shell, thicken, draft)",
+      "how": "All new compile arms follow the same pattern: check arg count, iterate compiled_args, emit CompiledGeometryOp with (name, expr) pairs. First arg is always ('target', ...) with target: GeomRef::Step(0)."
+    },
+    {
+      "what": "Kernel test patterns with OCCT_AVAILABLE guard",
+      "where": "crates/reify-eval/tests/boundary4_geometry.rs lines 272-314 (translate_centroid test)",
+      "how": "All new kernel/integration tests follow: check OCCT_AVAILABLE, create OcctKernel, execute primitive, execute transform, query volume/centroid, assert expected values with tolerance."
+    },
+    {
+      "what": "Compiler test patterns for geometry recognition and realization production",
+      "where": "crates/reify-compiler/src/lib.rs lines 5446-5650",
+      "how": "Recognition tests: assert!(is_geometry_function('name')). Realization tests: parse .ri source, compile, check template.realizations[0].operations[0] matches expected CompiledGeometryOp variant."
     }
   ],
-  "_session_id": "362-094fb15d",
-  "_created_at": "2026-03-24T17:16:01.467479+00:00"
+  "_session_id": "311-6f6488cf",
+  "_created_at": "2026-03-24T20:44:12.343232+00:00"
 }
