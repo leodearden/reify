@@ -212,6 +212,45 @@ mod tests {
     }
 
     #[test]
+    fn type_point_vector_eq_and_hash() {
+        use std::collections::HashMap;
+
+        let p3_len = Type::point3(Type::length());
+        let p3_len2 = Type::point3(Type::length());
+        let p2_len = Type::point2(Type::length());
+        let p3_real = Type::point3(Type::Real);
+        let v3_len = Type::vec3(Type::length());
+
+        // (a) Point3<Length> == Point3<Length>
+        assert_eq!(p3_len, p3_len2);
+
+        // (b) Point3<Length> != Point2<Length>
+        assert_ne!(p3_len, p2_len);
+
+        // (c) Point3<Length> != Point3<Real>
+        assert_ne!(p3_len, p3_real);
+
+        // (d) Point3<Length> != Vector3<Length>
+        assert_ne!(p3_len, v3_len);
+
+        // (e) Vector assertions
+        let v3_len_a = Type::vec3(Type::length());
+        let v3_len_b = Type::vec3(Type::length());
+        let v2_len = Type::vec2(Type::length());
+        let v3_real = Type::vec3(Type::Real);
+        assert_eq!(v3_len_a, v3_len_b);
+        assert_ne!(v3_len_a, v2_len);
+        assert_ne!(v3_len_a, v3_real);
+
+        // (f) Hash consistency: equal types produce equal hashes via HashMap insert+lookup
+        let mut map: HashMap<Type, &str> = HashMap::new();
+        map.insert(p3_len.clone(), "p3_len");
+        assert_eq!(map.get(&p3_len2), Some(&"p3_len"));
+        map.insert(v3_len.clone(), "v3_len");
+        assert_eq!(map.get(&v3_len_a), Some(&"v3_len"));
+    }
+
+    #[test]
     fn type_vec_factory_methods() {
         assert_eq!(
             Type::vec2(Type::length()),
