@@ -90,6 +90,38 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
             }
         }),
 
+        "lerp" => ternary(args, |a, b, t| {
+            // t must be dimensionless (pure scalar or Int/Real)
+            if t.dimension() != DimensionVector::DIMENSIONLESS {
+                return Value::Undef;
+            }
+            let Some(tv) = t.as_f64() else {
+                return Value::Undef;
+            };
+            match (a, b) {
+                (Value::Real(a), Value::Real(b)) => {
+                    sanitize_value(Value::Real(a + tv * (b - a)))
+                }
+                (
+                    Value::Scalar { si_value: av, dimension: da },
+                    Value::Scalar { si_value: bv, dimension: db },
+                ) if da == db => sanitize_value(Value::Scalar {
+                    si_value: av + tv * (bv - av),
+                    dimension: *da,
+                }),
+                _ => {
+                    // Fallback: require a and b to have the same dimension
+                    if a.dimension() != b.dimension() {
+                        return Value::Undef;
+                    }
+                    match (a.as_f64(), b.as_f64()) {
+                        (Some(av), Some(bv)) => sanitize_value(Value::Real(av + tv * (bv - av))),
+                        _ => Value::Undef,
+                    }
+                }
+            }
+        }),
+
         // --- Trig functions: accept Angle Scalar or bare Real (radians) ---
         "sin" => unary(args, |v| trig_input(v).map_or(Value::Undef, |r| Value::Real(r.sin()))),
         "cos" => unary(args, |v| trig_input(v).map_or(Value::Undef, |r| Value::Real(r.cos()))),
