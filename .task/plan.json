@@ -1,114 +1,70 @@
 {
-  "task_id": "354",
-  "title": "Claude bridge: test quality improvements",
+  "task_id": "355",
+  "title": "Rework range_constraint/equality_constraint API and reorganize TraitDefBuilder tests",
   "files": [
-    "gui/src-tauri/src/tests/claude_bridge_tests.rs"
+    "crates/reify-test-support/src/builders.rs"
   ],
   "modules": [
-    "gui/src-tauri/src/tests"
+    "crates/reify-test-support"
   ],
-  "analysis": "This task is ALREADY FULLY IMPLEMENTED on main. All 9 commits addressing the task 139 test analyst review suggestions are ancestors of the current HEAD. 75 claude_bridge tests pass (0 failures).\n\n**Issue 1 — Vacuous assertion (commit e2906293):**\nTest `sidecar_handle_state_starts_as_starting` originally used `BufReader::new(&b\"\"[..])` which causes immediate EOF → on_exit fires → Crashed state. The old assertion `Starting | NotStarted | Crashed` matched everything except Ready, making it vacuous. The fix uses `tokio::io::duplex(1024)` to keep the reader open (no EOF) and asserts exactly `SidecarState::Starting`.\n\n**Issue 2 — Flaky yield-loop synchronization (3 commits: c6906cae, 35f875e8, a12e86b8):**\nThree tests originally used fixed-count `yield_now()` loops (50-100 iterations) to wait for async state transitions. Replaced with proper synchronization:\n- `sidecar_handle_transitions_to_ready_on_ready_message`: now uses `handle.wait_ready(Duration::from_secs(5))` which awaits the Notify.\n- `crash_detection_sets_state_to_crashed_on_eof`: now uses `handle.wait_ready(Duration::from_secs(5))` which returns Err when crash notify fires.\n- `from_parts_with_mcp_intercepts_reify_tool_calls`: now uses `tokio::time::timeout(5s, stdin_reader.read(...))` to await the tool_result write — a natural I/O synchronization point.\n\nNote: The remaining `yield_now()` calls in `subscribe_ready_does_not_miss_notification_fired_before_poll` (lines 1346-1347) are *intentional* — they deliberately create a race window to test that `notify_one()` stores a permit. These are not the fixed-count loops flagged in the review.\n\n**Issue 3 — Missing test coverage (5 commits: 12c84015, 7d49da54, 96af873a, 35282182, 93356a7f):**\n- `claude_abort_impl_errors_when_sidecar_is_none`: verifies error contains 'not started'\n- `claude_clear_session_impl_errors_when_sidecar_is_none`: verifies error contains 'not started'\n- `inbound_tool_result_serialization_round_trip`: serialize → deserialize InboundMessage::ToolResult, assert equality\n- `claude_send_message_impl_errors_when_sidecar_crashed`: verifies error propagates crash reason\n- `wait_ready_handles_notify_registration_race`: writes ready before calling wait_ready, verifies Ok regardless of scheduling\n\nSince everything is already implemented and tested, the steps below are verification-only — each confirms existing code and tests are correct.",
-  "prerequisites": [],
+  "analysis": "Thorough codebase exploration reveals that 2 of the 3 deferred issues from task 218 review (S1 and S2) have ALREADY been resolved in the current code. Only S6 (test reorganization) remains.\n\n**S1 (range_constraint API rework) - ALREADY DONE:** The current `range_constraint` at builders.rs:353 returns `Vec<CompiledExpr>` (not `Vec<CompiledConstraint>`). It does NOT hardcode ConstraintNodeId indices -- callers assign their own indices via `TopologyTemplateBuilder::constraint()`. Tests at lines 1796-1843 in `mod constraint_helper_tests` verify composability (`range_constraint_composable_for_multiple_members`) and correctness (`range_constraint_returns_two_bool_exprs`).\n\n**S2 (equality_constraint/range_constraint asymmetry) - ALREADY DONE:** Both `range_constraint` (line 353) and `equality_constraint` (line 369) return `Vec<CompiledExpr>`, making them symmetric. The `constrained_structure_module()` fixture at line 640 uses `range_constraint` for both width and height -- no hand-rolling. Test `equality_constraint_returns_single_bool_expr` (line 1781) verifies the equality helper.\n\n**S6 (test module organization) - REMAINING WORK:** 9 TraitDefBuilder tests (lines 795-931) are inside `mod tests` at line 688, which is the general test module positioned between TopologyTemplateBuilder (line 392) and TraitDefBuilder (line 1184). These tests are above the struct they test, which violates the file's own convention where each builder's tests live in a dedicated module near its definition. Existing examples of correct placement: `mod purpose_builder_tests` (line 1659) near CompiledPurposeBuilder (line 1482), `mod trait_builder_tests` (line 1722) near CompiledTraitBuilder (line 1579), `mod constraint_helper_tests` (line 1777) near the constraint helpers (line 342).\n\nThe 9 tests to move:\n1. trait_def_builder_minimal (line 797)\n2. trait_def_builder_with_requirement (line 811)\n3. trait_def_builder_with_refinement (line 823)\n4. trait_def_builder_with_type_param (line 832)\n5. trait_def_builder_is_pub (line 854)\n6. trait_def_builder_content_hash_differs_by_name (line 860)\n7. trait_def_builder_with_default (line 867)\n8. trait_def_content_hash_differs_by_type_param (line 888)\n9. trait_def_content_hash_differs_by_default (line 910)\n\nThe `mod tests` module (lines 688-1179) also contains tests for literal expressions, TopologyTemplateBuilder, collection expressions, conditional/fn_call/user_fn_call/method_call/lambda expressions, field operations, and CompiledFieldBuilder -- all of which stay.",
+  "prerequisites": [
+    {
+      "id": "pre-1",
+      "description": "Run `cargo test -p reify-test-support` to establish baseline -- confirm all existing tests pass before reorganization. Record the test count to verify after the move.",
+      "status": "done",
+      "commit": "baseline-117-tests",
+      "tests": [
+        "cargo test -p reify-test-support"
+      ]
+    }
+  ],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Verify vacuous assertion fix: `sidecar_handle_state_starts_as_starting` uses `tokio::io::duplex` (not b\"\" reader) and asserts exactly `matches!(*handle.state().lock().unwrap(), SidecarState::Starting)`. Run test and confirm it passes.",
+      "description": "Create new `#[cfg(test)] mod trait_def_builder_tests` after TraitDefBuilder impl block (after line ~1275, before CompiledModuleBuilder at line 1277). Copy all 9 TraitDefBuilder tests into this module. The module needs `use super::*;` plus specific imports used by the tests: `use reify_types::{CompiledExprKind, ContentHash, DimensionVector, TypeParam, TraitBound, TraitRef, SourceSpan};` and `use reify_compiler::{DefaultKind, RequirementKind};`. Verify the new module compiles and all 9 tests pass with `cargo test -p reify-test-support trait_def_builder_tests`. At this point duplicate tests exist in both `mod tests` and `mod trait_def_builder_tests` -- both should pass.",
       "status": "done",
-      "commit": "8340c09196e0be5a0273372b93b6b74ae9039a5a"
+      "commit": "61ae66db"
     },
     {
       "id": "step-2",
-      "type": "test",
-      "description": "Verify yield-loop fix #1: `sidecar_handle_transitions_to_ready_on_ready_message` uses `handle.wait_ready(Duration::from_secs(5)).await.unwrap()` instead of yield_now loop. Run test and confirm it passes.",
+      "type": "impl",
+      "description": "Remove the 9 TraitDefBuilder tests from `mod tests` (lines 795-931). After removal, the `mod tests` module retains: literal expression tests (lines 694-779), auto_param_builder (line 782), TopologyTemplateBuilder trait extension tests (line 933+), collection expression tests, conditional/fn_call/method_call/lambda tests, field operation tests, and CompiledFieldBuilder tests. Run `cargo test -p reify-test-support` to verify total test count is unchanged (tests moved, not removed). Verify `cargo test -p reify-test-support tests::trait_def` returns 0 results (no TraitDefBuilder tests in old module).",
       "status": "done",
-      "commit": "8340c09196e0be5a0273372b93b6b74ae9039a5a"
-    },
-    {
-      "id": "step-3",
-      "type": "test",
-      "description": "Verify yield-loop fix #2: `crash_detection_sets_state_to_crashed_on_eof` uses `handle.wait_ready(Duration::from_secs(5)).await` (expects Err) instead of yield_now loop. Run test and confirm it passes.",
-      "status": "done",
-      "commit": "8340c09196e0be5a0273372b93b6b74ae9039a5a"
-    },
-    {
-      "id": "step-4",
-      "type": "test",
-      "description": "Verify yield-loop fix #3: `from_parts_with_mcp_intercepts_reify_tool_calls` uses `tokio::time::timeout(5s, stdin_reader.read(...))` for synchronization instead of yield_now loop. Run test and confirm it passes.",
-      "status": "done",
-      "commit": "8340c09196e0be5a0273372b93b6b74ae9039a5a"
-    },
-    {
-      "id": "step-5",
-      "type": "test",
-      "description": "Verify missing coverage: `claude_abort_impl_errors_when_sidecar_is_none` — constructs Mutex<None>, calls claude_abort_impl, asserts Err containing 'not started'. Run test.",
-      "status": "done",
-      "commit": "8340c09196e0be5a0273372b93b6b74ae9039a5a"
-    },
-    {
-      "id": "step-6",
-      "type": "test",
-      "description": "Verify missing coverage: `claude_clear_session_impl_errors_when_sidecar_is_none` — constructs Mutex<None>, calls claude_clear_session_impl, asserts Err containing 'not started'. Run test.",
-      "status": "done",
-      "commit": "8340c09196e0be5a0273372b93b6b74ae9039a5a"
-    },
-    {
-      "id": "step-7",
-      "type": "test",
-      "description": "Verify missing coverage: `inbound_tool_result_serialization_round_trip` — constructs InboundMessage::ToolResult, serializes to JSON, verifies type/id/tool_name/result fields, deserializes back, asserts equality. Run test.",
-      "status": "done",
-      "commit": "8340c09196e0be5a0273372b93b6b74ae9039a5a"
-    },
-    {
-      "id": "step-8",
-      "type": "test",
-      "description": "Verify missing coverage: `claude_send_message_impl_errors_when_sidecar_crashed` — creates SidecarHandle with Crashed state, calls claude_send_message_impl, asserts Err containing 'crashed'. Run test.",
-      "status": "done",
-      "commit": "8340c09196e0be5a0273372b93b6b74ae9039a5a"
-    },
-    {
-      "id": "step-9",
-      "type": "test",
-      "description": "Verify missing coverage: `wait_ready_handles_notify_registration_race` — writes ready message BEFORE calling wait_ready to exercise the subscribe-before-recheck pattern, asserts Ok and Ready state. Run test.",
-      "status": "done",
-      "commit": "8340c09196e0be5a0273372b93b6b74ae9039a5a"
+      "commit": "pending"
     }
   ],
   "design_decisions": [
     {
-      "decision": "All work was completed as part of task 139's review fix cycle",
-      "rationale": "The test quality issues were identified during task 139 review and fixed in 9 commits directly on main (e2906293 through 0f635b7a). Task 354 was filed to track these improvements but the work preceded the task filing. All 9 commits are ancestors of the task/354 branch."
+      "decision": "S1 and S2 are already resolved -- no code changes needed for constraint API",
+      "rationale": "The current `range_constraint` (line 353) and `equality_constraint` (line 369) both return `Vec<CompiledExpr>`, making them symmetric and free of hardcoded ConstraintNodeId indices. The `constrained_structure_module()` fixture uses the helper for both width and height. Tests in `mod constraint_helper_tests` verify composability and correctness. These fixes were applied during the task 218 review merge cycle."
     },
     {
-      "decision": "Intentional yield_now in subscribe_ready race test is NOT a yield-loop",
-      "rationale": "The 2 yield_now calls + 10ms sleep in subscribe_ready_does_not_miss_notification_fired_before_poll are intentional race-window creation, not the 50-100 iteration synchronization loops flagged in the review. They test that notify_one() stores a permit when no waiter is registered."
+      "decision": "Place new `mod trait_def_builder_tests` immediately after TraitDefBuilder impl block, before CompiledModuleBuilder",
+      "rationale": "Follows the established file convention where each builder's tests are in a dedicated module positioned near the builder's definition. Examples: `mod purpose_builder_tests` (line 1659) near CompiledPurposeBuilder (line 1482), `mod trait_builder_tests` (line 1722) near CompiledTraitBuilder (line 1579). Placing after TraitDefBuilder's impl (line 1275) and before CompiledModuleBuilder (line 1277) maintains this proximity pattern."
     },
     {
-      "decision": "Duplex reader replaces empty b\"\" reader for non-EOF tests",
-      "rationale": "Using b\"\" as a BufReader source causes immediate EOF which triggers on_exit → Crashed state transition asynchronously. Duplex channels keep the reader open indefinitely, preventing unwanted state transitions and enabling deterministic assertions."
+      "decision": "Two-step move: copy to new location first, then remove from old location",
+      "rationale": "Creating the tests in the new module first (step-1) and removing from the old module second (step-2) ensures each step is independently compilable and testable. After step-1, duplicate tests exist but all pass -- proving the new module is correct. After step-2, duplicates are eliminated. This is safer than a single atomic move where an error could lose test coverage."
     },
     {
-      "decision": "wait_ready() as the canonical synchronization primitive for tests",
-      "rationale": "wait_ready() uses Notify internally with subscribe-before-recheck pattern, making it deterministic. Tests that need to wait for Ready or Crashed state transitions use wait_ready() instead of yield loops, as it naturally handles both happy path (Ready) and error path (Crashed/timeout)."
+      "decision": "Use `use super::*` as primary import in new test module",
+      "rationale": "All other test modules in builders.rs use `use super::*` as their base import. The TraitDefBuilder tests additionally need specific types from reify_types (TraitBound, TraitRef, TypeParam) and reify_compiler (DefaultKind, RequirementKind) which require explicit use statements, matching the pattern used by other test modules like `trait_builder_tests` which imports `use reify_compiler::{CompiledTrait, RequirementKind};`."
     }
   ],
   "reuse": [
     {
-      "what": "SidecarHandle::wait_ready()",
-      "where": "gui/src-tauri/src/claude_bridge.rs line 321-347",
-      "how": "Production wait_ready() method doubles as the test synchronization primitive, replacing ad-hoc yield_now loops. Uses Notify with subscribe-before-recheck pattern to handle all scheduling orderings."
+      "what": "Existing test module organizational pattern",
+      "where": "builders.rs lines 1656-1772 (purpose_builder_tests, trait_builder_tests)",
+      "how": "Follow the exact same pattern: `#[cfg(test)]` attribute, section comment header (e.g. `// --- Tests for TraitDefBuilder ---`), descriptive module name, `use super::*` import. The new module mirrors this structure exactly."
     },
     {
-      "what": "tokio::io::duplex()",
-      "where": "Tests throughout claude_bridge_tests.rs",
-      "how": "Standard tokio duplex channels simulate sidecar I/O without real processes. Writer end kept alive prevents EOF, giving deterministic state control."
-    },
-    {
-      "what": "tokio::time::timeout() for I/O synchronization",
-      "where": "from_parts_with_mcp_intercepts_reify_tool_calls test",
-      "how": "Instead of yield loops, await the actual I/O (stdin_reader.read) with a timeout. The tool_result write to stdin is the natural synchronization point — all prior synchronous events have already fired by then."
+      "what": "Existing TraitDefBuilder test code (9 tests, lines 795-931)",
+      "where": "builders.rs `mod tests` block",
+      "how": "Move verbatim with no logic changes. Tests use TraitDefBuilder::new(), RequirementKind, DefaultKind, TypeParam, TraitBound, TraitRef, ContentHash, DimensionVector, SourceSpan -- all accessible from the new module position via `use super::*` plus targeted imports from reify_types and reify_compiler."
     }
   ],
-  "_session_id": "354-dda4cf8c",
-  "_created_at": "2026-03-24T22:16:31.206489+00:00"
+  "_session_id": "355-bfa0192c",
+  "_created_at": "2026-03-24T22:16:59.429290+00:00"
 }
