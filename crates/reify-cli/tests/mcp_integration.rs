@@ -211,14 +211,14 @@ fn mcp_server_set_parameter_changes_value() {
 
     let requests = vec![
         serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
-        // Set width to 100 (100mm = 0.1 in SI)
+        // Set width to 0.1 m (100mm in SI)
         serde_json::json!({
             "jsonrpc": "2.0",
             "id": 2,
             "method": "tools/call",
             "params": {
                 "name": "reify_set_parameter",
-                "arguments": {"cell_id": "Bracket.width", "value": "100"}
+                "arguments": {"cell_id": "Bracket.width", "value": "0.1"}
             }
         }),
         // Get parameters to verify the change
@@ -261,8 +261,8 @@ fn mcp_server_set_parameter_changes_value() {
     // Verify set_parameter response itself reports the correct new value
     assert_eq!(
         set_result["new_value"].as_str().unwrap_or(""),
-        "100 m",
-        "set_parameter response new_value should be '100 m', got: {:?}",
+        "0.1 m",
+        "set_parameter response new_value should be '0.1 m', got: {:?}",
         set_result["new_value"]
     );
 
@@ -280,10 +280,10 @@ fn mcp_server_set_parameter_changes_value() {
         .expect("should have width parameter");
 
     let width_value = width_param["value"].as_str().unwrap_or("");
-    // Original was 80mm (0.08 m SI), new should be 100 m after setting to 100
+    // Original was 80mm (0.08 m SI), new should be 0.1 m (100mm) after setting to 0.1
     assert_eq!(
-        width_value, "100 m",
-        "width should be 100 m after setting to 100"
+        width_value, "0.1 m",
+        "width should be 0.1 m (100mm) after setting to 0.1"
     );
 }
 
