@@ -65,6 +65,13 @@ pub enum Value {
         lower_inclusive: bool,
         upper_inclusive: bool,
     },
+    /// User-facing matrix literal (m rows × n cols).
+    ///
+    /// Before arithmetic evaluation, canonicalized to nested [`Value::Tensor`] (rank-2
+    /// Tensor where each element is a Tensor row) via [`Value::canonicalize_matrix()`].
+    /// The evaluator in `reify-expr` operates exclusively on the nested-Tensor
+    /// representation for matrix arithmetic.
+    Matrix(Vec<Vec<Value>>),
     /// Undefined — not yet determined or computation failed.
     Undef,
 }
@@ -110,6 +117,43 @@ impl Value {
 
     pub fn is_undef(&self) -> bool {
         matches!(self, Value::Undef)
+    }
+
+    /// Convert a `Value::Matrix` to nested `Value::Tensor` (rank-2 Tensor where each
+    /// element is a Tensor row).  All other variants are returned unchanged.
+    ///
+    /// This is used by the evaluator in `reify-expr` to canonicalize matrix literals
+    /// before dispatching to the arithmetic engine, which operates exclusively on the
+    /// nested-Tensor representation.
+    pub fn canonicalize_matrix(self) -> Self {
+        match self {
+            Value::Matrix(rows) => {
+                Value::Tensor(rows.into_iter().map(Value::Tensor).collect())
+            }
+            other => other,
+        }
+    }
+
+    /// Convert a rank-2 nested `Value::Tensor` back to a `Value::Matrix`.
+    ///
+    /// Returns `Some(Matrix(...))` if `self` is a `Tensor` with at least one element
+    /// and every element is itself a `Tensor`.  Returns `None` otherwise.
+    pub fn try_into_matrix(self) -> Option<Self> {
+        match self {
+            Value::Tensor(rows)
+                if !rows.is_empty() && rows.iter().all(|r| matches!(r, Value::Tensor(_))) =>
+            {
+                let matrix_rows: Vec<Vec<Value>> = rows
+                    .into_iter()
+                    .map(|r| match r {
+                        Value::Tensor(elems) => elems,
+                        _ => unreachable!("checked above"),
+                    })
+                    .collect();
+                Some(Value::Matrix(matrix_rows))
+            }
+            _ => None,
+        }
     }
 
     /// Get the f64 value if this is a numeric type.
@@ -294,6 +338,18 @@ impl Value {
                 }
                 h
             }
+            Value::Matrix(rows) => {
+                // tag=18; hash row count, then per-row col count + element hashes
+                let mut h = ContentHash::of(&[18]);
+                h = h.combine(ContentHash::of(&(rows.len() as u64).to_le_bytes()));
+                for row in rows {
+                    h = h.combine(ContentHash::of(&(row.len() as u64).to_le_bytes()));
+                    for elem in row {
+                        h = h.combine(elem.content_hash());
+                    }
+                }
+                h
+            }
             Value::Undef => ContentHash::of(&[5]),
         }
     }
@@ -371,6 +427,7 @@ impl PartialEq for Value {
                 );
                 al == bl && au == bu && ali == bli && aui == bui
             }
+            (Value::Matrix(a), Value::Matrix(b)) => a == b,
             (Value::Undef, Value::Undef) => true,
             _ => false,
         }
@@ -390,7 +447,7 @@ impl Ord for Value {
         use std::cmp::Ordering;
 
         // Type-tag discriminant for cross-type ordering:
-        // Undef=0, Bool=1, Int=2, Real=3, Scalar=4, String=5, Enum=6, List=7, Set=8, Map=9, Option=10, Field=11, Lambda=12, Tensor=13, Complex=14, Orientation=15, Range=16, Point=17, Vector=18
+        // Undef=0, Bool=1, Int=2, Real=3, Scalar=4, String=5, Enum=6, List=7, Set=8, Map=9, Option=10, Field=11, Lambda=12, Tensor=13, Complex=14, Orientation=15, Range=16, Point=17, Vector=18, Matrix=19
         fn type_tag(v: &Value) -> u8 {
             match v {
                 Value::Undef => 0,
@@ -412,6 +469,7 @@ impl Ord for Value {
                 Value::Range { .. } => 16,
                 Value::Point(_) => 17,
                 Value::Vector(_) => 18,
+                Value::Matrix(_) => 19,
             }
         }
 
@@ -510,6 +568,7 @@ impl Ord for Value {
                     .then_with(|| aui.cmp(bui))
                     .then_with(|| au.cmp(bu))
             }
+            (Value::Matrix(a), Value::Matrix(b)) => a.cmp(b),
             _ => unreachable!("same type tag but different variants"),
         }
     }
@@ -660,6 +719,23 @@ impl std::fmt::Display for Value {
                     Some(v) => format!("{}", v),
                 };
                 write!(f, "{}{}..{}{}", lb, lower_str, upper_str, ub)
+            }
+            Value::Matrix(rows) => {
+                write!(f, "[")?;
+                for (i, row) in rows.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "[")?;
+                    for (j, elem) in row.iter().enumerate() {
+                        if j > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{}", elem)?;
+                    }
+                    write!(f, "]")?;
+                }
+                write!(f, "]")
             }
             Value::Undef => write!(f, "undef"),
         }
@@ -2481,5 +2557,206 @@ mod tests {
             upper_inclusive: true,
         };
         let _ = format!("{}", r);
+    }
+
+    // ── Value::Matrix Ord tests (step-7) ─────────────────────────────────────
+
+    #[test]
+    fn value_matrix_ord_cross_type_after_range() {
+        // (a) Matrix (tag 17) > Range (tag 16)
+        let matrix = Value::Matrix(vec![vec![Value::Int(1)]]);
+        let range = Value::range(Some(Value::Int(0)), Some(Value::Int(10)), true, true);
+        assert!(matrix > range);
+    }
+
+    #[test]
+    fn value_matrix_ord_within_type_lexicographic() {
+        // (b) lexicographic ordering on rows: [[1,2],[3,4]] < [[1,2],[3,5]]
+        let m1 = Value::Matrix(vec![
+            vec![Value::Int(1), Value::Int(2)],
+            vec![Value::Int(3), Value::Int(4)],
+        ]);
+        let m2 = Value::Matrix(vec![
+            vec![Value::Int(1), Value::Int(2)],
+            vec![Value::Int(3), Value::Int(5)],
+        ]);
+        assert!(m1 < m2);
+        assert!(m2 > m1);
+        // Equal matrices compare equal
+        let m3 = Value::Matrix(vec![
+            vec![Value::Int(1), Value::Int(2)],
+            vec![Value::Int(3), Value::Int(4)],
+        ]);
+        assert_eq!(m1.cmp(&m3), std::cmp::Ordering::Equal);
+    }
+
+    // ── Value::Matrix content_hash tests (step-5) ────────────────────────────
+
+    #[test]
+    fn value_matrix_content_hash_determinism() {
+        // (a) same matrix produces same hash
+        let m1 = Value::Matrix(vec![
+            vec![Value::Int(1), Value::Int(2)],
+            vec![Value::Int(3), Value::Int(4)],
+        ]);
+        let m2 = Value::Matrix(vec![
+            vec![Value::Int(1), Value::Int(2)],
+            vec![Value::Int(3), Value::Int(4)],
+        ]);
+        assert_eq!(m1.content_hash(), m2.content_hash());
+    }
+
+    #[test]
+    fn value_matrix_content_hash_transposed_differs() {
+        // (b) transposed matrix has different hash
+        let m_normal = Value::Matrix(vec![
+            vec![Value::Int(1), Value::Int(2)],
+            vec![Value::Int(3), Value::Int(4)],
+        ]);
+        let m_transposed = Value::Matrix(vec![
+            vec![Value::Int(1), Value::Int(3)],
+            vec![Value::Int(2), Value::Int(4)],
+        ]);
+        assert_ne!(m_normal.content_hash(), m_transposed.content_hash());
+    }
+
+    #[test]
+    fn value_matrix_content_hash_distinct_from_tensor() {
+        // (c) same elements as Tensor produce different hash (different tag)
+        let matrix = Value::Matrix(vec![vec![Value::Int(1), Value::Int(2)]]);
+        let tensor = Value::Tensor(vec![Value::Int(1), Value::Int(2)]);
+        assert_ne!(matrix.content_hash(), tensor.content_hash());
+    }
+
+    // ── Value::Matrix tests (step-3) ─────────────────────────────────────────
+
+    #[test]
+    fn value_matrix_construction_and_partial_eq() {
+        // (a) same rows equal
+        let m1 = Value::Matrix(vec![
+            vec![Value::Int(1), Value::Int(2), Value::Int(3)],
+            vec![Value::Int(4), Value::Int(5), Value::Int(6)],
+        ]);
+        let m2 = Value::Matrix(vec![
+            vec![Value::Int(1), Value::Int(2), Value::Int(3)],
+            vec![Value::Int(4), Value::Int(5), Value::Int(6)],
+        ]);
+        assert_eq!(m1, m2);
+
+        // different element — not equal
+        let m3 = Value::Matrix(vec![
+            vec![Value::Int(1), Value::Int(2), Value::Int(3)],
+            vec![Value::Int(4), Value::Int(5), Value::Int(7)],
+        ]);
+        assert_ne!(m1, m3);
+
+        // different shape — not equal
+        let m4 = Value::Matrix(vec![
+            vec![Value::Int(1), Value::Int(2)],
+            vec![Value::Int(3), Value::Int(4)],
+        ]);
+        assert_ne!(m1, m4);
+
+        // cross-variant: Matrix != List
+        let list = Value::List(vec![Value::Int(1), Value::Int(2)]);
+        assert_ne!(Value::Matrix(vec![vec![Value::Int(1), Value::Int(2)]]), list);
+
+        // cross-variant: Matrix != Tensor
+        let tensor = Value::Tensor(vec![Value::Int(1), Value::Int(2)]);
+        assert_ne!(Value::Matrix(vec![vec![Value::Int(1), Value::Int(2)]]), tensor);
+    }
+
+    #[test]
+    fn value_matrix_display_2x3() {
+        // (b) 2x3 matrix: [[1, 2, 3], [4, 5, 6]]
+        let m = Value::Matrix(vec![
+            vec![Value::Int(1), Value::Int(2), Value::Int(3)],
+            vec![Value::Int(4), Value::Int(5), Value::Int(6)],
+        ]);
+        assert_eq!(format!("{}", m), "[[1, 2, 3], [4, 5, 6]]");
+    }
+
+    #[test]
+    fn value_matrix_display_1x1() {
+        // (b) 1x1 matrix: [[1]]
+        let m = Value::Matrix(vec![vec![Value::Int(1)]]);
+        assert_eq!(format!("{}", m), "[[1]]");
+    }
+
+    // ── Value::Matrix canonicalize_matrix / try_into_matrix tests (step-11) ─
+
+    #[test]
+    fn canonicalize_matrix_converts_to_nested_tensor() {
+        // (a) Matrix([[1,2],[3,4]]) → Tensor([Tensor([1,2]), Tensor([3,4])])
+        let matrix = Value::Matrix(vec![
+            vec![Value::Int(1), Value::Int(2)],
+            vec![Value::Int(3), Value::Int(4)],
+        ]);
+        let expected = Value::Tensor(vec![
+            Value::Tensor(vec![Value::Int(1), Value::Int(2)]),
+            Value::Tensor(vec![Value::Int(3), Value::Int(4)]),
+        ]);
+        assert_eq!(matrix.canonicalize_matrix(), expected);
+    }
+
+    #[test]
+    fn canonicalize_matrix_is_identity_for_non_matrix() {
+        // (b) non-Matrix values pass through unchanged
+        assert_eq!(Value::Int(42).canonicalize_matrix(), Value::Int(42));
+        assert_eq!(
+            Value::Tensor(vec![Value::Int(1), Value::Int(2)]).canonicalize_matrix(),
+            Value::Tensor(vec![Value::Int(1), Value::Int(2)])
+        );
+        assert_eq!(Value::Undef.canonicalize_matrix(), Value::Undef);
+    }
+
+    #[test]
+    fn canonicalize_matrix_empty_rows() {
+        // (c) Matrix([[],[]])  → Tensor([Tensor([]), Tensor([])])
+        let matrix = Value::Matrix(vec![vec![], vec![]]);
+        let expected = Value::Tensor(vec![Value::Tensor(vec![]), Value::Tensor(vec![])]);
+        assert_eq!(matrix.canonicalize_matrix(), expected);
+    }
+
+    #[test]
+    fn try_into_matrix_rank2_tensor_converts() {
+        // (d) rank-2 Tensor([Tensor([1,2]), Tensor([3,4])]) → Some(Matrix([[1,2],[3,4]]))
+        let tensor = Value::Tensor(vec![
+            Value::Tensor(vec![Value::Int(1), Value::Int(2)]),
+            Value::Tensor(vec![Value::Int(3), Value::Int(4)]),
+        ]);
+        let expected = Some(Value::Matrix(vec![
+            vec![Value::Int(1), Value::Int(2)],
+            vec![Value::Int(3), Value::Int(4)],
+        ]));
+        assert_eq!(tensor.try_into_matrix(), expected);
+    }
+
+    #[test]
+    fn try_into_matrix_rank1_tensor_returns_none() {
+        // (e) rank-1 Tensor([1,2,3]) → None (not all-Tensor elements)
+        let tensor = Value::Tensor(vec![Value::Int(1), Value::Int(2), Value::Int(3)]);
+        assert_eq!(tensor.try_into_matrix(), None);
+    }
+
+    #[test]
+    fn try_into_matrix_non_tensor_returns_none() {
+        // (f) non-Tensor values return None
+        assert_eq!(Value::Int(42).try_into_matrix(), None);
+        assert_eq!(
+            Value::Matrix(vec![vec![Value::Int(1)]]).try_into_matrix(),
+            None
+        );
+    }
+
+    #[test]
+    fn canonicalize_matrix_round_trip() {
+        // (g) round-trip: matrix.clone().canonicalize_matrix().try_into_matrix() == Some(matrix)
+        let matrix = Value::Matrix(vec![
+            vec![Value::Int(1), Value::Int(2)],
+            vec![Value::Int(3), Value::Int(4)],
+        ]);
+        let round_tripped = matrix.clone().canonicalize_matrix().try_into_matrix();
+        assert_eq!(round_tripped, Some(matrix));
     }
 }

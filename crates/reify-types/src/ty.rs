@@ -47,6 +47,12 @@ pub enum Type {
     Orientation(usize),
     /// Range over a comparable element type (e.g., Range<Int>, Range<Scalar[m]>).
     Range(Box<Type>),
+    /// User-facing m×n matrix type (e.g., Matrix3x2<Scalar[m]>).
+    ///
+    /// Semantically, evaluation treats matrices as rank-2 tensors; `Type::Matrix` preserves
+    /// distinct row (`m`) and column (`n`) dimensions while `Type::Tensor` uses a single
+    /// `n` for all dimensions.
+    Matrix { m: usize, n: usize, quantity: Box<Type> },
 }
 
 impl Type {
@@ -109,6 +115,11 @@ impl Type {
     /// Shorthand for a range over a given element type.
     pub fn range(inner: Type) -> Self {
         Type::Range(Box::new(inner))
+    }
+
+    /// Shorthand for an m×n matrix with a given quantity type.
+    pub fn matrix(m: usize, n: usize, quantity: Type) -> Self {
+        Type::Matrix { m, n, quantity: Box::new(quantity) }
     }
 
     /// Is this type a numeric type (Int, Real, or Scalar)?
@@ -587,6 +598,93 @@ mod tests {
         assert_eq!(Type::range(Type::Int).as_name(), None);
     }
 
+    // ── Matrix tests (step-1) ────────────────────────────────────────────────
+
+    #[test]
+    fn type_matrix_construction_and_equality() {
+        // (a) Same dimensions and quantity are equal
+        assert_eq!(
+            Type::Matrix { m: 3, n: 2, quantity: Box::new(Type::Real) },
+            Type::Matrix { m: 3, n: 2, quantity: Box::new(Type::Real) },
+        );
+        // Different m — not equal
+        assert_ne!(
+            Type::Matrix { m: 3, n: 2, quantity: Box::new(Type::Real) },
+            Type::Matrix { m: 2, n: 3, quantity: Box::new(Type::Real) },
+        );
+        // Different n — not equal
+        assert_ne!(
+            Type::Matrix { m: 3, n: 2, quantity: Box::new(Type::Real) },
+            Type::Matrix { m: 3, n: 3, quantity: Box::new(Type::Real) },
+        );
+        // Different quantity — not equal
+        assert_ne!(
+            Type::Matrix { m: 3, n: 2, quantity: Box::new(Type::Real) },
+            Type::Matrix { m: 3, n: 2, quantity: Box::new(Type::Int) },
+        );
+        // Matrix != Tensor with same n/quantity
+        assert_ne!(
+            Type::Matrix { m: 2, n: 3, quantity: Box::new(Type::Real) },
+            Type::Tensor { rank: 2, n: 3, quantity: Box::new(Type::Real) },
+        );
+    }
+
+    #[test]
+    fn type_matrix_display() {
+        // (d) Display: Matrix{m}x{n}<{quantity}>
+        assert_eq!(
+            format!("{}", Type::Matrix { m: 3, n: 2, quantity: Box::new(Type::Real) }),
+            "Matrix3x2<Real>"
+        );
+        assert_eq!(
+            format!("{}", Type::Matrix { m: 4, n: 4, quantity: Box::new(Type::length()) }),
+            "Matrix4x4<Scalar[m]>"
+        );
+    }
+
+    #[test]
+    fn type_matrix_factory() {
+        // (b) Type::matrix(m, n, q) factory method
+        assert_eq!(
+            Type::matrix(3, 2, Type::Real),
+            Type::Matrix { m: 3, n: 2, quantity: Box::new(Type::Real) },
+        );
+        assert_eq!(
+            Type::matrix(1, 1, Type::Int),
+            Type::Matrix { m: 1, n: 1, quantity: Box::new(Type::Int) },
+        );
+    }
+
+    #[test]
+    fn type_matrix_eq_and_hash() {
+        use std::collections::HashMap;
+        // (c) hash consistency: same key retrieves value
+        let m_a = Type::matrix(3, 2, Type::Real);
+        let m_b = Type::matrix(3, 2, Type::Real);
+        let m_other = Type::matrix(2, 3, Type::Real);
+
+        assert_eq!(m_a, m_b);
+        assert_ne!(m_a, m_other);
+
+        let mut map: HashMap<Type, &str> = HashMap::new();
+        map.insert(m_a.clone(), "mat");
+        assert_eq!(map.get(&m_b), Some(&"mat"));
+        assert_eq!(map.get(&m_other), None);
+    }
+
+    #[test]
+    fn type_matrix_not_numeric() {
+        // (e) is_numeric returns false
+        assert!(!Type::matrix(3, 2, Type::Real).is_numeric());
+        assert!(!Type::matrix(1, 1, Type::Int).is_numeric());
+    }
+
+    #[test]
+    fn type_matrix_as_name_none() {
+        // (f) as_name returns None
+        assert_eq!(Type::matrix(3, 2, Type::Real).as_name(), None);
+    }
+
     #[test]
     fn type_point_display() {
         let p3_length = Type::Point {
@@ -642,6 +740,7 @@ impl std::fmt::Display for Type {
             Type::Complex(inner) => write!(f, "Complex<{}>", inner),
             Type::Orientation(n) => write!(f, "Orientation{}", n),
             Type::Range(inner) => write!(f, "Range<{}>", inner),
+            Type::Matrix { m, n, quantity } => write!(f, "Matrix{}x{}<{}>", m, n, quantity),
         }
     }
 }

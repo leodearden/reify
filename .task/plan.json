@@ -1,108 +1,200 @@
 {
-  "task_id": "301",
-  "title": "Stdlib: dot, cross, normalize, magnitude linalg builtins",
+  "task_id": "229",
+  "title": "Matrix: Type and Value",
   "files": [
-    "crates/reify-stdlib/src/lib.rs"
+    "crates/reify-types/src/ty.rs",
+    "crates/reify-types/src/value.rs",
+    "crates/reify-types/tests/exports.rs",
+    "crates/reify-expr/src/lib.rs",
+    "crates/reify-expr/tests/tensor_matrix_arithmetic_tests.rs"
   ],
   "modules": [
-    "crates/reify-stdlib"
+    "crates/reify-types",
+    "crates/reify-expr"
   ],
-  "analysis": "All four linalg builtins (dot, cross, normalize, magnitude) are ALREADY fully implemented in eval_builtin() with correct dimensional tracking (lines 263-361 of stdlib/lib.rs). LSP completions already list all four (completion.rs line 86). Comprehensive unit tests exist (35 passing tests covering dimensionless, dimensioned, error cases, NaN/Inf, overflow). However, ALL existing tests use Value::Tensor inputs exclusively. The task specifies vec3(...) which produces Value::Vector. The implementation correctly handles Value::Vector (tensor_components_f64 accepts Vector, and wrapper-preserving logic returns Value::Vector from cross/normalize when inputs are Vector), but this behavior is completely untested. The gap is Value::Vector-specific test coverage: (1) dot with Vector inputs, (2) cross returning Value::Vector wrapper when both inputs are Vector, (3) normalize returning Value::Vector wrapper, (4) magnitude with Vector inputs. Adding these tests verifies the wrapper-preservation logic that distinguishes vectors from tensors at runtime — critical for downstream code (e.g., affine transforms where points get translation and vectors don't).",
+  "analysis": "Task 229 adds a Matrix type and value to the reify type system. The Matrix type is structurally similar to the existing Tensor variant: `Matrix { m: usize, n: usize, quantity: Box<Type> }` where m=rows, n=cols. Matrix values use `Vec<Vec<Value>>` (m rows of n elements each), unlike Tensor's flat `Vec<Value>` with recursive nesting. The implementation touches three files: ty.rs (Type enum variant + factory + Display), value.rs (Value enum variant + PartialEq + Ord + Display + content_hash), and tests/exports.rs (integration test). The Type enum derives Eq/Hash so no manual impl needed there. The Value enum has custom PartialEq, Ord, Display, and content_hash that all require explicit new arms. Content hash will use tag 18 (next after Range=17). Ord type_tag will use 17 (next after Range=16). The existing Tensor implementation serves as the closest pattern to follow. is_numeric already returns false via wildcard miss, and as_name returns None via wildcard catch-all — no changes needed for those methods, just test coverage.\n\n**Review fix (dual_representation_conflict):** The codebase already represents matrices as rank-2 nested `Value::Tensor` (Tensor of Tensor rows) — all 28 tests in `tensor_matrix_arithmetic_tests.rs` and all arithmetic functions in `reify-expr` (`eval_add`, `eval_sub`, `eval_mul`, `eval_div`, `neg_value`) pattern-match exclusively on `Value::Tensor`. The new `Value::Matrix` is a user-facing literal/display form. To prevent silent `Undef` production when `Value::Matrix` enters the arithmetic engine, we add: (1) doc comments on `Value::Matrix` and `Type::Matrix` clarifying the relationship, (2) `Value::canonicalize_matrix(self) -> Self` conversion method (Matrix→nested Tensor, no-op for others), (3) `Value::try_into_matrix(self) -> Option<Self>` reverse conversion, (4) canonicalization calls in `eval_binop` and `neg_value` in `reify-expr/src/lib.rs` so Matrix operands are converted to nested Tensor before arithmetic dispatch.",
   "prerequisites": [],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Add dot tests with Value::Vector inputs: (1) dot_vector_orthogonal — dot(Vector([1,0,0]), Vector([0,1,0])) == 0.0 as Real, (2) dot_vector_dimensioned — dot(Vector([1m,0,0]), Vector([1N,0,0])) → Scalar{1.0, Length*Force}. These mirror the existing Tensor-based dot tests but use Value::Vector to verify tensor_components_f64 extracts correctly from Vector variant.",
+      "description": "Write failing tests in ty.rs for Type::Matrix: (a) direct construction and equality — Matrix{3,2,Real} == Matrix{3,2,Real}, != Matrix{2,3,Real}, != Matrix{3,2,Int}, != Tensor{2,3,Real}; (b) factory method — Type::matrix(3,2,Real) == Type::Matrix{m:3,n:2,quantity:Real}; (c) hash consistency via HashMap insert+lookup; (d) Display — Matrix3x2<Real>, Matrix4x4<Scalar[m]>; (e) is_numeric returns false; (f) as_name returns None",
       "status": "done",
-      "commit": "9efb0ecb"
+      "commit": "c5a7ba2c"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Verify dot Vector tests pass without implementation changes. tensor_components_f64 already matches Value::Vector, so these should pass. If any fail, fix the extraction logic.",
+      "description": "Add `Matrix { m: usize, n: usize, quantity: Box<Type> }` variant to Type enum after Range. Add `Type::matrix(m, n, q)` factory method after range(). Add Display arm: `write!(f, \"Matrix{}x{}<{}>\", m, n, quantity)`. No changes needed for is_numeric or as_name (wildcard patterns).",
       "status": "done",
-      "commit": "9efb0ecb"
+      "commit": "a748e95b"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Add cross tests with Value::Vector inputs: (1) cross_vector_returns_vector_wrapper — cross(Vector([1,0,0]), Vector([0,1,0])) returns Value::Vector([0,0,1]), NOT Value::Tensor — verifies wrapper preservation logic at line 312, (2) cross_vector_dimensioned — cross of dimensioned Vectors preserves Length*Force dimension on each component, (3) cross_2d_vector_returns_undef — cross of 2-element Value::Vector returns Undef.",
+      "description": "Write failing tests in value.rs for Value::Matrix: (a) construction with Vec<Vec<Value>> and PartialEq — same rows equal, different rows not equal, cross-variant with List/Tensor returns false; (b) Display format — `[[1, 2, 3], [4, 5, 6]]` for 2x3 matrix, `[[1]]` for 1x1",
       "status": "done",
-      "commit": "9efb0ecb"
+      "commit": "ccc8c1fc"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Verify cross Vector tests pass. The wrapper logic (line 310-314) already returns Value::Vector when both inputs are Value::Vector. If the wrapper test fails, fix the match arm in the cross implementation.",
+      "description": "Add `Matrix(Vec<Vec<Value>>)` variant to Value enum after Range. Add PartialEq arm: `(Value::Matrix(a), Value::Matrix(b)) => a == b`. Add Display arm: outer `[` then comma-separated rows each formatted as `[v1, v2, ...]`, closing `]`.",
       "status": "done",
-      "commit": "9efb0ecb"
+      "commit": "3eb2307e"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Add normalize tests with Value::Vector inputs: (1) normalize_vector_returns_vector_wrapper — normalize(Vector([3,4,0])) returns Value::Vector([0.6,0.8,0.0]) with Real components, NOT Value::Tensor — verifies wrapper preservation at line 266, (2) normalize_zero_vector_input_returns_undef — normalize(Vector([0,0,0])) → Undef, (3) normalize_dimensioned_vector_input — normalize(Vector([3m,4m,0m])) → Value::Vector with dimensionless Real components.",
+      "description": "Write failing tests in value.rs for Value::Matrix content_hash: (a) determinism — same matrix produces same hash; (b) different values — [[1,2],[3,4]] != [[1,3],[2,4]] (transposed); (c) distinct from Tensor — Matrix([[1,2]]) hash != Tensor([1,2]) hash due to different tag",
       "status": "done",
-      "commit": "9efb0ecb"
+      "commit": "f7f3495e"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Verify normalize Vector tests pass. The wrap function (line 265-268) already selects Value::Vector when input is Vector. If any wrapper test fails, fix the match arm.",
+      "description": "Add content_hash arm for Value::Matrix with tag=18: `let mut h = ContentHash::of(&[18]); h = h.combine(rows.len()); for each row: h = h.combine(row.len()); for each elem: h = h.combine(elem.content_hash())`",
       "status": "done",
-      "commit": "9efb0ecb"
+      "commit": "048e2ffa"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Add magnitude tests with Value::Vector inputs: (1) magnitude_vector_3_4_0 — magnitude(Vector([3,4,0])) == Real(5.0), (2) magnitude_vector_dimensioned — magnitude(Vector([3mm,4mm,0])) == Scalar{0.005, LENGTH} — verifies dimension preservation through Vector path.",
+      "description": "Write failing tests in value.rs for Value::Matrix Ord: (a) cross-type ordering — Matrix (tag 17) > Range (tag 16), Matrix < Undef would be wrong since Undef=0; (b) within-type lexicographic ordering on rows — [[1,2],[3,4]] < [[1,2],[3,5]]",
       "status": "done",
-      "commit": "9efb0ecb"
+      "commit": "d2a7d90e"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Verify magnitude Vector tests pass. tensor_components_f64 extracts from Value::Vector correctly and dimension is derived from first component. If any test fails, fix extraction logic.",
+      "description": "Add `Value::Matrix(_) => 17` to type_tag fn in Ord impl. Add within-type arm: `(Value::Matrix(a), Value::Matrix(b)) => a.cmp(b)` leveraging Vec<Vec<Value>>'s derived lexicographic Ord.",
       "status": "done",
-      "commit": "9efb0ecb"
+      "commit": "6b75cd12"
+    },
+    {
+      "id": "step-9",
+      "type": "test",
+      "description": "Add Matrix entries to tests/exports.rs all_m5_types_exported: Type::Matrix direct construction, Type::matrix() factory method, Value::Matrix construction with Vec<Vec<Value>>",
+      "status": "done",
+      "commit": "22687aac"
+    },
+    {
+      "id": "step-10",
+      "type": "impl",
+      "description": "The export test entries are written in step-9 (test IS the impl for integration tests). Verify `cargo test -p reify-types` passes all tests including new Matrix tests.",
+      "status": "done",
+      "commit": "22687aac"
+    },
+    {
+      "id": "step-11",
+      "type": "test",
+      "description": "Write failing tests in value.rs for Matrix↔Tensor conversion methods: (a) `canonicalize_matrix` converts Matrix([[1,2],[3,4]]) to Tensor([Tensor([1,2]), Tensor([3,4])]); (b) `canonicalize_matrix` is identity for non-Matrix variants (Int, Tensor, Undef); (c) `canonicalize_matrix` on empty Matrix([[],[]]) produces Tensor([Tensor([]), Tensor([])]); (d) `try_into_matrix` converts rank-2 nested Tensor([Tensor([1,2]), Tensor([3,4])]) to Some(Matrix([[1,2],[3,4]])); (e) `try_into_matrix` returns None for rank-1 Tensor([1,2,3]); (f) `try_into_matrix` returns None for non-Tensor values (Int, Matrix); (g) round-trip: matrix.clone().canonicalize_matrix().try_into_matrix() == Some(matrix)",
+      "status": "done",
+      "commit": "9ed04a74"
+    },
+    {
+      "id": "step-12",
+      "type": "impl",
+      "description": "In value.rs: (1) Update doc comment on `Value::Matrix` to: 'User-facing matrix literal (m rows × n cols). Before arithmetic evaluation, canonicalized to nested Value::Tensor (rank-2 Tensor where each element is a Tensor row) via canonicalize_matrix(). The evaluator in reify-expr operates exclusively on the nested-Tensor representation for matrix arithmetic.' (2) Add `pub fn canonicalize_matrix(self) -> Self` method: match self { Value::Matrix(rows) => Value::Tensor(rows.into_iter().map(Value::Tensor).collect()), other => other }. (3) Add `pub fn try_into_matrix(self) -> Option<Self>` method: match self { Value::Tensor(rows) if !rows.is_empty() && rows.iter().all(|r| matches!(r, Value::Tensor(_))) => convert inner Tensors to Vec<Vec<Value>> and return Some(Matrix(...)), _ => None }. (4) Update doc comment on Type::Matrix in ty.rs to: 'User-facing m×n matrix type. Semantically, evaluation treats matrices as rank-2 tensors; Type::Matrix preserves distinct row (m) and column (n) dimensions while Type::Tensor uses a single n for all dimensions.'",
+      "status": "done",
+      "commit": "daad7fc2"
+    },
+    {
+      "id": "step-13",
+      "type": "test",
+      "description": "Write failing tests in crates/reify-expr/tests/tensor_matrix_arithmetic_tests.rs (new section at end of file) for Value::Matrix canonicalization through the evaluator: (a) Matrix + Matrix: Matrix([[Int(1),Int(2)],[Int(3),Int(4)]]) + Matrix([[Int(10),Int(20)],[Int(30),Int(40)]]) == Tensor([Tensor([Int(11),Int(22)]),Tensor([Int(33),Int(44)])]); (b) Scalar * Matrix: Real(2.0) * Matrix([[Int(1),Int(2)]]) == Tensor([Tensor([...scaled...])]); (c) -Matrix: negation of Matrix([[Int(1),Int(-2)]]) == Tensor([Tensor([Int(-1),Int(2)])]); (d) Matrix * Vector: 2x2 Matrix * 2-elem Tensor vector produces correct dot-product Tensor result. All tests construct BinOp/UnOp CompiledExpr with Matrix literals and verify eval_expr produces the correct nested-Tensor result (not Undef).",
+      "status": "done",
+      "commit": "8e4589fe"
+    },
+    {
+      "id": "step-14",
+      "type": "impl",
+      "description": "In crates/reify-expr/src/lib.rs: (1) In `eval_binop` (line ~642-643), after `let lv = eval_expr(left, ctx);` and `let rv = eval_expr(right, ctx);`, add canonicalization: `let lv = lv.canonicalize_matrix();` and `let rv = rv.canonicalize_matrix();`. This ensures Matrix operands become nested Tensor before any arithmetic dispatch. (2) In `neg_value` (line ~1180), add a `Value::Matrix(_)` arm before the wildcard that calls `neg_value(v.canonicalize_matrix())` to convert then negate. Alternatively, canonicalize at the top: `let v = v.canonicalize_matrix();` before the match. Verify all existing tensor_matrix_arithmetic_tests still pass plus new Matrix canonicalization tests.",
+      "status": "done",
+      "commit": "e231c8c4"
     }
   ],
   "design_decisions": [
     {
-      "decision": "No implementation changes planned — only adding test coverage for Value::Vector inputs",
-      "rationale": "All four builtins are already fully implemented with correct dimensional tracking. The tensor_components_f64 helper already handles Value::Vector extraction, and the wrapper-preservation logic (cross→Vector, normalize→Vector) is already coded. The gap is purely in test coverage: all 35 existing linalg tests use Value::Tensor, none exercise the Value::Vector code path."
+      "decision": "Matrix value stored as Vec<Vec<Value>> (not flat Vec<Value>)",
+      "rationale": "Task specifies 'm rows x n cols' as Vec<Vec<Value>>. This differs from Tensor's flat Vec<Value> with recursive nesting. The 2D structure makes row/column access O(1) and matrix operations natural. Each inner Vec is one row of n elements."
     },
     {
-      "decision": "Tests explicitly assert Value::Vector wrapper type, not just component values",
-      "rationale": "The critical behavioral difference between Tensor and Vector paths is wrapper preservation. cross(Vector, Vector) must return Value::Vector (not Value::Tensor), and normalize(Vector) must return Value::Vector. Tests must assert the outer enum variant, not just the inner f64 values, to catch regressions where someone might simplify the match arms."
+      "decision": "Display format: Type as `Matrix{m}x{n}<{quantity}>`, Value as `[[r1c1, r1c2], [r2c1, r2c2]]`",
+      "rationale": "Type Display follows the Tensor pattern (`Tensor{rank}x{n}<{quantity}>`). Value Display uses nested bracket notation matching the Vec<Vec<Value>> structure, which is the standard mathematical notation for matrix literals."
     },
     {
-      "decision": "LSP completions verified as-is — no changes needed",
-      "rationale": "BUILTIN_FUNCTIONS in completion.rs already includes dot, cross, normalize, magnitude at line 86. No modification required."
+      "decision": "Content hash tag = 18, Ord type_tag = 17",
+      "rationale": "Sequential allocation after the last used tags: content_hash tags go 0-17 (Range=17), so Matrix=18. Ord type_tags go 0-16 (Range=16), so Matrix=17. Both follow the established pattern of sequential tag assignment."
+    },
+    {
+      "decision": "Content hash includes both row count and per-row column count",
+      "rationale": "Hashing both dimensions ensures that a 2x3 matrix and a 3x2 matrix with the same elements in different arrangement produce different hashes. Per-row col count (rather than a single n) handles the Vec<Vec> structure faithfully even if rows could theoretically vary in length."
+    },
+    {
+      "decision": "Ord within-type comparison delegates to Vec<Vec<Value>>::cmp",
+      "rationale": "Since Value implements Ord, Vec<Value> and Vec<Vec<Value>> automatically get lexicographic Ord. This is consistent with how List and Tensor delegate to Vec<Value>::cmp."
+    },
+    {
+      "decision": "Value::Matrix is a user-facing literal form, canonicalized to nested Tensor for evaluation (Option 2 from review)",
+      "rationale": "The codebase has 28 existing tests and 5 arithmetic functions (eval_add, eval_sub, eval_mul, eval_div, neg_value) that exclusively pattern-match on nested Value::Tensor for matrix operations. Rewriting all of these to also handle Value::Matrix would be high-cost and create maintenance burden (every new arithmetic feature must handle both representations). Instead, a single canonicalization step at the eval_binop/neg_value entry points converts Matrix→nested Tensor, reusing the entire existing arithmetic engine. The O(m×n) copy cost is negligible compared to the actual arithmetic operations."
+    },
+    {
+      "decision": "Canonicalization placed in eval_binop and neg_value, not in eval_expr",
+      "rationale": "Placing canonicalization in eval_binop (which dispatches all binary arithmetic and comparisons) and neg_value (unary negation) covers all arithmetic paths. Placing it in eval_expr would be too broad — it would canonicalize Matrix literals on read even when no arithmetic is performed, and would affect FunctionCall, MethodCall, and other paths that may want the original Matrix form. The targeted placement is minimal and precise."
+    },
+    {
+      "decision": "try_into_matrix requires non-empty rows and all-Tensor elements",
+      "rationale": "An empty Tensor([]) is ambiguous — it could be an empty vector or an empty matrix. Requiring at least one row and all elements to be Tensor(_) ensures the conversion is unambiguous. This matches the detection heuristic used in eval_mul (lines 858-862) which checks matches!(rows[0], Value::Tensor(_))."
     }
   ],
   "reuse": [
     {
-      "what": "tensor_components_f64() helper",
-      "where": "crates/reify-stdlib/src/lib.rs:847",
-      "how": "Already handles Value::Tensor | Value::Point | Value::Vector extraction — no changes needed for Vector support"
+      "what": "Tensor Type variant pattern",
+      "where": "crates/reify-types/src/ty.rs lines 42-43",
+      "how": "Matrix { m, n, quantity } mirrors Tensor { rank, n, quantity } — same Box<Type> wrapping for quantity, same struct-variant style"
     },
     {
-      "what": "assert_real_approx! and assert_scalar_approx! test macros",
-      "where": "crates/reify-stdlib/src/lib.rs:893-920",
-      "how": "Reuse for asserting scalar results from dot and magnitude"
+      "what": "Type::tensor() factory method pattern",
+      "where": "crates/reify-types/src/ty.rs lines 94-97",
+      "how": "Type::matrix(m, n, q) follows exact same pattern as Type::tensor(rank, n, q) — construct variant with Box::new(quantity)"
     },
     {
-      "what": "DimensionVector::LENGTH.mul(&FORCE) pattern for Length*Force",
-      "where": "crates/reify-stdlib/src/lib.rs:2345,2384",
-      "how": "Same pattern used in existing dimensioned Tensor tests — reuse for dimensioned Vector tests"
+      "what": "Tensor Display format pattern",
+      "where": "crates/reify-types/src/ty.rs line 641",
+      "how": "Matrix Display `Matrix{m}x{n}<{quantity}>` follows Tensor's `Tensor{rank}x{n}<{quantity}>` format string pattern"
     },
     {
-      "what": "Existing test patterns for wrapper assertion (match + panic)",
-      "where": "crates/reify-stdlib/src/lib.rs:2277-2286",
-      "how": "Same match-on-variant pattern but assert Value::Vector instead of Value::Tensor"
+      "what": "Tensor/List content_hash iteration pattern",
+      "where": "crates/reify-types/src/value.rs lines 221-228",
+      "how": "Matrix content_hash uses the same tag + length + item-hashes pattern, extended to two nesting levels for Vec<Vec<Value>>"
+    },
+    {
+      "what": "Tensor test structure in ty.rs",
+      "where": "crates/reify-types/src/ty.rs lines 314-382",
+      "how": "Matrix tests follow the same pattern: display tests, factory tests, eq_and_hash tests, not_numeric test — mirroring the Tensor test block"
+    },
+    {
+      "what": "List/Tensor Value Display pattern",
+      "where": "crates/reify-types/src/value.rs lines 508-527",
+      "how": "Matrix Value Display reuses the bracket-delimited comma-separated format, nested one level deeper for the row structure"
+    },
+    {
+      "what": "exports.rs Tensor test pattern",
+      "where": "crates/reify-types/tests/exports.rs lines 163-179",
+      "how": "Matrix export test follows same structure: direct Type construction, factory method, Value construction"
+    },
+    {
+      "what": "Existing nested-Tensor arithmetic engine",
+      "where": "crates/reify-expr/src/lib.rs lines 723-1195 (eval_add, eval_sub, eval_mul, eval_div, neg_value)",
+      "how": "By canonicalizing Value::Matrix to nested Value::Tensor, all 5 arithmetic functions and their 28 existing tests are reused without modification. The canonicalization step transforms Matrix([[a,b],[c,d]]) into Tensor([Tensor([a,b]),Tensor([c,d])]) which the arithmetic engine already understands."
+    },
+    {
+      "what": "tensor_matrix_arithmetic_tests.rs test patterns",
+      "where": "crates/reify-expr/tests/tensor_matrix_arithmetic_tests.rs lines 1-614",
+      "how": "New Matrix canonicalization tests follow the same helper functions (lit, eval_simple, etc.) and assertion patterns as the existing 28 tensor-as-matrix tests. The new tests verify that Matrix literal inputs produce the same results as equivalent nested Tensor inputs."
     }
   ],
-  "_session_id": "301-ea802569",
-  "_created_at": "2026-03-24T23:07:11.907734+00:00"
+  "_session_id": "229-5956ad39",
+  "_created_at": "2026-03-24T23:03:03.900214+00:00"
 }

@@ -47,6 +47,9 @@ fn infer_value_type(v: &Value) -> Type {
         Value::Point(_) | Value::Vector(_) => {
             panic!("literal() cannot infer Point/Vector type (n/quantity). Use CompiledExpr::literal(value, type) directly.")
         }
+        Value::Matrix(_) => {
+            panic!("literal() cannot infer Matrix type (m/n/quantity). Use CompiledExpr::literal(value, type) directly.")
+        }
         Value::Complex { dimension, .. } => Type::complex(Type::Scalar { dimension: *dimension }),
         Value::Orientation { .. } => Type::Orientation(3),
         Value::Range { lower, upper, .. } => {
