@@ -628,7 +628,15 @@ fn eval_binop(op: BinOp, left: &CompiledExpr, right: &CompiledExpr, ctx: &EvalCo
     }
 
     match op {
-        BinOp::Add => eval_add(&lv, &rv),
+        BinOp::Add => {
+            // Point + Point is undefined: spec 3.3.1 prohibits adding two points
+            if matches!(&left.result_type, Type::Point { .. })
+                && matches!(&right.result_type, Type::Point { .. })
+            {
+                return Value::Undef;
+            }
+            eval_add(&lv, &rv)
+        }
         BinOp::Sub => eval_sub(&lv, &rv),
         BinOp::Mul => eval_mul(&lv, &rv),
         BinOp::Div => eval_div(&lv, &rv),
