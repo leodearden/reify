@@ -66,3 +66,17 @@ pub enum OutboundMessage {
     },
     Ready,
 }
+
+// --- Pure IPC functions ---
+
+/// Serialize an InboundMessage to a JSON line (with trailing newline).
+pub fn format_inbound(msg: &InboundMessage) -> String {
+    let mut s = serde_json::to_string(msg).expect("InboundMessage serialization cannot fail");
+    s.push('\n');
+    s
+}
+
+/// Parse a JSON line from the sidecar into an OutboundMessage.
+pub fn parse_outbound(line: &str) -> Result<OutboundMessage, String> {
+    serde_json::from_str(line.trim()).map_err(|e| format!("parse_outbound: {}", e))
+}

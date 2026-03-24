@@ -162,3 +162,144 @@ fn ipc_types_are_clone_debug_partialeq() {
     assert_traits::<OutboundMessage>();
     assert_traits::<MessageContext>();
 }
+
+// --- parse_outbound tests (step-5) ---
+
+#[test]
+fn parse_outbound_text_delta() {
+    let line = r#"{"type":"text_delta","id":"msg-1","content":"Hello"}"#;
+    let msg = parse_outbound(line).unwrap();
+    assert_eq!(msg, OutboundMessage::TextDelta { id: "msg-1".to_string(), content: "Hello".to_string() });
+}
+
+#[test]
+fn parse_outbound_thinking_delta() {
+    let line = r#"{"type":"thinking_delta","id":"msg-2","content":"hmm"}"#;
+    let msg = parse_outbound(line).unwrap();
+    assert_eq!(msg, OutboundMessage::ThinkingDelta { id: "msg-2".to_string(), content: "hmm".to_string() });
+}
+
+#[test]
+fn parse_outbound_tool_call() {
+    let line = r#"{"type":"tool_call","id":"msg-3","tool_name":"reify_get","tool_input":{"x":1}}"#;
+    let msg = parse_outbound(line).unwrap();
+    match msg {
+        OutboundMessage::ToolCall { id, tool_name, tool_input } => {
+            assert_eq!(id, "msg-3");
+            assert_eq!(tool_name, "reify_get");
+            assert_eq!(tool_input["x"], 1);
+        }
+        _ => panic!("Expected ToolCall"),
+    }
+}
+
+#[test]
+fn parse_outbound_tool_result() {
+    let line = r#"{"type":"tool_result","id":"msg-3","tool_name":"reify_get","result":"done"}"#;
+    let msg = parse_outbound(line).unwrap();
+    match msg {
+        OutboundMessage::ToolResult { id, tool_name, result } => {
+            assert_eq!(id, "msg-3");
+            assert_eq!(tool_name, "reify_get");
+            assert_eq!(result, json!("done"));
+        }
+        _ => panic!("Expected ToolResult"),
+    }
+}
+
+#[test]
+fn parse_outbound_done() {
+    let line = r#"{"type":"done","id":"msg-4"}"#;
+    let msg = parse_outbound(line).unwrap();
+    assert_eq!(msg, OutboundMessage::Done { id: "msg-4".to_string() });
+}
+
+#[test]
+fn parse_outbound_error() {
+    let line = r#"{"type":"error","id":"msg-5","message":"oops"}"#;
+    let msg = parse_outbound(line).unwrap();
+    assert_eq!(msg, OutboundMessage::ErrorMessage { id: "msg-5".to_string(), message: "oops".to_string() });
+}
+
+#[test]
+fn parse_outbound_ready() {
+    let line = r#"{"type":"ready"}"#;
+    let msg = parse_outbound(line).unwrap();
+    assert_eq!(msg, OutboundMessage::Ready);
+}
+
+#[test]
+fn parse_outbound_invalid_json_returns_err() {
+    let result = parse_outbound("not-json");
+    assert!(result.is_err());
+}
+
+#[test]
+fn parse_outbound_unknown_type_returns_err() {
+    let line = r#"{"type":"unknown_type","id":"x"}"#;
+    let result = parse_outbound(line);
+    assert!(result.is_err());
+}
+
+#[test]
+fn parse_outbound_missing_required_field_returns_err() {
+    // TextDelta requires 'content'
+    let line = r#"{"type":"text_delta","id":"msg-1"}"#;
+    let result = parse_outbound(line);
+    assert!(result.is_err());
+}
+
+// --- format_inbound tests (step-3) ---
+
+#[test]
+fn format_inbound_send_message_produces_json_line() {
+    let msg = InboundMessage::SendMessage {
+        id: "msg-1".to_string(),
+        text: "Hello".to_string(),
+        context: None,
+    };
+    let line = format_inbound(&msg);
+    assert!(line.ends_with('\n'), "Should end with newline");
+    let json_val: serde_json::Value = serde_json::from_str(line.trim_end()).unwrap();
+    assert_eq!(json_val["type"], "send_message");
+    assert_eq!(json_val["id"], "msg-1");
+    assert_eq!(json_val["text"], "Hello");
+}
+
+#[test]
+fn format_inbound_abort_produces_minimal_json_line() {
+    let msg = InboundMessage::Abort;
+    let line = format_inbound(&msg);
+    assert!(line.ends_with('\n'), "Should end with newline");
+    let json_val: serde_json::Value = serde_json::from_str(line.trim_end()).unwrap();
+    assert_eq!(json_val["type"], "abort");
+    // Should only have the type field
+    assert_eq!(line.trim_end(), r#"{"type":"abort"}"#);
+}
+
+#[test]
+fn format_inbound_clear_session_produces_json_line() {
+    let msg = InboundMessage::ClearSession;
+    let line = format_inbound(&msg);
+    assert!(line.ends_with('\n'), "Should end with newline");
+    let json_val: serde_json::Value = serde_json::from_str(line.trim_end()).unwrap();
+    assert_eq!(json_val["type"], "clear_session");
+    assert_eq!(line.trim_end(), r#"{"type":"clear_session"}"#);
+}
+
+#[test]
+fn format_inbound_send_message_with_context_includes_context() {
+    let msg = InboundMessage::SendMessage {
+        id: "msg-2".to_string(),
+        text: "fix".to_string(),
+        context: Some(MessageContext {
+            selected_entity: Some("box1".to_string()),
+            diagnostics: None,
+            constraints: None,
+        }),
+    };
+    let line = format_inbound(&msg);
+    assert!(line.ends_with('\n'));
+    let json_val: serde_json::Value = serde_json::from_str(line.trim_end()).unwrap();
+    assert_eq!(json_val["context"]["selected_entity"], "box1");
+}
