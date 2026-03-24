@@ -176,13 +176,14 @@ field def temp : Point3 -> Scalar { source = analytical { |p| p } }
 field def temp : Scalar -> Scalar { source = analytical { |x| x } }
 "#,
     );
-    // Should emit a diagnostic about duplicate field name
+    // Should emit a diagnostic about duplicate entity definition (covers field-vs-field collision
+    // now that fields participate in the unified entity namespace per spec §4.2.1).
     let has_dup_error = module.diagnostics.iter().any(|d| {
-        d.message.contains("duplicate field name")
+        d.message.contains("duplicate entity definition") && d.message.contains("temp")
     });
     assert!(
         has_dup_error,
-        "expected 'duplicate field name' diagnostic, got: {:?}",
+        "expected 'duplicate entity definition' diagnostic for 'temp', got: {:?}",
         module.diagnostics
     );
     // Should only compile the first field (duplicate skipped)

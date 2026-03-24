@@ -1,151 +1,149 @@
 {
-  "task_id": "227",
-  "title": "Point/Vector: unit tests",
+  "task_id": "172",
+  "title": "Fn overloading: entity overload ban",
   "files": [
-    "crates/reify-expr/tests/point_vector_eval_tests.rs",
-    "crates/reify-expr/src/lib.rs"
+    "crates/reify-compiler/src/lib.rs",
+    "crates/reify-compiler/tests/entity_overload_tests.rs"
   ],
   "modules": [
-    "crates/reify-expr",
-    "crates/reify-types"
+    "crates/reify-compiler"
   ],
-  "analysis": "Task 227 requires >=22 tests covering Point/Vector construction, all arithmetic rules from spec section 3.3.1, component access, dimensional checking, scalar-vector multiplication, P+P error, different-N error, undef propagation, and the specific Point3<Length>-Point3<Length>->Vector3<Length> case.\n\nThe existing point_vector_eval_tests.rs has 12 component-access tests from task 226. Task 225 ('affine arithmetic') is marked done but the eval_add/eval_sub/eval_mul/eval_div/eval_unop functions in lib.rs do NOT currently handle Value::Tensor \u2014 they fall through to `_ => Value::Undef`. This means the Tensor arithmetic implementation is missing and must be added alongside the tests (true TDD: write failing test, then implement).\n\nAt runtime, both Point and Vector are represented as Value::Tensor(Vec<Value>). The type distinction exists only in the Type enum (Type::Point vs Type::Vector). The evaluator's arithmetic functions (eval_add, eval_sub, etc.) operate on Values without type info, so component-wise Tensor operations are type-agnostic. The Point+Point error guard requires checking CompiledExpr.result_type in eval_binop before dispatching.\n\nThe implementation adds: (1) Tensor component-wise add/sub with length checking, (2) Scalar*Tensor and Tensor*Scalar in eval_mul, (3) Tensor/Scalar in eval_div, (4) Tensor negation in eval_unop, (5) Point+Point type guard in eval_binop. All follow strict Undef propagation: if any component op yields Undef, the entire Tensor result is Undef.",
+  "analysis": "Spec \u00a74.2.1 explicitly forbids entity definition overloading: two entity definitions (structures, occurrences, constraints, fields) sharing the same name are a compile error, regardless of type parameters. Currently, only duplicate field names are detected (pre-pass lines 1858-1877 in lib.rs via seen_field_names HashMap). Structures, occurrences, and constraints have NO duplicate name detection \u2014 duplicates silently overwrite in the template registry (last-definition-wins via HashMap::collect). The fix introduces a unified seen_entity_names tracker in the consolidated pre-pass that checks ALL entity definition types against a single namespace. Duplicates emit a two-label diagnostic (matching the existing field pattern) and are skipped from compilation. The existing seen_field_names HashMap is replaced by the unified tracker. Constraints are tracked even though their compilation is not yet implemented, to reserve names in the entity namespace for future use. The implementation follows the existing duplicate-detection pattern: pre-pass tracking with HashMap<String, (SourceSpan, entity_kind)>, diagnostic with two labels pointing to both definitions, and skip-on-duplicate to prevent cascading errors.",
   "prerequisites": [],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write 4 construction tests verifying Value::Tensor creation for Point3<Length>, Vector3<Length>, Point2<Length>, Vector2<Dimensionless>. These pass immediately since Value::Tensor already exists. Tests verify component count and values match. Add to point_vector_eval_tests.rs in a new '// --- Construction ---' section.",
+      "description": "Create entity_overload_tests.rs with test: two structures with the same name (e.g., `structure Bracket { ... }` twice) produce a 'duplicate entity definition' error diagnostic. Verify the diagnostic contains both labels and only 1 template is compiled.",
       "status": "done",
-      "commit": "PLACEHOLDER"
+      "commit": "958b93f"
     },
     {
       "id": "step-2",
-      "type": "test",
-      "description": "Write 7 failing tests for Tensor add/sub arithmetic: (1) vector3_add_vector3_componentwise, (2) vector3_sub_vector3_componentwise, (3) point3_add_vector3_returns_point, (4) vector3_add_point3_returns_point, (5) point3_sub_point3_returns_vector, (6) point3_length_sub_point3_length_gives_vector3_length (the specific spec case), (7) vector3_add_vector2_n_mismatch_returns_undef. All use CompiledExpr::binop with BinOp::Add/Sub on Tensor literals. Tests 1-6 fail because eval_add/eval_sub don't handle Tensor. Test 7 passes by accident (Undef fallthrough).",
-      "status": "pending",
-      "commit": null
+      "type": "impl",
+      "description": "In compile() pre-pass (~line 1841), add `seen_entity_names: HashMap<String, (SourceSpan, &'static str)>` and `duplicate_entity_names: HashSet<String>`. Add a Structure arm to the pre-pass match that checks against seen_entity_names, emits a two-label diagnostic on collision (with entity kind in labels), and records the name in duplicate_entity_names. In pass 2 (~line 1922), wrap the Structure arm in a `if !duplicate_entity_names.contains(name)` guard to skip duplicate compilation.",
+      "status": "done",
+      "commit": "fe0a6e6"
     },
     {
       "id": "step-3",
-      "type": "impl",
-      "description": "Add Tensor component-wise add/sub to eval_add and eval_sub in lib.rs. Pattern: match (Value::Tensor(a), Value::Tensor(b)) => check a.len()==b.len() (else Undef), zip and apply eval_add/eval_sub per component, if any component is Undef return Undef, else return Value::Tensor(results). This makes step-2 tests 1-6 pass. Test 7 (N mismatch) passes via the length check.",
-      "status": "pending",
-      "commit": null
+      "type": "test",
+      "description": "Write test: two occurrences with the same name produce a 'duplicate entity definition' error. Verify only 1 template is compiled.",
+      "status": "done",
+      "commit": "9193bb4"
     },
     {
       "id": "step-4",
-      "type": "test",
-      "description": "Write 1 failing test: point3_add_point3_returns_undef \u2014 create two Point3<Length> Tensor literals, add via BinOp::Add with result_type Type::point3(Type::length()). After step-3, Tensor+Tensor works, so P+P now returns a Tensor instead of Undef. This test fails, proving the guard is needed.",
-      "status": "pending",
-      "commit": null
+      "type": "impl",
+      "description": "Add Occurrence arm to pre-pass entity name tracking (same pattern as Structure). In pass 2 (~line 1951), add duplicate_entity_names guard for occurrence compilation.",
+      "status": "done",
+      "commit": "00e332f"
     },
     {
       "id": "step-5",
-      "type": "impl",
-      "description": "Add Point+Point type guard in eval_binop in lib.rs. Before dispatching BinOp::Add to eval_add, check if both left.result_type and right.result_type match Type::Point{..}. If so, return Value::Undef immediately. This makes step-4 test pass while preserving all other Tensor add behavior.",
-      "status": "pending",
-      "commit": null
+      "type": "test",
+      "description": "Write test: a structure and an occurrence with the same name produce a 'duplicate entity definition' error. Diagnostic labels should identify the entity kinds (e.g., 'occurrence defined here' / 'first defined as structure here'). Verify only 1 template is compiled.",
+      "status": "done",
+      "commit": "159cf86"
     },
     {
       "id": "step-6",
-      "type": "test",
-      "description": "Write 3 failing tests for scalar-vector multiplication and division: (1) scalar_mul_vector3_scales_components \u2014 Scalar(2.0,LENGTH) * Vector3<Length>(1,2,3) -> Tensor([2,4,6] with AREA dimension), (2) vector3_mul_scalar_commutative \u2014 same but reversed operand order, (3) vector3_div_scalar_divides_components \u2014 Vector3<Length>(10,20,30) / Scalar(2.0,DIMENSIONLESS) -> Tensor([5,10,15]). All fail because eval_mul/eval_div don't handle Tensor.",
-      "status": "pending",
-      "commit": null
+      "type": "impl",
+      "description": "Should already pass with the unified tracker from steps 2+4. If cross-entity collision is not detected, verify the seen_entity_names lookup uses the same key for both entity kinds. This step is a verification/fix gate.",
+      "status": "done",
+      "commit": "159cf86"
     },
     {
       "id": "step-7",
-      "type": "impl",
-      "description": "Add Scalar*Tensor, Tensor*Scalar to eval_mul and Tensor/Scalar to eval_div in lib.rs. For mul: match (Value::Tensor(components), scalar) or (scalar, Value::Tensor(components)) where scalar is Scalar/Int/Real, map each component through eval_mul(component, scalar). For div: match (Value::Tensor(components), scalar), map each component through eval_div(component, scalar). Apply strict Undef propagation. Makes step-6 tests pass.",
-      "status": "pending",
-      "commit": null
+      "type": "test",
+      "description": "Write test: a field def and a structure with the same name produce a 'duplicate entity definition' error. The first-declared entity wins regardless of kind.",
+      "status": "done",
+      "commit": "37859ba"
     },
     {
       "id": "step-8",
-      "type": "test",
-      "description": "Write 1 failing test: negate_vector3_negates_all_components \u2014 CompiledExpr::unop(UnOp::Neg, Vector3<Length>(1,2,3), Type::vec3(Type::length())). Expected: Tensor([-1,-2,-3]) with LENGTH dimension. Fails because eval_unop Neg doesn't handle Tensor.",
-      "status": "pending",
-      "commit": null
+      "type": "impl",
+      "description": "Refactor the existing field duplicate check (lines 1858-1877) to use the unified seen_entity_names tracker instead of the separate seen_field_names HashMap. Remove seen_field_names. The Field arm now inserts into seen_entity_names with kind='field' and checks against it, emitting 'duplicate entity definition' with entity-kind-aware labels on collision. Existing field-vs-field duplicate test must still pass.",
+      "status": "done",
+      "commit": "3e300d2"
     },
     {
       "id": "step-9",
-      "type": "impl",
-      "description": "Add Tensor negation to eval_unop in lib.rs. In the UnOp::Neg match arm, add: Value::Tensor(components) => map each component through negation (call eval_unop-style negation per component or inline match), strict Undef propagation. Makes step-8 test pass.",
-      "status": "pending",
-      "commit": null
+      "type": "test",
+      "description": "Write test: a constraint def and a structure with the same name produce a 'duplicate entity definition' error.",
+      "status": "done",
+      "commit": "730c6bf"
     },
     {
       "id": "step-10",
+      "type": "impl",
+      "description": "Add Constraint arm to pre-pass entity name tracking. Constraints are not compiled yet (line 1962-1963 is a no-op) but their names are now reserved in the entity namespace to prevent collisions.",
+      "status": "done",
+      "commit": "48ed621"
+    },
+    {
+      "id": "step-11",
       "type": "test",
-      "description": "Write 4 tests for dimension checking and Undef propagation: (1) vector3_add_different_dimension_returns_undef \u2014 Vector3<Length> + Vector3<Angle> -> Undef (component-wise Scalar add checks dimension, strict propagation makes whole Tensor Undef), (2) scalar_times_vector_combines_dimensions \u2014 Scalar(2.0,MASS) * Vector3<Length>(1,2,3) -> Tensor with MASS*LENGTH dimension on each component, (3) undef_operand_in_tensor_binop_propagates \u2014 Undef + Vector3 -> Undef (handled by existing strict propagation in eval_binop), (4) tensor_with_undef_component_in_add_propagates \u2014 Vector3 with one Undef component + Vector3 -> Undef (strict propagation in Tensor add). All should pass with existing implementation from prior steps.",
-      "status": "pending",
-      "commit": null
+      "description": "Write test: two structures with the same name but different type parameters (e.g., `structure Box<T> { ... }` and `structure Box<T, U> { ... }`) still produce a 'duplicate entity definition' error. Confirms name comparison ignores type params per spec \u00a74.2.1.",
+      "status": "done",
+      "commit": "e2306ac"
+    },
+    {
+      "id": "step-12",
+      "type": "test",
+      "description": "Write regression/sanity test: unique entity names across all types (structure A, occurrence B, field C, constraint D) compile without entity-duplicate errors. Ensures the check does not false-positive on distinct names.",
+      "status": "done",
+      "commit": "5fef1f0"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Tensor arithmetic is value-level, not type-level",
-      "rationale": "eval_add/sub/mul/div operate on Values without type information. At runtime, both Point and Vector are Value::Tensor(Vec<Value>). Component-wise operations are type-agnostic. This keeps the evaluator simple and aligns with the existing scalar arithmetic pattern."
+      "decision": "Unified entity namespace across all four entity types (structure, occurrence, constraint, field)",
+      "rationale": "Spec \u00a74.2.1 explicitly lists all four as sharing the entity namespace: 'Two entity definitions (structures, occurrences, constraints, fields) with the same name... are an error.' A structure named Foo and a field named Foo must collide."
     },
     {
-      "decision": "Point+Point guard uses CompiledExpr.result_type in eval_binop",
-      "rationale": "The only place where Point vs Vector distinction matters at eval time is the P+P prohibition. Since eval_binop receives full CompiledExpr (which has result_type: Type), we check types there before dispatching to eval_add. This is a surgical check that doesn't complicate the arithmetic functions."
+      "decision": "Detection in the consolidated pre-pass rather than post-compilation",
+      "rationale": "The pre-pass already detects duplicate field names and is the earliest point where all declarations are visited. Detecting in pre-pass enables skipping compilation of duplicates, avoiding cascading errors from invalid state. Matches existing field duplicate detection pattern."
     },
     {
-      "decision": "Strict Undef propagation for Tensor operations",
-      "rationale": "If any component operation returns Undef, the entire Tensor result is Undef. This follows the existing strict propagation pattern (eval_binop returns Undef if either operand is Undef, eval_sum returns Undef if any item is Undef). Dimension mismatch within components naturally produces Undef through the existing Scalar dimension check."
+      "decision": "Replace seen_field_names with unified seen_entity_names tracker",
+      "rationale": "Having two separate trackers (one for fields, one for entities) would miss cross-type collisions (field vs structure). A single HashMap<String, (SourceSpan, &str)> keyed by name, storing the first span and entity kind, handles all cases uniformly."
     },
     {
-      "decision": "Scalar*Tensor detects scalar-like values by matching Value variants",
-      "rationale": "Rather than introducing a helper method, eval_mul matches (Value::Tensor, Value::Scalar/Int/Real) and the reverse. This is consistent with how eval_mul already handles Scalar*Int and Scalar*Real cases. The per-component mul reuses the existing eval_mul function recursively."
+      "decision": "Error message format: 'duplicate entity definition <name>' with entity-kind-aware labels",
+      "rationale": "The existing field diagnostic says 'duplicate field name'. The unified message uses 'duplicate entity definition' to cover cross-type collisions, with labels like 'occurrence defined here' and 'first defined as structure here' to clarify which entity kinds are involved."
     },
     {
-      "decision": "N-mismatch check uses Vec length comparison",
-      "rationale": "Different-N Tensors have different Vec lengths at runtime. Checking a.len() != b.len() in the Tensor add/sub match arm is simple, correct, and produces Undef consistently with other error cases."
+      "decision": "Track constraint names even though constraint compilation is not yet implemented",
+      "rationale": "The spec includes constraints in the entity namespace. Reserving names now prevents future breakage when constraint compilation is added. The pre-pass tracking cost is negligible."
     },
     {
-      "decision": "Tests extend existing point_vector_eval_tests.rs rather than creating a new file",
-      "rationale": "The existing file has 12 component-access tests and established patterns (imports, helpers). Adding arithmetic tests in clearly labeled sections keeps related tests together and avoids import duplication."
+      "decision": "Name-only comparison (ignore type parameters) for entity duplicate detection",
+      "rationale": "Per spec \u00a74.2.1 and the task description: 'regardless of type parameters'. Entity overloading is forbidden precisely because type-param-based dispatch is ambiguous under partial determinacy. This is simpler than function signature comparison which includes param types."
     }
   ],
   "reuse": [
     {
-      "what": "Value::length(f64) and Value::angle(f64) constructors",
-      "where": "crates/reify-types/src/value.rs",
-      "how": "Use these helpers to construct dimensioned Scalar values for Tensor components in test literals, avoiding manual DimensionVector construction."
+      "what": "Field duplicate detection pattern (two-label diagnostic, skip on duplicate)",
+      "where": "crates/reify-compiler/src/lib.rs lines 1858-1877",
+      "how": "Generalize the existing seen_field_names HashMap to a unified seen_entity_names tracker. Reuse the two-label Diagnostic::error pattern with DiagnosticLabel::new for both 'defined here' and 'first defined here' locations."
     },
     {
-      "what": "Type::point3(), Type::vec3(), Type::point2(), Type::vec2() constructors",
-      "where": "crates/reify-types/src/ty.rs",
-      "how": "Use these shorthands for result_type annotations in CompiledExpr::binop and literal construction."
+      "what": "Consolidated pre-pass loop structure",
+      "where": "crates/reify-compiler/src/lib.rs lines 1843-1882",
+      "how": "Add new match arms for Structure, Occurrence, and Constraint in the existing pre-pass match dispatch. The loop already has a wildcard arm for these types (line 1879-1880) that gets replaced with explicit handling."
     },
     {
-      "what": "CompiledExpr::literal(), CompiledExpr::binop(), CompiledExpr::unop()",
-      "where": "crates/reify-types/src/expr.rs",
-      "how": "Use the existing expression builders to construct test expressions. binop takes (BinOp, left, right, result_type) and unop takes (UnOp, operand, result_type)."
+      "what": "Test infrastructure pattern from fn_overload_tests.rs",
+      "where": "crates/reify-compiler/tests/fn_overload_tests.rs",
+      "how": "Use the same parse \u2192 compile \u2192 filter diagnostics by Severity::Error \u2192 assert pattern. Use reify_syntax::parse() with ModulePath::single() and reify_compiler::compile()."
     },
     {
-      "what": "EvalContext::simple(&ValueMap) pattern",
-      "where": "crates/reify-expr/src/lib.rs",
-      "how": "All tests use this pattern for evaluation context with no user-defined functions, matching the existing 12 component-access tests."
-    },
-    {
-      "what": "Existing eval_add Scalar dimension checking",
-      "where": "crates/reify-expr/src/lib.rs lines 702-720",
-      "how": "Component-wise Tensor add/sub reuses eval_add/eval_sub per component. Dimension mismatches between Vector<Length> and Vector<Angle> are caught by the existing Scalar(ad != bd) check, returning Undef per component, which triggers strict Tensor-level Undef propagation."
-    },
-    {
-      "what": "Existing Undef propagation in eval_binop",
-      "where": "crates/reify-expr/src/lib.rs lines 625-628",
-      "how": "The existing 'if lv.is_undef() || rv.is_undef() { return Value::Undef }' guard handles Undef operand propagation for Tensor binops without any new code."
-    },
-    {
-      "what": "DimensionVector::mul() and DimensionVector::div()",
-      "where": "crates/reify-types/src/dimension.rs",
-      "how": "Scalar*Tensor dimension combination is handled automatically: eval_mul on (Scalar{dim_a}, Scalar{dim_b}) uses dim_a.mul(dim_b) to combine exponents. No new dimension logic needed."
+      "what": "Pass 2 skip logic via HashSet",
+      "where": "Analogous to field skip at line 1874 (field_refs not pushed on duplicate)",
+      "how": "For structures/occurrences, the duplicate skip must happen in pass 2 (lines 1920-1969) since their compilation occurs there rather than in the pre-pass. Use a HashSet<String> populated in pre-pass, checked with .contains() before compile_entity() calls."
     }
   ],
-  "_session_id": "227-cadb625d",
-  "_created_at": "2026-03-24T10:24:31.825500+00:00"
+  "_session_id": "172-a87b0b5f",
+  "_created_at": "2026-03-24T10:42:07.023852+00:00"
 }

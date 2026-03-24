@@ -1838,7 +1838,10 @@ pub fn compile(
     let mut fn_refs: Vec<&reify_syntax::FnDef> = Vec::new();
     let mut trait_refs: Vec<&reify_syntax::TraitDecl> = Vec::new();
     let mut field_refs: Vec<&reify_syntax::FieldDef> = Vec::new();
-    let mut seen_field_names: HashMap<String, SourceSpan> = HashMap::new();
+    // Unified entity namespace tracker (spec §4.2.1): structures, occurrences,
+    // constraints, and fields all share the entity name space.
+    // Maps name → (first_span, first_kind_label).
+    let mut seen_entity_names: HashMap<String, (SourceSpan, &'static str)> = HashMap::new();
 
     for decl in &parsed.declarations {
         match decl {
@@ -1855,28 +1858,92 @@ pub fn compile(
                 trait_refs.push(trait_decl);
             }
             reify_syntax::Declaration::Field(field_def) => {
-                if let Some(first_span) = seen_field_names.get(&field_def.name) {
-                    // Duplicate field name — emit error and skip
+                if let Some((first_span, first_kind)) = seen_entity_names.get(&field_def.name) {
+                    // Duplicate entity name — emit error and skip
                     diagnostics.push(
                         Diagnostic::error(format!(
-                            "duplicate field name '{}'",
+                            "duplicate entity definition '{}'",
                             field_def.name
                         ))
                         .with_label(DiagnosticLabel::new(
                             field_def.span,
-                            "duplicate defined here",
+                            "field defined here",
                         ))
                         .with_label(DiagnosticLabel::new(
                             *first_span,
-                            "first defined here",
+                            format!("first defined as {} here", first_kind),
                         )),
                     );
                 } else {
-                    seen_field_names.insert(field_def.name.clone(), field_def.span);
+                    seen_entity_names.insert(field_def.name.clone(), (field_def.span, "field"));
                     field_refs.push(field_def);
                 }
             }
-            // Structure, Occurrence, Import, Purpose handled in pass 2 / purpose pass
+            reify_syntax::Declaration::Structure(structure) => {
+                if let Some((first_span, first_kind)) = seen_entity_names.get(&structure.name) {
+                    // Duplicate entity name — emit error; pass 2 will skip compilation.
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "duplicate entity definition '{}'",
+                            structure.name
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            structure.span,
+                            "structure defined here",
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            *first_span,
+                            format!("first defined as {} here", first_kind),
+                        )),
+                    );
+                } else {
+                    seen_entity_names.insert(structure.name.clone(), (structure.span, "structure"));
+                }
+            }
+            reify_syntax::Declaration::Occurrence(occurrence) => {
+                if let Some((first_span, first_kind)) = seen_entity_names.get(&occurrence.name) {
+                    // Duplicate entity name — emit error; pass 2 will skip compilation.
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "duplicate entity definition '{}'",
+                            occurrence.name
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            occurrence.span,
+                            "occurrence defined here",
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            *first_span,
+                            format!("first defined as {} here", first_kind),
+                        )),
+                    );
+                } else {
+                    seen_entity_names.insert(occurrence.name.clone(), (occurrence.span, "occurrence"));
+                }
+            }
+            reify_syntax::Declaration::Constraint(constraint) => {
+                // Constraints reserve names in the entity namespace (spec §4.2.1)
+                // even though constraint compilation is not yet implemented.
+                if let Some((first_span, first_kind)) = seen_entity_names.get(&constraint.name) {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "duplicate entity definition '{}'",
+                            constraint.name
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            constraint.span,
+                            "constraint defined here",
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            *first_span,
+                            format!("first defined as {} here", first_kind),
+                        )),
+                    );
+                } else {
+                    seen_entity_names.insert(constraint.name.clone(), (constraint.span, "constraint"));
+                }
+            }
+            // Import, Purpose handled in pass 2 / purpose pass
             _ => {}
         }
     }
@@ -1920,9 +1987,16 @@ pub fn compile(
     for decl in &parsed.declarations {
         match decl {
             reify_syntax::Declaration::Structure(structure) => {
-                let entity_ref = EntityDefRef::from(structure);
-                let template = compile_entity(&entity_ref, EntityKind::Structure, &enum_defs, &functions, &trait_registry, &field_registry, &mut pending_bound_checks, &mut diagnostics, &templates);
-                templates.push(template);
+                // Only compile the first definition; duplicates have a different
+                // span than the one recorded in seen_entity_names.
+                let is_first_def = seen_entity_names
+                    .get(&structure.name)
+                    .is_none_or(|(first_span, _)| *first_span == structure.span);
+                if is_first_def {
+                    let entity_ref = EntityDefRef::from(structure);
+                    let template = compile_entity(&entity_ref, EntityKind::Structure, &enum_defs, &functions, &trait_registry, &field_registry, &mut pending_bound_checks, &mut diagnostics, &templates);
+                    templates.push(template);
+                }
             }
             reify_syntax::Declaration::Enum(_) => {
                 // Already collected in pre-pass above.
@@ -1949,9 +2023,16 @@ pub fn compile(
                 // Already compiled in trait pre-pass above.
             }
             reify_syntax::Declaration::Occurrence(occurrence) => {
-                let entity_ref = EntityDefRef::from(occurrence);
-                let template = compile_entity(&entity_ref, EntityKind::Occurrence, &enum_defs, &functions, &trait_registry, &field_registry, &mut pending_bound_checks, &mut diagnostics, &templates);
-                templates.push(template);
+                // Only compile the first definition; duplicates have a different
+                // span than the one recorded in seen_entity_names.
+                let is_first_def = seen_entity_names
+                    .get(&occurrence.name)
+                    .is_none_or(|(first_span, _)| *first_span == occurrence.span);
+                if is_first_def {
+                    let entity_ref = EntityDefRef::from(occurrence);
+                    let template = compile_entity(&entity_ref, EntityKind::Occurrence, &enum_defs, &functions, &trait_registry, &field_registry, &mut pending_bound_checks, &mut diagnostics, &templates);
+                    templates.push(template);
+                }
             }
             reify_syntax::Declaration::Field(_) => {
                 // Already compiled in field pre-pass above.
