@@ -1698,6 +1698,84 @@ mod tests {
         );
     }
 
+    // --- normalize() tests (step-9) ---
+
+    #[test]
+    fn normalize_3_4_0() {
+        // normalize([3,4,0]) ≈ [0.6, 0.8, 0.0]
+        let v = Value::Tensor(vec![Value::Real(3.0), Value::Real(4.0), Value::Real(0.0)]);
+        let result = eval_builtin("normalize", &[v]);
+        match result {
+            Value::Tensor(items) => {
+                assert_eq!(items.len(), 3, "normalize must return 3 components");
+                let vals: Vec<f64> = items.iter().map(|x| x.as_f64().unwrap()).collect();
+                assert!((vals[0] - 0.6).abs() < 1e-12, "x: expected 0.6, got {}", vals[0]);
+                assert!((vals[1] - 0.8).abs() < 1e-12, "y: expected 0.8, got {}", vals[1]);
+                assert!((vals[2] - 0.0).abs() < 1e-12, "z: expected 0.0, got {}", vals[2]);
+                // Components must be Real (dimensionless)
+                assert!(
+                    items.iter().all(|x| matches!(x, Value::Real(_))),
+                    "normalize must return Real components"
+                );
+            }
+            other => panic!("expected Tensor, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn normalize_zero_vector_returns_undef() {
+        let v = Value::Tensor(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]);
+        assert!(eval_builtin("normalize", &[v]).is_undef(), "normalize of zero vector should be Undef");
+    }
+
+    #[test]
+    fn normalize_dimensioned_vector_returns_real_components() {
+        // normalize([3m,4m,0m]) should return Real components (dimensionless direction)
+        let v = Value::Tensor(vec![
+            Value::Scalar { si_value: 3.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 4.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
+        ]);
+        let result = eval_builtin("normalize", &[v]);
+        match result {
+            Value::Tensor(items) => {
+                assert_eq!(items.len(), 3);
+                let vals: Vec<f64> = items.iter().map(|x| x.as_f64().unwrap()).collect();
+                assert!((vals[0] - 0.6).abs() < 1e-12, "x: expected 0.6, got {}", vals[0]);
+                assert!((vals[1] - 0.8).abs() < 1e-12, "y: expected 0.8, got {}", vals[1]);
+                assert!((vals[2] - 0.0).abs() < 1e-12, "z: expected 0.0, got {}", vals[2]);
+                assert!(
+                    items.iter().all(|x| matches!(x, Value::Real(_))),
+                    "normalize must return Real (dimensionless) components"
+                );
+            }
+            other => panic!("expected Tensor, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn normalize_non_tensor_returns_undef() {
+        assert!(
+            eval_builtin("normalize", &[Value::Real(5.0)]).is_undef(),
+            "normalize of non-Tensor should be Undef"
+        );
+    }
+
+    #[test]
+    fn normalize_single_element_tensor() {
+        // normalize([5.0]) == [1.0]
+        let v = Value::Tensor(vec![Value::Real(5.0)]);
+        let result = eval_builtin("normalize", &[v]);
+        match result {
+            Value::Tensor(items) => {
+                assert_eq!(items.len(), 1);
+                let val = items[0].as_f64().unwrap();
+                assert!((val - 1.0).abs() < 1e-12, "expected 1.0, got {}", val);
+            }
+            other => panic!("expected Tensor([1.0]), got {:?}", other),
+        }
+    }
+
     // --- magnitude() tests (step-7) ---
 
     #[test]
