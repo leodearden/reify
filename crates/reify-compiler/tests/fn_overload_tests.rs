@@ -4,6 +4,9 @@
 //! messages with candidate listing, arity disambiguation, and evaluator
 //! disambiguation of same-name/same-arity/different-type overloads.
 
+use reify_expr::{eval_expr, EvalContext};
+use reify_types::{Value, ValueMap};
+
 /// step-3: Define only fn f(x: Real)->Real, call f(3) where 3 is Int.
 /// Assert produces a "no matching overload" error that lists the candidate.
 /// Verifies: Int→Real widening is NOT used during resolution, and zero-match
@@ -214,6 +217,78 @@ structure S { let v = f(3) }
         msg.contains("f(Int) -> Real"),
         "ambiguous error should list 'f(Int) -> Real', got: {:?}",
         msg
+    );
+}
+
+/// step-11: E2E test for evaluator disambiguation.
+/// Define fn double(x: Int)->Int { x * 2 } and fn double(x: Real)->Real { x * 2.0 }.
+/// Call both in structure: let a = double(3) and let b = double(3.0).
+/// Compile (assert no errors), then evaluate and verify a==Int(6) and b==Real(6.0).
+///
+/// FAILS because the evaluator matches by name+arity only, so both double(3) and double(3.0)
+/// resolve to the FIRST 'double' function — producing wrong results.
+#[test]
+fn e2e_evaluator_disambiguates_int_vs_real_overload() {
+    let source = r#"
+fn double(x: Int) -> Int { x * 2 }
+fn double(x: Real) -> Real { x * 2.0 }
+structure S {
+    let a = double(3)
+    let b = double(3.0)
+}
+"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_e2e_double"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    // Compiler should produce no errors — exact type matching picks Int for 3, Real for 3.0
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_types::Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "expected no compile errors, got: {:?}", errors);
+
+    // Get the template
+    let template = &compiled.templates[0];
+
+    // Find value cells for 'a' and 'b'
+    let a_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "a")
+        .expect("should have 'a' value cell");
+    let b_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "b")
+        .expect("should have 'b' value cell");
+
+    let a_expr = a_cell.default_expr.as_ref().expect("'a' let should have expr");
+    let b_expr = b_cell.default_expr.as_ref().expect("'b' let should have expr");
+
+    // Evaluate with EvalContext that includes the compiled functions
+    let values = reify_types::ValueMap::new();
+    let ctx = reify_expr::EvalContext::new(&values, &compiled.functions);
+
+    let a_val = reify_expr::eval_expr(a_expr, &ctx);
+    let b_val = reify_expr::eval_expr(b_expr, &ctx);
+
+    // a = double(3) should call the Int overload → Int(6)
+    assert_eq!(
+        a_val,
+        reify_types::Value::Int(6),
+        "double(3) should return Int(6), got {:?}",
+        a_val
+    );
+
+    // b = double(3.0) should call the Real overload → Real(6.0)
+    assert_eq!(
+        b_val,
+        reify_types::Value::Real(6.0),
+        "double(3.0) should return Real(6.0), got {:?}",
+        b_val
     );
 }
 
