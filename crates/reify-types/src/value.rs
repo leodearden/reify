@@ -250,6 +250,14 @@ impl Value {
                 ContentHash::of(&buf)
             }
             Value::Range { lower, upper, lower_inclusive, upper_inclusive } => {
+                debug_assert!(
+                    lower.is_some() || !lower_inclusive,
+                    "Range invariant violated: lower_inclusive must be false when lower is None"
+                );
+                debug_assert!(
+                    upper.is_some() || !upper_inclusive,
+                    "Range invariant violated: upper_inclusive must be false when upper is None"
+                );
                 // tag=17; flags then optional bounds
                 let mut h = ContentHash::of(&[17, *lower_inclusive as u8, *upper_inclusive as u8]);
                 match lower {
@@ -318,7 +326,25 @@ impl PartialEq for Value {
             (
                 Value::Range { lower: al, upper: au, lower_inclusive: ali, upper_inclusive: aui },
                 Value::Range { lower: bl, upper: bu, lower_inclusive: bli, upper_inclusive: bui },
-            ) => al == bl && au == bu && ali == bli && aui == bui,
+            ) => {
+                debug_assert!(
+                    al.is_some() || !ali,
+                    "Range invariant violated: lower_inclusive must be false when lower is None"
+                );
+                debug_assert!(
+                    au.is_some() || !aui,
+                    "Range invariant violated: upper_inclusive must be false when upper is None"
+                );
+                debug_assert!(
+                    bl.is_some() || !bli,
+                    "Range invariant violated: lower_inclusive must be false when lower is None"
+                );
+                debug_assert!(
+                    bu.is_some() || !bui,
+                    "Range invariant violated: upper_inclusive must be false when upper is None"
+                );
+                al == bl && au == bu && ali == bli && aui == bui
+            }
             (Value::Undef, Value::Undef) => true,
             _ => false,
         }
@@ -433,6 +459,22 @@ impl Ord for Value {
                 Value::Range { lower: al, upper: au, lower_inclusive: ali, upper_inclusive: aui },
                 Value::Range { lower: bl, upper: bu, lower_inclusive: bli, upper_inclusive: bui },
             ) => {
+                debug_assert!(
+                    al.is_some() || !ali,
+                    "Range invariant violated: lower_inclusive must be false when lower is None"
+                );
+                debug_assert!(
+                    au.is_some() || !aui,
+                    "Range invariant violated: upper_inclusive must be false when upper is None"
+                );
+                debug_assert!(
+                    bl.is_some() || !bli,
+                    "Range invariant violated: lower_inclusive must be false when lower is None"
+                );
+                debug_assert!(
+                    bu.is_some() || !bui,
+                    "Range invariant violated: upper_inclusive must be false when upper is None"
+                );
                 ali.cmp(bli)
                     .then_with(|| al.cmp(bl))
                     .then_with(|| aui.cmp(bui))
@@ -549,6 +591,14 @@ impl std::fmt::Display for Value {
                 write!(f, "[{}, {}, {}, {}]q", fmt_f64(*w), fmt_f64(*x), fmt_f64(*y), fmt_f64(*z))
             }
             Value::Range { lower, upper, lower_inclusive, upper_inclusive } => {
+                debug_assert!(
+                    lower.is_some() || !lower_inclusive,
+                    "Range invariant violated: lower_inclusive must be false when lower is None"
+                );
+                debug_assert!(
+                    upper.is_some() || !upper_inclusive,
+                    "Range invariant violated: upper_inclusive must be false when upper is None"
+                );
                 let lb = if *lower_inclusive { '[' } else { '(' };
                 let ub = if *upper_inclusive { ']' } else { ')' };
                 let lower_str = match lower {
@@ -2296,5 +2346,90 @@ mod tests {
     fn value_range_display_both_none_with_inclusive_true() {
         let r = Value::range(None, None, true, true);
         assert_eq!(format!("{}", r), "(-inf..inf)");
+    }
+
+    // ── Range invariant enforcement tests (step-9) ───────────────────────────
+    // These tests bypass Value::range() factory and directly construct Value::Range
+    // with an invariant violation (lower/upper_inclusive=true when bound is None).
+    // Each impl (content_hash, PartialEq, Ord, Display) must panic via debug_assert!.
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "Range invariant violated")]
+    fn value_range_invariant_bypass_lower_none_inclusive_content_hash() {
+        let r = Value::Range {
+            lower: None,
+            lower_inclusive: true,
+            upper: Some(Box::new(Value::Int(10))),
+            upper_inclusive: false,
+        };
+        let _ = r.content_hash();
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "Range invariant violated")]
+    fn value_range_invariant_bypass_lower_none_inclusive_eq() {
+        let bad = Value::Range {
+            lower: None,
+            lower_inclusive: true,
+            upper: Some(Box::new(Value::Int(10))),
+            upper_inclusive: false,
+        };
+        let good = Value::range(None, Some(Value::Int(10)), false, false);
+        let _ = bad == good;
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "Range invariant violated")]
+    fn value_range_invariant_bypass_lower_none_inclusive_cmp() {
+        let bad = Value::Range {
+            lower: None,
+            lower_inclusive: true,
+            upper: Some(Box::new(Value::Int(10))),
+            upper_inclusive: false,
+        };
+        let good = Value::range(None, Some(Value::Int(10)), false, false);
+        let _ = bad.cmp(&good);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "Range invariant violated")]
+    fn value_range_invariant_bypass_lower_none_inclusive_display() {
+        let r = Value::Range {
+            lower: None,
+            lower_inclusive: true,
+            upper: Some(Box::new(Value::Int(10))),
+            upper_inclusive: false,
+        };
+        let _ = format!("{}", r);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "Range invariant violated")]
+    fn value_range_invariant_bypass_upper_none_inclusive_content_hash() {
+        let r = Value::Range {
+            lower: Some(Box::new(Value::Int(0))),
+            lower_inclusive: true,
+            upper: None,
+            upper_inclusive: true,
+        };
+        let _ = r.content_hash();
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "Range invariant violated")]
+    fn value_range_invariant_bypass_upper_none_inclusive_display() {
+        let r = Value::Range {
+            lower: Some(Box::new(Value::Int(0))),
+            lower_inclusive: true,
+            upper: None,
+            upper_inclusive: true,
+        };
+        let _ = format!("{}", r);
     }
 }
