@@ -408,6 +408,80 @@ pub fn bracket_compiled_module() -> CompiledModule {
         .build()
 }
 
+/// Create a `CompiledModule` with a `Beam` structure with multiple dimensional and labeled constraints.
+///
+/// Structure `Beam`:
+///   - `param width: Scalar(LENGTH) = 50mm`
+///   - `param height: Scalar(LENGTH) = 100mm`
+///   - range constraints on width: `width > 10mm` and `width < 500mm`
+///   - range constraints on height: `height > 10mm` and `height < 1000mm`
+///   - ratio constraint: `height > 2 * width` (labeled "slender")
+///
+/// Used to test constraint checking with dimensional and labeled constraints.
+pub fn constrained_structure_module() -> CompiledModule {
+    use reify_types::CompiledExpr;
+
+    let e = "Beam";
+
+    let width_ref = || CompiledExpr::value_ref(crate::vcid(e, "width"), Type::length());
+    let height_ref = || CompiledExpr::value_ref(crate::vcid(e, "height"), Type::length());
+    let mm_lit = |v: f64| CompiledExpr::literal(crate::mm(v), Type::length());
+
+    // Range constraints for width [10mm, 500mm] using helper, starting at index 0
+    let width_range = crate::builders::range_constraint(
+        e,
+        "width",
+        Type::length(),
+        mm_lit(10.0),
+        mm_lit(500.0),
+    );
+
+    // Range constraints for height [10mm, 1000mm], starting at index 2
+    let height_range_min = CompiledExpr::binop(
+        BinOp::Gt,
+        height_ref(),
+        mm_lit(10.0),
+        Type::Bool,
+    );
+    let height_range_max = CompiledExpr::binop(
+        BinOp::Lt,
+        height_ref(),
+        mm_lit(1000.0),
+        Type::Bool,
+    );
+
+    // Ratio constraint: height > 2 * width (labeled "slender")
+    let two_times_width = CompiledExpr::binop(
+        BinOp::Mul,
+        width_ref(),
+        CompiledExpr::literal(Value::Int(2), Type::Int),
+        Type::length(),
+    );
+    let slender_constraint = CompiledExpr::binop(
+        BinOp::Gt,
+        height_ref(),
+        two_times_width,
+        Type::Bool,
+    );
+
+    let template = TopologyTemplateBuilder::new(e)
+        .param(e, "width", Type::length(), Some(crate::builders::literal(crate::mm(50.0))))
+        .param(e, "height", Type::length(), Some(crate::builders::literal(crate::mm(100.0))))
+        // range on width (indices 0, 1)
+        .constraint(e, 0, None, width_range[0].expr.clone())
+        .constraint(e, 1, None, width_range[1].expr.clone())
+        // range on height (indices 2, 3)
+        .constraint(e, 2, None, height_range_min)
+        .constraint(e, 3, None, height_range_max)
+        // labeled ratio constraint (index 4)
+        .constraint(e, 4, Some("slender"), slender_constraint)
+        .build();
+
+    CompiledModuleBuilder::new(ModulePath::single("constrained_beam"))
+        .template(template)
+        .build()
+}
+
 /// Create a `CompiledModule` with `Rigid` and `Container<T: Rigid>` traits and conforming structures.
 ///
 /// Traits:
@@ -592,6 +666,25 @@ mod tests {
         assert!(source.contains("param width"));
         assert!(source.contains("constraint thickness > 2mm"));
         assert!(source.contains("let body = box("));
+    }
+
+    // step-15: failing test for constrained_structure_module fixture
+    #[test]
+    fn multi_constraint_fixture_structure() {
+        let module = constrained_structure_module();
+        assert_eq!(module.templates.len(), 1);
+        let beam = &module.templates[0];
+        assert_eq!(beam.name, "Beam");
+        // Beam has width and height params
+        let width = beam.value_cells.iter().find(|vc| vc.id.member == "width");
+        let height = beam.value_cells.iter().find(|vc| vc.id.member == "height");
+        assert!(width.is_some(), "Beam should have param width");
+        assert!(height.is_some(), "Beam should have param height");
+        // At least 4 constraints: range on width (2) + range on height (2)
+        assert!(beam.constraints.len() >= 4, "expected at least 4 constraints, got {}", beam.constraints.len());
+        // At least one labeled constraint
+        let labeled = beam.constraints.iter().any(|c| c.label.is_some());
+        assert!(labeled, "expected at least one labeled constraint");
     }
 
     // step-11: failing test for generic_container_module fixture
