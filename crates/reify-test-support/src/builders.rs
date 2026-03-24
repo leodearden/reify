@@ -317,6 +317,43 @@ fn infer_binop_type(op: BinOp, left: &Type, right: &Type) -> Type {
     }
 }
 
+// --- Constraint expression helpers ---
+
+/// Build a pair of range-check expressions for an entity member.
+///
+/// Returns `vec![member > min_expr, member < max_expr]` — exactly two `CompiledExpr`
+/// values, both with `result_type == Type::Bool`.  Callers wrap each expression into
+/// a `CompiledConstraint` via `TopologyTemplateBuilder::constraint(entity, idx, label, expr)`
+/// using their own chosen indices, so no `ConstraintNodeId` is ever hardcoded here.
+///
+/// This is safe to call multiple times for the same entity (e.g., once for `width`,
+/// once for `height`) because no index is allocated inside this function.
+pub fn range_constraint(
+    entity: &str,
+    member: &str,
+    cell_type: Type,
+    min_expr: CompiledExpr,
+    max_expr: CompiledExpr,
+) -> Vec<CompiledExpr> {
+    let member_ref = value_ref_typed(entity, member, cell_type);
+    vec![gt(member_ref.clone(), min_expr), lt(member_ref, max_expr)]
+}
+
+/// Build a single equality-check expression for an entity member.
+///
+/// Returns `vec![member == target_expr]` — exactly one `CompiledExpr` with
+/// `result_type == Type::Bool`.  Return type matches `range_constraint` so callers
+/// can iterate over results uniformly.
+pub fn equality_constraint(
+    entity: &str,
+    member: &str,
+    cell_type: Type,
+    target_expr: CompiledExpr,
+) -> Vec<CompiledExpr> {
+    let member_ref = value_ref_typed(entity, member, cell_type);
+    vec![eq(member_ref, target_expr)]
+}
+
 // --- Topology builders ---
 
 use std::collections::HashSet;
