@@ -305,7 +305,6 @@ async fn claude_send_message(
     let ready_notify = {
         let mut sidecar_guard = state.sidecar.lock().await;
         if sidecar_guard.is_none() {
-            use reify_gui::claude_bridge::{SidecarHandle, SidecarState};
             use std::sync::Arc;
 
             // Resolve the sidecar binary path relative to the app bundle.
@@ -316,45 +315,16 @@ async fn claude_send_message(
                 .map(|p| p.join("sidecar").join("reify-sidecar"))
                 .unwrap_or_else(|_| std::path::PathBuf::from("sidecar/reify-sidecar"));
 
-            let mut proc = tokio::process::Command::new(&sidecar_path)
-                .stdin(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::inherit())
-                .spawn()
-                .map_err(|e| format!("Failed to spawn sidecar {:?}: {}", sidecar_path, e))?;
-
-            let stdin = match proc.stdin.take() {
-                Some(s) => s,
-                None => {
-                    proc.kill().await.ok();
-                    return Err("sidecar has no stdin".to_string());
-                }
-            };
-            let stdout = match proc.stdout.take() {
-                Some(s) => s,
-                None => {
-                    proc.kill().await.ok();
-                    return Err("sidecar has no stdout".to_string());
-                }
-            };
-
             let app_for_events = app.clone();
             let engine = Arc::clone(&state.engine);
-            let reader = tokio::io::BufReader::new(stdout);
-            let sidecar_state = Arc::new(tokio::sync::Mutex::new(SidecarState::Starting));
-            let mut handle = SidecarHandle::from_parts_with_mcp(
-                stdin,
-                reader,
-                sidecar_state,
+            let handle = reify_gui::claude_bridge::spawn_sidecar_impl(
+                &sidecar_path,
                 engine,
                 move |name, payload| {
                     app_for_events.emit(&name, payload).ok();
                 },
-            );
-
-            // Store the child process in the handle for proper cleanup on kill().
-            // This replaces the old fire-and-forget tokio::spawn(proc.wait()) pattern.
-            handle.set_child(proc);
+            )
+            .await?;
 
             // Subscribe to the ready notification BEFORE storing the handle and
             // releasing the lock. This ensures we don't miss a notify_waiters()
