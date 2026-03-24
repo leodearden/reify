@@ -860,4 +860,72 @@ mod tests {
         let result = eval_builtin("mod", &[Value::Int(i64::MIN), Value::Int(-1)]);
         assert!(result.is_undef(), "mod(i64::MIN, -1) should be Undef (overflow), got {:?}", result);
     }
+
+    // --- clamp Real tests (step-3) ---
+
+    #[test]
+    fn clamp_real_within_range() {
+        assert_real_approx!(
+            eval_builtin("clamp", &[Value::Real(5.0), Value::Real(0.0), Value::Real(10.0)]),
+            5.0
+        );
+    }
+
+    #[test]
+    fn clamp_real_below_lo() {
+        assert_real_approx!(
+            eval_builtin("clamp", &[Value::Real(-3.0), Value::Real(0.0), Value::Real(10.0)]),
+            0.0
+        );
+    }
+
+    #[test]
+    fn clamp_real_above_hi() {
+        assert_real_approx!(
+            eval_builtin("clamp", &[Value::Real(15.0), Value::Real(0.0), Value::Real(10.0)]),
+            10.0
+        );
+    }
+
+    #[test]
+    fn clamp_at_lo_boundary() {
+        assert_real_approx!(
+            eval_builtin("clamp", &[Value::Real(0.0), Value::Real(0.0), Value::Real(10.0)]),
+            0.0
+        );
+    }
+
+    #[test]
+    fn clamp_at_hi_boundary() {
+        assert_real_approx!(
+            eval_builtin("clamp", &[Value::Real(10.0), Value::Real(0.0), Value::Real(10.0)]),
+            10.0
+        );
+    }
+
+    #[test]
+    fn clamp_nan_x_returns_undef() {
+        // x is NaN — explicit x.is_nan() guard
+        let result = eval_builtin("clamp", &[Value::Real(f64::NAN), Value::Real(0.0), Value::Real(10.0)]);
+        assert!(result.is_undef(), "clamp(NaN, 0, 10) should be Undef, got {:?}", result);
+    }
+
+    #[test]
+    fn clamp_nan_lo_returns_undef() {
+        let result = eval_builtin("clamp", &[Value::Real(5.0), Value::Real(f64::NAN), Value::Real(10.0)]);
+        assert!(result.is_undef(), "clamp(5, NaN, 10) should be Undef, got {:?}", result);
+    }
+
+    #[test]
+    fn clamp_nan_hi_returns_undef() {
+        let result = eval_builtin("clamp", &[Value::Real(5.0), Value::Real(0.0), Value::Real(f64::NAN)]);
+        assert!(result.is_undef(), "clamp(5, 0, NaN) should be Undef, got {:?}", result);
+    }
+
+    #[test]
+    fn clamp_inverted_range_real_returns_undef() {
+        // lo > hi is invalid
+        let result = eval_builtin("clamp", &[Value::Real(5.0), Value::Real(10.0), Value::Real(0.0)]);
+        assert!(result.is_undef(), "clamp with inverted range should be Undef, got {:?}", result);
+    }
 }
