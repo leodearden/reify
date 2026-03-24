@@ -1,0 +1,128 @@
+{
+  "task_id": "137",
+  "title": "Standalone MCP server binary: `reify mcp-server` CLI subcommand",
+  "files": [
+    "crates/reify-cli/src/main.rs",
+    "crates/reify-cli/src/mcp_context.rs",
+    "crates/reify-cli/Cargo.toml",
+    "crates/reify-cli/tests/mcp_integration.rs",
+    "crates/reify-cli/tests/fixtures/bracket.ri"
+  ],
+  "modules": [
+    "crates/reify-cli",
+    "crates/reify-mcp"
+  ],
+  "analysis": "FULLY IMPLEMENTED \u2014 All code, infrastructure, and tests for this task already exist in the worktree. The `reify mcp-server` subcommand is registered in main.rs (line 30, handler lines 266-317) with `--project-dir <dir>` flag support and optional `[file.ri]` argument. CliToolContext in mcp_context.rs (579 lines) provides a complete engine-backed implementation of ReifyToolContext using Engine directly (not EngineSession, which is a GUI-specific wrapper). It handles: (1) file loading via parse\u2192compile\u2192eval pipeline, (2) source management with dirty tracking, (3) incremental parameter editing via engine.edit_param(), (4) state preservation on failed updates, (5) navigation/selection stubs returning Ok(false)/empty for headless mode. The reify-mcp dependency is already in Cargo.toml. Six integration tests in mcp_integration.rs use the mcp_roundtrip helper (spawns real binary, sends JSON-RPC on stdin, reads responses from stdout with 10s timeout) to cover all 4 required test scenarios plus 2 extras (update_source state preservation, set_parameter accuracy). Steps below are verification-only \u2014 confirming existing implementation compiles and all tests pass.",
+  "prerequisites": [],
+  "steps": [
+    {
+      "id": "step-1",
+      "type": "test",
+      "description": "Verify integration test mcp_server_tools_list_returns_16_tools exists and passes: spawns `reify mcp-server` with bracket.ri fixture, sends initialize + tools/list JSON-RPC requests, asserts response contains exactly 16 tools",
+      "status": "done",
+      "commit": "PLACEHOLDER"
+    },
+    {
+      "id": "step-2",
+      "type": "test",
+      "description": "Verify integration test mcp_server_get_parameters_returns_bracket_params exists and passes: sends tools/call with reify_get_parameters, asserts all 5 bracket params (width, height, thickness, fillet_radius, hole_diameter) with Bracket.* cell_ids and non-empty values",
+      "status": "done",
+      "commit": "PLACEHOLDER"
+    },
+    {
+      "id": "step-3",
+      "type": "test",
+      "description": "Verify integration test mcp_server_set_parameter_changes_value exists and passes: sends tools/call with reify_set_parameter(cell_id=Bracket.width, value=100), then reify_get_parameters, asserts set_parameter returns success=true with new_value='100 m' and subsequent get_parameters confirms the change",
+      "status": "done",
+      "commit": "PLACEHOLDER"
+    },
+    {
+      "id": "step-4",
+      "type": "test",
+      "description": "Verify integration test mcp_server_language_reference_returns_content exists and passes: sends tools/call with reify_language_reference(topic=geometry), asserts non-empty content array containing geometry-related keywords (box, cylinder, geometry, Geometry)",
+      "status": "done",
+      "commit": "PLACEHOLDER"
+    },
+    {
+      "id": "step-5",
+      "type": "test",
+      "description": "Verify integration test mcp_server_set_parameter_reports_new_value_accurately exists and passes: sends tools/call with reify_set_parameter(cell_id=Bracket.width, value=200), asserts response new_value='200 m' confirming edit_param result is used for accurate reporting",
+      "status": "done",
+      "commit": "PLACEHOLDER"
+    },
+    {
+      "id": "step-6",
+      "type": "test",
+      "description": "Verify integration test mcp_server_update_source_invalid_preserves_state exists and passes: sends update_source with invalid 'enum { }' content, then get_source and get_parameters, asserts original bracket.ri content and all 5 params are preserved (state invariant: files/compiled/engine always reflect last successful state)",
+      "status": "done",
+      "commit": "PLACEHOLDER"
+    },
+    {
+      "id": "step-7",
+      "type": "impl",
+      "description": "Run full compilation check: cargo build -p reify-cli succeeds, confirming cmd_mcp_server dispatches correctly, CliToolContext implements all 15 ReifyToolContext methods, and all dependencies (reify-mcp, reify-eval, reify-constraints, reify-syntax, reify-compiler) resolve",
+      "status": "done",
+      "commit": "PLACEHOLDER"
+    }
+  ],
+  "design_decisions": [
+    {
+      "decision": "Use Engine directly instead of EngineSession for CLI context",
+      "rationale": "EngineSession (gui/src-tauri/src/engine.rs) is a GUI-specific wrapper adding source_map, file_path, last_check, and module_name tracking. CliToolContext manages its own equivalent state (files HashMap, active_file, compiled, engine) via CliState behind a Mutex, which is a better fit for the concurrent MCP request model. This avoids pulling in the GUI crate as a dependency."
+    },
+    {
+      "decision": "No geometry kernel in CLI MCP mode",
+      "rationale": "The CliToolContext initializes Engine with checker only (no DispatchPlanner/OcctKernelHandle). The export() method returns ToolError explaining geometry export is not available in headless mode. This keeps the MCP server lightweight and avoids spawning the OCCT kernel thread for sessions that primarily need parameter inspection and source editing."
+    },
+    {
+      "decision": "Mutex with poison recovery for CliToolContext state",
+      "rationale": "If a previous MCP request panics while holding the lock, the mutex becomes poisoned. Rather than cascading panics that kill the server, lock_state() calls unwrap_or_else(|p| p.into_inner()) to recover and continue operating. This matches the resilience expected of a long-running server process."
+    },
+    {
+      "decision": "State preservation on failed update_source",
+      "rationale": "When update_source receives invalid content, the parse\u2192compile\u2192eval pipeline is run BEFORE modifying state.files. On parse failure, the method returns UpdateResult{success:false} without touching state, so get_source/get_parameters continue returning the last known-good state. This is explicitly tested in mcp_server_update_source_invalid_preserves_state."
+    },
+    {
+      "decision": "Manual argument parsing instead of clap",
+      "rationale": "The entire CLI uses manual args[N] matching without a framework (no clap/structopt). The mcp-server subcommand follows the same pattern with a simple while-loop parser for --project-dir flag. This keeps dependencies minimal and is consistent with the rest of the CLI."
+    },
+    {
+      "decision": "Integration tests use process spawning with mcp_roundtrip helper",
+      "rationale": "Tests spawn the real reify binary via Command::new(env!(CARGO_BIN_EXE_reify)), send JSON-RPC on stdin, and read responses from stdout. This provides true end-to-end coverage including argument parsing, tokio runtime creation, and stdio transport. A 10-second timeout with process kill prevents CI deadlocks."
+    }
+  ],
+  "reuse": [
+    {
+      "what": "McpServer::new(context) and run_stdio()",
+      "where": "crates/reify-mcp/src/transport.rs",
+      "how": "cmd_mcp_server creates Arc<CliToolContext>, passes to McpServer::new() which auto-registers all 16 tools, then calls server.run_stdio() on a tokio runtime. Zero custom transport code needed."
+    },
+    {
+      "what": "SimpleConstraintChecker",
+      "where": "crates/reify-constraints/src/lib.rs",
+      "how": "Used in CliToolContext::load_file(), update_source(), and open_file() to create Engine instances. Zero-sized type, no configuration needed."
+    },
+    {
+      "what": "reify_syntax::parse() and reify_compiler::compile()",
+      "where": "crates/reify-syntax, crates/reify-compiler",
+      "how": "CliToolContext uses the same parse\u2192compile pipeline as parse_and_compile() in main.rs, creating ModulePath from filename and checking parsed.errors before proceeding."
+    },
+    {
+      "what": "Engine::new(), eval(), edit_param(), set_param_and_invalidate()",
+      "where": "crates/reify-eval/src/lib.rs",
+      "how": "CliToolContext creates Engine with Box<SimpleConstraintChecker> and None kernel. Uses eval() for full evaluation on load/update, edit_param() for incremental parameter changes."
+    },
+    {
+      "what": "mcp_roundtrip test helper pattern",
+      "where": "crates/reify-cli/tests/mcp_integration.rs",
+      "how": "Shared helper spawns reify mcp-server, writes JSON-RPC lines to stdin, reads JSON lines from stdout with 10s timeout. All 6 tests reuse this pattern with different request payloads."
+    },
+    {
+      "what": "bracket.ri test fixture",
+      "where": "crates/reify-cli/tests/fixtures/bracket.ri",
+      "how": "5-param structure with 3 constraints and box geometry. Used as the standard integration test fixture for all mcp_integration tests."
+    }
+  ],
+  "_session_id": "137-c2d0275c",
+  "_created_at": "2026-03-24T09:00:09.732284+00:00"
+}
