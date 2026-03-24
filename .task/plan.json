@@ -40,7 +40,7 @@
       "description": "Add (Value::Matrix(a), Value::Matrix(b)) arm to eval_add in lib.rs. Check a.len()==b.len() (row count) and a[i].len()==b[i].len() (col count per row). Map over rows/cols calling eval_add on each element. Return Undef on any mismatch or undef component. Wrap result in Value::Matrix.",
       "status": "done",
       "commit": "3c5a8ebe",
-      "note": "No new impl needed — existing Tensor+Tensor recursive arm in eval_add handles rank-2 tensors correctly."
+      "note": "No new impl needed \u2014 existing Tensor+Tensor recursive arm in eval_add handles rank-2 tensors correctly."
     },
     {
       "id": "step-3",
@@ -55,7 +55,7 @@
       "description": "Add (Value::Matrix(a), Value::Matrix(b)) arm to eval_sub in lib.rs. Same structure as eval_add arm but calling eval_sub on each element pair.",
       "status": "done",
       "commit": "3c5a8ebe",
-      "note": "No new impl needed — existing Tensor-Tensor recursive arm in eval_sub handles rank-2 tensors correctly."
+      "note": "No new impl needed \u2014 existing Tensor-Tensor recursive arm in eval_sub handles rank-2 tensors correctly."
     },
     {
       "id": "step-5",
@@ -70,7 +70,7 @@
       "description": "Add Scalar*Matrix and Matrix*Scalar arms to eval_mul in lib.rs. Pattern: (Value::Matrix(rows), scalar) | (scalar, Value::Matrix(rows)) guarded by !matches!(scalar, Value::Matrix(_) | Value::Tensor(_)). Map over rows, then over each element calling eval_mul(element, scalar). Return Undef on any undef. Wrap in Value::Matrix.",
       "status": "done",
       "commit": "3c5a8ebe",
-      "note": "No new impl needed — existing Scalar*Tensor recursive arm in eval_mul handles rank-2 tensors correctly."
+      "note": "No new impl needed \u2014 existing Scalar*Tensor recursive arm in eval_mul handles rank-2 tensors correctly."
     },
     {
       "id": "step-7",
@@ -85,7 +85,7 @@
       "description": "Add (Value::Matrix(rows), scalar) arm to eval_div in lib.rs, guarded by !matches!(scalar, Value::Matrix(_) | Value::Tensor(_)). Map over rows/elements calling eval_div(element, scalar). The existing div-by-zero check at the top of eval_div handles the zero case.",
       "status": "done",
       "commit": "3c5a8ebe",
-      "note": "No new impl needed — existing Tensor/Scalar arm in eval_div handles rank-2 tensors correctly."
+      "note": "No new impl needed \u2014 existing Tensor/Scalar arm in eval_div handles rank-2 tensors correctly."
     },
     {
       "id": "step-9",
@@ -142,6 +142,20 @@
       "description": "Handle any edge cases not covered: add empty-matrix guards (return Undef for 0-row or 0-col matrices in all eval_* functions), verify nested tensor addition works without changes. Fix any failing edge-case tests.",
       "status": "done",
       "commit": "ecd2537c"
+    },
+    {
+      "id": "step-17",
+      "type": "test",
+      "description": "Write failing test for jagged-matrix panic in Matrix*Matrix multiplication (review issue: index_out_of_bounds_panic). Test: construct a jagged A matrix where first row has 3 columns but second row has 2 columns (e.g., A=[[1,2,3],[4,5]]), multiply by a well-formed 3\u00d72 B matrix. The test must assert the result is Value::Undef (not panic). This reproduces the bug at lib.rs:925 where `a_elems[kk]` indexes without bounds checking when a_elems.len() < k for non-first rows.",
+      "status": "done",
+      "commit": "26f93942"
+    },
+    {
+      "id": "step-18",
+      "type": "impl",
+      "description": "Fix the jagged-matrix panic in the Matrix*Matrix arm of eval_mul (lib.rs ~line 925). Replace `&a_elems[kk]` with `a_elems.get(kk).unwrap_or(&Value::Undef)` so that jagged rows where a_elems.len() < k produce Value::Undef instead of panicking. This is the minimal safe-indexing fix \u2014 the Undef will propagate through eval_mul and the `prods.iter().any(|v| v.is_undef())` check on line 928 will catch it, returning Undef for the entire row and ultimately for the whole result.",
+      "status": "done",
+      "commit": "6427d30f"
     }
   ],
   "design_decisions": [
@@ -172,6 +186,10 @@
     {
       "decision": "Matrix-scalar operations placed BEFORE tensor-scalar arms in match order",
       "rationale": "In eval_mul and eval_div, the existing tensor-scalar arms use pattern guards like !matches!(scalar, Value::Tensor(_)). If Matrix is a separate variant, these guards would NOT exclude it, so Matrix*Scalar would match the Tensor arm incorrectly. The Matrix arms must appear first, or the guards must be updated to also exclude Value::Matrix."
+    },
+    {
+      "decision": "Fix jagged-matrix panic via safe indexing (.get().unwrap_or) rather than upfront validation loop",
+      "rationale": "Using a_elems.get(kk).unwrap_or(&Value::Undef) is the minimal, idiomatic fix that matches the existing pattern used for B-matrix access on line 921 (b_row_k.get(j).cloned().unwrap_or(Value::Undef)). The Undef propagates through the existing any(is_undef) checks, producing the correct result without adding a separate validation pass. This is consistent with the project norm of preferring noisy failures (Undef) over silent defaults."
     }
   ],
   "reuse": [
@@ -199,8 +217,13 @@
       "what": "Value factory methods",
       "where": "crates/reify-types/src/value.rs (Value::length, Value::angle, etc.)",
       "how": "Use existing Value::length(f64), Value::angle(f64) factories to construct test matrix elements with known dimensions."
+    },
+    {
+      "what": "Existing safe-indexing pattern for B-matrix in mat-mat multiply",
+      "where": "crates/reify-expr/src/lib.rs line 921",
+      "how": "The B-matrix access already uses b_row_k.get(j).cloned().unwrap_or(Value::Undef) for safe indexing. Apply the same pattern to the A-matrix access on line 925 for consistency."
     }
   ],
   "_session_id": "230-79297743",
-  "_created_at": "2026-03-24T20:46:32.776571+00:00"
+  "_created_at": "2026-03-24T21:06:58.634542+00:00"
 }
