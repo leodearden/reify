@@ -4836,6 +4836,33 @@ mod tests {
         );
     }
 
+    // --- Boolean function recognition tests (step-1) ---
+
+    #[test]
+    fn compile_geometry_union_recognized() {
+        assert!(is_geometry_function("union"));
+    }
+
+    #[test]
+    fn compile_geometry_intersection_recognized() {
+        assert!(is_geometry_function("intersection"));
+    }
+
+    #[test]
+    fn compile_geometry_difference_recognized() {
+        assert!(is_geometry_function("difference"));
+    }
+
+    #[test]
+    fn compile_geometry_union_all_recognized() {
+        assert!(is_geometry_function("union_all"));
+    }
+
+    #[test]
+    fn compile_geometry_intersection_all_recognized() {
+        assert!(is_geometry_function("intersection_all"));
+    }
+
     // --- Step 11: Directly test the catch-all branch in compile_geometry_call ---
 
     #[test]
