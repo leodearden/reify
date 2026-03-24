@@ -10,7 +10,7 @@
   "modules": [
     "crates/reify-test-support"
   ],
-  "analysis": "The reify-test-support crate currently has expression builders (literal, binop, comparisons, etc.), a TopologyTemplateBuilder, a CompiledModuleBuilder, fixture functions (bracket, parent_child), mock implementations (MockConstraintChecker, MockConstraintSolver, MockGeometryKernel, etc.), and value/ID constructors. Task 218 requires four categories of extensions:\n\n1. **Trait conformance test helpers**: The TopologyTemplate has `trait_bounds: Vec<String>` and `type_params: Vec<TypeParam>` fields but the builder always sets them to empty vecs. CompiledModule has `trait_defs: Vec<CompiledTrait>` but CompiledModuleBuilder always sets it to empty. We need a TraitDefBuilder for CompiledTrait, extensions to TopologyTemplateBuilder for trait_bounds/type_params, a trait_def() method on CompiledModuleBuilder, and fixture functions that combine traits + structures for conformance testing.\n\n2. **Constraint def fixtures**: Pre-built constraint expression patterns and fixture modules with various constraint configurations (dimensional, logical, multi-constraint) that tests across the codebase can reuse instead of manually constructing constraint expressions.\n\n3. **Determinacy state injection helpers**: The evaluation engine uses PersistentMap<ValueCellId, (Value, DeterminacyState)> for snapshot values. Tests currently construct these manually. A SnapshotValuesBuilder and convenience helpers (determined(), undetermined(), provisional(), auto()) will simplify setting up determinacy states for predicate testing.\n\n4. **Recursive structure fixtures**: Compiled modules with structures that have sub-components referencing the same structure type (tree nodes) or mutual recursion (A\u2192B\u2192A chains), used for testing cycle detection and recursive evaluation.",
+  "analysis": "The reify-test-support crate currently has expression builders (literal, binop, comparisons, etc.), a TopologyTemplateBuilder, a CompiledModuleBuilder, fixture functions (bracket, parent_child), mock implementations (MockConstraintChecker, MockConstraintSolver, MockGeometryKernel, etc.), and value/ID constructors. Task 218 requires four categories of extensions:\n\n1. **Trait conformance test helpers**: The TopologyTemplate has `trait_bounds: Vec<String>` and `type_params: Vec<TypeParam>` fields but the builder always sets them to empty vecs. CompiledModule has `trait_defs: Vec<CompiledTrait>` but CompiledModuleBuilder always sets it to empty. We need a TraitDefBuilder for CompiledTrait, extensions to TopologyTemplateBuilder for trait_bounds/type_params, a trait_def() method on CompiledModuleBuilder, and fixture functions that combine traits + structures for conformance testing.\n\n2. **Constraint def fixtures**: Pre-built constraint expression patterns and fixture modules with various constraint configurations (dimensional, logical, multi-constraint) that tests across the codebase can reuse instead of manually constructing constraint expressions.\n\n3. **Determinacy state injection helpers**: The evaluation engine uses PersistentMap<ValueCellId, (Value, DeterminacyState)> for snapshot values. Tests currently construct these manually. A SnapshotValuesBuilder and convenience helpers (determined(), undetermined(), provisional(), auto()) will simplify setting up determinacy states for predicate testing.\n\n4. **Recursive structure fixtures**: Compiled modules with structures that have sub-components referencing the same structure type (tree nodes) or mutual recursion (A\u2192B\u2192A chains), used for testing cycle detection and recursive evaluation.\n\n**Review fix addendum**: Two blocking issues found \u2014 (a) bare `matches!` on line 543 silently discards its bool result instead of asserting, (b) CompiledModuleBuilder::build() omits trait_defs from content_hash, causing hash collisions between modules differing only in trait definitions.",
   "prerequisites": [],
   "steps": [
     {
@@ -180,6 +180,27 @@
       "description": "Implement mutual_recursion_module() fixture in fixtures.rs: structures NodeA (param a_val: Int, sub child = NodeB) and NodeB (param b_val: Int, sub ref_back = NodeA), creating mutual recursion.",
       "status": "done",
       "commit": "6ac1b28"
+    },
+    {
+      "id": "step-25",
+      "type": "test",
+      "description": "Fix silent assertion in trait_def_builder_with_requirement test (line 543): change bare `matches!(&ct.required_members[0].kind, RequirementKind::Param(_));` to `assert!(matches!(...));` so the RequirementKind check actually asserts instead of silently discarding a bool. This is a test-only fix \u2014 no implementation code changes needed.",
+      "status": "done",
+      "commit": "5231eaf"
+    },
+    {
+      "id": "step-26",
+      "type": "test",
+      "description": "Write failing test module_builder_trait_defs_affect_content_hash: build two CompiledModules via CompiledModuleBuilder that are identical except one has a trait_def added. Assert their content_hashes differ. This test will fail because build() currently excludes trait_defs from the hash computation.",
+      "status": "done",
+      "commit": "9b5fe46"
+    },
+    {
+      "id": "step-27",
+      "type": "impl",
+      "description": "Fix CompiledModuleBuilder::build() content_hash computation (lines 786-803): add `let trait_def_hashes = self.trait_defs.iter().map(|t| t.content_hash);` and chain it into all_hashes alongside template_hashes, import_hashes, and function_hashes. This ensures modules differing only in trait_defs produce distinct hashes.",
+      "status": "done",
+      "commit": "733d5ec"
     }
   ],
   "design_decisions": [
@@ -206,6 +227,10 @@
     {
       "decision": "SnapshotValuesBuilder produces HashMap rather than PersistentMap",
       "rationale": "PersistentMap (from im crate) is an implementation detail of the evaluation engine. Test setup typically builds a HashMap which can be converted to PersistentMap at the call site. This avoids adding im as a dependency to reify-test-support."
+    },
+    {
+      "decision": "Include trait_defs in CompiledModuleBuilder content_hash computation",
+      "rationale": "The existing hash intentionally covers all module content (path, templates, imports, functions). Excluding trait_defs was an omission from step-8. Modules differing only in trait definitions must produce distinct hashes for correct change detection and caching."
     }
   ],
   "reuse": [
@@ -246,5 +271,5 @@
     }
   ],
   "_session_id": "218-d71e1d27",
-  "_created_at": "2026-03-24T07:06:37.660063+00:00"
+  "_created_at": "2026-03-24T07:27:06.006592+00:00"
 }
