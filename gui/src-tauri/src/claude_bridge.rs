@@ -159,6 +159,8 @@ pub struct SidecarHandle {
     state: Arc<Mutex<SidecarState>>,
     /// Notified when the sidecar sends the "ready" message.
     ready_notify: Arc<Notify>,
+    /// The OS child process, if started via `set_child`.
+    child: Option<tokio::process::Child>,
 }
 
 impl SidecarHandle {
@@ -277,7 +279,7 @@ impl SidecarHandle {
             .await;
         });
 
-        SidecarHandle { stdin, reader_handle, state, ready_notify }
+        SidecarHandle { stdin, reader_handle, state, ready_notify, child: None }
     }
 
     /// Get a reference to the state mutex.
@@ -315,9 +317,30 @@ impl SidecarHandle {
             .map_err(|_| format!("Timeout waiting for sidecar ready after {}ms", timeout.as_millis()))
     }
 
-    /// Kill the sidecar: abort the reader task and reset state to NotStarted.
+    /// Store the OS child process handle so it can be properly terminated on kill.
+    pub fn set_child(&mut self, child: tokio::process::Child) {
+        self.child = Some(child);
+    }
+
+    /// Returns true if a child process has been stored via `set_child`.
+    pub fn has_child(&self) -> bool {
+        self.child.is_some()
+    }
+
+    /// Kill the sidecar: terminate the OS process (if any), abort the reader task,
+    /// and reset state to NotStarted.
+    ///
+    /// The child process is SIGKILLed and then reaped (waited) to prevent zombies.
     pub async fn kill(&mut self) {
+        // 1. Terminate the OS child process first to release OS resources.
+        if let Some(mut child) = self.child.take() {
+            // Ignore errors: process may have already exited.
+            child.kill().await.ok();
+            child.wait().await.ok();
+        }
+        // 2. Abort the reader task.
         self.reader_handle.abort();
+        // 3. Mark as not started.
         *self.state.lock().await = SidecarState::NotStarted;
     }
 
