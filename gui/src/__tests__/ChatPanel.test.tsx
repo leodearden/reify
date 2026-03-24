@@ -128,6 +128,26 @@ describe('ChatPanel', () => {
     expect(screen.getByTestId('abort-button')).toBeTruthy();
   });
 
+  it('abort button visible when sessionStatus is thinking', () => {
+    const store = makeStore();
+    store.sendMessage('Hello', {});
+    const msgId = store.state.currentMessageId!;
+    store.handleOutboundMessage({ type: 'thinking_delta', id: msgId, content: 'hmm' });
+    // sessionStatus should now be 'thinking'
+    render(() => <ChatPanel store={store} />);
+    expect(screen.getByTestId('abort-button')).toBeTruthy();
+  });
+
+  it('abort button visible when sessionStatus is tool-calling', () => {
+    const store = makeStore();
+    store.sendMessage('Hello', {});
+    const msgId = store.state.currentMessageId!;
+    store.handleOutboundMessage({ type: 'tool_call', id: msgId, tool_name: 'reify_get_parameters', tool_input: {} });
+    // sessionStatus should now be 'tool-calling'
+    render(() => <ChatPanel store={store} />);
+    expect(screen.getByTestId('abort-button')).toBeTruthy();
+  });
+
   it('abort button NOT visible when sessionStatus is idle', () => {
     const store = makeStore();
     render(() => <ChatPanel store={store} />);

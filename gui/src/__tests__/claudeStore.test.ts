@@ -428,6 +428,29 @@ describe('claudeStore', () => {
       const assistant = state.messages.find((m) => m.role === 'assistant');
       expect(assistant!.responseText).toBe('');
     });
+
+    it('handles 200 text_delta events in rapid succession — single flush concatenates all', () => {
+      const { state, sendMessage, handleOutboundMessage } = makeStore();
+      sendMessage('hello', {});
+      const msgId = state.currentMessageId!;
+
+      // Send 200 deltas synchronously (high token rate)
+      const expected = Array.from({ length: 200 }, (_, i) => `t${i}`).join('');
+      for (let i = 0; i < 200; i++) {
+        handleOutboundMessage({ type: 'text_delta', id: msgId, content: `t${i}` } as OutboundMessage);
+      }
+
+      // Before rAF fires, responseText should still be empty (all buffered)
+      const assistantBefore = state.messages.find((m) => m.role === 'assistant');
+      expect(assistantBefore!.responseText).toBe('');
+
+      // Fire a single rAF — all 200 deltas should be flushed in one update
+      expect(rafCallbacks).toHaveLength(1);
+      rafCallbacks[0]();
+
+      const assistantAfter = state.messages.find((m) => m.role === 'assistant');
+      expect(assistantAfter!.responseText).toBe(expected);
+    });
   });
 
   describe('system messages', () => {

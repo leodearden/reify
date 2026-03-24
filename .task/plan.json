@@ -1,275 +1,312 @@
 {
-  "task_id": "218",
-  "title": "M9 test support: builder extensions",
+  "task_id": "142",
+  "title": "Chat panel: streaming renderer, thinking blocks, tool call cards",
   "files": [
-    "crates/reify-test-support/src/builders.rs",
-    "crates/reify-test-support/src/fixtures.rs",
-    "crates/reify-test-support/src/values.rs",
-    "crates/reify-test-support/src/lib.rs"
+    "gui/src/stores/claudeStore.ts",
+    "gui/src/panels/ChatPanel.tsx",
+    "gui/src/panels/ChatPanel.module.css",
+    "gui/src/panels/chat/MessageGroup.tsx",
+    "gui/src/panels/chat/MessageGroup.module.css",
+    "gui/src/panels/chat/StreamingText.tsx",
+    "gui/src/panels/chat/StreamingText.module.css",
+    "gui/src/panels/chat/ThinkingBlock.tsx",
+    "gui/src/panels/chat/ThinkingBlock.module.css",
+    "gui/src/panels/chat/ToolCallCard.tsx",
+    "gui/src/panels/chat/ToolCallCard.module.css",
+    "gui/src/panels/chat/AbortButton.tsx",
+    "gui/src/panels/chat/AbortButton.module.css",
+    "gui/src/panels/chat/DiffView.tsx",
+    "gui/src/panels/chat/DiffView.module.css",
+    "gui/src/panels/chat/markdown.ts",
+    "gui/src/panels/chat/SystemMessage.tsx",
+    "gui/src/panels/chat/SystemMessage.module.css",
+    "gui/src/utils/errorClassifier.ts",
+    "gui/src/utils/diff.ts",
+    "gui/sidecar/src/types.ts",
+    "gui/src/__tests__/claudeStore.test.ts",
+    "gui/src/__tests__/ChatPanel.test.tsx",
+    "gui/src/__tests__/ToolCallCard.test.tsx",
+    "gui/src/__tests__/ThinkingBlock.test.tsx",
+    "gui/src/__tests__/StreamingText.test.tsx",
+    "gui/src/__tests__/AbortButton.test.tsx"
   ],
   "modules": [
-    "crates/reify-test-support"
+    "gui/src/stores",
+    "gui/src/panels",
+    "gui/src/panels/chat",
+    "gui/src/utils",
+    "gui/src/__tests__",
+    "gui/sidecar/src"
   ],
-  "analysis": "The reify-test-support crate currently has expression builders (literal, binop, comparisons, etc.), a TopologyTemplateBuilder, a CompiledModuleBuilder, fixture functions (bracket, parent_child), mock implementations (MockConstraintChecker, MockConstraintSolver, MockGeometryKernel, etc.), and value/ID constructors. Task 218 requires four categories of extensions:\n\n1. **Trait conformance test helpers**: The TopologyTemplate has `trait_bounds: Vec<String>` and `type_params: Vec<TypeParam>` fields but the builder always sets them to empty vecs. CompiledModule has `trait_defs: Vec<CompiledTrait>` but CompiledModuleBuilder always sets it to empty. We need a TraitDefBuilder for CompiledTrait, extensions to TopologyTemplateBuilder for trait_bounds/type_params, a trait_def() method on CompiledModuleBuilder, and fixture functions that combine traits + structures for conformance testing.\n\n2. **Constraint def fixtures**: Pre-built constraint expression patterns and fixture modules with various constraint configurations (dimensional, logical, multi-constraint) that tests across the codebase can reuse instead of manually constructing constraint expressions.\n\n3. **Determinacy state injection helpers**: The evaluation engine uses PersistentMap<ValueCellId, (Value, DeterminacyState)> for snapshot values. Tests currently construct these manually. A SnapshotValuesBuilder and convenience helpers (determined(), undetermined(), provisional(), auto()) will simplify setting up determinacy states for predicate testing.\n\n4. **Recursive structure fixtures**: Compiled modules with structures that have sub-components referencing the same structure type (tree nodes) or mutual recursion (A\u2192B\u2192A chains), used for testing cycle detection and recursive evaluation.\n\n**Review fix addendum**: Two blocking issues found \u2014 (a) bare `matches!` on line 543 silently discards its bool result instead of asserting, (b) CompiledModuleBuilder::build() omits trait_defs from content_hash, causing hash collisions between modules differing only in trait definitions.",
-  "prerequisites": [],
+  "analysis": "Task 142 adds rich streaming display components to the ChatPanel. The codebase already has substantial implementation on main: claudeStore.ts provides rAF-based delta batching (60fps), FIFO tool-result matching, session status management, and abort/clear. The ChatPanel.tsx orchestrates message display with MessageGroup rendering ThinkingBlock + ToolCallCards + StreamingText in correct DOM order. ThinkingBlock shows animated pulsing dots during streaming and a collapsible section after completion. StreamingText renders markdown via renderMarkdown() with a blinking cursor. ToolCallCard has read/write icon coloring, status indicators (spinner/checkmark/X), expandable details with JSON or DiffView for source updates. AbortButton replaces SendButton when sessionStatus !== 'idle'. Tests exist across 6 test files: claudeStore.test.ts (579 lines, 50+ cases covering rAF batching, FIFO matching, status transitions, error classification), ChatPanel.test.tsx (305 lines covering MessageGroup composition, context integration, abort visibility), ToolCallCard.test.tsx (140 lines covering status states, expand/collapse, diff view), plus dedicated ThinkingBlock, StreamingText, and AbortButton tests. Gaps identified: (1) resultSummary() only handles reify_get_parameters but not reify_get_constraints — task spec says 'e.g., 2 violated constraints', (2) ChatPanel abort button tests cover 'responding'/'idle' but not 'thinking'/'tool-calling' explicitly, (3) no high-volume streaming performance test (current rAF test uses 10 deltas; task says 'rendering doesn't block at high token rates'). Plan structures TDD steps for the full feature set; steps where both test and impl exist will be verified-and-passed quickly by the executor.",
+  "prerequisites": [
+    {
+      "id": "pre-1",
+      "description": "Install GUI dependencies: cd gui && npm install (node_modules not present in worktree)",
+      "status": "done",
+      "commit": null,
+      "tests": []
+    },
+    {
+      "id": "pre-2",
+      "description": "Verify vitest runs: npx vitest run --reporter=verbose src/__tests__/claudeStore.test.ts to confirm test infrastructure works",
+      "status": "done",
+      "commit": null,
+      "tests": []
+    }
+  ],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing test for TraitDefBuilder: trait_def_builder_minimal builds a CompiledTrait with name, empty requirements/defaults/refinements, and valid content_hash",
+      "description": "Write failing tests for claudeStore delta batching: (a) buffers multiple text_delta events and flushes on rAF, (b) buffers thinking_delta events, (c) done event flushes immediately without waiting for rAF, (d) abort clears pending buffer. File: gui/src/__tests__/claudeStore.test.ts — verify 'rAF delta batching' describe block exists with these 3 cases.",
       "status": "done",
-      "commit": "e6ae70d"
+      "commit": "1fee2eeba3a18ccb34e74a7d96572affe4838fb6"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Implement TraitDefBuilder struct with new(name), is_pub(), build() methods. Builder follows the same fluent pattern as TopologyTemplateBuilder. Build computes content_hash from name + members.",
+      "description": "Implement rAF delta batching in claudeStore.ts: textBuffer/thinkingBuffer arrays, scheduleFlush() with requestAnimationFrame, cancelAndFlush() for terminal events, cancelAndClear() for abort. Verify step-1 tests pass.",
       "status": "done",
-      "commit": "e6ae70d"
+      "commit": "1fee2eeba3a18ccb34e74a7d96572affe4838fb6"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing tests for TraitDefBuilder members: trait_def_builder_with_requirement (adds RequirementKind::Param), trait_def_builder_with_default (adds DefaultKind::Constraint), trait_def_builder_with_refinement, trait_def_builder_with_type_param (adds TypeParam with bounds)",
+      "description": "Write failing tests for claudeStore session status transitions: text_delta sets 'responding', thinking_delta sets 'thinking', tool_call sets 'tool-calling', done/error/abort reset to 'idle'. File: gui/src/__tests__/claudeStore.test.ts — verify handleOutboundMessage tests exist.",
       "status": "done",
-      "commit": "5bbea3d"
+      "commit": "1fee2eeba3a18ccb34e74a7d96572affe4838fb6"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Implement TraitDefBuilder methods: requirement(name, kind), default(name, kind), refinement(name), type_param(param). Each returns Self for chaining.",
+      "description": "Implement session status transitions in claudeStore handleOutboundMessage: set sessionStatus on each event type. Verify step-3 tests pass.",
       "status": "done",
-      "commit": "5bbea3d"
+      "commit": "1fee2eeba3a18ccb34e74a7d96572affe4838fb6"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing tests for TopologyTemplateBuilder trait extensions: topology_with_trait_bound verifies template.trait_bounds contains the bound name, topology_with_type_param verifies template.type_params contains the TypeParam",
+      "description": "Write failing tests for claudeStore tool call FIFO matching: (a) tool_call adds ToolCallInfo with status='pending', (b) tool_result marks first pending tool with matching name as 'complete', (c) sequential same-tool calls resolve in order, (d) mixed tool names match correctly, (e) locally-unique IDs. File: gui/src/__tests__/claudeStore.test.ts — verify 'tool_result FIFO matching' describe block.",
       "status": "done",
-      "commit": "2ddb636"
+      "commit": "1fee2eeba3a18ccb34e74a7d96572affe4838fb6"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Add trait_bound(name: impl Into<String>) and type_param(param: TypeParam) methods to TopologyTemplateBuilder. Modify build() to use self.type_params and self.trait_bounds instead of empty vecs.",
+      "description": "Implement FIFO tool-result matching in claudeStore: tool_call pushes to toolCalls array with generated ID, tool_result finds first pending call with matching toolName. Verify step-5 tests pass.",
       "status": "done",
-      "commit": "2ddb636"
+      "commit": "1fee2eeba3a18ccb34e74a7d96572affe4838fb6"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing test for CompiledModuleBuilder trait_def method: module_builder_with_trait_def verifies module.trait_defs is populated after calling .trait_def(compiled_trait)",
+      "description": "Write failing tests for StreamingText component: (a) renders text content, (b) shows blinking cursor when streaming=true, (c) hides cursor when streaming=false, (d) bold markdown renders as <strong>, (e) code block renders as <pre><code>, (f) inline code renders as <code>, (g) empty text renders without errors. File: gui/src/__tests__/StreamingText.test.tsx.",
       "status": "done",
-      "commit": "80f73f4"
+      "commit": "1fee2eeba3a18ccb34e74a7d96572affe4838fb6"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Add trait_defs field to CompiledModuleBuilder, add trait_def(t: CompiledTrait) method, update build() to use self.trait_defs instead of Vec::new()",
+      "description": "Implement StreamingText component: createMemo for renderMarkdown(text), div with innerHTML for prose, Show for cursor span with blink animation. Plus StreamingText.module.css with prose styles, cursor animation. Verify step-7 tests pass.",
       "status": "done",
-      "commit": "80f73f4"
+      "commit": "1fee2eeba3a18ccb34e74a7d96572affe4838fb6"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write failing tests for trait conformance fixtures: rigid_trait_module_structure verifies the fixture has 1 trait (Rigid with param mass: Mass, constraint mass > 0kg) and 1 template (Bolt: Rigid with param mass)",
+      "description": "Write failing tests for ThinkingBlock component: (a) complete=false shows thinking-indicator with animated dots, (b) complete=false does NOT show text content, (c) complete=true shows thinking-block section, (d) complete=true text is collapsed by default, (e) clicking header expands to show text, (f) clicking again collapses. File: gui/src/__tests__/ThinkingBlock.test.tsx.",
       "status": "done",
-      "commit": "6abf4cf"
+      "commit": "1fee2eeba3a18ccb34e74a7d96572affe4838fb6"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Implement rigid_trait_module() fixture in fixtures.rs using TraitDefBuilder and TopologyTemplateBuilder. Creates a module with trait Rigid { param mass: Mass; constraint mass > 0kg } and structure Bolt: Rigid { param mass: Mass = 1kg }.",
+      "description": "Implement ThinkingBlock component: Show when=complete with fallback indicator (pulsing dots), collapsed section with createSignal(false) for expanded, click handler toggles. Plus ThinkingBlock.module.css with pulse animation, muted styling. Verify step-9 tests pass.",
       "status": "done",
-      "commit": "6abf4cf"
+      "commit": "1fee2eeba3a18ccb34e74a7d96572affe4838fb6"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write failing test for generic_container_module fixture: verifies module has 2 traits (Rigid, Container<T: Rigid>), 2 templates (Bolt: Rigid, Crate: Container<Bolt>), Container trait has type_param T with Rigid bound",
+      "description": "Write failing tests for ToolCallCard component: (a) renders with data-testid, (b) displays tool name, (c) spinner when pending, (d) checkmark when complete, (e) X when error, (f) click expands to show input JSON, (g) read tools have blue icon, (h) write tools have orange icon. File: gui/src/__tests__/ToolCallCard.test.tsx.",
       "status": "done",
-      "commit": "4169619"
+      "commit": "1fee2eeba3a18ccb34e74a7d96572affe4838fb6"
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "Implement generic_container_module() fixture in fixtures.rs: trait Container<T: Rigid> { param count: Int } with structures Bolt: Rigid and Crate: Container<Bolt>.",
+      "description": "Implement ToolCallCard: header with icon (data-tool-type), toolName, paramSummary, status indicator (spinner/char), expandable details with JSON. Plus ToolCallCard.module.css with icon colors, spinner animation. Verify step-11 tests pass.",
       "status": "done",
-      "commit": "4169619"
+      "commit": "1fee2eeba3a18ccb34e74a7d96572affe4838fb6"
     },
     {
       "id": "step-13",
       "type": "test",
-      "description": "Write failing tests for constraint expression helpers: range_constraint(entity, member, min_val, max_val) returns a Vec of two CompiledConstraints (member > min AND member < max), equality_constraint returns one constraint (member == value)",
+      "description": "Write failing tests for ToolCallCard DiffView integration: (a) reify_update_source when complete shows DiffView on expand, (b) DiffView receives before from toolInput and after from result, (c) non-update tools show JSON details not DiffView, (d) 'View diff' summary text visible for update_source. File: gui/src/__tests__/ToolCallCard.test.tsx — verify 'diff view for source updates' describe block.",
       "status": "done",
-      "commit": "84f022f"
+      "commit": "1fee2eeba3a18ccb34e74a7d96572affe4838fb6"
     },
     {
       "id": "step-14",
       "type": "impl",
-      "description": "Implement constraint expression helper functions in builders.rs: range_constraint(entity, member, cell_type, min_expr, max_expr) -> Vec<(u32, CompiledExpr)>, equality_constraint(entity, member, cell_type, target_expr) -> CompiledExpr. These compose existing expression builders.",
+      "description": "Implement DiffView rendering in ToolCallCard: isSourceUpdateDiff() check, extractDiffBefore/extractDiffAfter helpers, conditional DiffView vs JSON details. resultSummary returns 'View diff' for update_source. Verify step-13 tests pass.",
       "status": "done",
-      "commit": "84f022f"
+      "commit": "1fee2eeba3a18ccb34e74a7d96572affe4838fb6"
     },
     {
       "id": "step-15",
       "type": "test",
-      "description": "Write failing test for constrained_structure_module fixture: multi_constraint_fixture_structure verifies a module with structure having dimensional constraints (range), logical constraints (boolean condition), and labeled constraints",
+      "description": "Write failing tests for ToolCallCard result summaries: (a) reify_get_parameters with array result shows 'N parameters', (b) reify_get_constraints with array result shows 'N constraints' count. File: gui/src/__tests__/ToolCallCard.test.tsx — add test case for constraint summary.",
       "status": "done",
-      "commit": "80142e4"
+      "commit": "f213c99"
     },
     {
       "id": "step-16",
       "type": "impl",
-      "description": "Implement constrained_structure_module() fixture in fixtures.rs: a Beam structure with width/height params, range constraints on both, a ratio constraint (height > 2*width), and a labeled constraint. Uses constraint expression helpers from step-14.",
+      "description": "Extend resultSummary() in ToolCallCard to handle reify_get_constraints: if result is array, return `${result.length} constraints`. Verify step-15 tests pass.",
       "status": "done",
-      "commit": "80142e4"
+      "commit": "4cfee83"
     },
     {
       "id": "step-17",
       "type": "test",
-      "description": "Write failing tests for determinacy state helpers in values.rs: determined(vcid, value) returns (Value, DeterminacyState::Determined), undetermined(vcid) returns (Value::Undef, DeterminacyState::Undetermined), provisional(vcid, value) and auto_state(vcid) return the corresponding states",
+      "description": "Write failing tests for AbortButton component: (a) renders with data-testid, (b) calls onAbort on click, (c) has aria-label='Abort generation', (d) contains stop icon. File: gui/src/__tests__/AbortButton.test.tsx.",
       "status": "done",
-      "commit": "6661e02"
+      "commit": "4cfee83"
     },
     {
       "id": "step-18",
       "type": "impl",
-      "description": "Implement determinacy helper functions in values.rs: determined(value) -> (Value, DeterminacyState), undetermined() -> (Value, DeterminacyState), provisional(value) -> (Value, DeterminacyState), auto_state() -> (Value, DeterminacyState). Returns tuples matching the PersistentMap value type used in snapshot_values.",
+      "description": "Implement AbortButton: button with data-testid, aria-label, onClick calls onAbort, stop icon span. Plus AbortButton.module.css with hover-to-red transition. Verify step-17 tests pass.",
       "status": "done",
-      "commit": "6661e02"
+      "commit": "4cfee83"
     },
     {
       "id": "step-19",
       "type": "test",
-      "description": "Write failing tests for SnapshotValuesBuilder: builds a HashMap<ValueCellId, (Value, DeterminacyState)> using fluent API \u2014 .determined(id, value).undetermined(id).provisional(id, value).auto_val(id).build(). Verify correct values and states.",
+      "description": "Write failing tests for abort button visibility in ChatPanel across all session states: (a) visible when 'thinking', (b) visible when 'responding', (c) visible when 'tool-calling', (d) NOT visible when 'idle', (e) send button visible when 'idle'. File: gui/src/__tests__/ChatPanel.test.tsx — add test cases for 'thinking' and 'tool-calling' states.",
       "status": "done",
-      "commit": "ff23d06"
+      "commit": "5e2d68e"
     },
     {
       "id": "step-20",
       "type": "impl",
-      "description": "Implement SnapshotValuesBuilder in values.rs with new(), determined(id, value), undetermined(id), provisional(id, value), auto_val(id), and build() -> HashMap<ValueCellId, (Value, DeterminacyState)>. Uses the tuple helpers from step-18 internally.",
+      "description": "Verify ChatPanel conditional rendering: isActive() returns true for thinking/responding/tool-calling, Show when=isActive() renders AbortButton else SendButton. Verify step-19 tests pass.",
       "status": "done",
-      "commit": "ff23d06"
+      "commit": "5e2d68e"
     },
     {
       "id": "step-21",
       "type": "test",
-      "description": "Write failing test for recursive_tree_module fixture: verifies a module with TreeNode structure that has param value: Int, optional sub left = TreeNode, optional sub right = TreeNode. Verify sub_components reference same structure_name.",
+      "description": "Write failing tests for MessageGroup composition and ordering: (a) ThinkingBlock renders when thinkingText non-empty, (b) no ThinkingBlock when thinkingText empty, (c) ToolCallCard renders for each tool call, (d) StreamingText renders response, (e) DOM order: thinking before tool calls before streaming text. File: gui/src/__tests__/ChatPanel.test.tsx — verify MessageGroup describe block.",
       "status": "done",
-      "commit": "6ac1b28"
+      "commit": "5e2d68e"
     },
     {
       "id": "step-22",
       "type": "impl",
-      "description": "Implement recursive_tree_module() fixture in fixtures.rs: structure TreeNode with param value: Int = 0, sub left = TreeNode, sub right = TreeNode. Both sub-components reference 'TreeNode' as structure_name, creating a self-referencing topology.",
+      "description": "Implement MessageGroup: Show when=thinkingText for ThinkingBlock, For each=toolCalls for ToolCallCard, StreamingText with text/streaming props. Verify step-21 tests pass.",
       "status": "done",
-      "commit": "6ac1b28"
+      "commit": "5e2d68e"
     },
     {
       "id": "step-23",
       "type": "test",
-      "description": "Write failing test for mutual_recursion_module fixture: verifies a module with two structures (NodeA with sub child = NodeB, NodeB with sub parent_ref = NodeA) forming a mutual recursion cycle.",
+      "description": "Write failing test for full ChatPanel event sequence integration: sendMessage, thinking_delta, text_delta(s), done — verify user message rendered, response text combined, thinking block appears as collapsed, session returns to idle. File: gui/src/__tests__/ChatPanel.test.tsx — verify 'full event sequence' test.",
       "status": "done",
-      "commit": "6ac1b28"
+      "commit": "5e2d68e"
     },
     {
       "id": "step-24",
       "type": "impl",
-      "description": "Implement mutual_recursion_module() fixture in fixtures.rs: structures NodeA (param a_val: Int, sub child = NodeB) and NodeB (param b_val: Int, sub ref_back = NodeA), creating mutual recursion.",
+      "description": "Verify ChatPanel integrates all components: messages rendered via For loop, assistant messages via MessageGroup, system messages via SystemMessage, user messages inline. Verify step-23 tests pass.",
       "status": "done",
-      "commit": "6ac1b28"
+      "commit": "5e2d68e"
     },
     {
       "id": "step-25",
       "type": "test",
-      "description": "Fix silent assertion in trait_def_builder_with_requirement test (line 543): change bare `matches!(&ct.required_members[0].kind, RequirementKind::Param(_));` to `assert!(matches!(...));` so the RequirementKind check actually asserts instead of silently discarding a bool. This is a test-only fix \u2014 no implementation code changes needed.",
+      "description": "Write failing performance test: send 200 text_delta events in rapid succession, then fire rAF — verify all content is concatenated in a single flush, test completes within 500ms timeout. File: gui/src/__tests__/claudeStore.test.ts — add to 'rAF delta batching' describe block.",
       "status": "done",
-      "commit": "5231eaf"
+      "commit": "5feb3af"
     },
     {
       "id": "step-26",
-      "type": "test",
-      "description": "Write failing test module_builder_trait_defs_affect_content_hash: build two CompiledModules via CompiledModuleBuilder that are identical except one has a trait_def added. Assert their content_hashes differ. This test will fail because build() currently excludes trait_defs from the hash computation.",
-      "status": "done",
-      "commit": "9b5fe46"
-    },
-    {
-      "id": "step-27",
       "type": "impl",
-      "description": "Fix CompiledModuleBuilder::build() content_hash computation (lines 786-803): add `let trait_def_hashes = self.trait_defs.iter().map(|t| t.content_hash);` and chain it into all_hashes alongside template_hashes, import_hashes, and function_hashes. This ensures modules differing only in trait_defs produce distinct hashes.",
+      "description": "Verify rAF batching handles high token volume: buffer accumulates unbounded, single flush concatenates all. No implementation change expected — the existing rAF batching already handles this. Verify step-25 test passes.",
       "status": "done",
-      "commit": "733d5ec"
+      "commit": "5feb3af"
     }
   ],
   "design_decisions": [
     {
-      "decision": "TraitDefBuilder follows the same fluent builder pattern as TopologyTemplateBuilder and CompiledModuleBuilder",
-      "rationale": "Consistency with existing patterns in the crate reduces cognitive load. All three builders use method chaining with terminal .build()."
+      "decision": "Use requestAnimationFrame for delta batching instead of debounce/throttle",
+      "rationale": "rAF aligns with the browser's paint cycle, naturally achieving 60fps without artificial timers. Multiple deltas within one frame are concatenated and applied in a single store update, preventing excessive DOM re-renders."
     },
     {
-      "decision": "Determinacy helpers return (Value, DeterminacyState) tuples rather than wrapping in a custom struct",
-      "rationale": "The evaluation engine uses PersistentMap<ValueCellId, (Value, DeterminacyState)> directly. Matching this exact type avoids conversion boilerplate in tests. A SnapshotValuesBuilder provides the ergonomic layer."
+      "decision": "FIFO tool-result matching by tool name instead of by explicit tool call ID",
+      "rationale": "The sidecar protocol's tool_result only carries tool_name, not a unique call ID. FIFO matching (first pending call with matching name) correctly handles interleaved same-name calls (A, B, A → results match in order). Locally-generated IDs (msg-{ts}-tc-{idx}) provide uniqueness for React keys."
     },
     {
-      "decision": "Constraint expression helpers are free functions in builders.rs rather than methods on TopologyTemplateBuilder",
-      "rationale": "Constraint expressions are reusable across different builders and fixtures. Free functions like range_constraint() compose with the existing expression builders (gt, lt, eq, etc.) and can be used standalone for constraint checker tests."
+      "decision": "HTML-escape before markdown transforms in StreamingText",
+      "rationale": "Security-first approach: all user/LLM content has HTML entities neutralized before any tags are introduced by the markdown renderer. This prevents XSS without needing a heavy sanitizer library."
     },
     {
-      "decision": "Recursive structure fixtures use sub_component with same structure_name rather than requiring actual type resolution",
-      "rationale": "TopologyTemplate stores structure_name as a String \u2014 it doesn't resolve references at compile time. Recursive references are detected at evaluation/instantiation time, not at template construction. The fixture correctly mirrors how the compiler produces recursive templates."
+      "decision": "ThinkingBlock collapsed by default after completion",
+      "rationale": "Thinking text is internal reasoning — typically long and less important to the user than the final response. Collapsed-by-default reduces visual noise while keeping content accessible via click."
     },
     {
-      "decision": "Trait conformance fixtures model real Reify patterns (Rigid, Container<T>) rather than abstract test names",
-      "rationale": "Using domain-meaningful names makes tests self-documenting and validates that the builders can represent real-world scenarios from the Reify language spec."
+      "decision": "Abort button replaces send button position rather than appearing alongside",
+      "rationale": "Prevents accidental sends during generation. The user's muscle memory for the send button location naturally maps to 'stop what you're doing' during active generation."
     },
     {
-      "decision": "SnapshotValuesBuilder produces HashMap rather than PersistentMap",
-      "rationale": "PersistentMap (from im crate) is an implementation detail of the evaluation engine. Test setup typically builds a HashMap which can be converted to PersistentMap at the call site. This avoids adding im as a dependency to reify-test-support."
-    },
-    {
-      "decision": "Include trait_defs in CompiledModuleBuilder content_hash computation",
-      "rationale": "The existing hash intentionally covers all module content (path, templates, imports, functions). Excluding trait_defs was an omission from step-8. Modules differing only in trait definitions must produce distinct hashes for correct change detection and caching."
+      "decision": "Constraint result summary added to resultSummary() for reify_get_constraints",
+      "rationale": "Task spec explicitly mentions 'e.g., 2 violated constraints' as a result summary example. Extending the existing resultSummary() function with an additional tool name check is minimal and consistent with the existing reify_get_parameters handler."
     }
   ],
   "reuse": [
     {
-      "what": "TopologyTemplateBuilder fluent API pattern",
-      "where": "crates/reify-test-support/src/builders.rs",
-      "how": "TraitDefBuilder follows the same new() \u2192 method chaining \u2192 build() pattern with content hash computation."
+      "what": "renderMarkdown() utility",
+      "where": "gui/src/panels/chat/markdown.ts",
+      "how": "StreamingText uses createMemo(() => renderMarkdown(props.text)) to transform accumulated text to safe HTML. Already handles code blocks, bold, italic, headers, links, lists with XSS prevention."
     },
     {
-      "what": "Expression builder functions (gt, lt, eq, literal, value_ref, binop, etc.)",
-      "where": "crates/reify-test-support/src/builders.rs",
-      "how": "Constraint expression helpers compose these existing builders to create common constraint patterns (range, equality, ratio)."
+      "what": "computeUnifiedDiff() utility",
+      "where": "gui/src/utils/diff.ts",
+      "how": "DiffView component uses it to compute line-level diffs between before/after source for reify_update_source tool calls."
     },
     {
-      "what": "Value constructors (mm, deg, newton, etc.) and ID constructors (vcid, cnid)",
-      "where": "crates/reify-test-support/src/values.rs",
-      "how": "All new fixtures use these existing helpers for creating values and identifiers rather than constructing Value/ValueCellId directly."
+      "what": "classifyError() utility",
+      "where": "gui/src/utils/errorClassifier.ts",
+      "how": "claudeStore uses it in the error handler to auto-classify error messages (auth, rate-limit, network, sidecar, unknown) and generate user-friendly system messages."
     },
     {
-      "what": "CompiledModuleBuilder",
-      "where": "crates/reify-test-support/src/builders.rs",
-      "how": "New fixtures use the existing module builder extended with trait_def() method, following the same template+build pattern as bracket_compiled_module()."
+      "what": "SolidJS createStore + produce pattern",
+      "where": "gui/src/stores/claudeStore.ts",
+      "how": "Immutable updates via produce() for nested message mutations (appending text, updating tool call status). batch() groups multiple setState calls to prevent intermediate renders."
     },
     {
-      "what": "DeterminacyState and Satisfaction enums from reify-types",
-      "where": "crates/reify-types/src/value.rs",
-      "how": "Determinacy helpers wrap these existing types into convenient tuple constructors matching the snapshot_values map type."
+      "what": "CSS custom properties (design tokens)",
+      "where": "gui/src/panels/ChatPanel.module.css and all chat/*.module.css",
+      "how": "All components use --reify-* CSS custom properties for colors (--reify-text, --reify-text-muted, --reify-accent, --reify-surface0, --reify-background, --reify-blue, --reify-peach, --reify-green, --reify-red) and --reify-font-mono for code styling."
     },
     {
-      "what": "CompiledTrait, TraitRequirement, RequirementKind, TraitDefault, DefaultKind from reify-compiler",
-      "where": "crates/reify-compiler/src/lib.rs",
-      "how": "TraitDefBuilder constructs these existing types. No new types needed \u2014 only ergonomic builder wrapping."
+      "what": "Collapsible section pattern (chevron + click toggle)",
+      "where": "gui/src/panels/chat/ThinkingBlock.tsx, ToolCallCard.tsx, DiffView.tsx",
+      "how": "Consistent UX pattern: role='button' div with tabindex=0, onClick/onKeyDown handlers toggling a createSignal(false), chevron character (▶/▼) indicating state, Show when=expanded for content."
     },
     {
-      "what": "TypeParam, TraitBound, TraitRef from reify-types",
-      "where": "crates/reify-types/src/traits.rs",
-      "how": "TopologyTemplateBuilder type_param() and TraitDefBuilder type_param() use these existing types directly."
+      "what": "Sidecar message protocol types",
+      "where": "gui/sidecar/src/types.ts",
+      "how": "OutboundMessage union type defines the streaming event protocol. claudeStore imports and switches on msg.type for all 7 event types (ready, text_delta, thinking_delta, tool_call, tool_result, done, error)."
+    },
+    {
+      "what": "@solidjs/testing-library + vitest patterns",
+      "where": "gui/src/__tests__/*.test.tsx",
+      "how": "All component tests use render(() => <Component />), screen.getByTestId/queryByTestId, fireEvent.click/input. Store tests create store via factory function with vi.fn() callbacks. rAF tests mock globalThis.requestAnimationFrame."
     }
   ],
-  "_session_id": "218-d71e1d27",
-  "_created_at": "2026-03-24T07:27:06.006592+00:00"
+  "_session_id": "142-b26e400e",
+  "_created_at": "2026-03-24T08:58:49.933427+00:00"
 }
