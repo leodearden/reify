@@ -142,14 +142,14 @@
       "type": "test",
       "description": "Write test `parse_constraint_def_body_syntax_error` in constraint_def_tests.rs: parse a constraint def with a syntax error inside the body (e.g. `constraint def Bad { x >< 0 }` or similar invalid syntax that produces an ERROR tree-sitter node inside the body). Assert that errors is non-empty and contains a ParseError with message matching 'syntax error in constraint body'. This tests the [reviewer_robustness] silent_error_suppression fix \u2014 currently the `_ => {}` catch-all silently swallows ERROR nodes.",
       "status": "done",
-      "commit": "PLACEHOLDER_17_UPDATE"
+      "commit": "2c867aa"
     },
     {
       "id": "step-16",
       "type": "impl",
       "description": "Add explicit `\"ERROR\"` arm to the body iteration match in `lower_constraint_def` (ts_parser.rs line ~633), replacing the silent `_ => {}` catch-all for ERROR nodes. Push a ParseError with message `format!(\"syntax error in constraint body: {}\", self.node_text(child))` and span `self.span(child)`, matching the pattern used in `lower_member` (line 809) and `lower_source_file` (line 158). The `_ => {}` arm remains for non-ERROR unknown node kinds (e.g. punctuation like `{`, `}`).",
       "status": "done",
-      "commit": "PLACEHOLDER_16_18"
+      "commit": "2c867aa"
     },
     {
       "id": "step-17",
@@ -163,7 +163,7 @@
       "type": "impl",
       "description": "Guard the `\"param_declaration\"` arm in `lower_constraint_def` body iteration (ts_parser.rs line ~617-620) with `check_and_lower!` macro, matching the pattern used in `lower_member` (line 786). Replace the bare `if let Some(p) = self.lower_param(child) { params.push(p); }` with: `check_and_lower!(self, child, \"constraint param\", self.lower_param(child).map(|p| { params.push(p); Some(()) }));` \u2014 this checks `child.is_error() || child.has_error()` and emits a diagnostic before skipping the node.",
       "status": "done",
-      "commit": "PLACEHOLDER_16_18"
+      "commit": "2c867aa"
     }
   ],
   "design_decisions": [
