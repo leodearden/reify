@@ -2,12 +2,23 @@
   "task_id": "224",
   "title": "Point/Vector: constructors",
   "files": [
-    "crates/reify-stdlib/src/lib.rs"
+    "crates/reify-types/src/value.rs",
+    "crates/reify-stdlib/src/lib.rs",
+    "crates/reify-expr/src/lib.rs",
+    "crates/reify-expr/tests/point_vector_eval_tests.rs",
+    "crates/reify-constraints/src/classifier.rs",
+    "crates/reify-test-support/src/builders.rs",
+    "crates/reify-lsp/src/analysis.rs"
   ],
   "modules": [
-    "crates/reify-stdlib"
+    "crates/reify-types",
+    "crates/reify-stdlib",
+    "crates/reify-expr",
+    "crates/reify-constraints",
+    "crates/reify-test-support",
+    "crates/reify-lsp"
   ],
-  "analysis": "Task 224 adds point2/point3/vec2/vec3 stdlib constructor functions that produce Value::Point and Value::Vector values. These depend on task 223 which adds Value::Point(Vec<Value>) and Value::Vector(Vec<Value>) to the Value enum.\n\nThe stdlib dispatches via the eval_builtin match statement in reify-stdlib/src/lib.rs. Each constructor validates that: (1) the arg count matches the expected dimensionality (2 or 3), (2) all args are numeric values (Scalar, Real, or Int), (3) all args share the same physical dimension. On success, the original arg values are cloned into the Point/Vector wrapper. On failure, Value::Undef is returned.\n\nA shared helper function avoids duplicating the validation logic across all 4 constructors. The existing binary()/ternary() helpers handle arg-count validation but aren't ideal here since point2/vec2 need binary and point3/vec3 need ternary with different wrapping. A single helper taking expected_count and is_point flags is cleaner.\n\nThe compiler's stdlib fallback path infers result_type from the first arg's type, which will be Scalar rather than Point/Vector. This is a known limitation but out of scope for this task (compiler type inference for constructors is a separate concern). The evaluator ignores result_type when calling eval_builtin.\n\nAll tests are unit tests in the existing #[cfg(test)] module within lib.rs, following the established pattern of calling eval_builtin directly.",
+  "analysis": "Task 224 adds point2/point3/vec2/vec3 stdlib constructor functions. The initial implementation produced Value::Tensor for both points and vectors, making them runtime-indistinguishable. Review found this is a blocking semantic erasure: point2(1,2) and vec2(1,2) produce identical Value::Tensor output, violating the semantic contract implied by four distinct constructor names.\n\nThe fix adds Value::Point(Vec<Value>) and Value::Vector(Vec<Value>) as distinct enum variants in reify-types, matching the existing Type::Point/Type::Vector distinction. The construct_point_or_vector helper gains an is_point: bool parameter and produces the correct variant. tensor_components_f64 is updated to also extract from Point/Vector so existing vector operations (magnitude, normalize, cross, dot, orient) continue to work. eval_expr field access (.x/.y/.z) and arithmetic patterns are updated to handle the new variants. All match-exhaustive sites across 5 crates are updated.\n\nThe Type system already has Type::Point { n, quantity } and Type::Vector { n, quantity }. Adding Value-level distinction ensures runtime values honour the same semantics, enabling downstream code (e.g., affine transforms where points get translation and vectors don't) to distinguish them via pattern matching.",
   "prerequisites": [
     {
       "id": "pre-1",
@@ -92,41 +103,104 @@
       "id": "step-11",
       "type": "test",
       "description": "Write test: dimension_mismatch_undef \u2014 point3(Scalar(1,LENGTH), Scalar(2,MASS), Scalar(3,LENGTH)) returns Value::Undef. Same for vec3, point2, vec2 with mixed dimensions.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "5ed9dcaa"
     },
     {
       "id": "step-12",
       "type": "impl",
       "description": "Verify dimension mismatch tests pass (should be handled by construct_point_or_vector helper)",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "5ed9dcaa"
     },
     {
       "id": "step-13",
       "type": "test",
       "description": "Write test: wrong_arg_count_undef \u2014 point3 with 2 args returns Undef, point2 with 3 args returns Undef, vec3 with 0 args returns Undef, etc.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "1984f0ac"
     },
     {
       "id": "step-14",
       "type": "impl",
       "description": "Verify wrong-arg-count tests pass (should be handled by construct_point_or_vector helper)",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "1984f0ac"
     },
     {
       "id": "step-15",
       "type": "test",
       "description": "Write test: non_numeric_undef \u2014 point3(String, Scalar, Scalar) returns Undef, vec2(Bool, Bool) returns Undef",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "f4a66de8"
     },
     {
       "id": "step-16",
       "type": "impl",
       "description": "Verify non-numeric tests pass (should be handled by construct_point_or_vector helper)",
+      "status": "done",
+      "commit": "f4a66de8"
+    },
+    {
+      "id": "step-17",
+      "type": "test",
+      "description": "Write failing test: point_vector_semantic_distinction \u2014 assert point2(1,2) produces Value::Point, vec2(1,2) produces Value::Vector, and point2(a,b) != vec2(a,b) with identical args. Also test Value::Point and Value::Vector content_hash differ, Display output differs.",
+      "status": "done",
+      "commit": "8c88aa4f"
+    },
+    {
+      "id": "step-18",
+      "type": "impl",
+      "description": "Add Value::Point(Vec<Value>) and Value::Vector(Vec<Value>) variants to the Value enum in value.rs. Implement content_hash (tags 18/19), PartialEq (new match arms), Ord (new type_tags 17/18, match arms), Display (point(...) / vec(...) format). Add dimension() support for Point/Vector deriving from first component.",
+      "status": "done",
+      "commit": "eeb23555"
+    },
+    {
+      "id": "step-19",
+      "type": "impl",
+      "description": "Update construct_point_or_vector to accept is_point: bool and return Value::Point or Value::Vector. Update eval_builtin match arms: point2/point3 pass is_point=true, vec2/vec3 pass is_point=false. Remove stale comment about Value::Tensor.",
+      "status": "done",
+      "commit": "4d62fbf7"
+    },
+    {
+      "id": "step-20",
+      "type": "impl",
+      "description": "Update tensor_components_f64 in stdlib to also extract from Value::Point and Value::Vector, so magnitude/normalize/cross/dot/orient operations work on points and vectors.",
+      "status": "done",
+      "commit": "4d62fbf7"
+    },
+    {
+      "id": "step-21",
+      "type": "impl",
+      "description": "Update existing stdlib tests (steps 1-16) to match on Value::Point for point2/point3 and Value::Vector for vec2/vec3 instead of Value::Tensor.",
+      "status": "done",
+      "commit": "4d62fbf7"
+    },
+    {
+      "id": "step-22",
+      "type": "impl",
+      "description": "Update eval_expr.rs: field access (.x/.y/.z) to also match Value::Point(c) | Value::Vector(c); arithmetic Add/Sub for tensors to also handle Point/Vector; scalar*tensor mul to handle Point/Vector; neg_value to handle Point/Vector. Preserve variant type through operations (Point op stays Point, Vector op stays Vector).",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-23",
+      "type": "impl",
+      "description": "Update remaining crate files: classifier.rs (add Value::Point/Vector to non-numeric pattern), builders.rs infer_value_type (panic with helpful message like Tensor), analysis.rs (add Point/Vector to completion/hover match arms).",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-24",
+      "type": "test",
+      "description": "Update point_vector_eval_tests.rs: change Value::Tensor construction/assertions to Value::Point for point types and Value::Vector for vector types. Verify all eval tests pass with the new variants.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-25",
+      "type": "test",
+      "description": "Run full cargo test across all crates to verify no regressions from the new Value variants. Fix any remaining exhaustive-match compiler errors.",
       "status": "pending",
       "commit": null
     }
@@ -151,6 +225,18 @@
     {
       "decision": "Tests go in the existing #[cfg(test)] module inside lib.rs, not separate test files",
       "rationale": "All existing stdlib tests (abs, sqrt, min, max, cross, dot, magnitude, orient, etc.) are in the inline #[cfg(test)] module. Following this convention keeps tests co-located with the implementation."
+    },
+    {
+      "decision": "Add Value::Point(Vec<Value>) and Value::Vector(Vec<Value>) as distinct enum variants rather than tagging Value::Tensor",
+      "rationale": "The Type system already distinguishes Type::Point from Type::Vector. Adding distinct Value variants makes runtime values match this semantic distinction, enabling downstream code (affine transforms, geometric operations) to pattern-match on point vs vector. A boolean tag on Tensor would break every existing Tensor match arm. Separate variants let existing Tensor code remain untouched while Point/Vector patterns are added alongside."
+    },
+    {
+      "decision": "tensor_components_f64 accepts Point and Vector in addition to Tensor",
+      "rationale": "Existing stdlib operations (magnitude, normalize, cross, dot, orient) use tensor_components_f64 to extract numeric components. Points and vectors should support these operations, so the helper is extended to match all three container variants."
+    },
+    {
+      "decision": "Arithmetic operations preserve Point/Vector variant type through the result",
+      "rationale": "point3(1,2,3) + point3(4,5,6) should produce a Point, and vec3(1,2,3) + vec3(4,5,6) should produce a Vector. This is consistent with geometric algebra conventions and preserves semantic information through computation chains."
     }
   ],
   "reuse": [
@@ -178,8 +264,19 @@
       "what": "assert_scalar_approx macro and test conventions",
       "where": "crates/reify-stdlib/src/lib.rs:860-877",
       "how": "Tests follow the same pattern: call eval_builtin with name and args, match on result variant, assert values."
+    },
+    {
+      "what": "Existing Value trait impl patterns (content_hash, PartialEq, Ord, Display)",
+      "where": "crates/reify-types/src/value.rs:130-565",
+      "how": "New Value::Point/Vector arms follow the exact same patterns as Value::Tensor (tag-prefixed hash, same-variant equality, type_tag ordering, bracket-delimited display) with distinct tag bytes."
+    },
+    {
+      "what": "tensor_components_f64 helper",
+      "where": "crates/reify-stdlib/src/lib.rs:830-847",
+      "how": "Extended to also extract from Value::Point/Vector using or-pattern matching, so all existing vector math operations work on points/vectors without further changes."
     }
   ],
-  "_session_id": "224-fd8af9c5",
-  "_created_at": "2026-03-24T21:55:15.795550+00:00"
+  "_session_id": "224-d23dd65c",
+  "_created_at": "2026-03-24T22:19:34.015687+00:00",
+  "_schema_version": 1
 }
