@@ -437,15 +437,13 @@ fn main() {
         ])
         .on_window_event(|window, event| {
             // Gracefully shut down the sidecar when the window closes.
-            if let tauri::WindowEvent::Destroyed = event {
+            // CloseRequested fires while the runtime is still fully operational,
+            // making the async kill more reliable than Destroyed (post-teardown).
+            if let tauri::WindowEvent::CloseRequested { .. } = event {
                 let app = window.app_handle().clone();
                 tauri::async_runtime::spawn(async move {
                     let state: tauri::State<'_, AppState> = app.state();
-                    let mut sidecar = state.sidecar.lock().await;
-                    if let Some(handle) = sidecar.as_mut() {
-                        handle.kill().await;
-                    }
-                    *sidecar = None;
+                    reify_gui::claude_bridge::shutdown_sidecar(&state.sidecar).await;
                 });
             }
         })
