@@ -1,114 +1,217 @@
 {
-  "task_id": "163",
-  "title": "some/none: evaluator",
+  "task_id": "233",
+  "title": "Orientation: Type, Value, constructors",
   "files": [
-    "crates/reify-expr/src/lib.rs",
-    "crates/reify-expr/tests/option_eval_tests.rs"
+    "crates/reify-types/src/ty.rs",
+    "crates/reify-types/src/value.rs",
+    "crates/reify-types/tests/exports.rs",
+    "crates/reify-stdlib/src/lib.rs",
+    "crates/reify-lsp/src/analysis.rs",
+    "crates/reify-constraints/src/classifier.rs"
   ],
   "modules": [
-    "crates/reify-expr"
+    "crates/reify-types",
+    "crates/reify-stdlib",
+    "crates/reify-lsp",
+    "crates/reify-constraints"
   ],
-  "analysis": "Task 163 adds evaluation support for `some(expr)` and `none` expression forms in the reify-expr evaluator. Task 162 (dependency, status: done) adds `CompiledExprKind::OptionSome(Box<CompiledExpr>)` and `CompiledExprKind::OptionNone` variants to the enum in reify-types, along with constructor helpers, walk/collect_value_refs/remap_entity arms. This task adds the corresponding match arms in `eval_expr` and comprehensive tests.\n\nThe core semantics:\n- `none` evaluates to `Value::Option(None)`\n- `some(expr)` evaluates the inner expr and wraps: `Value::Option(Some(Box::new(eval(expr))))`\n- Critically, `some(undef)` produces `Value::Option(Some(Box::new(Value::Undef)))` — it does NOT propagate Undef. This preserves the three-way distinction: `Value::Undef` (error/missing), `Value::Option(None)` (intentional absence), `Value::Option(Some(Value::Undef))` (present but value undefined).\n\nThe implementation is small (2-4 lines per variant in eval_expr) but the test suite must verify the subtle Undef-wrapping semantics thoroughly. Tests follow the established pattern in crates/reify-expr/tests/ (lambda_eval_tests.rs, quantifier_eval_tests.rs, etc.).\n\nExisting infrastructure: `Value::Option(Option<Box<Value>>)` already exists with PartialEq, Ord, Display, content_hash. Test helpers `reify_test_support::values::{some_val, none_val, undef}` exist. `CompiledExpr::literal()` and `CompiledExpr::value_ref()` are available for building test expressions. Task 162 should provide `CompiledExpr::option_some()` and/or `CompiledExpr::option_none()` constructors; if not, tests can construct CompiledExpr structs directly.",
+  "analysis": "The task adds an Orientation type for representing spatial rotations via unit quaternions. The Type enum (ty.rs) gets a new Orientation(usize) tuple variant where usize is spatial dimension N (2 or 3). The Value enum (value.rs) gets a new Orientation { w, x, y, z } struct variant storing the quaternion components as f64. Five stdlib constructor functions are added to eval_builtin() in lib.rs. All constructors normalize the quaternion to unit length and return Undef for invalid inputs (NaN, Inf, zero-length). The Type enum derives Debug/Clone/PartialEq/Eq/Hash so those are automatic; Display is manual and needs a new arm. The Value enum has manual impls for PartialEq, Ord, Display, and content_hash \u2014 all need new arms. Two downstream crates (reify-lsp, reify-constraints) have exhaustive match statements on Value that will fail to compile without an Orientation arm.",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "Verify task 162 (parser/compiler) has landed: CompiledExprKind::OptionSome and OptionNone variants exist in crates/reify-types/src/expr.rs with walk/collect_value_refs/remap_entity arms and constructor helpers. If constructors are missing, they must be added before tests can be written cleanly.",
-      "status": "blocked",
-      "commit": null,
-      "tests": [],
-      "blocker_note": "Task 162 is marked done in task system but OptionSome/OptionNone variants are absent from codebase (main at 5256c4c and all branches). Escalated as esc-163-25."
+      "description": "Verify current workspace compiles and tests pass on the worktree baseline (cargo check --workspace)",
+      "status": "done",
+      "commit": "78c33d1",
+      "tests": []
     }
   ],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Create crates/reify-expr/tests/option_eval_tests.rs with 2 failing tests: (a) eval_none_produces_option_none — construct a CompiledExprKind::OptionNone expression, evaluate with eval_expr, assert result == Value::Option(None). (b) eval_none_is_not_undef — assert the result of evaluating none is not Value::Undef (verifying Option(None) != Undef at the evaluator level).",
-      "status": "done",
-      "commit": "7a85c79"
+      "description": "Write failing tests for Type::Orientation in ty.rs: variant construction with Orientation(3), Display format 'Orientation3', factory method Type::orientation(n), Eq/Hash consistency, is_numeric() returns false, as_name() returns None",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Add OptionNone match arm in eval_expr in crates/reify-expr/src/lib.rs: `CompiledExprKind::OptionNone => Value::Option(None)`. Tests from step-1 pass.",
-      "status": "done",
-      "commit": "7a85c79"
+      "description": "Add Orientation(usize) variant to Type enum, add orientation(n) factory method, add Display arm writing 'Orientation{n}'. Derives (Debug, Clone, PartialEq, Eq, Hash) are automatic.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Add 3 failing tests: (a) eval_some_wraps_int — OptionSome(literal(Int(5))) evaluates to Value::Option(Some(Box::new(Value::Int(5)))). (b) eval_some_wraps_bool — OptionSome(literal(Bool(true))) evaluates to Value::Option(Some(Box::new(Value::Bool(true)))). (c) eval_some_wraps_real — OptionSome(literal(Real(3.14))) evaluates to Value::Option(Some(Box::new(Value::Real(3.14)))).",
-      "status": "done",
-      "commit": "0e0037b"
+      "description": "Write failing tests for Value::Orientation in value.rs: variant construction, PartialEq (same quaternion equal, different not equal, NaN bitwise equality via to_bits), Ord (type_tag ordering, within-type lexicographic on w/x/y/z bits), Display format '[w, x, y, z]q', content_hash (tag=16, NaN canonicalization, distinct from other variants)",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Add OptionSome match arm in eval_expr: `CompiledExprKind::OptionSome(inner) => { let val = eval_expr(inner, ctx); Value::Option(Some(Box::new(val))) }`. IMPORTANT: No Undef short-circuit — wrapping Undef is intentional semantics. Tests from step-3 pass.",
-      "status": "done",
-      "commit": "0e0037b"
+      "description": "Add Orientation { w: f64, x: f64, y: f64, z: f64 } variant to Value enum. Add arms to: content_hash (tag=16 with NaN canonicalization for all 4 components), PartialEq (bitwise f64 comparison), Ord (type_tag=15, compare w/x/y/z via to_bits), Display (format as quaternion). Add is_undef/as_f64/dimension pass-through (Orientation is not numeric, dimension is DIMENSIONLESS).",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-5",
-      "type": "test",
-      "description": "Add 3 verification tests for Undef semantics (should pass with step-4 impl): (a) eval_some_undef_produces_option_some_undef — some(literal(Undef)) yields Value::Option(Some(Box::new(Value::Undef))), NOT Value::Undef. (b) eval_some_undef_not_equal_to_none — assert some(undef) != Value::Option(None). (c) eval_some_undef_not_equal_to_bare_undef — assert some(undef) != Value::Undef.",
-      "status": "done",
-      "commit": "253633a"
+      "type": "impl",
+      "description": "Fix downstream exhaustive matches: add Value::Orientation arm to format_value() in reify-lsp/src/analysis.rs (format as quaternion string), add Value::Orientation arm to domain classifier in reify-constraints/src/classifier.rs (Orientation doesn't contribute to domain classification, same as Complex/Tensor). Add Type::Orientation and Value::Orientation to exports.rs verification test.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-6",
       "type": "test",
-      "description": "Add 4 verification tests for nesting and value refs (should pass with step-4 impl): (a) eval_some_nested_some — some(some(Int(3))) yields Value::Option(Some(Box::new(Value::Option(Some(Box::new(Value::Int(3))))))). (b) eval_some_wraps_none — some(none) yields Value::Option(Some(Box::new(Value::Option(None)))). (c) eval_some_value_ref — some(value_ref(x)) where x=Int(42) in ValueMap yields Value::Option(Some(Box::new(Value::Int(42)))). (d) eval_some_missing_ref_wraps_undef — some(value_ref(x)) where x is absent from ValueMap yields Value::Option(Some(Box::new(Value::Undef))), not bare Undef.",
-      "status": "done",
-      "commit": "253633a"
+      "description": "Write failing test for orient_identity: no-arg call returns Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 }; call with args returns Undef",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-7",
+      "type": "impl",
+      "description": "Add orient_identity match arm in eval_builtin: check args.is_empty(), return identity quaternion (1,0,0,0)",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-8",
+      "type": "test",
+      "description": "Write failing tests for orient_quaternion(w,x,y,z): (1) unnormalized input (2,0,0,0) normalizes to (1,0,0,0); (2) already normalized input preserved; (3) arbitrary input normalizes correctly; (4) zero quaternion (0,0,0,0) returns Undef; (5) NaN/Inf input returns Undef; (6) wrong arg count returns Undef",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-9",
+      "type": "impl",
+      "description": "Add orient_quaternion match arm in eval_builtin: extract 4 f64 args, compute norm, reject zero/non-finite, divide by norm, return normalized Orientation. Add normalize_quaternion(w,x,y,z) -> Option<Value> helper function.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-10",
+      "type": "test",
+      "description": "Write failing tests for orient_axis_angle(axis, angle): (1) 90-deg rotation around Z axis produces correct quaternion (w=cos(pi/4), x=0, y=0, z=sin(pi/4)); (2) 180-deg around X axis; (3) angle as Angle Scalar accepted; (4) zero-length axis returns Undef; (5) non-3D axis returns Undef; (6) wrong arg count returns Undef",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-11",
+      "type": "impl",
+      "description": "Add orient_axis_angle match arm: extract axis via tensor_components_f64 (must be 3 components), extract angle via trig_input pattern (accept Real or Angle Scalar), normalize axis, compute q = (cos(theta/2), sin(theta/2)*axis), return via normalize_quaternion",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-12",
+      "type": "test",
+      "description": "Write failing tests for orient_euler(convention, a, b, c): (1) 'xyz' intrinsic with known angles produces correct quaternion; (2) 'zyx' convention; (3) all-zero angles produce identity; (4) invalid convention string returns Undef; (5) non-string convention returns Undef; (6) angles as Angle Scalar accepted; (7) wrong arg count returns Undef",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-13",
+      "type": "impl",
+      "description": "Add orient_euler match arm: extract convention as String, extract 3 angles via trig_input pattern, implement intrinsic Euler-to-quaternion conversion for 6 Tait-Bryan conventions (xyz, xzy, yxz, yzx, zxy, zyx) and 6 proper Euler conventions (xyx, xzx, yxy, yzy, zxz, zyz) by composing elementary rotation quaternions. Return Undef for unrecognized conventions.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-14",
+      "type": "test",
+      "description": "Write failing tests for orient_basis(x_axis, y_axis, z_axis): (1) identity basis vectors produce identity quaternion; (2) 90-deg rotated basis produces correct quaternion; (3) non-orthogonal basis returns Undef; (4) non-3D vectors return Undef; (5) zero-length vector returns Undef; (6) wrong arg count returns Undef",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-15",
+      "type": "impl",
+      "description": "Add orient_basis match arm: extract 3 axis vectors via tensor_components_f64 (each must be 3 components), verify approximate orthonormality (dot products near zero, magnitudes near 1, within tolerance), build rotation matrix from basis vectors, convert rotation matrix to quaternion using Shepperd's method, return via normalize_quaternion. Return Undef for non-orthonormal input.",
+      "status": "pending",
+      "commit": null
     }
   ],
   "design_decisions": [
     {
-      "decision": "No Undef propagation in OptionSome evaluation",
-      "rationale": "The task description explicitly requires some(undef) to produce Value::Option(Some(Box::new(Value::Undef))), which is distinct from both Value::Option(None) and Value::Undef. This preserves a three-way distinction: error state (Undef), intentional absence (None), and present-but-undefined (Some(Undef)). Unlike BinOp/FunctionCall which short-circuit on Undef, OptionSome must NOT propagate Undef — it wraps whatever the inner expression evaluates to."
+      "decision": "Type::Orientation(usize) as a tuple variant, not struct variant",
+      "rationale": "Only one parameter (spatial dimension N), matching task spec. Simpler than struct variant like Point { n, quantity } since orientations are inherently dimensionless \u2014 no quantity parameter needed."
     },
     {
-      "decision": "New test file option_eval_tests.rs",
-      "rationale": "Following the established pattern: lambda_eval_tests.rs, quantifier_eval_tests.rs, collection_eval_tests.rs each cover a distinct feature area. Option evaluation gets its own file for consistency and clear module boundary."
+      "decision": "Value::Orientation { w, x, y, z } stores raw quaternion components as f64",
+      "rationale": "Matches existing patterns like Value::Complex { re, im, dimension }. Quaternion components are always dimensionless so no DimensionVector needed. f64 provides sufficient precision for rotation representation."
     },
     {
-      "decision": "Rely on task 162 for CompiledExprKind variants and constructor helpers",
-      "rationale": "Task 162 (parser/compiler) adds OptionSome/OptionNone variants to CompiledExprKind. Rust's exhaustive match means walk/collect_value_refs/remap_entity arms must be added at the same time. Constructors are likely added for the compiler's use. If constructors are absent, tests can build CompiledExpr structs directly using the kind enum and ContentHash."
+      "decision": "Content hash tag=16 for Orientation, Ord type_tag=15",
+      "rationale": "Next available slots after Complex (content_hash tag=15, Ord type_tag=14). Tags 0-15 are used by existing variants plus the reserved Satisfaction tag at position 10."
+    },
+    {
+      "decision": "All constructors normalize to unit quaternion unconditionally",
+      "rationale": "Unit quaternion invariant simplifies downstream rotation composition, interpolation, and conversion. Normalization is cheap (one sqrt + 4 divides) and prevents drift. Follows the 'correct by construction' pattern."
+    },
+    {
+      "decision": "Return Value::Undef for invalid inputs (NaN, Inf, zero-length) rather than panicking",
+      "rationale": "Consistent with existing stdlib pattern \u2014 all functions return Undef for type mismatches and domain errors. Follows 'silent defaults should be noisy' convention (Undef propagates visibly rather than silently producing garbage)."
+    },
+    {
+      "decision": "orient_euler supports 12 conventions (6 Tait-Bryan + 6 proper Euler) via string parameter",
+      "rationale": "Covers all standard rotation conventions used in engineering (aerospace, robotics, CAD). String parameter ('xyz', 'zyx', etc.) is self-documenting. Invalid convention returns Undef. Implemented by composing elementary quaternion rotations \u2014 no external dependency needed."
+    },
+    {
+      "decision": "orient_basis validates approximate orthonormality with tolerance",
+      "rationale": "Exact orthonormality is unrealistic with floating-point inputs. A tolerance (e.g., 1e-6) allows for minor numerical drift while rejecting clearly non-orthogonal bases. Returns Undef for bases outside tolerance to keep errors noisy."
+    },
+    {
+      "decision": "Downstream crate fixes (reify-lsp, reify-constraints) included in task scope",
+      "rationale": "Both crates have exhaustive match statements on Value that will fail to compile when Orientation is added. Fixes are trivial (one match arm each) but required for workspace-wide cargo check/test to pass."
+    },
+    {
+      "decision": "Use Shepperd's method for rotation-matrix-to-quaternion conversion in orient_basis",
+      "rationale": "Shepperd's method is numerically stable for all rotation matrices (avoids the singularity at trace=-1 that affects naive methods). Well-established algorithm used in production rotation libraries."
     }
   ],
   "reuse": [
     {
-      "what": "CompiledExpr::literal() constructor",
-      "where": "crates/reify-types/src/expr.rs:156",
-      "how": "Build inner expressions for some(literal_value) test cases"
+      "what": "tensor_components_f64() helper",
+      "where": "crates/reify-stdlib/src/lib.rs:470",
+      "how": "Extract axis vector components in orient_axis_angle and orient_basis. Validates tensor structure, extracts f64 values, and checks dimension consistency."
     },
     {
-      "what": "CompiledExpr::value_ref() constructor",
-      "where": "crates/reify-types/src/expr.rs:166",
-      "how": "Build inner expressions for some(value_ref) test cases with ValueMap"
+      "what": "trig_input() helper",
+      "where": "crates/reify-stdlib/src/lib.rs:415",
+      "how": "Extract angle value in radians from orient_axis_angle and orient_euler arguments. Accepts both bare Real and Angle Scalar, rejects non-angle dimensioned Scalars."
     },
     {
-      "what": "reify_test_support::values::{some_val, none_val, undef}",
-      "where": "crates/reify-test-support/src/values.rs:199-211",
-      "how": "Construct expected Value::Option values in test assertions — saves verbose Box::new wrapping"
+      "what": "sanitize_value() pattern",
+      "where": "crates/reify-stdlib/src/lib.rs:383",
+      "how": "Model the normalize_quaternion helper after this \u2014 return None/Undef for non-finite results."
     },
     {
-      "what": "EvalContext::simple(&ValueMap) pattern",
-      "where": "Used throughout crates/reify-expr/tests/ (lambda_eval_tests.rs:45, quantifier_eval_tests.rs)",
-      "how": "Standard way to create eval context for tests with no user-defined functions"
+      "what": "unary/binary/ternary helper pattern",
+      "where": "crates/reify-stdlib/src/lib.rs:369-436",
+      "how": "Follow the same arity-checking closure pattern for orient_axis_angle (binary), orient_euler (4-arg custom), orient_quaternion (4-arg custom)."
     },
     {
-      "what": "Value::Option(Option<Box<Value>>) variant",
-      "where": "crates/reify-types/src/value.rs",
-      "how": "Already exists with PartialEq, Ord, Display, content_hash — no changes needed to Value enum"
+      "what": "assert_real_approx! / assert_scalar_approx! test macros",
+      "where": "crates/reify-stdlib/src/lib.rs:515-548",
+      "how": "Create analogous assert_orientation_approx! macro for testing quaternion values with floating-point tolerance (1e-12)."
     },
     {
-      "what": "Test file structure from lambda_eval_tests.rs",
-      "where": "crates/reify-expr/tests/lambda_eval_tests.rs",
-      "how": "Same imports (reify_expr::{eval_expr, EvalContext}, reify_types::{CompiledExpr, Type, Value, ValueCellId, ValueMap}), helper structure, and assertion patterns"
+      "what": "Complex variant implementation pattern",
+      "where": "crates/reify-types/src/value.rs:198-207,248-251,344-350,431-449",
+      "how": "Follow same pattern for Orientation in content_hash (NaN canonicalization on each f64 component), PartialEq (bitwise f64 comparison), Ord (compare component bits), Display (formatted output)."
+    },
+    {
+      "what": "Complex format_value arm in LSP",
+      "where": "crates/reify-lsp/src/analysis.rs:193",
+      "how": "Add Orientation arm following the same formatting convention as Complex \u2014 display quaternion components with appropriate formatting."
+    },
+    {
+      "what": "Complex domain classifier arm",
+      "where": "crates/reify-constraints/src/classifier.rs:92",
+      "how": "Add Orientation to the same multi-pattern arm as Complex/Tensor/Lambda/Field \u2014 orientations don't contribute to domain classification."
     }
   ],
-  "_session_id": "163-6300ffc2",
-  "_created_at": "2026-03-24T10:47:53.407410+00:00"
+  "_session_id": "233-1146333e",
+  "_created_at": "2026-03-24T16:05:56.274721+00:00"
 }

@@ -450,6 +450,61 @@ mod tests {
         assert_eq!(format!("{}", v2_real), "Vector2<Real>");
     }
 
+    // ── Orientation tests (step-1) ──────────────────────────────────────────
+
+    #[test]
+    fn type_orientation_construction() {
+        let o3 = Type::Orientation(3);
+        let o2 = Type::Orientation(2);
+        // Distinct dimensions
+        assert_ne!(o3, o2);
+        // Same dimension equal
+        assert_eq!(Type::Orientation(3), Type::Orientation(3));
+    }
+
+    #[test]
+    fn type_orientation_display() {
+        assert_eq!(format!("{}", Type::Orientation(3)), "Orientation3");
+        assert_eq!(format!("{}", Type::Orientation(2)), "Orientation2");
+    }
+
+    #[test]
+    fn type_orientation_factory() {
+        assert_eq!(Type::orientation(3), Type::Orientation(3));
+        assert_eq!(Type::orientation(2), Type::Orientation(2));
+    }
+
+    #[test]
+    fn type_orientation_eq_and_hash() {
+        use std::collections::HashMap;
+
+        let o3a = Type::Orientation(3);
+        let o3b = Type::Orientation(3);
+        let o2 = Type::Orientation(2);
+
+        assert_eq!(o3a, o3b);
+        assert_ne!(o3a, o2);
+        // Orientation != other types
+        assert_ne!(o3a, Type::Real);
+
+        // Hash consistency
+        let mut map: HashMap<Type, &str> = HashMap::new();
+        map.insert(o3a.clone(), "o3");
+        assert_eq!(map.get(&o3b), Some(&"o3"));
+        assert_eq!(map.get(&o2), None);
+    }
+
+    #[test]
+    fn type_orientation_not_numeric() {
+        assert!(!Type::Orientation(3).is_numeric());
+        assert!(!Type::Orientation(2).is_numeric());
+    }
+
+    #[test]
+    fn type_orientation_as_name_none() {
+        assert_eq!(Type::Orientation(3).as_name(), None);
+    }
+
     #[test]
     fn type_point_display() {
         let p3_length = Type::Point {
