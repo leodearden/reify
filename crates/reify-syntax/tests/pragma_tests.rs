@@ -258,6 +258,80 @@ fn parse_pragma_bool_and_number_values() {
     }
 }
 
+// ── Step 23: block-level pragma inside purpose ────────────────────
+
+#[test]
+fn parse_block_pragma_in_purpose() {
+    let source = "purpose Optimize(s : Structure) { #solver\nconstraint s.x > 0 }";
+    let module = parse_module(source);
+    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+
+    // Module-level pragmas should be empty
+    assert!(
+        module.pragmas.is_empty(),
+        "expected no module-level pragmas, got {:?}",
+        module.pragmas
+    );
+
+    let p = module.declarations.iter().find_map(|d| {
+        if let reify_syntax::Declaration::Purpose(p) = d {
+            if p.name == "Optimize" { Some(p) } else { None }
+        } else {
+            None
+        }
+    });
+    let p = p.expect("purpose Optimize not found");
+    assert_eq!(
+        p.pragmas.len(),
+        1,
+        "expected 1 pragma on Optimize, got {:?}",
+        p.pragmas
+    );
+    assert_eq!(p.pragmas[0].name, "solver");
+    assert!(
+        p.pragmas[0].args.is_empty(),
+        "expected no args, got {:?}",
+        p.pragmas[0].args
+    );
+}
+
+// ── Step 25: block-level pragma inside constraint def ─────────────
+
+#[test]
+fn parse_block_pragma_in_constraint() {
+    let source = "constraint def Positive { #validate\nparam x: Real\nx > 0 }";
+    let module = parse_module(source);
+    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+
+    // Module-level pragmas should be empty
+    assert!(
+        module.pragmas.is_empty(),
+        "expected no module-level pragmas, got {:?}",
+        module.pragmas
+    );
+
+    let c = module.declarations.iter().find_map(|d| {
+        if let reify_syntax::Declaration::Constraint(c) = d {
+            if c.name == "Positive" { Some(c) } else { None }
+        } else {
+            None
+        }
+    });
+    let c = c.expect("constraint def Positive not found");
+    assert_eq!(
+        c.pragmas.len(),
+        1,
+        "expected 1 pragma on Positive, got {:?}",
+        c.pragmas
+    );
+    assert_eq!(c.pragmas[0].name, "validate");
+    assert!(
+        c.pragmas[0].args.is_empty(),
+        "expected no args, got {:?}",
+        c.pragmas[0].args
+    );
+}
+
 // ── Step 3/4: pragma with key=value args ─────────────────────────
 
 #[test]
