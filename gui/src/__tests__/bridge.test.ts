@@ -27,6 +27,16 @@ import {
   onMeshUpdate,
   onEvaluationStatus,
   pickOpenPath,
+  claudeSendMessage,
+  claudeAbort,
+  claudeClearSession,
+  onClaudeTextDelta,
+  onClaudeThinkingDelta,
+  onClaudeToolCall,
+  onClaudeToolResult,
+  onClaudeDone,
+  onClaudeError,
+  onClaudeReady,
 } from '../bridge';
 import { open } from '@tauri-apps/plugin-dialog';
 
@@ -261,5 +271,158 @@ describe('bridge event listeners', () => {
     expect(received.vertices).toBeInstanceOf(Float32Array);
     expect(received.indices).toBeInstanceOf(Uint32Array);
     expect(received.normals).toBeNull();
+  });
+});
+
+describe('Claude bridge commands', () => {
+  it('claudeSendMessage calls invoke with claude_send_message and returns string id', async () => {
+    mockInvoke.mockResolvedValue('msg-abc-123');
+
+    const result = await claudeSendMessage('Hello Claude', { selectedEntity: 'box1' });
+
+    expect(mockInvoke).toHaveBeenCalledWith('claude_send_message', {
+      text: 'Hello Claude',
+      context: { selectedEntity: 'box1' },
+    });
+    expect(result).toBe('msg-abc-123');
+  });
+
+  it('claudeSendMessage works without context argument', async () => {
+    mockInvoke.mockResolvedValue('msg-xyz-999');
+
+    await claudeSendMessage('Tell me about this model');
+
+    expect(mockInvoke).toHaveBeenCalledWith('claude_send_message', {
+      text: 'Tell me about this model',
+      context: undefined,
+    });
+  });
+
+  it('claudeAbort calls invoke with claude_abort', async () => {
+    mockInvoke.mockResolvedValue(undefined);
+
+    await claudeAbort();
+
+    expect(mockInvoke).toHaveBeenCalledWith('claude_abort');
+  });
+
+  it('claudeClearSession calls invoke with claude_clear_session', async () => {
+    mockInvoke.mockResolvedValue(undefined);
+
+    await claudeClearSession();
+
+    expect(mockInvoke).toHaveBeenCalledWith('claude_clear_session');
+  });
+});
+
+describe('Claude bridge event listeners', () => {
+  it('onClaudeTextDelta calls listen with claude-text-delta and passes {id, content} to callback', async () => {
+    const unlisten = vi.fn();
+    mockListen.mockImplementation(async (_event, handler) => {
+      (handler as (event: { payload: unknown }) => void)({ payload: { id: 'msg-1', content: 'Hello' } });
+      return unlisten;
+    });
+
+    const callback = vi.fn();
+    const result = await onClaudeTextDelta(callback);
+
+    expect(mockListen).toHaveBeenCalledWith('claude-text-delta', expect.any(Function));
+    expect(callback).toHaveBeenCalledWith({ id: 'msg-1', content: 'Hello' });
+    expect(result).toBe(unlisten);
+  });
+
+  it('onClaudeThinkingDelta calls listen with claude-thinking-delta', async () => {
+    const unlisten = vi.fn();
+    mockListen.mockImplementation(async (_event, handler) => {
+      (handler as (event: { payload: unknown }) => void)({ payload: { id: 'msg-2', content: 'Let me think' } });
+      return unlisten;
+    });
+
+    const callback = vi.fn();
+    await onClaudeThinkingDelta(callback);
+
+    expect(mockListen).toHaveBeenCalledWith('claude-thinking-delta', expect.any(Function));
+    expect(callback).toHaveBeenCalledWith({ id: 'msg-2', content: 'Let me think' });
+  });
+
+  it('onClaudeToolCall calls listen with claude-tool-call and extracts tool_name/tool_input', async () => {
+    const unlisten = vi.fn();
+    mockListen.mockImplementation(async (_event, handler) => {
+      (handler as (event: { payload: unknown }) => void)({
+        payload: { id: 'msg-3', tool_name: 'reify_get_parameters', tool_input: { entity: 'box1' } },
+      });
+      return unlisten;
+    });
+
+    const callback = vi.fn();
+    await onClaudeToolCall(callback);
+
+    expect(mockListen).toHaveBeenCalledWith('claude-tool-call', expect.any(Function));
+    expect(callback).toHaveBeenCalledWith({
+      id: 'msg-3',
+      tool_name: 'reify_get_parameters',
+      tool_input: { entity: 'box1' },
+    });
+  });
+
+  it('onClaudeToolResult calls listen with claude-tool-result and extracts tool_name/result', async () => {
+    const unlisten = vi.fn();
+    mockListen.mockImplementation(async (_event, handler) => {
+      (handler as (event: { payload: unknown }) => void)({
+        payload: { id: 'msg-3', tool_name: 'reify_get_parameters', result: [{ name: 'width', value: 10 }] },
+      });
+      return unlisten;
+    });
+
+    const callback = vi.fn();
+    await onClaudeToolResult(callback);
+
+    expect(mockListen).toHaveBeenCalledWith('claude-tool-result', expect.any(Function));
+    expect(callback).toHaveBeenCalledWith({
+      id: 'msg-3',
+      tool_name: 'reify_get_parameters',
+      result: [{ name: 'width', value: 10 }],
+    });
+  });
+
+  it('onClaudeDone calls listen with claude-done and extracts {id}', async () => {
+    const unlisten = vi.fn();
+    mockListen.mockImplementation(async (_event, handler) => {
+      (handler as (event: { payload: unknown }) => void)({ payload: { id: 'msg-5' } });
+      return unlisten;
+    });
+
+    const callback = vi.fn();
+    await onClaudeDone(callback);
+
+    expect(mockListen).toHaveBeenCalledWith('claude-done', expect.any(Function));
+    expect(callback).toHaveBeenCalledWith({ id: 'msg-5' });
+  });
+
+  it('onClaudeError calls listen with claude-error and extracts {id, message}', async () => {
+    const unlisten = vi.fn();
+    mockListen.mockImplementation(async (_event, handler) => {
+      (handler as (event: { payload: unknown }) => void)({
+        payload: { id: 'msg-6', message: 'Rate limit exceeded' },
+      });
+      return unlisten;
+    });
+
+    const callback = vi.fn();
+    await onClaudeError(callback);
+
+    expect(mockListen).toHaveBeenCalledWith('claude-error', expect.any(Function));
+    expect(callback).toHaveBeenCalledWith({ id: 'msg-6', message: 'Rate limit exceeded' });
+  });
+
+  it('onClaudeReady calls listen with claude-ready', async () => {
+    const unlisten = vi.fn();
+    mockListen.mockResolvedValue(unlisten);
+
+    const callback = vi.fn();
+    const result = await onClaudeReady(callback);
+
+    expect(mockListen).toHaveBeenCalledWith('claude-ready', expect.any(Function));
+    expect(result).toBe(unlisten);
   });
 });
