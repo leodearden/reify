@@ -258,6 +258,29 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
         "cosh" => unary_f64(args, |x| Value::Real(x.cosh())),
         "tanh" => unary_f64(args, |x| Value::Real(x.tanh())),
 
+        // --- Linear algebra: dot, cross, magnitude, normalize ---
+
+        "dot" => binary(args, |a, b| {
+            let (a_vals, a_dim) = match tensor_components_f64(a) {
+                Some(v) => v,
+                None => return Value::Undef,
+            };
+            let (b_vals, b_dim) = match tensor_components_f64(b) {
+                Some(v) => v,
+                None => return Value::Undef,
+            };
+            if a_vals.len() != b_vals.len() {
+                return Value::Undef;
+            }
+            let sum: f64 = a_vals.iter().zip(b_vals.iter()).map(|(x, y)| x * y).sum();
+            let result_dim = a_dim.mul(&b_dim);
+            if result_dim == DimensionVector::DIMENSIONLESS {
+                sanitize_value(Value::Real(sum))
+            } else {
+                sanitize_value(Value::Scalar { si_value: sum, dimension: result_dim })
+            }
+        }),
+
         // --- Determinacy predicates (stubs) ---
         // These predicates inspect DeterminacyState which is tracked in the Engine's
         // snapshot, not in Value itself. Like sample(), the actual behavior is
@@ -371,6 +394,34 @@ fn valid_f64_range(lo: f64, hi: f64) -> bool {
 /// Linear interpolation: `a + t * (b - a)`.
 fn lerp_f64(a: f64, b: f64, t: f64) -> f64 {
     a + t * (b - a)
+}
+
+/// Extract numeric components and consistent dimension from a Tensor value.
+///
+/// Returns `Some((values, dimension))` if:
+/// - `v` is a `Value::Tensor` with at least one element.
+/// - All components support `as_f64()`.
+/// - All components share the same dimension (or all are dimensionless).
+///
+/// Returns `None` for non-Tensor values, empty Tensors, non-numeric components,
+/// or Tensors with mixed dimensions.
+fn tensor_components_f64(v: &Value) -> Option<(Vec<f64>, DimensionVector)> {
+    let items = match v {
+        Value::Tensor(items) if !items.is_empty() => items,
+        _ => return None,
+    };
+    let first_dim = items[0].dimension();
+    let mut vals = Vec::with_capacity(items.len());
+    for item in items {
+        if item.dimension() != first_dim {
+            return None; // mixed dimensions
+        }
+        match item.as_f64() {
+            Some(x) => vals.push(x),
+            None => return None, // non-numeric component
+        }
+    }
+    Some((vals, first_dim))
 }
 
 /// Apply a function to five f64 arguments (extracted via `as_f64()`).
