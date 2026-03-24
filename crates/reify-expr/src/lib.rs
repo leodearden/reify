@@ -816,6 +816,17 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
             si_value: si_value * r,
             dimension: *dimension,
         },
+        // Scalar * Tensor or Tensor * Scalar: scale each component
+        (Value::Tensor(components), scalar) | (scalar, Value::Tensor(components))
+            if !matches!(scalar, Value::Tensor(_)) =>
+        {
+            let results: Vec<Value> = components.iter().map(|c| eval_mul(c, scalar)).collect();
+            if results.iter().any(|v| v.is_undef()) {
+                Value::Undef
+            } else {
+                Value::Tensor(results)
+            }
+        }
         _ => Value::Undef,
     }
 }
@@ -871,6 +882,15 @@ fn eval_div(lv: &Value, rv: &Value) -> Value {
             si_value: si_value / r,
             dimension: *dimension,
         },
+        // Tensor / Scalar: divide each component by the scalar
+        (Value::Tensor(components), scalar) if !matches!(scalar, Value::Tensor(_)) => {
+            let results: Vec<Value> = components.iter().map(|c| eval_div(c, scalar)).collect();
+            if results.iter().any(|v| v.is_undef()) {
+                Value::Undef
+            } else {
+                Value::Tensor(results)
+            }
+        }
         _ => Value::Undef,
     }
 }
