@@ -940,4 +940,40 @@ mod tests {
         let result = eval_builtin("clamp", &[Value::Real(5.0), Value::Real(10.0), Value::Real(0.0)]);
         assert!(result.is_undef(), "clamp with inverted range should be Undef, got {:?}", result);
     }
+
+    // --- clamp Int tests (step-5) ---
+
+    #[test]
+    fn clamp_int_preserves_type() {
+        // within range: value passes through, returns Int
+        let result = eval_builtin("clamp", &[Value::Int(5), Value::Int(0), Value::Int(10)]);
+        match result {
+            Value::Int(5) => {}
+            other => panic!("expected Int(5), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn clamp_int_below_lo() {
+        let result = eval_builtin("clamp", &[Value::Int(-3), Value::Int(0), Value::Int(10)]);
+        match result {
+            Value::Int(0) => {}
+            other => panic!("expected Int(0) (clamped to lo), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn clamp_int_above_hi() {
+        let result = eval_builtin("clamp", &[Value::Int(15), Value::Int(0), Value::Int(10)]);
+        match result {
+            Value::Int(10) => {}
+            other => panic!("expected Int(10) (clamped to hi), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn clamp_inverted_range_int_returns_undef() {
+        let result = eval_builtin("clamp", &[Value::Int(5), Value::Int(10), Value::Int(0)]);
+        assert!(result.is_undef(), "clamp Int with inverted range should be Undef, got {:?}", result);
+    }
 }
