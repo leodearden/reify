@@ -595,5 +595,72 @@ mod occt_tests {
             }
             other => panic!("expected Value::Real, got {:?}", other),
         }
+
+        // Verify centroid of rotated shape matches analytical expectation.
+        // OCCT boxes are centered at origin, so centroid = (0, 0, 0).
+        // Rotating 90° around Z through pivot (0.05, 0, 0):
+        //   translate(-pivot): (0 - 0.05, 0, 0) = (-0.05, 0, 0)
+        //   Rz(PI/2): (x,y) → (-y, x) = (0, -0.05, 0)
+        //   translate(+pivot): (0 + 0.05, -0.05, 0) = (0.05, -0.05, 0)
+        let centroid_val = kernel
+            .query(&GeometryQuery::Centroid(rotated.id))
+            .unwrap();
+        let (cx, cy, cz) = match &centroid_val {
+            Value::String(s) => {
+                let parse_coord = |key: &str| -> f64 {
+                    let prefix = format!("\"{}\":", key);
+                    let start = s.find(&prefix).unwrap() + prefix.len();
+                    let end = s[start..].find([',', '}']).unwrap() + start;
+                    s[start..end].parse().unwrap()
+                };
+                (parse_coord("x"), parse_coord("y"), parse_coord("z"))
+            }
+            other => panic!("expected String centroid, got {:?}", other),
+        };
+        assert!(
+            (cx - 0.05).abs() < 1e-4,
+            "rotate_around centroid x should be ≈ 0.05, got {cx}"
+        );
+        assert!(
+            (cy - (-0.05)).abs() < 1e-4,
+            "rotate_around centroid y should be ≈ -0.05, got {cy}"
+        );
+        assert!(
+            cz.abs() < 1e-4,
+            "rotate_around centroid z should be ≈ 0.0, got {cz}"
+        );
+
+        // Execute a plain Rotate (no pivot) with same axis/angle and confirm
+        // centroid differs — proving the pivot point parameter is actually used.
+        let plain_rotated = kernel
+            .execute(&GeometryOp::Rotate {
+                target: handle.id,
+                axis: [0.0, 0.0, 1.0],
+                angle_rad: std::f64::consts::FRAC_PI_2,
+            })
+            .unwrap();
+        let plain_centroid = kernel
+            .query(&GeometryQuery::Centroid(plain_rotated.id))
+            .unwrap();
+        match plain_centroid {
+            Value::String(s) => {
+                let parse_coord = |key: &str| -> f64 {
+                    let prefix = format!("\"{}\":", key);
+                    let start = s.find(&prefix).unwrap() + prefix.len();
+                    let end = s[start..].find([',', '}']).unwrap() + start;
+                    s[start..end].parse().unwrap()
+                };
+                let px = parse_coord("x");
+                let py = parse_coord("y");
+                let diff_x = (px - cx).abs();
+                let diff_y = (py - cy).abs();
+                assert!(
+                    diff_x > 0.01 || diff_y > 0.01,
+                    "rotate_around centroid should differ from plain rotate by > 0.01 in at least one coord; \
+                     rotate_around=({cx}, {cy}), plain=({px}, {py})"
+                );
+            }
+            other => panic!("expected String centroid, got {:?}", other),
+        }
     }
 }
