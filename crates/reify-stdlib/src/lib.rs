@@ -265,9 +265,16 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
                 Some(c) => c,
                 None => return Value::Undef,
             };
+            // Reject non-finite inputs early — a partially-Undef Tensor is not
+            // a meaningful unit vector, so we return a single Undef for the
+            // whole result rather than per-component sanitization.
+            if vals.iter().any(|x| !x.is_finite()) {
+                return Value::Undef;
+            }
             let sum_sq: f64 = vals.iter().map(|x| x * x).sum();
             let mag = sum_sq.sqrt();
-            if mag == 0.0 {
+            // mag is finite here, but squaring can still overflow to Inf.
+            if !mag.is_finite() || mag == 0.0 {
                 return Value::Undef;
             }
             Value::Tensor(vals.iter().map(|x| Value::Real(x / mag)).collect())
