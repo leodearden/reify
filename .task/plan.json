@@ -1,200 +1,118 @@
 {
-  "task_id": "229",
-  "title": "Matrix: Type and Value",
+  "task_id": "241",
+  "title": "Connector params: compiler",
   "files": [
-    "crates/reify-types/src/ty.rs",
-    "crates/reify-types/src/value.rs",
-    "crates/reify-types/tests/exports.rs",
-    "crates/reify-expr/src/lib.rs",
-    "crates/reify-expr/tests/tensor_matrix_arithmetic_tests.rs"
+    "crates/reify-compiler/src/lib.rs",
+    "crates/reify-compiler/tests/connect_compile_tests.rs"
   ],
   "modules": [
-    "crates/reify-types",
-    "crates/reify-expr"
+    "crates/reify-compiler"
   ],
-  "analysis": "Task 229 adds a Matrix type and value to the reify type system. The Matrix type is structurally similar to the existing Tensor variant: `Matrix { m: usize, n: usize, quantity: Box<Type> }` where m=rows, n=cols. Matrix values use `Vec<Vec<Value>>` (m rows of n elements each), unlike Tensor's flat `Vec<Value>` with recursive nesting. The implementation touches three files: ty.rs (Type enum variant + factory + Display), value.rs (Value enum variant + PartialEq + Ord + Display + content_hash), and tests/exports.rs (integration test). The Type enum derives Eq/Hash so no manual impl needed there. The Value enum has custom PartialEq, Ord, Display, and content_hash that all require explicit new arms. Content hash will use tag 18 (next after Range=17). Ord type_tag will use 17 (next after Range=16). The existing Tensor implementation serves as the closest pattern to follow. is_numeric already returns false via wildcard miss, and as_name returns None via wildcard catch-all — no changes needed for those methods, just test coverage.\n\n**Review fix (dual_representation_conflict):** The codebase already represents matrices as rank-2 nested `Value::Tensor` (Tensor of Tensor rows) — all 28 tests in `tensor_matrix_arithmetic_tests.rs` and all arithmetic functions in `reify-expr` (`eval_add`, `eval_sub`, `eval_mul`, `eval_div`, `neg_value`) pattern-match exclusively on `Value::Tensor`. The new `Value::Matrix` is a user-facing literal/display form. To prevent silent `Undef` production when `Value::Matrix` enters the arithmetic engine, we add: (1) doc comments on `Value::Matrix` and `Type::Matrix` clarifying the relationship, (2) `Value::canonicalize_matrix(self) -> Self` conversion method (Matrix→nested Tensor, no-op for others), (3) `Value::try_into_matrix(self) -> Option<Self>` reverse conversion, (4) canonicalization calls in `eval_binop` and `neg_value` in `reify-expr/src/lib.rs` so Matrix operands are converted to nested Tensor before arithmetic dispatch.",
+  "analysis": "Task 241 requires the compiler to: (1) create synthetic __connector_N sub-components when a connector type is specified in a connect statement, (2) compile parameter assignments from the connector body, (3) generate port compatibility constraints, and (4) generate frame alignment constraints when both ports satisfy LocatedPort.\n\nAll four requirements are ALREADY IMPLEMENTED in compile_connection() at lib.rs:3773-4034:\n- Lines 3903-3966: Synthetic sub-component creation (__connector_N) with compiled params, content hash, best-effort param validation against connector template\n- Lines 3888-3901: Compatibility constraint generation (connect_compat_{left}_{right}) as boolean literal\n- Lines 3992-4022: Frame alignment constraint generation via trait_satisfies() check for LocatedPort (including transitive refinement)\n- Lines 3305-3327: Content hash computation includes all connection components (ports, operator, mappings, connector_sub, frame_constraint)\n\n21 existing tests in connect_compile_tests.rs all pass, covering: basic connections, connector sub-component creation, chain desugaring, direction errors (forward/reverse/bidi), port mapping propagation, unknown port errors, content hash sensitivity (type, params, operator, frame), port type mismatch warnings, trait refinement, connector param validation, frame alignment with LocatedPort, frame alignment via refinement chain, and frame_constraint=None for non-LocatedPort.\n\nGaps identified: (1) No test for connector with BOTH params AND port mappings combined, (2) No test for multiple connectors on same entity verifying __connector_0/__connector_1 indexing, (3) No test verifying connector args can reference parent scope parameters. These edge cases should be tested to ensure robustness.",
   "prerequisites": [],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing tests in ty.rs for Type::Matrix: (a) direct construction and equality — Matrix{3,2,Real} == Matrix{3,2,Real}, != Matrix{2,3,Real}, != Matrix{3,2,Int}, != Tensor{2,3,Real}; (b) factory method — Type::matrix(3,2,Real) == Type::Matrix{m:3,n:2,quantity:Real}; (c) hash consistency via HashMap insert+lookup; (d) Display — Matrix3x2<Real>, Matrix4x4<Scalar[m]>; (e) is_numeric returns false; (f) as_name returns None",
+      "description": "Write test `connector_with_params_and_port_mappings` verifying that a connect statement with BOTH params and port mappings produces: (a) a connector sub-component with correct structure_name and compiled args, (b) port_mappings propagated to CompiledConnection, (c) no errors. Source: `connect a -> b : BoltSet { grade = 10.9  shaft -> bore }`",
       "status": "done",
-      "commit": "c5a7ba2c"
+      "commit": "30cfa457"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Add `Matrix { m: usize, n: usize, quantity: Box<Type> }` variant to Type enum after Range. Add `Type::matrix(m, n, q)` factory method after range(). Add Display arm: `write!(f, \"Matrix{}x{}<{}>\", m, n, quantity)`. No changes needed for is_numeric or as_name (wildcard patterns).",
+      "description": "Verify step-1 test passes against existing implementation (compile_connection already handles both params and port_mappings independently; this test confirms they work together). Fix if needed.",
       "status": "done",
-      "commit": "a748e95b"
+      "commit": "30cfa457"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing tests in value.rs for Value::Matrix: (a) construction with Vec<Vec<Value>> and PartialEq — same rows equal, different rows not equal, cross-variant with List/Tensor returns false; (b) Display format — `[[1, 2, 3], [4, 5, 6]]` for 2x3 matrix, `[[1]]` for 1x1",
+      "description": "Write test `multiple_connectors_per_entity` verifying that two connect statements with connectors in the same structure produce __connector_0 and __connector_1 with distinct names and correct structure_names. Source: two connect statements with different connector types (BoltSet and RivetSet).",
       "status": "done",
-      "commit": "ccc8c1fc"
+      "commit": "30cfa457"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Add `Matrix(Vec<Vec<Value>>)` variant to Value enum after Range. Add PartialEq arm: `(Value::Matrix(a), Value::Matrix(b)) => a == b`. Add Display arm: outer `[` then comma-separated rows each formatted as `[v1, v2, ...]`, closing `]`.",
+      "description": "Verify step-3 test passes against existing implementation (connector_index is tracked in ConnectAccumulator and incremented per connector). Fix if needed.",
       "status": "done",
-      "commit": "3eb2307e"
+      "commit": "30cfa457"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing tests in value.rs for Value::Matrix content_hash: (a) determinism — same matrix produces same hash; (b) different values — [[1,2],[3,4]] != [[1,3],[2,4]] (transposed); (c) distinct from Tensor — Matrix([[1,2]]) hash != Tensor([1,2]) hash due to different tag",
+      "description": "Write test `connector_args_reference_parent_params` verifying that connector parameter expressions can reference the parent structure's params. Source: `structure def S { param g : Real = 8.8 ... connect a -> b : BoltSet { grade = g } }`. Assert the connector sub-component's args contain a CompiledExpr with a ValueRef to the parent param.",
       "status": "done",
-      "commit": "f7f3495e"
+      "commit": "30cfa457"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Add content_hash arm for Value::Matrix with tag=18: `let mut h = ContentHash::of(&[18]); h = h.combine(rows.len()); for each row: h = h.combine(row.len()); for each elem: h = h.combine(elem.content_hash())`",
+      "description": "Verify step-5 test passes against existing implementation (compile_expr uses ctx.scope which includes parent params). Fix if needed.",
       "status": "done",
-      "commit": "048e2ffa"
+      "commit": "30cfa457"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing tests in value.rs for Value::Matrix Ord: (a) cross-type ordering — Matrix (tag 17) > Range (tag 16), Matrix < Undef would be wrong since Undef=0; (b) within-type lexicographic ordering on rows — [[1,2],[3,4]] < [[1,2],[3,5]]",
+      "description": "Run full compiler test suite (`cargo test -p reify-compiler`) and verify all tests pass including the 21 existing connect_compile_tests plus the 3 new edge-case tests.",
       "status": "done",
-      "commit": "d2a7d90e"
+      "commit": "30cfa457"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Add `Value::Matrix(_) => 17` to type_tag fn in Ord impl. Add within-type arm: `(Value::Matrix(a), Value::Matrix(b)) => a.cmp(b)` leveraging Vec<Vec<Value>>'s derived lexicographic Ord.",
+      "description": "Final verification: ensure no regressions across the full compiler test suite. All 24+ connect tests and all other compiler tests must pass.",
       "status": "done",
-      "commit": "6b75cd12"
-    },
-    {
-      "id": "step-9",
-      "type": "test",
-      "description": "Add Matrix entries to tests/exports.rs all_m5_types_exported: Type::Matrix direct construction, Type::matrix() factory method, Value::Matrix construction with Vec<Vec<Value>>",
-      "status": "done",
-      "commit": "22687aac"
-    },
-    {
-      "id": "step-10",
-      "type": "impl",
-      "description": "The export test entries are written in step-9 (test IS the impl for integration tests). Verify `cargo test -p reify-types` passes all tests including new Matrix tests.",
-      "status": "done",
-      "commit": "22687aac"
-    },
-    {
-      "id": "step-11",
-      "type": "test",
-      "description": "Write failing tests in value.rs for Matrix↔Tensor conversion methods: (a) `canonicalize_matrix` converts Matrix([[1,2],[3,4]]) to Tensor([Tensor([1,2]), Tensor([3,4])]); (b) `canonicalize_matrix` is identity for non-Matrix variants (Int, Tensor, Undef); (c) `canonicalize_matrix` on empty Matrix([[],[]]) produces Tensor([Tensor([]), Tensor([])]); (d) `try_into_matrix` converts rank-2 nested Tensor([Tensor([1,2]), Tensor([3,4])]) to Some(Matrix([[1,2],[3,4]])); (e) `try_into_matrix` returns None for rank-1 Tensor([1,2,3]); (f) `try_into_matrix` returns None for non-Tensor values (Int, Matrix); (g) round-trip: matrix.clone().canonicalize_matrix().try_into_matrix() == Some(matrix)",
-      "status": "done",
-      "commit": "9ed04a74"
-    },
-    {
-      "id": "step-12",
-      "type": "impl",
-      "description": "In value.rs: (1) Update doc comment on `Value::Matrix` to: 'User-facing matrix literal (m rows × n cols). Before arithmetic evaluation, canonicalized to nested Value::Tensor (rank-2 Tensor where each element is a Tensor row) via canonicalize_matrix(). The evaluator in reify-expr operates exclusively on the nested-Tensor representation for matrix arithmetic.' (2) Add `pub fn canonicalize_matrix(self) -> Self` method: match self { Value::Matrix(rows) => Value::Tensor(rows.into_iter().map(Value::Tensor).collect()), other => other }. (3) Add `pub fn try_into_matrix(self) -> Option<Self>` method: match self { Value::Tensor(rows) if !rows.is_empty() && rows.iter().all(|r| matches!(r, Value::Tensor(_))) => convert inner Tensors to Vec<Vec<Value>> and return Some(Matrix(...)), _ => None }. (4) Update doc comment on Type::Matrix in ty.rs to: 'User-facing m×n matrix type. Semantically, evaluation treats matrices as rank-2 tensors; Type::Matrix preserves distinct row (m) and column (n) dimensions while Type::Tensor uses a single n for all dimensions.'",
-      "status": "done",
-      "commit": "daad7fc2"
-    },
-    {
-      "id": "step-13",
-      "type": "test",
-      "description": "Write failing tests in crates/reify-expr/tests/tensor_matrix_arithmetic_tests.rs (new section at end of file) for Value::Matrix canonicalization through the evaluator: (a) Matrix + Matrix: Matrix([[Int(1),Int(2)],[Int(3),Int(4)]]) + Matrix([[Int(10),Int(20)],[Int(30),Int(40)]]) == Tensor([Tensor([Int(11),Int(22)]),Tensor([Int(33),Int(44)])]); (b) Scalar * Matrix: Real(2.0) * Matrix([[Int(1),Int(2)]]) == Tensor([Tensor([...scaled...])]); (c) -Matrix: negation of Matrix([[Int(1),Int(-2)]]) == Tensor([Tensor([Int(-1),Int(2)])]); (d) Matrix * Vector: 2x2 Matrix * 2-elem Tensor vector produces correct dot-product Tensor result. All tests construct BinOp/UnOp CompiledExpr with Matrix literals and verify eval_expr produces the correct nested-Tensor result (not Undef).",
-      "status": "done",
-      "commit": "8e4589fe"
-    },
-    {
-      "id": "step-14",
-      "type": "impl",
-      "description": "In crates/reify-expr/src/lib.rs: (1) In `eval_binop` (line ~642-643), after `let lv = eval_expr(left, ctx);` and `let rv = eval_expr(right, ctx);`, add canonicalization: `let lv = lv.canonicalize_matrix();` and `let rv = rv.canonicalize_matrix();`. This ensures Matrix operands become nested Tensor before any arithmetic dispatch. (2) In `neg_value` (line ~1180), add a `Value::Matrix(_)` arm before the wildcard that calls `neg_value(v.canonicalize_matrix())` to convert then negate. Alternatively, canonicalize at the top: `let v = v.canonicalize_matrix();` before the match. Verify all existing tensor_matrix_arithmetic_tests still pass plus new Matrix canonicalization tests.",
-      "status": "done",
-      "commit": "e231c8c4"
+      "commit": "30cfa457"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Matrix value stored as Vec<Vec<Value>> (not flat Vec<Value>)",
-      "rationale": "Task specifies 'm rows x n cols' as Vec<Vec<Value>>. This differs from Tensor's flat Vec<Value> with recursive nesting. The 2D structure makes row/column access O(1) and matrix operations natural. Each inner Vec is one row of n elements."
+      "decision": "No new implementation code needed \u2014 core connector compilation is already complete",
+      "rationale": "compile_connection() at lib.rs:3773-4034 already handles all four task requirements: synthetic __connector_N sub-components (lines 3903-3966), parameter compilation (3908-3913), compatibility constraints (3888-3901), and frame alignment constraints (3992-4022). 21 tests verify this behavior. The remaining work is edge-case test coverage."
     },
     {
-      "decision": "Display format: Type as `Matrix{m}x{n}<{quantity}>`, Value as `[[r1c1, r1c2], [r2c1, r2c2]]`",
-      "rationale": "Type Display follows the Tensor pattern (`Tensor{rank}x{n}<{quantity}>`). Value Display uses nested bracket notation matching the Vec<Vec<Value>> structure, which is the standard mathematical notation for matrix literals."
+      "decision": "Connector sub-components use Private visibility and __connector_N naming",
+      "rationale": "Connectors are implementation details of the connection, not user-visible members. Private visibility prevents external access. The __connector_N naming uses a monotonically incrementing index within each entity to ensure unique names, matching the __count_N and __guard_N synthetic naming conventions."
     },
     {
-      "decision": "Content hash tag = 18, Ord type_tag = 17",
-      "rationale": "Sequential allocation after the last used tags: content_hash tags go 0-17 (Range=17), so Matrix=18. Ord type_tags go 0-16 (Range=16), so Matrix=17. Both follow the established pattern of sequential tag assignment."
+      "decision": "Frame alignment constraint is a boolean literal (true) placeholder",
+      "rationale": "The current implementation emits frame_align_{left}_{right} constraints as Bool(true) literals. This establishes the constraint infrastructure and content hash dependency. The actual frame transformation logic (comparing frame expressions from both ports) will be implemented in a later task when the evaluator supports spatial transforms."
     },
     {
-      "decision": "Content hash includes both row count and per-row column count",
-      "rationale": "Hashing both dimensions ensures that a 2x3 matrix and a 3x2 matrix with the same elements in different arrangement produce different hashes. Per-row col count (rather than a single n) handles the Vec<Vec> structure faithfully even if rows could theoretically vary in length."
-    },
-    {
-      "decision": "Ord within-type comparison delegates to Vec<Vec<Value>>::cmp",
-      "rationale": "Since Value implements Ord, Vec<Value> and Vec<Vec<Value>> automatically get lexicographic Ord. This is consistent with how List and Tensor delegate to Vec<Value>::cmp."
-    },
-    {
-      "decision": "Value::Matrix is a user-facing literal form, canonicalized to nested Tensor for evaluation (Option 2 from review)",
-      "rationale": "The codebase has 28 existing tests and 5 arithmetic functions (eval_add, eval_sub, eval_mul, eval_div, neg_value) that exclusively pattern-match on nested Value::Tensor for matrix operations. Rewriting all of these to also handle Value::Matrix would be high-cost and create maintenance burden (every new arithmetic feature must handle both representations). Instead, a single canonicalization step at the eval_binop/neg_value entry points converts Matrix→nested Tensor, reusing the entire existing arithmetic engine. The O(m×n) copy cost is negligible compared to the actual arithmetic operations."
-    },
-    {
-      "decision": "Canonicalization placed in eval_binop and neg_value, not in eval_expr",
-      "rationale": "Placing canonicalization in eval_binop (which dispatches all binary arithmetic and comparisons) and neg_value (unary negation) covers all arithmetic paths. Placing it in eval_expr would be too broad — it would canonicalize Matrix literals on read even when no arithmetic is performed, and would affect FunctionCall, MethodCall, and other paths that may want the original Matrix form. The targeted placement is minimal and precise."
-    },
-    {
-      "decision": "try_into_matrix requires non-empty rows and all-Tensor elements",
-      "rationale": "An empty Tensor([]) is ambiguous — it could be an empty vector or an empty matrix. Requiring at least one row and all elements to be Tensor(_) ensures the conversion is unambiguous. This matches the detection heuristic used in eval_mul (lines 858-862) which checks matches!(rows[0], Value::Tensor(_))."
+      "decision": "Connector param validation is best-effort (only when connector template already compiled)",
+      "rationale": "The compiler processes entities in source order. If the connector structure appears after the entity using it, its template won't be available yet for param validation. The current implementation gracefully skips validation in this case via the `ctx.compiled_templates.iter().find()` guard at line 3917."
     }
   ],
   "reuse": [
     {
-      "what": "Tensor Type variant pattern",
-      "where": "crates/reify-types/src/ty.rs lines 42-43",
-      "how": "Matrix { m, n, quantity } mirrors Tensor { rank, n, quantity } — same Box<Type> wrapping for quantity, same struct-variant style"
+      "what": "compile_expr for connector parameter compilation",
+      "where": "crates/reify-compiler/src/lib.rs:3908-3913",
+      "how": "Connector params are compiled using the same compile_expr() used for all other expression compilation, with the parent entity's CompilationScope. This means connector params can reference parent params, lets, and port members."
     },
     {
-      "what": "Type::tensor() factory method pattern",
-      "where": "crates/reify-types/src/ty.rs lines 94-97",
-      "how": "Type::matrix(m, n, q) follows exact same pattern as Type::tensor(rank, n, q) — construct variant with Box::new(quantity)"
+      "what": "trait_satisfies for LocatedPort detection",
+      "where": "crates/reify-compiler/src/lib.rs:3998-4001",
+      "how": "Frame alignment detection reuses the existing trait_satisfies() function which performs transitive refinement checking through the trait registry. This means ports typed with MechanicalPort (which refines LocatedPort) automatically get frame constraints."
     },
     {
-      "what": "Tensor Display format pattern",
-      "where": "crates/reify-types/src/ty.rs line 641",
-      "how": "Matrix Display `Matrix{m}x{n}<{quantity}>` follows Tensor's `Tensor{rank}x{n}<{quantity}>` format string pattern"
+      "what": "ContentHash pattern for connector sub-components",
+      "where": "crates/reify-compiler/src/lib.rs:3943-3949",
+      "how": "Connector sub-component hash combines connector type + operator + port names + param expression hashes using the same ContentHash::combine/of_str pattern used throughout the compiler."
     },
     {
-      "what": "Tensor/List content_hash iteration pattern",
-      "where": "crates/reify-types/src/value.rs lines 221-228",
-      "how": "Matrix content_hash uses the same tag + length + item-hashes pattern, extended to two nesting levels for Vec<Vec<Value>>"
+      "what": "SubComponentDecl struct for connector subs",
+      "where": "crates/reify-compiler/src/lib.rs:3951-3961",
+      "how": "Synthetic connector sub-components reuse the same SubComponentDecl struct as regular sub-components (params, type_args, is_collection, count_cell, content_hash), just with Private visibility and auto-generated name."
     },
     {
-      "what": "Tensor test structure in ty.rs",
-      "where": "crates/reify-types/src/ty.rs lines 314-382",
-      "how": "Matrix tests follow the same pattern: display tests, factory tests, eq_and_hash tests, not_numeric test — mirroring the Tensor test block"
-    },
-    {
-      "what": "List/Tensor Value Display pattern",
-      "where": "crates/reify-types/src/value.rs lines 508-527",
-      "how": "Matrix Value Display reuses the bracket-delimited comma-separated format, nested one level deeper for the row structure"
-    },
-    {
-      "what": "exports.rs Tensor test pattern",
-      "where": "crates/reify-types/tests/exports.rs lines 163-179",
-      "how": "Matrix export test follows same structure: direct Type construction, factory method, Value construction"
-    },
-    {
-      "what": "Existing nested-Tensor arithmetic engine",
-      "where": "crates/reify-expr/src/lib.rs lines 723-1195 (eval_add, eval_sub, eval_mul, eval_div, neg_value)",
-      "how": "By canonicalizing Value::Matrix to nested Value::Tensor, all 5 arithmetic functions and their 28 existing tests are reused without modification. The canonicalization step transforms Matrix([[a,b],[c,d]]) into Tensor([Tensor([a,b]),Tensor([c,d])]) which the arithmetic engine already understands."
-    },
-    {
-      "what": "tensor_matrix_arithmetic_tests.rs test patterns",
-      "where": "crates/reify-expr/tests/tensor_matrix_arithmetic_tests.rs lines 1-614",
-      "how": "New Matrix canonicalization tests follow the same helper functions (lit, eval_simple, etc.) and assertion patterns as the existing 28 tensor-as-matrix tests. The new tests verify that Matrix literal inputs produce the same results as equivalent nested Tensor inputs."
+      "what": "Existing test helpers (compile_module, compile_first_template)",
+      "where": "crates/reify-compiler/tests/connect_compile_tests.rs:9-20",
+      "how": "All new edge-case tests reuse the existing test helper functions that parse source text and compile to CompiledModule or (TopologyTemplate, Vec<Diagnostic>)."
     }
   ],
-  "_session_id": "229-5956ad39",
-  "_created_at": "2026-03-24T23:03:03.900214+00:00"
+  "_session_id": "241-1d6f7cda",
+  "_created_at": "2026-03-24T23:37:41.981333+00:00"
 }
