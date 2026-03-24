@@ -8,7 +8,7 @@
   "modules": [
     "crates/reify-compiler"
   ],
-  "analysis": "Task 203 requires detecting self-referential structure definitions during compilation. Structures in Reify can contain `sub` declarations that reference other structures (e.g., `sub x = B()`). When structure A contains a sub of type B, and B contains a sub of type A (or transitively through any chain), we have a recursive cycle.\n\nThe compiler already has all the infrastructure needed: (1) TopologyTemplate has `sub_components: Vec<SubComponentDecl>` where each SubComponentDecl has a `structure_name` field identifying the referenced structure. (2) After all templates are compiled (line 1894), a template_registry HashMap<String, &TopologyTemplate> is built for deferred checks. (3) module_dag.rs provides a pattern for DFS cycle detection.\n\nApproach: Add a post-compilation pass (after all templates are compiled, similar to bound checks) that builds a directed graph of structure references from sub_components, then runs DFS to detect cycles. When a cycle is found, emit a diagnostic and tag the participating templates with `is_recursive = true`. This flag will be consumed by downstream tasks for special handling (e.g., preventing infinite elaboration in reify-eval).\n\nThe reference graph is: for each TopologyTemplate T, for each SubComponentDecl S in T.sub_components, add edge T.name -> S.structure_name. Then run DFS with gray/black coloring to find back-edges indicating cycles. When a back-edge is found, extract the cycle path from the DFS stack.\n\nKey design choice: Tag templates with `is_recursive: bool` rather than blocking compilation. Recursive structures may be valid with collection subs or guarded subs \u2014 they need special handling at elaboration time, not outright rejection. The diagnostic is a warning-level note identifying the cycle path.",
+  "analysis": "Task 203 requires detecting self-referential structure definitions during compilation. Structures in Reify can contain `sub` declarations that reference other structures (e.g., `sub x = B()`). When structure A contains a sub of type B, and B contains a sub of type A (or transitively through any chain), we have a recursive cycle.\n\nThe compiler already has all the infrastructure needed: (1) TopologyTemplate has `sub_components: Vec<SubComponentDecl>` where each SubComponentDecl has a `structure_name` field identifying the referenced structure. (2) After all templates are compiled (line 1894), a template_registry HashMap<String, &TopologyTemplate> is built for deferred checks. (3) module_dag.rs provides a pattern for DFS cycle detection.\n\nApproach: Add a post-compilation pass (after all templates are compiled, similar to bound checks) that builds a directed graph of structure references from sub_components, then runs DFS to detect cycles. When a cycle is found, emit a diagnostic and tag the participating templates with `is_recursive = true`. This flag will be consumed by downstream tasks for special handling (e.g., preventing infinite elaboration in reify-eval).\n\nThe reference graph is: for each TopologyTemplate T, for each SubComponentDecl S in T.sub_components, add edge T.name -> S.structure_name. Then run DFS with gray/black coloring to find back-edges indicating cycles. When a back-edge is found, extract the cycle path from the DFS stack.\n\nKey design choice: Tag templates with `is_recursive: bool` rather than blocking compilation. Recursive structures may be valid with collection subs or guarded subs \u2014 they need special handling at elaboration time, not outright rejection. The diagnostic is a warning-level note identifying the cycle path.\n\n--- REVIEW FIX (reviewer_robustness/incorrect_cycle_detection) ---\n\nThe DFS-based cycle detection has a bug: the `Some(false)` arm (black/fully-explored node) takes no action, so when a second DFS path reaches a cycle member that's already fully explored, intermediate nodes on that path are never tagged in_cycle. Example: graph A\u2192B, A\u2192D, B\u2192C, D\u2192C, C\u2192A. DFS finds A\u2192B\u2192C\u2192A and marks A,B,C in_cycle. Then A visits D; D visits C (black, in_cycle), but the `Some(false)` arm does nothing \u2014 D is never tagged, yet D participates in the genuine cycle A\u2192D\u2192C\u2192A.\n\nNaive fix (propagate in_cycle when black neighbor is in_cycle) would cause false positives: if X\u2192Y\u2192X is a cycle and Z\u2192Y exists, Z would be wrongly marked even though there's no path Y\u2192Z.\n\nCorrect fix: replace the DFS with Tarjan's SCC algorithm. Tarjan's finds all strongly connected components in O(V+E). Every node in an SCC of size > 1 is a cycle participant. Self-loops (SCC of size 1 with self-edge) are also cycles. This handles multi-path convergence correctly because SCC membership is determined by mutual reachability, not by DFS tree structure. Cycle paths for diagnostics can be reconstructed from the SCC's adjacency sub-graph.",
   "prerequisites": [],
   "steps": [
     {
@@ -122,6 +122,34 @@
       "description": "Verify edge case: templates with empty sub_components are handled correctly (no edges added, no iteration issues)",
       "status": "done",
       "commit": "99e5cd3"
+    },
+    {
+      "id": "step-17",
+      "type": "test",
+      "description": "Write failing test for multi-path cycle convergence (reviewer bug): graph A\u2192B, A\u2192D, B\u2192C, D\u2192C, C\u2192A. All four structures participate in cycles (A\u2192B\u2192C\u2192A and A\u2192D\u2192C\u2192A). Assert all four are tagged is_recursive=true. This test will FAIL with the current DFS because D is reached via a black (already-explored) node C and the Some(false) arm takes no action, leaving D untagged.",
+      "status": "done",
+      "commit": "c68e309"
+    },
+    {
+      "id": "step-18",
+      "type": "impl",
+      "description": "Replace dfs_detect_cycle with Tarjan's SCC algorithm. Tarjan's correctly finds all strongly connected components in O(V+E) by tracking index and lowlink values on a stack. Tag all nodes in SCCs of size > 1 as in_cycle. Also tag self-loop SCCs (size 1 where node has edge to itself). Reconstruct one representative cycle path per SCC from the adjacency sub-graph for diagnostic messages. Remove the old dfs_detect_cycle function entirely.",
+      "status": "done",
+      "commit": "e6d821d"
+    },
+    {
+      "id": "step-19",
+      "type": "test",
+      "description": "Write test for false-positive resistance: structure Z has sub a = A(), and A\u2192B\u2192A is a cycle, but there is no path from A or B back to Z. Assert Z is NOT tagged is_recursive (Z merely points into a cycle without being part of one). This validates that Tarjan's SCC correctly excludes nodes that have edges into an SCC but aren't members of it.",
+      "status": "done",
+      "commit": "c68e309"
+    },
+    {
+      "id": "step-20",
+      "type": "impl",
+      "description": "Verify the false-positive test passes with Tarjan's SCC (should pass because SCC membership requires mutual reachability \u2014 Z can reach A but A cannot reach Z, so Z is in its own singleton SCC with no self-edge).",
+      "status": "done",
+      "commit": "e6d821d"
     }
   ],
   "design_decisions": [
@@ -138,8 +166,8 @@
       "rationale": "Following the existing pattern of deferred bound checks: all templates must be compiled before we can build the full reference graph. Forward references are allowed within a module, so inline detection during entity compilation would miss structures defined later in the file."
     },
     {
-      "decision": "Use DFS with path tracking for cycle detection rather than full SCC (Tarjan's)",
-      "rationale": "We need cycle paths for diagnostic messages, not just cycle membership. DFS with a path stack naturally gives us the cycle path when a back edge is found. The structure count per module is small enough that algorithmic complexity is irrelevant."
+      "decision": "Replace DFS gray/black cycle detection with Tarjan's SCC algorithm",
+      "rationale": "The original DFS approach misses cycle participants reachable through already-explored (black) nodes. When multiple paths converge on a cycle, the DFS only finds members on the first path. Tarjan's SCC correctly identifies ALL nodes in ALL strongly connected components in O(V+E) by tracking index/lowlink values, handling multi-path convergence without the early-exit issue. Cycle paths for diagnostics are reconstructed from each SCC's adjacency sub-graph."
     },
     {
       "decision": "Place all tests in a dedicated integration test file rather than inline unit tests",
@@ -148,6 +176,10 @@
     {
       "decision": "Only consider sub_components for reference graph edges, not type_args",
       "rationale": "Type arguments (e.g., Box<Bolt>) reference structures but don't create containment relationships that cause infinite elaboration. A Box<T> parameterized by T doesn't contain T as a sub \u2014 it's a type parameter. Recursion through sub containment is what causes structural cycles."
+    },
+    {
+      "decision": "Rejected naive propagation fix (mark in_cycle when black neighbor is in_cycle) in favor of Tarjan's SCC",
+      "rationale": "Naive propagation causes false positives: if Z\u2192A where A is in cycle A\u2192B\u2192A, Z would be wrongly tagged because its black neighbor A is in_cycle, even though there's no path from A back to Z. Tarjan's SCC correctly requires mutual reachability for cycle membership."
     }
   ],
   "reuse": [
@@ -180,8 +212,13 @@
       "what": "TopologyTemplate.sub_components and template name",
       "where": "crates/reify-compiler/src/lib.rs lines 159-178",
       "how": "Iterate compiled templates to extract (template.name -> sub.structure_name) edges for graph construction"
+    },
+    {
+      "what": "Tarjan's SCC algorithm (standard)",
+      "where": "Well-known algorithm, no codebase dependency",
+      "how": "Implement iterative Tarjan's with index counter, lowlink array, and explicit stack. Each SCC of size > 1 (or size 1 with self-edge) maps to a set of in_cycle nodes. Reconstruct one cycle path per SCC by walking adjacency within the SCC."
     }
   ],
   "_session_id": "203-409aa634",
-  "_created_at": "2026-03-24T08:29:48.931250+00:00"
+  "_created_at": "2026-03-24T08:43:43.061708+00:00"
 }
