@@ -236,6 +236,26 @@ pub fn method_call_expr(
     CompiledExpr::method_call(object, method.to_string(), args, result_type)
 }
 
+/// Create a field `sample` call: `std::field::sample(field, point) -> result_type`.
+pub fn sample_call(field: CompiledExpr, point: CompiledExpr, result_type: Type) -> CompiledExpr {
+    fn_call("sample", "std::field::sample", vec![field, point], result_type)
+}
+
+/// Create a field `gradient` call: `std::field::gradient(field) -> result_type`.
+pub fn gradient_call(field: CompiledExpr, result_type: Type) -> CompiledExpr {
+    fn_call("gradient", "std::field::gradient", vec![field], result_type)
+}
+
+/// Create a field `divergence` call: `std::field::divergence(field) -> result_type`.
+pub fn divergence_call(field: CompiledExpr, result_type: Type) -> CompiledExpr {
+    fn_call("divergence", "std::field::divergence", vec![field], result_type)
+}
+
+/// Create a field `curl` call: `std::field::curl(field) -> result_type`.
+pub fn curl_call(field: CompiledExpr, result_type: Type) -> CompiledExpr {
+    fn_call("curl", "std::field::curl", vec![field], result_type)
+}
+
 /// Create a lambda expression with named parameters.
 ///
 /// Generates param IDs with `ValueCellId::new("__lambda", name)` for each parameter.
