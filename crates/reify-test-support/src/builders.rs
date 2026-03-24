@@ -676,6 +676,7 @@ pub struct CompiledModuleBuilder {
     path: reify_types::ModulePath,
     imports: Vec<CompiledImport>,
     functions: Vec<reify_types::CompiledFunction>,
+    trait_defs: Vec<CompiledTrait>,
     templates: Vec<TopologyTemplate>,
     diagnostics: Vec<reify_types::Diagnostic>,
 }
@@ -686,9 +687,15 @@ impl CompiledModuleBuilder {
             path,
             imports: Vec::new(),
             functions: Vec::new(),
+            trait_defs: Vec::new(),
             templates: Vec::new(),
             diagnostics: Vec::new(),
         }
+    }
+
+    pub fn trait_def(mut self, t: CompiledTrait) -> Self {
+        self.trait_defs.push(t);
+        self
     }
 
     pub fn function(mut self, f: reify_types::CompiledFunction) -> Self {
@@ -755,12 +762,29 @@ impl CompiledModuleBuilder {
             imports: self.imports,
             enum_defs: Vec::new(),
             functions: self.functions,
-            trait_defs: Vec::new(),
+            trait_defs: self.trait_defs,
             fields: Vec::new(),
             compiled_purposes: Vec::new(),
             templates: self.templates,
             diagnostics: self.diagnostics,
             content_hash,
         }
+    }
+}
+
+#[cfg(test)]
+mod module_builder_tests {
+    use super::*;
+    use reify_types::ModulePath;
+
+    // step-7: failing test for CompiledModuleBuilder trait_def method
+    #[test]
+    fn module_builder_with_trait_def() {
+        let ct = TraitDefBuilder::new("Rigid").build();
+        let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+            .trait_def(ct)
+            .build();
+        assert_eq!(module.trait_defs.len(), 1);
+        assert_eq!(module.trait_defs[0].name, "Rigid");
     }
 }
