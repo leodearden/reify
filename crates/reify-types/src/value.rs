@@ -1944,6 +1944,56 @@ mod tests {
         assert_eq!(o.dimension(), DimensionVector::DIMENSIONLESS);
     }
 
+    // ── Range Display tests (step-9) ─────────────────────────────────────────
+
+    #[test]
+    fn value_range_display_closed_inclusive() {
+        let r = make_range(Some(Value::Int(0)), Some(Value::Int(10)), true, true);
+        assert_eq!(format!("{}", r), "[0..10]");
+    }
+
+    #[test]
+    fn value_range_display_open_exclusive() {
+        let r = make_range(Some(Value::Int(0)), Some(Value::Int(10)), false, false);
+        assert_eq!(format!("{}", r), "(0..10)");
+    }
+
+    #[test]
+    fn value_range_display_half_open_lower_inclusive() {
+        let r = make_range(Some(Value::Int(0)), Some(Value::Int(10)), true, false);
+        assert_eq!(format!("{}", r), "[0..10)");
+    }
+
+    #[test]
+    fn value_range_display_half_open_upper_inclusive() {
+        let r = make_range(Some(Value::Int(0)), Some(Value::Int(10)), false, true);
+        assert_eq!(format!("{}", r), "(0..10]");
+    }
+
+    #[test]
+    fn value_range_display_unbounded_lower() {
+        let r = make_range(None, Some(Value::Int(10)), false, true);
+        assert_eq!(format!("{}", r), "(-inf..10]");
+    }
+
+    #[test]
+    fn value_range_display_unbounded_upper() {
+        let r = make_range(Some(Value::Int(0)), None, true, false);
+        assert_eq!(format!("{}", r), "[0..inf)");
+    }
+
+    #[test]
+    fn value_range_display_fully_unbounded() {
+        let r = make_range(None, None, false, false);
+        assert_eq!(format!("{}", r), "(-inf..inf)");
+    }
+
+    #[test]
+    fn value_range_display_real_bounds() {
+        let r = make_range(Some(Value::Real(1.5)), Some(Value::Real(3.5)), true, false);
+        assert_eq!(format!("{}", r), "[1.5..3.5)");
+    }
+
     // ── Range content_hash tests (step-7) ───────────────────────────────────
 
     #[test]
