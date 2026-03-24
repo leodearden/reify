@@ -378,7 +378,7 @@ impl SidecarHandle {
         text: &str,
         context: Option<MessageContext>,
     ) -> Result<String, String> {
-        let n = MSG_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let n = MSG_COUNTER.fetch_add(1, Ordering::Relaxed);
         let id = format!("msg-{}", n);
         let msg = InboundMessage::SendMessage {
             id: id.clone(),
