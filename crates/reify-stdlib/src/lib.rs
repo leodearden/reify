@@ -86,7 +86,43 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
                     sanitize_value(Value::Real(xv.clamp(*lov, *hiv)))
                 }
             }
-            _ => Value::Undef,
+            (
+                Value::Scalar { si_value: xv, dimension: dx },
+                Value::Scalar { si_value: lov, dimension: dlo },
+                Value::Scalar { si_value: hiv, dimension: dhi },
+            ) => {
+                if dx != dlo || dx != dhi {
+                    return Value::Undef;
+                }
+                if xv.is_nan() || !valid_f64_range(*lov, *hiv) {
+                    return Value::Undef;
+                }
+                sanitize_value(Value::Scalar {
+                    si_value: xv.clamp(*lov, *hiv),
+                    dimension: *dx,
+                })
+            }
+            _ => {
+                // Fallback: try to extract f64 from all three args.
+                // If all dimensions agree and are non-DIMENSIONLESS, reconstruct Scalar.
+                let (xv, lov, hiv) = match (x.as_f64(), lo.as_f64(), hi.as_f64()) {
+                    (Some(a), Some(b), Some(c)) => (a, b, c),
+                    _ => return Value::Undef,
+                };
+                if xv.is_nan() || !valid_f64_range(lov, hiv) {
+                    return Value::Undef;
+                }
+                let result = xv.clamp(lov, hiv);
+                let dx = x.dimension();
+                if dx != DimensionVector::DIMENSIONLESS
+                    && dx == lo.dimension()
+                    && dx == hi.dimension()
+                {
+                    sanitize_value(Value::Scalar { si_value: result, dimension: dx })
+                } else {
+                    sanitize_value(Value::Real(result))
+                }
+            }
         }),
 
         // --- Trig functions: accept Angle Scalar or bare Real (radians) ---
