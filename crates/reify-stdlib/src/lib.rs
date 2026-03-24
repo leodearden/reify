@@ -1158,4 +1158,79 @@ mod tests {
         let result = eval_builtin("lerp", &[Value::Real(0.0), Value::Real(10.0), Value::Real(f64::NAN)]);
         assert!(result.is_undef(), "lerp with NaN t should be Undef, got {:?}", result);
     }
+
+    // --- lerp Scalar + dimension tests (step-11) ---
+
+    #[test]
+    fn lerp_scalar_preserves_dimension() {
+        // lerp(Scalar{0.0, LENGTH}, Scalar{1.0, LENGTH}, Real(0.5)) = Scalar{0.5, LENGTH}
+        assert_scalar_approx!(
+            eval_builtin(
+                "lerp",
+                &[
+                    Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
+                    Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
+                    Value::Real(0.5),
+                ]
+            ),
+            0.5,
+            DimensionVector::LENGTH
+        );
+    }
+
+    #[test]
+    fn lerp_dimension_mismatch_a_b_returns_undef() {
+        // a and b have different dimensions -> Undef
+        let result = eval_builtin(
+            "lerp",
+            &[
+                Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
+                Value::Scalar { si_value: 1.0, dimension: DimensionVector::TIME },
+                Value::Real(0.5),
+            ],
+        );
+        assert!(result.is_undef(), "lerp dimension mismatch a/b should be Undef, got {:?}", result);
+    }
+
+    #[test]
+    fn lerp_t_dimensioned_returns_undef() {
+        // t must be dimensionless; a LENGTH t is invalid
+        let result = eval_builtin(
+            "lerp",
+            &[
+                Value::Real(0.0),
+                Value::Real(10.0),
+                Value::Scalar { si_value: 0.5, dimension: DimensionVector::LENGTH },
+            ],
+        );
+        assert!(result.is_undef(), "lerp with dimensioned t should be Undef, got {:?}", result);
+    }
+
+    #[test]
+    fn lerp_nan_a_returns_undef() {
+        // NaN in a -> Undef (via sanitize_value)
+        let result = eval_builtin(
+            "lerp",
+            &[
+                Value::Scalar { si_value: f64::NAN, dimension: DimensionVector::LENGTH },
+                Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
+                Value::Real(0.5),
+            ],
+        );
+        assert!(result.is_undef(), "lerp with NaN a should be Undef, got {:?}", result);
+    }
+
+    #[test]
+    fn lerp_nan_b_returns_undef() {
+        // NaN in b -> Undef (via sanitize_value)
+        let result = eval_builtin(
+            "lerp",
+            &[
+                Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
+                Value::Scalar { si_value: f64::NAN, dimension: DimensionVector::LENGTH },
+                Value::Real(0.5),
+            ],
+        );
+        assert!(result.is_undef(), "lerp with NaN b should be Undef, got {:?}", result);
+    }
 }
