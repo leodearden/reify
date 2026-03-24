@@ -26,7 +26,7 @@ fn errors_only(module: &reify_compiler::CompiledModule) -> Vec<&reify_types::Dia
         .collect()
 }
 
-// ── step-1: duplicate structure names ──────────────────────────────────────
+// ── step-1/3: duplicate entity names ─────────────────────────────────────
 
 /// Two structures with the same name produce a 'duplicate entity definition'
 /// error diagnostic with two labels. Only one template is compiled.
@@ -68,6 +68,54 @@ structure Bracket {
     );
 
     // Only 1 template compiled (the first definition wins, duplicate is skipped)
+    assert_eq!(
+        module.templates.len(),
+        1,
+        "expected only 1 compiled template, got {}",
+        module.templates.len()
+    );
+}
+
+// ── step-3: duplicate occurrence names ────────────────────────────────────
+
+/// Two occurrences with the same name produce a 'duplicate entity definition'
+/// error diagnostic with two labels. Only one template is compiled.
+#[test]
+fn duplicate_occurrence_names_produce_error() {
+    let source = r#"
+occurrence Weld {
+    param duration : Real = 5.0
+}
+
+occurrence Weld {
+    param energy : Real = 100.0
+}
+"#;
+    let module = compile_module(source);
+    let errors = errors_only(&module);
+
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly 1 error for duplicate occurrence, got: {:?}",
+        errors
+    );
+
+    let msg = &errors[0].message;
+    assert!(
+        msg.contains("duplicate entity definition") && msg.contains("Weld"),
+        "error should say 'duplicate entity definition' for 'Weld', got: {:?}",
+        msg
+    );
+
+    assert_eq!(
+        errors[0].labels.len(),
+        2,
+        "expected 2 labels (duplicate + first), got {:?}",
+        errors[0].labels
+    );
+
+    // Only 1 template compiled (first definition wins)
     assert_eq!(
         module.templates.len(),
         1,
