@@ -161,7 +161,17 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
                     sanitize_value(Value::Real(lerp_f64(*av as f64, *bv as f64, tv)))
                 }
                 _ => {
-                    // Fallback: extract f64 from a and b; check dimension consistency
+                    // Fallback: extract f64 from a and b.
+                    // If both a and b were Scalar with matching dimension, the explicit Scalar
+                    // arm above handles them. In this fallback, at least one is non-Scalar.
+                    // Non-Scalar dimension() always returns DIMENSIONLESS, so any
+                    // non-DIMENSIONLESS dimension would be silently dropped — return Undef
+                    // to keep logic errors noisy (per feedback_silent_defaults_pattern).
+                    if a.dimension() != DimensionVector::DIMENSIONLESS
+                        || b.dimension() != DimensionVector::DIMENSIONLESS
+                    {
+                        return Value::Undef;
+                    }
                     let av = match a.as_f64() {
                         Some(v) => v,
                         None => return Value::Undef,
@@ -170,15 +180,7 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
                         Some(v) => v,
                         None => return Value::Undef,
                     };
-                    let da = a.dimension();
-                    if da != DimensionVector::DIMENSIONLESS && da == b.dimension() {
-                        sanitize_value(Value::Scalar {
-                            si_value: lerp_f64(av, bv, tv),
-                            dimension: da,
-                        })
-                    } else {
-                        sanitize_value(Value::Real(lerp_f64(av, bv, tv)))
-                    }
+                    sanitize_value(Value::Real(lerp_f64(av, bv, tv)))
                 }
             }
         }),
