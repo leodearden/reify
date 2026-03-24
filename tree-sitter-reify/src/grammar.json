@@ -1097,6 +1097,10 @@
         {
           "type": "SYMBOL",
           "name": "constraint_def_predicate"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "pragma"
         }
       ]
     },
@@ -4314,6 +4318,9 @@
     ],
     [
       "pragma_arg"
+    ],
+    [
+      "pragma"
     ]
   ],
   "precedences": [],

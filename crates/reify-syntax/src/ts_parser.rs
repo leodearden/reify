@@ -601,7 +601,7 @@ impl<'a> Lowering<'a> {
         let is_pub = self.has_pub_keyword(node);
         let type_params = self.lower_type_parameters(node);
         let params = self.lower_purpose_params(node);
-        let members = self.lower_purpose_members(node);
+        let (members, pragmas) = self.lower_purpose_members(node);
 
         Some(PurposeDef {
             name,
@@ -611,7 +611,7 @@ impl<'a> Lowering<'a> {
             members,
             span: self.span(node),
             content_hash: self.content_hash(node),
-            pragmas: Vec::new(),
+            pragmas,
         })
     }
 
@@ -626,6 +626,7 @@ impl<'a> Lowering<'a> {
 
         let mut params = Vec::new();
         let mut predicates = Vec::new();
+        let mut pragmas = Vec::new();
 
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
@@ -643,6 +644,11 @@ impl<'a> Lowering<'a> {
                         && let Some(expr) = self.lower_expr(expr_node)
                     {
                         predicates.push(expr);
+                    }
+                }
+                "pragma" => {
+                    if let Some(pragma) = self.lower_pragma(child) {
+                        pragmas.push(pragma);
                     }
                 }
                 "ERROR" => {
@@ -666,7 +672,7 @@ impl<'a> Lowering<'a> {
             predicates,
             span: self.span(node),
             content_hash: self.content_hash(node),
-            pragmas: Vec::new(),
+            pragmas,
         })
     }
 
@@ -798,20 +804,28 @@ impl<'a> Lowering<'a> {
         })
     }
 
-    fn lower_purpose_members(&mut self, node: tree_sitter::Node) -> Vec<MemberDecl> {
+    fn lower_purpose_members(
+        &mut self,
+        node: tree_sitter::Node,
+    ) -> (Vec<MemberDecl>, Vec<Pragma>) {
         let mut members = Vec::new();
+        let mut pragmas = Vec::new();
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             if child.kind() == "purpose_member" {
-                // purpose_member is a choice node wrapping the actual member
-                if let Some(inner) = child.named_child(0)
-                    && let Some(member) = self.lower_member(inner)
-                {
-                    members.push(member);
+                // purpose_member is a choice node wrapping the actual member or pragma
+                if let Some(inner) = child.named_child(0) {
+                    if inner.kind() == "pragma" {
+                        if let Some(pragma) = self.lower_pragma(inner) {
+                            pragmas.push(pragma);
+                        }
+                    } else if let Some(member) = self.lower_member(inner) {
+                        members.push(member);
+                    }
                 }
             }
         }
-        members
+        (members, pragmas)
     }
 
     fn lower_fn_param(&self, node: tree_sitter::Node) -> Option<FnParam> {

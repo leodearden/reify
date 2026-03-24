@@ -27,6 +27,7 @@ module.exports = grammar({
     [$.sub_declaration],
     [$.port_declaration],
     [$.pragma_arg],
+    [$.pragma],
   ],
 
   rules: {
@@ -250,6 +251,7 @@ module.exports = grammar({
       $.param_declaration,
       $.let_declaration,
       $.constraint_def_predicate,
+      $.pragma,
     ),
 
     // A bare expression predicate inside a constraint def body.
