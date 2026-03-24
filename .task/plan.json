@@ -1,146 +1,70 @@
 {
-  "task_id": "149",
-  "title": "Range type: Type and Value variants",
+  "task_id": "355",
+  "title": "Rework range_constraint/equality_constraint API and reorganize TraitDefBuilder tests",
   "files": [
-    "crates/reify-types/src/ty.rs",
-    "crates/reify-types/src/value.rs",
-    "crates/reify-types/tests/exports.rs"
+    "crates/reify-test-support/src/builders.rs"
   ],
   "modules": [
-    "crates/reify-types"
+    "crates/reify-test-support"
   ],
-  "analysis": "This task is ALREADY FULLY IMPLEMENTED in the current worktree. Both Range variants exist with comprehensive trait implementations and 52 Range-specific tests (all passing, 289 total in reify-types).\n\n**Type::Range(Box<Type>)** at ty.rs line 49:\n- Derives Debug, Clone, PartialEq, Eq, Hash automatically via derive macros\n- Display impl: 'Range<{inner}>' at line 644\n- Factory method: Type::range(inner) at lines 109-112\n- 8 unit tests (lines 522-588): construction, display (int/scalar/real), factory, eq+hash, not_numeric, as_name_none\n\n**Value::Range { lower, upper, lower_inclusive, upper_inclusive }** at value.rs lines 58-63:\n- PartialEq: field-by-field comparison (lines 318-321)\n- Eq: marker trait (line 328)\n- Ord: type_tag=16, compares lower_inclusive -> lower -> upper_inclusive -> upper (lines 432-440)\n- Display: interval notation [0..10] or (-inf..inf) (lines 551-563)\n- content_hash: tag=17, flags then optional bounds (lines 252-264)\n- Factory: Value::range() with normalization \u2014 forces inclusive=false when bound is None (lines 91-105)\n- 44 unit tests covering display (8), content_hash (6), ord (7), equality (10), normalization (7), cross-variant (3), hash consistency (3)\n\n**Dimension checking**: Type::Range(Box<Type>) structurally guarantees both bounds share the same element type (and thus dimension for Scalar). Runtime dimension checking is the type-checker's responsibility (in reify-compiler, not reify-types).\n\n**Exports**: tests/exports.rs lines 197-214 verify Range is accessible via public API for both Type and Value.\n\nSince everything is fully implemented and tested, the steps below are verification-only \u2014 each confirms existing code and tests are correct.\n\n**Review fix (steps 9-10):** The reviewer identified that Value::Range is a public enum variant with named fields, so callers can bypass Value::range() and directly construct Value::Range { lower: None, lower_inclusive: true, ... }. This violates the normalization invariant (inclusive flags must be false when bounds are None), which corrupts cache equality. The fix adds debug_assert! guards in all four trait impls (content_hash, PartialEq, Ord, Display) to catch invariant violations at runtime in debug builds. A compile-time fix via #[non_exhaustive] was considered but deferred because it would break pattern matching and construction in dependent crates (reify-test-support, reify-lsp, gui/src-tauri) which are outside this task's scope.",
-  "prerequisites": [],
+  "analysis": "Thorough codebase exploration reveals that 2 of the 3 deferred issues from task 218 review (S1 and S2) have ALREADY been resolved in the current code. Only S6 (test reorganization) remains.\n\n**S1 (range_constraint API rework) - ALREADY DONE:** The current `range_constraint` at builders.rs:353 returns `Vec<CompiledExpr>` (not `Vec<CompiledConstraint>`). It does NOT hardcode ConstraintNodeId indices -- callers assign their own indices via `TopologyTemplateBuilder::constraint()`. Tests at lines 1796-1843 in `mod constraint_helper_tests` verify composability (`range_constraint_composable_for_multiple_members`) and correctness (`range_constraint_returns_two_bool_exprs`).\n\n**S2 (equality_constraint/range_constraint asymmetry) - ALREADY DONE:** Both `range_constraint` (line 353) and `equality_constraint` (line 369) return `Vec<CompiledExpr>`, making them symmetric. The `constrained_structure_module()` fixture at line 640 uses `range_constraint` for both width and height -- no hand-rolling. Test `equality_constraint_returns_single_bool_expr` (line 1781) verifies the equality helper.\n\n**S6 (test module organization) - REMAINING WORK:** 9 TraitDefBuilder tests (lines 795-931) are inside `mod tests` at line 688, which is the general test module positioned between TopologyTemplateBuilder (line 392) and TraitDefBuilder (line 1184). These tests are above the struct they test, which violates the file's own convention where each builder's tests live in a dedicated module near its definition. Existing examples of correct placement: `mod purpose_builder_tests` (line 1659) near CompiledPurposeBuilder (line 1482), `mod trait_builder_tests` (line 1722) near CompiledTraitBuilder (line 1579), `mod constraint_helper_tests` (line 1777) near the constraint helpers (line 342).\n\nThe 9 tests to move:\n1. trait_def_builder_minimal (line 797)\n2. trait_def_builder_with_requirement (line 811)\n3. trait_def_builder_with_refinement (line 823)\n4. trait_def_builder_with_type_param (line 832)\n5. trait_def_builder_is_pub (line 854)\n6. trait_def_builder_content_hash_differs_by_name (line 860)\n7. trait_def_builder_with_default (line 867)\n8. trait_def_content_hash_differs_by_type_param (line 888)\n9. trait_def_content_hash_differs_by_default (line 910)\n\nThe `mod tests` module (lines 688-1179) also contains tests for literal expressions, TopologyTemplateBuilder, collection expressions, conditional/fn_call/user_fn_call/method_call/lambda expressions, field operations, and CompiledFieldBuilder -- all of which stay.",
+  "prerequisites": [
+    {
+      "id": "pre-1",
+      "description": "Run `cargo test -p reify-test-support` to establish baseline -- confirm all existing tests pass before reorganization. Record the test count to verify after the move.",
+      "status": "done",
+      "commit": "baseline-117-tests",
+      "tests": [
+        "cargo test -p reify-test-support"
+      ]
+    }
+  ],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Verify Type::Range(Box<Type>) variant exists with derived Eq/Hash, Display as 'Range<{inner}>', and factory method Type::range(). Run existing 8 tests in ty.rs (type_range_construction through type_range_as_name_none). All should pass \u2014 no new test code needed.",
-      "status": "done",
-      "commit": "6f1eba2531d1c137305cb0882a844d5e01329e12"
+      "description": "Create new `#[cfg(test)] mod trait_def_builder_tests` after TraitDefBuilder impl block (after line ~1275, before CompiledModuleBuilder at line 1277). Copy all 9 TraitDefBuilder tests into this module. The module needs `use super::*;` plus specific imports used by the tests: `use reify_types::{CompiledExprKind, ContentHash, DimensionVector, TypeParam, TraitBound, TraitRef, SourceSpan};` and `use reify_compiler::{DefaultKind, RequirementKind};`. Verify the new module compiles and all 9 tests pass with `cargo test -p reify-test-support trait_def_builder_tests`. At this point duplicate tests exist in both `mod tests` and `mod trait_def_builder_tests` -- both should pass.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Type::Range(Box<Type>) already at ty.rs:49 with derive(Debug, Clone, PartialEq, Eq, Hash), Display at line 644, factory at lines 109-112. No code changes needed \u2014 mark as done after step-1 verification.",
-      "status": "done",
-      "commit": "6f1eba2531d1c137305cb0882a844d5e01329e12"
-    },
-    {
-      "id": "step-3",
-      "type": "test",
-      "description": "Verify Value::Range struct variant exists with PartialEq (lines 318-321), Eq (line 328), content_hash tag=17 (lines 252-264). Run existing 15 equality+hash tests (value_range_equal_ranges_are_equal through value_range_content_hash_both_none_deterministic). All should pass.",
-      "status": "done",
-      "commit": "6f1eba2531d1c137305cb0882a844d5e01329e12"
-    },
-    {
-      "id": "step-4",
-      "type": "impl",
-      "description": "Value::Range { lower, upper, lower_inclusive, upper_inclusive } already at value.rs:58-63. PartialEq, Eq, content_hash all implemented. No code changes needed.",
-      "status": "done",
-      "commit": "6f1eba2531d1c137305cb0882a844d5e01329e12"
-    },
-    {
-      "id": "step-5",
-      "type": "test",
-      "description": "Verify Value::Range Ord (type_tag=16, lines 432-440) and Display (interval notation, lines 551-563). Run existing 15 ord+display tests (value_range_ord_cross_type_after_orientation through value_range_display_real_bounds). All should pass.",
-      "status": "done",
-      "commit": "6f1eba2531d1c137305cb0882a844d5e01329e12"
-    },
-    {
-      "id": "step-6",
-      "type": "impl",
-      "description": "Value::Range Ord and Display already fully implemented. Ord compares lower_inclusive -> lower -> upper_inclusive -> upper. Display uses [/( brackets with -inf/inf for unbounded. No code changes needed.",
-      "status": "done",
-      "commit": "6f1eba2531d1c137305cb0882a844d5e01329e12"
-    },
-    {
-      "id": "step-7",
-      "type": "test",
-      "description": "Verify Value::range() factory normalizes inclusivity (forces false when bound is None) and exports.rs covers Range. Run existing 12 normalization tests (value_range_normalize_* through value_range_display_both_none_with_inclusive_true) and exports test. All should pass.",
-      "status": "done",
-      "commit": "6f1eba2531d1c137305cb0882a844d5e01329e12"
-    },
-    {
-      "id": "step-8",
-      "type": "impl",
-      "description": "Value::range() factory at value.rs:91-105 normalizes inclusive flags. exports.rs lines 197-214 test public API. No code changes needed \u2014 full implementation is complete.",
-      "status": "done",
-      "commit": "6f1eba2531d1c137305cb0882a844d5e01329e12"
-    },
-    {
-      "id": "step-9",
-      "type": "test",
-      "description": "Write 4 failing tests for Range invariant enforcement (review fix: invariant_bypass). Tests directly construct Value::Range { lower: None, lower_inclusive: true, ... } bypassing the factory, then call content_hash(), eq(), cmp(), and format!() respectively. Each test should panic in debug mode with the message 'Range invariant violated: lower_inclusive must be false when lower is None'. Also write 2 tests for upper bound: directly construct with upper: None, upper_inclusive: true and verify content_hash() and format!() panic. All 6 tests use #[should_panic(expected = \"Range invariant violated\")]. Tests go in value.rs after the existing normalization tests (~line 2300).",
-      "status": "done",
-      "commit": "a86fc299"
-    },
-    {
-      "id": "step-10",
-      "type": "impl",
-      "description": "Add debug_assert! guards in all 4 trait impls for Value::Range to enforce the normalization invariant. In each impl's Range match arm, add two assertions before the existing logic: debug_assert!(lower.is_some() || !lower_inclusive, \"Range invariant violated: lower_inclusive must be false when lower is None\") and debug_assert!(upper.is_some() || !upper_inclusive, \"Range invariant violated: upper_inclusive must be false when upper is None\"). Locations: (1) content_hash at value.rs:252-264, add after the pattern match and before tag=17 hashing; (2) PartialEq at value.rs:318-321, add assertions for both self and other Range values; (3) Ord at value.rs:432-440, add assertions for both Range values; (4) Display at value.rs:551-563, add after the pattern match and before bracket formatting. This catches any direct construction that bypasses Value::range() at runtime in debug builds.",
-      "status": "done",
-      "commit": "755ab264"
+      "description": "Remove the 9 TraitDefBuilder tests from `mod tests` (lines 795-931). After removal, the `mod tests` module retains: literal expression tests (lines 694-779), auto_param_builder (line 782), TopologyTemplateBuilder trait extension tests (line 933+), collection expression tests, conditional/fn_call/method_call/lambda tests, field operation tests, and CompiledFieldBuilder tests. Run `cargo test -p reify-test-support` to verify total test count is unchanged (tests moved, not removed). Verify `cargo test -p reify-test-support tests::trait_def` returns 0 results (no TraitDefBuilder tests in old module).",
+      "status": "pending",
+      "commit": null
     }
   ],
   "design_decisions": [
     {
-      "decision": "Type::Range wraps a single Box<Type> rather than two separate bound types",
-      "rationale": "Structurally enforces that both bounds share the same element type (and thus the same dimension for Scalar types). No runtime validation needed in reify-types \u2014 the type checker in reify-compiler handles dimension checking at the type level."
+      "decision": "S1 and S2 are already resolved -- no code changes needed for constraint API",
+      "rationale": "The current `range_constraint` (line 353) and `equality_constraint` (line 369) both return `Vec<CompiledExpr>`, making them symmetric and free of hardcoded ConstraintNodeId indices. The `constrained_structure_module()` fixture uses the helper for both width and height. Tests in `mod constraint_helper_tests` verify composability and correctness. These fixes were applied during the task 218 review merge cycle."
     },
     {
-      "decision": "Value::range() factory normalizes inclusive flags to false when bound is None",
-      "rationale": "Infinity is never 'included', so normalizing prevents logically identical ranges (e.g., (-inf..10] vs [-inf..10]) from comparing as different or producing different content hashes. This is critical for the cache-equality invariant."
+      "decision": "Place new `mod trait_def_builder_tests` immediately after TraitDefBuilder impl block, before CompiledModuleBuilder",
+      "rationale": "Follows the established file convention where each builder's tests are in a dedicated module positioned near the builder's definition. Examples: `mod purpose_builder_tests` (line 1659) near CompiledPurposeBuilder (line 1482), `mod trait_builder_tests` (line 1722) near CompiledTraitBuilder (line 1579). Placing after TraitDefBuilder's impl (line 1275) and before CompiledModuleBuilder (line 1277) maintains this proximity pattern."
     },
     {
-      "decision": "Ord for Value::Range uses type_tag=16 (after Orientation=15) and compares lower_inclusive before lower bound",
-      "rationale": "Tag 16 places Range after Orientation in cross-type ordering, consistent with enum declaration order. Within-type comparison puts inclusive/exclusive status first for deterministic total ordering."
+      "decision": "Two-step move: copy to new location first, then remove from old location",
+      "rationale": "Creating the tests in the new module first (step-1) and removing from the old module second (step-2) ensures each step is independently compilable and testable. After step-1, duplicate tests exist but all pass -- proving the new module is correct. After step-2, duplicates are eliminated. This is safer than a single atomic move where an error could lose test coverage."
     },
     {
-      "decision": "content_hash uses tag byte 17 for Range (tag 10 reserved for Satisfaction, 0-16 for other Value variants)",
-      "rationale": "Avoids collision with all existing Value and Satisfaction hash tags. The tag-then-flags-then-optional-bounds structure ensures different Range configurations produce distinct hashes."
-    },
-    {
-      "decision": "Display uses mathematical interval notation: [0..10], (0..10), (-inf..inf)",
-      "rationale": "Standard interval notation is universally understood: [ for inclusive, ( for exclusive, -inf/inf for unbounded. Uses '..' as Rust-idiomatic range separator."
-    },
-    {
-      "decision": "Use debug_assert! guards rather than #[non_exhaustive] to enforce Range normalization invariant",
-      "rationale": "The reviewer identified that Value::Range can be directly constructed bypassing the Value::range() factory, violating the normalization invariant. debug_assert! catches violations at runtime in debug builds with clear error messages. #[non_exhaustive] was considered for compile-time prevention but would break pattern matching and construction in dependent crates (reify-test-support, reify-lsp, gui/src-tauri) which are outside this task's scope. The debug_assert approach is defense-in-depth: the factory is the intended API, and assertions catch misuse during development."
+      "decision": "Use `use super::*` as primary import in new test module",
+      "rationale": "All other test modules in builders.rs use `use super::*` as their base import. The TraitDefBuilder tests additionally need specific types from reify_types (TraitBound, TraitRef, TypeParam) and reify_compiler (DefaultKind, RequirementKind) which require explicit use statements, matching the pattern used by other test modules like `trait_builder_tests` which imports `use reify_compiler::{CompiledTrait, RequirementKind};`."
     }
   ],
   "reuse": [
     {
-      "what": "Derive macros on Type enum for automatic Eq/Hash",
-      "where": "crates/reify-types/src/ty.rs line 4",
-      "how": "Type derives Debug, Clone, PartialEq, Eq, Hash \u2014 Range(Box<Type>) gets all traits for free via the derive, no manual implementation needed."
+      "what": "Existing test module organizational pattern",
+      "where": "builders.rs lines 1656-1772 (purpose_builder_tests, trait_builder_tests)",
+      "how": "Follow the exact same pattern: `#[cfg(test)]` attribute, section comment header (e.g. `// --- Tests for TraitDefBuilder ---`), descriptive module name, `use super::*` import. The new module mirrors this structure exactly."
     },
     {
-      "what": "ContentHash::of and ContentHash::combine for tagged hashing",
-      "where": "crates/reify-types/src/hash.rs",
-      "how": "Range content_hash follows the same tag+combine pattern used by all other Value variants (List uses tag 7, Tensor uses tag 14, etc.)."
-    },
-    {
-      "what": "f64 to_bits() pattern for total ordering in Value",
-      "where": "crates/reify-types/src/value.rs PartialEq and Ord impls",
-      "how": "Range bounds containing Real/Scalar values inherit the to_bits() total ordering through recursive Value comparison \u2014 no special f64 handling needed in Range-specific code."
-    },
-    {
-      "what": "Box<Type> / Option<Box<Value>> boxing pattern for recursive types",
-      "where": "Existing compound types: List(Box<Type>), Option(Option<Box<Value>>), Complex(Box<Type>)",
-      "how": "Range follows identical boxing: Type::Range(Box<Type>) and Value::Range { lower: Option<Box<Value>>, upper: Option<Box<Value>> }."
-    },
-    {
-      "what": "Factory method convention with normalization",
-      "where": "Type::complex(), Type::vec3(), Value::length() factory methods",
-      "how": "Type::range() and Value::range() follow the same convenience-constructor convention. Value::range() adds normalization logic specific to Range semantics."
-    },
-    {
-      "what": "Existing debug_assert! pattern in reify-types",
-      "where": "crates/reify-types/src/diagnostics.rs:14",
-      "how": "The crate already uses debug_assert! for invariant checking (e.g., start <= end in diagnostics). Range invariant guards follow this same pattern."
+      "what": "Existing TraitDefBuilder test code (9 tests, lines 795-931)",
+      "where": "builders.rs `mod tests` block",
+      "how": "Move verbatim with no logic changes. Tests use TraitDefBuilder::new(), RequirementKind, DefaultKind, TypeParam, TraitBound, TraitRef, ContentHash, DimensionVector, SourceSpan -- all accessible from the new module position via `use super::*` plus targeted imports from reify_types and reify_compiler."
     }
   ],
-  "_session_id": "149-f4f12efa",
-  "_created_at": "2026-03-24T21:44:29.287931+00:00"
+  "_session_id": "355-bfa0192c",
+  "_created_at": "2026-03-24T22:16:59.429290+00:00"
 }
