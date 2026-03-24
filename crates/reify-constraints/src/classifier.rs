@@ -74,7 +74,10 @@ impl ConstraintClassifier {
                 CompiledExprKind::Literal(value) => {
                     match value {
                         Value::Bool(_) => flags.has_logical = true,
-                        Value::Int(_) | Value::Real(_) | Value::Scalar { .. } => {
+                        Value::Int(_)
+                        | Value::Real(_)
+                        | Value::Scalar { .. }
+                        | Value::Complex { .. } => {
                             flags.has_numeric = true;
                         }
                         Value::String(_) | Value::Undef => {

@@ -118,6 +118,12 @@ pub fn format_value(v: &Value) -> (String, String) {
             let strs: Vec<String> = items.iter().map(|v| format_value(v).0).collect();
             (format!("[{}]", strs.join(", ")), String::new())
         }
+        Value::Complex { re, im, dimension } => {
+            let (display_re, unit) = convert_si_to_display(*re, *dimension);
+            let (display_im, _) = convert_si_to_display(*im, *dimension);
+            let formatted = format!("{} + {}i", format_number(display_re), format_number(display_im));
+            (formatted, unit.to_string())
+        }
         Value::Undef => ("undefined".to_string(), String::new()),
     }
 }

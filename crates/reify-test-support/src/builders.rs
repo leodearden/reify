@@ -44,6 +44,7 @@ fn infer_value_type(v: &Value) -> Type {
         Value::Tensor(_) => {
             panic!("literal() cannot infer Tensor type (rank/n/quantity). Use CompiledExpr::literal(value, type) directly.")
         }
+        Value::Complex { dimension, .. } => Type::complex(Type::Scalar { dimension: *dimension }),
         Value::Undef => Type::Bool,
     }
 }

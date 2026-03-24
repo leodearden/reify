@@ -190,6 +190,14 @@ pub fn format_value(value: &Value) -> String {
         Value::Field { domain_type, codomain_type, source, .. } => {
             format!("Field<{}, {}>({:?})", domain_type, codomain_type, source)
         }
+        Value::Complex { re, im, dimension } => {
+            let unit = dimension_unit_label(dimension);
+            if unit.is_empty() {
+                format!("{re} + {im}i")
+            } else {
+                format!("{re} + {im}i {unit}")
+            }
+        }
         Value::Undef => "(undefined)".to_string(),
     }
 }
