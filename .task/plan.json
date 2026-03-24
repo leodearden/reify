@@ -67,35 +67,35 @@
       "type": "test",
       "description": "Write Voltage dimension spec tests: (1) complex_voltage_preserves_dimension — build voltage_dim = MASS·LENGTH²·TIME⁻³·CURRENT⁻¹, create complex(Scalar{3,voltage}, Scalar{4,voltage}), assert result is Complex with voltage dimension, (2) real_voltage_returns_scalar — real(complex_voltage) → Scalar{3, voltage}, (3) imag_voltage_returns_scalar — imag(complex_voltage) → Scalar{4, voltage}, (4) complex_magnitude_voltage — complex_magnitude(complex_voltage) → Scalar{5, voltage}, (5) conjugate_voltage_preserves_dim — conjugate flips im sign, preserves voltage dimension. These exercise existing logic with the specific Voltage dimension from the task spec.",
       "status": "done",
-      "commit": "PENDING"
+      "commit": "3dfb1000"
     },
     {
       "id": "step-8",
       "type": "test",
       "description": "Write dimension mismatch spec test: complex_voltage_current_mismatch_returns_undef — build voltage_dim and current_dim (DimensionVector::CURRENT), call eval_builtin(\"complex\", &[Scalar{3, voltage}, Scalar{4, current}]), assert result is Undef because Voltage ≠ Current dimensions.",
       "status": "done",
-      "commit": "PENDING"
+      "commit": "3dfb1000"
     },
     {
       "id": "step-9",
       "type": "test",
       "description": "Write phase degree-equivalent verification test: phase_1_plus_i_approx_45_deg — create Complex{1,1,DIMLESS}, call phase(), assert result is Scalar with ANGLE dimension and si_value ≈ π/4 ≈ 0.7854 radians (which is 45°). Add comment noting 45° equivalence. This verifies the specific task-spec case phase(1+i)≈45deg.",
       "status": "done",
-      "commit": "PENDING"
+      "commit": "3dfb1000"
     },
     {
       "id": "step-10",
       "type": "test",
       "description": "Add LSP completion test: in crates/reify-lsp/src/completion.rs tests, verify that BUILTIN_FUNCTIONS contains complex number function names. Assert BUILTIN_FUNCTIONS.contains(&\"complex\"), .contains(&\"real\"), .contains(&\"imag\"), .contains(&\"conjugate\"), .contains(&\"complex_magnitude\"), .contains(&\"phase\"). This will fail until step-11 adds them.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "PENDING"
     },
     {
       "id": "step-11",
       "type": "impl",
       "description": "Update BUILTIN_FUNCTIONS array in crates/reify-lsp/src/completion.rs to include complex number functions: add \"complex\", \"real\", \"imag\", \"conjugate\", \"complex_magnitude\", \"phase\" to the existing array. Keep existing entries and add a comment grouping the complex functions.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "PENDING"
     }
   ],
   "design_decisions": [
