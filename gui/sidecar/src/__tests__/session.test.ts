@@ -315,6 +315,106 @@ describe('SidecarSession', () => {
   });
 });
 
+describe('SidecarSession destroy() lifecycle', () => {
+  let outputs: OutboundMessage[];
+
+  beforeEach(() => {
+    outputs = [];
+    vi.mocked(spawn).mockReset();
+  });
+
+  it('destroy() aborts in-flight request and emits done', async () => {
+    const mockProc = new EventEmitter() as any;
+    const stdout = new PassThrough();
+    mockProc.stdout = stdout;
+    mockProc.stderr = new PassThrough();
+    mockProc.stdin = new PassThrough();
+    mockProc.exitCode = null;
+
+    vi.mocked(spawn).mockImplementation(((_cmd: string, _args: string[], opts: any) => {
+      if (opts?.signal) {
+        opts.signal.addEventListener('abort', () => {
+          stdout.end();
+          mockProc.exitCode = null;
+          mockProc.emit('close', null);
+        });
+      }
+      return mockProc;
+    }) as any);
+
+    const session = new SidecarSession({
+      model: 'claude-opus-4-6',
+      workingDirectory: '/tmp/test-project',
+      systemPrompt: 'Test.',
+    });
+    session.onOutput = (msg) => outputs.push(msg);
+
+    await session.init();
+    outputs.length = 0;
+
+    // Start a hanging send_message
+    const msgPromise = session.handleMessage({
+      type: 'send_message',
+      id: 'msg-destroy',
+      text: 'Hang',
+    });
+
+    // Give it a tick to set up
+    await new Promise((r) => setTimeout(r, 10));
+
+    // Destroy should abort the in-flight request
+    session.destroy();
+
+    await msgPromise;
+
+    // Should emit done (not error) on destroy
+    const dones = outputs.filter((o) => o.type === 'done');
+    expect(dones).toHaveLength(1);
+    expect(dones[0]).toEqual({ type: 'done', id: 'msg-destroy' });
+
+    const errors = outputs.filter((o) => o.type === 'error');
+    expect(errors).toHaveLength(0);
+  });
+
+  it('handleMessage after destroy() is a no-op (does not spawn or emit)', async () => {
+    const session = new SidecarSession({
+      model: 'claude-opus-4-6',
+      workingDirectory: '/tmp/test-project',
+      systemPrompt: 'Test.',
+    });
+    session.onOutput = (msg) => outputs.push(msg);
+
+    await session.init();
+    outputs.length = 0;
+
+    session.destroy();
+
+    // After destroy, handleMessage should be a no-op
+    await session.handleMessage({ type: 'send_message', id: 'msg-after', text: 'Post-destroy' });
+
+    // spawn should NOT have been called (no subprocess spawned)
+    expect(vi.mocked(spawn)).not.toHaveBeenCalled();
+
+    // No messages emitted (not even done or error)
+    expect(outputs).toHaveLength(0);
+  });
+
+  it('destroy() is idempotent — calling twice does not throw', async () => {
+    const session = new SidecarSession({
+      model: 'claude-opus-4-6',
+      workingDirectory: '/tmp/test-project',
+      systemPrompt: 'Test.',
+    });
+    session.onOutput = (msg) => outputs.push(msg);
+
+    await session.init();
+
+    // Both calls should complete without throwing
+    expect(() => session.destroy()).not.toThrow();
+    expect(() => session.destroy()).not.toThrow();
+  });
+});
+
 describe('SidecarSession timeout', () => {
   let session: SidecarSession;
   let outputs: OutboundMessage[];
