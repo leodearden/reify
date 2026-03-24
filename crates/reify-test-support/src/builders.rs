@@ -173,6 +173,18 @@ pub fn map_expr(entries: Vec<(CompiledExpr, CompiledExpr)>) -> CompiledExpr {
     CompiledExpr::map_literal(entries, result_type)
 }
 
+/// Create an `option_some` expression wrapping `inner`, inferring `Type::Option(inner.result_type)`.
+pub fn option_some_expr(inner: CompiledExpr) -> CompiledExpr {
+    let result_type = Type::Option(Box::new(inner.result_type.clone()));
+    CompiledExpr::option_some(inner, result_type)
+}
+
+/// Create an `option_none` expression for the given inner type, producing `Type::Option(inner_type)`.
+pub fn option_none_expr(inner_type: Type) -> CompiledExpr {
+    let result_type = Type::Option(Box::new(inner_type));
+    CompiledExpr::option_none(result_type)
+}
+
 /// Create a conditional expression. Result type is taken from `then_branch`.
 pub fn conditional_expr(
     condition: CompiledExpr,
@@ -455,6 +467,25 @@ impl TopologyTemplateBuilder {
         self.value_cells.push(ValueCellDecl {
             id: ValueCellId::new(entity, member),
             kind: ValueCellKind::Auto,
+            visibility: reify_compiler::Visibility::Public,
+            cell_type,
+            default_expr: None,
+            span: SourceSpan::new(0, 0),
+        });
+        self
+    }
+
+    /// Spec-aligned alias for `auto_param`. Creates a ValueCellKind::Auto cell (a "free" parameter
+    /// with no default, determined by the solver).
+    pub fn free_param(self, entity: &str, member: &str, cell_type: Type) -> Self {
+        self.auto_param(entity, member, cell_type)
+    }
+
+    /// Create a ValueCellKind::Param cell with no default expression.
+    pub fn param_no_default(mut self, entity: &str, member: &str, cell_type: Type) -> Self {
+        self.value_cells.push(ValueCellDecl {
+            id: ValueCellId::new(entity, member),
+            kind: ValueCellKind::Param,
             visibility: reify_compiler::Visibility::Public,
             cell_type,
             default_expr: None,
@@ -1891,5 +1922,70 @@ mod module_builder_extension_tests {
         let t = CompiledTraitBuilder::new("Rigid").build();
         let with_trait = CompiledModuleBuilder::new(module_path()).trait_def(t).build();
         assert_ne!(empty_module.content_hash, with_trait.content_hash);
+    }
+
+    // step-5: failing tests for option expression helpers
+    #[test]
+    fn option_some_expr_wraps_inner_with_option_type() {
+        let inner = literal(Value::Int(42));
+        let expr = option_some_expr(inner);
+        assert_eq!(expr.result_type, Type::Option(Box::new(Type::Int)));
+        assert!(matches!(expr.kind, CompiledExprKind::OptionSome(_)));
+    }
+
+    #[test]
+    fn option_none_expr_produces_option_none_kind() {
+        let expr = option_none_expr(Type::Real);
+        assert_eq!(expr.result_type, Type::Option(Box::new(Type::Real)));
+        assert!(matches!(expr.kind, CompiledExprKind::OptionNone));
+    }
+
+    #[test]
+    fn option_some_expr_content_hash_is_nonzero() {
+        let inner = literal(Value::Int(42));
+        let expr = option_some_expr(inner);
+        assert_ne!(expr.content_hash, reify_types::ContentHash::of(&[]));
+    }
+
+    // step-7: failing tests for free_param and param_no_default
+    #[test]
+    fn free_param_creates_auto_kind_cell() {
+        use reify_compiler::ValueCellKind;
+        let template = TopologyTemplateBuilder::new("S")
+            .free_param("S", "x", Type::Scalar { dimension: DimensionVector::LENGTH })
+            .build();
+        let cell = &template.value_cells[0];
+        assert_eq!(cell.kind, ValueCellKind::Auto);
+        assert!(cell.default_expr.is_none());
+        assert_eq!(cell.visibility, reify_compiler::Visibility::Public);
+    }
+
+    #[test]
+    fn free_param_is_equivalent_to_auto_param() {
+        use reify_compiler::ValueCellKind;
+        let ty = Type::Scalar { dimension: DimensionVector::LENGTH };
+        let via_free = TopologyTemplateBuilder::new("S")
+            .free_param("S", "x", ty.clone())
+            .build();
+        let via_auto = TopologyTemplateBuilder::new("S")
+            .auto_param("S", "x", ty.clone())
+            .build();
+        assert_eq!(via_free.value_cells[0].kind, via_auto.value_cells[0].kind);
+        assert_eq!(via_free.value_cells[0].cell_type, via_auto.value_cells[0].cell_type);
+        // Both should have no default expression
+        assert!(via_free.value_cells[0].default_expr.is_none());
+        assert!(via_auto.value_cells[0].default_expr.is_none());
+    }
+
+    #[test]
+    fn param_no_default_creates_param_kind_without_default() {
+        use reify_compiler::ValueCellKind;
+        let template = TopologyTemplateBuilder::new("S")
+            .param_no_default("S", "y", Type::Int)
+            .build();
+        let cell = &template.value_cells[0];
+        assert_eq!(cell.kind, ValueCellKind::Param);
+        assert!(cell.default_expr.is_none());
+        assert_eq!(cell.visibility, reify_compiler::Visibility::Public);
     }
 }
