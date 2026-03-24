@@ -537,7 +537,7 @@ impl std::fmt::Display for Value {
                     None => "inf".to_string(),
                     Some(v) => format!("{}", v),
                 };
-                write!(f, "{}{}{}{}{}", lb, lower_str, "..", upper_str, ub)
+                write!(f, "{}{}..{}{}", lb, lower_str, upper_str, ub)
             }
             Value::Undef => write!(f, "undef"),
         }

@@ -46,6 +46,14 @@ fn infer_value_type(v: &Value) -> Type {
         }
         Value::Complex { dimension, .. } => Type::complex(Type::Scalar { dimension: *dimension }),
         Value::Orientation { .. } => Type::Orientation(3),
+        Value::Range { lower, upper, .. } => {
+            let elem_ty = lower
+                .as_ref()
+                .map(|v| infer_value_type(v))
+                .or_else(|| upper.as_ref().map(|v| infer_value_type(v)))
+                .unwrap_or(Type::Real);
+            Type::Range(Box::new(elem_ty))
+        }
         Value::Undef => Type::Bool,
     }
 }
