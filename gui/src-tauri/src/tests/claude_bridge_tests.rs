@@ -249,6 +249,48 @@ fn parse_outbound_missing_required_field_returns_err() {
     assert!(result.is_err());
 }
 
+// --- SidecarHandle::abort and clear_session tests (step-17) ---
+
+#[tokio::test]
+async fn sidecar_handle_abort_writes_abort_json() {
+    use std::sync::Arc;
+    use tokio::io::{AsyncReadExt, BufReader};
+    use tokio::sync::Mutex;
+
+    let state = Arc::new(Mutex::new(SidecarState::Ready));
+    let (writer, mut reader_end) = tokio::io::duplex(1024);
+    let data: &[u8] = b"";
+    let empty_reader = BufReader::new(data);
+    let mut handle = SidecarHandle::from_parts(writer, empty_reader, state);
+
+    handle.abort().await.unwrap();
+
+    let mut buf = vec![0u8; 64];
+    let n = reader_end.read(&mut buf).await.unwrap();
+    let written = std::str::from_utf8(&buf[..n]).unwrap();
+    assert_eq!(written, "{\"type\":\"abort\"}\n");
+}
+
+#[tokio::test]
+async fn sidecar_handle_clear_session_writes_clear_session_json() {
+    use std::sync::Arc;
+    use tokio::io::{AsyncReadExt, BufReader};
+    use tokio::sync::Mutex;
+
+    let state = Arc::new(Mutex::new(SidecarState::Ready));
+    let (writer, mut reader_end) = tokio::io::duplex(1024);
+    let data: &[u8] = b"";
+    let empty_reader = BufReader::new(data);
+    let mut handle = SidecarHandle::from_parts(writer, empty_reader, state);
+
+    handle.clear_session().await.unwrap();
+
+    let mut buf = vec![0u8; 64];
+    let n = reader_end.read(&mut buf).await.unwrap();
+    let written = std::str::from_utf8(&buf[..n]).unwrap();
+    assert_eq!(written, "{\"type\":\"clear_session\"}\n");
+}
+
 // --- SidecarHandle::send_message tests (step-15) ---
 
 #[tokio::test]

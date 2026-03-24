@@ -193,6 +193,16 @@ impl SidecarHandle {
         &self.state
     }
 
+    /// Send an abort signal to the sidecar (cancels the current message).
+    pub async fn abort(&mut self) -> Result<(), String> {
+        write_to_sidecar(&mut self.stdin, &InboundMessage::Abort).await
+    }
+
+    /// Send a clear_session signal to the sidecar (resets conversation history).
+    pub async fn clear_session(&mut self) -> Result<(), String> {
+        write_to_sidecar(&mut self.stdin, &InboundMessage::ClearSession).await
+    }
+
     /// Send a user message to the sidecar. Returns the generated message ID.
     ///
     /// The caller is responsible for ensuring the sidecar is in the Ready state.
