@@ -1,220 +1,165 @@
 {
-  "task_id": "307",
-  "title": "Stdlib: wire boolean operations \u2014 union, intersection, difference",
+  "task_id": "171",
+  "title": "Fn overloading: resolution logic",
   "files": [
     "crates/reify-compiler/src/lib.rs",
-    "crates/reify-eval/src/lib.rs",
-    "crates/reify-eval/tests/boolean_ops_e2e.rs"
+    "crates/reify-compiler/tests/fn_overload_tests.rs",
+    "crates/reify-expr/src/lib.rs"
   ],
   "modules": [
     "crates/reify-compiler",
-    "crates/reify-eval"
+    "crates/reify-expr"
   ],
-  "analysis": "The boolean operations infrastructure is fully built at every layer EXCEPT the compiler's function recognition and compilation. Specifically: (1) CompiledGeometryOp::Boolean { op: BooleanOp, left: GeomRef, right: GeomRef } already exists in the compiler types. (2) BooleanOp::{Union,Difference,Intersection} enum exists. (3) The eval layer's compile_geometry_op() already resolves Boolean ops via GeomRef::Step \u2192 step_handles lookup. (4) GeometryOp::{Union,Difference,Intersection} runtime variants exist in reify-types. (5) The OCCT kernel already dispatches to boolean_fuse/cut/common FFI. (6) OCCT FFI is proven working (boundary4_geometry.rs tests boolean_difference at kernel level). The ONLY gap is: is_geometry_function() doesn't include 'union'/'intersection'/'difference'/'union_all'/'intersection_all', and compile_geometry_call() has no match arms for them. The key design challenge is that boolean ops take geometry operands (not scalars), so compilation must recursively compile each arg as a geometry op chain, tracking step indices for GeomRef references. The eval engine accumulates step_handles across all operations in a flat vector, so GeomRef::Step(i) indices must be globally correct within the realization's ops list.\n\nREVIEW FIX: The compiler always passes step_offset: 0 per realization, making GeomRef::Step indices realization-local. However, the eval engine passes the full accumulated step_handles vector (which spans ALL realizations) to compile_geometry_op. When a second realization has boolean ops, Step(0) resolves to the first realization's handle instead of the current realization's first handle. The fix is to pass &step_handles[handle_start..] in all three eval code paths (tessellate_from_values at line 2650, and the two build methods at lines 2461 and 2535), making step_handles lookup realization-local to match the compiler's indexing.",
-  "prerequisites": [],
+  "analysis": "Function call resolution lives inline at lines 849-937 of reify-compiler/src/lib.rs within compile_expr_guarded(). Current flow: (1) compile args, (2) filter functions by name + arity + type_compatible() which includes Int→Real widening, (3) 1 match → UserFunctionCall, >1 → ambiguity error, 0 → stdlib FunctionCall fallback. The task requires: (A) exact type matching during resolution (no Int→Real), (B) proper error with candidate listing when user functions exist but none match, (C) ambiguity error when multiple match, (D) stdlib fallback only when NO user functions have that name. The type_compatible() function (lines 544-552) is only used in one place (the resolution filter), so replacing it with exact matching is safe. The evaluator in reify-expr (line 280) currently looks up functions by name+arity only, which is insufficient when two overloads have same name+arity but different param types. The evaluator already receives CompiledExpr args which carry result_type, so we can match on arg result_types to disambiguate — no struct changes to UserFunctionCall needed. Key insight: with exact matching, the current code would produce ambiguity for f(int_val) when both fn f(Int) and fn f(Real) exist, because type_compatible matches BOTH. Exact matching resolves this by only matching f(Int). The duplicate signature check (lines 1851-1875) is complementary and catches same-name + same-param-types at post-compilation.",
+  "prerequisites": [
+    {
+      "id": "pre-1",
+      "description": "Verify all existing compiler and expr tests pass on the worktree base before making changes. Run cargo test -p reify-compiler -p reify-expr to establish baseline.",
+      "status": "done",
+      "commit": "c608231",
+      "tests": []
+    }
+  ],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing inline tests in reify-compiler asserting is_geometry_function returns true for 'union', 'intersection', 'difference', 'union_all', 'intersection_all'",
+      "description": "Write failing test in fn_overload_tests.rs: define fn f(x: Int)->Int and fn f(x: Real)->Real, call f(3) where 3 is Int. Assert resolves to UserFunctionCall with function_name 'f' and return type Int (not ambiguity error). This fails because current type_compatible matches BOTH overloads via Int→Real widening, producing an ambiguity error.",
       "status": "done",
-      "commit": "bfc1da2"
+      "commit": "c608231"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Add 'union' | 'intersection' | 'difference' | 'union_all' | 'intersection_all' to is_geometry_function() match arms",
+      "description": "Extract resolve_function_overload() helper function from the inline FunctionCall resolution logic (lines 849-937). The function takes (name, arg_types, functions) and returns an enum: Resolved(&CompiledFunction) | NoUserFunctions | NoMatch(Vec<&CompiledFunction>) | Ambiguous(Vec<&CompiledFunction>). Use exact type matching (param_ty == arg_ty, NOT type_compatible) for candidate filtering. Wire the enum variants into the existing match arms: Resolved → UserFunctionCall, NoUserFunctions → stdlib FunctionCall fallback, NoMatch → error diagnostic, Ambiguous → ambiguity error.",
       "status": "done",
-      "commit": "4186230"
+      "commit": "2cd1524"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing inline test: parse 'let r = union(box(10mm,10mm,10mm), box(20mm,20mm,20mm))' \u2192 realization with 3 ops: 2 Primitive::Box + 1 Boolean{Union, Step(0), Step(1)}",
+      "description": "Write failing test: define only fn f(x: Real)->Real, call f(3) where 3 is Int. Assert produces a diagnostic error containing 'no matching overload' and the candidate 'f(Real) -> Real'. This verifies Int→Real is NOT used during resolution and that zero-match errors list candidates. Fails because error message format may not include candidates yet.",
       "status": "done",
-      "commit": "cf101cd"
+      "commit": "2f5ce69"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Add match arms for 'union'|'intersection'|'difference' in compile_geometry_call: validate 2 args, recursively compile each arg via compile_geometry_call, compute step indices, emit CompiledGeometryOp::Boolean with correct GeomRef::Step references. Include error diagnostics for wrong arity and non-geometry args.",
+      "description": "Ensure the NoMatch error diagnostic in resolve_function_overload lists all same-name candidates with their full signatures: 'no matching overload for f(Int), candidates: f(Real) -> Real'. Format each candidate as 'name(param_types) -> return_type'.",
       "status": "done",
-      "commit": "b228162"
+      "commit": "2f5ce69"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write inline test: 'let r = difference(box(20mm,20mm,20mm), box(10mm,10mm,10mm))' \u2192 realization with 3 ops ending in Boolean{Difference}. Should pass from step-4.",
+      "description": "Write test: define fn f(x: Int)->Int and fn f(x: Int, y: Int)->Int, call f(5) with one arg. Assert resolves to the 1-arity overload (UserFunctionCall with return type Int). This verifies arity-based disambiguation. Should pass from step-2 implementation.",
       "status": "done",
-      "commit": "97bea24"
+      "commit": "8b55b1d"
     },
     {
       "id": "step-6",
-      "type": "test",
-      "description": "Write inline test: 'let r = intersection(box(10mm,10mm,10mm), box(10mm,10mm,10mm))' \u2192 realization with 3 ops ending in Boolean{Intersection}. Should pass from step-4.",
+      "type": "impl",
+      "description": "Verify step-5 test passes. If not, fix arity filtering in resolve_function_overload. Also write an additional test: call f(1, 2) → selects the 2-arity overload.",
       "status": "done",
-      "commit": "97bea24"
+      "commit": "8b55b1d"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing inline test: 'let r = union_all(box(10mm,10mm,10mm), box(10mm,10mm,10mm), box(10mm,10mm,10mm))' \u2192 realization with 5 ops: 3 Primitive::Box + 2 Boolean{Union} (left-fold pattern: Union(Union(box0,box1),box2))",
+      "description": "Write test: no user function named 'sqrt', call sqrt(4.0) in a structure let binding. Assert compiles to FunctionCall (stdlib) with qualified_name 'std::sqrt', NOT an error. This verifies stdlib fallback is preserved when no user functions have the name. Should pass from step-2 NoUserFunctions path.",
       "status": "done",
-      "commit": "ff28ca0"
+      "commit": "b35bc6d"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Add match arms for 'union_all'|'intersection_all' in compile_geometry_call: validate >=2 args, recursively compile each arg, left-fold with binary Boolean ops tracking accumulated step indices",
+      "description": "Verify step-7 test passes. If it fails, ensure resolve_function_overload returns NoUserFunctions (not NoMatch) when zero user functions have the given name, and that the caller falls through to stdlib FunctionCall as before.",
       "status": "done",
-      "commit": "a4040e3"
+      "commit": "b35bc6d"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write inline test: 'let r = union(box(10mm,10mm,10mm))' with 1 arg \u2192 compile_geometry_call returns None and emits 'expects 2 arguments' diagnostic",
+      "description": "Write failing test: define fn f(x: Int)->Int and fn f(x: Int)->Real (same name and param types, different return types — i.e., duplicate signatures). Call f(3). Assert produces an ambiguity error diagnostic that lists both candidate signatures. This tests the ambiguity error path with candidate listing.",
       "status": "done",
-      "commit": "130cf04"
+      "commit": "0984993"
     },
     {
       "id": "step-10",
-      "type": "test",
-      "description": "Write inline test: 'let r = union(42, box(10mm,10mm,10mm))' with non-geometry first arg \u2192 compile_geometry_call returns None and emits diagnostic about geometry argument required",
+      "type": "impl",
+      "description": "Ensure the Ambiguous error diagnostic lists all matching candidate signatures: 'ambiguous function call: 2 candidates match f(Int): f(Int) -> Int, f(Int) -> Real'. Format each candidate with return type for clarity.",
       "status": "done",
-      "commit": "130cf04"
+      "commit": "0984993"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write inline test for nested boolean: 'let r = union(difference(box(...), cylinder(...)), sphere(...))' \u2192 realization with 5 ops: Box, Cylinder, Boolean{Difference}, Sphere, Boolean{Union} with correct step indices",
+      "description": "Write failing E2E test: define fn double(x: Int)->Int { x * 2 } and fn double(x: Real)->Real { x * 2.0 }, call both as structure let bindings: let a = double(3) and let b = double(3.0). Parse, compile (assert no errors), then evaluate with reify-expr and verify a==Int(6) and b==Real(6.0). This tests full pipeline including evaluator disambiguation. Fails because evaluator matches by name+arity only, picking the first 'double' for both calls.",
       "status": "done",
-      "commit": "07af798"
+      "commit": "02eb048"
     },
     {
       "id": "step-12",
-      "type": "test",
-      "description": "Create crates/reify-eval/tests/boolean_ops_e2e.rs with OCCT-guarded test: parse+compile+eval 'union(box(10mm,10mm,10mm), box(10mm,10mm,10mm))' through Engine with OcctKernel, verify non-empty STEP output containing ISO-10303-21",
-      "status": "done",
-      "commit": "46be438"
-    },
-    {
-      "id": "step-13",
       "type": "impl",
-      "description": "Verify full eval+kernel path works end-to-end. The compile_geometry_op Boolean handler and OCCT kernel boolean ops are already implemented \u2014 fix any issues if e2e test fails.",
+      "description": "Update eval_user_function_call() in reify-expr/src/lib.rs (line 280) to match on param types in addition to name and arity: change find closure from 'f.name == function_name && f.params.len() == args.len()' to also check 'f.params.iter().zip(args.iter()).all(|((_, pt), arg)| *pt == arg.result_type)'. This ensures the evaluator selects the same overload the compiler resolved.",
       "status": "done",
-      "commit": "46be438"
-    },
-    {
-      "id": "step-14",
-      "type": "test",
-      "description": "Add OCCT-guarded e2e test: difference(box(20mm,20mm,20mm), cylinder(5mm,20mm)) \u2192 valid STEP export (box with hole)",
-      "status": "done",
-      "commit": "46be438"
-    },
-    {
-      "id": "step-15",
-      "type": "test",
-      "description": "Add OCCT-guarded e2e test: intersection(box(10mm,10mm,10mm), box(10mm,10mm,10mm)) \u2192 valid STEP export",
-      "status": "done",
-      "commit": "46be438"
-    },
-    {
-      "id": "step-16",
-      "type": "test",
-      "description": "Add OCCT-guarded e2e test: union_all with 5 boxes at different positions (nested translates or direct) \u2192 valid STEP export",
-      "status": "done",
-      "commit": "46be438"
-    },
-    {
-      "id": "step-17",
-      "type": "test",
-      "description": "Write failing OCCT-guarded e2e test in boolean_ops_e2e.rs: structure with two geometry let bindings 'let r1 = box(10mm, 10mm, 10mm)' and 'let r2 = union(box(20mm, 20mm, 20mm), box(30mm, 30mm, 30mm))'. Use Engine::tessellate_realizations() (or build()) and verify both realizations produce valid geometry. This test exposes the multi-realization step index bug: r2's Boolean{Union, Step(0), Step(1)} resolves Step(0) to r1's handle instead of r2's first box handle because the eval engine passes the full global step_handles vector instead of a realization-local slice.",
-      "status": "done",
-      "commit": "4a08e78"
-    },
-    {
-      "id": "step-18",
-      "type": "impl",
-      "description": "Fix all three geometry eval loops in Engine (crates/reify-eval/src/lib.rs) to pass realization-local step_handles slice to compile_geometry_op. (1) In tessellate_from_values (line ~2650): change '&step_handles' to '&step_handles[handle_start..]' \u2014 handle_start already tracked at line 2644. (2) In the eval-then-build method (line ~2461): add 'let handle_start = step_handles.len()' before the per-realization op loop, then pass '&step_handles[handle_start..]'. (3) In the full build() method (line ~2535): same pattern \u2014 add handle_start tracking and pass realization-local slice. This makes GeomRef::Step indices resolve relative to the current realization, matching the compiler's step_offset: 0 convention.",
-      "status": "done",
-      "commit": "a737b43"
-    },
-    {
-      "id": "step-19",
-      "type": "test",
-      "description": "Write OCCT-guarded e2e test for multi-realization with nested booleans: 'let r1 = difference(box(20mm,20mm,20mm), cylinder(5mm, 20mm))' and 'let r2 = union(box(10mm,10mm,10mm), sphere(8mm))'. Verify both realizations tessellate to non-empty meshes. This exercises the fix with nested boolean ops where step indices would be even more wrong without the realization-local slice (r2's ops would start at step index 3 globally but the compiler emits Step(0), Step(1), Step(2)).",
-      "status": "done",
-      "commit": "b27abde"
+      "commit": "02eb048"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Recursive geometry arg compilation for boolean ops",
-      "rationale": "Boolean ops take geometry operands, not scalar values. Each arg (e.g., box(10,10,10)) must be recursively compiled via compile_geometry_call into geometry ops, then referenced by GeomRef::Step index. This reuses the existing compilation infrastructure and produces a flat ops list within one realization."
+      "decision": "Extract resolve_function_overload() as a named helper returning a 4-variant enum",
+      "rationale": "The task says 'extend resolve_function()' but resolution is currently inline. Extracting a named function with Resolved/NoUserFunctions/NoMatch/Ambiguous variants improves readability, testability (unit-testable with constructed inputs), and makes the control flow explicit. Each variant maps cleanly to one compiled output or diagnostic."
     },
     {
-      "decision": "Left-fold pattern for union_all/intersection_all",
-      "rationale": "union_all(a,b,c,d) compiles to Union(Union(Union(a,b),c),d). This maps naturally to binary BooleanOp and accumulates step indices correctly. Left-fold is standard for associative operations and matches OCCT's pairwise boolean API."
+      "decision": "No struct changes to UserFunctionCall — evaluator uses compiled arg result_types for disambiguation",
+      "rationale": "UserFunctionCall { function_name, args } is referenced in ~20 pattern-match sites across 5 crates (reify-types, reify-compiler, reify-expr, reify-eval, gui). Adding param_types would require touching all of them. Instead, since the compiler uses exact type matching, the compiled args' result_types exactly equal the selected overload's param types. The evaluator can match on these existing result_types with zero struct changes."
     },
     {
-      "decision": "No geometry variable references in boolean args (only nested calls)",
-      "rationale": "Supporting references to named geometry let bindings (e.g., union(my_box, my_sphere)) would require cross-realization handle resolution at compile time, which the current architecture doesn't support \u2014 each geometry let becomes a separate realization. Nested calls (union(box(...), cylinder(...))) are the natural syntax and fully supported by recursive compilation."
+      "decision": "Exact type equality (==) for resolution, not type_compatible()",
+      "rationale": "The task explicitly states 'Int→Real promotion is NOT considered during overload resolution.' The existing type_compatible() allows Int→Real widening. Using == for resolution and preserving type_compatible() unchanged avoids breaking any other callers (though currently there are none). This makes overload selection unambiguous: f(Int) and f(Real) are distinct overloads."
     },
     {
-      "decision": "No separate surface boolean handling",
-      "rationale": "OCCT's boolean_fuse/cut/common work identically on solids and surfaces (BRepAlgoAPI handles both). The same GeometryOp::Union/Difference/Intersection variants and kernel dispatch path handle both cases without any surface-specific code."
+      "decision": "Stdlib fallback only when zero user functions share the name",
+      "rationale": "The task says 'zero matches → error with candidates listed.' This applies only when user-defined overloads EXIST but none match. When no user functions have the name at all (e.g., sin, cos, sqrt), the existing stdlib FunctionCall fallback is preserved. This avoids breaking all stdlib function calls."
     },
     {
-      "decision": "Use compile_geometry_call for arg validation instead of type checking",
-      "rationale": "Non-geometry args (like scalar literals) are detected when compile_geometry_call returns None for the arg. This produces a clear diagnostic without requiring a separate type-checking pass, keeping the implementation simple and consistent with the existing pattern."
-    },
-    {
-      "decision": "Fix multi-realization step indices in eval engine (not compiler)",
-      "rationale": "The compiler correctly emits realization-local step indices (step_offset: 0 per realization). The bug is in the eval engine which passes the full global step_handles vector to compile_geometry_op instead of a realization-local slice. Fixing in eval by passing &step_handles[handle_start..] is minimal (3 call-sites), preserves the compiler's clean per-realization indexing, and matches the existing handle_start tracking in tessellate_from_values. The alternative (making the compiler emit globally-offset indices) would require the compiler to know about other realizations' op counts, coupling compilation order to eval order."
+      "decision": "Error messages include full candidate signatures with return types",
+      "rationale": "Listing candidates as 'f(Int, Int) -> Int' rather than just 'f(Int, Int)' helps the user understand the available overloads. Return types are included because two overloads might have the same param types but different returns (caught as duplicate signature, but the error should still be informative)."
     }
   ],
   "reuse": [
     {
-      "what": "CompiledGeometryOp::Boolean { op, left, right } variant",
-      "where": "crates/reify-compiler/src/lib.rs line 300",
-      "how": "Already defined with BooleanOp enum and GeomRef fields \u2014 emit directly from compile_geometry_call match arms"
+      "what": "Existing FunctionCall compilation pattern (lines 903-937)",
+      "where": "crates/reify-compiler/src/lib.rs",
+      "how": "The stdlib fallback path (ResolvedFunction, qualified_name, is_geometry_function check, content hash computation) is preserved verbatim for the NoUserFunctions case. Only the user-function resolution path changes."
     },
     {
-      "what": "BooleanOp::{Union, Difference, Intersection} enum",
-      "where": "crates/reify-compiler/src/lib.rs line 340",
-      "how": "Map function name to enum variant: 'union'\u2192Union, 'difference'\u2192Difference, 'intersection'\u2192Intersection"
+      "what": "Existing Diagnostic::error().with_label() pattern",
+      "where": "crates/reify-compiler/src/lib.rs (lines 889-901)",
+      "how": "The existing ambiguity error format is the template for both NoMatch and Ambiguous error diagnostics. Extend with candidate signature listing using the same format!() + join pattern."
     },
     {
-      "what": "compile_geometry_op Boolean handler in eval",
-      "where": "crates/reify-eval/src/lib.rs line 2869",
-      "how": "Already resolves GeomRef::Step(idx) \u2192 step_handles[idx] for left/right, maps to GeometryOp::Union/Difference/Intersection \u2014 no changes needed to the function itself, only to the slice passed to it"
+      "what": "Existing UserFunctionCall emission pattern (lines 867-886)",
+      "where": "crates/reify-compiler/src/lib.rs",
+      "how": "The Resolved case emits UserFunctionCall identically to the current single-match case: same content hash computation, same struct fields. Only the caller (resolve_function_overload) changes, not the emission."
     },
     {
-      "what": "OCCT kernel boolean dispatch",
-      "where": "crates/reify-kernel-occt/src/lib.rs line 174",
-      "how": "Already handles GeometryOp::Union\u2192boolean_fuse, Difference\u2192boolean_cut, Intersection\u2192boolean_common \u2014 no changes needed"
+      "what": "CompiledExpr::result_type for evaluator disambiguation",
+      "where": "crates/reify-types/src/expr.rs (CompiledExpr struct)",
+      "how": "Each compiled arg carries result_type which, under exact resolution, equals the selected overload's param type. The evaluator's find() closure adds a zip-check of param types against arg result_types for O(1) disambiguation."
     },
     {
-      "what": "Existing inline test pattern for geometry compilation",
-      "where": "crates/reify-compiler/src/lib.rs line 4670",
-      "how": "Follow exact pattern: parse source string with reify_syntax::parse, compile with compile(), assert realization count and op types via matches!() macro"
+      "what": "Test patterns from boundary2_producer.rs",
+      "where": "crates/reify-compiler/tests/boundary2_producer.rs (lines 1557-1695)",
+      "how": "Follow the established pattern: parse source string, compile, assert no errors, find template, find value cell, pattern-match on CompiledExprKind::UserFunctionCall { function_name, args }. Error tests filter diagnostics by Severity::Error and assert on message content."
     },
     {
-      "what": "compile_geometry_call recursive call pattern",
-      "where": "Function already accepts &Expr and returns Option<Vec<CompiledGeometryOp>>",
-      "how": "Call compile_geometry_call(&args[i], scope, enum_defs, functions, diagnostics) on each raw syntax arg to recursively compile nested geometry calls"
-    },
-    {
-      "what": "e2e test pattern with OCCT kernel",
-      "where": "crates/reify-eval/tests/e2e_bracket.rs",
-      "how": "Follow pattern: parse\u2192compile\u2192DispatchPlanner+OcctKernelHandle\u2192Engine::new\u2192build\u2192verify STEP output"
-    },
-    {
-      "what": "handle_start tracking pattern in tessellate_from_values",
-      "where": "crates/reify-eval/src/lib.rs line 2644",
-      "how": "Already computes handle_start = step_handles.len() before each realization's op loop. Reuse this exact pattern in the two build methods that currently lack it, and change all three call-sites to pass &step_handles[handle_start..] for realization-local indexing."
+      "what": "duplicate signature detection (lines 1851-1875)",
+      "where": "crates/reify-compiler/src/lib.rs",
+      "how": "Preserved unchanged. It catches same-name + same-param-type duplicates post-compilation, complementing the runtime ambiguity detection during resolution. Both error paths are informative."
     }
   ],
-  "_session_id": "307-a6974930",
-  "_created_at": "2026-03-24T07:25:08.162380+00:00"
+  "_session_id": "171-d5351b5d",
+  "_created_at": "2026-03-24T07:52:23.981585+00:00"
 }
