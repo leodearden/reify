@@ -736,6 +736,9 @@ fn eval_add(lv: &Value, rv: &Value) -> Value {
         (Value::String(a), Value::String(b)) => Value::String(format!("{}{}", a, b)),
         // Component-wise Tensor addition
         (Value::Tensor(a), Value::Tensor(b)) => {
+            if a.is_empty() || b.is_empty() {
+                return Value::Undef; // empty-tensor arithmetic is degenerate
+            }
             if a.len() != b.len() {
                 return Value::Undef;
             }
@@ -777,6 +780,9 @@ fn eval_sub(lv: &Value, rv: &Value) -> Value {
         }
         // Component-wise Tensor subtraction
         (Value::Tensor(a), Value::Tensor(b)) => {
+            if a.is_empty() || b.is_empty() {
+                return Value::Undef; // empty-tensor arithmetic is degenerate
+            }
             if a.len() != b.len() {
                 return Value::Undef;
             }

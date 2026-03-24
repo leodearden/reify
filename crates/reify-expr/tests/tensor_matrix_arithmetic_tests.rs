@@ -575,11 +575,9 @@ fn matrix_1x1_vec_mul_degenerate() {
 /// Empty matrix (0 rows) addition returns Undef.
 #[test]
 fn empty_matrix_add_returns_undef() {
-    // Both empty → technically same shape but 0-row matrices are degenerate
+    // Both empty → 0-row matrices are degenerate; arithmetic on them returns Undef.
     let a = mat(vec![]);
     let b = mat(vec![]);
     let expr = CompiledExpr::binop(BinOp::Add, a, b, Type::Real);
-    // Empty tensor addition currently returns Tensor([]) — step-16 may enforce Undef.
-    // For now just verify no panic.
-    let _result = eval(&expr);
+    assert_eq!(eval(&expr), Value::Undef);
 }
