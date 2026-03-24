@@ -319,8 +319,9 @@ fn infer_binop_type(op: BinOp, left: &Type, right: &Type) -> Type {
 use std::collections::HashSet;
 
 use reify_compiler::{
-    CompiledConstraint, CompiledGeometryOp, CompiledGuardedGroup, CompiledImport, CompiledModule,
-    EntityKind, RealizationDecl, SubComponentDecl, TopologyTemplate, ValueCellDecl, ValueCellKind,
+    CompiledConstraint, CompiledField, CompiledFieldSource, CompiledGeometryOp,
+    CompiledGuardedGroup, CompiledImport, CompiledModule, EntityKind, RealizationDecl,
+    SubComponentDecl, TopologyTemplate, ValueCellDecl, ValueCellKind,
 };
 use reify_types::{ConstraintNodeId, RealizationNodeId};
 
@@ -953,6 +954,73 @@ impl CompiledModuleBuilder {
             compiled_purposes: Vec::new(),
             templates: self.templates,
             diagnostics: self.diagnostics,
+            content_hash,
+        }
+    }
+}
+
+// --- CompiledFieldBuilder ---
+
+/// Builder for `CompiledField`.
+pub struct CompiledFieldBuilder {
+    name: String,
+    is_pub: bool,
+    domain_type: Type,
+    codomain_type: Type,
+    source: Option<CompiledFieldSource>,
+}
+
+impl CompiledFieldBuilder {
+    pub fn new(name: impl Into<String>, domain_type: Type, codomain_type: Type) -> Self {
+        Self {
+            name: name.into(),
+            is_pub: false,
+            domain_type,
+            codomain_type,
+            source: None,
+        }
+    }
+
+    pub fn public(mut self) -> Self {
+        self.is_pub = true;
+        self
+    }
+
+    /// Set source to `Analytical { expr }`.
+    pub fn analytical(mut self, expr: CompiledExpr) -> Self {
+        self.source = Some(CompiledFieldSource::Analytical { expr });
+        self
+    }
+
+    /// Set source to `Sampled { config }`.
+    pub fn sampled(mut self, config: Vec<(&str, CompiledExpr)>) -> Self {
+        let config = config.into_iter().map(|(k, v)| (k.to_string(), v)).collect();
+        self.source = Some(CompiledFieldSource::Sampled { config });
+        self
+    }
+
+    /// Set source to `Composed { expr }`.
+    pub fn composed(mut self, expr: CompiledExpr) -> Self {
+        self.source = Some(CompiledFieldSource::Composed { expr });
+        self
+    }
+
+    /// Set source to `Imported`.
+    pub fn imported(mut self) -> Self {
+        self.source = Some(CompiledFieldSource::Imported);
+        self
+    }
+
+    pub fn build(self) -> CompiledField {
+        let source = self.source.expect("CompiledFieldBuilder: source must be set before build()");
+        let content_hash = ContentHash::of_str(&self.name)
+            .combine(ContentHash::of(&[99])); // distinguish from zero
+        CompiledField {
+            name: self.name,
+            is_pub: self.is_pub,
+            domain_type: self.domain_type,
+            codomain_type: self.codomain_type,
+            source,
             content_hash,
         }
     }
