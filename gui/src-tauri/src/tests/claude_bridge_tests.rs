@@ -249,6 +249,85 @@ fn parse_outbound_missing_required_field_returns_err() {
     assert!(result.is_err());
 }
 
+// --- read_sidecar_output tests (step-9) ---
+
+#[tokio::test]
+async fn read_sidecar_output_receives_messages_in_order() {
+    use std::sync::{Arc, Mutex};
+    use tokio::io::BufReader;
+
+    let data = b"{\"type\":\"ready\"}\n{\"type\":\"text_delta\",\"id\":\"msg-1\",\"content\":\"hi\"}\n";
+    let reader = BufReader::new(&data[..]);
+    let received: Arc<Mutex<Vec<OutboundMessage>>> = Arc::new(Mutex::new(vec![]));
+    let received_clone = Arc::clone(&received);
+    let exit_fired: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
+    let exit_fired_clone = Arc::clone(&exit_fired);
+
+    read_sidecar_output(
+        reader,
+        move |msg| {
+            received_clone.lock().unwrap().push(msg);
+        },
+        move || {
+            *exit_fired_clone.lock().unwrap() = true;
+        },
+    )
+    .await;
+
+    let msgs = received.lock().unwrap();
+    assert_eq!(msgs.len(), 2);
+    assert_eq!(msgs[0], OutboundMessage::Ready);
+    assert_eq!(msgs[1], OutboundMessage::TextDelta { id: "msg-1".to_string(), content: "hi".to_string() });
+    assert!(*exit_fired.lock().unwrap(), "on_exit should fire at EOF");
+}
+
+#[tokio::test]
+async fn read_sidecar_output_eof_fires_on_exit() {
+    use std::sync::{Arc, Mutex};
+    use tokio::io::BufReader;
+
+    let data: &[u8] = b"";
+    let reader = BufReader::new(data);
+    let exit_fired: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
+    let exit_fired_clone = Arc::clone(&exit_fired);
+
+    read_sidecar_output(
+        reader,
+        |_msg| {},
+        move || {
+            *exit_fired_clone.lock().unwrap() = true;
+        },
+    )
+    .await;
+
+    assert!(*exit_fired.lock().unwrap(), "on_exit should fire at EOF even with no messages");
+}
+
+#[tokio::test]
+async fn read_sidecar_output_skips_invalid_json_lines() {
+    use std::sync::{Arc, Mutex};
+    use tokio::io::BufReader;
+
+    let data = b"not-json\n{\"type\":\"ready\"}\n";
+    let reader = BufReader::new(&data[..]);
+    let received: Arc<Mutex<Vec<OutboundMessage>>> = Arc::new(Mutex::new(vec![]));
+    let received_clone = Arc::clone(&received);
+
+    read_sidecar_output(
+        reader,
+        move |msg| {
+            received_clone.lock().unwrap().push(msg);
+        },
+        || {},
+    )
+    .await;
+
+    // Invalid line skipped, ready message received
+    let msgs = received.lock().unwrap();
+    assert_eq!(msgs.len(), 1);
+    assert_eq!(msgs[0], OutboundMessage::Ready);
+}
+
 // --- outbound_to_event tests (step-7) ---
 
 #[test]

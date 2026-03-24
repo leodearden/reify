@@ -6,6 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt};
 
 // --- IPC types mirroring gui/sidecar/src/types.ts ---
 
@@ -79,6 +80,28 @@ pub fn format_inbound(msg: &InboundMessage) -> String {
 /// Parse a JSON line from the sidecar into an OutboundMessage.
 pub fn parse_outbound(line: &str) -> Result<OutboundMessage, String> {
     serde_json::from_str(line.trim()).map_err(|e| format!("parse_outbound: {}", e))
+}
+
+/// Read lines from sidecar stdout, parse each as OutboundMessage, and call callbacks.
+/// Skips lines that fail to parse. Calls on_exit when the stream ends (EOF).
+pub async fn read_sidecar_output<R: AsyncBufRead + Unpin>(
+    reader: R,
+    on_message: impl Fn(OutboundMessage),
+    on_exit: impl FnOnce(),
+) {
+    let mut lines = reader.lines();
+    loop {
+        match lines.next_line().await {
+            Ok(Some(line)) => {
+                if let Ok(msg) = parse_outbound(&line) {
+                    on_message(msg);
+                }
+            }
+            Ok(None) => break, // EOF
+            Err(_) => break,   // I/O error treated as EOF
+        }
+    }
+    on_exit();
 }
 
 /// Map an OutboundMessage to a Tauri event name and JSON payload.
