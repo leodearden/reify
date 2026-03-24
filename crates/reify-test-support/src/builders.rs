@@ -726,6 +726,28 @@ mod tests {
     }
 
     #[test]
+    fn literal_range_with_lower_bound_infers_type() {
+        let expr = literal(Value::Range {
+            lower: Some(Box::new(Value::Int(1))),
+            upper: None,
+            lower_inclusive: true,
+            upper_inclusive: false,
+        });
+        assert_eq!(expr.result_type, Type::Range(Box::new(Type::Int)));
+    }
+
+    #[test]
+    fn literal_range_with_upper_bound_only_infers_type() {
+        let expr = literal(Value::Range {
+            lower: None,
+            upper: Some(Box::new(Value::Real(5.0))),
+            lower_inclusive: false,
+            upper_inclusive: true,
+        });
+        assert_eq!(expr.result_type, Type::Range(Box::new(Type::Real)));
+    }
+
+    #[test]
     fn auto_param_builder() {
         let template = TopologyTemplateBuilder::new("T")
             .auto_param("T", "x", Type::length())
