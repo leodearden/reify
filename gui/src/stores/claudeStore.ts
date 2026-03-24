@@ -262,8 +262,23 @@ export function createClaudeStore(options: ClaudeStoreOptions) {
           setState('messages', (m) => m.id === id && m.role === 'assistant', 'id', bridgeId);
           setState('currentMessageId', bridgeId);
         });
-      }).catch(() => {
-        // Bridge call failed; currentMessageId stays as local id
+      }).catch((err: unknown) => {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        const classified = classifyError(errMsg);
+        setState('sessionStatus', 'idle');
+        addSystemMessage(classified.type, classified.userMessage);
+        const idx = state.messages.findIndex((m) => m.id === id && m.role === 'assistant');
+        if (idx !== -1) {
+          setState(
+            'messages',
+            idx,
+            produce((m: ChatMessage) => {
+              if (m.role !== 'assistant') return;
+              m.error = errMsg;
+              m.complete = true;
+            }),
+          );
+        }
       });
     }
   }
