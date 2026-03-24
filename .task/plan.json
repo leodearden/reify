@@ -103,7 +103,7 @@
       "type": "test",
       "description": "Run full existing test suite (`cargo test --package reify-compiler`) to verify the rename in pre-1 and all new code don't break any existing tests. This is a regression check.",
       "status": "done",
-      "commit": null
+      "commit": "c1074321"
     }
   ],
   "design_decisions": [
