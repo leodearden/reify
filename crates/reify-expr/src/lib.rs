@@ -766,6 +766,39 @@ fn eval_add(lv: &Value, rv: &Value) -> Value {
     }
 }
 
+/// Compute the dot-product sum of an iterator of already-multiplied product values.
+///
+/// Uses `try_fold` for a single-pass, short-circuiting accumulation:
+/// - If the iterator is empty → returns `Value::Undef`
+/// - If any product is `Undef` → short-circuits to `Value::Undef`
+/// - If any partial sum from `eval_add` is `Undef` (e.g. dimension mismatch) → short-circuits
+///
+/// This eliminates the triple-pass collect→check→reduce pattern.
+fn eval_dot(mut products: impl Iterator<Item = Value>) -> Value {
+    // Seed with first product; short-circuit immediately if it's Undef.
+    let first = match products.next() {
+        None => return Value::Undef, // empty iterator
+        Some(v) => v,
+    };
+    if first.is_undef() {
+        return Value::Undef;
+    }
+    // Fold remaining products into running sum, short-circuiting on Undef.
+    products
+        .try_fold(first, |acc, prod| {
+            if prod.is_undef() {
+                return Err(());
+            }
+            let sum = eval_add(&acc, &prod);
+            if sum.is_undef() {
+                Err(())
+            } else {
+                Ok(sum)
+            }
+        })
+        .unwrap_or(Value::Undef)
+}
+
 fn eval_sub(lv: &Value, rv: &Value) -> Value {
     match (lv, rv) {
         (Value::Int(a), Value::Int(b)) => Value::Int(a - b),
