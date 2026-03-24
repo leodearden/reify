@@ -126,6 +126,27 @@
       "description": "Write integration tests in boundary4_geometry.rs exercising the full stack: (1) translate 10mm box by 50mm in x via GeometryOp::Translate, verify centroid x approx 0.05 (confirms existing kernel path), (2) rotate box 90deg around Z, verify volume preserved, (3) scale box by 2.0, verify volume = 8x, (4) rotate_around non-origin point, verify centroid at expected position, (5) scale(box, 1.0) = identity (volume unchanged). All should pass with prior implementations.",
       "status": "done",
       "commit": "fbed8e54"
+    },
+    {
+      "id": "step-12",
+      "type": "test",
+      "description": "Fix rotate_around_point_preserves_volume test in boundary4_geometry.rs (line 565) to validate the non-origin pivot logic. After the existing volume assertion, add: (1) query GeometryQuery::Centroid(rotated.id), parse the x/y/z coordinates from the JSON string, (2) assert centroid is approximately at (0.045, -0.045, 0.005) within 1e-4 tolerance \u2014 analytically: 10mm box centroid at (0.005, 0.005, 0.005) rotated 90\u00b0 around Z through point (0.05, 0, 0) maps to (0.05 + Rz(PI/2)*(0.005-0.05, 0.005, 0.005)) = (0.05 + (\u22120.005, \u22120.045, 0.005)) = (0.045, \u22120.045, 0.005), (3) also execute a plain GeometryOp::Rotate (no pivot) on the same box with same axis/angle, query its centroid, and assert the two centroids differ by at least 0.01 in at least one coordinate \u2014 confirming the pivot point parameter is actually used. This test should pass immediately since the kernel implementation is correct, but it now properly guards against regressions where the point parameter is silently ignored.",
+      "status": "done",
+      "commit": "bb17f1a0"
+    },
+    {
+      "id": "step-13",
+      "type": "test",
+      "description": "Write failing kernel tests in crates/reify-kernel-occt/src/lib.rs: (1) rotate_near_degenerate_axis_rejected: create a box, call GeometryOp::Rotate with axis=[1e-10, 0.0, 0.0] and angle=PI/4, assert the result is Err(GeometryError::OperationFailed(..)) containing 'zero-length'. (2) rotate_around_near_degenerate_axis_rejected: same but with GeometryOp::RotateAround using axis=[0.0, 1e-8, 0.0]. Both tests will FAIL because the current guard (mag_sq < f64::EPSILON * f64::EPSILON \u2248 4.9e-32) allows these near-degenerate axes through \u2014 1e-10 has mag_sq=1e-20, far above the threshold.",
+      "status": "done",
+      "commit": "231ddcb3"
+    },
+    {
+      "id": "step-14",
+      "type": "impl",
+      "description": "Change the zero-axis guard threshold from `mag_sq < f64::EPSILON * f64::EPSILON` to `mag_sq < 1e-12` in both the GeometryOp::Rotate dispatch (line 243) and the GeometryOp::RotateAround dispatch (line 418) in crates/reify-kernel-occt/src/lib.rs. The new threshold 1e-12 means any axis with length < 1e-6 (one micron) is rejected, matching OCCT's own precision floor for axis validity. Tests from step-13 now pass.",
+      "status": "done",
+      "commit": "fb058d6f"
     }
   ],
   "design_decisions": [
@@ -147,7 +168,15 @@
     },
     {
       "decision": "translate/rotate .ri signatures: translate(geo, dx, dy, dz) with 4 args, rotate(geo, ax, ay, az, angle) with 5 args",
-      "rationale": "Existing eval layer already handles TransformKind::Translate extracting (dx, dy, dz) and TransformKind::Rotate extracting (axis_x, axis_y, axis_z, angle). The compile_geometry_call just needs to map positional args to these same named args. Zero changes needed in eval for translate/rotate — only compiler wiring."
+      "rationale": "Existing eval layer already handles TransformKind::Translate extracting (dx, dy, dz) and TransformKind::Rotate extracting (axis_x, axis_y, axis_z, angle). The compile_geometry_call just needs to map positional args to these same named args. Zero changes needed in eval for translate/rotate \u2014 only compiler wiring."
+    },
+    {
+      "decision": "Use mag_sq < 1e-12 threshold for near-degenerate axis rejection in both Rotate and RotateAround",
+      "rationale": "The original threshold (f64::EPSILON^2 \u2248 4.9e-32) only catches axes shorter than ~7e-16, which is machine epsilon. Near-degenerate axes (e.g. length 1e-10) pass through and cause NaN/garbage in OCCT's gp_Trsf normalization. The new threshold 1e-12 (axis length < 1e-6 = 1 micron) matches OCCT's own geometric precision floor while accepting all physically meaningful rotation axes."
+    },
+    {
+      "decision": "Centroid verification in rotate_around integration test uses analytical geometry to compute expected position",
+      "rationale": "For a 10mm OCCT box at origin (centroid at (0.005,0.005,0.005) in meters), rotating 90\u00b0 around Z through pivot (0.05,0,0): translate to pivot-relative coords, apply Rz(PI/2), translate back. Expected centroid = (0.045, -0.045, 0.005). This deterministic assertion catches bugs where the pivot point is silently ignored, which a volume-only check cannot."
     }
   ],
   "reuse": [
@@ -180,8 +209,13 @@
       "what": "Compiler test patterns for geometry recognition and realization production",
       "where": "crates/reify-compiler/src/lib.rs lines 5446-5650",
       "how": "Recognition tests: assert!(is_geometry_function('name')). Realization tests: parse .ri source, compile, check template.realizations[0].operations[0] matches expected CompiledGeometryOp variant."
+    },
+    {
+      "what": "Centroid JSON parsing pattern from kernel test rotate_around_non_origin_differs_from_rotate_at_origin",
+      "where": "crates/reify-kernel-occt/src/lib.rs lines 2305-2325",
+      "how": "GeometryQuery::Centroid returns Value::String with JSON like {\"x\":0.045,\"y\":-0.045,\"z\":0.005}. Parse x/y/z by finding '\"x\":' prefix and extracting the float. Reuse this same parsing approach in the boundary4 integration test for centroid verification."
     }
   ],
   "_session_id": "311-6f6488cf",
-  "_created_at": "2026-03-24T20:44:12.343232+00:00"
+  "_created_at": "2026-03-24T21:08:14.912740+00:00"
 }
