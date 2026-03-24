@@ -950,48 +950,46 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
             };
 
             // C[i][j] = sum(A[i][kk] * B[kk][j] for kk in 0..k)
-            let c_rows: Vec<Value> = a_rows
+            // Uses eval_dot for each cell's dot product (single-pass, short-circuiting).
+            // Uses try_fold at two levels:
+            //   - cell level: if any cell in a row is Undef, skip remaining cells
+            //   - row level:  if any row is Undef, skip remaining rows
+            a_rows
                 .iter()
-                .map(|a_row| {
-                    if let Value::Tensor(a_elems) = a_row {
-                        let c_row: Vec<Value> = (0..n)
-                            .map(|j| {
-                                let prods: Vec<Value> = (0..k)
-                                    .map(|kk| {
-                                        let b_kj =
-                                            if let Value::Tensor(b_row_k) = &b_rows[kk] {
-                                                b_row_k.get(j).cloned().unwrap_or(Value::Undef)
-                                            } else {
-                                                Value::Undef
-                                            };
-                                        eval_mul(a_elems.get(kk).unwrap_or(&Value::Undef), &b_kj)
-                                    })
-                                    .collect();
-                                if prods.iter().any(|v| v.is_undef()) {
-                                    return Value::Undef;
+                .try_fold(Vec::with_capacity(a_rows.len()), |mut c_rows, a_row| {
+                    let row_result = if let Value::Tensor(a_elems) = a_row {
+                        // Build this row of C via cell-level try_fold.
+                        (0..n)
+                            .try_fold(Vec::with_capacity(n), |mut c_row, j| {
+                                let cell = eval_dot((0..k).map(|kk| {
+                                    let b_kj = if let Value::Tensor(b_row_k) = &b_rows[kk] {
+                                        b_row_k.get(j).cloned().unwrap_or(Value::Undef)
+                                    } else {
+                                        Value::Undef
+                                    };
+                                    eval_mul(a_elems.get(kk).unwrap_or(&Value::Undef), &b_kj)
+                                }));
+                                if cell.is_undef() {
+                                    Err(())
+                                } else {
+                                    c_row.push(cell);
+                                    Ok(c_row)
                                 }
-                                prods
-                                    .into_iter()
-                                    .reduce(|acc, x| eval_add(&acc, &x))
-                                    .unwrap_or(Value::Undef)
                             })
-                            .collect();
-                        if c_row.iter().any(|v| v.is_undef()) {
-                            Value::Undef
-                        } else {
-                            Value::Tensor(c_row)
-                        }
+                            .map(Value::Tensor)
+                            .unwrap_or(Value::Undef)
                     } else {
                         Value::Undef
+                    };
+                    if row_result.is_undef() {
+                        Err(())
+                    } else {
+                        c_rows.push(row_result);
+                        Ok(c_rows)
                     }
                 })
-                .collect();
-
-            if c_rows.iter().any(|v| v.is_undef()) {
-                Value::Undef
-            } else {
-                Value::Tensor(c_rows)
-            }
+                .map(Value::Tensor)
+                .unwrap_or(Value::Undef)
         }
         _ => Value::Undef,
     }
