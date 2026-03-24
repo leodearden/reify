@@ -870,6 +870,96 @@ mod tests {
         assert!(result.is_undef(), "clamp with wrong arg count should be Undef, got {:?}", result);
     }
 
+    // --- remap tests (step-5) ---
+
+    #[test]
+    fn remap_midpoint() {
+        // remap(5, 0→10, 0→100) == 50
+        let result = eval_builtin(
+            "remap",
+            &[Value::Real(5.0), Value::Real(0.0), Value::Real(10.0), Value::Real(0.0), Value::Real(100.0)],
+        );
+        match result {
+            Value::Real(v) => assert!((v - 50.0).abs() < 1e-12),
+            other => panic!("expected Real(50.0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn remap_at_from_lo() {
+        let result = eval_builtin(
+            "remap",
+            &[Value::Real(0.0), Value::Real(0.0), Value::Real(10.0), Value::Real(0.0), Value::Real(100.0)],
+        );
+        match result {
+            Value::Real(v) => assert!((v - 0.0).abs() < 1e-12),
+            other => panic!("expected Real(0.0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn remap_at_from_hi() {
+        let result = eval_builtin(
+            "remap",
+            &[Value::Real(10.0), Value::Real(0.0), Value::Real(10.0), Value::Real(0.0), Value::Real(100.0)],
+        );
+        match result {
+            Value::Real(v) => assert!((v - 100.0).abs() < 1e-12),
+            other => panic!("expected Real(100.0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn remap_extrapolation() {
+        // x=15 beyond [0,10] → 150 (extrapolation allowed)
+        let result = eval_builtin(
+            "remap",
+            &[Value::Real(15.0), Value::Real(0.0), Value::Real(10.0), Value::Real(0.0), Value::Real(100.0)],
+        );
+        match result {
+            Value::Real(v) => assert!((v - 150.0).abs() < 1e-12),
+            other => panic!("expected Real(150.0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn remap_inverse() {
+        // remap(50, 0→100, 0→10) == 5
+        let result = eval_builtin(
+            "remap",
+            &[Value::Real(50.0), Value::Real(0.0), Value::Real(100.0), Value::Real(0.0), Value::Real(10.0)],
+        );
+        match result {
+            Value::Real(v) => assert!((v - 5.0).abs() < 1e-12),
+            other => panic!("expected Real(5.0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn remap_division_by_zero_returns_undef() {
+        // from_lo == from_hi → division by zero
+        let result = eval_builtin(
+            "remap",
+            &[Value::Real(5.0), Value::Real(5.0), Value::Real(5.0), Value::Real(0.0), Value::Real(100.0)],
+        );
+        assert!(result.is_undef(), "remap with from_lo==from_hi should be Undef, got {:?}", result);
+    }
+
+    #[test]
+    fn remap_nan_returns_undef() {
+        let result = eval_builtin(
+            "remap",
+            &[Value::Real(f64::NAN), Value::Real(0.0), Value::Real(10.0), Value::Real(0.0), Value::Real(100.0)],
+        );
+        assert!(result.is_undef(), "remap(NaN,...) should be Undef, got {:?}", result);
+    }
+
+    #[test]
+    fn remap_wrong_arg_count_returns_undef() {
+        let result = eval_builtin("remap", &[Value::Real(5.0), Value::Real(0.0)]);
+        assert!(result.is_undef(), "remap with wrong arg count should be Undef, got {:?}", result);
+    }
+
     // --- lerp tests (step-3) ---
 
     #[test]
