@@ -1,243 +1,154 @@
 {
-  "task_id": "195",
-  "title": "Constraint def: parser verification",
+  "task_id": "222",
+  "title": "Point/Vector: Type variants",
   "files": [
-    "tree-sitter-reify/grammar.js",
-    "tree-sitter-reify/src/parser.c",
-    "tree-sitter-reify/src/grammar.json",
-    "tree-sitter-reify/src/node-types.json",
-    "crates/reify-syntax/src/lib.rs",
-    "crates/reify-syntax/src/ts_parser.rs",
-    "crates/reify-syntax/tests/constraint_def_tests.rs"
+    "crates/reify-types/src/ty.rs",
+    "crates/reify-types/tests/exports.rs"
   ],
   "modules": [
-    "tree-sitter-reify",
-    "crates/reify-syntax"
+    "crates/reify-types"
   ],
-  "analysis": "The task requires adding support for top-level `constraint def Name { params, predicate_lines }` parsing. Currently, `ConstraintDecl` exists only as a member-level declaration (inside structures, traits, purposes) using the syntax `constraint <expr>`. The task needs a NEW top-level `ConstraintDef` that is a named, parameterized constraint definition with bare expression predicates in the body.\n\nThe language spec (Section 4.1.3, 10.1, 12.1) defines constraint def syntax with examples like:\n```\nconstraint def MinWallThickness {\n    param wall : Length\n    param process : ManufacturingProcess\n    wall >= process.min_wall_thickness\n}\n```\n\nThe implementation requires three layers:\n1. **Grammar**: Add `constraint_definition` rule to tree-sitter grammar with body items being either `param_declaration`, `let_declaration`, or bare expression predicates (`constraint_def_predicate`)\n2. **AST**: Add `ConstraintDef` struct and `Constraint(ConstraintDef)` variant to `Declaration` enum\n3. **Lowering**: Add `lower_constraint_def` function and dispatch in `lower_source_file`\n\nKey insight: `constraint_definition` (top-level, starts with `constraint def`) operates in `_declaration` context, while `constraint_declaration` (member-level, starts with `constraint <expr>`) operates in `_member` context. No grammar conflict between them.\n\nThe body uses `_constraint_def_body_item` choice: param_declaration, let_declaration, or constraint_def_predicate (bare _expression). Bare expressions are predicate assertions; multiple predicates form a conjunction. Keywords like `param`/`let` disambiguate member declarations from bare expressions.\n\n**Review fix (2026-03-24):** Two robustness issues in `lower_constraint_def` body iteration loop: (1) the `_ => {}` catch-all silently swallows ERROR tree-sitter nodes \u2014 must add explicit \"ERROR\" arm matching `lower_member` and `lower_source_file` patterns; (2) `param_declaration` arm uses bare `self.lower_param(child)` without `check_and_lower!` guard \u2014 must wrap with `check_and_lower!` for consistency with `lower_member`.",
-  "prerequisites": [
-    {
-      "id": "pre-1",
-      "description": "Add `constraint_definition`, `_constraint_def_body_item`, and `constraint_def_predicate` rules to tree-sitter-reify/grammar.js. Add `$.constraint_definition` to the `_declaration` choice. Add `[$.constraint_def_predicate]` to conflicts if needed.",
-      "status": "done",
-      "commit": "730d914",
-      "tests": []
-    },
-    {
-      "id": "pre-2",
-      "description": "Regenerate tree-sitter parser by running `tree-sitter generate` in tree-sitter-reify/. This updates src/parser.c, src/grammar.json, and src/node-types.json.",
-      "status": "done",
-      "commit": "730d914",
-      "tests": []
-    },
-    {
-      "id": "pre-3",
-      "description": "Add `ConstraintDef` struct to crates/reify-syntax/src/lib.rs with fields: name (String), is_pub (bool), type_params (Vec<TypeParamDecl>), params (Vec<ParamDecl>), predicates (Vec<Expr>), span (SourceSpan), content_hash (ContentHash). Add `Constraint(ConstraintDef)` variant to the Declaration enum.",
-      "status": "done",
-      "commit": "730d914",
-      "tests": []
-    }
-  ],
+  "analysis": "The Type enum in crates/reify-types/src/ty.rs currently has 15 variants with #[derive(Debug, Clone, PartialEq, Eq, Hash)]. Display is manually implemented in the same file. Factory methods (length(), angle(), dimensionless_scalar()) follow a consistent pattern of constructing Type variants with preset fields. The only exhaustive match on Type is the Display impl itself \u2014 all other match sites in the codebase (cpsat.rs, compiler, etc.) use wildcard catch-all arms, so adding two new variants will only require updating ty.rs and the exports integration test. No content_hash impl exists for Type (it uses derived Hash), so no hash tag assignments needed. The new Point { n, quantity } and Vector { n, quantity } variants follow the same structural pattern as List(Box<Type>) and Set(Box<Type>) \u2014 a container with an inner type \u2014 but additionally carry a dimensionality parameter n:usize. Display will follow the format Point{n}<{quantity}> (e.g., Point3<Scalar[m]>) and Vector{n}<{quantity}> consistent with the existing angle-bracket convention for generic types.",
+  "prerequisites": [],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing test `parse_basic_constraint_def` in constraint_def_tests.rs: parse `constraint def Foo { x > 0 }`, assert no errors, assert 1 declaration of type Declaration::Constraint, assert name is 'Foo'.",
+      "description": "Write failing tests for Point variant Display: assert Point { n:3, quantity: Type::length() } displays as 'Point3<Scalar[m]>', Point { n:2, quantity: Type::Real } as 'Point2<Real>', Point { n:1, quantity: Type::Int } as 'Point1<Int>'",
       "status": "done",
-      "commit": "852c0f3"
+      "commit": "6712fef"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Add `lower_constraint_def` function in ts_parser.rs extracting name, is_pub, type_params, params, predicates. Add dispatch arm `\"constraint_definition\" => ...` in `lower_source_file`. Follow pattern from lower_purpose/lower_structure.",
+      "description": "Add Point { n: usize, quantity: Box<Type> } variant to Type enum and add Display match arm: write!(f, 'Point{}<{}>', n, quantity)",
       "status": "done",
-      "commit": "0d4776e"
+      "commit": "10dbab1"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write test `parse_constraint_def_predicate_expr`: verify the predicate expression content \u2014 parse `constraint def Check { a > 5mm }`, assert predicates.len() == 1, assert the predicate is a BinOp with op '>' and left Ident('a').",
+      "description": "Write failing tests for Vector variant Display: assert Vector { n:3, quantity: Type::length() } displays as 'Vector3<Scalar[m]>', Vector { n:2, quantity: Type::Real } as 'Vector2<Real>'",
       "status": "done",
-      "commit": "852c0f3"
+      "commit": "658a8e2"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Verify predicate extraction works in lower_constraint_def by iterating constraint_def_predicate children and lowering their 'expr' field. Fix if needed.",
+      "description": "Add Vector { n: usize, quantity: Box<Type> } variant to Type enum and add Display match arm: write!(f, 'Vector{}<{}>', n, quantity)",
       "status": "done",
-      "commit": "0d4776e"
+      "commit": "0f8bcd9"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write test `parse_constraint_def_with_params`: parse `constraint def MinWall { param wall : Length  param process : Process  wall >= process.min_wall }`, assert params.len() == 2, assert params[0].name == 'wall', assert predicates.len() == 1.",
+      "description": "Write failing tests for factory methods: assert Type::point2(Type::length()) == Type::Point { n:2, quantity: Box::new(Type::length()) } and Type::point3(Type::Real) == Type::Point { n:3, quantity: Box::new(Type::Real) }",
       "status": "done",
-      "commit": "852c0f3"
+      "commit": "8b251e9"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Verify param extraction works in lower_constraint_def by iterating param_declaration children and lowering them via existing lower_param. Fix if needed.",
+      "description": "Implement pub fn point2(quantity: Type) -> Self and pub fn point3(quantity: Type) -> Self factory methods on Type impl block",
       "status": "done",
-      "commit": "0d4776e"
+      "commit": "1fd02c2"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write test `parse_constraint_def_multiple_predicates`: parse a constraint def with 3 bare expression predicates (conjunction), assert predicates.len() == 3, verifying multiple predicates represent logical AND.",
+      "description": "Write failing tests for factory methods: assert Type::vec2(Type::length()) == Type::Vector { n:2, quantity: Box::new(Type::length()) } and Type::vec3(Type::Real) == Type::Vector { n:3, quantity: Box::new(Type::Real) }",
       "status": "done",
-      "commit": "852c0f3"
+      "commit": "5969093"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Should already pass since predicates Vec collects all constraint_def_predicate nodes. Verify and fix if needed.",
+      "description": "Implement pub fn vec2(quantity: Type) -> Self and pub fn vec3(quantity: Type) -> Self factory methods on Type impl block",
       "status": "done",
-      "commit": "0d4776e"
+      "commit": "88a92bf"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write test `parse_pub_constraint_def`: parse `pub constraint def Visible { x > 0 }`, assert is_pub == true.",
+      "description": "Write tests for Eq and Hash: (a) Point3<Length> == Point3<Length>, (b) Point3<Length> != Point2<Length>, (c) Point3<Length> != Point3<Real>, (d) Point3<Length> != Vector3<Length>, (e) same assertions for Vector, (f) Hash consistency: equal types produce equal hashes via HashMap insert+lookup",
       "status": "done",
-      "commit": "852c0f3"
+      "commit": "f26ca73"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Should already pass since lower_constraint_def uses has_pub_keyword(). Verify and fix if needed.",
+      "description": "Verify Eq/Hash tests pass (derived automatically \u2014 no code change expected). Also add test asserting Point and Vector are not numeric via is_numeric(), which should pass from the existing match wildcard-free is_numeric() using matches!() macro",
       "status": "done",
-      "commit": "0d4776e"
+      "commit": "88d118a"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write test `parse_constraint_def_with_type_params`: parse `constraint def Aligned<T : Rigid> { ... }`, assert type_params.len() == 1, assert type_params[0].name == 'T'.",
+      "description": "Add Point and Vector variant construction to the all_m5_types_exported test in tests/exports.rs: construct Type::Point and Type::Vector variants, use Type::point3() and Type::vec3() factories, verify accessible from crate root",
       "status": "done",
-      "commit": "852c0f3"
+      "commit": "4d8556f"
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "Should already pass since lower_constraint_def uses lower_type_parameters(). Verify and fix if needed.",
+      "description": "No impl change expected for exports \u2014 Type is already re-exported. Run full cargo test -p reify-types to verify everything passes end-to-end.",
       "status": "done",
-      "commit": "0d4776e"
-    },
-    {
-      "id": "step-13",
-      "type": "test",
-      "description": "Write integration test `parse_constraint_def_complex`: parse a realistic constraint def from the spec (DFM_Milling-style with params, forall quantifier predicates, and multiple predicates), verify all fields.",
-      "status": "done",
-      "commit": "852c0f3"
-    },
-    {
-      "id": "step-14",
-      "type": "impl",
-      "description": "Should already pass as an integration verification. Fix any edge cases discovered.",
-      "status": "done",
-      "commit": "0d4776e"
-    },
-    {
-      "id": "step-15",
-      "type": "test",
-      "description": "Write test `parse_constraint_def_body_syntax_error` in constraint_def_tests.rs: parse a constraint def with a syntax error inside the body (e.g. `constraint def Bad { x >< 0 }` or similar invalid syntax that produces an ERROR tree-sitter node inside the body). Assert that errors is non-empty and contains a ParseError with message matching 'syntax error in constraint body'. This tests the [reviewer_robustness] silent_error_suppression fix \u2014 currently the `_ => {}` catch-all silently swallows ERROR nodes.",
-      "status": "done",
-      "commit": "2c867aa"
-    },
-    {
-      "id": "step-16",
-      "type": "impl",
-      "description": "Add explicit `\"ERROR\"` arm to the body iteration match in `lower_constraint_def` (ts_parser.rs line ~633), replacing the silent `_ => {}` catch-all for ERROR nodes. Push a ParseError with message `format!(\"syntax error in constraint body: {}\", self.node_text(child))` and span `self.span(child)`, matching the pattern used in `lower_member` (line 809) and `lower_source_file` (line 158). The `_ => {}` arm remains for non-ERROR unknown node kinds (e.g. punctuation like `{`, `}`).",
-      "status": "done",
-      "commit": "2c867aa"
-    },
-    {
-      "id": "step-17",
-      "type": "test",
-      "description": "Write test `parse_constraint_def_error_param` in constraint_def_tests.rs: parse a constraint def with a malformed param_declaration inside the body (e.g. `constraint def Bad { param : Length  x > 0 }` \u2014 param missing its name, which gives a param_declaration node with `has_error() == true`). Assert that errors is non-empty and contains a ParseError with message matching 'invalid constraint param'. Assert that the constraint is still constructed (with 0 params) and the valid predicate is still collected. This tests the [reviewer_robustness] missing_error_guard fix \u2014 currently the bare `self.lower_param(child)` silently drops error params without diagnostics.",
-      "status": "done",
-      "commit": "12f0c52"
-    },
-    {
-      "id": "step-18",
-      "type": "impl",
-      "description": "Guard the `\"param_declaration\"` arm in `lower_constraint_def` body iteration (ts_parser.rs line ~617-620) with `check_and_lower!` macro, matching the pattern used in `lower_member` (line 786). Replace the bare `if let Some(p) = self.lower_param(child) { params.push(p); }` with: `check_and_lower!(self, child, \"constraint param\", self.lower_param(child).map(|p| { params.push(p); Some(()) }));` \u2014 this checks `child.is_error() || child.has_error()` and emits a diagnostic before skipping the node.",
-      "status": "done",
-      "commit": "2c867aa"
+      "commit": "021e749"
     }
   ],
   "design_decisions": [
     {
-      "decision": "ConstraintDef stores `params: Vec<ParamDecl>` and `predicates: Vec<Expr>` as separate fields rather than a unified body Vec",
-      "rationale": "Matches the task description's 'params, predicate_lines' separation. Cleaner API for downstream consumers (compiler can iterate params and predicates independently). If let/sub support is needed later, a `lets: Vec<LetDecl>` field or unified body enum can be added."
+      "decision": "Use Point{n}<{quantity}> Display format (e.g., Point3<Scalar[m]>) rather than domain-specific names like Point3<Length>",
+      "rationale": "Consistent with existing generic type Display conventions (List<Int>, Set<String>, Field<Real, Real>). The inner type's Display is reused verbatim. If a friendlier 'Length' alias is desired, that would be a Type alias feature, not a Point-specific Display hack."
     },
     {
-      "decision": "Grammar uses `constraint def` (required `def` keyword) rather than `constraint` alone for top-level definitions",
-      "rationale": "Follows the language spec (Section 4.1.3). The required `def` keyword cleanly disambiguates top-level `constraint def Name { ... }` from member-level `constraint <expr>`. structure_definition uses optional('def'), but constraint_definition requires it because `constraint <expr>` at the top level would be ambiguous without it."
+      "decision": "Use Vector{n}<{quantity}> as Display format, not Vec{n}<...>",
+      "rationale": "Avoids ambiguity with Rust's Vec<T> and is more explicit for the CAD/engineering domain. The variant name in the enum is Vector, so Display should match."
     },
     {
-      "decision": "Grammar body accepts param_declaration, let_declaration, and constraint_def_predicate (bare expression)",
-      "rationale": "Task says 'not preceded by param/let/etc keywords are predicate assertions', implying param and let ARE valid keyword-prefixed body items. Bare expressions (starting with identifiers, literals, operators) are unambiguously distinguishable from keyword-prefixed declarations."
+      "decision": "Both Point and Vector store n:usize + quantity:Box<Type> with identical structure",
+      "rationale": "Mathematically a Point and a Vector in an affine space are distinct types even though they share the same representation (n-tuple of quantities). Keeping them as separate variants enables the type checker to distinguish them, which is important for geometric correctness (you can subtract points to get a vector, but cannot add two points)."
     },
     {
-      "decision": "constraint_def_predicate is a named grammar rule wrapping _expression, not an inline anonymous rule",
-      "rationale": "A named node ('constraint_def_predicate') is needed so the lowering code can identify bare expression predicates by node kind, distinguishing them from param_declaration and let_declaration children."
+      "decision": "Factory methods only for n=2 and n=3 (point2, point3, vec2, vec3)",
+      "rationale": "Task specifies these four. The general variant Type::Point { n, quantity } supports arbitrary dimensions, but 2D and 3D are the common cases in CAD that deserve convenience constructors."
     },
     {
-      "decision": "No semicolons or explicit statement terminators for predicates in the body",
-      "rationale": "Consistent with the rest of the Reify grammar where members (param, let, constraint, etc.) don't use terminators. Tree-sitter's GLR parser resolves expression boundaries by operator precedence \u2014 a new predicate begins when no binary operator connects adjacent expressions."
+      "decision": "Eq and Hash are derived, no custom implementation needed",
+      "rationale": "Both new variants contain only usize (which derives Eq/Hash trivially) and Box<Type> (which delegates to Type's derived Eq/Hash). The derive macro handles this correctly with structural equality and deterministic hashing."
     },
     {
-      "decision": "ERROR nodes in constraint def body get 'syntax error in constraint body' message prefix (not generic 'syntax error')",
-      "rationale": "Using a context-specific message ('in constraint body') helps users locate errors when multiple parse errors are reported. Matches the contextual messaging pattern \u2014 lower_member uses generic 'syntax error' because it's already scoped to a member context, but constraint def body errors benefit from the extra disambiguation."
-    },
-    {
-      "decision": "param_declaration arm uses check_and_lower! macro with label 'constraint param' rather than just 'param'",
-      "rationale": "The label 'constraint param' disambiguates from regular member params in error messages. When a user sees 'invalid constraint param: ...', they know the error is inside a constraint def body, not inside a structure or trait body where 'invalid param: ...' would appear from lower_member."
+      "decision": "Steps 9-10 test Eq/Hash even though it's derived",
+      "rationale": "Explicit tests document the contract and catch regressions if someone later changes the derive to a manual implementation. Following the pattern of existing tests (e.g., type_field_variant tests equality)."
     }
   ],
   "reuse": [
     {
-      "what": "has_pub_keyword() helper",
-      "where": "ts_parser.rs Lowering impl",
-      "how": "Reuse directly for is_pub extraction in lower_constraint_def, same pattern as lower_structure, lower_purpose, lower_trait."
+      "what": "Existing #[derive(Debug, Clone, PartialEq, Eq, Hash)] on Type enum",
+      "where": "crates/reify-types/src/ty.rs line 4",
+      "how": "New Point and Vector variants get Eq/Hash for free from the derive macro \u2014 no manual implementation needed."
     },
     {
-      "what": "lower_type_parameters() helper",
-      "where": "ts_parser.rs Lowering impl",
-      "how": "Reuse directly for extracting optional type parameters from constraint_definition node."
+      "what": "Factory method pattern from Type::length(), Type::angle()",
+      "where": "crates/reify-types/src/ty.rs lines 42-60",
+      "how": "Follow identical pattern: pub fn point3(quantity: Type) -> Self { Type::Point { n: 3, quantity: Box::new(quantity) } }"
     },
     {
-      "what": "lower_param() function",
-      "where": "ts_parser.rs Lowering impl",
-      "how": "Reuse directly to lower param_declaration children in the constraint def body into ParamDecl."
+      "what": "Display arm pattern from List/Set/Field variants",
+      "where": "crates/reify-types/src/ty.rs lines 206-216",
+      "how": "Point/Vector Display follows the same write!(f, ...) pattern, using the inner type's Display trait via {} format."
     },
     {
-      "what": "lower_expr() function",
-      "where": "ts_parser.rs Lowering impl",
-      "how": "Reuse directly to lower constraint_def_predicate children (bare expressions) into Expr."
+      "what": "Test patterns from existing type_field_variant and type_list_display tests",
+      "where": "crates/reify-types/src/ty.rs lines 77-189",
+      "how": "New tests follow the same assert_eq!(format!('{}', ty), expected) and equality assertion patterns."
     },
     {
-      "what": "check_and_lower! macro",
-      "where": "ts_parser.rs",
-      "how": "Reuse for error-checking child nodes before lowering params and predicates in the body."
-    },
-    {
-      "what": "PurposeDef test patterns",
-      "where": "tests/purpose_tests.rs",
-      "how": "Follow the same parse_decls() helper pattern, assertion style, and test naming conventions for constraint_def_tests.rs."
-    },
-    {
-      "what": "span() and content_hash() helpers",
-      "where": "ts_parser.rs Lowering impl",
-      "how": "Reuse for SourceSpan and ContentHash on the ConstraintDef node."
-    },
-    {
-      "what": "ERROR handling pattern from lower_member (line 809) and lower_source_file (line 158)",
-      "where": "ts_parser.rs",
-      "how": "Reuse the exact same push-ParseError-with-span pattern for the new \"ERROR\" arm in lower_constraint_def's body iteration loop."
+      "what": "Integration test pattern from all_m5_types_exported",
+      "where": "crates/reify-types/tests/exports.rs lines 47-142",
+      "how": "Add Point/Vector variant construction under a new section in the existing test function, following the same let _var = reify_types::Type::Variant pattern."
     }
   ],
-  "_session_id": "195-84380801",
-  "_created_at": "2026-03-24T07:22:34.651702+00:00"
+  "_session_id": "222-f112dec9",
+  "_created_at": "2026-03-24T07:45:46.897202+00:00"
 }

@@ -35,6 +35,10 @@ pub enum Type {
     Field { domain: Box<Type>, codomain: Box<Type> },
     /// Geometry handle (a reference to a realization, not a scalar value).
     Geometry,
+    /// N-dimensional point with a quantity type (e.g., Point3<Scalar[m]>).
+    Point { n: usize, quantity: Box<Type> },
+    /// N-dimensional vector with a quantity type (e.g., Vector3<Scalar[m]>).
+    Vector { n: usize, quantity: Box<Type> },
 }
 
 impl Type {
@@ -57,6 +61,26 @@ impl Type {
         Type::Scalar {
             dimension: DimensionVector::DIMENSIONLESS,
         }
+    }
+
+    /// Shorthand for a 2D vector with a given quantity type.
+    pub fn vec2(quantity: Type) -> Self {
+        Type::Vector { n: 2, quantity: Box::new(quantity) }
+    }
+
+    /// Shorthand for a 3D vector with a given quantity type.
+    pub fn vec3(quantity: Type) -> Self {
+        Type::Vector { n: 3, quantity: Box::new(quantity) }
+    }
+
+    /// Shorthand for a 2D point with a given quantity type.
+    pub fn point2(quantity: Type) -> Self {
+        Type::Point { n: 2, quantity: Box::new(quantity) }
+    }
+
+    /// Shorthand for a 3D point with a given quantity type.
+    pub fn point3(quantity: Type) -> Self {
+        Type::Point { n: 3, quantity: Box::new(quantity) }
     }
 
     /// Is this type a numeric type (Int, Real, or Scalar)?
@@ -186,6 +210,113 @@ mod tests {
         // Not numeric
         assert!(!field_ty.is_numeric());
     }
+
+    #[test]
+    fn type_point_vector_not_numeric() {
+        assert!(!Type::point2(Type::length()).is_numeric());
+        assert!(!Type::point3(Type::Real).is_numeric());
+        assert!(!Type::vec2(Type::length()).is_numeric());
+        assert!(!Type::vec3(Type::Real).is_numeric());
+    }
+
+    #[test]
+    fn type_point_vector_eq_and_hash() {
+        use std::collections::HashMap;
+
+        let p3_len = Type::point3(Type::length());
+        let p3_len2 = Type::point3(Type::length());
+        let p2_len = Type::point2(Type::length());
+        let p3_real = Type::point3(Type::Real);
+        let v3_len = Type::vec3(Type::length());
+
+        // (a) Point3<Length> == Point3<Length>
+        assert_eq!(p3_len, p3_len2);
+
+        // (b) Point3<Length> != Point2<Length>
+        assert_ne!(p3_len, p2_len);
+
+        // (c) Point3<Length> != Point3<Real>
+        assert_ne!(p3_len, p3_real);
+
+        // (d) Point3<Length> != Vector3<Length>
+        assert_ne!(p3_len, v3_len);
+
+        // (e) Vector assertions
+        let v3_len_a = Type::vec3(Type::length());
+        let v3_len_b = Type::vec3(Type::length());
+        let v2_len = Type::vec2(Type::length());
+        let v3_real = Type::vec3(Type::Real);
+        assert_eq!(v3_len_a, v3_len_b);
+        assert_ne!(v3_len_a, v2_len);
+        assert_ne!(v3_len_a, v3_real);
+
+        // (f) Hash consistency: equal types produce equal hashes via HashMap insert+lookup
+        let mut map: HashMap<Type, &str> = HashMap::new();
+        map.insert(p3_len.clone(), "p3_len");
+        assert_eq!(map.get(&p3_len2), Some(&"p3_len"));
+        map.insert(v3_len.clone(), "v3_len");
+        assert_eq!(map.get(&v3_len_a), Some(&"v3_len"));
+    }
+
+    #[test]
+    fn type_vec_factory_methods() {
+        assert_eq!(
+            Type::vec2(Type::length()),
+            Type::Vector { n: 2, quantity: Box::new(Type::length()) }
+        );
+        assert_eq!(
+            Type::vec3(Type::Real),
+            Type::Vector { n: 3, quantity: Box::new(Type::Real) }
+        );
+    }
+
+    #[test]
+    fn type_point_factory_methods() {
+        assert_eq!(
+            Type::point2(Type::length()),
+            Type::Point { n: 2, quantity: Box::new(Type::length()) }
+        );
+        assert_eq!(
+            Type::point3(Type::Real),
+            Type::Point { n: 3, quantity: Box::new(Type::Real) }
+        );
+    }
+
+    #[test]
+    fn type_vector_display() {
+        let v3_length = Type::Vector {
+            n: 3,
+            quantity: Box::new(Type::length()),
+        };
+        assert_eq!(format!("{}", v3_length), "Vector3<Scalar[m]>");
+
+        let v2_real = Type::Vector {
+            n: 2,
+            quantity: Box::new(Type::Real),
+        };
+        assert_eq!(format!("{}", v2_real), "Vector2<Real>");
+    }
+
+    #[test]
+    fn type_point_display() {
+        let p3_length = Type::Point {
+            n: 3,
+            quantity: Box::new(Type::length()),
+        };
+        assert_eq!(format!("{}", p3_length), "Point3<Scalar[m]>");
+
+        let p2_real = Type::Point {
+            n: 2,
+            quantity: Box::new(Type::Real),
+        };
+        assert_eq!(format!("{}", p2_real), "Point2<Real>");
+
+        let p1_int = Type::Point {
+            n: 1,
+            quantity: Box::new(Type::Int),
+        };
+        assert_eq!(format!("{}", p1_int), "Point1<Int>");
+    }
 }
 
 impl std::fmt::Display for Type {
@@ -215,6 +346,8 @@ impl std::fmt::Display for Type {
             Type::StructureRef(name) => write!(f, "{}", name),
             Type::Field { domain, codomain } => write!(f, "Field<{}, {}>", domain, codomain),
             Type::Geometry => write!(f, "Geometry"),
+            Type::Point { n, quantity } => write!(f, "Point{}<{}>", n, quantity),
+            Type::Vector { n, quantity } => write!(f, "Vector{}<{}>", n, quantity),
         }
     }
 }
