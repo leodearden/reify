@@ -1473,6 +1473,69 @@ mod tests {
         }
     }
 
+    // --- Near-degenerate axis rejection tests (task-311 step-13) ---
+
+    #[test]
+    fn rotate_near_degenerate_axis_rejected() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        // axis=[1e-10, 0, 0] has mag_sq=1e-20, physically meaningless (0.1 nanometer)
+        // but above the current threshold of f64::EPSILON^2 ≈ 4.9e-32
+        let result = kernel.execute(&GeometryOp::Rotate {
+            target: box_h.id,
+            axis: [1e-10, 0.0, 0.0],
+            angle_rad: std::f64::consts::FRAC_PI_4,
+        });
+        match result {
+            Err(GeometryError::OperationFailed(msg)) => {
+                let lower = msg.to_lowercase();
+                assert!(
+                    lower.contains("zero"),
+                    "error should mention 'zero', got: {msg}"
+                );
+            }
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for near-degenerate axis [1e-10, 0, 0] in rotate"),
+        }
+    }
+
+    #[test]
+    fn rotate_around_near_degenerate_axis_rejected() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        // axis=[0, 1e-8, 0] has mag_sq=1e-16, physically meaningless (10 nanometers)
+        // but above the current threshold of f64::EPSILON^2 ≈ 4.9e-32
+        let result = kernel.execute(&GeometryOp::RotateAround {
+            target: box_h.id,
+            point: [5.0, 0.0, 0.0],
+            axis: [0.0, 1e-8, 0.0],
+            angle_rad: std::f64::consts::FRAC_PI_4,
+        });
+        match result {
+            Err(GeometryError::OperationFailed(msg)) => {
+                let lower = msg.to_lowercase();
+                assert!(
+                    lower.contains("zero"),
+                    "error should mention 'zero', got: {msg}"
+                );
+            }
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for near-degenerate axis [0, 1e-8, 0] in rotate_around"),
+        }
+    }
+
     // --- Error message quality regression tests (step-7) ---
 
     #[test]
