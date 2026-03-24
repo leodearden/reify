@@ -372,6 +372,50 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
                 _ => Value::Undef,
             }
         }
+        "orient_euler" => {
+            if args.len() != 4 {
+                return Value::Undef;
+            }
+            let convention = match &args[0] {
+                Value::String(s) => s.as_str(),
+                _ => return Value::Undef,
+            };
+            let a = match trig_input(&args[1]) {
+                Some(v) => v,
+                None => return Value::Undef,
+            };
+            let b = match trig_input(&args[2]) {
+                Some(v) => v,
+                None => return Value::Undef,
+            };
+            let c = match trig_input(&args[3]) {
+                Some(v) => v,
+                None => return Value::Undef,
+            };
+            // Map convention letters to axis indices for elementary rotations
+            let axes: [usize; 3] = match convention {
+                "xyz" => [0, 1, 2],
+                "xzy" => [0, 2, 1],
+                "yxz" => [1, 0, 2],
+                "yzx" => [1, 2, 0],
+                "zxy" => [2, 0, 1],
+                "zyx" => [2, 1, 0],
+                "xyx" => [0, 1, 0],
+                "xzx" => [0, 2, 0],
+                "yxy" => [1, 0, 1],
+                "yzy" => [1, 2, 1],
+                "zxz" => [2, 0, 2],
+                "zyz" => [2, 1, 2],
+                _ => return Value::Undef,
+            };
+            // Compose q = q_a * q_b * q_c (intrinsic: multiply left-to-right)
+            let q1 = elementary_rotation_quat(axes[0], a);
+            let q2 = elementary_rotation_quat(axes[1], b);
+            let q3 = elementary_rotation_quat(axes[2], c);
+            let q12 = quat_mul(q1, q2);
+            let q = quat_mul(q12, q3);
+            normalize_quaternion(q.0, q.1, q.2, q.3).unwrap_or(Value::Undef)
+        }
         "orient_axis_angle" => {
             if args.len() != 2 {
                 return Value::Undef;
@@ -439,6 +483,32 @@ fn normalize_quaternion(w: f64, x: f64, y: f64, z: f64) -> Option<Value> {
         y: y / norm,
         z: z / norm,
     })
+}
+
+/// Create an elementary rotation quaternion for a single axis.
+///
+/// `axis`: 0=X, 1=Y, 2=Z. `angle`: rotation in radians.
+/// Returns (w, x, y, z) quaternion.
+fn elementary_rotation_quat(axis: usize, angle: f64) -> (f64, f64, f64, f64) {
+    let half = angle / 2.0;
+    let c = half.cos();
+    let s = half.sin();
+    match axis {
+        0 => (c, s, 0.0, 0.0),
+        1 => (c, 0.0, s, 0.0),
+        2 => (c, 0.0, 0.0, s),
+        _ => (1.0, 0.0, 0.0, 0.0), // identity fallback
+    }
+}
+
+/// Hamilton product of two quaternions.
+fn quat_mul(a: (f64, f64, f64, f64), b: (f64, f64, f64, f64)) -> (f64, f64, f64, f64) {
+    (
+        a.0 * b.0 - a.1 * b.1 - a.2 * b.2 - a.3 * b.3,
+        a.0 * b.1 + a.1 * b.0 + a.2 * b.3 - a.3 * b.2,
+        a.0 * b.2 - a.1 * b.3 + a.2 * b.0 + a.3 * b.1,
+        a.0 * b.3 + a.1 * b.2 - a.2 * b.1 + a.3 * b.0,
+    )
 }
 
 /// Convert non-finite f64 values (NaN, inf) to Undef.
