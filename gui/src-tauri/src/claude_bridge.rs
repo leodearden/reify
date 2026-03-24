@@ -227,8 +227,8 @@ impl SidecarHandle {
                         sink(event_name, payload);
 
                         // 3. MCP tool interception for reify_ prefixed tool calls
-                        if let OutboundMessage::ToolCall { id, tool_name, tool_input } = &msg {
-                            if tool_name.starts_with("reify_") {
+                        if let OutboundMessage::ToolCall { id, tool_name, tool_input } = &msg
+                            && tool_name.starts_with("reify_") {
                                 let id = id.clone();
                                 let tool_name = tool_name.clone();
                                 let tool_input = tool_input.clone();
@@ -254,7 +254,6 @@ impl SidecarHandle {
                                     write_to_sidecar(&mut *writer, &response).await.ok();
                                 });
                             }
-                        }
                     }
                 },
                 move || {
