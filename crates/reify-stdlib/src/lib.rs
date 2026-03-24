@@ -1399,4 +1399,79 @@ mod tests {
         let result = eval_builtin("remap", &[Value::Real(5.0), Value::Real(0.0), Value::Real(10.0)]);
         assert!(result.is_undef(), "remap with 3 args should be Undef, got {:?}", result);
     }
+
+    // --- remap Scalar tests (step-17) ---
+    // remap(x, from_lo, from_hi, to_lo, to_hi)
+
+    #[test]
+    fn remap_scalar_preserves_dimension() {
+        // All 5 args LENGTH -> result is LENGTH
+        // remap(Scalar{5m}, Scalar{0m}, Scalar{10m}, Scalar{0m}, Scalar{100m}) = Scalar{50m}
+        assert_scalar_approx!(
+            eval_builtin(
+                "remap",
+                &[
+                    Value::Scalar { si_value: 5.0, dimension: DimensionVector::LENGTH },
+                    Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
+                    Value::Scalar { si_value: 10.0, dimension: DimensionVector::LENGTH },
+                    Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
+                    Value::Scalar { si_value: 100.0, dimension: DimensionVector::LENGTH },
+                ]
+            ),
+            50.0,
+            DimensionVector::LENGTH
+        );
+    }
+
+    #[test]
+    fn remap_scalar_cross_dimension() {
+        // x in LENGTH, from in LENGTH, to in TIME -> result is TIME
+        // remap(Scalar{5m, LENGTH}, Scalar{0m}, Scalar{10m}, Scalar{0s, TIME}, Scalar{100s, TIME}) = Scalar{50s, TIME}
+        assert_scalar_approx!(
+            eval_builtin(
+                "remap",
+                &[
+                    Value::Scalar { si_value: 5.0, dimension: DimensionVector::LENGTH },
+                    Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
+                    Value::Scalar { si_value: 10.0, dimension: DimensionVector::LENGTH },
+                    Value::Scalar { si_value: 0.0, dimension: DimensionVector::TIME },
+                    Value::Scalar { si_value: 100.0, dimension: DimensionVector::TIME },
+                ]
+            ),
+            50.0,
+            DimensionVector::TIME
+        );
+    }
+
+    #[test]
+    fn remap_scalar_dimension_mismatch_x_from_returns_undef() {
+        // x has TIME dimension but from_lo/from_hi are LENGTH -> Undef
+        let result = eval_builtin(
+            "remap",
+            &[
+                Value::Scalar { si_value: 5.0, dimension: DimensionVector::TIME },
+                Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
+                Value::Scalar { si_value: 10.0, dimension: DimensionVector::LENGTH },
+                Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
+                Value::Scalar { si_value: 100.0, dimension: DimensionVector::LENGTH },
+            ],
+        );
+        assert!(result.is_undef(), "remap with x dim != from dim should be Undef, got {:?}", result);
+    }
+
+    #[test]
+    fn remap_scalar_to_range_mismatch_returns_undef() {
+        // to_lo and to_hi have different dimensions -> Undef
+        let result = eval_builtin(
+            "remap",
+            &[
+                Value::Scalar { si_value: 5.0, dimension: DimensionVector::LENGTH },
+                Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
+                Value::Scalar { si_value: 10.0, dimension: DimensionVector::LENGTH },
+                Value::Scalar { si_value: 0.0, dimension: DimensionVector::TIME },
+                Value::Scalar { si_value: 100.0, dimension: DimensionVector::LENGTH }, // mismatch
+            ],
+        );
+        assert!(result.is_undef(), "remap with to_lo/to_hi dim mismatch should be Undef, got {:?}", result);
+    }
 }
