@@ -2155,6 +2155,70 @@ mod tests {
         assert!(eval_builtin("orient_quaternion", &[]).is_undef());
     }
 
+    // ── orient_axis_angle tests (step-10) ─────────────────────────────────
+
+    #[test]
+    fn orient_axis_angle_90deg_around_z() {
+        // 90° around Z: q = (cos(π/4), 0, 0, sin(π/4))
+        let axis = Value::Tensor(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
+        let angle = Value::Real(std::f64::consts::FRAC_PI_2);
+        let cos_pi_4 = std::f64::consts::FRAC_PI_4.cos();
+        let sin_pi_4 = std::f64::consts::FRAC_PI_4.sin();
+        assert_orientation_approx!(
+            eval_builtin("orient_axis_angle", &[axis, angle]),
+            cos_pi_4, 0.0, 0.0, sin_pi_4
+        );
+    }
+
+    #[test]
+    fn orient_axis_angle_180deg_around_x() {
+        // 180° around X: q = (cos(π/2), sin(π/2), 0, 0) = (0, 1, 0, 0)
+        let axis = Value::Tensor(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
+        let angle = Value::Real(std::f64::consts::PI);
+        assert_orientation_approx!(
+            eval_builtin("orient_axis_angle", &[axis, angle]),
+            0.0, 1.0, 0.0, 0.0
+        );
+    }
+
+    #[test]
+    fn orient_axis_angle_accepts_angle_scalar() {
+        // Same as 90° around Z but angle is an Angle Scalar
+        let axis = Value::Tensor(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
+        let angle = Value::Scalar {
+            si_value: std::f64::consts::FRAC_PI_2,
+            dimension: DimensionVector::ANGLE,
+        };
+        let cos_pi_4 = std::f64::consts::FRAC_PI_4.cos();
+        let sin_pi_4 = std::f64::consts::FRAC_PI_4.sin();
+        assert_orientation_approx!(
+            eval_builtin("orient_axis_angle", &[axis, angle]),
+            cos_pi_4, 0.0, 0.0, sin_pi_4
+        );
+    }
+
+    #[test]
+    fn orient_axis_angle_zero_axis_returns_undef() {
+        let axis = Value::Tensor(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]);
+        let angle = Value::Real(1.0);
+        assert!(eval_builtin("orient_axis_angle", &[axis, angle]).is_undef());
+    }
+
+    #[test]
+    fn orient_axis_angle_non_3d_axis_returns_undef() {
+        let axis = Value::Tensor(vec![Value::Real(1.0), Value::Real(0.0)]);
+        let angle = Value::Real(1.0);
+        assert!(eval_builtin("orient_axis_angle", &[axis, angle]).is_undef());
+    }
+
+    #[test]
+    fn orient_axis_angle_wrong_arg_count_returns_undef() {
+        assert!(eval_builtin("orient_axis_angle", &[]).is_undef());
+        assert!(eval_builtin("orient_axis_angle", &[Value::Real(1.0)]).is_undef());
+        let axis = Value::Tensor(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
+        assert!(eval_builtin("orient_axis_angle", &[axis.clone(), Value::Real(1.0), Value::Real(2.0)]).is_undef());
+    }
+
     #[test]
     fn dot_mixed_component_dimensions_returns_undef() {
         // A Tensor with mixed dimensions is not a valid physical vector
