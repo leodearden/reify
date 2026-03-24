@@ -62,8 +62,16 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
 
         // --- Three-arg numeric functions ---
         "clamp" => ternary(args, |x, lo, hi| match (x, lo, hi) {
-            (Value::Int(x), Value::Int(lo), Value::Int(hi)) => Value::Int(*x.clamp(lo, hi)),
+            (Value::Int(x), Value::Int(lo), Value::Int(hi)) => {
+                if lo > hi {
+                    return Value::Undef;
+                }
+                Value::Int(*x.clamp(lo, hi))
+            }
             (Value::Real(x), Value::Real(lo), Value::Real(hi)) => {
+                if lo.is_nan() || hi.is_nan() || lo > hi {
+                    return Value::Undef;
+                }
                 sanitize_value(Value::Real(x.clamp(*lo, *hi)))
             }
             (
@@ -71,6 +79,9 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
                 Value::Scalar { si_value: lo, dimension: d2 },
                 Value::Scalar { si_value: hi, dimension: d3 },
             ) if d1 == d2 && d2 == d3 => {
+                if lo.is_nan() || hi.is_nan() || lo > hi {
+                    return Value::Undef;
+                }
                 sanitize_value(Value::Scalar { si_value: x.clamp(*lo, *hi), dimension: *d1 })
             }
             _ => {
@@ -83,6 +94,9 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
                 }
                 match (x.as_f64(), lo.as_f64(), hi.as_f64()) {
                     (Some(xv), Some(lov), Some(hiv)) => {
+                        if lov.is_nan() || hiv.is_nan() || lov > hiv {
+                            return Value::Undef;
+                        }
                         sanitize_value(Value::Real(xv.clamp(lov, hiv)))
                     }
                     _ => Value::Undef,
