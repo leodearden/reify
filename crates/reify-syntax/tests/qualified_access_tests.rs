@@ -119,3 +119,182 @@ fn parse_qualified_access_in_binary_expr() {
         other => panic!("expected BinOp, got {:?}", other),
     }
 }
+
+// ── Step 7: basic instance qualified access ────────────────────────────────
+
+#[test]
+fn parse_basic_instance_qualified_access() {
+    let (decls, errors) = parse_decls("structure S { let x = motor.(Driveable::torque) }");
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+    assert_eq!(decls.len(), 1);
+
+    let s = match &decls[0] {
+        Declaration::Structure(s) => s,
+        other => panic!("expected Structure, got {:?}", other),
+    };
+
+    let let_decl = match &s.members[0] {
+        MemberDecl::Let(l) => l,
+        other => panic!("expected Let, got {:?}", other),
+    };
+
+    // Expected: InstanceQualifiedAccess { object: Ident("motor"), qualified: QualifiedAccess(Ident("Driveable"), "torque") }
+    match &let_decl.value.kind {
+        ExprKind::InstanceQualifiedAccess { object, qualified } => {
+            match &object.kind {
+                ExprKind::Ident(name) => assert_eq!(name, "motor"),
+                other => panic!("expected Ident object, got {:?}", other),
+            }
+            match &qualified.kind {
+                ExprKind::QualifiedAccess { qualifier, member } => {
+                    assert_eq!(member, "torque");
+                    match &qualifier.kind {
+                        ExprKind::Ident(name) => assert_eq!(name, "Driveable"),
+                        other => panic!("expected Ident qualifier, got {:?}", other),
+                    }
+                }
+                other => panic!("expected QualifiedAccess qualified, got {:?}", other),
+            }
+        }
+        other => panic!("expected InstanceQualifiedAccess, got {:?}", other),
+    }
+}
+
+// ── Step 9: instance qualified with member chain ───────────────────────────
+
+#[test]
+fn parse_instance_qualified_with_member_chain() {
+    let (decls, errors) = parse_decls("structure S { let x = self.motor.(Driveable::torque) }");
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+    assert_eq!(decls.len(), 1);
+
+    let s = match &decls[0] {
+        Declaration::Structure(s) => s,
+        other => panic!("expected Structure, got {:?}", other),
+    };
+
+    let let_decl = match &s.members[0] {
+        MemberDecl::Let(l) => l,
+        other => panic!("expected Let, got {:?}", other),
+    };
+
+    // Expected: InstanceQualifiedAccess {
+    //   object: MemberAccess { object: Ident("self"), member: "motor" },
+    //   qualified: QualifiedAccess(Ident("Driveable"), "torque")
+    // }
+    match &let_decl.value.kind {
+        ExprKind::InstanceQualifiedAccess { object, qualified } => {
+            match &object.kind {
+                ExprKind::MemberAccess { object: inner_obj, member } => {
+                    assert_eq!(member, "motor");
+                    match &inner_obj.kind {
+                        ExprKind::Ident(name) => assert_eq!(name, "self"),
+                        other => panic!("expected Ident inner object, got {:?}", other),
+                    }
+                }
+                other => panic!("expected MemberAccess object, got {:?}", other),
+            }
+            match &qualified.kind {
+                ExprKind::QualifiedAccess { qualifier, member } => {
+                    assert_eq!(member, "torque");
+                    match &qualifier.kind {
+                        ExprKind::Ident(name) => assert_eq!(name, "Driveable"),
+                        other => panic!("expected Ident qualifier, got {:?}", other),
+                    }
+                }
+                other => panic!("expected QualifiedAccess qualified, got {:?}", other),
+            }
+        }
+        other => panic!("expected InstanceQualifiedAccess, got {:?}", other),
+    }
+}
+
+// ── Step 11: instance qualified with chained path ─────────────────────────
+
+#[test]
+fn parse_instance_qualified_with_chained_path() {
+    let (decls, errors) = parse_decls("structure S { let x = obj.(A::B::c) }");
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+    assert_eq!(decls.len(), 1);
+
+    let s = match &decls[0] {
+        Declaration::Structure(s) => s,
+        other => panic!("expected Structure, got {:?}", other),
+    };
+
+    let let_decl = match &s.members[0] {
+        MemberDecl::Let(l) => l,
+        other => panic!("expected Let, got {:?}", other),
+    };
+
+    // Expected: InstanceQualifiedAccess {
+    //   object: Ident("obj"),
+    //   qualified: QualifiedAccess {
+    //     qualifier: QualifiedAccess { qualifier: Ident("A"), member: "B" },
+    //     member: "c"
+    //   }
+    // }
+    match &let_decl.value.kind {
+        ExprKind::InstanceQualifiedAccess { object, qualified } => {
+            match &object.kind {
+                ExprKind::Ident(name) => assert_eq!(name, "obj"),
+                other => panic!("expected Ident object, got {:?}", other),
+            }
+            match &qualified.kind {
+                ExprKind::QualifiedAccess { qualifier: outer_q, member: outer_m } => {
+                    assert_eq!(outer_m, "c");
+                    match &outer_q.kind {
+                        ExprKind::QualifiedAccess { qualifier: inner_q, member: inner_m } => {
+                            assert_eq!(inner_m, "B");
+                            match &inner_q.kind {
+                                ExprKind::Ident(name) => assert_eq!(name, "A"),
+                                other => panic!("expected Ident inner qualifier, got {:?}", other),
+                            }
+                        }
+                        other => panic!("expected inner QualifiedAccess, got {:?}", other),
+                    }
+                }
+                other => panic!("expected outer QualifiedAccess, got {:?}", other),
+            }
+        }
+        other => panic!("expected InstanceQualifiedAccess, got {:?}", other),
+    }
+}
+
+// ── Step 13: distinct AST nodes ───────────────────────────────────────────
+
+#[test]
+fn parse_distinct_ast_nodes() {
+    let (decls, errors) = parse_decls(
+        "structure S { let a = Rigid::mass  let b = obj.(Rigid::mass) }"
+    );
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+    assert_eq!(decls.len(), 1);
+
+    let s = match &decls[0] {
+        Declaration::Structure(s) => s,
+        other => panic!("expected Structure, got {:?}", other),
+    };
+
+    assert_eq!(s.members.len(), 2, "expected 2 members, got {}", s.members.len());
+
+    // First member: `let a = Rigid::mass` → QualifiedAccess
+    let let_a = match &s.members[0] {
+        MemberDecl::Let(l) => l,
+        other => panic!("expected Let for 'a', got {:?}", other),
+    };
+    assert!(
+        matches!(&let_a.value.kind, ExprKind::QualifiedAccess { .. }),
+        "expected QualifiedAccess for 'a', got {:?}", let_a.value.kind,
+    );
+
+    // Second member: `let b = obj.(Rigid::mass)` → InstanceQualifiedAccess
+    let let_b = match &s.members[1] {
+        MemberDecl::Let(l) => l,
+        other => panic!("expected Let for 'b', got {:?}", other),
+    };
+    assert!(
+        matches!(&let_b.value.kind, ExprKind::InstanceQualifiedAccess { .. }),
+        "expected InstanceQualifiedAccess for 'b', got {:?}", let_b.value.kind,
+    );
+}
