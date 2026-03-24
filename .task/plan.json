@@ -1,156 +1,175 @@
 {
-  "task_id": "286",
-  "title": "Complex<Q>: Type and Value",
+  "task_id": "230",
+  "title": "Tensor/Matrix: arithmetic",
   "files": [
-    "crates/reify-types/src/ty.rs",
-    "crates/reify-types/src/value.rs",
-    "crates/reify-types/tests/exports.rs"
+    "crates/reify-expr/tests/tensor_matrix_arithmetic_tests.rs",
+    "crates/reify-expr/src/lib.rs"
   ],
   "modules": [
-    "crates/reify-types"
+    "crates/reify-expr"
   ],
-  "analysis": "Task 286 asks for Complex(Box<Type>) in the Type enum and Complex { re, im, dimension } in the Value enum, with Display, Eq, Hash, content_hash, and Type::complex(q) factory. After thorough exploration, ALL of this is already fully implemented and tested in the current worktree:\n\n**Type (ty.rs):** Complex(Box<Type>) variant (line 45), Type::complex(q) factory (lines 105-108), Display arm producing 'Complex<Real>', 'Complex<Scalar[m]>' (line 740). Type derives Eq+Hash. 5 passing tests: display_real, display_scalar, display_nested, factory_eq_variant, eq_and_hash.\n\n**Value (value.rs):** Complex { re: f64, im: f64, dimension: DimensionVector } variant (line 58). Custom PartialEq using to_bits() for re/im (line 396-398). Custom Ord: dimension→re bits→im bits with type_tag=14 (lines 467, 530-536). Display: dimensionless '3+4i', dimensioned '(3+4i) m' (lines 672-690). content_hash with tag=15 and NaN canonicalization (lines 297-306). dimension() returns stored dimension (line 173). 30 passing tests covering Display (6), PartialEq (7), Ord (6), content_hash (5), dimension (2), plus 4 cross-variant tests.\n\n**Only gap:** exports.rs integration test has no Complex entries (covers Type::Complex direct construction, Type::complex() factory, Value::Complex construction). All other types (Tensor, Orientation, Range, Matrix) have export test entries.\n\nSince the implementation is complete, the executor should verify each piece passes and add the missing export test. Steps are structured as test-first TDD pairs matching the existing code for traceability.",
+  "analysis": "Task 230 requires tensor addition (same rank/N/Q), scalar-tensor multiplication, matrix-vector multiplication (M(M,K,Q1)*V(K,Q2)->V(M,Q1*Q2)), and matrix-matrix multiplication (M(M,K,Q1)*M(K,N,Q2)->M(M,N,Q1*Q2)) with dimensional checking on all operations.\n\nThe core implementation already exists in crates/reify-expr/src/lib.rs from dependency tasks 228/229:\n- eval_add: componentwise Tensor+Tensor via componentwise_op (recursive, any rank)\n- eval_sub: componentwise Tensor-Tensor via componentwise_op\n- eval_mul: Scalar*Tensor scaling, Mat*Vec (dot product per row, try_fold), Mat*Mat (O(m*n*k) with eval_dot)\n- eval_div: Tensor/Scalar component-wise division\n- neg_value: recursive Tensor negation with Matrix canonicalization\n- eval_dot: single-pass short-circuiting dot product helper\n- componentwise_op: length-matched zip with Undef propagation\n- eval_binop: canonicalizes Value::Matrix to nested Value::Tensor before dispatch\n\nAll 34 existing tests in tensor_matrix_arithmetic_tests.rs pass, covering rank-2 (matrix) operations. However, there are test coverage gaps for the operations task 230 specifically describes:\n\n1. Rank-1 Tensor arithmetic (add/sub/neg/scale/div) — tests exist for Value::Vector in point_vector_eval_tests.rs, but Value::Tensor rank-1 is a different variant with different semantics\n2. Rank-3+ Tensor arithmetic — no tests verify recursive generality beyond rank-2\n3. Dimension product Q1*Q2 tracking — tested for Length*Length=Area in mat*vec/mat*mat, but needs explicit verification for other dimension combinations\n4. Rank/shape mismatch Undef checking for rank-1 tensors\n5. Mixed-rank tensor operations (rank-1 + rank-2 → Undef)\n\nThe TDD plan adds these missing tests. Since the implementation handles all ranks generically via recursion, all new tests should pass without implementation changes. If any test reveals a gap, the corresponding impl step addresses it.",
   "prerequisites": [],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Verify existing tests for Type::Complex pass: type_complex_display_real, type_complex_display_scalar, type_complex_display_nested, type_complex_factory_eq_variant, type_complex_eq_and_hash (5 tests in ty.rs). Run `cargo test -p reify-types -- type_complex` and confirm all 5 pass. No code changes needed — implementation already exists.",
+      "description": "Write failing tests for rank-1 tensor addition: (a) Tensor([Real(1),Real(2),Real(3)]) + Tensor([Real(4),Real(5),Real(6)]) = Tensor([Real(5),Real(7),Real(9)]); (b) Tensor([Length(1),Length(2)]) + Tensor([Length(3),Length(4)]) = Tensor([Length(4),Length(6)]) — dimension preserved; (c) length mismatch Tensor([1,2,3]) + Tensor([1,2]) → Undef; (d) dimension mismatch Tensor([Length(1)]) + Tensor([Angle(1)]) → Undef",
       "status": "done",
-      "commit": null
+      "commit": "99e719c24b54c2501a47dc7029b22f47b1c45ec7"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "No-op verification: Type::Complex(Box<Type>) variant exists (ty.rs:45), Type::complex(q) factory exists (ty.rs:105-108), Display arm exists (ty.rs:740), Eq+Hash are derived on Type. Confirm `cargo test -p reify-types -- type_complex` passes all 5 tests. Mark done — no code changes needed.",
+      "description": "Verify rank-1 tensor addition tests pass — eval_add already handles Tensor+Tensor via componentwise_op with recursive dimension checking. No implementation changes expected.",
       "status": "done",
-      "commit": null
+      "commit": "99e719c24b54c2501a47dc7029b22f47b1c45ec7"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Verify existing tests for Value::Complex Display pass: value_complex_display_positive_imaginary ('3+4i'), value_complex_display_negative_imaginary ('3-4i'), value_complex_display_fractional ('3.5+4.2i'), value_complex_display_dimensioned ('(3+4i) m'), value_complex_display_zero_imaginary ('3+0i'), value_complex_display_negative_real ('-3-4i'). Run `cargo test -p reify-types -- value_complex_display` and confirm all 6 pass.",
+      "description": "Write failing tests for scalar-tensor multiplication with rank-1 tensors and dimension tracking: (a) Int(3) * Tensor([Real(1),Real(2)]) = Tensor([Real(3),Real(6)]); (b) Length(2) * Tensor([Length(1),Length(3)]) = Tensor([Area(2),Area(6)]) — Q1*Q2 dimension product; (c) Tensor * Scalar commutativity: Tensor([Real(1),Real(2)]) * Real(3) = Tensor([Real(3),Real(6)]); (d) Real(0.5) * Tensor([Length(4),Length(8)]) = Tensor([Length(2),Length(4)])",
       "status": "done",
-      "commit": null
+      "commit": "99e719c24b54c2501a47dc7029b22f47b1c45ec7"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "No-op verification: Value::Complex variant exists (value.rs:58), Display arm exists (value.rs:672-690) with whole-number formatting and dimension support. Confirm all 6 display tests pass. Mark done — no code changes needed.",
+      "description": "Verify scalar-tensor multiplication tests pass — eval_mul scalar*tensor arm handles Int/Real/Scalar * Tensor with recursive scaling. The guard '!matches!(scalar, Value::Tensor(_))' ensures proper dispatch. No implementation changes expected.",
       "status": "done",
-      "commit": null
+      "commit": "99e719c24b54c2501a47dc7029b22f47b1c45ec7"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Verify existing tests for Value::Complex PartialEq pass: eq_same, neq_different_re, neq_different_im, neq_different_dimension, neg_zero_distinguished, neq_real, neq_scalar (7 tests). Run `cargo test -p reify-types -- value_complex_eq value_complex_neq value_complex_neg_zero` and confirm all 7 pass.",
+      "description": "Write failing tests for rank-1 tensor subtraction, negation, and division: (a) Tensor([Real(5),Real(3)]) - Tensor([Real(1),Real(2)]) = Tensor([Real(4),Real(1)]); (b) Tensor([Length(10),Length(20)]) - Tensor([Length(3),Length(7)]) = Tensor([Length(7),Length(13)]); (c) -Tensor([Real(1),Real(-2),Real(3)]) = Tensor([Real(-1),Real(2),Real(-3)]); (d) Tensor([Area(4),Area(6)]) / Length(2) = Tensor([Length(2),Length(3)]) — Q/Q' dimension quotient",
       "status": "done",
-      "commit": null
+      "commit": "99e719c24b54c2501a47dc7029b22f47b1c45ec7"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "No-op verification: Custom PartialEq for Complex uses to_bits() for re/im and structural == for dimension (value.rs:396-398). Eq is empty impl (line 427). Confirm all 7 equality tests pass. Mark done — no code changes needed.",
+      "description": "Verify rank-1 tensor sub/neg/div tests pass — eval_sub uses componentwise_op, neg_value recurses into Tensor components, eval_div handles Tensor/Scalar with component-wise division. No implementation changes expected.",
       "status": "done",
-      "commit": null
+      "commit": "99e719c24b54c2501a47dc7029b22f47b1c45ec7"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Verify existing tests for Value::Complex Ord pass: sorts_after_tensor, sorts_before_undef (cross-type), ord_dimension_first, ord_re_second, ord_im_third, partial_ord_consistent (6 tests). Run `cargo test -p reify-types -- value_complex_sort value_complex_ord value_complex_partial` and confirm all 6 pass.",
+      "description": "Write failing tests for rank/shape validation across operations: (a) rank-1 + rank-2 → Undef: Tensor([Real(1),Real(2)]) + Tensor([Tensor([1,2]),Tensor([3,4])]) → Undef; (b) rank-1 * rank-1 → Undef: Tensor([Real(1)]) * Tensor([Real(2)]) → Undef (no element-wise tensor multiply); (c) empty rank-1 tensor operations: Tensor([]) + Tensor([]) → Undef; (d) single-element rank-1 tensor: Tensor([Length(5)]) + Tensor([Length(3)]) = Tensor([Length(8)])",
       "status": "done",
-      "commit": null
+      "commit": "99e719c24b54c2501a47dc7029b22f47b1c45ec7"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "No-op verification: Ord impl has type_tag=14 for Complex (value.rs:467), within-type comparison orders by dimension→re bits→im bits (value.rs:530-536). Confirm all 6 ordering tests pass. Mark done — no code changes needed.",
+      "description": "Verify rank/shape validation tests pass — componentwise_op rejects empty/mismatched lengths, eval_mul guards prevent rank-1*rank-1 (falls to _ => Undef), recursive dispatch produces Undef for rank mismatches at leaf level. No implementation changes expected.",
       "status": "done",
-      "commit": null
+      "commit": "99e719c24b54c2501a47dc7029b22f47b1c45ec7"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Verify existing tests for Value::Complex content_hash pass: hash_determinism, nan_re_canonicalized, hash_eq_implies_same_hash, different_re_different_hash, different_dimension_different_hash, hash_differs_from_scalar (6 tests including the cross-variant scalar distinction test). Run `cargo test -p reify-types -- value_complex_hash` and confirm all 5-6 pass.",
+      "description": "Write failing test for rank-3 tensor addition to verify recursive generality: Tensor([Tensor([Tensor([Real(1),Real(2)]),Tensor([Real(3),Real(4)])]),Tensor([Tensor([Real(5),Real(6)]),Tensor([Real(7),Real(8)])])]) + same-shape tensor = element-wise sum. This confirms componentwise_op recurses correctly through arbitrary nesting depth.",
       "status": "done",
-      "commit": null
+      "commit": "99e719c24b54c2501a47dc7029b22f47b1c45ec7"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "No-op verification: content_hash uses tag=15 with NaN canonicalization for both re and im, combined with dimension.content_hash() (value.rs:297-306). Confirm all content_hash tests pass. Mark done — no code changes needed.",
+      "description": "Verify rank-3 tensor addition test passes — componentwise_op calls eval_add recursively, which calls componentwise_op again for nested Tensor layers. This recursive structure handles any rank. No implementation changes expected.",
       "status": "done",
-      "commit": null
+      "commit": "99e719c24b54c2501a47dc7029b22f47b1c45ec7"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write new Complex entries in crates/reify-types/tests/exports.rs at the end of all_m5_types_exported(), after the Matrix block. Add a '--- Complex variant ---' section with: (a) Type::Complex direct construction `let _tc_direct = reify_types::Type::Complex(Box::new(reify_types::Type::Real));`, (b) Type::complex factory `let _tc_factory = reify_types::Type::complex(reify_types::Type::length());`, (c) Value::Complex construction `let _vc = reify_types::Value::Complex { re: 3.0, im: 4.0, dimension: reify_types::DimensionVector::DIMENSIONLESS };`. Run `cargo test -p reify-types -- exports` and confirm all_m5_types_exported passes.",
+      "description": "Write failing tests for mat*vec and mat*mat dimension product Q1*Q2 with non-trivial dimensions: (a) mat*vec: Matrix(Angle) * Vector(Length) → Vector(Angle·Length dimension product): [[Angle(1),Angle(2)],[Angle(3),Angle(4)]] * [Length(1),Length(1)] = [AngleLength(3),AngleLength(7)]; (b) mat*mat: 2x2(Length) * 2x2(Time⁻¹ via velocity/length) → 2x2(dimensionless or appropriate product); (c) mat*vec inner-dim mismatch with dimensioned values → Undef",
       "status": "done",
-      "commit": null
+      "commit": "99e719c24b54c2501a47dc7029b22f47b1c45ec7"
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "The export test entries are the implementation for step-11 (the test IS the verification). Run full `cargo test -p reify-types` and confirm all tests pass (both unit and integration). This is the only code change in this task.",
+      "description": "Verify dimension product tests pass — eval_mul delegates to DimensionVector::mul for dimension products in both scalar*scalar (leaf) and dot product (eval_dot via eval_add). Dimension tracking is automatic through recursive evaluation. No implementation changes expected.",
       "status": "done",
-      "commit": null
+      "commit": "99e719c24b54c2501a47dc7029b22f47b1c45ec7"
+    },
+    {
+      "id": "step-13",
+      "type": "test",
+      "description": "Write a comprehensive integration test combining multiple operations: scalar * (matrix + matrix) * vector with dimensional tracking — e.g., Real(2) * ([[Length(1),Length(0)],[Length(0),Length(1)]] + [[Length(1),Length(1)],[Length(1),Length(1)]]) * [Length(1),Length(1)] — verifying correct dimension product chain through add then scale then mat*vec.",
+      "status": "done",
+      "commit": "99e719c24b54c2501a47dc7029b22f47b1c45ec7"
+    },
+    {
+      "id": "step-14",
+      "type": "impl",
+      "description": "Verify integration test passes. Run full test suite: cargo test -p reify-expr to confirm no regressions across all 34+ existing tests plus all new tests. No implementation changes expected.",
+      "status": "done",
+      "commit": "99e719c24b54c2501a47dc7029b22f47b1c45ec7"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Plan is verification-focused since Complex is already implemented",
-      "rationale": "All code for Complex(Box<Type>) in Type and Complex { re, im, dimension } in Value was already merged via prior orchestrator runs. 35 tests pass. Rather than re-implementing, the plan verifies each piece and adds the one missing export test. This avoids accidental regressions from needless rewrites."
+      "decision": "Leverage existing recursive tensor arithmetic — no new code paths needed",
+      "rationale": "The eval_add/eval_sub/eval_mul/eval_div/neg_value functions already handle Value::Tensor recursively via componentwise_op. Adding rank-specific code would duplicate logic. The recursive structure naturally handles rank-1, rank-2 (matrix), and rank-N tensors identically. Task 230's scope is covered by existing generic implementations from dependencies 228/229."
     },
     {
-      "decision": "Complex stores a single shared DimensionVector for both re and im",
-      "rationale": "In physics, a complex quantity like impedance (3+4i) Ω has both real and imaginary parts in the same unit. Storing one dimension for the pair (not per-component) is correct and matches how Value::Scalar stores its dimension."
+      "decision": "Test-first verification strategy: all tests should pass without implementation changes",
+      "rationale": "Dependencies 228 and 229 already implemented the complete arithmetic engine (eval_add, eval_sub, eval_mul with mat*vec and mat*mat arms, eval_div, neg_value, eval_dot, componentwise_op). Task 230 adds test coverage for the specific operations mentioned in its description (rank-1 tensors, Q1*Q2 dimension products, rank-3 generality) to confirm and document the existing behavior."
     },
     {
-      "decision": "Display format uses whole-number convention: '3+4i' not '3.0+4.0i'",
-      "rationale": "The existing Real Display format truncates trailing .0 for whole numbers (3.0→'3'). Complex follows the same convention for consistency. The task description's example '3.0+4.0i' is aspirational formatting — the codebase convention of no-trailing-zero is more consistent."
+      "decision": "Rank-1 Tensor × Rank-1 Tensor → Undef (no element-wise multiply)",
+      "rationale": "Element-wise tensor multiplication (Hadamard product) is not a standard mathematical operation in engineering CAD contexts. eval_mul only defines Scalar*Tensor (scaling), Matrix*Vector (linear transform), and Matrix*Matrix (composition). Rank-1 × rank-1 falls through to _ => Undef, which is correct by design."
     },
     {
-      "decision": "content_hash tag=15, Ord type_tag=14 for Complex",
-      "rationale": "These were allocated sequentially when Complex was first added. content_hash tags: Bool=0..Tensor=14, Complex=15. Ord type_tags: Undef=0..Tensor=13, Complex=14. Both ensure unique hashes/ordering across all Value variants."
-    },
-    {
-      "decision": "PartialEq uses to_bits() for f64 re/im comparison",
-      "rationale": "Standard in this codebase for floating-point equality (Real and Scalar do the same). Distinguishes -0.0 from 0.0 and makes NaN==NaN true at the bit level, giving total equality semantics consistent with Eq trait requirements."
+      "decision": "Dimension products (Q1*Q2) verified through DimensionVector::mul at Scalar leaf level",
+      "rationale": "The dimension product Q1*Q2 in mat*vec/mat*mat is an emergent property: eval_mul on Scalar elements calls DimensionVector::mul (adds exponents), and eval_add in eval_dot verifies summands have matching dimensions. No special dimension logic exists at the matrix level — it's all handled by the leaf operations. Tests should verify this end-to-end."
     }
   ],
   "reuse": [
     {
-      "what": "Scalar-style DimensionVector pattern",
-      "where": "crates/reify-types/src/value.rs lines 26, 58",
-      "how": "Complex { re, im, dimension } reuses the same DimensionVector storage pattern as Scalar { si_value, dimension }. Both use to_bits() for f64 comparison in PartialEq and content_hash."
+      "what": "componentwise_op helper for rank-matched binary operations",
+      "where": "crates/reify-expr/src/lib.rs:730-745",
+      "how": "Already used by eval_add and eval_sub for Tensor+Tensor and Tensor-Tensor. Handles length checking, zip, Undef propagation. Recursion through eval_add/eval_sub enables arbitrary rank support."
     },
     {
-      "what": "NaN canonicalization pattern in content_hash",
-      "where": "crates/reify-types/src/value.rs lines 297-306",
-      "how": "Complex content_hash canonicalizes NaN for both re and im using the same `if v.is_nan() { f64::NAN.to_bits() } else { v.to_bits() }` pattern used by Real and Scalar."
+      "what": "eval_mul scalar*tensor arm with guard",
+      "where": "crates/reify-expr/src/lib.rs:894-904",
+      "how": "Already handles Int/Real/Scalar * Tensor and Tensor * Scalar with !matches!(scalar, Tensor|Point|Vector) guard. Recursively scales each component, propagates Undef."
     },
     {
-      "what": "Whole-number f64 Display formatter",
-      "where": "crates/reify-types/src/value.rs lines 674-680",
-      "how": "Complex Display reuses the same `v == v.trunc() && v.is_finite()` check as Real Display (earlier in same file) to omit trailing '.0' on whole numbers."
+      "what": "eval_mul mat*vec arm with try_fold and eval_dot",
+      "where": "crates/reify-expr/src/lib.rs:927-961",
+      "how": "Detects rank-2 * rank-1 via rows[0] is Tensor and vec_elems[0] is not Tensor. Computes dot product per row with dimension tracking via eval_mul on elements and eval_dot for summation."
     },
     {
-      "what": "Dimension-first Ord pattern",
-      "where": "crates/reify-types/src/value.rs lines 530-536",
-      "how": "Complex Ord compares dimension first, then re bits, then im bits — mirroring how Scalar Ord (not shown but implied) compares dimension before si_value."
+      "what": "eval_mul mat*mat arm with nested try_fold",
+      "where": "crates/reify-expr/src/lib.rs:962-1031",
+      "how": "Detects rank-2 * rank-2 via a_rows[0] and b_rows[0] both Tensor. O(m*n*k) with eval_dot per cell, safe indexing via .get().unwrap_or(Undef), double try_fold for short-circuit."
     },
     {
-      "what": "Box<Type> wrapper for inner type",
-      "where": "crates/reify-types/src/ty.rs line 45",
-      "how": "Complex(Box<Type>) follows the same Box wrapping pattern as List(Box<Type>), Set(Box<Type>), Option(Box<Type>), Range(Box<Type>) — single inner type behind a Box."
+      "what": "eval_dot short-circuiting dot product",
+      "where": "crates/reify-expr/src/lib.rs:798-821",
+      "how": "Single-pass fold over products with early Undef exit via try_fold. Used by both mat*vec and mat*mat. Handles dimension checking implicitly through eval_add."
     },
     {
-      "what": "exports.rs integration test pattern",
-      "where": "crates/reify-types/tests/exports.rs lines 163-232",
-      "how": "Complex export test entries follow the established three-part pattern: direct Type construction, factory method call, Value construction — matching Tensor, Orientation, Range, and Matrix sections."
+      "what": "DimensionVector::mul for Q1*Q2 dimension products",
+      "where": "crates/reify-types/src/dimension.rs",
+      "how": "Adds rational exponent vectors element-wise. Called by eval_mul at Scalar*Scalar leaf, producing correct composite dimension (e.g., Length*Length=Area, Length*Angle=AngleLength)."
+    },
+    {
+      "what": "Test helpers: mat(), vec_lit(), scalar_lit(), area(), eval()",
+      "where": "crates/reify-expr/tests/tensor_matrix_arithmetic_tests.rs:18-44",
+      "how": "Existing helpers for constructing CompiledExpr literals and evaluating them. New tests reuse these plus add a rank3_tensor() helper for rank-3 construction."
+    },
+    {
+      "what": "Matrix canonicalization in eval_binop",
+      "where": "crates/reify-expr/src/lib.rs:645-646",
+      "how": "Value::Matrix is canonicalized to nested Value::Tensor before arithmetic dispatch. All arithmetic functions pattern-match exclusively on Tensor. Tests using Value::Matrix inputs benefit from this transparent conversion."
     }
   ],
-  "_session_id": "286-4cf62fd7",
-  "_created_at": "2026-03-24T23:29:20.402720+00:00"
+  "_session_id": "230-316ac9ab",
+  "_created_at": "2026-03-24T23:32:55.170890+00:00"
 }
