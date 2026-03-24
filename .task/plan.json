@@ -1,221 +1,159 @@
 {
-  "task_id": "311",
-  "title": "Stdlib: wire translate, rotate + add scale through compiler",
+  "task_id": "352",
+  "title": "Claude bridge: architectural cleanup (claude_bridge.rs)",
   "files": [
-    "crates/reify-compiler/src/lib.rs",
-    "crates/reify-types/src/geometry.rs",
-    "crates/reify-kernel-occt/src/ffi.rs",
-    "crates/reify-kernel-occt/cpp/occt_wrapper.h",
-    "crates/reify-kernel-occt/cpp/occt_wrapper.cpp",
-    "crates/reify-kernel-occt/src/lib.rs",
-    "crates/reify-eval/src/lib.rs",
-    "crates/reify-eval/tests/boundary4_geometry.rs"
+    "gui/src-tauri/src/claude_bridge.rs",
+    "gui/src-tauri/src/main.rs",
+    "gui/src-tauri/src/tests/claude_bridge_tests.rs"
   ],
   "modules": [
-    "crates/reify-compiler",
-    "crates/reify-types",
-    "crates/reify-kernel-occt",
-    "crates/reify-kernel-occt/cpp",
-    "crates/reify-eval"
+    "gui/src-tauri/src"
   ],
-  "analysis": "GeometryOp::Translate and GeometryOp::Rotate already exist in reify-types, and their FFI functions (translate_shape, rotate_shape) are fully implemented in the OCCT kernel with C++ wrappers. The eval layer already dispatches TransformKind::Translate and TransformKind::Rotate. However, these functions are NOT in is_geometry_function() and have no compile_geometry_call() match arms, meaning they cannot be called from .ri source files. The task requires: (1) wiring existing translate/rotate through the compiler, (2) adding scale as a new FFI function (gp_Trsf::SetScale), (3) adding rotate_around as a compound translate-rotate-translate operation. The approach follows the established pattern: positional scalar args at .ri source level, compiled to CompiledGeometryOp::Transform with named args, evaluated to GeometryOp variants, dispatched to OCCT FFI calls. Scale uses origin center (0,0,0) for uniform scaling. RotateAround gets a dedicated C++ function that composes gp_Trsf transforms internally for a single BRepBuilderAPI_Transform call.",
-  "prerequisites": [
-    {
-      "id": "pre-1",
-      "description": "Add RotateAround and Scale variants to TransformKind enum in crates/reify-compiler/src/lib.rs (lines 364-368). These are data-only enum variants needed before tests can reference them.",
-      "status": "done",
-      "commit": "c2f5e179",
-      "tests": []
-    },
-    {
-      "id": "pre-2",
-      "description": "Add Scale { target: GeometryHandleId, factor: f64 } and RotateAround { target: GeometryHandleId, point: [f64; 3], axis: [f64; 3], angle_rad: f64 } variants to GeometryOp enum in crates/reify-types/src/geometry.rs (after line 92).",
-      "status": "done",
-      "commit": "e9bb4e49",
-      "tests": []
-    },
-    {
-      "id": "pre-3",
-      "description": "Implement scale_shape C++ function in occt_wrapper.cpp using gp_Trsf::SetScale(gp_Pnt(cx,cy,cz), factor) + BRepBuilderAPI_Transform. Add declaration to occt_wrapper.h. Add FFI bridge declaration fn scale_shape(shape: &OcctShape, factor: f64, cx: f64, cy: f64, cz: f64) -> Result<UniquePtr<OcctShape>> to ffi.rs.",
-      "status": "done",
-      "commit": "881edfe7",
-      "tests": []
-    },
-    {
-      "id": "pre-4",
-      "description": "Implement rotate_around_shape C++ function in occt_wrapper.cpp: compose gp_Trsf translate(-point) * rotate(axis, angle) * translate(+point) into a single BRepBuilderAPI_Transform. Add declaration to occt_wrapper.h. Add FFI bridge declaration fn rotate_around_shape(shape: &OcctShape, px: f64, py: f64, pz: f64, ax: f64, ay: f64, az: f64, angle_rad: f64) -> Result<UniquePtr<OcctShape>> to ffi.rs.",
-      "status": "done",
-      "commit": "881edfe7",
-      "tests": []
-    }
-  ],
+  "analysis": "Task 352 addresses 6 review suggestions from task 139 in the claude_bridge module. The changes are ordered to minimize churn: S5 (trivial ordering fix) \u2192 S4 (outbound_to_event return type) \u2192 S2 (state mutex type) \u2192 S1 (module boundary decoupling) \u2192 S3 (ready_notify restriction) \u2192 S8 (boilerplate extraction). Key interactions: S1 and S4 both change from_parts_with_mcp's generic bounds; S2 changes the state Mutex type used pervasively in tests and production code; S3 depends on having an alternative to the raw ready_notify accessor; S8 depends on S2 (uses lock().unwrap() in the extracted helper). The existing test file has ~60 tests covering IPC types, parse/format, read_sidecar_output, outbound_to_event, SidecarHandle lifecycle, wait_ready, send/abort/clear, from_parts_with_mcp MCP interception, spawn_sidecar_impl, and shutdown_sidecar. Many tests construct state with tokio::sync::Mutex and will need updating for S2. The from_parts_with_mcp test creates an EngineSession and will need updating for S1.\n\nPost-review fix (steps 11-12): subscribe_ready() defers the notified() call inside an async move block, meaning the Notified future's waiter registration only happens on first poll, not at call time. notify_waiters() only wakes currently-registered waiters and stores no permit. If notify_waiters() fires between subscribe_ready() returning and the returned future being first polled, the notification is permanently lost and the caller hangs until timeout. The fix is to switch notify_waiters() to notify_one() at both call sites (Ready on line 235, Crash on line 278). notify_one() stores a permit if no waiter is registered, so a later notified() call sees it immediately. Since at most one ready/crash notification is ever sent per sidecar lifetime, and there is at most one subscriber (the main.rs caller), notify_one semantics are correct. wait_ready() is unaffected \u2014 it calls notified() eagerly before checking state, so there is no race window there.",
+  "prerequisites": [],
   "steps": [
     {
       "id": "step-1",
-      "type": "test",
-      "description": "Write failing tests in compiler mod tests: assert is_geometry_function returns true for 'translate', 'rotate', 'rotate_around', 'scale'. Four #[test] functions following the pattern at line 5446 (compile_geometry_linear_pattern_recognized). All four will fail since these names are not in the match.",
+      "type": "impl",
+      "description": "S5: Change MSG_COUNTER fetch_add from Ordering::SeqCst to Ordering::Relaxed in send_message (line 381 of claude_bridge.rs). No behavior change \u2014 existing send_message_ids_are_unique_across_calls test covers correctness. SeqCst is unnecessarily strong for a monotonic counter with no cross-variable ordering requirements.",
       "status": "done",
-      "commit": "c2f5e179"
+      "commit": "44a292b"
     },
     {
       "id": "step-2",
-      "type": "impl",
-      "description": "Add 'translate' | 'rotate' | 'rotate_around' | 'scale' to the is_geometry_function() match expression (lines 396-412 in crates/reify-compiler/src/lib.rs). Tests from step-1 pass.",
+      "type": "test",
+      "description": "S4: Write test outbound_to_event_returns_static_str that explicitly type-annotates the return as (&str, Value). This fails to compile with the current (String, Value) return type because String cannot coerce to &str in destructuring. Also write test event_sink_accepts_str_ref that creates a from_parts_with_mcp handle with event_sink typed as Fn(&str, Value) \u2014 fails because current bound is Fn(String, Value).",
       "status": "done",
-      "commit": "c2f5e179"
+      "commit": "032381a"
     },
     {
       "id": "step-3",
-      "type": "test",
-      "description": "Write failing compiler tests that parse+compile .ri source containing translate(w, 1, 0, 0), rotate(w, 0, 0, 1, 90), scale(w, 2), rotate_around(w, 1, 0, 0, 0, 0, 1, 90) calls and assert each produces a realization with CompiledGeometryOp::Transform of the correct TransformKind. Four tests following the compile_linear_pattern_produces_realization pattern (line 5483). Will fail with 'unsupported geometry function' diagnostic since no compile_geometry_call arms exist yet.",
+      "type": "impl",
+      "description": "S4: Change outbound_to_event return type from (String, Value) to (&'static str, Value) \u2014 all 7 match arms already use string literals which are &'static str. Update event_sink generic bound F from Fn(String, Value) to Fn(&str, Value) in from_parts_with_mcp, new_inner, and spawn_sidecar_impl. Update main.rs closure in claude_send_message (line 323: emit(&name, ...) works unchanged since &str satisfies Tauri's emit). Update test from_parts_with_mcp_intercepts_reify_tool_calls closure signature (name: String \u2192 name: &str). Update spawn_sidecar_impl test closures (_name: String \u2192 _name: &str).",
       "status": "done",
-      "commit": "c2f5e179"
+      "commit": "032381a"
     },
     {
       "id": "step-4",
-      "type": "impl",
-      "description": "Add match arms in compile_geometry_call() (before the _ fallback at line 5391) for: 'translate' (4 args: target, dx, dy, dz -> Transform/Translate), 'rotate' (5 args: target, axis_x, axis_y, axis_z, angle -> Transform/Rotate), 'rotate_around' (8 args: target, px, py, pz, axis_x, axis_y, axis_z, angle -> Transform/RotateAround), 'scale' (2 args: target, factor -> Transform/Scale). Follow existing pattern: first arg is target compiled as named arg, target field is GeomRef::Step(0).",
+      "type": "test",
+      "description": "S2: Write test from_parts_accepts_std_sync_mutex that constructs state as Arc<std::sync::Mutex<SidecarState>> and passes it to SidecarHandle::from_parts. Also write test state_accessor_returns_std_sync_mutex that calls handle.state().lock().unwrap() (synchronous). Both fail to compile because from_parts currently expects Arc<tokio::sync::Mutex<SidecarState>> and state() returns &Arc<tokio::sync::Mutex<...>>.",
       "status": "done",
-      "commit": "c2f5e179"
+      "commit": "423e6412"
     },
     {
       "id": "step-5",
-      "type": "test",
-      "description": "Write failing kernel test in crates/reify-kernel-occt/src/lib.rs: create a 10mm box, execute GeometryOp::Scale { target, factor: 2.0 }, query volume, assert volume approx 8e-6 m^3 (8x original 1e-6). Also test scale(1.0) preserves volume. Guard with OCCT_AVAILABLE. Tests fail because OcctKernel::execute() has no Scale match arm.",
+      "type": "impl",
+      "description": "S2: Switch SidecarHandle.state from Arc<tokio::sync::Mutex<SidecarState>> to Arc<std::sync::Mutex<SidecarState>>. (1) Update the SidecarHandle struct field type. (2) Update state() accessor return type. (3) In new_inner on_message callback: replace tokio::spawn(async { state.lock().await = Ready; notify }) with direct state.lock().unwrap() = Ready + notify_waiters(). (4) In on_exit callback: same pattern \u2014 direct lock().unwrap() instead of tokio::spawn. (5) In wait_ready: change 3 occurrences of self.state.lock().await to self.state.lock().unwrap(). (6) In kill: change self.state.lock().await to self.state.lock().unwrap(). (7) In claude_send_message_impl: change handle.state().lock().await to handle.state().lock().unwrap(). (8) In spawn_sidecar_impl: change Arc::new(Mutex::new(...)) to Arc::new(std::sync::Mutex::new(...)). (9) Remove tokio::sync::Mutex from imports (keep tokio::sync::Notify). (10) Update ~15 tests that create state with tokio::sync::Mutex to use std::sync::Mutex, and change .lock().await to .lock().unwrap().",
       "status": "done",
-      "commit": "088e5af8"
+      "commit": "423e6412"
     },
     {
       "id": "step-6",
-      "type": "impl",
-      "description": "Add GeometryOp::Scale dispatch in OcctKernel::execute() (after the Rotate arm around line 250): validate factor is finite and non-zero, call ffi::ffi::scale_shape(shape, *factor, 0.0, 0.0, 0.0) with center at origin. Map errors with .map_err(|e| GeometryError::OperationFailed(e.to_string())).",
+      "type": "test",
+      "description": "S1: Write test from_parts_with_tool_dispatch_intercepts_reify_calls that creates a SidecarHandle using from_parts_with_mcp with a tool_dispatch closure (|tool_name: String, input: Value| -> Result<Value, String>) instead of an Arc<Mutex<EngineSession>>. The closure returns Ok(json!({\"dispatched\": true})). Simulates a reify_ tool_call from stdout, verifies the tool_result written back to stdin contains the dispatched result. This fails because current from_parts_with_mcp requires engine: Arc<std::sync::Mutex<EngineSession>>.",
       "status": "done",
-      "commit": "088e5af8"
+      "commit": "fa776af5"
     },
     {
       "id": "step-7",
-      "type": "test",
-      "description": "Write failing kernel test: create a 10mm box at origin, execute GeometryOp::RotateAround with point=(0.05, 0, 0), axis=(0,0,1), angle=PI/2. Query centroid and verify it differs from a simple rotate around origin. Guard with OCCT_AVAILABLE. Test fails because no RotateAround dispatch in execute().",
+      "type": "impl",
+      "description": "S1: Replace engine parameter with generic tool_dispatch callback. (1) In from_parts_with_mcp: replace engine: Arc<std::sync::Mutex<crate::engine::EngineSession>> with tool_dispatch: D where D: Fn(String, Value) -> Result<Value, String> + Send + Sync + 'static. (2) In new_inner: replace mcp_config tuple type from (Arc<...EngineSession>, F) to (D, F). (3) In the MCP interception branch: replace TauriToolContext::new + mcp_tool_call_impl with direct tool_dispatch(tool_name, tool_input) call. Remove crate::mcp_context and crate::engine imports from claude_bridge.rs. (4) In spawn_sidecar_impl: replace engine param with tool_dispatch, forward to from_parts_with_mcp. (5) In main.rs claude_send_message: construct TauriToolContext in the tool_dispatch closure passed to spawn_sidecar_impl, moving the engine dependency to the call site. (6) Update existing from_parts_with_mcp_intercepts_reify_tool_calls test to pass a tool_dispatch closure instead of engine. (7) Update spawn_sidecar_impl tests to pass tool_dispatch instead of engine.",
       "status": "done",
-      "commit": "088e5af8"
+      "commit": "fa776af5"
     },
     {
       "id": "step-8",
-      "type": "impl",
-      "description": "Add GeometryOp::RotateAround dispatch in OcctKernel::execute(): validate point/axis components are finite, axis non-zero. Call ffi::ffi::rotate_around_shape(shape, point[0..2], axis[0..2], angle_rad). Map errors.",
+      "type": "test",
+      "description": "S3: Write test subscribe_ready_returns_awaitable_future that calls handle.subscribe_ready(), stores the returned future, moves the handle into an Option slot, drops the reference, then awaits the future with a ready message. This verifies subscribe_ready produces an owned 'static future safe to hold across lock boundaries. Fails because subscribe_ready() does not exist yet.",
       "status": "done",
-      "commit": "088e5af8"
+      "commit": "6f3c8658"
     },
     {
       "id": "step-9",
-      "type": "test",
-      "description": "Write failing eval tests: construct CompiledGeometryOp::Transform with kind TransformKind::Scale and named args [(target,...), (factor, literal 2.0)], call compile_geometry_op, assert it returns Some(GeometryOp::Scale { factor: 2.0 }). Similarly for TransformKind::RotateAround with point/axis/angle args. Tests fail because eval match is exhaustive on TransformKind and new variants cause compile error or unmatched arm.",
+      "type": "impl",
+      "description": "S3: Add pub fn subscribe_ready(&self) -> impl Future<Output = ()> + Send + 'static that clones Arc<Notify> internally and returns async move { notify.notified().await }. Remove pub fn ready_notify() accessor entirely (it was only used in main.rs and internally). Internal uses in wait_ready already access self.ready_notify directly. Update main.rs claude_send_message to use handle.subscribe_ready() instead of Arc::clone(handle.ready_notify()).notified(). Verify test that used ready_notify() is updated or removed.",
       "status": "done",
-      "commit": "fbed8e54"
+      "commit": "7e867c80"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Add eval dispatch in compile_geometry_op() in crates/reify-eval/src/lib.rs (after the Rotate arm at line 2982): TransformKind::Scale -> GeometryOp::Scale { target: target_id, factor: eval_arg_f64('factor') }. TransformKind::RotateAround -> GeometryOp::RotateAround { target: target_id, point: [eval_arg_f64('px'), eval_arg_f64('py'), eval_arg_f64('pz')], axis: [eval_arg_f64('axis_x'), eval_arg_f64('axis_y'), eval_arg_f64('axis_z')], angle_rad: eval_arg_f64('angle') }.",
+      "description": "S8: Extract private async fn with_handle<T>(sidecar, f) helper using for<'a> FnOnce(&'a mut SidecarHandle) -> Pin<Box<dyn Future<Output = Result<T, String>> + Send + 'a>> for the closure type. The helper locks the outer sidecar Mutex, checks for None (returns Err 'sidecar not started'), and calls f(handle).await for the Some case. Refactor claude_abort_impl to with_handle(sidecar, |h| Box::pin(h.abort())). Refactor claude_clear_session_impl similarly. Refactor claude_send_message_impl: own text via to_string(), use with_handle with move closure that checks state (lock().unwrap()) and calls send_message. Existing tests for all three _impl functions validate behavior is preserved.",
       "status": "done",
-      "commit": "fbed8e54"
+      "commit": "d9336cd5"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write integration tests in boundary4_geometry.rs exercising the full stack: (1) translate 10mm box by 50mm in x via GeometryOp::Translate, verify centroid x approx 0.05 (confirms existing kernel path), (2) rotate box 90deg around Z, verify volume preserved, (3) scale box by 2.0, verify volume = 8x, (4) rotate_around non-origin point, verify centroid at expected position, (5) scale(box, 1.0) = identity (volume unchanged). All should pass with prior implementations.",
+      "description": "Fix subscribe_ready race condition (review blocker: race_condition). Write test subscribe_ready_does_not_miss_notification_fired_before_poll that exercises the race window: (1) Create a SidecarHandle via from_parts with duplex I/O. (2) Call handle.subscribe_ready() to obtain the future (notified() is NOT called yet \u2014 only deferred inside the async block). (3) Write {\"type\":\"ready\"} to the stdout data_writer. (4) Call tokio::task::yield_now().await to yield control to the reader task, allowing it to process the ready message and call notify on the Notify. (5) Await the subscribe_ready future with a short timeout (500ms). Assert it completes successfully \u2014 if the notification was lost, this would timeout. This test exposes the bug: with notify_waiters(), the notification fires while no waiter is registered (notified() hasn't been called yet), so the permit is lost and the future hangs. With notify_one(), the permit is stored and the future completes immediately when polled.",
       "status": "done",
-      "commit": "fbed8e54"
+      "commit": "8862a79c"
     },
     {
       "id": "step-12",
-      "type": "test",
-      "description": "Fix rotate_around_point_preserves_volume test in boundary4_geometry.rs (line 565) to validate the non-origin pivot logic. After the existing volume assertion, add: (1) query GeometryQuery::Centroid(rotated.id), parse the x/y/z coordinates from the JSON string, (2) assert centroid is approximately at (0.045, -0.045, 0.005) within 1e-4 tolerance \u2014 analytically: 10mm box centroid at (0.005, 0.005, 0.005) rotated 90\u00b0 around Z through point (0.05, 0, 0) maps to (0.05 + Rz(PI/2)*(0.005-0.05, 0.005, 0.005)) = (0.05 + (\u22120.005, \u22120.045, 0.005)) = (0.045, \u22120.045, 0.005), (3) also execute a plain GeometryOp::Rotate (no pivot) on the same box with same axis/angle, query its centroid, and assert the two centroids differ by at least 0.01 in at least one coordinate \u2014 confirming the pivot point parameter is actually used. This test should pass immediately since the kernel implementation is correct, but it now properly guards against regressions where the point parameter is silently ignored.",
-      "status": "done",
-      "commit": "bb17f1a0"
-    },
-    {
-      "id": "step-13",
-      "type": "test",
-      "description": "Write failing kernel tests in crates/reify-kernel-occt/src/lib.rs: (1) rotate_near_degenerate_axis_rejected: create a box, call GeometryOp::Rotate with axis=[1e-10, 0.0, 0.0] and angle=PI/4, assert the result is Err(GeometryError::OperationFailed(..)) containing 'zero-length'. (2) rotate_around_near_degenerate_axis_rejected: same but with GeometryOp::RotateAround using axis=[0.0, 1e-8, 0.0]. Both tests will FAIL because the current guard (mag_sq < f64::EPSILON * f64::EPSILON \u2248 4.9e-32) allows these near-degenerate axes through \u2014 1e-10 has mag_sq=1e-20, far above the threshold.",
-      "status": "done",
-      "commit": "231ddcb3"
-    },
-    {
-      "id": "step-14",
       "type": "impl",
-      "description": "Change the zero-axis guard threshold from `mag_sq < f64::EPSILON * f64::EPSILON` to `mag_sq < 1e-12` in both the GeometryOp::Rotate dispatch (line 243) and the GeometryOp::RotateAround dispatch (line 418) in crates/reify-kernel-occt/src/lib.rs. The new threshold 1e-12 means any axis with length < 1e-6 (one micron) is rejected, matching OCCT's own precision floor for axis validity. Tests from step-13 now pass.",
+      "description": "Fix subscribe_ready race condition: change notify_waiters() to notify_one() at both call sites in new_inner. (1) In the on_message callback (line 235): change notify_for_reader.notify_waiters() to notify_for_reader.notify_one(). (2) In the on_exit callback (line 278): change notify_for_crash.notify_waiters() to notify_for_crash.notify_one(). (3) Update the subscribe_ready() doc comment to reference notify_one instead of notify_waiters. (4) Update the wait_ready() internal comment (line 313-314) if it references notify_waiters. This is safe because: (a) at most one ready/crash notification is ever sent per sidecar lifetime, (b) there is at most one subscriber at any time (either subscribe_ready from main.rs OR wait_ready from tests, never both concurrently), and (c) notify_one stores a permit if no waiter is registered, eliminating the race window where the notification fires between subscribe_ready() returning and the future being first polled.",
       "status": "done",
-      "commit": "fb058d6f"
+      "commit": "0f635b7a"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Use decomposed positional scalar args at .ri source level (translate(geo, dx, dy, dz) not translate(geo, vec3(...)))",
-      "rationale": "Matches the established pattern used by linear_pattern, circular_pattern, mirror, etc. where direction/position components are passed as separate scalar args. Avoids needing vector-decomposition logic in the eval layer. Vector API can be added as syntactic sugar later."
+      "decision": "tool_dispatch callback is synchronous: Fn(String, Value) -> Result<Value, String>",
+      "rationale": "mcp_tool_call_impl is synchronous (locks engine mutex, runs tool, returns). The tokio::spawn in the MCP interception branch is needed for the async stdin write, not for tool dispatch itself. Keeping tool_dispatch sync avoids the complexity of async closures while matching the actual calling pattern."
     },
     {
-      "decision": "Implement rotate_around as a dedicated C++ FFI function with composed gp_Trsf transforms rather than emitting 3 separate GeometryOps",
-      "rationale": "compile_geometry_op returns Option<GeometryOp> (single op). Changing to Vec would be a wider refactor. A single compound transform via gp_Trsf composition (translate * rotate * translate) applied in one BRepBuilderAPI_Transform call is also more efficient and numerically stable."
+      "decision": "subscribe_ready() returns impl Future + 'static instead of exposing Arc<Notify>",
+      "rationale": "Hides the Notify implementation detail while providing the same capability: an owned future that can be held across lock boundaries. main.rs needs this pattern to avoid holding the outer sidecar lock during the 10s ready timeout. The returned future clones the Arc internally so it's self-contained."
     },
     {
-      "decision": "scale_shape FFI takes (shape, factor, cx, cy, cz) but GeometryOp::Scale only stores factor, with center hardcoded to origin in kernel dispatch",
-      "rationale": "Task specifies 'Uniform only' for scale. The FFI is designed with flexibility for future center-point support, but the .ri API and GeometryOp keep it simple. Adding a center parameter later is backward-compatible."
+      "decision": "with_handle uses Pin<Box<dyn Future + 'a>> for the closure return type",
+      "rationale": "Rust's type system requires explicit lifetime propagation for async closures that borrow from their arguments. The for<'a> FnOnce(&'a mut SidecarHandle) -> Pin<Box<dyn Future + Send + 'a>> pattern is the standard workaround. The Box allocation is negligible compared to the outer async Mutex lock + sidecar IPC overhead."
     },
     {
-      "decision": "Add Scale and RotateAround as new GeometryOp variants rather than reusing compound operations from existing Translate+Rotate",
-      "rationale": "Each variant maps cleanly to a single FFI call. Scale requires new OCCT wrapper (gp_Trsf::SetScale). RotateAround needs composed transforms that are best done atomically in C++. Separate variants also give kernel implementations the chance to validate parameters independently."
+      "decision": "claude_send_message_impl owns text via to_string() when using with_handle",
+      "rationale": "The for<'a> bound on with_handle's closure means captured references can't have a specific lifetime. Owning text (one small allocation per user message) avoids lifetime gymnastics. This is not a hot path \u2014 it runs once per user message."
     },
     {
-      "decision": "translate/rotate .ri signatures: translate(geo, dx, dy, dz) with 4 args, rotate(geo, ax, ay, az, angle) with 5 args",
-      "rationale": "Existing eval layer already handles TransformKind::Translate extracting (dx, dy, dz) and TransformKind::Rotate extracting (axis_x, axis_y, axis_z, angle). The compile_geometry_call just needs to map positional args to these same named args. Zero changes needed in eval for translate/rotate \u2014 only compiler wiring."
+      "decision": "Step ordering: S5 \u2192 S4 \u2192 S2 \u2192 S1 \u2192 S3 \u2192 S8",
+      "rationale": "S5 is independent (1 line). S4 changes event_sink type before S1 changes the same signature. S2 changes state mutex type before S1 uses it in closures. S3 depends on subscribe_ready alternative before removing ready_notify. S8 depends on S2 (uses lock().unwrap() in extracted helper). Each step touches an overlapping but distinct concern, so this ordering minimizes re-editing."
     },
     {
-      "decision": "Use mag_sq < 1e-12 threshold for near-degenerate axis rejection in both Rotate and RotateAround",
-      "rationale": "The original threshold (f64::EPSILON^2 \u2248 4.9e-32) only catches axes shorter than ~7e-16, which is machine epsilon. Near-degenerate axes (e.g. length 1e-10) pass through and cause NaN/garbage in OCCT's gp_Trsf normalization. The new threshold 1e-12 (axis length < 1e-6 = 1 micron) matches OCCT's own geometric precision floor while accepting all physically meaningful rotation axes."
+      "decision": "on_message Ready transition uses direct lock().unwrap() instead of tokio::spawn",
+      "rationale": "The on_message callback runs inside read_sidecar_output's tokio task. The std::sync::Mutex state lock is held for only a single assignment \u2014 no risk of blocking the async runtime. The tokio::spawn was unnecessary overhead that also introduced a race window where state might not be updated when expected."
     },
     {
-      "decision": "Centroid verification in rotate_around integration test uses analytical geometry to compute expected position",
-      "rationale": "For a 10mm OCCT box at origin (centroid at (0.005,0.005,0.005) in meters), rotating 90\u00b0 around Z through pivot (0.05,0,0): translate to pivot-relative coords, apply Rz(PI/2), translate back. Expected centroid = (0.045, -0.045, 0.005). This deterministic assertion catches bugs where the pivot point is silently ignored, which a volume-only check cannot."
+      "decision": "Use notify_one() instead of notify_waiters() to fix subscribe_ready race condition",
+      "rationale": "subscribe_ready() defers the notified() call inside an async move block, so the Notified future's waiter is only registered on first poll. notify_waiters() only wakes currently-registered waiters and stores no permit \u2014 if it fires before the future is polled, the notification is permanently lost. notify_one() stores a permit when no waiter is registered, so a later notified() call sees it immediately. This is the lowest-change fix. Alternatives considered: (a) tokio::sync::watch channel \u2014 correct but higher churn, replaces the Notify entirely; (b) eagerly calling notified() in subscribe_ready \u2014 hits lifetime issues since Notified borrows Notify and we need a 'static future. notify_one is semantically correct because there is at most one subscriber at any time."
     }
   ],
   "reuse": [
     {
-      "what": "Existing translate_shape/rotate_shape FFI and C++ implementations",
-      "where": "crates/reify-kernel-occt/src/ffi.rs lines 50-62, cpp/occt_wrapper.cpp lines 222-263",
-      "how": "translate and rotate from .ri compile through existing TransformKind::Translate/Rotate -> eval dispatch (lines 2964-2982) -> GeometryOp::Translate/Rotate -> OcctKernel::execute() (lines 211-249). Only compiler wiring (is_geometry_function + compile_geometry_call) is needed."
+      "what": "Existing from_parts constructor (unchanged)",
+      "where": "claude_bridge.rs SidecarHandle::from_parts",
+      "how": "from_parts is the test-friendly constructor that creates handles without MCP wiring. All test helpers that don't need MCP continue using it. Its generic type params for new_inner's None case need updating for the new D type parameter."
     },
     {
-      "what": "Existing TransformKind::Translate/Rotate eval dispatch",
-      "where": "crates/reify-eval/src/lib.rs lines 2952-2983",
-      "how": "The eval layer already handles CompiledGeometryOp::Transform for Translate and Rotate kinds. New Scale and RotateAround kinds follow the exact same pattern with eval_arg_f64() extraction."
+      "what": "Existing test patterns (duplex I/O, BufReader)",
+      "where": "tests/claude_bridge_tests.rs",
+      "how": "All existing tests use tokio::io::duplex for stdin/stdout simulation and BufReader for the reader. New tests follow the same pattern. The MCP interception test pattern (write tool_call to stdout_writer, read tool_result from stdin_reader) is reused for the S1 test."
     },
     {
-      "what": "BRepBuilderAPI_Transform + gp_Trsf C++ pattern",
-      "where": "cpp/occt_wrapper.cpp lines 222-263 (translate_shape, rotate_shape)",
-      "how": "scale_shape and rotate_around_shape follow identical pattern: create gp_Trsf, configure transform (SetScale/SetRotation+SetTranslation composition), pass to BRepBuilderAPI_Transform, check IsDone(), return wrapped shape. Same error handling with Standard_Failure catch."
+      "what": "TauriToolContext::new and mcp_tool_call_impl",
+      "where": "mcp_context.rs",
+      "how": "After S1, these are called from main.rs inside the tool_dispatch closure rather than from claude_bridge.rs. The API is unchanged \u2014 only the call site moves."
     },
     {
-      "what": "compile_geometry_call positional-arg-to-named-arg pattern",
-      "where": "crates/reify-compiler/src/lib.rs lines 5229-5370 (linear_pattern, mirror, shell, thicken, draft)",
-      "how": "All new compile arms follow the same pattern: check arg count, iterate compiled_args, emit CompiledGeometryOp with (name, expr) pairs. First arg is always ('target', ...) with target: GeomRef::Step(0)."
+      "what": "Arc<Notify> pattern for async readiness signaling",
+      "where": "claude_bridge.rs wait_ready / subscribe_ready",
+      "how": "The Notify + notified() pattern is preserved internally. subscribe_ready wraps it in a cleaner public API that returns an owned future. notify_one() replaces notify_waiters() to store a permit for deferred subscribers."
     },
     {
-      "what": "Kernel test patterns with OCCT_AVAILABLE guard",
-      "where": "crates/reify-eval/tests/boundary4_geometry.rs lines 272-314 (translate_centroid test)",
-      "how": "All new kernel/integration tests follow: check OCCT_AVAILABLE, create OcctKernel, execute primitive, execute transform, query volume/centroid, assert expected values with tolerance."
-    },
-    {
-      "what": "Compiler test patterns for geometry recognition and realization production",
-      "where": "crates/reify-compiler/src/lib.rs lines 5446-5650",
-      "how": "Recognition tests: assert!(is_geometry_function('name')). Realization tests: parse .ri source, compile, check template.realizations[0].operations[0] matches expected CompiledGeometryOp variant."
-    },
-    {
-      "what": "Centroid JSON parsing pattern from kernel test rotate_around_non_origin_differs_from_rotate_at_origin",
-      "where": "crates/reify-kernel-occt/src/lib.rs lines 2305-2325",
-      "how": "GeometryQuery::Centroid returns Value::String with JSON like {\"x\":0.045,\"y\":-0.045,\"z\":0.005}. Parse x/y/z by finding '\"x\":' prefix and extracting the float. Reuse this same parsing approach in the boundary4 integration test for centroid verification."
+      "what": "subscribe_ready_returns_awaitable_future test pattern",
+      "where": "tests/claude_bridge_tests.rs (step-8)",
+      "how": "The new race-condition test (step-11) reuses the same duplex I/O + from_parts + subscribe_ready pattern but adds an explicit yield point between writing the ready message and polling the future to deterministically trigger the race window."
     }
   ],
-  "_session_id": "311-6f6488cf",
-  "_created_at": "2026-03-24T21:08:14.912740+00:00"
+  "_session_id": "352-13c73c6d",
+  "_created_at": "2026-03-24T21:18:49.389360+00:00"
 }
