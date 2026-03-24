@@ -30,106 +30,106 @@
       "id": "step-1",
       "type": "test",
       "description": "Write failing tests for Type::Orientation in ty.rs: variant construction with Orientation(3), Display format 'Orientation3', factory method Type::orientation(n), Eq/Hash consistency, is_numeric() returns false, as_name() returns None",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "5136510"
     },
     {
       "id": "step-2",
       "type": "impl",
       "description": "Add Orientation(usize) variant to Type enum, add orientation(n) factory method, add Display arm writing 'Orientation{n}'. Derives (Debug, Clone, PartialEq, Eq, Hash) are automatic.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "280585a"
     },
     {
       "id": "step-3",
       "type": "test",
       "description": "Write failing tests for Value::Orientation in value.rs: variant construction, PartialEq (same quaternion equal, different not equal, NaN bitwise equality via to_bits), Ord (type_tag ordering, within-type lexicographic on w/x/y/z bits), Display format '[w, x, y, z]q', content_hash (tag=16, NaN canonicalization, distinct from other variants)",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "a3aaf2f"
     },
     {
       "id": "step-4",
       "type": "impl",
       "description": "Add Orientation { w: f64, x: f64, y: f64, z: f64 } variant to Value enum. Add arms to: content_hash (tag=16 with NaN canonicalization for all 4 components), PartialEq (bitwise f64 comparison), Ord (type_tag=15, compare w/x/y/z via to_bits), Display (format as quaternion). Add is_undef/as_f64/dimension pass-through (Orientation is not numeric, dimension is DIMENSIONLESS).",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "10fb1be"
     },
     {
       "id": "step-5",
       "type": "impl",
       "description": "Fix downstream exhaustive matches: add Value::Orientation arm to format_value() in reify-lsp/src/analysis.rs (format as quaternion string), add Value::Orientation arm to domain classifier in reify-constraints/src/classifier.rs (Orientation doesn't contribute to domain classification, same as Complex/Tensor). Add Type::Orientation and Value::Orientation to exports.rs verification test.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "44e5071"
     },
     {
       "id": "step-6",
       "type": "test",
       "description": "Write failing test for orient_identity: no-arg call returns Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 }; call with args returns Undef",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "79778f9"
     },
     {
       "id": "step-7",
       "type": "impl",
       "description": "Add orient_identity match arm in eval_builtin: check args.is_empty(), return identity quaternion (1,0,0,0)",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "9e2587a"
     },
     {
       "id": "step-8",
       "type": "test",
       "description": "Write failing tests for orient_quaternion(w,x,y,z): (1) unnormalized input (2,0,0,0) normalizes to (1,0,0,0); (2) already normalized input preserved; (3) arbitrary input normalizes correctly; (4) zero quaternion (0,0,0,0) returns Undef; (5) NaN/Inf input returns Undef; (6) wrong arg count returns Undef",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "1edde1c"
     },
     {
       "id": "step-9",
       "type": "impl",
       "description": "Add orient_quaternion match arm in eval_builtin: extract 4 f64 args, compute norm, reject zero/non-finite, divide by norm, return normalized Orientation. Add normalize_quaternion(w,x,y,z) -> Option<Value> helper function.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "8e11d45"
     },
     {
       "id": "step-10",
       "type": "test",
       "description": "Write failing tests for orient_axis_angle(axis, angle): (1) 90-deg rotation around Z axis produces correct quaternion (w=cos(pi/4), x=0, y=0, z=sin(pi/4)); (2) 180-deg around X axis; (3) angle as Angle Scalar accepted; (4) zero-length axis returns Undef; (5) non-3D axis returns Undef; (6) wrong arg count returns Undef",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "70075b5"
     },
     {
       "id": "step-11",
       "type": "impl",
       "description": "Add orient_axis_angle match arm: extract axis via tensor_components_f64 (must be 3 components), extract angle via trig_input pattern (accept Real or Angle Scalar), normalize axis, compute q = (cos(theta/2), sin(theta/2)*axis), return via normalize_quaternion",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "da6eb5c"
     },
     {
       "id": "step-12",
       "type": "test",
       "description": "Write failing tests for orient_euler(convention, a, b, c): (1) 'xyz' intrinsic with known angles produces correct quaternion; (2) 'zyx' convention; (3) all-zero angles produce identity; (4) invalid convention string returns Undef; (5) non-string convention returns Undef; (6) angles as Angle Scalar accepted; (7) wrong arg count returns Undef",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "92ed969"
     },
     {
       "id": "step-13",
       "type": "impl",
       "description": "Add orient_euler match arm: extract convention as String, extract 3 angles via trig_input pattern, implement intrinsic Euler-to-quaternion conversion for 6 Tait-Bryan conventions (xyz, xzy, yxz, yzx, zxy, zyx) and 6 proper Euler conventions (xyx, xzx, yxy, yzy, zxz, zyz) by composing elementary rotation quaternions. Return Undef for unrecognized conventions.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "1bab91e"
     },
     {
       "id": "step-14",
       "type": "test",
       "description": "Write failing tests for orient_basis(x_axis, y_axis, z_axis): (1) identity basis vectors produce identity quaternion; (2) 90-deg rotated basis produces correct quaternion; (3) non-orthogonal basis returns Undef; (4) non-3D vectors return Undef; (5) zero-length vector returns Undef; (6) wrong arg count returns Undef",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "557258c"
     },
     {
       "id": "step-15",
       "type": "impl",
       "description": "Add orient_basis match arm: extract 3 axis vectors via tensor_components_f64 (each must be 3 components), verify approximate orthonormality (dot products near zero, magnitudes near 1, within tolerance), build rotation matrix from basis vectors, convert rotation matrix to quaternion using Shepperd's method, return via normalize_quaternion. Return Undef for non-orthonormal input.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "8128684"
     }
   ],
   "design_decisions": [
