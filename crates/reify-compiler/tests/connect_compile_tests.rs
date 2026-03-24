@@ -417,6 +417,42 @@ structure def S2 {
     );
 }
 
+// ── step-7: port_type_compatibility_mismatch_warning ─────────────────
+
+#[test]
+fn port_type_compatibility_mismatch_warning() {
+    let source = r#"
+trait TraitA {}
+trait TraitB {}
+structure def S {
+    port a : out TraitA {}
+    port b : in TraitB {}
+    connect a -> b
+}
+"#;
+
+    let (_template, diagnostics) = compile_first_template(source);
+
+    // Direction is compatible (Out -> In), so no direction error
+    let dir_errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error && d.message.contains("incompatible port directions"))
+        .collect();
+    assert!(dir_errors.is_empty(), "unexpected direction errors: {:?}", dir_errors);
+
+    // Should emit a warning about incompatible port types
+    let type_warnings: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning
+            && (d.message.contains("incompatible port types") || d.message.contains("port type mismatch")))
+        .collect();
+    assert!(
+        !type_warnings.is_empty(),
+        "expected a warning about incompatible port types, diagnostics: {:?}",
+        diagnostics
+    );
+}
+
 // ── step-3: frame_alignment_none_when_ports_not_located ──────────────
 
 #[test]
