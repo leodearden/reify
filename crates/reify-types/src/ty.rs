@@ -43,6 +43,8 @@ pub enum Type {
     Tensor { rank: usize, n: usize, quantity: Box<Type> },
     /// Complex number type with a quantity type (e.g., Complex<Scalar[Ω]>).
     Complex(Box<Type>),
+    /// Orientation in N-dimensional space (unit quaternion for N=3, angle for N=2).
+    Orientation(usize),
 }
 
 impl Type {
@@ -95,6 +97,11 @@ impl Type {
     /// Shorthand for a complex number type with a given quantity type.
     pub fn complex(q: Type) -> Self {
         Type::Complex(Box::new(q))
+    }
+
+    /// Shorthand for an orientation in N-dimensional space.
+    pub fn orientation(n: usize) -> Self {
+        Type::Orientation(n)
     }
 
     /// Is this type a numeric type (Int, Real, or Scalar)?
@@ -558,6 +565,7 @@ impl std::fmt::Display for Type {
             Type::Vector { n, quantity } => write!(f, "Vector{}<{}>", n, quantity),
             Type::Tensor { rank, n, quantity } => write!(f, "Tensor{}x{}<{}>", rank, n, quantity),
             Type::Complex(inner) => write!(f, "Complex<{}>", inner),
+            Type::Orientation(n) => write!(f, "Orientation{}", n),
         }
     }
 }
