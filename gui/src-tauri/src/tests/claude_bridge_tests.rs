@@ -249,6 +249,144 @@ fn parse_outbound_missing_required_field_returns_err() {
     assert!(result.is_err());
 }
 
+// --- claude_send_message_impl tests (step-23) ---
+
+#[tokio::test]
+async fn claude_send_message_impl_errors_when_sidecar_is_none() {
+    let sidecar: tokio::sync::Mutex<Option<SidecarHandle>> = tokio::sync::Mutex::new(None);
+
+    let result = claude_send_message_impl(&sidecar, "hello", None).await;
+
+    assert!(result.is_err(), "Expected error when sidecar is not started");
+    let msg = result.unwrap_err();
+    assert!(
+        msg.contains("not started") || msg.contains("spawn") || msg.contains("sidecar"),
+        "Error should mention sidecar state: {}",
+        msg
+    );
+}
+
+#[tokio::test]
+async fn claude_send_message_impl_sends_message_when_sidecar_ready() {
+    use std::sync::Arc;
+    use tokio::io::{AsyncReadExt, BufReader};
+
+    let state = Arc::new(tokio::sync::Mutex::new(SidecarState::Ready));
+    let (writer, mut reader_end) = tokio::io::duplex(1024);
+    let empty_reader = BufReader::new(&b""[..]);
+    let handle = SidecarHandle::from_parts(writer, empty_reader, state);
+
+    let sidecar = tokio::sync::Mutex::new(Some(handle));
+
+    let result = claude_send_message_impl(&sidecar, "hello world", None).await;
+
+    assert!(result.is_ok(), "Expected success when sidecar is Ready: {:?}", result);
+    let id = result.unwrap();
+    assert!(id.starts_with("msg-"), "ID should start with msg-: {}", id);
+
+    // Verify message was written to sidecar stdin
+    let mut buf = vec![0u8; 1024];
+    let n = reader_end.read(&mut buf).await.unwrap();
+    let written = std::str::from_utf8(&buf[..n]).unwrap();
+    let json_val: serde_json::Value = serde_json::from_str(written.trim_end()).unwrap();
+    assert_eq!(json_val["type"], "send_message");
+    assert_eq!(json_val["id"], id);
+    assert_eq!(json_val["text"], "hello world");
+}
+
+#[tokio::test]
+async fn claude_send_message_impl_errors_when_sidecar_not_ready() {
+    use std::sync::Arc;
+    use tokio::io::BufReader;
+
+    // Sidecar exists but is still Starting (not yet Ready)
+    let state = Arc::new(tokio::sync::Mutex::new(SidecarState::Starting));
+    let (writer, _reader_end) = tokio::io::duplex(1024);
+    let empty_reader = BufReader::new(&b""[..]);
+    let handle = SidecarHandle::from_parts(writer, empty_reader, state);
+
+    let sidecar = tokio::sync::Mutex::new(Some(handle));
+
+    let result = claude_send_message_impl(&sidecar, "hello", None).await;
+
+    // Should error since sidecar is not in Ready state
+    assert!(result.is_err(), "Expected error when sidecar is Starting (not yet Ready)");
+}
+
+#[tokio::test]
+async fn from_parts_with_mcp_intercepts_reify_tool_calls() {
+    use std::sync::Arc;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
+    use reify_constraints::SimpleConstraintChecker;
+    use reify_test_support::MockGeometryKernel;
+    use crate::engine::EngineSession;
+
+    // Set up engine for MCP dispatch
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let engine = Arc::new(std::sync::Mutex::new(session));
+
+    // stdin_writer: Rust writes here → sidecar reads it (we read from stdin_reader to inspect)
+    // stdout_writer: simulates sidecar writing → Rust reader task processes it
+    let (stdin_writer, mut stdin_reader) = tokio::io::duplex(4096);
+    let (mut stdout_writer, stdout_reader) = tokio::io::duplex(4096);
+    let reader = BufReader::new(stdout_reader);
+    let state = Arc::new(tokio::sync::Mutex::new(SidecarState::Ready));
+
+    // from_parts_with_mcp wires up both event sink and MCP tool interception
+    let events = Arc::new(std::sync::Mutex::new(vec![]));
+    let events_clone = Arc::clone(&events);
+    let _handle = SidecarHandle::from_parts_with_mcp(
+        stdin_writer,
+        reader,
+        state,
+        engine,
+        move |name: String, payload: serde_json::Value| {
+            events_clone.lock().unwrap().push((name, payload));
+        },
+    );
+
+    // Inject a reify_ tool_call from simulated sidecar stdout
+    let tool_call =
+        r#"{"type":"tool_call","id":"msg-1","tool_name":"reify_get_diagnostics","tool_input":{}}"#;
+    stdout_writer
+        .write_all(format!("{}\n", tool_call).as_bytes())
+        .await
+        .unwrap();
+
+    // Allow reader task to process the tool_call and run the spawned MCP handler
+    for _ in 0..100 {
+        tokio::task::yield_now().await;
+    }
+
+    // Verify the tool_call event was emitted to the event sink
+    let emitted = events.lock().unwrap();
+    assert!(
+        emitted.iter().any(|(name, _)| name == "claude-tool-call"),
+        "Expected claude-tool-call event in sink, got: {:?}",
+        emitted.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>()
+    );
+    drop(emitted);
+
+    // Verify tool_result was written back to sidecar stdin
+    let mut buf = vec![0u8; 4096];
+    let n = stdin_reader.read(&mut buf).await.unwrap_or(0);
+    assert!(n > 0, "Expected tool_result to be written back to sidecar stdin");
+    let written = std::str::from_utf8(&buf[..n]).unwrap();
+    // The response should be a tool_result JSON line
+    let json_val: serde_json::Value =
+        serde_json::from_str(written.trim()).unwrap_or(serde_json::json!(null));
+    assert_eq!(
+        json_val["type"], "tool_result",
+        "Expected tool_result type, got: {}",
+        written
+    );
+    assert_eq!(json_val["tool_name"], "reify_get_diagnostics");
+
+    drop(stdout_writer);
+}
+
 // --- AppState sidecar field tests (step-21) ---
 
 #[test]
