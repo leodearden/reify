@@ -5053,6 +5053,58 @@ mod tests {
         );
     }
 
+    // --- Error case tests for boolean arg validation (step-9, step-10) ---
+
+    #[test]
+    fn compile_union_wrong_arity_emits_diagnostic() {
+        // union(box(...)) with 1 arg should fail with arity diagnostic
+        let source = r#"structure S {
+    let r = union(box(10mm, 10mm, 10mm))
+}"#;
+        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_union_arity"));
+        assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+        let compiled = compile(&parsed);
+        let template = &compiled.templates[0];
+        // Should produce no realization (compilation failed)
+        assert_eq!(
+            template.realizations.len(), 0,
+            "expected 0 realizations for wrong-arity union, got {}",
+            template.realizations.len()
+        );
+        // Should have a diagnostic mentioning "expects 2 arguments"
+        assert!(
+            compiled.diagnostics.iter().any(|d| d.message.contains("expects 2 arguments")),
+            "expected 'expects 2 arguments' diagnostic, got: {:?}",
+            compiled.diagnostics
+        );
+    }
+
+    #[test]
+    fn compile_union_non_geometry_arg_emits_diagnostic() {
+        // union(42, box(...)) — first arg is a scalar literal, not geometry
+        // The parser may reject bare number literals in function position,
+        // so we use a param reference (Scalar param) which is a valid expr but not geometry.
+        let source = r#"structure S {
+    param w: Scalar = 10mm
+    let r = union(w, box(10mm, 10mm, 10mm))
+}"#;
+        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_union_nongeom"));
+        assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+        let compiled = compile(&parsed);
+        let template = &compiled.templates[0];
+        // Should produce no realization (compilation failed)
+        assert_eq!(
+            template.realizations.len(), 0,
+            "expected 0 realizations for non-geometry arg union, got {}",
+            template.realizations.len()
+        );
+        // Should have at least one diagnostic
+        assert!(
+            !compiled.diagnostics.is_empty(),
+            "expected diagnostics for non-geometry arg, got none"
+        );
+    }
+
     // --- union_all / intersection_all fold compilation tests (step-7) ---
 
     #[test]
