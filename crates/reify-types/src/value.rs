@@ -1944,6 +1944,54 @@ mod tests {
         assert_eq!(o.dimension(), DimensionVector::DIMENSIONLESS);
     }
 
+    // ── Range content_hash tests (step-7) ───────────────────────────────────
+
+    #[test]
+    fn value_range_content_hash_deterministic() {
+        let r1 = make_range(Some(Value::Int(0)), Some(Value::Int(10)), true, false);
+        let r2 = make_range(Some(Value::Int(0)), Some(Value::Int(10)), true, false);
+        assert_eq!(r1.content_hash(), r2.content_hash());
+    }
+
+    #[test]
+    fn value_range_content_hash_different_bounds_differ() {
+        let r1 = make_range(Some(Value::Int(0)), Some(Value::Int(10)), true, false);
+        let r2 = make_range(Some(Value::Int(1)), Some(Value::Int(10)), true, false);
+        assert_ne!(r1.content_hash(), r2.content_hash());
+    }
+
+    #[test]
+    fn value_range_content_hash_none_vs_some_differ() {
+        let r_none = make_range(None, Some(Value::Int(10)), false, true);
+        let r_some = make_range(Some(Value::Int(0)), Some(Value::Int(10)), false, true);
+        assert_ne!(r_none.content_hash(), r_some.content_hash());
+    }
+
+    #[test]
+    fn value_range_content_hash_inclusivity_differs() {
+        let r_open = make_range(Some(Value::Int(0)), Some(Value::Int(10)), false, false);
+        let r_half = make_range(Some(Value::Int(0)), Some(Value::Int(10)), true, false);
+        let r_closed = make_range(Some(Value::Int(0)), Some(Value::Int(10)), true, true);
+        assert_ne!(r_open.content_hash(), r_half.content_hash());
+        assert_ne!(r_half.content_hash(), r_closed.content_hash());
+        assert_ne!(r_open.content_hash(), r_closed.content_hash());
+    }
+
+    #[test]
+    fn value_range_content_hash_no_collision_with_orientation() {
+        // Range tag=17 should not collide with Orientation tag=16
+        let range = make_range(None, None, false, false);
+        let orient = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+        assert_ne!(range.content_hash(), orient.content_hash());
+    }
+
+    #[test]
+    fn value_range_content_hash_both_none_deterministic() {
+        let r1 = make_range(None, None, false, false);
+        let r2 = make_range(None, None, false, false);
+        assert_eq!(r1.content_hash(), r2.content_hash());
+    }
+
     // ── Range Ord tests (step-5) ─────────────────────────────────────────────
 
     #[test]
