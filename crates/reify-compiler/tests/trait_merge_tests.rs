@@ -64,6 +64,40 @@ structure def S : HasArea + AlsoHasArea {
     );
 }
 
+/// Step 2: Trait A has `let x : Length = 5mm`, trait B has `let x : Mass = 1kg`.
+/// Structure implements both — different types → 'conflicting' error.
+/// NOTE: This test is EXPECTED TO FAIL until step-3 fixes the Type::Real sentinel.
+#[test]
+fn let_defaults_same_name_different_type_error() {
+    let source = r#"
+trait A {
+    let x : Length = 5mm
+}
+
+trait B {
+    let x : Mass = 1kg
+}
+
+structure def U : A + B {
+}
+"#;
+
+    let (_, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(!errors.is_empty(), "expected conflict diagnostic for same-name different-type let defaults");
+
+    let error_msg = format!("{:?}", errors);
+    assert!(
+        error_msg.contains("conflicting"),
+        "error should mention 'conflicting', got: {}",
+        error_msg
+    );
+}
+
 /// Step 1b: Two traits each requiring `param x : Length`.
 /// Structure provides `param x : Length = 5mm` — requirement dedup baseline.
 /// Expect 0 errors (existing behavior).
