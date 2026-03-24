@@ -2067,6 +2067,23 @@ fn eval_method_concat_two_args() {
 // ─── task-168: generate as FunctionCall ───
 
 #[test]
+fn eval_fn_generate_zero_count() {
+    // generate(0, |i| i) -> []
+    let i_id = ValueCellId::new("$lambda_fgen0.S", "i");
+    let body = CompiledExpr::value_ref(i_id.clone(), Type::Int);
+    let lambda_arg = lambda_literal(vec![("i", i_id)], body, ValueMap::new());
+    let count_arg = CompiledExpr::literal(Value::Int(0), Type::Int);
+    let expr = make_fn_call(
+        "generate",
+        vec![count_arg, lambda_arg],
+        Type::List(Box::new(Type::Int)),
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::List(vec![]));
+}
+
+#[test]
 fn eval_fn_generate_basic() {
     // generate(3, |i| i * 2) -> [0, 2, 4]
     let i_id = ValueCellId::new("$lambda_fgen.S", "i");
