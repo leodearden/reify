@@ -172,6 +172,14 @@ fn trig_input(v: &Value) -> Option<f64> {
     }
 }
 
+/// Apply a function to three arguments (by reference).
+fn ternary(args: &[Value], f: impl FnOnce(&Value, &Value, &Value) -> Value) -> Value {
+    if args.len() != 3 {
+        return Value::Undef;
+    }
+    f(&args[0], &args[1], &args[2])
+}
+
 /// Apply a function to two f64 arguments.
 fn binary_f64(args: &[Value], f: impl FnOnce(f64, f64) -> Value) -> Value {
     if args.len() != 2 {
