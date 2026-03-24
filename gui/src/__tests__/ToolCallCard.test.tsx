@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@solidjs/testing-library';
 import { ToolCallCard } from '../panels/chat/ToolCallCard';
-import type { ToolCallInfo } from '../stores/claudeStore';
+import type { ToolCallInfo } from '../types';
 
 function makeTool(overrides?: Partial<ToolCallInfo>): ToolCallInfo {
   return {

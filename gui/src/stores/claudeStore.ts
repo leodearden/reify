@@ -13,10 +13,8 @@ import {
   onClaudeReady,
   claudeSendMessage as bridgeSendMessage,
   claudeAbort as bridgeAbort,
+  claudeClearSession as bridgeClearSession,
 } from '../bridge';
-
-// Re-export shared types so consumers can import from either location.
-export type { MessageContext, ToolCallInfo };
 
 // --- Domain types for UI consumption ---
 
@@ -70,6 +68,21 @@ export function createClaudeStore(options: ClaudeStoreOptions) {
     sessionStatus: 'idle',
     currentMessageId: null,
   });
+
+  // --- Abort generation counter (monotonically increasing) ---
+  // Incremented on every abort; sendMessage captures the current value
+  // so its .then() can detect if an abort occurred while awaiting.
+  let abortGeneration = 0;
+
+  // --- Pending bridge ID for event buffering ---
+  // Between calling bridgeSendMessage and receiving the resolved bridgeId,
+  // events may arrive using the bridge-assigned ID before reconciliation.
+  // We buffer them here and replay once the ID is known.
+  let pendingLocalId: string | null = null;
+  let pendingEventBuffer: OutboundMessage[] = [];
+
+  // --- Subscription idempotency ---
+  let activeCleanup: (() => void) | null = null;
 
   // --- Delta batching for 60fps rendering ---
   let textBuffer: string[] = [];
@@ -132,6 +145,24 @@ export function createClaudeStore(options: ClaudeStoreOptions) {
   // --- Actions ---
 
   function handleOutboundMessage(msg: OutboundMessage): void {
+    // Buffer events that arrive with an unknown ID while we're waiting for
+    // bridge ID reconciliation. After reconciliation, these are replayed.
+    if (
+      'id' in msg &&
+      msg.id &&
+      pendingLocalId &&
+      msg.id !== pendingLocalId &&
+      msg.id !== state.currentMessageId &&
+      state.messages.findIndex((m) => m.id === msg.id) === -1
+    ) {
+      pendingEventBuffer.push(msg);
+      // Still allow status transitions for buffered events
+      if (msg.type === 'text_delta') setState('sessionStatus', 'responding');
+      if (msg.type === 'thinking_delta') setState('sessionStatus', 'thinking');
+      if (msg.type === 'tool_call') setState('sessionStatus', 'tool-calling');
+      return;
+    }
+
     switch (msg.type) {
       case 'ready':
         // No state change needed
@@ -257,12 +288,35 @@ export function createClaudeStore(options: ClaudeStoreOptions) {
     if (options.onSend) {
       options.onSend(id, text, context);
     } else {
+      // Track the abort generation at call time so we can detect stale resolutions.
+      const sendGeneration = abortGeneration;
+      pendingLocalId = id;
+      pendingEventBuffer = [];
+
       bridgeSendMessage(text, context).then((bridgeId) => {
+        // If an abort happened after we sent but before the promise resolved,
+        // discard the reconciliation — the session has been cancelled.
+        if (abortGeneration !== sendGeneration) {
+          pendingLocalId = null;
+          pendingEventBuffer = [];
+          return;
+        }
+
         batch(() => {
           setState('messages', (m) => m.id === id && m.role === 'assistant', 'id', bridgeId);
           setState('currentMessageId', bridgeId);
         });
+
+        // Replay any events that arrived with bridgeId before reconciliation.
+        const buffered = pendingEventBuffer;
+        pendingLocalId = null;
+        pendingEventBuffer = [];
+        for (const bufferedMsg of buffered) {
+          handleOutboundMessage(bufferedMsg);
+        }
       }).catch((err: unknown) => {
+        pendingLocalId = null;
+        pendingEventBuffer = [];
         const errMsg = err instanceof Error ? err.message : String(err);
         const classified = classifyError(errMsg);
         setState('sessionStatus', 'idle');
@@ -284,16 +338,27 @@ export function createClaudeStore(options: ClaudeStoreOptions) {
   }
 
   function claudeAbort(): void {
+    abortGeneration++;
+    pendingLocalId = null;
+    pendingEventBuffer = [];
     cancelAndClear();
     setState('sessionStatus', 'idle');
     if (options.onAbort) {
       options.onAbort();
     } else {
-      bridgeAbort();
+      bridgeAbort().catch((err: unknown) => {
+        console.warn('Claude abort failed:', err);
+      });
     }
   }
 
   async function subscribeToEvents(): Promise<() => void> {
+    // Idempotency guard: clean up any previous subscription before re-subscribing.
+    if (activeCleanup) {
+      activeCleanup();
+      activeCleanup = null;
+    }
+
     const results = await Promise.allSettled([
       onClaudeTextDelta((p) => handleOutboundMessage({ type: 'text_delta', id: p.id, content: p.content })),
       onClaudeThinkingDelta((p) => handleOutboundMessage({ type: 'thinking_delta', id: p.id, content: p.content })),
@@ -313,20 +378,34 @@ export function createClaudeStore(options: ClaudeStoreOptions) {
       }
     }
 
-    return () => {
+    const cleanup = () => {
       for (const unlisten of unlisteners) {
         unlisten();
       }
+      if (activeCleanup === cleanup) {
+        activeCleanup = null;
+      }
     };
+    activeCleanup = cleanup;
+
+    return cleanup;
   }
 
   function clearSession(): void {
     cancelAndClear();
+    pendingLocalId = null;
+    pendingEventBuffer = [];
     batch(() => {
       setState('messages', []);
       setState('sessionStatus', 'idle');
       setState('currentMessageId', null);
     });
+    // In bridge mode, also clear the sidecar's conversation history.
+    if (!options.onSend) {
+      bridgeClearSession().catch((err: unknown) => {
+        console.warn('Claude clear session failed:', err);
+      });
+    }
   }
 
   return {

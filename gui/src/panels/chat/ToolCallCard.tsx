@@ -1,5 +1,5 @@
 import { type Component, createSignal, Show } from 'solid-js';
-import type { ToolCallInfo } from '../../stores/claudeStore';
+import type { ToolCallInfo } from '../../types';
 import { DiffView } from './DiffView';
 import styles from './ToolCallCard.module.css';
 

@@ -13,6 +13,7 @@ vi.mock('../bridge', () => ({
   onClaudeReady: vi.fn(),
   claudeSendMessage: vi.fn(),
   claudeAbort: vi.fn(),
+  claudeClearSession: vi.fn(),
 }));
 
 import * as bridge from '../bridge';
@@ -646,30 +647,35 @@ describe('claudeStore', () => {
       expect(unlisten7).toHaveBeenCalledTimes(1);
     });
 
-    it('claude-text-delta event calls handleOutboundMessage with type=text_delta', async () => {
+    it('text-delta event transitions sessionStatus to responding and accumulates responseText', async () => {
       let textDeltaHandler!: (payload: { id: string; content: string }) => void;
+      let doneHandler!: (payload: { id: string }) => void;
       (bridge.onClaudeTextDelta as ReturnType<typeof vi.fn>).mockImplementation(
         async (cb: (p: { id: string; content: string }) => void) => {
           textDeltaHandler = cb;
           return vi.fn();
         },
       );
+      (bridge.onClaudeDone as ReturnType<typeof vi.fn>).mockImplementation(
+        async (cb: (p: { id: string }) => void) => {
+          doneHandler = cb;
+          return vi.fn();
+        },
+      );
 
-      const { subscribeToEvents, sendMessage, state } = makeStore();
+      const { subscribeToEvents, sendMessage, state, handleOutboundMessage } = makeStore();
       sendMessage('hello', {});
       const msgId = state.currentMessageId!;
       await subscribeToEvents();
 
       textDeltaHandler({ id: msgId, content: 'Hello from bridge' });
-
-      // Flush via done so we can check responseText
-      const { handleOutboundMessage } = makeStore();
-      // We need to flush — call done on the same store
-      // Actually, flushBuffers happens on done; use the store's handleOutboundMessage
-      // The simplest way: trigger done via handleOutboundMessage on the same store instance
-      const store2 = createClaudeStore({ onSend: vi.fn(), onAbort: vi.fn() });
-      // Alternatively, just check sessionStatus changes to 'responding'
       expect(state.sessionStatus).toBe('responding');
+
+      // Flush buffers by dispatching done on the same store instance
+      handleOutboundMessage({ type: 'done', id: msgId } as OutboundMessage);
+      const assistantMsg = state.messages.find((m) => m.role === 'assistant');
+      expect(assistantMsg!.responseText).toBe('Hello from bridge');
+      expect(assistantMsg!.complete).toBe(true);
     });
 
     it('claude-tool-call event calls handleOutboundMessage with type=tool_call', async () => {
@@ -756,6 +762,72 @@ describe('claudeStore', () => {
 
       expect(onAbort).toHaveBeenCalledTimes(1);
       expect(bridge.claudeAbort).not.toHaveBeenCalled();
+    });
+
+    it('clearSession calls bridge.claudeClearSession in bridge mode', () => {
+      (bridge.claudeClearSession as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+
+      const store = createClaudeStore({});
+      store.clearSession();
+
+      expect(bridge.claudeClearSession).toHaveBeenCalledTimes(1);
+    });
+
+    it('clearSession does NOT call bridge.claudeClearSession when onSend is provided', () => {
+      const store = createClaudeStore({ onSend: vi.fn() });
+      store.clearSession();
+
+      expect(bridge.claudeClearSession).not.toHaveBeenCalled();
+    });
+
+    it('abort before bridgeSendMessage resolves prevents ID reconciliation', async () => {
+      (bridge.claudeSendMessage as ReturnType<typeof vi.fn>).mockResolvedValue('bridge-msg-aborted');
+      (bridge.claudeAbort as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+
+      const store = createClaudeStore({});
+      store.sendMessage('hello', {});
+      const localId = store.state.currentMessageId!;
+
+      // Abort before the promise resolves
+      store.claudeAbort();
+
+      // Wait for the .then() to execute (it should be a no-op due to abort guard)
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+      // The currentMessageId should NOT be updated to the bridge ID
+      // because abort invalidated the send generation
+      expect(store.state.currentMessageId).not.toBe('bridge-msg-aborted');
+      expect(store.state.sessionStatus).toBe('idle');
+    });
+  });
+
+  describe('subscription idempotency', () => {
+    beforeEach(() => {
+      vi.clearAllMocks();
+      const unlisten = vi.fn();
+      (bridge.onClaudeTextDelta as ReturnType<typeof vi.fn>).mockResolvedValue(unlisten);
+      (bridge.onClaudeThinkingDelta as ReturnType<typeof vi.fn>).mockResolvedValue(unlisten);
+      (bridge.onClaudeToolCall as ReturnType<typeof vi.fn>).mockResolvedValue(unlisten);
+      (bridge.onClaudeToolResult as ReturnType<typeof vi.fn>).mockResolvedValue(unlisten);
+      (bridge.onClaudeDone as ReturnType<typeof vi.fn>).mockResolvedValue(unlisten);
+      (bridge.onClaudeError as ReturnType<typeof vi.fn>).mockResolvedValue(unlisten);
+      (bridge.onClaudeReady as ReturnType<typeof vi.fn>).mockResolvedValue(unlisten);
+    });
+
+    it('calling subscribeToEvents twice cleans up the first subscription', async () => {
+      const unlisten1 = vi.fn();
+      (bridge.onClaudeTextDelta as ReturnType<typeof vi.fn>).mockResolvedValue(unlisten1);
+
+      const { subscribeToEvents } = makeStore();
+      await subscribeToEvents();
+
+      // Second call should clean up the first set of listeners
+      const unlisten2 = vi.fn();
+      (bridge.onClaudeTextDelta as ReturnType<typeof vi.fn>).mockResolvedValue(unlisten2);
+      await subscribeToEvents();
+
+      // The first unlisten should have been called
+      expect(unlisten1).toHaveBeenCalledTimes(1);
     });
   });
 

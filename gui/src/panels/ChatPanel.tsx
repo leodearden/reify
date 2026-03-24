@@ -1,5 +1,6 @@
 import { type Component, createSignal, createEffect, For, Show } from 'solid-js';
-import type { ChatMessage, MessageContext, AssistantMessage, SystemMessage as SystemMessageType } from '../stores/claudeStore';
+import type { ChatMessage, AssistantMessage, SystemMessage as SystemMessageType } from '../stores/claudeStore';
+import type { MessageContext } from '../types';
 import { MessageGroup } from './chat/MessageGroup';
 import { AbortButton } from './chat/AbortButton';
 import { SystemMessage } from './chat/SystemMessage';
