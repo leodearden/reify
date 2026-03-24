@@ -458,7 +458,7 @@ fn eval_method_call(obj: &Value, method: &str, args: &[Value], result_type: &Typ
                         _ => Value::Undef,
                     };
                 }
-                let mut acc = items[0].clone();
+                let mut acc = items[0].clone().canonicalize_matrix();
                 if acc.is_undef() {
                     return Value::Undef;
                 }
@@ -466,7 +466,8 @@ fn eval_method_call(obj: &Value, method: &str, args: &[Value], result_type: &Typ
                     if item.is_undef() {
                         return Value::Undef;
                     }
-                    acc = eval_add(&acc, item);
+                    let item = item.clone().canonicalize_matrix();
+                    acc = eval_add(&acc, &item);
                     if acc.is_undef() {
                         return Value::Undef;
                     }
