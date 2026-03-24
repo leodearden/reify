@@ -2017,6 +2017,44 @@ mod tests {
         assert_scalar_approx!(eval_builtin("dot", &[a, b]), 1.0, length_force);
     }
 
+    /// Assert that an expression evaluates to `Value::Orientation { w, x, y, z }` where each
+    /// component is within `1e-12` of the expected value.
+    macro_rules! assert_orientation_approx {
+        ($expr:expr, $ew:expr, $ex:expr, $ey:expr, $ez:expr) => {
+            match $expr {
+                Value::Orientation { w, x, y, z } => {
+                    assert!(
+                        (w - $ew).abs() < 1e-12 &&
+                        (x - $ex).abs() < 1e-12 &&
+                        (y - $ey).abs() < 1e-12 &&
+                        (z - $ez).abs() < 1e-12,
+                        "expected Orientation({}, {}, {}, {}), got Orientation({}, {}, {}, {})",
+                        $ew, $ex, $ey, $ez, w, x, y, z
+                    );
+                }
+                other => panic!(
+                    "expected Orientation({}, {}, {}, {}), got {:?}",
+                    $ew, $ex, $ey, $ez, other
+                ),
+            }
+        };
+    }
+
+    // ── orient_identity tests (step-6) ──────────────────────────────────────
+
+    #[test]
+    fn orient_identity_no_args() {
+        assert_orientation_approx!(
+            eval_builtin("orient_identity", &[]),
+            1.0, 0.0, 0.0, 0.0
+        );
+    }
+
+    #[test]
+    fn orient_identity_with_args_returns_undef() {
+        assert!(eval_builtin("orient_identity", &[Value::Real(1.0)]).is_undef());
+    }
+
     #[test]
     fn dot_mixed_component_dimensions_returns_undef() {
         // A Tensor with mixed dimensions is not a valid physical vector
