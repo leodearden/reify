@@ -47,6 +47,8 @@ pub enum Type {
     Orientation(usize),
     /// Range over a comparable element type (e.g., Range<Int>, Range<Scalar[m]>).
     Range(Box<Type>),
+    /// m-by-n matrix with a quantity type (e.g., Matrix3x2<Scalar[m]>).
+    Matrix { m: usize, n: usize, quantity: Box<Type> },
 }
 
 impl Type {
@@ -109,6 +111,11 @@ impl Type {
     /// Shorthand for a range over a given element type.
     pub fn range(inner: Type) -> Self {
         Type::Range(Box::new(inner))
+    }
+
+    /// Shorthand for an m×n matrix with a given quantity type.
+    pub fn matrix(m: usize, n: usize, quantity: Type) -> Self {
+        Type::Matrix { m, n, quantity: Box::new(quantity) }
     }
 
     /// Is this type a numeric type (Int, Real, or Scalar)?
@@ -729,6 +736,7 @@ impl std::fmt::Display for Type {
             Type::Complex(inner) => write!(f, "Complex<{}>", inner),
             Type::Orientation(n) => write!(f, "Orientation{}", n),
             Type::Range(inner) => write!(f, "Range<{}>", inner),
+            Type::Matrix { m, n, quantity } => write!(f, "Matrix{}x{}<{}>", m, n, quantity),
         }
     }
 }
