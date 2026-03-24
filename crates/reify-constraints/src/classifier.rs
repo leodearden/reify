@@ -8,7 +8,8 @@ use reify_types::{CompiledExpr, CompiledExprKind, ConstraintDomain, Type, Value}
 /// Internal flags collected during expression tree traversal.
 #[derive(Default)]
 struct DomainFlags {
-    /// Saw a numeric leaf (Scalar, Real, Int) or numeric-typed ValueRef.
+    /// Saw a numeric leaf (Scalar, Real, or Int) or numeric-typed ValueRef.
+    /// Note: Complex is excluded — Type::is_numeric() returns false for Complex.
     has_numeric: bool,
     /// Saw a Bool leaf or Bool-typed ValueRef.
     has_logical: bool,
@@ -74,10 +75,7 @@ impl ConstraintClassifier {
                 CompiledExprKind::Literal(value) => {
                     match value {
                         Value::Bool(_) => flags.has_logical = true,
-                        Value::Int(_)
-                        | Value::Real(_)
-                        | Value::Scalar { .. }
-                        | Value::Complex { .. } => {
+                        Value::Int(_) | Value::Real(_) | Value::Scalar { .. } => {
                             flags.has_numeric = true;
                         }
                         Value::String(_) | Value::Undef => {
@@ -90,8 +88,12 @@ impl ConstraintClassifier {
                         | Value::Option(_)
                         | Value::Lambda { .. }
                         | Value::Field { .. }
-                        | Value::Tensor(_) => {
-                            // Collection, enum, lambda, field, and tensor types don't contribute to domain classification
+                        | Value::Tensor(_)
+                        | Value::Complex { .. } => {
+                            // Collection, enum, lambda, field, tensor, and Complex types
+                            // don't contribute to domain classification.
+                            // Complex is not numeric (Type::is_numeric() returns false for
+                            // Complex); needs its own domain if special routing is required.
                         }
                     }
                 }
