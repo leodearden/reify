@@ -468,6 +468,63 @@ mod tests {
         // content_hash should be non-zero (derived from name)
         assert_ne!(ct.content_hash, reify_types::ContentHash(0));
     }
+
+    // step-3: failing tests for TraitDefBuilder members
+    #[test]
+    fn trait_def_builder_with_requirement() {
+        let ct = TraitDefBuilder::new("Rigid")
+            .requirement("mass", RequirementKind::Param(Type::Scalar {
+                dimension: DimensionVector::LENGTH, // reuse LENGTH for test simplicity
+            }))
+            .build();
+        assert_eq!(ct.required_members.len(), 1);
+        assert_eq!(ct.required_members[0].name, "mass");
+        matches!(&ct.required_members[0].kind, RequirementKind::Param(_));
+    }
+
+    #[test]
+    fn trait_def_builder_with_refinement() {
+        let ct = TraitDefBuilder::new("StronglyRigid")
+            .refinement("Rigid")
+            .build();
+        assert_eq!(ct.refinements.len(), 1);
+        assert_eq!(ct.refinements[0], "Rigid");
+    }
+
+    #[test]
+    fn trait_def_builder_with_type_param() {
+        use reify_types::{TraitBound, TraitRef};
+        let param = TypeParam {
+            name: "T".to_string(),
+            bounds: vec![TraitBound {
+                trait_ref: TraitRef {
+                    name: "Rigid".to_string(),
+                    type_args: vec![],
+                },
+            }],
+            default: None,
+        };
+        let ct = TraitDefBuilder::new("Container")
+            .type_param(param)
+            .build();
+        assert_eq!(ct.type_params.len(), 1);
+        assert_eq!(ct.type_params[0].name, "T");
+        assert_eq!(ct.type_params[0].bounds.len(), 1);
+        assert_eq!(ct.type_params[0].bounds[0].trait_ref.name, "Rigid");
+    }
+
+    #[test]
+    fn trait_def_builder_is_pub() {
+        let ct = TraitDefBuilder::new("Rigid").is_pub().build();
+        assert!(ct.is_pub);
+    }
+
+    #[test]
+    fn trait_def_builder_content_hash_differs_by_name() {
+        let ct1 = TraitDefBuilder::new("Rigid").build();
+        let ct2 = TraitDefBuilder::new("Flexible").build();
+        assert_ne!(ct1.content_hash, ct2.content_hash);
+    }
 }
 
 /// Builder for `CompiledTrait`.
