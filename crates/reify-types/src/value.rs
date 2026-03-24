@@ -2130,12 +2130,7 @@ mod tests {
         lower_inclusive: bool,
         upper_inclusive: bool,
     ) -> Value {
-        Value::Range {
-            lower: lower.map(Box::new),
-            upper: upper.map(Box::new),
-            lower_inclusive,
-            upper_inclusive,
-        }
+        Value::range(lower, upper, lower_inclusive, upper_inclusive)
     }
 
     #[test]
