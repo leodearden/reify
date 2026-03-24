@@ -618,6 +618,52 @@ fn mat_vec_mul_first_row_undef_returns_undef() {
     assert_eq!(eval(&expr), Value::Undef);
 }
 
+// ── step-5 (task-374): mat*mat Undef propagation contracts ─────────────────
+//
+// These tests verify existing Undef behavior before the mat*mat refactoring.
+
+/// mat*mat where a cell's dot product produces Undef (mixed-dimension sums).
+/// B has row 0 with Length and row 1 with Angle → the dot product
+/// A[0]*B[:,0] involves Area + Angle·Length → dimension mismatch → Undef.
+#[test]
+fn mat_mat_mul_undef_in_cell_propagates() {
+    // A = [[Length(1), Length(1)]]  (1×2)
+    // B = [[Length(1), Length(1)], [Angle(1), Angle(1)]]  (2×2, mixed dimensions by row)
+    // C[0][0] = A[0][0]*B[0][0] + A[0][1]*B[1][0] = Area(1) + Angle*Length(1) → Undef
+    let a = mat(vec![vec![Value::length(1.0), Value::length(1.0)]]);
+    let b = mat(vec![
+        vec![Value::length(1.0), Value::length(1.0)],
+        vec![Value::angle(1.0), Value::angle(1.0)],
+    ]);
+    let expr = CompiledExpr::binop(BinOp::Mul, a, b, Type::Real);
+    assert_eq!(eval(&expr), Value::Undef);
+}
+
+/// mat*mat where A has Length elements and B columns have mixed dimensions.
+/// A = [[Length(2), Length(3)]], B = [[Length(1), Angle(0)], [Length(0), Angle(1)]]
+/// C[0][0] = Length*Length + Length*Length = Area (ok)
+/// C[0][1] = Length*Angle + Length*Angle → both ANGLE·LENGTH, same dimension → sum is ok
+/// Actually this won't produce Undef... Let me use a different case.
+///
+/// Use A (2×2 Real) * B (2×2 where B[0][0]=Real, B[1][0]=Length) →
+/// C[0][0] = Real*Real + Real*Length → Real + Length (dimension mismatch) → Undef.
+#[test]
+fn mat_mat_mul_mixed_dimension_products_returns_undef() {
+    // A = [[Real(1), Real(1)], [Real(1), Real(1)]]  (2×2)
+    // B = [[Real(1), Real(1)], [Length(1), Real(1)]]  (2×2, mixed dimensions in col 0)
+    // C[0][0] = Real(1)*Real(1) + Real(1)*Length(1) = Real(1) + Length(1) → Undef
+    let a = mat(vec![
+        vec![Value::Real(1.0), Value::Real(1.0)],
+        vec![Value::Real(1.0), Value::Real(1.0)],
+    ]);
+    let b = mat(vec![
+        vec![Value::Real(1.0), Value::Real(1.0)],
+        vec![Value::length(1.0), Value::Real(1.0)],
+    ]);
+    let expr = CompiledExpr::binop(BinOp::Mul, a, b, Type::Real);
+    assert_eq!(eval(&expr), Value::Undef);
+}
+
 // ── step-17: Jagged-matrix panic in Matrix*Matrix ──────────────────────────
 //
 // This test will FAIL (panic) until step-18 fixes the safe-indexing in eval_mul.
