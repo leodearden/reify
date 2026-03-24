@@ -15,6 +15,7 @@ import type {
   EvaluationStatus,
   SourceLocation,
   FileData,
+  MessageContext,
 } from './types';
 import { convertRawMesh, convertRawGuiState } from './types';
 
@@ -187,5 +188,118 @@ export async function onConstraintRemoved(
 ): Promise<UnlistenFn> {
   return listen<string>('constraint-removed', (event) => {
     callback(event.payload);
+  });
+}
+
+// ── Claude commands (invoke wrappers) ────────────────────────────────
+
+/** Send a message to the Claude sidecar. Returns the assigned message ID. */
+export async function claudeSendMessage(text: string, context?: MessageContext): Promise<string> {
+  return invoke<string>('claude_send_message', { text, context });
+}
+
+/** Abort the current Claude response. */
+export async function claudeAbort(): Promise<void> {
+  return invoke('claude_abort');
+}
+
+/** Clear the Claude session history. */
+export async function claudeClearSession(): Promise<void> {
+  return invoke('claude_clear_session');
+}
+
+// ── Claude event listeners (listen wrappers) ─────────────────────────
+
+/** Payload shape for claude-text-delta and claude-thinking-delta events. */
+interface ClaudeDeltaPayload {
+  id: string;
+  content: string;
+}
+
+/** Payload shape for claude-tool-call events (snake_case matching Rust serialization). */
+interface ClaudeToolCallPayload {
+  id: string;
+  tool_name: string;
+  tool_input: Record<string, unknown>;
+}
+
+/** Payload shape for claude-tool-result events. */
+interface ClaudeToolResultPayload {
+  id: string;
+  tool_name: string;
+  result: unknown;
+}
+
+/** Payload shape for claude-done events. */
+interface ClaudeDonePayload {
+  id: string;
+}
+
+/** Payload shape for claude-error events. */
+interface ClaudeErrorPayload {
+  id: string;
+  message: string;
+}
+
+/** Subscribe to text delta events from Claude. */
+export async function onClaudeTextDelta(
+  callback: (data: ClaudeDeltaPayload) => void,
+): Promise<UnlistenFn> {
+  return listen<ClaudeDeltaPayload>('claude-text-delta', (event) => {
+    callback(event.payload);
+  });
+}
+
+/** Subscribe to thinking delta events from Claude. */
+export async function onClaudeThinkingDelta(
+  callback: (data: ClaudeDeltaPayload) => void,
+): Promise<UnlistenFn> {
+  return listen<ClaudeDeltaPayload>('claude-thinking-delta', (event) => {
+    callback(event.payload);
+  });
+}
+
+/** Subscribe to tool call events from Claude. */
+export async function onClaudeToolCall(
+  callback: (data: ClaudeToolCallPayload) => void,
+): Promise<UnlistenFn> {
+  return listen<ClaudeToolCallPayload>('claude-tool-call', (event) => {
+    callback(event.payload);
+  });
+}
+
+/** Subscribe to tool result events from Claude. */
+export async function onClaudeToolResult(
+  callback: (data: ClaudeToolResultPayload) => void,
+): Promise<UnlistenFn> {
+  return listen<ClaudeToolResultPayload>('claude-tool-result', (event) => {
+    callback(event.payload);
+  });
+}
+
+/** Subscribe to done events from Claude. */
+export async function onClaudeDone(
+  callback: (data: ClaudeDonePayload) => void,
+): Promise<UnlistenFn> {
+  return listen<ClaudeDonePayload>('claude-done', (event) => {
+    callback(event.payload);
+  });
+}
+
+/** Subscribe to error events from Claude. */
+export async function onClaudeError(
+  callback: (data: ClaudeErrorPayload) => void,
+): Promise<UnlistenFn> {
+  return listen<ClaudeErrorPayload>('claude-error', (event) => {
+    callback(event.payload);
+  });
+}
+
+/** Subscribe to the claude-ready event (sidecar is responsive). */
+export async function onClaudeReady(
+  callback: () => void,
+): Promise<UnlistenFn> {
+  return listen('claude-ready', () => {
+    callback();
   });
 }
