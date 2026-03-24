@@ -177,4 +177,20 @@ fn all_m5_types_exported() {
         reify_types::Value::Int(1),
         reify_types::Value::Int(2),
     ]);
+
+    // --- Orientation variants ---
+
+    // Type::Orientation (direct construction)
+    let _to3 = reify_types::Type::Orientation(3);
+
+    // Type::orientation factory method
+    let _to_factory = reify_types::Type::orientation(2);
+
+    // Value::Orientation construction
+    let _vo = reify_types::Value::Orientation {
+        w: 1.0,
+        x: 0.0,
+        y: 0.0,
+        z: 0.0,
+    };
 }

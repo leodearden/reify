@@ -52,6 +52,8 @@ pub enum Value {
     Tensor(Vec<Value>),
     /// Complex number: re and im share one dimension (e.g., complex impedance in ohms).
     Complex { re: f64, im: f64, dimension: DimensionVector },
+    /// Orientation as a unit quaternion (w + xi + yj + zk).
+    Orientation { w: f64, x: f64, y: f64, z: f64 },
     /// Undefined — not yet determined or computation failed.
     Undef,
 }
@@ -205,6 +207,19 @@ impl Value {
                 buf[9..17].copy_from_slice(&im_bits.to_le_bytes());
                 ContentHash::of(&buf).combine(dimension.content_hash())
             }
+            Value::Orientation { w, x, y, z } => {
+                // tag=16; NaN canonicalization for all 4 components
+                let canon = |v: &f64| -> u64 {
+                    if v.is_nan() { f64::NAN.to_bits() } else { v.to_bits() }
+                };
+                let mut buf = [0u8; 33];
+                buf[0] = 16;
+                buf[1..9].copy_from_slice(&canon(w).to_le_bytes());
+                buf[9..17].copy_from_slice(&canon(x).to_le_bytes());
+                buf[17..25].copy_from_slice(&canon(y).to_le_bytes());
+                buf[25..33].copy_from_slice(&canon(z).to_le_bytes());
+                ContentHash::of(&buf)
+            }
             Value::Undef => ContentHash::of(&[5]),
         }
     }
@@ -249,6 +264,15 @@ impl PartialEq for Value {
                 Value::Complex { re: ar, im: ai, dimension: ad },
                 Value::Complex { re: br, im: bi, dimension: bd },
             ) => ar.to_bits() == br.to_bits() && ai.to_bits() == bi.to_bits() && ad == bd,
+            (
+                Value::Orientation { w: aw, x: ax, y: ay, z: az },
+                Value::Orientation { w: bw, x: bx, y: by, z: bz },
+            ) => {
+                aw.to_bits() == bw.to_bits()
+                    && ax.to_bits() == bx.to_bits()
+                    && ay.to_bits() == by.to_bits()
+                    && az.to_bits() == bz.to_bits()
+            }
             (Value::Undef, Value::Undef) => true,
             _ => false,
         }
@@ -286,6 +310,7 @@ impl Ord for Value {
                 Value::Lambda { .. } => 12,
                 Value::Tensor(_) => 13,
                 Value::Complex { .. } => 14,
+                Value::Orientation { .. } => 15,
             }
         }
 
@@ -347,6 +372,15 @@ impl Ord for Value {
                 ad.cmp(bd)
                     .then_with(|| ar.to_bits().cmp(&br.to_bits()))
                     .then_with(|| ai.to_bits().cmp(&bi.to_bits()))
+            }
+            (
+                Value::Orientation { w: aw, x: ax, y: ay, z: az },
+                Value::Orientation { w: bw, x: bx, y: by, z: bz },
+            ) => {
+                aw.to_bits().cmp(&bw.to_bits())
+                    .then_with(|| ax.to_bits().cmp(&bx.to_bits()))
+                    .then_with(|| ay.to_bits().cmp(&by.to_bits()))
+                    .then_with(|| az.to_bits().cmp(&bz.to_bits()))
             }
             _ => unreachable!("same type tag but different variants"),
         }
@@ -446,6 +480,17 @@ impl std::fmt::Display for Value {
                 } else {
                     write!(f, "({}{}{}i) {}", re_str, sign, im_abs_str, dimension)
                 }
+            }
+            Value::Orientation { w, x, y, z } => {
+                // Format quaternion components using same whole-number convention as Real
+                let fmt_f64 = |v: f64| -> String {
+                    if v == v.trunc() && v.is_finite() {
+                        format!("{:.0}", v)
+                    } else {
+                        format!("{}", v)
+                    }
+                };
+                write!(f, "[{}, {}, {}, {}]q", fmt_f64(*w), fmt_f64(*x), fmt_f64(*y), fmt_f64(*z))
             }
             Value::Undef => write!(f, "undef"),
         }
@@ -1734,5 +1779,121 @@ mod tests {
     fn value_complex_dimensionless_returns_dimensionless() {
         let v = Value::Complex { re: 1.0, im: 2.0, dimension: DimensionVector::DIMENSIONLESS };
         assert_eq!(v.dimension(), DimensionVector::DIMENSIONLESS);
+    }
+
+    // ── Value::Orientation tests (step-3) ────────────────────────────────────
+
+    #[test]
+    fn value_orientation_construction() {
+        let o = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+        // Should not be undef
+        assert!(!o.is_undef());
+    }
+
+    #[test]
+    fn value_orientation_eq_same() {
+        let a = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+        let b = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn value_orientation_eq_different() {
+        let a = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+        let b = Value::Orientation { w: 0.0, x: 1.0, y: 0.0, z: 0.0 };
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn value_orientation_eq_nan_bitwise() {
+        // NaN == NaN via to_bits (bitwise equality)
+        let a = Value::Orientation { w: f64::NAN, x: 0.0, y: 0.0, z: 0.0 };
+        let b = Value::Orientation { w: f64::NAN, x: 0.0, y: 0.0, z: 0.0 };
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn value_orientation_eq_neg_zero() {
+        // -0.0 != 0.0 via to_bits
+        let a = Value::Orientation { w: -0.0, x: 0.0, y: 0.0, z: 0.0 };
+        let b = Value::Orientation { w: 0.0, x: 0.0, y: 0.0, z: 0.0 };
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn value_orientation_ord_cross_type() {
+        // Orientation should sort after Complex (tag 14), so Orientation tag = 15
+        let complex = Value::Complex { re: 0.0, im: 0.0, dimension: DimensionVector::DIMENSIONLESS };
+        let orient = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+        assert!(complex < orient);
+    }
+
+    #[test]
+    fn value_orientation_ord_within_type() {
+        // Lexicographic on w, x, y, z via to_bits
+        let a = Value::Orientation { w: 0.0, x: 0.0, y: 0.0, z: 0.0 };
+        let b = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+        assert!(a < b);
+
+        // Same w, different x
+        let c = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+        let d = Value::Orientation { w: 1.0, x: 1.0, y: 0.0, z: 0.0 };
+        assert!(c < d);
+    }
+
+    #[test]
+    fn value_orientation_display() {
+        let o = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+        assert_eq!(format!("{}", o), "[1, 0, 0, 0]q");
+    }
+
+    #[test]
+    fn value_orientation_display_fractional() {
+        let s = std::f64::consts::FRAC_1_SQRT_2;
+        let o = Value::Orientation { w: s, x: 0.0, y: 0.0, z: s };
+        let display = format!("{}", o);
+        assert!(display.starts_with('['));
+        assert!(display.ends_with("]q"));
+    }
+
+    #[test]
+    fn value_orientation_content_hash_deterministic() {
+        let a = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+        let b = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+        assert_eq!(a.content_hash(), b.content_hash());
+    }
+
+    #[test]
+    fn value_orientation_content_hash_nan_canonical() {
+        let a = Value::Orientation { w: f64::NAN, x: 0.0, y: 0.0, z: 0.0 };
+        let b = Value::Orientation { w: f64::NAN, x: 0.0, y: 0.0, z: 0.0 };
+        assert_eq!(a.content_hash(), b.content_hash());
+    }
+
+    #[test]
+    fn value_orientation_content_hash_distinct_from_complex() {
+        // Tag 16 for Orientation vs tag 15 for Complex
+        let o = Value::Orientation { w: 0.0, x: 0.0, y: 0.0, z: 0.0 };
+        let c = Value::Complex { re: 0.0, im: 0.0, dimension: DimensionVector::DIMENSIONLESS };
+        assert_ne!(o.content_hash(), c.content_hash());
+    }
+
+    #[test]
+    fn value_orientation_content_hash_neg_zero() {
+        let a = Value::Orientation { w: -0.0, x: 0.0, y: 0.0, z: 0.0 };
+        let b = Value::Orientation { w: 0.0, x: 0.0, y: 0.0, z: 0.0 };
+        assert_ne!(a.content_hash(), b.content_hash());
+    }
+
+    #[test]
+    fn value_orientation_as_f64_none() {
+        let o = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+        assert_eq!(o.as_f64(), None);
+    }
+
+    #[test]
+    fn value_orientation_dimension_dimensionless() {
+        let o = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+        assert_eq!(o.dimension(), DimensionVector::DIMENSIONLESS);
     }
 }

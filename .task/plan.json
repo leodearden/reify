@@ -1,239 +1,247 @@
 {
-  "task_id": "203",
-  "title": "Recursive structures: detection",
+  "task_id": "233",
+  "title": "Orientation: Type, Value, constructors",
   "files": [
-    "crates/reify-compiler/src/lib.rs",
-    "crates/reify-compiler/tests/recursive_structure_tests.rs"
+    "crates/reify-types/src/ty.rs",
+    "crates/reify-types/src/value.rs",
+    "crates/reify-types/tests/exports.rs",
+    "crates/reify-stdlib/src/lib.rs",
+    "crates/reify-lsp/src/analysis.rs",
+    "crates/reify-constraints/src/classifier.rs"
   ],
   "modules": [
-    "crates/reify-compiler"
+    "crates/reify-types",
+    "crates/reify-stdlib",
+    "crates/reify-lsp",
+    "crates/reify-constraints"
   ],
-  "analysis": "Task 203 requires detecting self-referential structure definitions during compilation. Structures in Reify can contain `sub` declarations that reference other structures (e.g., `sub x = B()`). When structure A contains a sub of type B, and B contains a sub of type A (or transitively through any chain), we have a recursive cycle.\n\nThe compiler already has all the infrastructure needed: (1) TopologyTemplate has `sub_components: Vec<SubComponentDecl>` where each SubComponentDecl has a `structure_name` field identifying the referenced structure. (2) After all templates are compiled (line 1894), a template_registry HashMap<String, &TopologyTemplate> is built for deferred checks. (3) module_dag.rs provides a pattern for DFS cycle detection.\n\nApproach: Add a post-compilation pass (after all templates are compiled, similar to bound checks) that builds a directed graph of structure references from sub_components, then runs DFS to detect cycles. When a cycle is found, emit a diagnostic and tag the participating templates with `is_recursive = true`. This flag will be consumed by downstream tasks for special handling (e.g., preventing infinite elaboration in reify-eval).\n\nThe reference graph is: for each TopologyTemplate T, for each SubComponentDecl S in T.sub_components, add edge T.name -> S.structure_name. Then run DFS with gray/black coloring to find back-edges indicating cycles. When a back-edge is found, extract the cycle path from the DFS stack.\n\nKey design choice: Tag templates with `is_recursive: bool` rather than blocking compilation. Recursive structures may be valid with collection subs or guarded subs \u2014 they need special handling at elaboration time, not outright rejection. The diagnostic is a warning-level note identifying the cycle path.\n\n--- REVIEW FIX (reviewer_robustness/incorrect_cycle_detection) ---\n\nThe DFS-based cycle detection has a bug: the `Some(false)` arm (black/fully-explored node) takes no action, so when a second DFS path reaches a cycle member that's already fully explored, intermediate nodes on that path are never tagged in_cycle. Example: graph A\u2192B, A\u2192D, B\u2192C, D\u2192C, C\u2192A. DFS finds A\u2192B\u2192C\u2192A and marks A,B,C in_cycle. Then A visits D; D visits C (black, in_cycle), but the `Some(false)` arm does nothing \u2014 D is never tagged, yet D participates in the genuine cycle A\u2192D\u2192C\u2192A.\n\nNaive fix (propagate in_cycle when black neighbor is in_cycle) would cause false positives: if X\u2192Y\u2192X is a cycle and Z\u2192Y exists, Z would be wrongly marked even though there's no path Y\u2192Z.\n\nCorrect fix: replace the DFS with Tarjan's SCC algorithm. Tarjan's finds all strongly connected components in O(V+E). Every node in an SCC of size > 1 is a cycle participant. Self-loops (SCC of size 1 with self-edge) are also cycles. This handles multi-path convergence correctly because SCC membership is determined by mutual reachability, not by DFS tree structure. Cycle paths for diagnostics can be reconstructed from the SCC's adjacency sub-graph.",
-  "prerequisites": [],
+  "analysis": "The task adds an Orientation type for representing spatial rotations via unit quaternions. The Type enum (ty.rs) gets a new Orientation(usize) tuple variant where usize is spatial dimension N (2 or 3). The Value enum (value.rs) gets a new Orientation { w, x, y, z } struct variant storing the quaternion components as f64. Five stdlib constructor functions are added to eval_builtin() in lib.rs. All constructors normalize the quaternion to unit length and return Undef for invalid inputs (NaN, Inf, zero-length). The Type enum derives Debug/Clone/PartialEq/Eq/Hash so those are automatic; Display is manual and needs a new arm. The Value enum has manual impls for PartialEq, Ord, Display, and content_hash \u2014 all need new arms. Two downstream crates (reify-lsp, reify-constraints) have exhaustive match statements on Value that will fail to compile without an Orientation arm.",
+  "prerequisites": [
+    {
+      "id": "pre-1",
+      "description": "Verify current workspace compiles and tests pass on the worktree baseline (cargo check --workspace)",
+      "status": "done",
+      "commit": "78c33d1",
+      "tests": []
+    }
+  ],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing test: direct self-reference (structure A has sub x = A()) is detected and tagged as recursive \u2014 assert template.is_recursive == true and a warning diagnostic contains 'recursive structure cycle'",
+      "description": "Write failing tests for Type::Orientation in ty.rs: variant construction with Orientation(3), Display format 'Orientation3', factory method Type::orientation(n), Eq/Hash consistency, is_numeric() returns false, as_name() returns None",
       "status": "done",
-      "commit": "9adda10"
+      "commit": "5136510"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Add `is_recursive: bool` field to TopologyTemplate (default false). Add `detect_recursive_structures()` function that builds adjacency list from templates' sub_components and runs DFS cycle detection. Wire it into compile() after all templates are compiled. Set is_recursive=true on templates in cycles. Emit warning diagnostic with cycle path.",
+      "description": "Add Orientation(usize) variant to Type enum, add orientation(n) factory method, add Display arm writing 'Orientation{n}'. Derives (Debug, Clone, PartialEq, Eq, Hash) are automatic.",
       "status": "done",
-      "commit": "99e5cd3"
+      "commit": "280585a"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing test: mutual recursion (A has sub b = B(), B has sub a = A()) \u2014 both A and B are tagged as is_recursive=true",
+      "description": "Write failing tests for Value::Orientation in value.rs: variant construction, PartialEq (same quaternion equal, different not equal, NaN bitwise equality via to_bits), Ord (type_tag ordering, within-type lexicographic on w/x/y/z bits), Display format '[w, x, y, z]q', content_hash (tag=16, NaN canonicalization, distinct from other variants)",
       "status": "done",
-      "commit": "9adda10"
+      "commit": "a3aaf2f"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Ensure detect_recursive_structures handles mutual/indirect cycles by propagating is_recursive to all nodes in any cycle, not just the back-edge node",
+      "description": "Add Orientation { w: f64, x: f64, y: f64, z: f64 } variant to Value enum. Add arms to: content_hash (tag=16 with NaN canonicalization for all 4 components), PartialEq (bitwise f64 comparison), Ord (type_tag=15, compare w/x/y/z via to_bits), Display (format as quaternion). Add is_undef/as_f64/dimension pass-through (Orientation is not numeric, dimension is DIMENSIONLESS).",
       "status": "done",
-      "commit": "99e5cd3"
+      "commit": "10fb1be"
     },
     {
       "id": "step-5",
-      "type": "test",
-      "description": "Write failing test: indirect cycle through 3 structures (A->B->C->A) \u2014 all three tagged as is_recursive=true and diagnostic message contains full cycle path 'A -> B -> C -> A'",
+      "type": "impl",
+      "description": "Fix downstream exhaustive matches: add Value::Orientation arm to format_value() in reify-lsp/src/analysis.rs (format as quaternion string), add Value::Orientation arm to domain classifier in reify-constraints/src/classifier.rs (Orientation doesn't contribute to domain classification, same as Complex/Tensor). Add Type::Orientation and Value::Orientation to exports.rs verification test.",
       "status": "done",
-      "commit": "9adda10"
+      "commit": "44e5071"
     },
     {
       "id": "step-6",
-      "type": "impl",
-      "description": "Ensure cycle path reconstruction works for chains of arbitrary length by tracking the DFS path stack and extracting the cycle when a back edge is found",
+      "type": "test",
+      "description": "Write failing test for orient_identity: no-arg call returns Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 }; call with args returns Undef",
       "status": "done",
-      "commit": "99e5cd3"
+      "commit": "79778f9"
     },
     {
       "id": "step-7",
-      "type": "test",
-      "description": "Write failing test: non-recursive structures (A->B, C->D, no cycles) \u2014 none tagged as recursive, no warning diagnostics emitted about recursion",
+      "type": "impl",
+      "description": "Add orient_identity match arm in eval_builtin: check args.is_empty(), return identity quaternion (1,0,0,0)",
       "status": "done",
-      "commit": "9adda10"
+      "commit": "9e2587a"
     },
     {
       "id": "step-8",
-      "type": "impl",
-      "description": "Verify non-recursive DAG structures produce no false positives (should already pass if DFS is correct, fix if not)",
+      "type": "test",
+      "description": "Write failing tests for orient_quaternion(w,x,y,z): (1) unnormalized input (2,0,0,0) normalizes to (1,0,0,0); (2) already normalized input preserved; (3) arbitrary input normalizes correctly; (4) zero quaternion (0,0,0,0) returns Undef; (5) NaN/Inf input returns Undef; (6) wrong arg count returns Undef",
       "status": "done",
-      "commit": "99e5cd3"
+      "commit": "1edde1c"
     },
     {
       "id": "step-9",
-      "type": "test",
-      "description": "Write failing test: mixed recursive and non-recursive structures in same module \u2014 only cycle participants are tagged is_recursive=true, others remain false. E.g., A->B->A cycle plus standalone C->D \u2014 C and D stay is_recursive=false",
+      "type": "impl",
+      "description": "Add orient_quaternion match arm in eval_builtin: extract 4 f64 args, compute norm, reject zero/non-finite, divide by norm, return normalized Orientation. Add normalize_quaternion(w,x,y,z) -> Option<Value> helper function.",
       "status": "done",
-      "commit": "9adda10"
+      "commit": "8e11d45"
     },
     {
       "id": "step-10",
-      "type": "impl",
-      "description": "Ensure tagging is precise: only structures participating in a cycle get is_recursive=true. Structures that reference a recursive structure but aren't themselves in a cycle remain false.",
+      "type": "test",
+      "description": "Write failing tests for orient_axis_angle(axis, angle): (1) 90-deg rotation around Z axis produces correct quaternion (w=cos(pi/4), x=0, y=0, z=sin(pi/4)); (2) 180-deg around X axis; (3) angle as Angle Scalar accepted; (4) zero-length axis returns Undef; (5) non-3D axis returns Undef; (6) wrong arg count returns Undef",
       "status": "done",
-      "commit": "99e5cd3"
+      "commit": "70075b5"
     },
     {
       "id": "step-11",
-      "type": "test",
-      "description": "Write failing test: sub referencing unknown/external structure name does not cause panic or false positive \u2014 structure with sub pointing to non-existent type compiles without recursion diagnostics",
+      "type": "impl",
+      "description": "Add orient_axis_angle match arm: extract axis via tensor_components_f64 (must be 3 components), extract angle via trig_input pattern (accept Real or Angle Scalar), normalize axis, compute q = (cos(theta/2), sin(theta/2)*axis), return via normalize_quaternion",
       "status": "done",
-      "commit": "9adda10"
+      "commit": "da6eb5c"
     },
     {
       "id": "step-12",
-      "type": "impl",
-      "description": "Ensure detect_recursive_structures only adds edges for structure_names that exist in the template set \u2014 skip unknown/external references gracefully",
+      "type": "test",
+      "description": "Write failing tests for orient_euler(convention, a, b, c): (1) 'xyz' intrinsic with known angles produces correct quaternion; (2) 'zyx' convention; (3) all-zero angles produce identity; (4) invalid convention string returns Undef; (5) non-string convention returns Undef; (6) angles as Angle Scalar accepted; (7) wrong arg count returns Undef",
       "status": "done",
-      "commit": "99e5cd3"
+      "commit": "92ed969"
     },
     {
       "id": "step-13",
-      "type": "test",
-      "description": "Write failing test: structure with multiple sub declarations, one creating a cycle and one not \u2014 structure is correctly tagged as recursive. E.g., A has sub b = B() and sub c = C(), B has sub a = A() \u2014 A and B are recursive, C is not",
+      "type": "impl",
+      "description": "Add orient_euler match arm: extract convention as String, extract 3 angles via trig_input pattern, implement intrinsic Euler-to-quaternion conversion for 6 Tait-Bryan conventions (xyz, xzy, yxz, yzx, zxy, zyx) and 6 proper Euler conventions (xyx, xzx, yxy, yzy, zxz, zyz) by composing elementary rotation quaternions. Return Undef for unrecognized conventions.",
       "status": "done",
-      "commit": "9adda10"
+      "commit": "1bab91e"
     },
     {
       "id": "step-14",
-      "type": "impl",
-      "description": "Verify all edges from a template are considered (multiple subs), and the diagnostic label points to the specific sub creating the back-edge",
+      "type": "test",
+      "description": "Write failing tests for orient_basis(x_axis, y_axis, z_axis): (1) identity basis vectors produce identity quaternion; (2) 90-deg rotated basis produces correct quaternion; (3) non-orthogonal basis returns Undef; (4) non-3D vectors return Undef; (5) zero-length vector returns Undef; (6) wrong arg count returns Undef",
       "status": "done",
-      "commit": "99e5cd3"
+      "commit": "557258c"
     },
     {
       "id": "step-15",
-      "type": "test",
-      "description": "Write test: structure with no subs at all is not tagged as recursive and produces no recursion diagnostics",
+      "type": "impl",
+      "description": "Add orient_basis match arm: extract 3 axis vectors via tensor_components_f64 (each must be 3 components), verify approximate orthonormality (dot products near zero, magnitudes near 1, within tolerance), build rotation matrix from basis vectors, convert rotation matrix to quaternion using Shepperd's method, return via normalize_quaternion. Return Undef for non-orthonormal input.",
       "status": "done",
-      "commit": "9adda10"
+      "commit": "8128684"
     },
     {
       "id": "step-16",
-      "type": "impl",
-      "description": "Verify edge case: templates with empty sub_components are handled correctly (no edges added, no iteration issues)",
+      "type": "test",
+      "description": "Review fix [untested_core_behavior]: Add orient_euler compound rotation tests that exercise quat_mul with multiple non-identity operands. (1) orient_euler('xyz', \u03c0/2, \u03c0/2, 0) \u2014 two non-zero angles \u2014 verifies q_x(\u03c0/2)*q_y(\u03c0/2) composition yields (0.5, 0.5, 0.5, 0.5); (2) orient_euler('zyx', \u03c0/3, \u03c0/4, \u03c0/6) \u2014 three non-zero angles \u2014 verifies full three-way quat_mul composition against analytically computed result; (3) orient_euler('xzx', \u03c0/2, \u03c0/2, 0) \u2014 proper Euler convention with compound rotation. These tests validate the quat_mul Hamilton product and composition ordering that single-axis tests cannot catch.",
       "status": "done",
-      "commit": "99e5cd3"
+      "commit": "f6f42ca"
     },
     {
       "id": "step-17",
       "type": "test",
-      "description": "Write failing test for multi-path cycle convergence (reviewer bug): graph A\u2192B, A\u2192D, B\u2192C, D\u2192C, C\u2192A. All four structures participate in cycles (A\u2192B\u2192C\u2192A and A\u2192D\u2192C\u2192A). Assert all four are tagged is_recursive=true. This test will FAIL with the current DFS because D is reached via a black (already-explored) node C and the Some(false) arm takes no action, leaving D untagged.",
+      "description": "Review fix [missing_validation]: Add orient_basis left-handed (improper rotation) rejection tests. (1) x=(1,0,0), y=(0,1,0), z=(0,0,-1) \u2014 reflection through XY plane, det=-1 \u2014 must return Undef; (2) x=(1,0,0), y=(0,0,1), z=(0,1,0) \u2014 another left-handed basis, det=-1 \u2014 must return Undef; (3) verify that a valid right-handed basis near tolerance still passes (sanity check). These tests will FAIL against the current implementation because orient_basis only checks orthonormality but not handedness (determinant).",
       "status": "done",
-      "commit": "c68e309"
+      "commit": "c6a14f3"
     },
     {
       "id": "step-18",
       "type": "impl",
-      "description": "Replace dfs_detect_cycle with Tarjan's SCC algorithm. Tarjan's correctly finds all strongly connected components in O(V+E) by tracking index and lowlink values on a stack. Tag all nodes in SCCs of size > 1 as in_cycle. Also tag self-loop SCCs (size 1 where node has edge to itself). Reconstruct one representative cycle path per SCC from the adjacency sub-graph for diagnostic messages. Remove the old dfs_detect_cycle function entirely.",
+      "description": "Review fix [missing_validation]: Add handedness validation to orient_basis. After the dot-product orthonormality checks (line ~448), compute the scalar triple product (determinant): det = xc[0]*(yc[1]*zc[2] - yc[2]*zc[1]) + xc[1]*(yc[2]*zc[0] - yc[0]*zc[2]) + xc[2]*(yc[0]*zc[1] - yc[1]*zc[0]). Return Value::Undef if (det - 1.0).abs() > tol. This rejects left-handed orthonormal bases (det=-1), reflections, and improper rotations that pass orthonormality checks but are not in SO(3).",
       "status": "done",
-      "commit": "e6d821d"
-    },
-    {
-      "id": "step-19",
-      "type": "test",
-      "description": "Write test for false-positive resistance: structure Z has sub a = A(), and A\u2192B\u2192A is a cycle, but there is no path from A or B back to Z. Assert Z is NOT tagged is_recursive (Z merely points into a cycle without being part of one). This validates that Tarjan's SCC correctly excludes nodes that have edges into an SCC but aren't members of it.",
-      "status": "done",
-      "commit": "c68e309"
-    },
-    {
-      "id": "step-20",
-      "type": "impl",
-      "description": "Verify the false-positive test passes with Tarjan's SCC (should pass because SCC membership requires mutual reachability \u2014 Z can reach A but A cannot reach Z, so Z is in its own singleton SCC with no self-edge).",
-      "status": "done",
-      "commit": "e6d821d"
-    },
-    {
-      "id": "step-21",
-      "type": "test",
-      "description": "Write tests for annotated entity fixtures: trait_structure_module() returns CompiledModule with 1 trait_def (\"Rigid\" requiring thickness:Length), 1 template (\"Plate\" with thickness param), 0 diagnostics. field_module() returns module with 1 field (analytical), 1 template. purpose_module() returns module with 1 compiled_purpose, 1 template. Assert expected counts and key field values.",
-      "status": "done",
-      "commit": "9550026"
-    },
-    {
-      "id": "step-22",
-      "type": "impl",
-      "description": "Implement annotated entity fixtures in fixtures.rs using the new builders: trait_structure_module()->CompiledModule (CompiledTraitBuilder::new(\"Rigid\").require_param(\"thickness\",Type::length()).build() + TopologyTemplateBuilder::new(\"Plate\") with thickness param). field_module()->CompiledModule (CompiledFieldBuilder::new(\"temp\",..).analytical(lambda).build() + template). purpose_module()->CompiledModule (CompiledPurposeBuilder::new(\"mfg_ready\").param(\"subject\",\"Structure\").constraint(..).build() + template).",
-      "status": "done",
-      "commit": "aad3efb"
+      "commit": "359be1c"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Add `is_recursive: bool` field to TopologyTemplate rather than a separate data structure",
-      "rationale": "TopologyTemplate is the compiled representation consumed by reify-eval. Tagging it directly makes the information immediately available during elaboration without requiring a side-channel lookup. The field is cheap (1 byte) and zero-cost when false."
+      "decision": "Type::Orientation(usize) as a tuple variant, not struct variant",
+      "rationale": "Only one parameter (spatial dimension N), matching task spec. Simpler than struct variant like Point { n, quantity } since orientations are inherently dimensionless \u2014 no quantity parameter needed."
     },
     {
-      "decision": "Use warning-level diagnostics, not errors, for recursive cycles",
-      "rationale": "Recursive structures are not necessarily invalid \u2014 they may be meaningful with collection subs (bounded count) or guarded subs (conditional inclusion). The task says 'tag for special handling', not 'reject'. Downstream elaboration can decide how to handle them (e.g., depth limits, lazy expansion)."
+      "decision": "Value::Orientation { w, x, y, z } stores raw quaternion components as f64",
+      "rationale": "Matches existing patterns like Value::Complex { re, im, dimension }. Quaternion components are always dimensionless so no DimensionVector needed. f64 provides sufficient precision for rotation representation."
     },
     {
-      "decision": "Implement detection as a post-compilation pass rather than inline during compile_entity",
-      "rationale": "Following the existing pattern of deferred bound checks: all templates must be compiled before we can build the full reference graph. Forward references are allowed within a module, so inline detection during entity compilation would miss structures defined later in the file."
+      "decision": "Content hash tag=16 for Orientation, Ord type_tag=15",
+      "rationale": "Next available slots after Complex (content_hash tag=15, Ord type_tag=14). Tags 0-15 are used by existing variants plus the reserved Satisfaction tag at position 10."
     },
     {
-      "decision": "Replace DFS gray/black cycle detection with Tarjan's SCC algorithm",
-      "rationale": "The original DFS approach misses cycle participants reachable through already-explored (black) nodes. When multiple paths converge on a cycle, the DFS only finds members on the first path. Tarjan's SCC correctly identifies ALL nodes in ALL strongly connected components in O(V+E) by tracking index/lowlink values, handling multi-path convergence without the early-exit issue. Cycle paths for diagnostics are reconstructed from each SCC's adjacency sub-graph."
+      "decision": "All constructors normalize to unit quaternion unconditionally",
+      "rationale": "Unit quaternion invariant simplifies downstream rotation composition, interpolation, and conversion. Normalization is cheap (one sqrt + 4 divides) and prevents drift. Follows the 'correct by construction' pattern."
     },
     {
-      "decision": "Place all tests in a dedicated integration test file rather than inline unit tests",
-      "rationale": "Follows the established codebase pattern where each feature area has its own test file in tests/ (e.g., collection_sub_tests.rs, trait_bounds_tests.rs). The tests need the compile + check diagnostics pattern that integration tests use."
+      "decision": "Return Value::Undef for invalid inputs (NaN, Inf, zero-length) rather than panicking",
+      "rationale": "Consistent with existing stdlib pattern \u2014 all functions return Undef for type mismatches and domain errors. Follows 'silent defaults should be noisy' convention (Undef propagates visibly rather than silently producing garbage)."
     },
     {
-      "decision": "Only consider sub_components for reference graph edges, not type_args",
-      "rationale": "Type arguments (e.g., Box<Bolt>) reference structures but don't create containment relationships that cause infinite elaboration. A Box<T> parameterized by T doesn't contain T as a sub \u2014 it's a type parameter. Recursion through sub containment is what causes structural cycles."
+      "decision": "orient_euler supports 12 conventions (6 Tait-Bryan + 6 proper Euler) via string parameter",
+      "rationale": "Covers all standard rotation conventions used in engineering (aerospace, robotics, CAD). String parameter ('xyz', 'zyx', etc.) is self-documenting. Invalid convention returns Undef. Implemented by composing elementary quaternion rotations \u2014 no external dependency needed."
     },
     {
-      "decision": "Rejected naive propagation fix (mark in_cycle when black neighbor is in_cycle) in favor of Tarjan's SCC",
-      "rationale": "Naive propagation causes false positives: if Z\u2192A where A is in cycle A\u2192B\u2192A, Z would be wrongly tagged because its black neighbor A is in_cycle, even though there's no path from A back to Z. Tarjan's SCC correctly requires mutual reachability for cycle membership."
+      "decision": "orient_basis validates approximate orthonormality with tolerance",
+      "rationale": "Exact orthonormality is unrealistic with floating-point inputs. A tolerance (e.g., 1e-6) allows for minor numerical drift while rejecting clearly non-orthogonal bases. Returns Undef for bases outside tolerance to keep errors noisy."
+    },
+    {
+      "decision": "Downstream crate fixes (reify-lsp, reify-constraints) included in task scope",
+      "rationale": "Both crates have exhaustive match statements on Value that will fail to compile when Orientation is added. Fixes are trivial (one match arm each) but required for workspace-wide cargo check/test to pass."
+    },
+    {
+      "decision": "Use Shepperd's method for rotation-matrix-to-quaternion conversion in orient_basis",
+      "rationale": "Shepperd's method is numerically stable for all rotation matrices (avoids the singularity at trace=-1 that affects naive methods). Well-established algorithm used in production rotation libraries."
+    },
+    {
+      "decision": "orient_basis validates handedness via scalar triple product (determinant)",
+      "rationale": "Review fix: orthonormality alone is necessary but not sufficient for a valid rotation basis. A left-handed orthonormal basis (det=-1) passes unit-magnitude and perpendicularity checks but represents an improper rotation (reflection), not a member of SO(3). Shepperd's method silently produces a geometrically meaningless quaternion for such inputs. The determinant check (det \u2248 +1.0 within tolerance) ensures only proper rotations are accepted; improper inputs return Undef to keep errors noisy."
     }
   ],
   "reuse": [
     {
-      "what": "DFS cycle detection pattern from module_dag.rs",
-      "where": "crates/reify-compiler/src/module_dag.rs lines 118-126",
-      "how": "Adapt the in_progress HashSet + early return pattern for structure reference graph traversal, extending it with path tracking to report cycle chains"
+      "what": "tensor_components_f64() helper",
+      "where": "crates/reify-stdlib/src/lib.rs:470",
+      "how": "Extract axis vector components in orient_axis_angle and orient_basis. Validates tensor structure, extracts f64 values, and checks dimension consistency."
     },
     {
-      "what": "Post-compilation pass pattern",
-      "where": "crates/reify-compiler/src/lib.rs lines 1896-1942",
-      "how": "Add the recursive structure detection pass after the existing deferred bound check pass, using the same template_registry HashMap<String, &TopologyTemplate>"
+      "what": "trig_input() helper",
+      "where": "crates/reify-stdlib/src/lib.rs:415",
+      "how": "Extract angle value in radians from orient_axis_angle and orient_euler arguments. Accepts both bare Real and Angle Scalar, rejects non-angle dimensioned Scalars."
     },
     {
-      "what": "Diagnostic emission pattern with labels",
-      "where": "crates/reify-compiler/src/lib.rs (used throughout, e.g., lines 1783-1802)",
-      "how": "Use Diagnostic::warning() with DiagnosticLabel::new(span, message) pointing to the sub declarations that form the cycle"
+      "what": "sanitize_value() pattern",
+      "where": "crates/reify-stdlib/src/lib.rs:383",
+      "how": "Model the normalize_quaternion helper after this \u2014 return None/Undef for non-finite results."
     },
     {
-      "what": "Test helper compile_no_errors() / compile pattern",
-      "where": "crates/reify-compiler/tests/collection_sub_tests.rs lines 6-27",
-      "how": "Reuse the same pattern: parse source, assert no parse errors, compile, return CompiledModule. Create a compile_module() helper that allows warnings (since recursion detection emits warnings, not errors)."
+      "what": "unary/binary/ternary helper pattern",
+      "where": "crates/reify-stdlib/src/lib.rs:369-436",
+      "how": "Follow the same arity-checking closure pattern for orient_axis_angle (binary), orient_euler (4-arg custom), orient_quaternion (4-arg custom)."
     },
     {
-      "what": "SubComponentDecl.structure_name field",
-      "where": "crates/reify-compiler/src/lib.rs line 208",
-      "how": "Use structure_name from each SubComponentDecl to build the adjacency list edges in the reference graph"
+      "what": "assert_real_approx! / assert_scalar_approx! test macros",
+      "where": "crates/reify-stdlib/src/lib.rs:515-548",
+      "how": "Create analogous assert_orientation_approx! macro for testing quaternion values with floating-point tolerance (1e-12)."
     },
     {
-      "what": "TopologyTemplate.sub_components and template name",
-      "where": "crates/reify-compiler/src/lib.rs lines 159-178",
-      "how": "Iterate compiled templates to extract (template.name -> sub.structure_name) edges for graph construction"
+      "what": "Complex variant implementation pattern",
+      "where": "crates/reify-types/src/value.rs:198-207,248-251,344-350,431-449",
+      "how": "Follow same pattern for Orientation in content_hash (NaN canonicalization on each f64 component), PartialEq (bitwise f64 comparison), Ord (compare component bits), Display (formatted output)."
     },
     {
-      "what": "Tarjan's SCC algorithm (standard)",
-      "where": "Well-known algorithm, no codebase dependency",
-      "how": "Implement iterative Tarjan's with index counter, lowlink array, and explicit stack. Each SCC of size > 1 (or size 1 with self-edge) maps to a set of in_cycle nodes. Reconstruct one cycle path per SCC by walking adjacency within the SCC."
+      "what": "Complex format_value arm in LSP",
+      "where": "crates/reify-lsp/src/analysis.rs:193",
+      "how": "Add Orientation arm following the same formatting convention as Complex \u2014 display quaternion components with appropriate formatting."
+    },
+    {
+      "what": "Complex domain classifier arm",
+      "where": "crates/reify-constraints/src/classifier.rs:92",
+      "how": "Add Orientation to the same multi-pattern arm as Complex/Tensor/Lambda/Field \u2014 orientations don't contribute to domain classification."
+    },
+    {
+      "what": "Existing orthonormality tolerance (tol = 1e-6) in orient_basis",
+      "where": "crates/reify-stdlib/src/lib.rs:436",
+      "how": "Reuse the same tolerance for the determinant check \u2014 (det - 1.0).abs() > tol. Consistent with existing dot-product and magnitude tolerance."
     }
   ],
-  "_session_id": "248-5e08a36b",
-  "_created_at": "2026-03-24T16:33:41.948215+00:00",
-  "_schema_version": 1
+  "_session_id": "233-1146333e",
+  "_created_at": "2026-03-24T16:30:52.734413+00:00"
 }
