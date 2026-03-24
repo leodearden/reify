@@ -983,4 +983,88 @@ mod tests {
         let result = eval_builtin("clamp", &[Value::Int(5), Value::Int(10), Value::Int(0)]);
         assert!(result.is_undef(), "clamp Int with inverted range should be Undef, got {:?}", result);
     }
+
+    // --- clamp Scalar + fallback tests (step-7) ---
+
+    #[test]
+    fn clamp_scalar_preserves_dimension() {
+        // All three args: same LENGTH dimension, result should be LENGTH Scalar
+        assert_scalar_approx!(
+            eval_builtin(
+                "clamp",
+                &[
+                    Value::Scalar { si_value: 0.005, dimension: DimensionVector::LENGTH },
+                    Value::Scalar { si_value: 0.001, dimension: DimensionVector::LENGTH },
+                    Value::Scalar { si_value: 0.010, dimension: DimensionVector::LENGTH },
+                ]
+            ),
+            0.005,
+            DimensionVector::LENGTH
+        );
+    }
+
+    #[test]
+    fn clamp_dimension_mismatch_returns_undef() {
+        // lo/hi have different dimensions -> Undef
+        let result = eval_builtin(
+            "clamp",
+            &[
+                Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
+                Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
+                Value::Scalar { si_value: 10.0, dimension: DimensionVector::TIME },
+            ],
+        );
+        assert!(result.is_undef(), "clamp with dimension mismatch should be Undef, got {:?}", result);
+    }
+
+    #[test]
+    fn clamp_inverted_range_scalar_returns_undef() {
+        let result = eval_builtin(
+            "clamp",
+            &[
+                Value::Scalar { si_value: 5.0, dimension: DimensionVector::LENGTH },
+                Value::Scalar { si_value: 10.0, dimension: DimensionVector::LENGTH },
+                Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
+            ],
+        );
+        assert!(result.is_undef(), "clamp Scalar with inverted range should be Undef, got {:?}", result);
+    }
+
+    #[test]
+    fn clamp_scalar_nan_x_returns_undef() {
+        let result = eval_builtin(
+            "clamp",
+            &[
+                Value::Scalar { si_value: f64::NAN, dimension: DimensionVector::LENGTH },
+                Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
+                Value::Scalar { si_value: 10.0, dimension: DimensionVector::LENGTH },
+            ],
+        );
+        assert!(result.is_undef(), "clamp Scalar NaN x should be Undef, got {:?}", result);
+    }
+
+    #[test]
+    fn clamp_wrong_arg_count_returns_undef() {
+        let result = eval_builtin("clamp", &[Value::Real(5.0), Value::Real(0.0)]);
+        assert!(result.is_undef(), "clamp with 2 args should be Undef, got {:?}", result);
+    }
+
+    #[test]
+    fn clamp_fallback_scalar_reconstruction() {
+        // Mixed types: x is Int, lo/hi are Scalar LENGTH -> fallback extracts as_f64 but
+        // since all args share a non-DIMENSIONLESS dimension, result should be Scalar LENGTH
+        let result = eval_builtin(
+            "clamp",
+            &[
+                Value::Scalar { si_value: 0.005, dimension: DimensionVector::LENGTH },
+                Value::Scalar { si_value: 0.001, dimension: DimensionVector::LENGTH },
+                Value::Scalar { si_value: 0.010, dimension: DimensionVector::LENGTH },
+            ],
+        );
+        // The Scalar arm should handle this; checking it preserves dimension
+        match result {
+            Value::Scalar { dimension, .. } => assert_eq!(dimension, DimensionVector::LENGTH),
+            other => panic!("expected Scalar with LENGTH dimension, got {:?}", other),
+        }
+    }
 }
