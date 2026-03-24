@@ -482,6 +482,84 @@ fn vector3_div_scalar_divides_components() {
     );
 }
 
+// --- Dimension checking and Undef propagation ---
+
+/// Vector3<Length> + Vector3<Angle> returns Undef — dimension mismatch per component.
+#[test]
+fn vector3_add_different_dimension_returns_undef() {
+    let left = CompiledExpr::literal(
+        Value::Tensor(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]),
+        Type::vec3(Type::length()),
+    );
+    let right = CompiledExpr::literal(
+        Value::Tensor(vec![Value::angle(0.1), Value::angle(0.2), Value::angle(0.3)]),
+        Type::vec3(Type::angle()),
+    );
+    let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::Real);
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::Undef);
+}
+
+/// Scalar<Mass> * Vector3<Length> gives Tensor with Mass*Length dimension per component.
+#[test]
+fn scalar_times_vector_combines_dimensions() {
+    let mass_length = DimensionVector::MASS.mul(&DimensionVector::LENGTH);
+    let left = CompiledExpr::literal(
+        Value::Scalar { si_value: 3.0, dimension: DimensionVector::MASS },
+        Type::Scalar { dimension: DimensionVector::MASS },
+    );
+    let right = CompiledExpr::literal(
+        Value::Tensor(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]),
+        Type::vec3(Type::length()),
+    );
+    let expr = CompiledExpr::binop(BinOp::Mul, left, right, Type::Real);
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Tensor(vec![
+            Value::Scalar { si_value: 3.0, dimension: mass_length },
+            Value::Scalar { si_value: 6.0, dimension: mass_length },
+            Value::Scalar { si_value: 9.0, dimension: mass_length },
+        ])
+    );
+}
+
+/// Undef + Vector3 propagates Undef (strict Undef propagation in eval_binop).
+#[test]
+fn undef_operand_in_tensor_binop_propagates() {
+    let undef_ref = {
+        let missing = ValueCellId::new("S", "missing");
+        CompiledExpr::value_ref(missing, Type::vec3(Type::length()))
+    };
+    let right = CompiledExpr::literal(
+        Value::Tensor(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]),
+        Type::vec3(Type::length()),
+    );
+    let expr = CompiledExpr::binop(BinOp::Add, undef_ref, right, Type::vec3(Type::length()));
+    let values = ValueMap::new(); // missing is absent → Undef
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::Undef);
+}
+
+/// Tensor with a Undef component + Tensor propagates Undef through component-wise add.
+#[test]
+fn tensor_with_undef_component_in_add_propagates() {
+    let left = CompiledExpr::literal(
+        Value::Tensor(vec![Value::length(1.0), Value::Undef, Value::length(3.0)]),
+        Type::vec3(Type::length()),
+    );
+    let right = CompiledExpr::literal(
+        Value::Tensor(vec![Value::length(4.0), Value::length(5.0), Value::length(6.0)]),
+        Type::vec3(Type::length()),
+    );
+    let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::vec3(Type::length()));
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::Undef);
+}
+
 // --- Tensor negation ---
 
 /// Negating Vector3<Length> negates all components.
