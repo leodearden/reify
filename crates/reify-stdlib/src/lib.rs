@@ -372,6 +372,34 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
                 _ => Value::Undef,
             }
         }
+        "orient_axis_angle" => {
+            if args.len() != 2 {
+                return Value::Undef;
+            }
+            let (comps, _dim) = match tensor_components_f64(&args[0]) {
+                Some(c) if c.0.len() == 3 => c,
+                _ => return Value::Undef,
+            };
+            let theta = match trig_input(&args[1]) {
+                Some(t) => t,
+                None => return Value::Undef,
+            };
+            // Normalize axis
+            let ax = comps[0];
+            let ay = comps[1];
+            let az = comps[2];
+            let axis_norm = (ax * ax + ay * ay + az * az).sqrt();
+            if axis_norm == 0.0 || !axis_norm.is_finite() {
+                return Value::Undef;
+            }
+            let nax = ax / axis_norm;
+            let nay = ay / axis_norm;
+            let naz = az / axis_norm;
+            let half = theta / 2.0;
+            let c = half.cos();
+            let s = half.sin();
+            normalize_quaternion(c, s * nax, s * nay, s * naz).unwrap_or(Value::Undef)
+        }
 
         // --- Field operations (stubs) ---
         // These are handled by reify-expr's eval_expr FunctionCall interceptor
