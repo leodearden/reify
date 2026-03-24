@@ -41,6 +41,8 @@ pub enum Type {
     Vector { n: usize, quantity: Box<Type> },
     /// Rank-r tensor with n elements per dimension and a quantity type (e.g., Tensor2x3<Scalar[m]>).
     Tensor { rank: usize, n: usize, quantity: Box<Type> },
+    /// Complex number type with a quantity type (e.g., Complex<Scalar[Ω]>).
+    Complex(Box<Type>),
 }
 
 impl Type {
@@ -88,6 +90,11 @@ impl Type {
     /// Shorthand for a rank-r tensor with n elements per dimension and a given quantity type.
     pub fn tensor(rank: usize, n: usize, quantity: Type) -> Self {
         Type::Tensor { rank, n, quantity: Box::new(quantity) }
+    }
+
+    /// Shorthand for a complex number type with a given quantity type.
+    pub fn complex(q: Type) -> Self {
+        Type::Complex(Box::new(q))
     }
 
     /// Is this type a numeric type (Int, Real, or Scalar)?
@@ -495,6 +502,7 @@ impl std::fmt::Display for Type {
             Type::Point { n, quantity } => write!(f, "Point{}<{}>", n, quantity),
             Type::Vector { n, quantity } => write!(f, "Vector{}<{}>", n, quantity),
             Type::Tensor { rank, n, quantity } => write!(f, "Tensor{}x{}<{}>", rank, n, quantity),
+            Type::Complex(inner) => write!(f, "Complex<{}>", inner),
         }
     }
 }
