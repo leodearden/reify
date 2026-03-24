@@ -188,6 +188,82 @@ fn conformance_multiple_requirements_mixed() {
     assert!(has_missing_param, "expected MissingParam for 'name', errors: {:?}", errors);
 }
 
+/// step-9: Let requirement missing → MissingLet error.
+#[test]
+fn conformance_let_requirement_checked() {
+    let trait_def = CompiledTrait {
+        name: "HasArea".to_string(),
+        is_pub: true,
+        type_params: vec![],
+        refinements: vec![],
+        required_members: vec![TraitRequirement {
+            name: "area".to_string(),
+            kind: RequirementKind::Let(Type::Real),
+            span: test_span(),
+        }],
+        defaults: vec![],
+        content_hash: ContentHash::of_str("HasArea"),
+    };
+    let structure_members: std::collections::HashMap<String, Type> =
+        std::collections::HashMap::new();
+    let errors = check_trait_conformance(&structure_members, &trait_def);
+    assert_eq!(errors.len(), 1, "expected 1 error, got: {:?}", errors);
+    match &errors[0] {
+        ConformanceError::MissingLet { name, expected_type } => {
+            assert_eq!(name, "area");
+            assert_eq!(*expected_type, Type::Real);
+        }
+        other => panic!("expected MissingLet, got: {:?}", other),
+    }
+}
+
+/// step-11: exact dimensional type equality — Scalar{LENGTH} ≠ Scalar{MASS}.
+#[test]
+fn conformance_exact_type_equality_dimensions() {
+    let trait_def = CompiledTrait {
+        name: "HasLength".to_string(),
+        is_pub: true,
+        type_params: vec![],
+        refinements: vec![],
+        required_members: vec![TraitRequirement {
+            name: "length".to_string(),
+            kind: RequirementKind::Param(Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            }),
+            span: test_span(),
+        }],
+        defaults: vec![],
+        content_hash: ContentHash::of_str("HasLength"),
+    };
+
+    // Wrong dimension → TypeMismatch.
+    {
+        let mut structure_members = std::collections::HashMap::new();
+        structure_members.insert(
+            "length".to_string(),
+            Type::Scalar { dimension: DimensionVector::MASS },
+        );
+        let errors = check_trait_conformance(&structure_members, &trait_def);
+        assert_eq!(errors.len(), 1, "expected 1 error for wrong dimension, got: {:?}", errors);
+        assert!(
+            matches!(&errors[0], ConformanceError::TypeMismatch { name, .. } if name == "length"),
+            "expected TypeMismatch, got: {:?}",
+            errors
+        );
+    }
+
+    // Correct dimension → no errors.
+    {
+        let mut structure_members = std::collections::HashMap::new();
+        structure_members.insert(
+            "length".to_string(),
+            Type::Scalar { dimension: DimensionVector::LENGTH },
+        );
+        let errors = check_trait_conformance(&structure_members, &trait_def);
+        assert!(errors.is_empty(), "expected no errors for correct dimension, got: {:?}", errors);
+    }
+}
+
 /// Helper: parse source and compile, returning the CompiledModule.
 fn compile_module(source: &str) -> CompiledModule {
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
