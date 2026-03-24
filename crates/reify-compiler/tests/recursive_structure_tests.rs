@@ -291,6 +291,64 @@ fn multiple_subs_one_cycle_correct_tagging() {
     assert!(!c_template.is_recursive, "C should NOT be recursive (not in any cycle)");
 }
 
+// ─── step-17: multi-path cycle convergence (Tarjan bug) ───
+
+#[test]
+fn multi_path_convergence_all_cycle_participants_tagged() {
+    // Graph: A→B, A→D, B→C, D→C, C→A
+    // Two cycles exist: A→B→C→A and A→D→C→A.
+    // All four nodes A, B, C, D participate in a cycle.
+    //
+    // The old DFS gray/black approach misses D: DFS finds A→B→C→A and marks A,B,C in_cycle.
+    // Then A visits D; D visits C (already black/fully-explored), takes no action — D is
+    // never tagged, even though D→C→A→D is a valid cycle.
+    //
+    // Tarjan's SCC correctly identifies the single SCC {A, B, C, D} where all four are
+    // mutually reachable through the cycles.
+    let source = r#"
+        structure A {
+            sub b = B()
+            sub d = D()
+        }
+        structure B {
+            sub c = C()
+        }
+        structure D {
+            sub cc = C()
+        }
+        structure C {
+            sub a = A()
+        }
+    "#;
+    let compiled = compile_module(source);
+
+    let a_template = compiled.templates.iter().find(|t| t.name == "A").expect("template A");
+    let b_template = compiled.templates.iter().find(|t| t.name == "B").expect("template B");
+    let c_template = compiled.templates.iter().find(|t| t.name == "C").expect("template C");
+    let d_template = compiled.templates.iter().find(|t| t.name == "D").expect("template D");
+
+    assert!(a_template.is_recursive, "A should be recursive (participates in A→B→C→A cycle)");
+    assert!(b_template.is_recursive, "B should be recursive (participates in A→B→C→A cycle)");
+    assert!(c_template.is_recursive, "C should be recursive (participates in both cycles)");
+    assert!(
+        d_template.is_recursive,
+        "D should be recursive (participates in A→D→C→A cycle) — \
+         the old DFS misses D because C is fully explored before D is checked"
+    );
+
+    // Should have at least one recursive cycle warning
+    let recursion_warnings: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning && d.message.contains("recursive structure cycle"))
+        .collect();
+    assert!(
+        !recursion_warnings.is_empty(),
+        "expected recursive structure cycle warning(s), got: {:?}",
+        compiled.diagnostics
+    );
+}
+
 // ─── step-15: structure with no subs ───
 
 #[test]
@@ -324,5 +382,39 @@ fn no_subs_not_recursive() {
         recursion_warnings.is_empty(),
         "no recursion warnings expected for leaf structure, got: {:?}",
         recursion_warnings
+    );
+}
+
+// ─── step-19: false-positive resistance — pointing into a cycle without being in it ───
+
+#[test]
+fn pointer_into_cycle_not_tagged_recursive() {
+    // Z has sub a = A(). A→B→A is a cycle. No path from A or B back to Z.
+    // Z points INTO the A<->B cycle but is not a member of it.
+    // Tarjan's SCC correctly excludes Z: mutual reachability is required.
+    // Z can reach A, but A cannot reach Z, so Z is in its own singleton SCC with no self-edge.
+    let source = r#"
+        structure A {
+            sub b = B()
+        }
+        structure B {
+            sub a = A()
+        }
+        structure Z {
+            sub a = A()
+        }
+    "#;
+    let compiled = compile_module(source);
+
+    let a_template = compiled.templates.iter().find(|t| t.name == "A").expect("template A");
+    let b_template = compiled.templates.iter().find(|t| t.name == "B").expect("template B");
+    let z_template = compiled.templates.iter().find(|t| t.name == "Z").expect("template Z");
+
+    assert!(a_template.is_recursive, "A should be recursive (in A<->B cycle)");
+    assert!(b_template.is_recursive, "B should be recursive (in A<->B cycle)");
+    assert!(
+        !z_template.is_recursive,
+        "Z should NOT be recursive — it points into the A<->B cycle but is not a member of it; \
+         naive in_cycle propagation would wrongly tag Z because its neighbor A is in_cycle"
     );
 }
