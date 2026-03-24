@@ -3437,6 +3437,26 @@ mod tests {
         );
     }
 
+    // --- non-numeric args → Undef ---
+
+    #[test]
+    fn point3_non_numeric_undef() {
+        // point3(String, Scalar, Scalar) → Undef
+        let args = vec![
+            Value::String("hello".to_string()),
+            Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 2.0, dimension: DimensionVector::LENGTH },
+        ];
+        assert!(eval_builtin("point3", &args).is_undef(), "non-numeric first arg must return Undef");
+    }
+
+    #[test]
+    fn vec2_non_numeric_undef() {
+        // vec2(Bool, Bool) → Undef
+        let args = vec![Value::Bool(true), Value::Bool(false)];
+        assert!(eval_builtin("vec2", &args).is_undef(), "Bool args must return Undef");
+    }
+
     // --- wrong arg count → Undef ---
 
     #[test]
