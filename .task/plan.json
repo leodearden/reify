@@ -1,259 +1,152 @@
 {
-  "task_id": "264",
-  "title": "Annotation framework: parser",
+  "task_id": "278",
+  "title": "Pragma framework: parser",
   "files": [
     "tree-sitter-reify/grammar.js",
-    "tree-sitter-reify/src/parser.c",
-    "tree-sitter-reify/src/grammar.json",
-    "tree-sitter-reify/src/node-types.json",
     "crates/reify-syntax/src/lib.rs",
     "crates/reify-syntax/src/ts_parser.rs",
-    "crates/reify-syntax/tests/annotation_tests.rs"
+    "crates/reify-syntax/tests/pragma_tests.rs"
   ],
   "modules": [
-    "tree-sitter-reify",
-    "crates/reify-syntax"
+    "crates/reify-syntax",
+    "tree-sitter-reify"
   ],
-  "analysis": "Task requires adding `@ident` and `@ident(args)` annotation syntax to reify-syntax. The crate already has an analogous feature: pragmas (`#name(args)`) with `Pragma`/`PragmaArg`/`PragmaValue` types. Annotations differ in: (1) prefix is `@` not `#`, (2) args are full expressions not just compile-time constants, (3) they attach to the *next* declaration rather than floating as module/block metadata.\n\nThe parser uses a two-phase architecture: tree-sitter grammar.js defines the CST, then ts_parser.rs lowers CST to AST. We need changes at both levels.\n\n**Grammar approach**: Add `annotation` as a new rule in `_declaration` (sibling to `pragma`). In the lowering pass (`lower_source_file`), collect pending annotations and attach them to the next declaration encountered. This mirrors how doc-comment association works in many parsers.\n\n**AST approach**: New `Annotation` struct with `name: String`, `args: Vec<Expr>`, `span: SourceSpan`. Add `pub annotations: Vec<Annotation>` to all 10 declaration structs (StructureDef, OccurrenceDef, ImportDecl, EnumDecl, FnDef, TraitDecl, FieldDef, PurposeDef, ConstraintDef, UnitDecl). Using `Vec<Expr>` for args since the task says args can be string literals, identifiers, or expressions \u2014 all of which are expressions in the grammar.\n\n**Scope**: Top-level declarations only. Member-level annotation support would require adding the field to 11 more struct types and is a natural follow-up task.",
-  "prerequisites": [
-    {
-      "id": "pre-1",
-      "description": "Add `annotation` grammar rule to grammar.js: `seq('@', field('name', alias($.immediate_identifier, $.identifier)), optional(seq('(', commaSep($._expression), ')')))`. Add `$.annotation` to `_declaration` choice. Regenerate parser with `tree-sitter generate` in tree-sitter-reify/.",
-      "status": "done",
-      "commit": "b44e5a90",
-      "tests": []
-    },
-    {
-      "id": "pre-2",
-      "description": "Add `Annotation` struct to lib.rs: `pub struct Annotation { pub name: String, pub args: Vec<Expr>, pub span: SourceSpan }`. Add `pub annotations: Vec<Annotation>` field to all 10 declaration types (StructureDef, OccurrenceDef, ImportDecl, EnumDecl, FnDef, TraitDecl, FieldDef, PurposeDef, ConstraintDef, UnitDecl).",
-      "status": "done",
-      "commit": "632b3db0",
-      "tests": []
-    },
-    {
-      "id": "pre-3",
-      "description": "Add `annotations: vec![]` to all struct literals in ts_parser.rs lowering functions (lower_structure, lower_occurrence, lower_import, lower_enum, lower_function, lower_trait, lower_field, lower_purpose, lower_constraint_def, lower_unit) and any downstream code constructing these types. Verify all existing tests still pass \u2014 this is a no-op change.",
-      "status": "done",
-      "commit": "b5a59c27",
-      "tests": [
-        "cargo test -p reify-syntax"
-      ]
-    }
-  ],
+  "analysis": "The pragma framework parser is ALREADY FULLY IMPLEMENTED on main. All four layers are complete and tested: (1) Grammar: tree-sitter-reify/grammar.js defines `pragma` rule (line 751) with `#immediate_identifier` and optional `(commaSep(pragma_arg))`, `pragma_arg` (line 758) supporting key=value and bare forms, and `_pragma_value` (line 764) restricted to number/string/bool/identifier literals. Pragma appears in `_declaration` (module level, line 47), `_member` (structure/occurrence blocks, line 346), `trait_member` (line 146), `purpose_member` (line 233), and `_constraint_def_body_item` (line 255). (2) AST: lib.rs defines Pragma (line 556), PragmaArg (line 564), PragmaValue (line 572); ParsedModule.pragmas (line 13) for module level; StructureDef.pragmas (line 42), OccurrenceDef.pragmas (line 67), TraitDecl.pragmas (line 293), PurposeDef.pragmas (line 323), ConstraintDef.pragmas (line 351) for block level. (3) Parser: ts_parser.rs implements lower_pragma() (line 781), lower_pragma_arg() (line 806), lower_pragma_value() (line 823); module-level collection in lower_source_file() (line 196); block-level collection in lower_members() (line 1038), lower_trait_members() (line 960), lower_purpose_members() (line 881), and lower_constraint_def() (line 658). (4) Tests: pragma_tests.rs has 12 passing tests covering bare pragmas, key=value args, bare value args, mixed args, multiple module pragmas, block-level pragmas in structure/occurrence/trait/purpose/constraint, scoping isolation, and boolean/number value types. All 12 tests pass. This plan contains verification-only steps confirming the existing implementation satisfies the task requirements. No new code is needed.",
+  "prerequisites": [],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing test: bare annotation on structure (`@test structure S { param x: Real }`). Assert declaration has 1 annotation with name='test' and empty args.",
+      "description": "Verify existing test parse_bare_module_pragma: bare pragma at module level (#optimize parses to Pragma with name='optimize' and empty args on ParsedModule.pragmas). Run `cargo test -p reify-syntax --test pragma_tests parse_bare_module_pragma` and confirm pass.",
       "status": "done",
-      "commit": "b893c227"
+      "commit": "b126fef05323740c65841e48bfc19fa293d5e188"
     },
     {
       "id": "step-2",
-      "type": "impl",
-      "description": "Implement `lower_annotation()` in ts_parser.rs: extract name from field 'name' node, collect expression args by iterating children. Modify `lower_source_file()` to use a `pending_annotations: Vec<Annotation>` \u2014 on 'annotation' node push to pending, on each declaration-kind branch drain via `std::mem::take(&mut pending_annotations)` into the declaration's `annotations` field.",
+      "type": "test",
+      "description": "Verify existing test parse_key_value_pragma_args: pragma with key=value args (#config(level=3, name=\"test\") parses to PragmaArg::KeyValue entries with PragmaValue::Number(3.0) and PragmaValue::String(\"test\")). Run `cargo test -p reify-syntax --test pragma_tests parse_key_value_pragma_args` and confirm pass.",
       "status": "done",
-      "commit": "36f63990"
+      "commit": "b126fef05323740c65841e48bfc19fa293d5e188"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing test: annotation with string literal arg (`@deprecated(\"use NewS\") structure S {}`). Assert annotation has 1 arg that is ExprKind::StringLiteral(\"use NewS\").",
+      "description": "Verify existing test parse_bare_value_pragma_args: pragma with bare value args (#feature(sse2, avx) parses to PragmaArg::Bare(PragmaValue::Ident) entries). Run `cargo test -p reify-syntax --test pragma_tests parse_bare_value_pragma_args` and confirm pass.",
       "status": "done",
-      "commit": "b893c227"
+      "commit": "b126fef05323740c65841e48bfc19fa293d5e188"
     },
     {
       "id": "step-4",
-      "type": "impl",
-      "description": "Extend `lower_annotation()` to collect expression args: iterate named children of the annotation node that are expression nodes (not 'name' field), lower each via `lower_expr()`, push to args Vec. The grammar's `commaSep($._expression)` produces expression children directly.",
+      "type": "test",
+      "description": "Verify existing test parse_mixed_pragma_args: mixed pragma args (#config(debug, level=2, name=\"prod\") parses to mix of Bare and KeyValue args with correct types). Run `cargo test -p reify-syntax --test pragma_tests parse_mixed_pragma_args` and confirm pass.",
       "status": "done",
-      "commit": "36f63990"
+      "commit": "b126fef05323740c65841e48bfc19fa293d5e188"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write test: annotation with identifier arg (`@category(mechanical) structure S {}`). Assert annotation has 1 arg that is ExprKind::Ident(\"mechanical\").",
+      "description": "Verify existing test parse_multiple_module_pragmas: multiple module-level pragmas (#optimize + #config(level=3) both collected in ParsedModule.pragmas with correct order). Run `cargo test -p reify-syntax --test pragma_tests parse_multiple_module_pragmas` and confirm pass.",
       "status": "done",
-      "commit": "cb2c4d25"
+      "commit": "b126fef05323740c65841e48bfc19fa293d5e188"
     },
     {
       "id": "step-6",
-      "type": "impl",
-      "description": "Verify identifier args work \u2014 identifiers are expressions, so lower_expr() handles them. If test fails, debug the child iteration to ensure identifier nodes inside annotation parens are reached.",
+      "type": "test",
+      "description": "Verify existing test parse_block_pragma_in_structure: block-level pragma inside structure (structure S { #internal ... } stores pragma on StructureDef.pragmas, not module.pragmas). Run `cargo test -p reify-syntax --test pragma_tests parse_block_pragma_in_structure` and confirm pass.",
       "status": "done",
-      "commit": "cb2c4d25"
+      "commit": "b126fef05323740c65841e48bfc19fa293d5e188"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write test: annotation with complex expression arg (`@tolerance(width * 0.01) structure S { param width: Real }`). Assert annotation arg is ExprKind::BinOp with op='*', left=Ident(\"width\"), right=NumberLiteral(0.01).",
+      "description": "Verify existing test parse_block_pragma_in_occurrence: block-level pragma inside occurrence (occurrence P { #temporal ... } stores pragma on OccurrenceDef.pragmas). Run `cargo test -p reify-syntax --test pragma_tests parse_block_pragma_in_occurrence` and confirm pass.",
       "status": "done",
-      "commit": "bebe443f"
+      "commit": "b126fef05323740c65841e48bfc19fa293d5e188"
     },
     {
       "id": "step-8",
-      "type": "impl",
-      "description": "Verify complex expression parsing works in annotation context. Should work from step-4 since we use the general `lower_expr()`. Fix if needed.",
+      "type": "test",
+      "description": "Verify existing test parse_block_pragma_in_trait: block-level pragma inside trait (trait R { #required ... } stores pragma on TraitDecl.pragmas). Run `cargo test -p reify-syntax --test pragma_tests parse_block_pragma_in_trait` and confirm pass.",
       "status": "done",
-      "commit": "bebe443f"
+      "commit": "b126fef05323740c65841e48bfc19fa293d5e188"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write test: annotation with multiple args (`@config(\"prod\", 3, true) structure S {}`). Assert annotation has 3 args: StringLiteral(\"prod\"), NumberLiteral(3.0), BoolLiteral(true).",
+      "description": "Verify existing test parse_pragma_scoping_isolation: pragma scoping isolation (#module_level at top, #block_level inside S \u2014 each appears only in its own scope's Vec<Pragma>). Run `cargo test -p reify-syntax --test pragma_tests parse_pragma_scoping_isolation` and confirm pass.",
       "status": "done",
-      "commit": "bebe443f"
+      "commit": "b126fef05323740c65841e48bfc19fa293d5e188"
     },
     {
       "id": "step-10",
-      "type": "impl",
-      "description": "Verify multiple args work \u2014 commaSep in grammar produces multiple expression children. Fix collection logic if it doesn't iterate all expression children correctly.",
+      "type": "test",
+      "description": "Verify existing test parse_pragma_bool_and_number_values: boolean and number pragma values (#feature(enabled=true, count=42) parses to PragmaValue::Bool(true) and PragmaValue::Number(42.0)). Run `cargo test -p reify-syntax --test pragma_tests parse_pragma_bool_and_number_values` and confirm pass.",
       "status": "done",
-      "commit": "bebe443f"
+      "commit": "b126fef05323740c65841e48bfc19fa293d5e188"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write test: multiple annotations on one declaration (`@test\\n@deprecated(\"old\")\\nstructure S {}`). Assert declaration has 2 annotations: first with name='test' and no args, second with name='deprecated' and 1 string arg.",
+      "description": "Verify existing test parse_block_pragma_in_purpose: block-level pragma inside purpose (purpose Optimize(...) { #solver ... } stores pragma on PurposeDef.pragmas). Run `cargo test -p reify-syntax --test pragma_tests parse_block_pragma_in_purpose` and confirm pass.",
       "status": "done",
-      "commit": "bebe443f"
+      "commit": "b126fef05323740c65841e48bfc19fa293d5e188"
     },
     {
       "id": "step-12",
-      "type": "impl",
-      "description": "Verify multiple pending annotations accumulate and all attach to the next declaration. The `std::mem::take(&mut pending_annotations)` pattern moves all accumulated annotations at once.",
-      "status": "done",
-      "commit": "bebe443f"
-    },
-    {
-      "id": "step-13",
       "type": "test",
-      "description": "Write tests: annotation on each remaining declaration type \u2014 fn (`@pure fn area(w: Real, h: Real) -> Real { w * h }`), trait (`@marker trait Rigid { param mass: Real }`), enum (`@flags enum Dir { In, Out }`), import (`@reexport import std.math`), field def (`@cached field def temp : Point3 -> Real { source = analytical { |p| p } }`), purpose (`@strict purpose mfg_ready(s: Structure) { constraint s > 0 }`), constraint def (`@builtin constraint def MinWall { param w: Real  w > 0 }`), unit (`@si unit meter : Length`), occurrence (`@async occurrence Heat {}`).",
+      "description": "Verify existing test parse_block_pragma_in_constraint: block-level pragma inside constraint def (constraint def Positive { #validate ... } stores pragma on ConstraintDef.pragmas). Run `cargo test -p reify-syntax --test pragma_tests parse_block_pragma_in_constraint` and confirm pass.",
       "status": "done",
-      "commit": "bebe443f"
-    },
-    {
-      "id": "step-14",
-      "type": "impl",
-      "description": "Ensure all 10 declaration branches in `lower_source_file()` drain pending_annotations into the declaration's annotations field. Add the drain pattern to any branches that were missed in step-2.",
-      "status": "done",
-      "commit": "bebe443f"
-    },
-    {
-      "id": "step-15",
-      "type": "test",
-      "description": "Write test: empty annotation arg list (`@test() structure S {}`). Assert annotation has name='test' and empty args Vec (0 args, not parse error).",
-      "status": "done",
-      "commit": "bebe443f"
-    },
-    {
-      "id": "step-16",
-      "type": "impl",
-      "description": "Verify empty arg list works \u2014 commaSep returns optional, so empty parens `()` should produce 0 expression children. Fix if needed.",
-      "status": "done",
-      "commit": "bebe443f"
-    },
-    {
-      "id": "step-17",
-      "type": "test",
-      "description": "Write test: annotations interspersed with pragmas. Case A: `#optimize\\n@test\\nstructure S {}` \u2014 assert 1 module pragma and structure has 1 annotation. Case B: `@test\\n#optimize\\nstructure S {}` \u2014 annotation attaches to structure, pragma goes to module level.",
-      "status": "done",
-      "commit": "bebe443f"
-    },
-    {
-      "id": "step-18",
-      "type": "impl",
-      "description": "Ensure the lowering loop correctly separates pragma and annotation handling: pragma nodes go to module_pragmas (existing behavior), annotation nodes accumulate in pending_annotations, declaration nodes consume pending_annotations. Pragmas between annotations and declarations should not interfere.",
-      "status": "done",
-      "commit": "bebe443f"
-    },
-    {
-      "id": "step-19",
-      "type": "test",
-      "description": "Write edge case test: trailing annotation with no following declaration (`structure S {}\\n@orphan`). Assert S has 0 annotations and no parse errors. The orphan annotation is silently dropped.",
-      "status": "done",
-      "commit": "bebe443f"
-    },
-    {
-      "id": "step-20",
-      "type": "impl",
-      "description": "Verify trailing annotations don't cause panics or spurious errors. The pending_annotations Vec is simply dropped at end of lowering \u2014 no special handling needed.",
-      "status": "done",
-      "commit": "bebe443f"
-    },
-    {
-      "id": "step-21",
-      "type": "test",
-      "description": "Write test: annotation between two declarations (`structure A {}\\n@middle\\nstructure B {}`). Assert A has 0 annotations, B has 1 annotation named 'middle'. Verifies pending_annotations resets after draining.",
-      "status": "done",
-      "commit": "bebe443f"
-    },
-    {
-      "id": "step-22",
-      "type": "impl",
-      "description": "Verify pending_annotations resets correctly after being drained to A. The `std::mem::take` pattern replaces the Vec with an empty Vec, so subsequent annotations accumulate fresh for B.",
-      "status": "done",
-      "commit": "bebe443f"
+      "commit": "b126fef05323740c65841e48bfc19fa293d5e188"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Add `annotation` as a top-level `_declaration` choice in the grammar (sibling to `pragma`), not embedded in each declaration rule.",
-      "rationale": "Minimizes grammar changes (one new rule vs modifying 10 declaration rules). Follows the pragma precedent. The lowering pass handles attachment to the next declaration via pending-annotations accumulation, which is simpler and more maintainable."
+      "decision": "Pragmas use restricted compile-time values (Ident, Number, String, Bool) rather than full expressions",
+      "rationale": "Pragmas are compiler directives resolved at compile time, so arbitrary runtime expressions would be meaningless. This contrasts with annotations (@name(expr)) which DO accept full expressions. The PragmaValue enum enforces this restriction at the type level."
     },
     {
-      "decision": "Use `Vec<Expr>` for annotation args rather than `Vec<PragmaValue>` or a new `AnnotationArg` enum.",
-      "rationale": "Task says args can be 'string literals, identifiers, or expressions'. Since the first two are subsets of expressions, using `Expr` directly leverages the existing `lower_expr()` infrastructure with zero new lowering code. It's also more extensible \u2014 any future expression feature automatically works in annotations."
+      "decision": "immediate_identifier token (no whitespace between # and name)",
+      "rationale": "Prevents ambiguity \u2014 '#optimize' is a pragma, '# optimize' would be a parse error. Implemented via tree-sitter's token.immediate() which disallows whitespace between the '#' and the identifier."
     },
     {
-      "decision": "Scope to top-level declarations only (the 10 variants of the `Declaration` enum), not member declarations.",
-      "rationale": "The task says 'AST declaration nodes' which maps to the `Declaration` enum. Adding annotations to all 11 `MemberDecl` variants would triple the scope. The pattern established here (grammar rule + pending-annotations lowering) can be reused for member annotations in a follow-up task."
+      "decision": "Module-level pragmas stored on ParsedModule.pragmas, block-level pragmas stored on block container types",
+      "rationale": "Scoping by storage location \u2014 each pragma lives on its enclosing scope's AST node (StructureDef, TraitDecl, PurposeDef, ConstraintDef, OccurrenceDef). No separate 'Scope' type is needed; the container IS the scope."
     },
     {
-      "decision": "Use `@` + `immediate_identifier` (no whitespace between @ and name), matching the pragma pattern of `#` + `immediate_identifier`.",
-      "rationale": "Consistency with existing pragma syntax. Prevents ambiguity where `@ ident` with a space could be parsed as two separate tokens."
+      "decision": "Pragmas inside guarded blocks (where ... { ... }) are silently discarded",
+      "rationale": "GuardedGroupDecl has no pragmas field. Guarded blocks are conditional member groups within a structure, not independent compilation scopes. The enclosing structure's pragmas field is the right place for block-level compiler directives."
     },
     {
-      "decision": "Silently drop annotations not followed by a declaration (orphan annotations), rather than emitting a parse error.",
-      "rationale": "Consistent with how trailing pragmas are handled (they go to module_pragmas even at end of file). Tree-sitter error recovery is better when the grammar is permissive. Semantic validation ('annotation must precede a declaration') can be added in a later compiler pass if desired."
+      "decision": "Pragma args support both key=value and bare value forms in the same argument list",
+      "rationale": "Flexibility \u2014 some pragmas need named config (#config(level=3)), others need feature flags (#feature(sse2, avx)), and mixed usage is useful (#config(debug, level=2)). The grammar uses a choice() between the two forms in pragma_arg."
     },
     {
-      "decision": "No key=value syntax for annotation args (positional only), unlike pragmas which support key=value.",
-      "rationale": "Task description specifies 'string literals, identifiers, or expressions' as valid arg types with no mention of key=value pairs. Keeping args as positional expressions is simpler. Key=value can be added later if needed by introducing an AnnotationArg enum."
+      "decision": "Separate collection paths for structure/occurrence (lower_members), trait (lower_trait_members), purpose (lower_purpose_members), and constraint def (inline in lower_constraint_def)",
+      "rationale": "Each block type has a different grammar wrapper node (trait_member, purpose_member, _constraint_def_body_item, _member). The wrapper nodes require different iteration patterns, so separate collection functions are needed despite the shared lower_pragma() call."
     }
   ],
   "reuse": [
     {
-      "what": "Pragma grammar pattern (`#` + immediate_identifier + optional args)",
-      "where": "tree-sitter-reify/grammar.js lines 750-768",
-      "how": "Copy pragma rule structure, replace `#` with `@`, use `_expression` instead of `_pragma_value` for args. Drop the key=value form from pragma_arg \u2014 annotation args are positional expressions only."
+      "what": "Pragma AST types (Pragma, PragmaArg, PragmaValue)",
+      "where": "crates/reify-syntax/src/lib.rs lines 551-578",
+      "how": "Already defined and used by all block-scope containers and ParsedModule. Downstream crates (reify-compiler boundary tests) already construct these types with pragmas: vec![]."
     },
     {
-      "what": "`lower_pragma()` lowering pattern",
-      "where": "crates/reify-syntax/src/ts_parser.rs lines 712-732",
-      "how": "Mirror the pattern for `lower_annotation()`: extract name from 'name' field, iterate named children for args. Replace pragma-specific arg lowering with calls to `lower_expr()` for each expression child."
+      "what": "lower_pragma/lower_pragma_arg/lower_pragma_value functions",
+      "where": "crates/reify-syntax/src/ts_parser.rs lines 778-847",
+      "how": "Shared lowering functions called from module-level (lower_source_file line 196) and all block-level collection functions. The same lower_pragma() is reused across 5 different collection contexts."
     },
     {
-      "what": "Pending-collection pattern from module pragma lowering",
-      "where": "crates/reify-syntax/src/ts_parser.rs lines 167-171 (pragma branch in lower_source_file)",
-      "how": "Same pattern but with a `pending_annotations` Vec that drains into declarations via `std::mem::take` instead of pushing to `module_pragmas`."
+      "what": "Tree-sitter grammar pragma rule and subrules",
+      "where": "tree-sitter-reify/grammar.js lines 748-769",
+      "how": "Pragma rule is referenced by 5 parent rules: _declaration (module), _member (structure/occurrence), trait_member, purpose_member, _constraint_def_body_item. The grammar's commaSep() helper handles comma-separated pragma_arg lists."
     },
     {
-      "what": "`lower_expr()` for expression parsing",
-      "where": "crates/reify-syntax/src/ts_parser.rs expression lowering infrastructure",
-      "how": "Reuse directly for annotation args \u2014 no new expression parsing needed. Handles all expression kinds (literals, identifiers, binary ops, function calls, etc.)."
-    },
-    {
-      "what": "`commaSep()` helper in grammar.js",
-      "where": "tree-sitter-reify/grammar.js lines 8-10",
-      "how": "Use for comma-separated annotation args: `commaSep($._expression)`, same pattern as list_literal, argument_list, etc."
-    },
-    {
-      "what": "Test pattern from pragma_tests.rs",
-      "where": "crates/reify-syntax/tests/pragma_tests.rs",
-      "how": "Mirror the `parse_module()` helper and assertion pattern. Test structure: parse source, check errors empty, match on declaration variant, assert annotation fields."
+      "what": "Existing test helper parse_module() and assertion patterns",
+      "where": "crates/reify-syntax/tests/pragma_tests.rs lines 8-10",
+      "how": "Standard pattern across all 21 test files \u2014 wraps reify_syntax::parse() with a test ModulePath. Assertion patterns: errors.is_empty(), pragmas.len(), pattern match on PragmaArg/PragmaValue variants."
     }
   ],
-  "_session_id": "264-23000fa5",
-  "_created_at": "2026-03-24T21:44:05.390137+00:00"
+  "_session_id": "278-8676abb1",
+  "_created_at": "2026-03-24T22:53:27.879328+00:00"
 }
