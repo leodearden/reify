@@ -2360,6 +2360,60 @@ mod tests {
         }
     }
 
+    // ── eval_dot unit tests ──────────────────────────────────────
+
+    #[test]
+    fn eval_dot_sums_real_products() {
+        // [Real(1.0), Real(2.0), Real(3.0)] → Real(6.0)
+        let products = vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)];
+        let result = eval_dot(products.into_iter());
+        assert_eq!(result, Value::Real(6.0));
+    }
+
+    #[test]
+    fn eval_dot_short_circuits_on_undef() {
+        // [Undef, Real(2.0)] → Undef (first product is Undef)
+        let products = vec![Value::Undef, Value::Real(2.0)];
+        let result = eval_dot(products.into_iter());
+        assert!(result.is_undef(), "expected Undef, got {:?}", result);
+    }
+
+    #[test]
+    fn eval_dot_empty_returns_undef() {
+        // empty iterator → Undef
+        let result = eval_dot(std::iter::empty());
+        assert!(result.is_undef(), "expected Undef for empty iterator");
+    }
+
+    #[test]
+    fn eval_dot_single_product() {
+        // single Real passes through
+        let result = eval_dot(std::iter::once(Value::Real(42.0)));
+        assert_eq!(result, Value::Real(42.0));
+    }
+
+    #[test]
+    fn eval_dot_scalar_dimension_sum() {
+        // Scalar{LENGTH} values sum correctly: 1m + 2m + 3m = 6m
+        let products = vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)];
+        let result = eval_dot(products.into_iter());
+        assert_eq!(result, Value::length(6.0));
+    }
+
+    #[test]
+    fn eval_dot_dimension_mismatch_in_sum() {
+        // Scalar{LENGTH} + Scalar{MASS} → Undef from eval_add
+        let products = vec![
+            Value::length(1.0),
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::MASS,
+            },
+        ];
+        let result = eval_dot(products.into_iter());
+        assert!(result.is_undef(), "expected Undef for dimension mismatch in sum");
+    }
+
     // ── Match non-enum discriminant ──────────────────────────────
 
     #[test]
