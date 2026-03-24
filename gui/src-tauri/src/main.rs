@@ -301,8 +301,8 @@ async fn claude_send_message(
     text: String,
     context: Option<reify_gui::claude_bridge::MessageContext>,
 ) -> Result<String, String> {
-    // Lazy-spawn the sidecar if it isn't running yet.
-    {
+    // Lazy-spawn the sidecar if it isn't running yet, then wait for ready.
+    let ready_notify = {
         let mut sidecar_guard = state.sidecar.lock().await;
         if sidecar_guard.is_none() {
             use reify_gui::claude_bridge::{SidecarHandle, SidecarState};
@@ -325,14 +325,12 @@ async fn claude_send_message(
 
             let stdin = proc.stdin.take().ok_or("sidecar has no stdin")?;
             let stdout = proc.stdout.take().ok_or("sidecar has no stdout")?;
-            // Keep proc alive by dropping it into a background task that waits for exit
-            tokio::spawn(async move { proc.wait().await.ok(); });
 
             let app_for_events = app.clone();
             let engine = Arc::clone(&state.engine);
             let reader = tokio::io::BufReader::new(stdout);
             let sidecar_state = Arc::new(tokio::sync::Mutex::new(SidecarState::Starting));
-            let handle = SidecarHandle::from_parts_with_mcp(
+            let mut handle = SidecarHandle::from_parts_with_mcp(
                 stdin,
                 reader,
                 sidecar_state,
@@ -341,8 +339,34 @@ async fn claude_send_message(
                     app_for_events.emit(&name, payload).ok();
                 },
             );
+
+            // Store the child process in the handle for proper cleanup on kill().
+            // This replaces the old fire-and-forget tokio::spawn(proc.wait()) pattern.
+            handle.set_child(proc);
+
+            // Extract the ready_notify Arc before storing the handle so we can
+            // await it after dropping the sidecar lock (avoids holding the lock
+            // for up to 10s during startup, which would block abort/clear_session).
+            let notify = std::sync::Arc::clone(handle.ready_notify());
             *sidecar_guard = Some(handle);
+            Some(notify)
+        } else {
+            // Sidecar already running — no need to wait for ready again.
+            None
         }
+        // sidecar_guard is dropped here, releasing the lock.
+    };
+
+    // If we just spawned a new sidecar, wait for the "ready" signal with a 10s
+    // timeout before sending the message. We do this *outside* the sidecar lock
+    // so other commands (abort, clear_session) remain responsive during startup.
+    if let Some(notify) = ready_notify {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            notify.notified(),
+        )
+        .await
+        .map_err(|_| "Sidecar did not become ready within 10 seconds".to_string())?;
     }
 
     reify_gui::claude_bridge::claude_send_message_impl(&state.sidecar, &text, context).await
