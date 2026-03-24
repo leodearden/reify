@@ -32,6 +32,7 @@ export async function main(
 
   // Handle graceful shutdown
   const shutdown = () => {
+    session.destroy();
     input.destroy();
   };
   process.on('SIGTERM', shutdown);
@@ -60,5 +61,6 @@ export async function main(
   } finally {
     process.removeListener('SIGTERM', shutdown);
     process.removeListener('SIGINT', shutdown);
+    session.destroy();
   }
 }

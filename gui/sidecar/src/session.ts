@@ -21,6 +21,7 @@ export class SidecarSession {
   private config: SessionConfig;
   private sessionId: string | null = null;
   private abortController: AbortController | null = null;
+  private destroyed = false;
 
   /** Called when the session produces an outbound message. */
   onOutput: (msg: OutboundMessage) => void = () => {};
@@ -37,9 +38,22 @@ export class SidecarSession {
   }
 
   /**
+   * Dispose the session: abort any in-flight request and prevent further
+   * message handling. Safe to call multiple times (idempotent).
+   */
+  destroy(): void {
+    if (this.destroyed) return;
+    this.destroyed = true;
+    this.abortController?.abort();
+    this.sessionId = null;
+  }
+
+  /**
    * Dispatch an inbound message to the appropriate handler.
+   * Returns immediately (no-op) if the session has been destroyed.
    */
   async handleMessage(msg: InboundMessage): Promise<void> {
+    if (this.destroyed) return;
     switch (msg.type) {
       case 'send_message':
         await this.handleSendMessage(msg.id, msg.text, msg.context);
