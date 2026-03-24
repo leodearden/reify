@@ -5,6 +5,53 @@ use reify_types::{
     ConstraintNodeId, DeterminacyState, Value, ValueCellId,
 };
 
+// --- Range value constructors ---
+
+/// Create a Range with both bounds inclusive: [lower, upper].
+pub fn range_inclusive(lower: Value, upper: Value) -> Value {
+    Value::range(Some(lower), Some(upper), true, true)
+}
+
+/// Create a Range with both bounds exclusive: (lower, upper).
+pub fn range_exclusive(lower: Value, upper: Value) -> Value {
+    Value::range(Some(lower), Some(upper), false, false)
+}
+
+/// Create a Range with a lower bound only (inclusive): [lower, +∞).
+pub fn range_at_least(lower: Value) -> Value {
+    Value::range(Some(lower), None, true, false)
+}
+
+/// Create a Range with an upper bound only (inclusive): (-∞, upper].
+pub fn range_at_most(upper: Value) -> Value {
+    Value::range(None, Some(upper), false, true)
+}
+
+/// Create a half-open Range: [lower, upper).
+pub fn range_half_open(lower: Value, upper: Value) -> Value {
+    Value::range(Some(lower), Some(upper), true, false)
+}
+
+// --- Temperature value constructors ---
+
+/// Create a Scalar with TEMPERATURE dimension in kelvin (SI base unit).
+pub fn kelvin(v: f64) -> Value {
+    Value::Scalar {
+        si_value: v,
+        dimension: DimensionVector::TEMPERATURE,
+    }
+}
+
+/// Create a Scalar with TEMPERATURE dimension from degrees Celsius (converts to kelvin).
+pub fn celsius(v: f64) -> Value {
+    kelvin(v + 273.15)
+}
+
+/// Create a Scalar with TEMPERATURE dimension from degrees Fahrenheit (converts to kelvin).
+pub fn fahrenheit(v: f64) -> Value {
+    kelvin((v - 32.0) * 5.0 / 9.0 + 273.15)
+}
+
 // --- Value constructors ---
 
 /// Create a Scalar with LENGTH dimension from millimeters.
@@ -215,7 +262,131 @@ pub fn undef() -> Value {
 mod tests {
     use super::*;
     use std::collections::{BTreeMap, BTreeSet, HashMap};
-    use reify_types::DeterminacyState;
+    use reify_types::{DeterminacyState, Value};
+
+    // step-1: failing tests for range value constructors
+    #[test]
+    fn range_inclusive_creates_both_bounds_inclusive() {
+        let v = range_inclusive(mm(10.0), mm(100.0));
+        match v {
+            Value::Range { lower, upper, lower_inclusive, upper_inclusive } => {
+                assert!(lower.is_some(), "lower should be Some");
+                assert!(upper.is_some(), "upper should be Some");
+                assert!(lower_inclusive, "lower_inclusive should be true");
+                assert!(upper_inclusive, "upper_inclusive should be true");
+                assert_eq!(*lower.unwrap(), mm(10.0));
+                assert_eq!(*upper.unwrap(), mm(100.0));
+            }
+            _ => panic!("expected Value::Range"),
+        }
+    }
+
+    #[test]
+    fn range_exclusive_creates_both_bounds_exclusive() {
+        let v = range_exclusive(mm(10.0), mm(100.0));
+        match v {
+            Value::Range { lower, upper, lower_inclusive, upper_inclusive } => {
+                assert!(lower.is_some(), "lower should be Some");
+                assert!(upper.is_some(), "upper should be Some");
+                assert!(!lower_inclusive, "lower_inclusive should be false");
+                assert!(!upper_inclusive, "upper_inclusive should be false");
+            }
+            _ => panic!("expected Value::Range"),
+        }
+    }
+
+    #[test]
+    fn range_at_least_creates_lower_bound_only() {
+        let v = range_at_least(mm(5.0));
+        match v {
+            Value::Range { lower, upper, lower_inclusive, upper_inclusive } => {
+                assert!(lower.is_some(), "lower should be Some");
+                assert!(upper.is_none(), "upper should be None");
+                assert!(lower_inclusive, "lower_inclusive should be true");
+                assert!(!upper_inclusive, "upper_inclusive should be false (no upper bound)");
+            }
+            _ => panic!("expected Value::Range"),
+        }
+    }
+
+    #[test]
+    fn range_at_most_creates_upper_bound_only() {
+        let v = range_at_most(mm(50.0));
+        match v {
+            Value::Range { lower, upper, lower_inclusive, upper_inclusive } => {
+                assert!(lower.is_none(), "lower should be None");
+                assert!(upper.is_some(), "upper should be Some");
+                assert!(!lower_inclusive, "lower_inclusive should be false (no lower bound)");
+                assert!(upper_inclusive, "upper_inclusive should be true");
+            }
+            _ => panic!("expected Value::Range"),
+        }
+    }
+
+    #[test]
+    fn range_half_open_creates_lower_inclusive_upper_exclusive() {
+        let v = range_half_open(mm(0.0), mm(100.0));
+        match v {
+            Value::Range { lower, upper, lower_inclusive, upper_inclusive } => {
+                assert!(lower.is_some(), "lower should be Some");
+                assert!(upper.is_some(), "upper should be Some");
+                assert!(lower_inclusive, "lower_inclusive should be true");
+                assert!(!upper_inclusive, "upper_inclusive should be false");
+            }
+            _ => panic!("expected Value::Range"),
+        }
+    }
+
+    // step-3: failing tests for temperature value constructors
+    #[test]
+    fn kelvin_creates_temperature_scalar() {
+        let v = kelvin(300.0);
+        match v {
+            Value::Scalar { si_value, dimension } => {
+                assert!((si_value - 300.0).abs() < 1e-9, "si_value should be 300.0");
+                assert_eq!(dimension, DimensionVector::TEMPERATURE);
+            }
+            _ => panic!("expected Value::Scalar"),
+        }
+    }
+
+    #[test]
+    fn celsius_converts_to_kelvin() {
+        let v0 = celsius(0.0);
+        let v100 = celsius(100.0);
+        match v0 {
+            Value::Scalar { si_value, dimension } => {
+                assert!((si_value - 273.15).abs() < 1e-9, "0°C should be 273.15 K");
+                assert_eq!(dimension, DimensionVector::TEMPERATURE);
+            }
+            _ => panic!("expected Value::Scalar"),
+        }
+        match v100 {
+            Value::Scalar { si_value, .. } => {
+                assert!((si_value - 373.15).abs() < 1e-9, "100°C should be 373.15 K");
+            }
+            _ => panic!("expected Value::Scalar"),
+        }
+    }
+
+    #[test]
+    fn fahrenheit_converts_to_kelvin() {
+        let v_freeze = fahrenheit(32.0);
+        let v_boil = fahrenheit(212.0);
+        match v_freeze {
+            Value::Scalar { si_value, dimension } => {
+                assert!((si_value - 273.15).abs() < 1e-9, "32°F should be 273.15 K, got {}", si_value);
+                assert_eq!(dimension, DimensionVector::TEMPERATURE);
+            }
+            _ => panic!("expected Value::Scalar"),
+        }
+        match v_boil {
+            Value::Scalar { si_value, .. } => {
+                assert!((si_value - 373.15).abs() < 1e-9, "212°F should be 373.15 K, got {}", si_value);
+            }
+            _ => panic!("expected Value::Scalar"),
+        }
+    }
 
     // step-19: failing tests for SnapshotValuesBuilder
     #[test]
