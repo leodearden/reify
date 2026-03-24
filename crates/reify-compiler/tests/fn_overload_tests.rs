@@ -222,11 +222,12 @@ structure S { let v = f(3) }
 
 /// step-11: E2E test for evaluator disambiguation.
 /// Define fn double(x: Int)->Int { x * 2 } and fn double(x: Real)->Real { x * 2.0 }.
-/// Call both in structure: let a = double(3) and let b = double(3.0).
-/// Compile (assert no errors), then evaluate and verify a==Int(6) and b==Real(6.0).
+/// Call both in structure: let a = double(3) (Int arg) and let b = double(1.5) (Real arg).
+/// Note: 3.0 compiles as Int because it's a whole number. Use 1.5 for a guaranteed Real literal.
+/// Compile (assert no errors), then evaluate and verify a==Int(6) and b==Real(3.0).
 ///
-/// FAILS because the evaluator matches by name+arity only, so both double(3) and double(3.0)
-/// resolve to the FIRST 'double' function — producing wrong results.
+/// FAILS because the evaluator matches by name+arity only, so both double(3) and double(1.5)
+/// resolve to the FIRST 'double' function — producing wrong results for double(1.5).
 #[test]
 fn e2e_evaluator_disambiguates_int_vs_real_overload() {
     let source = r#"
@@ -234,7 +235,7 @@ fn double(x: Int) -> Int { x * 2 }
 fn double(x: Real) -> Real { x * 2.0 }
 structure S {
     let a = double(3)
-    let b = double(3.0)
+    let b = double(1.5)
 }
 "#;
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_e2e_double"));
@@ -242,7 +243,7 @@ structure S {
 
     let compiled = reify_compiler::compile(&parsed);
 
-    // Compiler should produce no errors — exact type matching picks Int for 3, Real for 3.0
+    // Compiler should produce no errors — exact type matching picks Int for 3, Real for 1.5
     let errors: Vec<_> = compiled
         .diagnostics
         .iter()
@@ -283,11 +284,11 @@ structure S {
         a_val
     );
 
-    // b = double(3.0) should call the Real overload → Real(6.0)
+    // b = double(1.5) should call the Real overload → Real(3.0)
     assert_eq!(
         b_val,
-        reify_types::Value::Real(6.0),
-        "double(3.0) should return Real(6.0), got {:?}",
+        reify_types::Value::Real(3.0),
+        "double(1.5) should return Real(3.0), got {:?}",
         b_val
     );
 }

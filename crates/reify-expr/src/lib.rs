@@ -276,11 +276,21 @@ fn eval_user_function_call(
         return Value::Undef;
     }
 
-    // Look up function by name + arity
+    // Look up function by name, arity, and param types (to disambiguate overloads).
+    // The compiler uses exact type matching during resolution, so the compiled args'
+    // result_types exactly equal the selected overload's param types. Matching on
+    // these result_types selects the same overload the compiler chose.
     let func = ctx
         .functions
         .iter()
-        .find(|f| f.name == function_name && f.params.len() == args.len());
+        .find(|f| {
+            f.name == function_name
+                && f.params.len() == args.len()
+                && f.params
+                    .iter()
+                    .zip(args.iter())
+                    .all(|((_, param_ty), arg)| *param_ty == arg.result_type)
+        });
 
     let func = match func {
         Some(f) => f,
