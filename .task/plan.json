@@ -1,188 +1,192 @@
 {
-  "task_id": "178",
-  "title": "M8 test support: builder extensions",
+  "task_id": "157",
+  "title": "Chained comparisons: desugaring",
   "files": [
-    "crates/reify-test-support/src/builders.rs",
-    "crates/reify-test-support/src/values.rs",
-    "crates/reify-test-support/src/fixtures.rs",
-    "crates/reify-test-support/src/lib.rs"
+    "crates/reify-compiler/src/lib.rs",
+    "crates/reify-compiler/tests/chained_comparison_tests.rs"
   ],
   "modules": [
-    "crates/reify-test-support"
+    "crates/reify-compiler"
   ],
-  "analysis": "This task extends reify-test-support with helpers for M8 features. Analysis of existing code:\n\n1. **Type aliases**: No CompiledTypeAlias type exists in reify-compiler, and CompiledModule has no type_aliases field. The compiler IR for type aliases is not yet implemented. We provide a lightweight TypeAliasMap (HashMap<String, Type>) builder and a fixture function that demonstrates a module using aliased-dimension types (e.g., Pressure -> Scalar[FORCE/AREA dimension]).\n\n2. **Range value constructors**: Value::Range exists (value.rs:57-63) with Value::range() constructor that normalizes inclusivity flags. The literal() function already handles Range type inference (builders.rs:49-56). MISSING: convenient named constructors in values.rs like range_inclusive(), range_at_least() that reduce boilerplate.\n\n3. **Auto(free) cell declarations**: TopologyTemplateBuilder::auto_param() already exists (builders.rs:449-464) creating ValueCellKind::Auto cells. The 'free' terminology from the spec maps to the same concept. We add free_param() as a spec-aligned alias and param_no_default() for Param kind without a default.\n\n4. **Some/none value helpers**: Value-level some_val() and none_val() exist in values.rs. Expression-level CompiledExpr::option_some() and option_none() exist in reify-types/src/expr.rs. MISSING: convenience expression builder functions in builders.rs (matching list_expr/set_expr/map_expr pattern) that auto-compute Option types.\n\n5. **Temperature offset values**: DimensionVector::TEMPERATURE exists (basis index 4). MISSING: value constructors for kelvin(), celsius(), fahrenheit() that create Scalar values with TEMPERATURE dimension, applying offset conversion for celsius/fahrenheit to SI (kelvin).",
-  "prerequisites": [
-    {
-      "id": "pre-1",
-      "description": "Verify existing tests pass with `cargo test -p reify-test-support` before making changes",
-      "status": "done",
-      "commit": "64e0dd41",
-      "tests": []
-    }
-  ],
+  "analysis": "This task adds chained comparison desugaring to the compiler. During compilation, chained comparisons like `a < b < c` are desugared into And-chains of pairwise comparisons: `And(Lt(a,b), Lt(b,c))`. The implementation is entirely within the compiler's `compile_expr_guarded` function, which already handles BinOp compilation. The approach: (1) detect when the outer BinOp is a comparison and its left child is also a comparison BinOp, (2) flatten the left-nested chain into a list of operands and operators via `flatten_comparison_chain`, (3) compile each operand exactly once, (4) build pairwise comparison nodes and left-fold them into an And-chain. Middle expressions are compiled once and cloned — the content_hash identity ensures the eval engine's cache deduplicates evaluation. No syntax changes are needed since the parser already produces left-nested BinOp trees for `a < b < c` (parsed as `(a < b) < c`). The desugaring intercepts this at compile time. All comparison operators (< <= > >= == !=) participate in chaining. Non-comparison operators on the left side do not trigger chaining. The implementation already exists on main: helper functions `is_comparison_op` and `flatten_comparison_chain` (lines 638-672), and the desugaring block in `compile_expr_guarded` (lines 887-924). All 9 tests pass.",
+  "prerequisites": [],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing tests for range value constructors in values.rs::tests: (a) range_inclusive_creates_both_bounds_inclusive - range_inclusive(mm(10.0), mm(100.0)) produces Range with lower=Some(mm(10)), upper=Some(mm(100)), lower_inclusive=true, upper_inclusive=true; (b) range_exclusive_creates_both_bounds_exclusive; (c) range_at_least_creates_lower_bound_only with upper=None; (d) range_at_most_creates_upper_bound_only with lower=None; (e) range_half_open_creates_lower_inclusive_upper_exclusive.",
+      "description": "Write failing test `simple_chain_desugars_to_and`: parse `structure S { param a/b/c : Int; constraint a < b < c }`, assert the constraint expr is `BinOp(And, BinOp(Lt, ValueRef(a), ValueRef(b)), BinOp(Lt, ValueRef(b), ValueRef(c)))`. This verifies the basic two-operator chain desugaring.",
       "status": "done",
-      "commit": "64e0dd41"
+      "commit": "8dbbb2375efe51f4c9005214c2a6b5713514d5e5"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Implement range value constructors in values.rs: range_inclusive(lower, upper) -> Value::range(Some(lower), Some(upper), true, true), range_exclusive(lower, upper) -> Value::range(Some(lower), Some(upper), false, false), range_at_least(lower) -> Value::range(Some(lower), None, true, false), range_at_most(upper) -> Value::range(None, Some(upper), false, true), range_half_open(lower, upper) -> Value::range(Some(lower), Some(upper), true, false). All delegate to Value::range() for flag normalization.",
+      "description": "Add `is_comparison_op(op: &str) -> bool` helper that returns true for < <= > >= == !=. Add `flatten_comparison_chain` function that recursively flattens left-nested comparison BinOps into (operands, operators) vectors. In `compile_expr_guarded`'s BinOp arm, detect when outer op is comparison and left child is also comparison BinOp — call flatten_comparison_chain, compile each operand once, build pairwise BinOp nodes, and left-fold into And-chain. Step-1 test passes.",
       "status": "done",
-      "commit": "64e0dd41"
+      "commit": "8dbbb2375efe51f4c9005214c2a6b5713514d5e5"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing tests for temperature value constructors in values.rs::tests: (a) kelvin_creates_temperature_scalar - kelvin(300.0) produces Scalar { si_value: 300.0, dimension: TEMPERATURE }; (b) celsius_converts_to_kelvin - celsius(0.0) produces si_value=273.15, celsius(100.0) produces si_value=373.15; (c) fahrenheit_converts_to_kelvin - fahrenheit(32.0) produces si_value=273.15 (freezing), fahrenheit(212.0) produces si_value=373.15 (boiling).",
+      "description": "Write failing test `mixed_operators_chain_preserves_ops`: parse `constraint a < b <= c`, assert desugared to `And(Lt(a,b), Le(b,c))`. Both operator variants are preserved in the desugared output — not collapsed to a single op type.",
       "status": "done",
-      "commit": "64e0dd41"
+      "commit": "8dbbb2375efe51f4c9005214c2a6b5713514d5e5"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Implement temperature value constructors in values.rs: kelvin(v: f64) -> Value::Scalar { si_value: v, dimension: DimensionVector::TEMPERATURE }, celsius(v: f64) -> kelvin(v + 273.15), fahrenheit(v: f64) -> kelvin((v - 32.0) * 5.0 / 9.0 + 273.15). Add DimensionVector::TEMPERATURE to the use imports.",
+      "description": "Verify mixed operators work. The `flatten_comparison_chain` stores each operator separately, and `resolve_binop` maps each string operator to the correct BinOp variant. Step-3 test should pass with the step-2 implementation.",
       "status": "done",
-      "commit": "64e0dd41"
+      "commit": "8dbbb2375efe51f4c9005214c2a6b5713514d5e5"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing tests for option expression helpers in builders.rs::tests: (a) option_some_expr_wraps_inner_with_option_type - option_some_expr(literal(Value::Int(42))) produces CompiledExprKind::OptionSome with result_type=Type::Option(Box::new(Type::Int)); (b) option_none_expr_produces_option_none_kind - option_none_expr(Type::Real) produces CompiledExprKind::OptionNone with result_type=Type::Option(Box::new(Type::Real)); (c) option_some_expr_content_hash_is_nonzero.",
+      "description": "Write failing test `three_operator_chain_left_folds`: parse `constraint a < b < c < d`, assert desugared to `And(And(Lt(a,b), Lt(b,c)), Lt(c,d))` — a left-folded And structure with 3 pairwise comparisons, verifying arbitrary chain length support.",
       "status": "done",
-      "commit": "fa40c4c5"
+      "commit": "8dbbb2375efe51f4c9005214c2a6b5713514d5e5"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Implement option expression helpers in builders.rs: pub fn option_some_expr(inner: CompiledExpr) -> CompiledExpr that computes result_type = Type::Option(Box::new(inner.result_type.clone())) then delegates to CompiledExpr::option_some(inner, result_type); pub fn option_none_expr(inner_type: Type) -> CompiledExpr that computes result_type = Type::Option(Box::new(inner_type)) then delegates to CompiledExpr::option_none(result_type). Place near the other collection expression helpers (after map_expr).",
+      "description": "Verify 3-operator chain. The recursive `flatten_comparison_chain` handles arbitrary depth, and the left-fold loop `acc = BinOp(And, acc, pair)` naturally produces left-nested And trees. Step-5 test should pass.",
       "status": "done",
-      "commit": "fa40c4c5"
+      "commit": "8dbbb2375efe51f4c9005214c2a6b5713514d5e5"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing tests for free_param and param_no_default on TopologyTemplateBuilder in builders.rs::tests: (a) free_param_creates_auto_kind_cell - free_param('S', 'x', Type::length()) produces ValueCellDecl with kind=Auto, no default, public visibility; (b) free_param_is_equivalent_to_auto_param - same output as auto_param; (c) param_no_default_creates_param_kind_without_default - param_no_default('S', 'y', Type::Int) produces kind=Param, no default_expr, public visibility.",
+      "description": "Write failing test `equality_chain_desugars_to_and`: parse `constraint a == b == c`, assert desugared to `And(Eq(a,b), Eq(b,c))`. All comparison operators participate in chaining, including equality.",
       "status": "done",
-      "commit": "fa40c4c5"
+      "commit": "8dbbb2375efe51f4c9005214c2a6b5713514d5e5"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Implement free_param and param_no_default on TopologyTemplateBuilder. free_param(entity, member, cell_type) is a semantic alias calling auto_param internally: pushes ValueCellDecl with ValueCellKind::Auto. param_no_default(entity, member, cell_type) pushes ValueCellDecl with ValueCellKind::Param, default_expr: None, public visibility. Both follow the existing mut self -> Self pattern.",
+      "description": "Verify equality chaining. The `is_comparison_op` function includes `==` and `!=`, so equality operators participate in the same desugaring path. Step-7 test should pass.",
       "status": "done",
-      "commit": "fa40c4c5"
+      "commit": "8dbbb2375efe51f4c9005214c2a6b5713514d5e5"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write failing tests for type alias helpers: (a) type_alias_map_builder in values.rs::tests - TypeAliasMap::new().alias('Pressure', pressure_type).alias('Velocity', velocity_type).build() returns HashMap with 2 entries and correct types; (b) common_type_aliases_has_standard_engineering_types - common_type_aliases() contains 'Pressure', 'Velocity', 'Acceleration' keys with correct dimension types; (c) type_alias_module_fixture in fixtures.rs::tests - type_alias_module() returns a CompiledModule with a template using temperature-dimensioned params.",
+      "description": "Write failing test `middle_expression_compiled_once`: parse `constraint a < b + c < d`, assert desugared to `And(Lt(a, Add(b,c)), Lt(Add(b,c), d))` where both occurrences of `b + c` have identical `content_hash`. This verifies middle expressions are compiled once and cloned (not recompiled).",
       "status": "done",
-      "commit": "52059b96"
+      "commit": "8dbbb2375efe51f4c9005214c2a6b5713514d5e5"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Implement type alias helpers: (a) TypeAliasMap struct in values.rs with new(), alias(name: impl Into<String>, ty: Type) -> Self, build() -> HashMap<String, Type>; (b) common_type_aliases() fn computing Pressure=FORCE.div(&AREA), Velocity=LENGTH.div(&TIME), Acceleration=LENGTH.div(&TIME.mul(&TIME)) dimension scalars; (c) type_alias_module() fixture in fixtures.rs building 'HeatExchanger' structure with params max_temp: TEMPERATURE, operating_pressure: FORCE/AREA dimension, and flow_rate: a velocity-like type, demonstrating use of aliased dimensional types.",
+      "description": "Verify middle expression deduplication. The implementation compiles all operands into `compiled_operands` vec first, then uses `.clone()` when building pairwise comparisons. Since `CompiledExpr::binop()` derives content_hash deterministically from op+children, cloned exprs have identical hashes. Step-9 test should pass.",
       "status": "done",
-      "commit": "52059b96"
+      "commit": "8dbbb2375efe51f4c9005214c2a6b5713514d5e5"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write integration test in builders.rs::tests composing all new helpers: build a CompiledModule with a 'Reactor' template using free_param for temperature, param with celsius() default, range constraint using range_inclusive, option_some_expr/option_none_expr in conditional, and TypeAliasMap for pressure type. Assert module builds with valid content_hash and correct cell/constraint counts.",
+      "description": "Write failing test `arithmetic_on_left_does_not_chain`: parse `constraint (a + b) < c`, assert result is plain `BinOp(Lt, Add(a,b), c)` — no And-wrapping. Non-comparison binary ops on the left must not trigger chaining.",
       "status": "done",
-      "commit": "52059b96"
+      "commit": "8dbbb2375efe51f4c9005214c2a6b5713514d5e5"
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "Ensure all new public items are properly exported: values.rs new fns (range_inclusive, range_exclusive, range_at_least, range_at_most, range_half_open, kelvin, celsius, fahrenheit, TypeAliasMap, common_type_aliases) and builders.rs new fns (option_some_expr, option_none_expr) are accessible via `pub use values::*` and `pub use builders::*` in lib.rs (already uses wildcard re-exports). Verify type_alias_module is exported from fixtures. Run final `cargo test -p reify-test-support` to confirm all tests pass.",
+      "description": "Verify non-chain guarding. The `is_comparison_op` check on the inner op ensures only comparison BinOps trigger chaining. When the left child is Add/Sub/Mul/etc, the normal BinOp compilation path runs. Step-11 test should pass.",
       "status": "done",
-      "commit": "52059b96"
+      "commit": "8dbbb2375efe51f4c9005214c2a6b5713514d5e5"
+    },
+    {
+      "id": "step-13",
+      "type": "test",
+      "description": "Write failing test `single_comparison_stays_plain`: parse `constraint a < b`, assert result is plain `BinOp(Lt, ValueRef(a), ValueRef(b))` — no desugaring. Regression test ensuring desugaring only activates for actual chains (>2 operands).",
+      "status": "done",
+      "commit": "8dbbb2375efe51f4c9005214c2a6b5713514d5e5"
+    },
+    {
+      "id": "step-14",
+      "type": "impl",
+      "description": "Verify single comparison passthrough. The chaining guard requires both the outer op AND the inner left-child op to be comparisons. A single `a < b` has an Ident left child, not a BinOp, so the guard fails and normal compilation runs. Step-13 test should pass.",
+      "status": "done",
+      "commit": "8dbbb2375efe51f4c9005214c2a6b5713514d5e5"
+    },
+    {
+      "id": "step-15",
+      "type": "test",
+      "description": "Write failing test `scalar_range_constraint`: parse `constraint 2mm < thickness < 10mm` with Scalar param, assert no errors, result type is Bool, and top-level op is And. Real-world range constraint with dimensional quantities.",
+      "status": "done",
+      "commit": "8dbbb2375efe51f4c9005214c2a6b5713514d5e5"
+    },
+    {
+      "id": "step-16",
+      "type": "impl",
+      "description": "Verify scalar range constraint. QuantityLiteral operands compile to Scalar literals via `unit_to_scalar`, and comparison ops produce Bool result_type via `infer_binop_type`. The chaining desugaring is type-agnostic — it works on any operand types. Step-15 test should pass.",
+      "status": "done",
+      "commit": "8dbbb2375efe51f4c9005214c2a6b5713514d5e5"
+    },
+    {
+      "id": "step-17",
+      "type": "test",
+      "description": "Write failing test `let_binding_chain_desugars_to_and`: parse `let in_range = 0 < x < 100`, assert the `in_range` value cell's `default_expr` is an And-chain with result_type Bool. Verifies desugaring works in let-binding context, not just constraint context.",
+      "status": "done",
+      "commit": "8dbbb2375efe51f4c9005214c2a6b5713514d5e5"
+    },
+    {
+      "id": "step-18",
+      "type": "impl",
+      "description": "Verify let-binding context. The `compile_expr_guarded` function is called uniformly for all expression contexts (constraints, let defaults, guard conditions). The chaining desugaring operates at the expression level, so it applies regardless of where the expression appears. Step-17 test should pass.",
+      "status": "done",
+      "commit": "8dbbb2375efe51f4c9005214c2a6b5713514d5e5"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Range constructors delegate to Value::range() rather than constructing Value::Range directly",
-      "rationale": "Value::range() normalizes inclusivity flags for unbounded sides (forces false when bound is None), ensuring consistent equality and hashing. Direct struct construction could skip this normalization."
+      "decision": "Desugar at compile time, not parse time",
+      "rationale": "The parser already produces left-nested BinOp trees for `a < b < c` (parsed as `(a < b) < c`). Desugaring in the compiler keeps the parser simple and syntax-focused. The compiler has the context to compile operands, infer types, and build proper And-chains with correct content_hashes."
     },
     {
-      "decision": "free_param is a semantic alias for auto_param rather than a new ValueCellKind",
-      "rationale": "The compiler only has ValueCellKind::Auto. The 'free' concept from the language spec maps to the same IR representation. An alias provides spec-aligned vocabulary without compiler changes."
+      "decision": "Clone middle operands instead of synthetic let bindings",
+      "rationale": "Middle expressions are compiled once into a CompiledExpr, then cloned for each pairwise comparison that uses them. This is simpler than introducing synthetic let bindings and achieves the same guarantee: no recompilation. The eval engine caches by content_hash, so cloned expressions with identical hashes are evaluated once at runtime too."
     },
     {
-      "decision": "TypeAliasMap is a builder for HashMap<String, Type> rather than a new compiler IR type",
-      "rationale": "CompiledModule has no type_aliases field yet (no CompiledTypeAlias in reify-compiler). A lightweight map builder provides test utility now without requiring cross-crate compiler changes. When the compiler adds proper type alias IR, the builder can be upgraded."
+      "decision": "Left-fold And-chain structure: And(And(a<b, b<c), c<d)",
+      "rationale": "Consistent with how the parser naturally nests left-recursive BinOps. The left-fold means the And-chain grows from the left, matching the evaluation order (short-circuit left to right). Also matches how users read the chain: `a < b` is checked first, then `b < c`, then `c < d`."
     },
     {
-      "decision": "Temperature constructors store absolute kelvin in si_value, applying offset conversion for celsius and fahrenheit",
-      "rationale": "All SI scalar values are stored in base SI units. Temperature's base unit is kelvin. Celsius offset is +273.15K, Fahrenheit is (F-32)*5/9+273.15. This matches the pattern used by mm() (stores meters), deg() (stores radians), etc."
+      "decision": "All six comparison operators participate in chaining",
+      "rationale": "The is_comparison_op function includes < <= > >= == !=. This matches Python's semantics and the task spec. Mixed chains like `a < b <= c` or `a == b == c` are valid. Even `a < b > c` is syntactically valid (though semantically unusual). No-op desugaring for non-comparison chains is enforced by the is_comparison_op guard."
     },
     {
-      "decision": "Option expression helpers auto-compute the Option wrapping type, matching the pattern of list_expr/set_expr/map_expr",
-      "rationale": "Existing collection expression builders infer the container type from the first element. option_some_expr(inner) infers Type::Option(inner.result_type) and option_none_expr(ty) wraps ty in Type::Option. This is consistent and reduces boilerplate."
-    },
-    {
-      "decision": "New value constructors and expression helpers are free functions, not methods on builders",
-      "rationale": "Existing helpers (mm, deg, literal, gt, lt, list_expr, etc.) are all free functions for composability. New helpers follow the same convention so they can be freely composed in any builder chain."
-    },
-    {
-      "decision": "common_type_aliases uses DimensionVector arithmetic to compute derived dimensions",
-      "rationale": "Pressure = FORCE / AREA, Velocity = LENGTH / TIME, Acceleration = LENGTH / TIME^2. Using dimension vector arithmetic (mul, div methods) rather than hardcoded arrays ensures correctness and consistency with the dimension system."
+      "decision": "Flatten recursively before building pairwise nodes",
+      "rationale": "The `flatten_comparison_chain` function recursively collects all operands and operators from the left-nested tree before building any compiled nodes. This two-pass approach (flatten then build) ensures each operand is compiled exactly once, even in long chains like `a < b < c < d < e`."
     }
   ],
   "reuse": [
     {
-      "what": "Value::range(lower, upper, lower_inclusive, upper_inclusive)",
-      "where": "crates/reify-types/src/value.rs:91-105",
-      "how": "Range value constructors delegate to this method which normalizes inclusivity flags for unbounded sides."
+      "what": "CompiledExpr::binop() constructor with content_hash derivation",
+      "where": "crates/reify-types/src/expr.rs (lines 182-195)",
+      "how": "Used to build each pairwise comparison node and each And-combination node. The constructor deterministically derives content_hash from op + child hashes, which is critical for the middle-expression deduplication test."
     },
     {
-      "what": "DimensionVector::TEMPERATURE",
-      "where": "crates/reify-types/src/dimension.rs:123",
-      "how": "Temperature value constructors use this constant for the dimension vector in Scalar values."
+      "what": "resolve_binop() for operator string-to-enum mapping",
+      "where": "crates/reify-compiler/src/lib.rs (lines 677-695)",
+      "how": "Used to convert each string operator from the flattened chain into a BinOp enum variant. Already handles all comparison operators."
     },
     {
-      "what": "CompiledExpr::option_some() and CompiledExpr::option_none()",
-      "where": "crates/reify-types/src/expr.rs:509-527",
-      "how": "option_some_expr and option_none_expr wrap these methods, adding automatic Type::Option wrapping."
+      "what": "infer_binop_type() for result type inference",
+      "where": "crates/reify-compiler/src/lib.rs (lines 709-751)",
+      "how": "Used to determine the result type of each pairwise comparison node. Comparison ops always return Type::Bool, and And also returns Type::Bool."
     },
     {
-      "what": "ValueCellKind::Auto",
-      "where": "crates/reify-compiler/src/lib.rs:267",
-      "how": "free_param reuses the same Auto kind as auto_param, providing spec-aligned naming."
+      "what": "compile_first_template() test helper pattern",
+      "where": "crates/reify-compiler/tests/chained_comparison_tests.rs (lines 10-16)",
+      "how": "Standard test helper that parses source, compiles, and returns the first TopologyTemplate. Reused across all 9 tests in this file, consistent with patterns in other compiler test files."
     },
     {
-      "what": "Existing value constructor pattern (mm, deg, newton, meters, mm2, mm3)",
-      "where": "crates/reify-test-support/src/values.rs:10-56",
-      "how": "Temperature constructors follow the same pattern: create Value::Scalar with appropriate si_value conversion and dimension vector."
-    },
-    {
-      "what": "Existing expression builder pattern (list_expr, set_expr, map_expr)",
-      "where": "crates/reify-test-support/src/builders.rs:148-174",
-      "how": "option_some_expr and option_none_expr follow the same free-function pattern with auto-inferred container types."
-    },
-    {
-      "what": "FORCE derived dimension constant and DimensionVector arithmetic (mul, div)",
-      "where": "crates/reify-types/src/dimension.rs:204, :147-162",
-      "how": "common_type_aliases() uses FORCE, AREA, LENGTH, TIME dimension constants with div/mul to compute Pressure, Velocity, Acceleration dimensions."
-    },
-    {
-      "what": "TopologyTemplateBuilder fluent builder pattern",
-      "where": "crates/reify-test-support/src/builders.rs:396-655",
-      "how": "free_param and param_no_default follow the same mut self -> Self pattern with ValueCellDecl construction."
-    },
-    {
-      "what": "Fixture function pattern (bracket_compiled_module, constrained_structure_module, etc.)",
-      "where": "crates/reify-test-support/src/fixtures.rs",
-      "how": "type_alias_module() follows the same pattern: compose TopologyTemplateBuilder + CompiledModuleBuilder to produce a realistic test module."
+      "what": "Existing compile_expr_guarded BinOp arm",
+      "where": "crates/reify-compiler/src/lib.rs (lines 886-960+)",
+      "how": "The chained comparison guard is inserted at the top of the BinOp arm, before the normal BinOp compilation path. On non-chain cases, execution falls through to the existing code unchanged."
     }
   ],
-  "_session_id": "178-99fead6c",
-  "_created_at": "2026-03-24T21:27:31.250845+00:00"
+  "_session_id": "157-73a8ed1a",
+  "_created_at": "2026-03-24T21:46:18.004702+00:00"
 }
