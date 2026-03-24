@@ -398,6 +398,11 @@ fn is_geometry_function(name: &str) -> bool {
             | "shell"
             | "thicken"
             | "draft"
+            | "union"
+            | "intersection"
+            | "difference"
+            | "union_all"
+            | "intersection_all"
     )
 }
 
