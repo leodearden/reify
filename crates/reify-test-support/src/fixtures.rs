@@ -760,6 +760,51 @@ mod tests {
         assert_eq!(parent.sub_components[0].args.len(), 1);
         assert_eq!(parent.sub_components[0].args[0].0, "height");
     }
+
+    // step-21: failing test for recursive_tree_module fixture
+    #[test]
+    fn recursive_tree_module_structure() {
+        let module = recursive_tree_module();
+        assert_eq!(module.templates.len(), 1);
+        let tree = &module.templates[0];
+        assert_eq!(tree.name, "TreeNode");
+        // Has param value: Int
+        let value_cell = tree.value_cells.iter().find(|vc| vc.id.member == "value");
+        assert!(value_cell.is_some(), "TreeNode should have param value");
+        // Has two sub-components: left and right, both referencing TreeNode
+        assert_eq!(tree.sub_components.len(), 2, "TreeNode should have 2 sub-components");
+        let left = tree.sub_components.iter().find(|sc| sc.name == "left");
+        let right = tree.sub_components.iter().find(|sc| sc.name == "right");
+        assert!(left.is_some(), "TreeNode should have sub left");
+        assert!(right.is_some(), "TreeNode should have sub right");
+        assert_eq!(left.unwrap().structure_name, "TreeNode", "left should reference TreeNode");
+        assert_eq!(right.unwrap().structure_name, "TreeNode", "right should reference TreeNode");
+    }
+
+    // step-23: failing test for mutual_recursion_module fixture
+    #[test]
+    fn mutual_recursion_module_structure() {
+        let module = mutual_recursion_module();
+        assert_eq!(module.templates.len(), 2);
+        let node_a = module.templates.iter().find(|t| t.name == "NodeA");
+        let node_b = module.templates.iter().find(|t| t.name == "NodeB");
+        assert!(node_a.is_some(), "should have NodeA template");
+        assert!(node_b.is_some(), "should have NodeB template");
+        let node_a = node_a.unwrap();
+        let node_b = node_b.unwrap();
+        // NodeA has param a_val: Int and sub child = NodeB
+        let a_val = node_a.value_cells.iter().find(|vc| vc.id.member == "a_val");
+        assert!(a_val.is_some(), "NodeA should have param a_val");
+        assert_eq!(node_a.sub_components.len(), 1);
+        assert_eq!(node_a.sub_components[0].name, "child");
+        assert_eq!(node_a.sub_components[0].structure_name, "NodeB");
+        // NodeB has param b_val: Int and sub ref_back = NodeA
+        let b_val = node_b.value_cells.iter().find(|vc| vc.id.member == "b_val");
+        assert!(b_val.is_some(), "NodeB should have param b_val");
+        assert_eq!(node_b.sub_components.len(), 1);
+        assert_eq!(node_b.sub_components[0].name, "ref_back");
+        assert_eq!(node_b.sub_components[0].structure_name, "NodeA");
+    }
 }
 
 /// Create a `CompiledModule` with a parent/child relationship for sub-component testing.
@@ -815,5 +860,53 @@ pub fn parent_child_module() -> CompiledModule {
     CompiledModuleBuilder::new(ModulePath::single("parent_child"))
         .template(child_template)
         .template(parent_template)
+        .build()
+}
+
+/// Create a `CompiledModule` with a self-referencing `TreeNode` structure.
+///
+/// Structure `TreeNode`:
+///   - `param value: Int = 0`
+///   - `sub left = TreeNode` (recursive left child, no args)
+///   - `sub right = TreeNode` (recursive right child, no args)
+///
+/// Both sub-components reference `"TreeNode"` as their `structure_name`, creating
+/// a self-referencing topology used to test cycle detection and recursive evaluation.
+pub fn recursive_tree_module() -> CompiledModule {
+    let e = "TreeNode";
+
+    let tree_template = TopologyTemplateBuilder::new(e)
+        .param(e, "value", Type::Int, Some(crate::builders::literal(Value::Int(0))))
+        .sub_component("left", "TreeNode", vec![])
+        .sub_component("right", "TreeNode", vec![])
+        .build();
+
+    CompiledModuleBuilder::new(ModulePath::single("recursive_tree"))
+        .template(tree_template)
+        .build()
+}
+
+/// Create a `CompiledModule` with two mutually recursive structures.
+///
+/// Structures:
+///   - `NodeA`: `param a_val: Int = 0`, `sub child = NodeB`
+///   - `NodeB`: `param b_val: Int = 0`, `sub ref_back = NodeA`
+///
+/// The two structures form a mutual recursion cycle (NodeA → NodeB → NodeA),
+/// used to test cycle detection algorithms in the evaluation engine.
+pub fn mutual_recursion_module() -> CompiledModule {
+    let node_a = TopologyTemplateBuilder::new("NodeA")
+        .param("NodeA", "a_val", Type::Int, Some(crate::builders::literal(Value::Int(0))))
+        .sub_component("child", "NodeB", vec![])
+        .build();
+
+    let node_b = TopologyTemplateBuilder::new("NodeB")
+        .param("NodeB", "b_val", Type::Int, Some(crate::builders::literal(Value::Int(0))))
+        .sub_component("ref_back", "NodeA", vec![])
+        .build();
+
+    CompiledModuleBuilder::new(ModulePath::single("mutual_recursion"))
+        .template(node_a)
+        .template(node_b)
         .build()
 }
