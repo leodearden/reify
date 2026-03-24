@@ -1,224 +1,191 @@
 {
-  "task_id": "203",
-  "title": "Recursive structures: detection",
+  "task_id": "241",
+  "title": "Connector params: compiler",
   "files": [
     "crates/reify-compiler/src/lib.rs",
-    "crates/reify-compiler/tests/recursive_structure_tests.rs"
+    "crates/reify-compiler/tests/connect_compile_tests.rs"
   ],
   "modules": [
     "crates/reify-compiler"
   ],
-  "analysis": "Task 203 requires detecting self-referential structure definitions during compilation. Structures in Reify can contain `sub` declarations that reference other structures (e.g., `sub x = B()`). When structure A contains a sub of type B, and B contains a sub of type A (or transitively through any chain), we have a recursive cycle.\n\nThe compiler already has all the infrastructure needed: (1) TopologyTemplate has `sub_components: Vec<SubComponentDecl>` where each SubComponentDecl has a `structure_name` field identifying the referenced structure. (2) After all templates are compiled (line 1894), a template_registry HashMap<String, &TopologyTemplate> is built for deferred checks. (3) module_dag.rs provides a pattern for DFS cycle detection.\n\nApproach: Add a post-compilation pass (after all templates are compiled, similar to bound checks) that builds a directed graph of structure references from sub_components, then runs DFS to detect cycles. When a cycle is found, emit a diagnostic and tag the participating templates with `is_recursive = true`. This flag will be consumed by downstream tasks for special handling (e.g., preventing infinite elaboration in reify-eval).\n\nThe reference graph is: for each TopologyTemplate T, for each SubComponentDecl S in T.sub_components, add edge T.name -> S.structure_name. Then run DFS with gray/black coloring to find back-edges indicating cycles. When a back-edge is found, extract the cycle path from the DFS stack.\n\nKey design choice: Tag templates with `is_recursive: bool` rather than blocking compilation. Recursive structures may be valid with collection subs or guarded subs \u2014 they need special handling at elaboration time, not outright rejection. The diagnostic is a warning-level note identifying the cycle path.\n\n--- REVIEW FIX (reviewer_robustness/incorrect_cycle_detection) ---\n\nThe DFS-based cycle detection has a bug: the `Some(false)` arm (black/fully-explored node) takes no action, so when a second DFS path reaches a cycle member that's already fully explored, intermediate nodes on that path are never tagged in_cycle. Example: graph A\u2192B, A\u2192D, B\u2192C, D\u2192C, C\u2192A. DFS finds A\u2192B\u2192C\u2192A and marks A,B,C in_cycle. Then A visits D; D visits C (black, in_cycle), but the `Some(false)` arm does nothing \u2014 D is never tagged, yet D participates in the genuine cycle A\u2192D\u2192C\u2192A.\n\nNaive fix (propagate in_cycle when black neighbor is in_cycle) would cause false positives: if X\u2192Y\u2192X is a cycle and Z\u2192Y exists, Z would be wrongly marked even though there's no path Y\u2192Z.\n\nCorrect fix: replace the DFS with Tarjan's SCC algorithm. Tarjan's finds all strongly connected components in O(V+E). Every node in an SCC of size > 1 is a cycle participant. Self-loops (SCC of size 1 with self-edge) are also cycles. This handles multi-path convergence correctly because SCC membership is determined by mutual reachability, not by DFS tree structure. Cycle paths for diagnostics can be reconstructed from the SCC's adjacency sub-graph.",
-  "prerequisites": [],
+  "analysis": "Task 241 enhances the compiler's connector parameter compilation in `compile_connection()` (lines 3692-3869 of lib.rs). The existing implementation already: (1) creates `__connector_N` synthetic sub-components when a connector type is specified (lines 3822-3857), (2) compiles parameter expressions into CompiledExpr values (lines 3827-3832), and (3) generates direction-only compatibility constraints as Bool literals (lines 3746-3820). Two key features remain unimplemented:\n\n**Frame alignment constraints (task item 4):** The `frame_constraint` field on `CompiledConnection` is always set to `None` (line 3866). The language spec (\u00a76.1, item 4) requires that when both connected ports satisfy the `LocatedPort` trait (which adds `param frame : Frame<3>`), the compiler generates a constraint indicating frame alignment is required. The `trait_satisfies()` function (line 3616) already walks refinement chains transitively, so checking if a port's `type_name` refines `LocatedPort` is straightforward. The `ConnectContext` struct currently lacks `trait_registry` access \u2014 it must be added.\n\n**Port type compatibility (task item 3):** Currently only direction compatibility is checked (In/Out/Bidi). The language spec (\u00a76.1, item 2) says port compatibility includes 'matching or complementary traits'. We need to verify that both port type_names are compatible \u2014 either identical, or one refines the other via the trait registry \u2014 and emit diagnostics for mismatches.\n\n**Connector param validation (enhancement for item 2):** The current implementation compiles connector body params blindly without checking them against the connector structure's declared params. When the connector structure template is available among already-compiled templates, we should validate that parameter names match.\n\nAll changes are confined to `compile_connection()` and its surrounding context structs. The `ConnectContext` struct (line 3672) needs `trait_registry` (for LocatedPort/type checking) and `compiled_templates` (for connector param validation). Both are already available in the calling `compile_entity()` function (line 2523). Existing tests in `connect_compile_tests.rs` cover 10 scenarios; this task adds 8 more tests.",
+  "prerequisites": [
+    {
+      "id": "pre-1",
+      "description": "Add `trait_registry: &'a HashMap<String, &'a CompiledTrait>` and `compiled_templates: &'a [TopologyTemplate]` to the `ConnectContext` struct (line 3672). Update both call sites in `compile_entity()` \u2014 the connect block (line 3087) and the chain block (line 3122) \u2014 to pass these new fields from the enclosing function parameters. This is a purely mechanical change with no behavioral impact.",
+      "status": "done",
+      "commit": "59fb374",
+      "tests": []
+    }
+  ],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing test: direct self-reference (structure A has sub x = A()) is detected and tagged as recursive \u2014 assert template.is_recursive == true and a warning diagnostic contains 'recursive structure cycle'",
+      "description": "Write failing test `frame_alignment_constraint_when_both_ports_located`: define traits `Port {}` and `LocatedPort : Port { param frame : Length }`, create two ports both typed as `LocatedPort`, connect with a connector. Assert `connections[0].frame_constraint.is_some()` and that a constraint with label containing `frame_align` exists in the template's constraints vec.",
       "status": "done",
-      "commit": "9adda10"
+      "commit": "dc82596"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Add `is_recursive: bool` field to TopologyTemplate (default false). Add `detect_recursive_structures()` function that builds adjacency list from templates' sub_components and runs DFS cycle detection. Wire it into compile() after all templates are compiled. Set is_recursive=true on templates in cycles. Emit warning diagnostic with cycle path.",
+      "description": "In `compile_connection()`, after the direction compatibility constraint block and before pushing the CompiledConnection: look up both ports' type_name from `ctx.ports`. For each local port (bare ident), call `trait_satisfies(type_name, \"LocatedPort\", ctx.trait_registry, &mut visited)`. If both satisfy LocatedPort, create a new CompiledConstraint with `Bool(true)` expr, label `frame_align_{left}_{right}`, push to `acc.constraints`, increment `acc.constraint_index`, and set `frame_constraint: Some(id)`. Otherwise keep `frame_constraint: None`.",
       "status": "done",
-      "commit": "99e5cd3"
+      "commit": "6533874"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing test: mutual recursion (A has sub b = B(), B has sub a = A()) \u2014 both A and B are tagged as is_recursive=true",
+      "description": "Write test `frame_alignment_none_when_ports_not_located`: define a plain trait `T {}` (not refining LocatedPort), create two ports typed as `T`, connect with a connector. Assert `connections[0].frame_constraint.is_none()` and no constraint with `frame_align` label exists.",
       "status": "done",
-      "commit": "9adda10"
+      "commit": "071eba4"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Ensure detect_recursive_structures handles mutual/indirect cycles by propagating is_recursive to all nodes in any cycle, not just the back-edge node",
+      "description": "Verify the None-case test passes from step-2 logic (trait_satisfies returns false for a trait that doesn't refine LocatedPort). Fix if needed.",
       "status": "done",
-      "commit": "99e5cd3"
+      "commit": "071eba4"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing test: indirect cycle through 3 structures (A->B->C->A) \u2014 all three tagged as is_recursive=true and diagnostic message contains full cycle path 'A -> B -> C -> A'",
+      "description": "Write test `frame_alignment_via_refinement_chain`: define `Port {}`, `LocatedPort : Port { param frame : Length }`, `MechanicalPort : LocatedPort { param max_load : Force }`. Create ports typed as `MechanicalPort`, connect with a connector. Assert `frame_constraint.is_some()` \u2014 verifying transitive refinement chains are walked correctly.",
       "status": "done",
-      "commit": "9adda10"
+      "commit": "669107e"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Ensure cycle path reconstruction works for chains of arbitrary length by tracking the DFS path stack and extracting the cycle when a back edge is found",
+      "description": "Verify the refinement chain test passes. The existing `trait_satisfies()` already walks chains transitively. If it fails, debug trait registry population to ensure refinements are recorded correctly.",
       "status": "done",
-      "commit": "99e5cd3"
+      "commit": "669107e"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing test: non-recursive structures (A->B, C->D, no cycles) \u2014 none tagged as recursive, no warning diagnostics emitted about recursion",
+      "description": "Write failing test `port_type_compatibility_mismatch_warning`: define two unrelated traits `TraitA {}` and `TraitB {}` (neither refines the other). Create `port a : out TraitA` and `port b : in TraitB`, connect `a -> b`. Assert a warning diagnostic is emitted with message containing 'incompatible port types' (or 'port type mismatch'). Direction should still be compatible (out -> in).",
       "status": "done",
-      "commit": "9adda10"
+      "commit": "bf400c9"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Verify non-recursive DAG structures produce no false positives (should already pass if DFS is correct, fix if not)",
+      "description": "In `compile_connection()`, after resolving port directions: add a port type compatibility check. Create a `type_of` closure (similar to existing `dir_of`) that looks up a port's type_name from `ctx.ports`. If both type_names are known and neither `trait_satisfies(left_type, right_type)` nor `trait_satisfies(right_type, left_type)` is true, and the types aren't equal, emit a warning diagnostic about potentially incompatible port types.",
       "status": "done",
-      "commit": "99e5cd3"
+      "commit": "b79be73"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write failing test: mixed recursive and non-recursive structures in same module \u2014 only cycle participants are tagged is_recursive=true, others remain false. E.g., A->B->A cycle plus standalone C->D \u2014 C and D stay is_recursive=false",
+      "description": "Write test `port_type_compatibility_refinement_ok`: define `TraitA {}` and `TraitB : TraitA {}`. Create `port a : out TraitA` and `port b : in TraitB`, connect `a -> b`. Assert no type compatibility warning is emitted \u2014 refinement makes them compatible.",
       "status": "done",
-      "commit": "9adda10"
+      "commit": "73b1c81"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Ensure tagging is precise: only structures participating in a cycle get is_recursive=true. Structures that reference a recursive structure but aren't themselves in a cycle remain false.",
+      "description": "Verify the refinement compatibility test passes from step-8 logic (trait_satisfies(TraitB, TraitA) returns true because TraitB refines TraitA).",
       "status": "done",
-      "commit": "99e5cd3"
+      "commit": "73b1c81"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write failing test: sub referencing unknown/external structure name does not cause panic or false positive \u2014 structure with sub pointing to non-existent type compiles without recursion diagnostics",
+      "description": "Write failing test `connector_param_validation_unknown_param`: define `structure def BoltSet { param grade : Real = 8.8 }` before the connecting structure. Then `connect a -> b : BoltSet { unknown_param = 5.0 }`. Assert an error diagnostic is emitted containing 'unknown' and 'unknown_param'. (BoltSet must be defined first so it's available in compiled_templates.)",
       "status": "done",
-      "commit": "9adda10"
+      "commit": "8f613ab"
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "Ensure detect_recursive_structures only adds edges for structure_names that exist in the template set \u2014 skip unknown/external references gracefully",
+      "description": "In the connector sub-entity block of `compile_connection()`, after compiling args: look up `conn_type` in `ctx.compiled_templates`. If found, collect the template's param-kind value_cells. For each connector body param name, check if it exists in that set. Emit an error for any param name that doesn't match, including the connector type name and available params in the message.",
       "status": "done",
-      "commit": "99e5cd3"
+      "commit": "970db40"
     },
     {
       "id": "step-13",
       "type": "test",
-      "description": "Write failing test: structure with multiple sub declarations, one creating a cycle and one not \u2014 structure is correctly tagged as recursive. E.g., A has sub b = B() and sub c = C(), B has sub a = A() \u2014 A and B are recursive, C is not",
+      "description": "Write test `connector_param_validation_valid_params_ok`: define `structure def BoltSet { param grade : Real = 8.8 }`, then `connect a -> b : BoltSet { grade = 10.9 }`. Assert no error diagnostics \u2014 valid param name matches the declared param.",
       "status": "done",
-      "commit": "9adda10"
+      "commit": "10d12fe"
     },
     {
       "id": "step-14",
       "type": "impl",
-      "description": "Verify all edges from a template are considered (multiple subs), and the diagnostic label points to the specific sub creating the back-edge",
+      "description": "Verify the valid-params test passes from step-12 implementation (grade is found in BoltSet's value_cells). Should already pass.",
       "status": "done",
-      "commit": "99e5cd3"
+      "commit": "10d12fe"
     },
     {
       "id": "step-15",
       "type": "test",
-      "description": "Write test: structure with no subs at all is not tagged as recursive and produces no recursion diagnostics",
+      "description": "Write test `content_hash_includes_frame_constraint`: compile two modules with identical structures except one has ports typed as LocatedPort (producing frame_constraint Some) and the other has plain Port (producing None). Assert that template content_hashes differ.",
       "status": "done",
-      "commit": "9adda10"
+      "commit": "1a755a3"
     },
     {
       "id": "step-16",
       "type": "impl",
-      "description": "Verify edge case: templates with empty sub_components are handled correctly (no edges added, no iteration issues)",
+      "description": "In the content hash computation (lines 3232-3248), extend the connection_hashes iterator chain to include the frame_constraint: add `.chain(std::iter::once(c.frame_constraint.as_ref().map(|_| ContentHash::of(&[1u8])).unwrap_or(ContentHash(0))))` so the presence/absence of frame alignment affects the template hash.",
       "status": "done",
-      "commit": "99e5cd3"
-    },
-    {
-      "id": "step-17",
-      "type": "test",
-      "description": "Write failing test for multi-path cycle convergence (reviewer bug): graph A\u2192B, A\u2192D, B\u2192C, D\u2192C, C\u2192A. All four structures participate in cycles (A\u2192B\u2192C\u2192A and A\u2192D\u2192C\u2192A). Assert all four are tagged is_recursive=true. This test will FAIL with the current DFS because D is reached via a black (already-explored) node C and the Some(false) arm takes no action, leaving D untagged.",
-      "status": "done",
-      "commit": "c68e309"
-    },
-    {
-      "id": "step-18",
-      "type": "impl",
-      "description": "Replace dfs_detect_cycle with Tarjan's SCC algorithm. Tarjan's correctly finds all strongly connected components in O(V+E) by tracking index and lowlink values on a stack. Tag all nodes in SCCs of size > 1 as in_cycle. Also tag self-loop SCCs (size 1 where node has edge to itself). Reconstruct one representative cycle path per SCC from the adjacency sub-graph for diagnostic messages. Remove the old dfs_detect_cycle function entirely.",
-      "status": "done",
-      "commit": "e6d821d"
-    },
-    {
-      "id": "step-19",
-      "type": "test",
-      "description": "Write test for false-positive resistance: structure Z has sub a = A(), and A\u2192B\u2192A is a cycle, but there is no path from A or B back to Z. Assert Z is NOT tagged is_recursive (Z merely points into a cycle without being part of one). This validates that Tarjan's SCC correctly excludes nodes that have edges into an SCC but aren't members of it.",
-      "status": "done",
-      "commit": "c68e309"
-    },
-    {
-      "id": "step-20",
-      "type": "impl",
-      "description": "Verify the false-positive test passes with Tarjan's SCC (should pass because SCC membership requires mutual reachability \u2014 Z can reach A but A cannot reach Z, so Z is in its own singleton SCC with no self-edge).",
-      "status": "done",
-      "commit": "e6d821d"
+      "commit": null
     }
   ],
   "design_decisions": [
     {
-      "decision": "Add `is_recursive: bool` field to TopologyTemplate rather than a separate data structure",
-      "rationale": "TopologyTemplate is the compiled representation consumed by reify-eval. Tagging it directly makes the information immediately available during elaboration without requiring a side-channel lookup. The field is cheap (1 byte) and zero-cost when false."
+      "decision": "Frame alignment constraints are compile-time marker constraints (Bool(true)) rather than runtime frame-equality expressions",
+      "rationale": "Port frames are not available at compile time \u2014 they are runtime values resolved during evaluation. The compiler generates a labeled constraint (`frame_align_{left}_{right}`) that signals to the evaluator that frame alignment is required. The evaluator can then construct actual geometric constraints from the port frame value cells. This follows the same pattern as the existing direction compatibility constraint which is also a Bool literal."
     },
     {
-      "decision": "Use warning-level diagnostics, not errors, for recursive cycles",
-      "rationale": "Recursive structures are not necessarily invalid \u2014 they may be meaningful with collection subs (bounded count) or guarded subs (conditional inclusion). The task says 'tag for special handling', not 'reject'. Downstream elaboration can decide how to handle them (e.g., depth limits, lazy expansion)."
+      "decision": "Port type compatibility check emits a warning (not error) for mismatched types",
+      "rationale": "At compile time within a single module, we cannot fully verify port compatibility because trait implementations may come from other modules or the standard library. Dotted port references (sub.port) have unknown types at compile time. A warning alerts the user without blocking compilation. Cross-module type checking can be strengthened in a future pass."
     },
     {
-      "decision": "Implement detection as a post-compilation pass rather than inline during compile_entity",
-      "rationale": "Following the existing pattern of deferred bound checks: all templates must be compiled before we can build the full reference graph. Forward references are allowed within a module, so inline detection during entity compilation would miss structures defined later in the file."
+      "decision": "LocatedPort is identified by the well-known name string 'LocatedPort' via trait refinement chains",
+      "rationale": "The language spec explicitly defines LocatedPort as a standard library trait with known semantics (\u00a75.1). The compiler already uses trait_satisfies() for walking refinement chains. Checking if a port's type_name satisfies 'LocatedPort' is consistent with how trait bounds are checked elsewhere. If the name changes, it only needs updating in one place."
     },
     {
-      "decision": "Replace DFS gray/black cycle detection with Tarjan's SCC algorithm",
-      "rationale": "The original DFS approach misses cycle participants reachable through already-explored (black) nodes. When multiple paths converge on a cycle, the DFS only finds members on the first path. Tarjan's SCC correctly identifies ALL nodes in ALL strongly connected components in O(V+E) by tracking index/lowlink values, handling multi-path convergence without the early-exit issue. Cycle paths for diagnostics are reconstructed from each SCC's adjacency sub-graph."
+      "decision": "Connector param validation is best-effort \u2014 only checked when connector structure is already compiled",
+      "rationale": "Structures are compiled in declaration order within compile(). If the connector type is defined after the connecting structure, its template isn't available in compiled_templates yet. Full forward-reference validation would require the deferred post-pass mechanism (PendingBoundCheck). For this task, we validate when possible and skip when the template isn't available, matching how the compiler handles other forward references gracefully."
     },
     {
-      "decision": "Place all tests in a dedicated integration test file rather than inline unit tests",
-      "rationale": "Follows the established codebase pattern where each feature area has its own test file in tests/ (e.g., collection_sub_tests.rs, trait_bounds_tests.rs). The tests need the compile + check diagnostics pattern that integration tests use."
-    },
-    {
-      "decision": "Only consider sub_components for reference graph edges, not type_args",
-      "rationale": "Type arguments (e.g., Box<Bolt>) reference structures but don't create containment relationships that cause infinite elaboration. A Box<T> parameterized by T doesn't contain T as a sub \u2014 it's a type parameter. Recursion through sub containment is what causes structural cycles."
-    },
-    {
-      "decision": "Rejected naive propagation fix (mark in_cycle when black neighbor is in_cycle) in favor of Tarjan's SCC",
-      "rationale": "Naive propagation causes false positives: if Z\u2192A where A is in cycle A\u2192B\u2192A, Z would be wrongly tagged because its black neighbor A is in_cycle, even though there's no path from A back to Z. Tarjan's SCC correctly requires mutual reachability for cycle membership."
+      "decision": "ConnectContext gains trait_registry and compiled_templates references rather than adding function parameters",
+      "rationale": "ConnectContext is the established read-only context struct for compile_connection(). Adding fields there keeps the function signature stable and groups related context. Both values are already available in compile_entity() where ConnectContext is constructed."
     }
   ],
   "reuse": [
     {
-      "what": "DFS cycle detection pattern from module_dag.rs",
-      "where": "crates/reify-compiler/src/module_dag.rs lines 118-126",
-      "how": "Adapt the in_progress HashSet + early return pattern for structure reference graph traversal, extending it with path tracking to report cycle chains"
+      "what": "trait_satisfies() function for transitive refinement checking",
+      "where": "crates/reify-compiler/src/lib.rs line 3616",
+      "how": "Reuse to check if a port's type_name transitively refines 'LocatedPort' for frame alignment, and for bidirectional port type compatibility checking (checking both trait_satisfies(A,B) and trait_satisfies(B,A))."
     },
     {
-      "what": "Post-compilation pass pattern",
-      "where": "crates/reify-compiler/src/lib.rs lines 1896-1942",
-      "how": "Add the recursive structure detection pass after the existing deferred bound check pass, using the same template_registry HashMap<String, &TopologyTemplate>"
+      "what": "Constraint generation pattern (ConstraintNodeId + CompiledConstraint with Bool literal)",
+      "where": "crates/reify-compiler/src/lib.rs lines 3807-3820 (compatibility constraint block)",
+      "how": "Clone the exact pattern for frame alignment constraints: create ConstraintNodeId from entity_name + constraint_index, push CompiledConstraint with Bool(true) and a descriptive label, increment constraint_index via acc."
     },
     {
-      "what": "Diagnostic emission pattern with labels",
-      "where": "crates/reify-compiler/src/lib.rs (used throughout, e.g., lines 1783-1802)",
-      "how": "Use Diagnostic::warning() with DiagnosticLabel::new(span, message) pointing to the sub declarations that form the cycle"
+      "what": "ConnectContext / ConnectAccumulator context-object pattern",
+      "where": "crates/reify-compiler/src/lib.rs lines 3663-3689",
+      "how": "Extend ConnectContext with trait_registry and compiled_templates fields rather than adding function parameters. Follow the existing borrowing pattern (&'a lifetime)."
     },
     {
-      "what": "Test helper compile_no_errors() / compile pattern",
-      "where": "crates/reify-compiler/tests/collection_sub_tests.rs lines 6-27",
-      "how": "Reuse the same pattern: parse source, assert no parse errors, compile, return CompiledModule. Create a compile_module() helper that allows warnings (since recursion detection emits warnings, not errors)."
+      "what": "Content hash chain pattern for connections",
+      "where": "crates/reify-compiler/src/lib.rs lines 3232-3248",
+      "how": "Extend the connection_hashes iterator chain with frame_constraint presence hash, following the same ContentHash / unwrap_or(ContentHash(0)) pattern used for connector_sub."
     },
     {
-      "what": "SubComponentDecl.structure_name field",
-      "where": "crates/reify-compiler/src/lib.rs line 208",
-      "how": "Use structure_name from each SubComponentDecl to build the adjacency list edges in the reference graph"
+      "what": "Test helpers compile_module() / compile_first_template()",
+      "where": "crates/reify-compiler/tests/connect_compile_tests.rs lines 9-20",
+      "how": "All new tests use the existing test helpers. Multi-structure tests use compile_module() with template lookup by name; single-structure tests use compile_first_template()."
     },
     {
-      "what": "TopologyTemplate.sub_components and template name",
-      "where": "crates/reify-compiler/src/lib.rs lines 159-178",
-      "how": "Iterate compiled templates to extract (template.name -> sub.structure_name) edges for graph construction"
-    },
-    {
-      "what": "Tarjan's SCC algorithm (standard)",
-      "where": "Well-known algorithm, no codebase dependency",
-      "how": "Implement iterative Tarjan's with index counter, lowlink array, and explicit stack. Each SCC of size > 1 (or size 1 with self-edge) maps to a set of in_cycle nodes. Reconstruct one cycle path per SCC by walking adjacency within the SCC."
+      "what": "Port lookup closure pattern (dir_of)",
+      "where": "crates/reify-compiler/src/lib.rs line 3727",
+      "how": "Create analogous type_of closure that looks up port type_name from ctx.ports for type compatibility checking."
     }
   ],
-  "_session_id": "203-409aa634",
-  "_created_at": "2026-03-24T08:43:43.061708+00:00"
+  "_session_id": "241-125057fc",
+  "_created_at": "2026-03-24T16:48:52.824819+00:00"
 }

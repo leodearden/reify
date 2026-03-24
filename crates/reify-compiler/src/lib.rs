@@ -3233,7 +3233,7 @@ fn compile_entity(
             ))
         });
 
-        // Connection identity hashes: left_port, operator, right_port, port_mappings, connector_sub
+        // Connection identity hashes: left_port, operator, right_port, port_mappings, connector_sub, frame_constraint
         let connection_hashes = connections.iter().flat_map(|c| {
             std::iter::once(ContentHash::of_str(&c.left_port))
                 .chain(std::iter::once(ContentHash::of(&[c.operator.as_u8()])))
@@ -3247,6 +3247,12 @@ fn compile_entity(
                     c.connector_sub
                         .as_ref()
                         .map(|s| ContentHash::of_str(s))
+                        .unwrap_or(ContentHash(0)),
+                ))
+                .chain(std::iter::once(
+                    c.frame_constraint
+                        .as_ref()
+                        .map(|_| ContentHash::of(&[1u8]))
                         .unwrap_or(ContentHash(0)),
                 ))
         });
