@@ -47,7 +47,11 @@ pub enum Type {
     Orientation(usize),
     /// Range over a comparable element type (e.g., Range<Int>, Range<Scalar[m]>).
     Range(Box<Type>),
-    /// m-by-n matrix with a quantity type (e.g., Matrix3x2<Scalar[m]>).
+    /// User-facing m×n matrix type (e.g., Matrix3x2<Scalar[m]>).
+    ///
+    /// Semantically, evaluation treats matrices as rank-2 tensors; `Type::Matrix` preserves
+    /// distinct row (`m`) and column (`n`) dimensions while `Type::Tensor` uses a single
+    /// `n` for all dimensions.
     Matrix { m: usize, n: usize, quantity: Box<Type> },
 }
 

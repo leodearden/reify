@@ -61,7 +61,12 @@ pub enum Value {
         lower_inclusive: bool,
         upper_inclusive: bool,
     },
-    /// m-by-n matrix: m rows each containing n Values.
+    /// User-facing matrix literal (m rows × n cols).
+    ///
+    /// Before arithmetic evaluation, canonicalized to nested [`Value::Tensor`] (rank-2
+    /// Tensor where each element is a Tensor row) via [`Value::canonicalize_matrix()`].
+    /// The evaluator in `reify-expr` operates exclusively on the nested-Tensor
+    /// representation for matrix arithmetic.
     Matrix(Vec<Vec<Value>>),
     /// Undefined — not yet determined or computation failed.
     Undef,
@@ -108,6 +113,43 @@ impl Value {
 
     pub fn is_undef(&self) -> bool {
         matches!(self, Value::Undef)
+    }
+
+    /// Convert a `Value::Matrix` to nested `Value::Tensor` (rank-2 Tensor where each
+    /// element is a Tensor row).  All other variants are returned unchanged.
+    ///
+    /// This is used by the evaluator in `reify-expr` to canonicalize matrix literals
+    /// before dispatching to the arithmetic engine, which operates exclusively on the
+    /// nested-Tensor representation.
+    pub fn canonicalize_matrix(self) -> Self {
+        match self {
+            Value::Matrix(rows) => {
+                Value::Tensor(rows.into_iter().map(Value::Tensor).collect())
+            }
+            other => other,
+        }
+    }
+
+    /// Convert a rank-2 nested `Value::Tensor` back to a `Value::Matrix`.
+    ///
+    /// Returns `Some(Matrix(...))` if `self` is a `Tensor` with at least one element
+    /// and every element is itself a `Tensor`.  Returns `None` otherwise.
+    pub fn try_into_matrix(self) -> Option<Self> {
+        match self {
+            Value::Tensor(rows)
+                if !rows.is_empty() && rows.iter().all(|r| matches!(r, Value::Tensor(_))) =>
+            {
+                let matrix_rows: Vec<Vec<Value>> = rows
+                    .into_iter()
+                    .map(|r| match r {
+                        Value::Tensor(elems) => elems,
+                        _ => unreachable!("checked above"),
+                    })
+                    .collect();
+                Some(Value::Matrix(matrix_rows))
+            }
+            _ => None,
+        }
     }
 
     /// Get the f64 value if this is a numeric type.
