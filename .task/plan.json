@@ -1,250 +1,187 @@
 {
-  "task_id": "289",
-  "title": "M11 test support: builder extensions",
+  "task_id": "203",
+  "title": "Recursive structures: detection",
   "files": [
-    "crates/reify-test-support/src/values.rs",
-    "crates/reify-test-support/src/builders.rs",
-    "crates/reify-test-support/src/fixtures.rs",
-    "crates/reify-test-support/src/lib.rs",
-    "crates/reify-test-support/Cargo.toml"
+    "crates/reify-compiler/src/lib.rs",
+    "crates/reify-compiler/tests/recursive_structure_tests.rs"
   ],
   "modules": [
-    "crates/reify-test-support"
+    "crates/reify-compiler"
   ],
-  "analysis": "The reify-test-support crate has four modules: builders (TopologyTemplateBuilder, CompiledModuleBuilder, expression helpers), values (scalar/ID constructors), fixtures (bracket/parent-child modules), and mocks. The task requires extending it in four areas:\n\n1. **Complex value constructors** \u2014 values.rs only has scalar helpers (mm, deg, etc.). Tests constructing List, Set, Map, Enum, Option, Field, Lambda values must use verbose manual construction. We need convenience constructors.\n\n2. **Extended literal() and expression builders** \u2014 literal() panics on M5 types (Enum, List, Set, Map, Option, Lambda, Field). CompiledExpr has no named constructors for Conditional, FunctionCall, or UserFunctionCall \u2014 they must be built manually with CompiledExprKind + content_hash computation. We need: (a) extend literal() to handle complex types, (b) add collection expression builders (list_expr, set_expr, map_expr), (c) add conditional_expr, fn_call, user_fn_call, method_call_expr, lambda_expr helpers.\n\n3. **Field operator test helpers** \u2014 Field operations (sample, gradient, divergence, curl) are resolved as FunctionCall exprs at std::field::*. We need CompiledFieldBuilder (for CompiledField with analytical/sampled/composed/imported CompiledFieldSource variants) and field operation expression helpers that wrap fn_call.\n\n4. **Annotated entity builders and fixtures** \u2014 CompiledModuleBuilder is missing trait_def(), field(), enum_def(), compiled_purpose() methods (it initializes these as empty vecs in build()). We need CompiledPurposeBuilder (for CompiledPurpose: params, constraints, objective, resolved_queries), CompiledTraitBuilder (for CompiledTrait: type_params, refinements, required_members as TraitRequirement, defaults as TraitDefault), the module builder extensions, and fixture modules demonstrating annotated entities.\n\nKey types: CompiledField{name, is_pub, domain_type, codomain_type, source: CompiledFieldSource, content_hash}, CompiledPurpose{name, is_pub, params: Vec<CompiledPurposeParam>, constraints, objective, resolved_queries: Vec<ResolvedSchemaQuery>, content_hash}, CompiledTrait{name, is_pub, type_params: Vec<TypeParam>, refinements, required_members: Vec<TraitRequirement>, defaults: Vec<TraitDefault>, content_hash}, EnumDef{name, variants}. All from reify-compiler and reify-types, already dependencies.",
+  "analysis": "Task 203 requires detecting self-referential structure definitions during compilation. Structures in Reify can contain `sub` declarations that reference other structures (e.g., `sub x = B()`). When structure A contains a sub of type B, and B contains a sub of type A (or transitively through any chain), we have a recursive cycle.\n\nThe compiler already has all the infrastructure needed: (1) TopologyTemplate has `sub_components: Vec<SubComponentDecl>` where each SubComponentDecl has a `structure_name` field identifying the referenced structure. (2) After all templates are compiled (line 1894), a template_registry HashMap<String, &TopologyTemplate> is built for deferred checks. (3) module_dag.rs provides a pattern for DFS cycle detection.\n\nApproach: Add a post-compilation pass (after all templates are compiled, similar to bound checks) that builds a directed graph of structure references from sub_components, then runs DFS to detect cycles. When a cycle is found, emit a diagnostic and tag the participating templates with `is_recursive = true`. This flag will be consumed by downstream tasks for special handling (e.g., preventing infinite elaboration in reify-eval).\n\nThe reference graph is: for each TopologyTemplate T, for each SubComponentDecl S in T.sub_components, add edge T.name -> S.structure_name. Then run DFS with gray/black coloring to find back-edges indicating cycles. When a back-edge is found, extract the cycle path from the DFS stack.\n\nKey design choice: Tag templates with `is_recursive: bool` rather than blocking compilation. Recursive structures may be valid with collection subs or guarded subs \u2014 they need special handling at elaboration time, not outright rejection. The diagnostic is a warning-level note identifying the cycle path.",
   "prerequisites": [],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write tests for complex value constructors in values.rs: int_val(42)->Value::Int(42), real_val(3.14)->Value::Real(3.14), bool_val(true)->Value::Bool(true), string_val(\"hi\")->Value::String, enum_val(\"Color\",\"Red\")->Value::Enum{type_name,variant}, list_val(vec![Value::Int(1)])->Value::List, set_val(vec![Value::Int(1)])->Value::Set(BTreeSet), map_val(vec![(Value::String(..),Value::Int(..))])->Value::Map(BTreeMap), some_val(Value::Int(1))->Value::Option(Some(..)), none_val()->Value::Option(None), undef()->Value::Undef. Each test asserts the correct variant and inner contents.",
+      "description": "Write failing test: direct self-reference (structure A has sub x = A()) is detected and tagged as recursive \u2014 assert template.is_recursive == true and a warning diagnostic contains 'recursive structure cycle'",
       "status": "done",
-      "commit": "9d80b6e"
+      "commit": "9adda10"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Implement complex value constructors in values.rs. Add: int_val(i64)->Value::Int, real_val(f64)->Value::Real, bool_val(bool)->Value::Bool, string_val(&str)->Value::String(s.to_string()), enum_val(&str,&str)->Value::Enum{type_name,variant}, list_val(Vec<Value>)->Value::List, set_val(Vec<Value>)->Value::Set(items.into_iter().collect::<BTreeSet>()), map_val(Vec<(Value,Value)>)->Value::Map(entries.into_iter().collect::<BTreeMap>()), some_val(Value)->Value::Option(Some(Box::new(v))), none_val()->Value::Option(None), undef()->Value::Undef. Add use std::collections::{BTreeSet, BTreeMap}.",
+      "description": "Add `is_recursive: bool` field to TopologyTemplate (default false). Add `detect_recursive_structures()` function that builds adjacency list from templates' sub_components and runs DFS cycle detection. Wire it into compile() after all templates are compiled. Set is_recursive=true on templates in cycles. Emit warning diagnostic with cycle path.",
       "status": "done",
-      "commit": "b0b4bf4"
+      "commit": "99e5cd3"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write tests for extended literal() function in builders.rs: literal(Value::Enum{type_name:\"Color\",variant:\"Red\"}) produces CompiledExpr with result_type=Type::Enum(\"Color\"), literal(Value::List(vec![Value::Int(1)])) produces Type::List(Box::new(Type::Int)), literal(Value::Set(btreeset)) produces Type::Set(..), literal(Value::Map(btreemap)) produces Type::Map(..), literal(Value::Option(Some(Box::new(Value::Int(1))))) produces Type::Option(Box::new(Type::Int)), literal(Value::Option(None)) produces Type::Option(Box::new(Type::Bool)) as fallback. Replace existing should_panic tests.",
+      "description": "Write failing test: mutual recursion (A has sub b = B(), B has sub a = A()) \u2014 both A and B are tagged as is_recursive=true",
       "status": "done",
-      "commit": "e831408"
+      "commit": "9adda10"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Extend literal() in builders.rs to handle M5 types. Remove the panic branch. Add match arms: Value::Enum{type_name,..}->Type::Enum(type_name.clone()), Value::List(v)->Type::List(Box::new(infer from first element or Type::Int)), Value::Set(s)->Type::Set(Box::new(infer from first or Type::Int)), Value::Map(m)->Type::Map(Box::new(key type), Box::new(val type)), Value::Option(Some(v))->Type::Option(Box::new(infer inner)), Value::Option(None)->Type::Option(Box::new(Type::Bool)), Value::Lambda{params,body,..}->Type::Function{params: infer from param types, return_type: body.result_type}, Value::Field{domain_type,codomain_type,..}->Type::Field{domain,codomain}. Extract helper fn infer_value_type(v:&Value)->Type for reuse.",
+      "description": "Ensure detect_recursive_structures handles mutual/indirect cycles by propagating is_recursive to all nodes in any cycle, not just the back-edge node",
       "status": "done",
-      "commit": "e24beb5"
+      "commit": "99e5cd3"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write tests for collection expression builders in builders.rs: list_expr(vec![literal(Value::Int(1)), literal(Value::Int(2))]) produces CompiledExprKind::ListLiteral with result_type=Type::List(Box::new(Type::Int)). set_expr(vec![literal(Value::Int(1))]) produces SetLiteral with Type::Set(Box::new(Type::Int)). map_expr(vec![(literal(Value::String(..)), literal(Value::Int(..)))]) produces MapLiteral with Type::Map(String,Int). Assert kinds and result_types.",
+      "description": "Write failing test: indirect cycle through 3 structures (A->B->C->A) \u2014 all three tagged as is_recursive=true and diagnostic message contains full cycle path 'A -> B -> C -> A'",
       "status": "done",
-      "commit": "79415a0"
+      "commit": "9adda10"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Implement collection expression builders in builders.rs: list_expr(elements: Vec<CompiledExpr>)->CompiledExpr infers element type from first element's result_type, wraps CompiledExpr::list_literal with Type::List(Box::new(elem_type)). set_expr(elements)->CompiledExpr similarly with Type::Set. map_expr(entries: Vec<(CompiledExpr,CompiledExpr)>)->CompiledExpr infers key/val types from first entry, wraps CompiledExpr::map_literal. Panic with descriptive message if elements/entries are empty (caller must use CompiledExpr constructors directly for empty collections).",
+      "description": "Ensure cycle path reconstruction works for chains of arbitrary length by tracking the DFS path stack and extracting the cycle when a back edge is found",
       "status": "done",
-      "commit": "e6f6352"
+      "commit": "99e5cd3"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write tests for conditional_expr and function call helpers: conditional_expr(literal(Value::Bool(true)), literal(Value::Int(1)), literal(Value::Int(2))) produces Conditional kind with result_type=Type::Int (from then_branch). fn_call(\"sin\",\"std::math::sin\",vec![literal(Value::Real(1.0))],Type::Real) produces FunctionCall with ResolvedFunction{name:\"sin\",qualified_name:\"std::math::sin\"}. user_fn_call(\"my_func\",vec![literal(Value::Int(1))],Type::Int) produces UserFunctionCall.",
+      "description": "Write failing test: non-recursive structures (A->B, C->D, no cycles) \u2014 none tagged as recursive, no warning diagnostics emitted about recursion",
       "status": "done",
-      "commit": "39fe838"
+      "commit": "9adda10"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Implement conditional_expr(condition, then_branch, else_branch)->CompiledExpr: result_type from then_branch, content_hash with tag byte [4] combined with condition+then+else hashes, kind=Conditional. fn_call(name: &str, qualified_name: &str, args: Vec<CompiledExpr>, result_type: Type)->CompiledExpr: content_hash with tag [5]+name hash+arg hashes, kind=FunctionCall{function: ResolvedFunction{name, qualified_name}}. user_fn_call(function_name: &str, args, result_type)->CompiledExpr: content_hash with tag [6]+name+args, kind=UserFunctionCall.",
+      "description": "Verify non-recursive DAG structures produce no false positives (should already pass if DFS is correct, fix if not)",
       "status": "done",
-      "commit": "854d07f"
+      "commit": "99e5cd3"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write tests for method_call_expr and lambda_expr: method_call_expr(literal(Value::List(..)), \"count\", vec![], Type::Int) produces MethodCall{object, method:\"count\", args:[]}. lambda_expr(vec![(\"x\", Type::Real)], literal(Value::Real(1.0))) produces Lambda with param_ids containing ValueCellId::new(\"__lambda\",\"x\"), result_type=Type::Function{params:[Type::Real], return_type: Box::new(Type::Real)}.",
+      "description": "Write failing test: mixed recursive and non-recursive structures in same module \u2014 only cycle participants are tagged is_recursive=true, others remain false. E.g., A->B->A cycle plus standalone C->D \u2014 C and D stay is_recursive=false",
       "status": "done",
-      "commit": "83844b1"
+      "commit": "9adda10"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Implement method_call_expr(object: CompiledExpr, method: &str, args: Vec<CompiledExpr>, result_type: Type)->CompiledExpr wrapping CompiledExpr::method_call(object, method.to_string(), args, result_type). Implement lambda_expr(params: Vec<(&str, Type)>, body: CompiledExpr)->CompiledExpr: generate param_ids as ValueCellId::new(\"__lambda\", name) for each param, build params as Vec<(String, Option<Type>)>, infer Function result_type, wrap CompiledExpr::lambda with empty captures.",
+      "description": "Ensure tagging is precise: only structures participating in a cycle get is_recursive=true. Structures that reference a recursive structure but aren't themselves in a cycle remain false.",
       "status": "done",
-      "commit": "63c997f"
+      "commit": "99e5cd3"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write tests for field operation expression helpers: sample_call(field_expr, point_expr, Type::Real) produces FunctionCall with function.qualified_name=\"std::field::sample\". gradient_call(field_expr, Type::Real) produces FunctionCall with function.qualified_name=\"std::field::gradient\" and single arg. divergence_call and curl_call similarly with their qualified names.",
+      "description": "Write failing test: sub referencing unknown/external structure name does not cause panic or false positive \u2014 structure with sub pointing to non-existent type compiles without recursion diagnostics",
       "status": "done",
-      "commit": "954bfe8"
+      "commit": "9adda10"
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "Implement field operation helpers in builders.rs: sample_call(field, point, result_type)->fn_call(\"sample\",\"std::field::sample\",vec![field,point],result_type). gradient_call(field, result_type)->fn_call(\"gradient\",\"std::field::gradient\",vec![field],result_type). divergence_call(field, result_type)->fn_call(\"divergence\",\"std::field::divergence\",vec![field],result_type). curl_call(field, result_type)->fn_call(\"curl\",\"std::field::curl\",vec![field],result_type).",
+      "description": "Ensure detect_recursive_structures only adds edges for structure_names that exist in the template set \u2014 skip unknown/external references gracefully",
       "status": "done",
-      "commit": "53f71fd"
+      "commit": "99e5cd3"
     },
     {
       "id": "step-13",
       "type": "test",
-      "description": "Write tests for CompiledFieldBuilder: CompiledFieldBuilder::new(\"temp\",Type::Geometry,Type::Real).analytical(expr).build() produces CompiledField{name:\"temp\",is_pub:false,source:Analytical{expr}}. .public().sampled(config).build() produces is_pub:true,source:Sampled. .composed(expr).build() and .imported().build() produce their respective source variants. Assert content_hash is non-zero for all.",
+      "description": "Write failing test: structure with multiple sub declarations, one creating a cycle and one not \u2014 structure is correctly tagged as recursive. E.g., A has sub b = B() and sub c = C(), B has sub a = A() \u2014 A and B are recursive, C is not",
       "status": "done",
-      "commit": "4c743c7"
+      "commit": "9adda10"
     },
     {
       "id": "step-14",
       "type": "impl",
-      "description": "Implement CompiledFieldBuilder struct{name:String, is_pub:bool, domain_type:Type, codomain_type:Type, source:Option<CompiledFieldSource>}. Methods: new(name,domain,codomain)->Self (is_pub=false, source=None), public()->Self, analytical(expr)->Self (source=Some(Analytical{expr})), sampled(config: Vec<(&str,CompiledExpr)>)->Self, composed(expr)->Self, imported()->Self, build()->CompiledField (panics if source is None, computes content_hash from name+source hash).",
+      "description": "Verify all edges from a template are considered (multiple subs), and the diagnostic label points to the specific sub creating the back-edge",
       "status": "done",
-      "commit": "1dedfc9"
+      "commit": "99e5cd3"
     },
     {
       "id": "step-15",
       "type": "test",
-      "description": "Write tests for CompiledPurposeBuilder: CompiledPurposeBuilder::new(\"mfg_ready\").param(\"subject\",\"Structure\").constraint(\"subject\",0,Some(\"thick_enough\"),gt_expr).build() produces CompiledPurpose with name, 1 param (name:\"subject\",entity_kind:\"Structure\"), 1 constraint with label. .objective(Minimize{..}).schema_query(\"subject\",\"params\",vec![vcid]).build() adds objective and resolved_queries. Assert content_hash non-zero.",
+      "description": "Write test: structure with no subs at all is not tagged as recursive and produces no recursion diagnostics",
       "status": "done",
-      "commit": "79e4488"
+      "commit": "9adda10"
     },
     {
       "id": "step-16",
       "type": "impl",
-      "description": "Implement CompiledPurposeBuilder struct{name, is_pub, params: Vec<CompiledPurposeParam>, constraints: Vec<CompiledConstraint>, objective: Option<OptimizationObjective>, resolved_queries: Vec<ResolvedSchemaQuery>}. Methods: new(name)->Self, public()->Self, param(name,entity_kind)->Self, constraint(entity,index,label,expr)->Self, objective(obj)->Self, schema_query(param_name,query_kind,resolved_ids)->Self, build()->CompiledPurpose with content_hash from name+constraints+queries.",
+      "description": "Verify edge case: templates with empty sub_components are handled correctly (no edges added, no iteration issues)",
       "status": "done",
-      "commit": "7c0cf55"
-    },
-    {
-      "id": "step-17",
-      "type": "test",
-      "description": "Write tests for CompiledTraitBuilder: CompiledTraitBuilder::new(\"Rigid\").require_param(\"thickness\",Type::length()).build() produces CompiledTrait with 1 required_member (TraitRequirement{name:\"thickness\",kind:RequirementKind::Param(Type::length())}). .public().refinement(\"Bounded\").require_let(\"vol\",Type::Real).require_sub(\"mount\",\"MountPoint\").build() populates all fields. Assert content_hash non-zero.",
-      "status": "done",
-      "commit": "5548c2a"
-    },
-    {
-      "id": "step-18",
-      "type": "impl",
-      "description": "Implement CompiledTraitBuilder struct{name, is_pub, type_params: Vec<TypeParam>, refinements: Vec<String>, required_members: Vec<TraitRequirement>, defaults: Vec<TraitDefault>}. Methods: new(name)->Self, public()->Self, type_param(name,bounds:Vec<TraitBound>)->Self (adds TypeParam{name,bounds,default:None}), refinement(name)->Self, require_param(name,ty)->Self (adds TraitRequirement with RequirementKind::Param(ty)), require_let(name,ty)->Self, require_sub(name,structure)->Self, build()->CompiledTrait with content_hash from name+members.",
-      "status": "done",
-      "commit": "938fcaa"
-    },
-    {
-      "id": "step-19",
-      "type": "test",
-      "description": "Write tests for extended CompiledModuleBuilder: CompiledModuleBuilder::new(path).trait_def(compiled_trait).field(compiled_field).enum_def(EnumDef{name:\"Color\",variants:vec![\"Red\",\"Blue\"]}).compiled_purpose(purpose).template(tpl).build() produces CompiledModule where trait_defs.len()==1, fields.len()==1, enum_defs.len()==1, compiled_purposes.len()==1. Assert content_hash changes when these new fields are added (differs from empty module hash).",
-      "status": "done",
-      "commit": "964fe6d"
-    },
-    {
-      "id": "step-20",
-      "type": "impl",
-      "description": "Extend CompiledModuleBuilder: add fields trait_defs: Vec<CompiledTrait>, fields: Vec<CompiledField>, enum_defs: Vec<EnumDef>, compiled_purposes: Vec<CompiledPurpose> (init empty in new()). Add methods trait_def(t)->Self, field(f)->Self, enum_def(e)->Self, compiled_purpose(p)->Self. Update build() to populate these in CompiledModule and chain their content_hashes into the combined hash.",
-      "status": "done",
-      "commit": "4fea382"
-    },
-    {
-      "id": "step-21",
-      "type": "test",
-      "description": "Write tests for annotated entity fixtures: trait_structure_module() returns CompiledModule with 1 trait_def (\"Rigid\" requiring thickness:Length), 1 template (\"Plate\" with thickness param), 0 diagnostics. field_module() returns module with 1 field (analytical), 1 template. purpose_module() returns module with 1 compiled_purpose, 1 template. Assert expected counts and key field values.",
-      "status": "done",
-      "commit": "pending"
-    },
-    {
-      "id": "step-22",
-      "type": "impl",
-      "description": "Implement annotated entity fixtures in fixtures.rs using the new builders: trait_structure_module()->CompiledModule (CompiledTraitBuilder::new(\"Rigid\").require_param(\"thickness\",Type::length()).build() + TopologyTemplateBuilder::new(\"Plate\") with thickness param). field_module()->CompiledModule (CompiledFieldBuilder::new(\"temp\",..).analytical(lambda).build() + template). purpose_module()->CompiledModule (CompiledPurposeBuilder::new(\"mfg_ready\").param(\"subject\",\"Structure\").constraint(..).build() + template).",
-      "status": "pending",
-      "commit": null
+      "commit": "99e5cd3"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Keep all builder extensions in existing files (builders.rs, values.rs, fixtures.rs) rather than splitting into new modules",
-      "rationale": "The crate has an established 4-module convention (builders, values, fixtures, mocks). Splitting would add complexity without clear benefit at this size. builders.rs will grow from ~550 to ~900 lines, which is manageable."
+      "decision": "Add `is_recursive: bool` field to TopologyTemplate rather than a separate data structure",
+      "rationale": "TopologyTemplate is the compiled representation consumed by reify-eval. Tagging it directly makes the information immediately available during elaboration without requiring a side-channel lookup. The field is cheap (1 byte) and zero-cost when false."
     },
     {
-      "decision": "Extend literal() to handle M5 types rather than creating a separate typed_literal() function",
-      "rationale": "The existing panic message says 'not yet implemented', indicating the intent was always to extend it. Keeping a single entry point reduces API surface and cognitive load. Type inference uses the same logic as the compiler: infer element types from collection contents."
+      "decision": "Use warning-level diagnostics, not errors, for recursive cycles",
+      "rationale": "Recursive structures are not necessarily invalid \u2014 they may be meaningful with collection subs (bounded count) or guarded subs (conditional inclusion). The task says 'tag for special handling', not 'reject'. Downstream elaboration can decide how to handle them (e.g., depth limits, lazy expansion)."
     },
     {
-      "decision": "Collection expression builders (list_expr, set_expr, map_expr) infer types from first element rather than requiring explicit type arguments",
-      "rationale": "Follows the ergonomic pattern of literal() \u2014 infer when possible. In tests, collections almost always have uniform element types. For empty collections, callers use CompiledExpr::list_literal/set_literal/map_literal directly with explicit types."
+      "decision": "Implement detection as a post-compilation pass rather than inline during compile_entity",
+      "rationale": "Following the existing pattern of deferred bound checks: all templates must be compiled before we can build the full reference graph. Forward references are allowed within a module, so inline detection during entity compilation would miss structures defined later in the file."
     },
     {
-      "decision": "Field operation helpers (sample_call, gradient_call, etc.) delegate to fn_call() rather than constructing FunctionCall variants directly",
-      "rationale": "Layered API: fn_call() is the general-purpose FunctionCall builder, field ops are convenient wrappers with hardcoded qualified names. This mirrors how the compiler resolves these to std::field::* functions."
+      "decision": "Use DFS with path tracking for cycle detection rather than full SCC (Tarjan's)",
+      "rationale": "We need cycle paths for diagnostic messages, not just cycle membership. DFS with a path stack naturally gives us the cycle path when a back edge is found. The structure count per module is small enough that algorithmic complexity is irrelevant."
     },
     {
-      "decision": "Lambda expression builder generates ValueCellIds with '__lambda' entity prefix for param IDs",
-      "rationale": "Matches the compiler convention for lambda parameter scoping (seen as FIELD_ENTITY_PREFIX='__field' for fields). Keeps generated IDs distinct from structure-level cells."
+      "decision": "Place all tests in a dedicated integration test file rather than inline unit tests",
+      "rationale": "Follows the established codebase pattern where each feature area has its own test file in tests/ (e.g., collection_sub_tests.rs, trait_bounds_tests.rs). The tests need the compile + check diagnostics pattern that integration tests use."
     },
     {
-      "decision": "CompiledTraitBuilder omits default_constraint/default_param methods in initial implementation \u2014 only required_members are built",
-      "rationale": "TraitDefault wraps syntax-level AST declarations (reify_syntax::ConstraintDecl, ParamDecl, LetDecl), which require complex manual construction. The primary test need is for trait requirements (the contract). Default handling can be added later if tests need it."
-    },
-    {
-      "decision": "Annotated entity fixtures use the new builders exclusively rather than manual struct construction",
-      "rationale": "Serves as integration tests for the builder API and demonstrates intended usage patterns. If a builder can't express a fixture, that's a signal the builder API is incomplete."
-    },
-    {
-      "decision": "Content hash tag bytes for new expression helpers (Conditional=[4], FunctionCall=[5], UserFunctionCall=[6]) are test-only values, not matching compiler exactly",
-      "rationale": "The test-support builders produce structurally correct but not compiler-identical hashes. The existing TopologyTemplateBuilder already follows this pattern (hash from name+children, not matching compile_structure byte-for-byte). What matters is that distinct expressions produce distinct hashes."
+      "decision": "Only consider sub_components for reference graph edges, not type_args",
+      "rationale": "Type arguments (e.g., Box<Bolt>) reference structures but don't create containment relationships that cause infinite elaboration. A Box<T> parameterized by T doesn't contain T as a sub \u2014 it's a type parameter. Recursion through sub containment is what causes structural cycles."
     }
   ],
   "reuse": [
     {
-      "what": "ContentHash::of, ContentHash::combine, ContentHash::of_str",
-      "where": "reify-types",
-      "how": "All new builders use these for content hash computation, matching the project's hash scheme"
+      "what": "DFS cycle detection pattern from module_dag.rs",
+      "where": "crates/reify-compiler/src/module_dag.rs lines 118-126",
+      "how": "Adapt the in_progress HashSet + early return pattern for structure reference graph traversal, extending it with path tracking to report cycle chains"
     },
     {
-      "what": "SourceSpan::new(0, 0) pattern for test spans",
-      "where": "Existing builders in builders.rs (lines 193, 209, 244, etc.)",
-      "how": "All new builders use zero-span for test convenience, same as TopologyTemplateBuilder"
+      "what": "Post-compilation pass pattern",
+      "where": "crates/reify-compiler/src/lib.rs lines 1896-1942",
+      "how": "Add the recursive structure detection pass after the existing deferred bound check pass, using the same template_registry HashMap<String, &TopologyTemplate>"
     },
     {
-      "what": "Fluent builder pattern (consume self, return Self)",
-      "where": "TopologyTemplateBuilder, CompiledModuleBuilder",
-      "how": "CompiledFieldBuilder, CompiledPurposeBuilder, CompiledTraitBuilder all follow the same owned-self fluent API with terminal build()"
+      "what": "Diagnostic emission pattern with labels",
+      "where": "crates/reify-compiler/src/lib.rs (used throughout, e.g., lines 1783-1802)",
+      "how": "Use Diagnostic::warning() with DiagnosticLabel::new(span, message) pointing to the sub declarations that form the cycle"
     },
     {
-      "what": "CompiledExpr named constructors (literal, list_literal, set_literal, map_literal, method_call, lambda)",
-      "where": "reify-types/src/expr.rs",
-      "how": "New expression builders wrap these with ergonomic type inference. list_expr wraps list_literal, set_expr wraps set_literal, etc."
+      "what": "Test helper compile_no_errors() / compile pattern",
+      "where": "crates/reify-compiler/tests/collection_sub_tests.rs lines 6-27",
+      "how": "Reuse the same pattern: parse source, assert no parse errors, compile, return CompiledModule. Create a compile_module() helper that allows warnings (since recursion detection emits warnings, not errors)."
     },
     {
-      "what": "Value::content_hash() method",
-      "where": "reify-types/src/value.rs",
-      "how": "Used by the extended literal() and by CompiledExpr::literal internally for computing expression content hashes"
+      "what": "SubComponentDecl.structure_name field",
+      "where": "crates/reify-compiler/src/lib.rs line 208",
+      "how": "Use structure_name from each SubComponentDecl to build the adjacency list edges in the reference graph"
     },
     {
-      "what": "Existing fixture patterns (bracket_compiled_module, parent_child_module)",
-      "where": "fixtures.rs",
-      "how": "New fixtures follow same doc-comment and function-returning-CompiledModule pattern"
-    },
-    {
-      "what": "CompiledConstraint struct for constraint construction",
-      "where": "reify-compiler",
-      "how": "Reused in CompiledPurposeBuilder.constraint() and existing TopologyTemplateBuilder.constraint(), same construction pattern"
-    },
-    {
-      "what": "Existing expression helpers (gt, lt, ge, le, eq, ne, and, or, not, neg, binop)",
-      "where": "builders.rs lines 41-96",
-      "how": "Field operation helpers and fixture construction use these to build constraint expressions without verbose CompiledExpr construction"
+      "what": "TopologyTemplate.sub_components and template name",
+      "where": "crates/reify-compiler/src/lib.rs lines 159-178",
+      "how": "Iterate compiled templates to extract (template.name -> sub.structure_name) edges for graph construction"
     }
   ],
-  "_session_id": "289-5c7e2f5f",
-  "_created_at": "2026-03-24T07:45:08.996375+00:00"
+  "_session_id": "203-409aa634",
+  "_created_at": "2026-03-24T08:29:48.931250+00:00"
 }
