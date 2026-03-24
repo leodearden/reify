@@ -743,6 +743,56 @@ mod tests {
             panic!("expected Lambda kind");
         }
     }
+
+    // --- Field operation expression helpers tests (step-11) ---
+
+    #[test]
+    fn sample_call_produces_function_call_with_std_field_sample() {
+        let field_e = literal(Value::Real(0.0)); // dummy field expr
+        let point_e = literal(Value::Real(1.0));
+        let expr = sample_call(field_e, point_e, Type::Real);
+        if let CompiledExprKind::FunctionCall { function, args } = &expr.kind {
+            assert_eq!(function.qualified_name, "std::field::sample");
+            assert_eq!(args.len(), 2);
+        } else {
+            panic!("expected FunctionCall kind for sample_call");
+        }
+        assert_eq!(expr.result_type, Type::Real);
+    }
+
+    #[test]
+    fn gradient_call_produces_function_call_with_std_field_gradient() {
+        let field_e = literal(Value::Real(0.0));
+        let expr = gradient_call(field_e, Type::Real);
+        if let CompiledExprKind::FunctionCall { function, args } = &expr.kind {
+            assert_eq!(function.qualified_name, "std::field::gradient");
+            assert_eq!(args.len(), 1);
+        } else {
+            panic!("expected FunctionCall kind for gradient_call");
+        }
+    }
+
+    #[test]
+    fn divergence_call_produces_function_call_with_std_field_divergence() {
+        let field_e = literal(Value::Real(0.0));
+        let expr = divergence_call(field_e, Type::Real);
+        if let CompiledExprKind::FunctionCall { function, .. } = &expr.kind {
+            assert_eq!(function.qualified_name, "std::field::divergence");
+        } else {
+            panic!("expected FunctionCall kind for divergence_call");
+        }
+    }
+
+    #[test]
+    fn curl_call_produces_function_call_with_std_field_curl() {
+        let field_e = literal(Value::Real(0.0));
+        let expr = curl_call(field_e, Type::Real);
+        if let CompiledExprKind::FunctionCall { function, .. } = &expr.kind {
+            assert_eq!(function.qualified_name, "std::field::curl");
+        } else {
+            panic!("expected FunctionCall kind for curl_call");
+        }
+    }
 }
 
 /// Builder for `CompiledModule`.
