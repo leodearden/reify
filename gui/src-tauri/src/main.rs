@@ -284,6 +284,82 @@ async fn lsp_request(
     Ok(result)
 }
 
+/// Lazy-spawn the Claude sidecar (if not already running) and send a user message.
+/// Returns the generated message ID for correlating response events.
+///
+/// All outbound messages from the sidecar are emitted as Tauri events:
+/// - `claude-ready`, `claude-text-delta`, `claude-thinking-delta`
+/// - `claude-tool-call`, `claude-tool-result`
+/// - `claude-done`, `claude-error`
+///
+/// `reify_` prefixed tool calls are intercepted and executed in-process
+/// via the MCP registry before a `tool_result` is written back to the sidecar.
+#[tauri::command]
+async fn claude_send_message(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    text: String,
+    context: Option<reify_gui::claude_bridge::MessageContext>,
+) -> Result<String, String> {
+    // Lazy-spawn the sidecar if it isn't running yet.
+    {
+        let mut sidecar_guard = state.sidecar.lock().await;
+        if sidecar_guard.is_none() {
+            use reify_gui::claude_bridge::{SidecarHandle, SidecarState};
+            use std::sync::Arc;
+
+            // Resolve the sidecar binary path relative to the app bundle.
+            // In development, the sidecar is in the adjacent sidecar/ directory.
+            let sidecar_path = app
+                .path()
+                .resource_dir()
+                .map(|p| p.join("sidecar").join("reify-sidecar"))
+                .unwrap_or_else(|_| std::path::PathBuf::from("sidecar/reify-sidecar"));
+
+            let mut proc = tokio::process::Command::new(&sidecar_path)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::inherit())
+                .spawn()
+                .map_err(|e| format!("Failed to spawn sidecar {:?}: {}", sidecar_path, e))?;
+
+            let stdin = proc.stdin.take().ok_or("sidecar has no stdin")?;
+            let stdout = proc.stdout.take().ok_or("sidecar has no stdout")?;
+            // Keep proc alive by dropping it into a background task that waits for exit
+            tokio::spawn(async move { proc.wait().await.ok(); });
+
+            let app_for_events = app.clone();
+            let engine = Arc::clone(&state.engine);
+            let reader = tokio::io::BufReader::new(stdout);
+            let sidecar_state = Arc::new(tokio::sync::Mutex::new(SidecarState::Starting));
+            let handle = SidecarHandle::from_parts_with_mcp(
+                stdin,
+                reader,
+                sidecar_state,
+                engine,
+                move |name, payload| {
+                    app_for_events.emit(&name, payload).ok();
+                },
+            );
+            *sidecar_guard = Some(handle);
+        }
+    }
+
+    reify_gui::claude_bridge::claude_send_message_impl(&state.sidecar, &text, context).await
+}
+
+/// Send an abort signal to the sidecar (cancels the current in-flight message).
+#[tauri::command]
+async fn claude_abort(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    reify_gui::claude_bridge::claude_abort_impl(&state.sidecar).await
+}
+
+/// Clear the Claude conversation session (resets conversation history).
+#[tauri::command]
+async fn claude_clear_session(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    reify_gui::claude_bridge::claude_clear_session_impl(&state.sidecar).await
+}
+
 fn main() {
     // Set up the geometry kernel with OCCT
     let checker = SimpleConstraintChecker;
@@ -346,7 +422,24 @@ fn main() {
             focus_entity,
             mcp_tool_call,
             lsp_request,
+            claude_send_message,
+            claude_abort,
+            claude_clear_session,
         ])
+        .on_window_event(|window, event| {
+            // Gracefully shut down the sidecar when the window closes.
+            if let tauri::WindowEvent::Destroyed = event {
+                let app = window.app_handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let state: tauri::State<'_, AppState> = app.state();
+                    let mut sidecar = state.sidecar.lock().await;
+                    if let Some(handle) = sidecar.as_mut() {
+                        handle.kill().await;
+                    }
+                    *sidecar = None;
+                });
+            }
+        })
         .run(tauri::generate_context!())
         .expect("error running tauri application");
 }
