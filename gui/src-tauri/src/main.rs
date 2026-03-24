@@ -323,8 +323,20 @@ async fn claude_send_message(
                 .spawn()
                 .map_err(|e| format!("Failed to spawn sidecar {:?}: {}", sidecar_path, e))?;
 
-            let stdin = proc.stdin.take().ok_or("sidecar has no stdin")?;
-            let stdout = proc.stdout.take().ok_or("sidecar has no stdout")?;
+            let stdin = match proc.stdin.take() {
+                Some(s) => s,
+                None => {
+                    proc.kill().await.ok();
+                    return Err("sidecar has no stdin".to_string());
+                }
+            };
+            let stdout = match proc.stdout.take() {
+                Some(s) => s,
+                None => {
+                    proc.kill().await.ok();
+                    return Err("sidecar has no stdout".to_string());
+                }
+            };
 
             let app_for_events = app.clone();
             let engine = Arc::clone(&state.engine);
@@ -344,12 +356,13 @@ async fn claude_send_message(
             // This replaces the old fire-and-forget tokio::spawn(proc.wait()) pattern.
             handle.set_child(proc);
 
-            // Extract the ready_notify Arc before storing the handle so we can
-            // await it after dropping the sidecar lock (avoids holding the lock
-            // for up to 10s during startup, which would block abort/clear_session).
+            // Subscribe to the ready notification BEFORE storing the handle and
+            // releasing the lock. This ensures we don't miss a notify_waiters()
+            // call that fires between the lock drop and the await.
             let notify = std::sync::Arc::clone(handle.ready_notify());
+            let notified = notify.notified();
             *sidecar_guard = Some(handle);
-            Some(notify)
+            Some(notified)
         } else {
             // Sidecar already running — no need to wait for ready again.
             None
@@ -360,10 +373,12 @@ async fn claude_send_message(
     // If we just spawned a new sidecar, wait for the "ready" signal with a 10s
     // timeout before sending the message. We do this *outside* the sidecar lock
     // so other commands (abort, clear_session) remain responsive during startup.
-    if let Some(notify) = ready_notify {
+    // The Notified future was created before the lock was released, so we won't
+    // miss a notification that fires between the lock drop and the await.
+    if let Some(notified) = ready_notify {
         tokio::time::timeout(
             std::time::Duration::from_secs(10),
-            notify.notified(),
+            notified,
         )
         .await
         .map_err(|_| "Sidecar did not become ready within 10 seconds".to_string())?;

@@ -213,6 +213,7 @@ impl SidecarHandle {
         let ready_notify = Arc::new(Notify::new());
         let state_for_ready = Arc::clone(&state);
         let state_for_crash = Arc::clone(&state);
+        let notify_for_crash = Arc::clone(&ready_notify);
         let stdin_for_reader = Arc::clone(&stdin);
         let notify_for_reader = Arc::clone(&ready_notify);
 
@@ -266,13 +267,17 @@ impl SidecarHandle {
                     }
                 },
                 move || {
-                    // on_exit: set state to Crashed unless we're already NotStarted (killed)
+                    // on_exit: set state to Crashed unless we're already NotStarted (killed).
+                    // Also notify waiters so anyone blocked in wait_ready wakes immediately
+                    // instead of hanging for the full timeout.
                     let state_inner = state_for_crash;
+                    let notify_inner = notify_for_crash;
                     tokio::spawn(async move {
                         let mut s = state_inner.lock().await;
                         if !matches!(*s, SidecarState::NotStarted) {
                             *s = SidecarState::Crashed("sidecar exited unexpectedly".to_string());
                         }
+                        notify_inner.notify_waiters();
                     });
                 },
             )
@@ -314,7 +319,15 @@ impl SidecarHandle {
 
         tokio::time::timeout(timeout, notified)
             .await
-            .map_err(|_| format!("Timeout waiting for sidecar ready after {}ms", timeout.as_millis()))
+            .map_err(|_| format!("Timeout waiting for sidecar ready after {}ms", timeout.as_millis()))?;
+
+        // Re-check state: notification may have been triggered by a crash, not Ready.
+        let state = self.state.lock().await;
+        match &*state {
+            SidecarState::Ready => Ok(()),
+            SidecarState::Crashed(msg) => Err(format!("sidecar crashed: {}", msg)),
+            other => Err(format!("sidecar not ready after notification: {:?}", other)),
+        }
     }
 
     /// Store the OS child process handle so it can be properly terminated on kill.
