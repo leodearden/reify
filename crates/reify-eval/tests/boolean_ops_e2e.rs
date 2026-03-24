@@ -93,6 +93,95 @@ fn boolean_union_all_three_boxes_e2e() {
     run_boolean_e2e(source);
 }
 
+/// Step-19: multi-realization with nested booleans in both realizations.
+///
+/// r1 = difference(box(20mm,20mm,20mm), cylinder(5mm, 20mm)) — box with cylindrical hole
+/// r2 = union(box(10mm,10mm,10mm), sphere(8mm))              — box merged with sphere
+///
+/// Both realizations use nested boolean ops. Without the realization-local slice
+/// fix (step-18), r2's Step(0), Step(1), Step(2) would resolve into r1's handles
+/// rather than r2's own primitives. This exercises the fix with compound ops
+/// where step indices would be even more wrong: r2 emits Step(0)=box, Step(1)=sphere,
+/// Step(2)=Boolean{Union, Step(0), Step(1)}, but globally after r1's 3 ops those
+/// step indices point to r1's box, cylinder, and difference result respectively.
+#[test]
+fn boolean_multi_realization_nested_e2e() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!("skipping: OCCT not available");
+        return;
+    }
+
+    let source = r#"structure S {
+    let r1 = difference(box(20mm, 20mm, 20mm), cylinder(5mm, 20mm))
+    let r2 = union(box(10mm, 10mm, 10mm), sphere(8mm))
+}"#;
+
+    // Parse
+    let parsed = reify_syntax::parse(source, ModulePath::single("test_bool_nested_multi"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    // Compile
+    let compiled = reify_compiler::compile(&parsed);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_types::Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "compile errors: {:?}", errors);
+
+    // Should have 1 template with 2 realizations
+    assert_eq!(compiled.templates.len(), 1, "expected 1 template");
+    assert_eq!(
+        compiled.templates[0].realizations.len(),
+        2,
+        "expected 2 realizations (r1 and r2)"
+    );
+    // r1 has 3 ops: box, cylinder, Boolean{Difference}
+    assert_eq!(
+        compiled.templates[0].realizations[0].operations.len(),
+        3,
+        "r1 should have 3 ops (box, cylinder, difference)"
+    );
+    // r2 has 3 ops: box, sphere, Boolean{Union}
+    assert_eq!(
+        compiled.templates[0].realizations[1].operations.len(),
+        3,
+        "r2 should have 3 ops (box, sphere, union)"
+    );
+
+    // Tessellate with real OCCT kernel
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let mut planner = reify_geometry::DispatchPlanner::new();
+    planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
+
+    let result = engine.tessellate_realizations(&compiled);
+
+    // No geometry errors
+    let geom_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_types::Severity::Error)
+        .collect();
+    assert!(geom_errors.is_empty(), "geometry errors: {:?}", geom_errors);
+
+    // Both realizations must produce tessellated meshes
+    assert_eq!(
+        result.meshes.len(),
+        2,
+        "expected 2 meshes (one per realization), got {}",
+        result.meshes.len()
+    );
+    assert!(
+        !result.meshes[0].1.vertices.is_empty(),
+        "r1 (difference) mesh should have vertices"
+    );
+    assert!(
+        !result.meshes[1].1.vertices.is_empty(),
+        "r2 (union) mesh should have vertices"
+    );
+}
+
 /// Step-17: two geometry let bindings — r1 = simple box, r2 = boolean union.
 ///
 /// This test exposes the multi-realization step index bug: when the eval engine
