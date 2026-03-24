@@ -1,146 +1,164 @@
 {
-  "task_id": "149",
-  "title": "Range type: Type and Value variants",
+  "task_id": "182",
+  "title": "Trait conformance: infrastructure",
   "files": [
-    "crates/reify-types/src/ty.rs",
-    "crates/reify-types/src/value.rs",
-    "crates/reify-types/tests/exports.rs"
+    "crates/reify-compiler/src/lib.rs",
+    "crates/reify-compiler/tests/trait_conformance_tests.rs"
   ],
   "modules": [
-    "crates/reify-types"
+    "crates/reify-compiler"
   ],
-  "analysis": "This task is ALREADY FULLY IMPLEMENTED in the current worktree. Both Range variants exist with comprehensive trait implementations and 52 Range-specific tests (all passing, 289 total in reify-types).\n\n**Type::Range(Box<Type>)** at ty.rs line 49:\n- Derives Debug, Clone, PartialEq, Eq, Hash automatically via derive macros\n- Display impl: 'Range<{inner}>' at line 644\n- Factory method: Type::range(inner) at lines 109-112\n- 8 unit tests (lines 522-588): construction, display (int/scalar/real), factory, eq+hash, not_numeric, as_name_none\n\n**Value::Range { lower, upper, lower_inclusive, upper_inclusive }** at value.rs lines 58-63:\n- PartialEq: field-by-field comparison (lines 318-321)\n- Eq: marker trait (line 328)\n- Ord: type_tag=16, compares lower_inclusive -> lower -> upper_inclusive -> upper (lines 432-440)\n- Display: interval notation [0..10] or (-inf..inf) (lines 551-563)\n- content_hash: tag=17, flags then optional bounds (lines 252-264)\n- Factory: Value::range() with normalization \u2014 forces inclusive=false when bound is None (lines 91-105)\n- 44 unit tests covering display (8), content_hash (6), ord (7), equality (10), normalization (7), cross-variant (3), hash consistency (3)\n\n**Dimension checking**: Type::Range(Box<Type>) structurally guarantees both bounds share the same element type (and thus dimension for Scalar). Runtime dimension checking is the type-checker's responsibility (in reify-compiler, not reify-types).\n\n**Exports**: tests/exports.rs lines 197-214 verify Range is accessible via public API for both Type and Value.\n\nSince everything is fully implemented and tested, the steps below are verification-only \u2014 each confirms existing code and tests are correct.\n\n**Review fix (steps 9-10):** The reviewer identified that Value::Range is a public enum variant with named fields, so callers can bypass Value::range() and directly construct Value::Range { lower: None, lower_inclusive: true, ... }. This violates the normalization invariant (inclusive flags must be false when bounds are None), which corrupts cache equality. The fix adds debug_assert! guards in all four trait impls (content_hash, PartialEq, Ord, Display) to catch invariant violations at runtime in debug builds. A compile-time fix via #[non_exhaustive] was considered but deferred because it would break pattern matching and construction in dependent crates (reify-test-support, reify-lsp, gui/src-tauri) which are outside this task's scope.",
-  "prerequisites": [],
+  "analysis": "The task requires adding a new pure, public `check_trait_conformance(structure_members, trait_def) -> Vec<ConformanceError>` function and a new `ConformanceError` enum to the reify-compiler crate.\n\nCurrently, trait conformance checking exists as a private `check_trait_conformance` function (line 4399) with a heavy signature \u2014 it takes an EntityDefRef, trait_registry, CompilationScope, mutable value_cells/constraints vecs, and diagnostics. It both validates conformance AND injects trait defaults (value cells, constraints). It emits errors as `Diagnostic` values pushed into a mutable vec.\n\nThe task asks for a new, focused public function with a clean API:\n- Input: `structure_members: &HashMap<String, Type>` (member name -> type) and `trait_def: &CompiledTrait`\n- Output: `Vec<ConformanceError>` \u2014 structured error types, not Diagnostics\n- Scope: For each `RequirementKind::Param` in `trait_def.required_members`, verify the structure has a param with matching name and exact type (using Type PartialEq).\n\nThis is infrastructure for a larger trait system \u2014 the pure function checks one trait's requirements against a flat member map, while callers handle refinement hierarchy walking and default injection.\n\nThe existing private function must be renamed to avoid collision (it's called once at line 2685). Renaming to `check_and_apply_trait_conformance` captures its dual role (check + inject defaults).",
+  "prerequisites": [
+    {
+      "id": "pre-1",
+      "description": "Rename existing private `check_trait_conformance` (line 4399) to `check_and_apply_trait_conformance` and update the single call site at line 2685. This avoids name collision with the new public function. No behavior change \u2014 purely mechanical rename.",
+      "status": "done",
+      "commit": "c5b025ff",
+      "tests": [
+        "cargo test --package reify-compiler (all existing tests pass after rename)"
+      ]
+    }
+  ],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Verify Type::Range(Box<Type>) variant exists with derived Eq/Hash, Display as 'Range<{inner}>', and factory method Type::range(). Run existing 8 tests in ty.rs (type_range_construction through type_range_as_name_none). All should pass \u2014 no new test code needed.",
-      "status": "done",
-      "commit": "6f1eba2531d1c137305cb0882a844d5e01329e12"
+      "description": "Write failing test `conformance_empty_trait_no_errors`: construct a CompiledTrait with empty required_members and an arbitrary structure_members HashMap. Call `check_trait_conformance` and assert it returns an empty Vec. This test fails because the function and ConformanceError type don't exist yet.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Type::Range(Box<Type>) already at ty.rs:49 with derive(Debug, Clone, PartialEq, Eq, Hash), Display at line 644, factory at lines 109-112. No code changes needed \u2014 mark as done after step-1 verification.",
-      "status": "done",
-      "commit": "6f1eba2531d1c137305cb0882a844d5e01329e12"
+      "description": "Add `ConformanceError` enum with two variants: `MissingParam { name: String, expected_type: Type }` and `TypeMismatch { name: String, expected_type: Type, actual_type: Type }`. Derive Debug, Clone, PartialEq. Add `pub fn check_trait_conformance(structure_members: &HashMap<String, Type>, trait_def: &CompiledTrait) -> Vec<ConformanceError>` that returns an empty Vec. Place the type near the other trait-related types (after line ~80) and the function after `collect_all_requirements`.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Verify Value::Range struct variant exists with PartialEq (lines 318-321), Eq (line 328), content_hash tag=17 (lines 252-264). Run existing 15 equality+hash tests (value_range_equal_ranges_are_equal through value_range_content_hash_both_none_deterministic). All should pass.",
-      "status": "done",
-      "commit": "6f1eba2531d1c137305cb0882a844d5e01329e12"
+      "description": "Write failing test `conformance_missing_param_error`: construct a CompiledTrait with one `RequirementKind::Param(Type::Scalar { dimension: DimensionVector::LENGTH })` named 'width', and an empty structure_members. Assert the result contains exactly one `ConformanceError::MissingParam { name: \"width\", expected_type: LENGTH }`. Fails because function returns empty vec.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Value::Range { lower, upper, lower_inclusive, upper_inclusive } already at value.rs:58-63. PartialEq, Eq, content_hash all implemented. No code changes needed.",
-      "status": "done",
-      "commit": "6f1eba2531d1c137305cb0882a844d5e01329e12"
+      "description": "Implement missing-param detection in `check_trait_conformance`: iterate `trait_def.required_members`, for each `RequirementKind::Param(expected_type)`, if `structure_members` does not contain the requirement name, push `ConformanceError::MissingParam { name, expected_type }`.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Verify Value::Range Ord (type_tag=16, lines 432-440) and Display (interval notation, lines 551-563). Run existing 15 ord+display tests (value_range_ord_cross_type_after_orientation through value_range_display_real_bounds). All should pass.",
-      "status": "done",
-      "commit": "6f1eba2531d1c137305cb0882a844d5e01329e12"
+      "description": "Write failing test `conformance_type_mismatch_error`: construct a CompiledTrait requiring param 'mass' of type Mass, and structure_members containing 'mass' mapped to Length. Assert result contains exactly one `ConformanceError::TypeMismatch { name: \"mass\", expected_type: MASS, actual_type: LENGTH }`. Fails because the function doesn't check types yet \u2014 it sees the key exists and skips.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Value::Range Ord and Display already fully implemented. Ord compares lower_inclusive -> lower -> upper_inclusive -> upper. Display uses [/( brackets with -inf/inf for unbounded. No code changes needed.",
-      "status": "done",
-      "commit": "6f1eba2531d1c137305cb0882a844d5e01329e12"
+      "description": "Add type-mismatch detection: when `structure_members` contains the requirement name but `actual_type != expected_type`, push `ConformanceError::TypeMismatch { name, expected_type, actual_type }`. The full Param branch now: lookup name -> missing -> MissingParam, found + wrong type -> TypeMismatch, found + correct type -> no error.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Verify Value::range() factory normalizes inclusivity (forces false when bound is None) and exports.rs covers Range. Run existing 12 normalization tests (value_range_normalize_* through value_range_display_both_none_with_inclusive_true) and exports test. All should pass.",
-      "status": "done",
-      "commit": "6f1eba2531d1c137305cb0882a844d5e01329e12"
+      "description": "Write test `conformance_satisfied_param_no_errors`: construct a CompiledTrait requiring param 'width' of type Length, and structure_members containing 'width' mapped to Length. Assert result is empty. This should pass immediately (green) \u2014 validates the happy path.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-8",
-      "type": "impl",
-      "description": "Value::range() factory at value.rs:91-105 normalizes inclusive flags. exports.rs lines 197-214 test public API. No code changes needed \u2014 full implementation is complete.",
-      "status": "done",
-      "commit": "6f1eba2531d1c137305cb0882a844d5e01329e12"
+      "type": "test",
+      "description": "Write test `conformance_multiple_requirements_mixed`: construct a CompiledTrait with three Param requirements: 'width' (Length), 'mass' (Mass), 'name' (String). Provide structure_members with 'width' mapped to Length (correct), 'mass' mapped to Length (wrong type), and no 'name'. Assert result has exactly 2 errors: one TypeMismatch for 'mass' and one MissingParam for 'name'. Should pass immediately \u2014 validates multi-requirement handling.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write 4 failing tests for Range invariant enforcement (review fix: invariant_bypass). Tests directly construct Value::Range { lower: None, lower_inclusive: true, ... } bypassing the factory, then call content_hash(), eq(), cmp(), and format!() respectively. Each test should panic in debug mode with the message 'Range invariant violated: lower_inclusive must be false when lower is None'. Also write 2 tests for upper bound: directly construct with upper: None, upper_inclusive: true and verify content_hash() and format!() panic. All 6 tests use #[should_panic(expected = \"Range invariant violated\")]. Tests go in value.rs after the existing normalization tests (~line 2300).",
-      "status": "done",
-      "commit": "a86fc299"
+      "description": "Write test `conformance_let_requirement_checked`: construct a CompiledTrait with a `RequirementKind::Let(Type::Real)` named 'area'. Provide structure_members without 'area'. Assert result contains a MissingLet error. This tests that Let requirements are also validated.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Add debug_assert! guards in all 4 trait impls for Value::Range to enforce the normalization invariant. In each impl's Range match arm, add two assertions before the existing logic: debug_assert!(lower.is_some() || !lower_inclusive, \"Range invariant violated: lower_inclusive must be false when lower is None\") and debug_assert!(upper.is_some() || !upper_inclusive, \"Range invariant violated: upper_inclusive must be false when upper is None\"). Locations: (1) content_hash at value.rs:252-264, add after the pattern match and before tag=17 hashing; (2) PartialEq at value.rs:318-321, add assertions for both self and other Range values; (3) Ord at value.rs:432-440, add assertions for both Range values; (4) Display at value.rs:551-563, add after the pattern match and before bracket formatting. This catches any direct construction that bypasses Value::range() at runtime in debug builds.",
-      "status": "done",
-      "commit": "755ab264"
+      "description": "Extend `check_trait_conformance` to also handle `RequirementKind::Let` with the same missing/mismatch logic as Param. Add `MissingLet { name: String, expected_type: Type }` variant to ConformanceError for precision. Update the function to match on both Param and Let requirement kinds.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-11",
+      "type": "test",
+      "description": "Write test `conformance_exact_type_equality_dimensions`: construct a trait requiring 'length' with Scalar{LENGTH} dimension, provide structure_members with 'length' mapped to Scalar{MASS}. Assert TypeMismatch. Then test with Scalar{LENGTH} mapped to Scalar{LENGTH} produces no error. Validates that dimensional types use exact equality (no widening).",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-12",
+      "type": "test",
+      "description": "Run full existing test suite (`cargo test --package reify-compiler`) to verify the rename in pre-1 and all new code don't break any existing tests. This is a regression check.",
+      "status": "pending",
+      "commit": null
     }
   ],
   "design_decisions": [
     {
-      "decision": "Type::Range wraps a single Box<Type> rather than two separate bound types",
-      "rationale": "Structurally enforces that both bounds share the same element type (and thus the same dimension for Scalar types). No runtime validation needed in reify-types \u2014 the type checker in reify-compiler handles dimension checking at the type level."
+      "decision": "Create a new public pure function rather than modifying the existing private one",
+      "rationale": "The existing `check_trait_conformance` does two things: validation AND default injection (value cells, constraints). The task asks for a pure checking function with structured errors. Separating concerns gives callers a clean API for validation-only use cases (e.g., IDE diagnostics, incremental checking) without the side effects of default injection."
     },
     {
-      "decision": "Value::range() factory normalizes inclusive flags to false when bound is None",
-      "rationale": "Infinity is never 'included', so normalizing prevents logically identical ranges (e.g., (-inf..10] vs [-inf..10]) from comparing as different or producing different content hashes. This is critical for the cache-equality invariant."
+      "decision": "Rename existing private function to `check_and_apply_trait_conformance`",
+      "rationale": "Rust doesn't support function overloading, so we can't have two functions with the same name. The existing function both checks conformance AND applies/injects defaults \u2014 the new name accurately describes its dual role. Only one call site needs updating."
     },
     {
-      "decision": "Ord for Value::Range uses type_tag=16 (after Orientation=15) and compares lower_inclusive before lower bound",
-      "rationale": "Tag 16 places Range after Orientation in cross-type ordering, consistent with enum declaration order. Within-type comparison puts inclusive/exclusive status first for deterministic total ordering."
+      "decision": "ConformanceError uses separate MissingParam/MissingLet variants (not a generic Missing variant)",
+      "rationale": "Structured errors should carry enough information for callers to provide precise diagnostics. Distinguishing param vs let in the error type lets consumers emit different messages or apply different fix suggestions. Follows the existing pattern where RequirementKind distinguishes Param from Let."
     },
     {
-      "decision": "content_hash uses tag byte 17 for Range (tag 10 reserved for Satisfaction, 0-16 for other Value variants)",
-      "rationale": "Avoids collision with all existing Value and Satisfaction hash tags. The tag-then-flags-then-optional-bounds structure ensures different Range configurations produce distinct hashes."
+      "decision": "Function checks a single CompiledTrait, not the full refinement chain",
+      "rationale": "The function signature takes `trait_def: &CompiledTrait`, not a trait registry. Hierarchy walking (refinement chains, diamond dedup) remains the caller's responsibility via `collect_all_requirements`. This keeps the function pure and composable \u2014 it's infrastructure that higher-level code combines."
     },
     {
-      "decision": "Display uses mathematical interval notation: [0..10], (0..10), (-inf..inf)",
-      "rationale": "Standard interval notation is universally understood: [ for inclusive, ( for exclusive, -inf/inf for unbounded. Uses '..' as Rust-idiomatic range separator."
+      "decision": "Use exact Type equality (PartialEq) for type matching, no widening",
+      "rationale": "The task explicitly says 'exact type'. The existing conformance code uses `!=` on Type (which derives PartialEq). Int->Real widening is only allowed in expression compilation, not in trait conformance. Dimensional types (Scalar{LENGTH} vs Scalar{MASS}) must match exactly."
     },
     {
-      "decision": "Use debug_assert! guards rather than #[non_exhaustive] to enforce Range normalization invariant",
-      "rationale": "The reviewer identified that Value::Range can be directly constructed bypassing the Value::range() factory, violating the normalization invariant. debug_assert! catches violations at runtime in debug builds with clear error messages. #[non_exhaustive] was considered for compile-time prevention but would break pattern matching and construction in dependent crates (reify-test-support, reify-lsp, gui/src-tauri) which are outside this task's scope. The debug_assert approach is defense-in-depth: the factory is the intended API, and assertions catch misuse during development."
+      "decision": "Sub requirements are not checked by the new function",
+      "rationale": "Sub requirements need structure member declarations (SubDecl), not just a name->type map. The function signature `structure_members: &HashMap<String, Type>` can't express sub-component validation. Sub checking remains in the existing `check_and_apply_trait_conformance` function. A future task could add sub checking with an extended input type."
     }
   ],
   "reuse": [
     {
-      "what": "Derive macros on Type enum for automatic Eq/Hash",
-      "where": "crates/reify-types/src/ty.rs line 4",
-      "how": "Type derives Debug, Clone, PartialEq, Eq, Hash \u2014 Range(Box<Type>) gets all traits for free via the derive, no manual implementation needed."
+      "what": "CompiledTrait, TraitRequirement, RequirementKind types",
+      "where": "crates/reify-compiler/src/lib.rs lines 22-55",
+      "how": "The new function takes &CompiledTrait and iterates its required_members Vec<TraitRequirement>, matching on RequirementKind::Param and ::Let. No new requirement types needed."
     },
     {
-      "what": "ContentHash::of and ContentHash::combine for tagged hashing",
-      "where": "crates/reify-types/src/hash.rs",
-      "how": "Range content_hash follows the same tag+combine pattern used by all other Value variants (List uses tag 7, Tensor uses tag 14, etc.)."
+      "what": "Type enum with PartialEq derive",
+      "where": "crates/reify-types/src/ty.rs",
+      "how": "Type comparison uses the derived PartialEq \u2014 `actual_type != expected_type` for mismatch detection. Covers all Type variants including Scalar with DimensionVector."
     },
     {
-      "what": "f64 to_bits() pattern for total ordering in Value",
-      "where": "crates/reify-types/src/value.rs PartialEq and Ord impls",
-      "how": "Range bounds containing Real/Scalar values inherit the to_bits() total ordering through recursive Value comparison \u2014 no special f64 handling needed in Range-specific code."
+      "what": "Existing test patterns (compile_module, compile_first_template, error filtering)",
+      "where": "crates/reify-compiler/tests/trait_conformance_tests.rs",
+      "how": "New tests for the pure function construct CompiledTrait directly (all fields are pub). Integration regression tests reuse existing compile_module helper."
     },
     {
-      "what": "Box<Type> / Option<Box<Value>> boxing pattern for recursive types",
-      "where": "Existing compound types: List(Box<Type>), Option(Option<Box<Value>>), Complex(Box<Type>)",
-      "how": "Range follows identical boxing: Type::Range(Box<Type>) and Value::Range { lower: Option<Box<Value>>, upper: Option<Box<Value>> }."
+      "what": "HashMap<String, Type> pattern for structure members",
+      "where": "crates/reify-compiler/src/lib.rs lines 4411-4433",
+      "how": "The existing check_and_apply_trait_conformance already builds a HashMap<String, Type> from structure members. The new function accepts this same type as input, so callers can reuse the same collection logic."
     },
     {
-      "what": "Factory method convention with normalization",
-      "where": "Type::complex(), Type::vec3(), Value::length() factory methods",
-      "how": "Type::range() and Value::range() follow the same convenience-constructor convention. Value::range() adds normalization logic specific to Range semantics."
-    },
-    {
-      "what": "Existing debug_assert! pattern in reify-types",
-      "where": "crates/reify-types/src/diagnostics.rs:14",
-      "how": "The crate already uses debug_assert! for invariant checking (e.g., start <= end in diagnostics). Range invariant guards follow this same pattern."
+      "what": "DimensionVector constants (LENGTH, MASS, etc.)",
+      "where": "crates/reify-types/src/dimension.rs",
+      "how": "Tests use DimensionVector::LENGTH, DimensionVector::MASS etc. to construct Type::Scalar values for test fixtures."
     }
   ],
-  "_session_id": "149-f4f12efa",
-  "_created_at": "2026-03-24T21:44:29.287931+00:00"
+  "_session_id": "182-e1360ce8",
+  "_created_at": "2026-03-24T22:17:01.861443+00:00"
 }

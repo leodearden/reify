@@ -6,6 +6,34 @@
 use reify_compiler::*;
 use reify_types::*;
 
+// Helper to create a minimal CompiledTrait with no required members.
+fn empty_trait(name: &str) -> CompiledTrait {
+    CompiledTrait {
+        name: name.to_string(),
+        is_pub: true,
+        type_params: vec![],
+        refinements: vec![],
+        required_members: vec![],
+        defaults: vec![],
+        content_hash: ContentHash::of_str(name),
+    }
+}
+
+// Helper to create a span for tests.
+fn test_span() -> SourceSpan {
+    SourceSpan { start: 0, end: 0 }
+}
+
+/// step-1: empty trait → no errors.
+#[test]
+fn conformance_empty_trait_no_errors() {
+    let trait_def = empty_trait("Empty");
+    let structure_members: std::collections::HashMap<String, Type> =
+        std::collections::HashMap::new();
+    let errors = check_trait_conformance(&structure_members, &trait_def);
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+}
+
 /// Helper: parse source and compile, returning the CompiledModule.
 fn compile_module(source: &str) -> CompiledModule {
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
