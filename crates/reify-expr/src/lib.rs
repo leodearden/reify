@@ -1048,6 +1048,25 @@ fn eval_unop(op: UnOp, operand: &CompiledExpr, ctx: &EvalContext) -> Value {
                 si_value: -si_value,
                 dimension,
             },
+            // Negate all components of a Tensor
+            Value::Tensor(components) => {
+                let results: Vec<Value> = components
+                    .into_iter()
+                    .map(|c| match c {
+                        Value::Int(i) => Value::Int(-i),
+                        Value::Real(r) => Value::Real(-r),
+                        Value::Scalar { si_value, dimension } => {
+                            Value::Scalar { si_value: -si_value, dimension }
+                        }
+                        _ => Value::Undef,
+                    })
+                    .collect();
+                if results.iter().any(|x| x.is_undef()) {
+                    Value::Undef
+                } else {
+                    Value::Tensor(results)
+                }
+            }
             _ => Value::Undef,
         },
         UnOp::Not => match v {
