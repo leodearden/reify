@@ -1103,4 +1103,49 @@ mod tests {
             other => panic!("expected Scalar with LENGTH dimension, got {:?}", other),
         }
     }
+
+    // --- lerp Real tests (step-9) ---
+
+    #[test]
+    fn lerp_midpoint() {
+        // lerp(0, 10, 0.5) = 5
+        assert_real_approx!(
+            eval_builtin("lerp", &[Value::Real(0.0), Value::Real(10.0), Value::Real(0.5)]),
+            5.0
+        );
+    }
+
+    #[test]
+    fn lerp_t_zero() {
+        // lerp(a, b, 0) = a
+        assert_real_approx!(
+            eval_builtin("lerp", &[Value::Real(3.0), Value::Real(7.0), Value::Real(0.0)]),
+            3.0
+        );
+    }
+
+    #[test]
+    fn lerp_t_one() {
+        // lerp(a, b, 1) = b
+        assert_real_approx!(
+            eval_builtin("lerp", &[Value::Real(3.0), Value::Real(7.0), Value::Real(1.0)]),
+            7.0
+        );
+    }
+
+    #[test]
+    fn lerp_negative_t_extrapolation() {
+        // lerp(0, 10, -0.5) = -5 (extrapolation below)
+        assert_real_approx!(
+            eval_builtin("lerp", &[Value::Real(0.0), Value::Real(10.0), Value::Real(-0.5)]),
+            -5.0
+        );
+    }
+
+    #[test]
+    fn lerp_nan_t_returns_undef() {
+        // t is NaN — explicit NaN check after extraction
+        let result = eval_builtin("lerp", &[Value::Real(0.0), Value::Real(10.0), Value::Real(f64::NAN)]);
+        assert!(result.is_undef(), "lerp with NaN t should be Undef, got {:?}", result);
+    }
 }
