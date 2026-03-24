@@ -63,6 +63,16 @@ impl Type {
         }
     }
 
+    /// Shorthand for a 2D point with a given quantity type.
+    pub fn point2(quantity: Type) -> Self {
+        Type::Point { n: 2, quantity: Box::new(quantity) }
+    }
+
+    /// Shorthand for a 3D point with a given quantity type.
+    pub fn point3(quantity: Type) -> Self {
+        Type::Point { n: 3, quantity: Box::new(quantity) }
+    }
+
     /// Is this type a numeric type (Int, Real, or Scalar)?
     pub fn is_numeric(&self) -> bool {
         matches!(self, Type::Int | Type::Real | Type::Scalar { .. })
