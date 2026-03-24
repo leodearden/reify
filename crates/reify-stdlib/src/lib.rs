@@ -70,6 +70,18 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
             _ => Value::Undef,
         }),
 
+        // --- Three-arg numeric functions ---
+        "clamp" => ternary(args, |x, lo, hi| match (x, lo, hi) {
+            (Value::Real(xv), Value::Real(lov), Value::Real(hiv)) => {
+                if xv.is_nan() || !valid_f64_range(*lov, *hiv) {
+                    Value::Undef
+                } else {
+                    sanitize_value(Value::Real(xv.clamp(*lov, *hiv)))
+                }
+            }
+            _ => Value::Undef,
+        }),
+
         // --- Trig functions: accept Angle Scalar or bare Real (radians) ---
         "sin" => unary(args, |v| trig_input(v).map_or(Value::Undef, |r| Value::Real(r.sin()))),
         "cos" => unary(args, |v| trig_input(v).map_or(Value::Undef, |r| Value::Real(r.cos()))),
