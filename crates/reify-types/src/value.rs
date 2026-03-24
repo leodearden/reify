@@ -1483,4 +1483,211 @@ mod tests {
         let long = Value::Tensor(vec![Value::Int(1), Value::Int(2)]);
         assert!(short < long);
     }
+
+    // ── Value::Complex Display tests (step-3) ─────────────────────────────────
+
+    #[test]
+    fn value_complex_display_positive_imaginary() {
+        let v = Value::Complex { re: 3.0, im: 4.0, dimension: DimensionVector::DIMENSIONLESS };
+        assert_eq!(format!("{}", v), "3+4i");
+    }
+
+    #[test]
+    fn value_complex_display_negative_imaginary() {
+        let v = Value::Complex { re: 3.0, im: -4.0, dimension: DimensionVector::DIMENSIONLESS };
+        assert_eq!(format!("{}", v), "3-4i");
+    }
+
+    #[test]
+    fn value_complex_display_fractional() {
+        let v = Value::Complex { re: 3.5, im: 4.2, dimension: DimensionVector::DIMENSIONLESS };
+        assert_eq!(format!("{}", v), "3.5+4.2i");
+    }
+
+    #[test]
+    fn value_complex_display_dimensioned() {
+        let v = Value::Complex { re: 3.0, im: 4.0, dimension: DimensionVector::LENGTH };
+        assert_eq!(format!("{}", v), "(3+4i) m");
+    }
+
+    #[test]
+    fn value_complex_display_zero_imaginary() {
+        let v = Value::Complex { re: 3.0, im: 0.0, dimension: DimensionVector::DIMENSIONLESS };
+        assert_eq!(format!("{}", v), "3+0i");
+    }
+
+    #[test]
+    fn value_complex_display_negative_real() {
+        let v = Value::Complex { re: -3.0, im: -4.0, dimension: DimensionVector::DIMENSIONLESS };
+        assert_eq!(format!("{}", v), "-3-4i");
+    }
+
+    // ── Value::Complex PartialEq tests (step-4) ───────────────────────────────
+
+    #[test]
+    fn value_complex_eq_same() {
+        let a = Value::Complex { re: 3.0, im: 4.0, dimension: DimensionVector::DIMENSIONLESS };
+        let b = Value::Complex { re: 3.0, im: 4.0, dimension: DimensionVector::DIMENSIONLESS };
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn value_complex_neq_different_re() {
+        let a = Value::Complex { re: 3.0, im: 4.0, dimension: DimensionVector::DIMENSIONLESS };
+        let b = Value::Complex { re: 5.0, im: 4.0, dimension: DimensionVector::DIMENSIONLESS };
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn value_complex_neq_different_im() {
+        let a = Value::Complex { re: 3.0, im: 4.0, dimension: DimensionVector::DIMENSIONLESS };
+        let b = Value::Complex { re: 3.0, im: 5.0, dimension: DimensionVector::DIMENSIONLESS };
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn value_complex_neq_different_dimension() {
+        let a = Value::Complex { re: 3.0, im: 4.0, dimension: DimensionVector::DIMENSIONLESS };
+        let b = Value::Complex { re: 3.0, im: 4.0, dimension: DimensionVector::LENGTH };
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn value_complex_neg_zero_distinguished() {
+        // -0.0 vs 0.0 distinguished via to_bits()
+        let pos = Value::Complex { re: 0.0, im: 0.0, dimension: DimensionVector::DIMENSIONLESS };
+        let neg_re = Value::Complex { re: -0.0, im: 0.0, dimension: DimensionVector::DIMENSIONLESS };
+        let neg_im = Value::Complex { re: 0.0, im: -0.0, dimension: DimensionVector::DIMENSIONLESS };
+        assert_ne!(pos, neg_re);
+        assert_ne!(pos, neg_im);
+    }
+
+    #[test]
+    fn value_complex_neq_real() {
+        let c = Value::Complex { re: 3.0, im: 0.0, dimension: DimensionVector::DIMENSIONLESS };
+        assert_ne!(c, Value::Real(3.0));
+    }
+
+    #[test]
+    fn value_complex_neq_scalar() {
+        let c = Value::Complex { re: 3.0, im: 0.0, dimension: DimensionVector::LENGTH };
+        let s = Value::Scalar { si_value: 3.0, dimension: DimensionVector::LENGTH };
+        assert_ne!(c, s);
+    }
+
+    // ── Value::Complex Ord tests (step-5) ─────────────────────────────────────
+
+    #[test]
+    fn value_complex_sorts_after_tensor() {
+        // Complex type_tag=14 > Tensor type_tag=13
+        let complex = Value::Complex { re: 0.0, im: 0.0, dimension: DimensionVector::DIMENSIONLESS };
+        let tensor = Value::Tensor(vec![Value::Int(99)]);
+        assert!(complex > tensor, "Complex (tag 14) should order after Tensor (tag 13)");
+    }
+
+    #[test]
+    fn value_complex_sorts_before_undef() {
+        // Undef tag=0, Complex tag=14 — Complex > Undef
+        // (lower tag sorts first, so Undef=0 < Complex=14)
+        // But also test vs something with tag > 14 doesn't exist yet,
+        // so just verify cross-type ordering is consistent
+        let complex = Value::Complex { re: 0.0, im: 0.0, dimension: DimensionVector::DIMENSIONLESS };
+        let undef = Value::Undef;
+        assert!(complex > undef, "Complex (tag 14) should order after Undef (tag 0)");
+    }
+
+    #[test]
+    fn value_complex_ord_dimension_first() {
+        // Same re/im, different dimension — dimension compared first
+        // LENGTH > DIMENSIONLESS in DimensionVector ordering
+        let a = Value::Complex { re: 1.0, im: 1.0, dimension: DimensionVector::DIMENSIONLESS };
+        let b = Value::Complex { re: 1.0, im: 1.0, dimension: DimensionVector::LENGTH };
+        // They should not be equal; whichever dimension ordering, they differ
+        assert_ne!(a.cmp(&b), std::cmp::Ordering::Equal);
+    }
+
+    #[test]
+    fn value_complex_ord_re_second() {
+        // Same dimension, different re — re bits compared second
+        let a = Value::Complex { re: 1.0, im: 0.0, dimension: DimensionVector::DIMENSIONLESS };
+        let b = Value::Complex { re: 2.0, im: 0.0, dimension: DimensionVector::DIMENSIONLESS };
+        assert!(a < b);
+    }
+
+    #[test]
+    fn value_complex_ord_im_third() {
+        // Same dimension+re, different im — im bits compared third
+        let a = Value::Complex { re: 1.0, im: 1.0, dimension: DimensionVector::DIMENSIONLESS };
+        let b = Value::Complex { re: 1.0, im: 2.0, dimension: DimensionVector::DIMENSIONLESS };
+        assert!(a < b);
+    }
+
+    #[test]
+    fn value_complex_partial_ord_consistent() {
+        let a = Value::Complex { re: 1.0, im: 2.0, dimension: DimensionVector::DIMENSIONLESS };
+        let b = Value::Complex { re: 1.0, im: 3.0, dimension: DimensionVector::DIMENSIONLESS };
+        assert_eq!(a.partial_cmp(&b), Some(std::cmp::Ordering::Less));
+        assert_eq!(b.partial_cmp(&a), Some(std::cmp::Ordering::Greater));
+    }
+
+    // ── Value::Complex content_hash tests (step-6) ────────────────────────────
+
+    #[test]
+    fn value_complex_hash_determinism() {
+        let a = Value::Complex { re: 3.0, im: 4.0, dimension: DimensionVector::DIMENSIONLESS };
+        let b = Value::Complex { re: 3.0, im: 4.0, dimension: DimensionVector::DIMENSIONLESS };
+        assert_eq!(a.content_hash(), b.content_hash());
+    }
+
+    #[test]
+    fn value_complex_nan_re_canonicalized() {
+        let a = Value::Complex { re: f64::NAN, im: 0.0, dimension: DimensionVector::DIMENSIONLESS };
+        let b = Value::Complex { re: f64::NAN, im: 0.0, dimension: DimensionVector::DIMENSIONLESS };
+        assert_eq!(a.content_hash(), b.content_hash());
+    }
+
+    #[test]
+    fn value_complex_hash_eq_implies_same_hash() {
+        // Equal values produce equal hashes
+        let a = Value::Complex { re: 1.0, im: 2.0, dimension: DimensionVector::LENGTH };
+        let b = Value::Complex { re: 1.0, im: 2.0, dimension: DimensionVector::LENGTH };
+        assert_eq!(a, b);
+        assert_eq!(a.content_hash(), b.content_hash());
+    }
+
+    #[test]
+    fn value_complex_different_re_different_hash() {
+        let a = Value::Complex { re: 1.0, im: 0.0, dimension: DimensionVector::DIMENSIONLESS };
+        let b = Value::Complex { re: 2.0, im: 0.0, dimension: DimensionVector::DIMENSIONLESS };
+        assert_ne!(a.content_hash(), b.content_hash());
+    }
+
+    #[test]
+    fn value_complex_different_dimension_different_hash() {
+        let a = Value::Complex { re: 3.0, im: 0.0, dimension: DimensionVector::DIMENSIONLESS };
+        let b = Value::Complex { re: 3.0, im: 0.0, dimension: DimensionVector::LENGTH };
+        assert_ne!(a.content_hash(), b.content_hash());
+    }
+
+    #[test]
+    fn value_complex_hash_differs_from_scalar() {
+        // Complex tag=15 vs Scalar tag=4 — hashes must differ even with same numeric value
+        let c = Value::Complex { re: 3.0, im: 0.0, dimension: DimensionVector::DIMENSIONLESS };
+        let s = Value::Scalar { si_value: 3.0, dimension: DimensionVector::DIMENSIONLESS };
+        assert_ne!(c.content_hash(), s.content_hash());
+    }
+
+    // ── Value::Complex dimension() test (step-7) ──────────────────────────────
+
+    #[test]
+    fn value_complex_dimension_returns_stored() {
+        let v = Value::Complex { re: 1.0, im: 2.0, dimension: DimensionVector::LENGTH };
+        assert_eq!(v.dimension(), DimensionVector::LENGTH);
+    }
+
+    #[test]
+    fn value_complex_dimensionless_returns_dimensionless() {
+        let v = Value::Complex { re: 1.0, im: 2.0, dimension: DimensionVector::DIMENSIONLESS };
+        assert_eq!(v.dimension(), DimensionVector::DIMENSIONLESS);
+    }
 }
