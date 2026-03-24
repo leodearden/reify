@@ -158,85 +158,85 @@
       "id": "step-15",
       "type": "test",
       "description": "Write failing tests for ToolCallCard result summaries: (a) reify_get_parameters with array result shows 'N parameters', (b) reify_get_constraints with array result shows 'N constraints' count. File: gui/src/__tests__/ToolCallCard.test.tsx — add test case for constraint summary.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "f213c99"
     },
     {
       "id": "step-16",
       "type": "impl",
       "description": "Extend resultSummary() in ToolCallCard to handle reify_get_constraints: if result is array, return `${result.length} constraints`. Verify step-15 tests pass.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "4cfee83"
     },
     {
       "id": "step-17",
       "type": "test",
       "description": "Write failing tests for AbortButton component: (a) renders with data-testid, (b) calls onAbort on click, (c) has aria-label='Abort generation', (d) contains stop icon. File: gui/src/__tests__/AbortButton.test.tsx.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "4cfee83"
     },
     {
       "id": "step-18",
       "type": "impl",
       "description": "Implement AbortButton: button with data-testid, aria-label, onClick calls onAbort, stop icon span. Plus AbortButton.module.css with hover-to-red transition. Verify step-17 tests pass.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "4cfee83"
     },
     {
       "id": "step-19",
       "type": "test",
       "description": "Write failing tests for abort button visibility in ChatPanel across all session states: (a) visible when 'thinking', (b) visible when 'responding', (c) visible when 'tool-calling', (d) NOT visible when 'idle', (e) send button visible when 'idle'. File: gui/src/__tests__/ChatPanel.test.tsx — add test cases for 'thinking' and 'tool-calling' states.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "5e2d68e"
     },
     {
       "id": "step-20",
       "type": "impl",
       "description": "Verify ChatPanel conditional rendering: isActive() returns true for thinking/responding/tool-calling, Show when=isActive() renders AbortButton else SendButton. Verify step-19 tests pass.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "5e2d68e"
     },
     {
       "id": "step-21",
       "type": "test",
       "description": "Write failing tests for MessageGroup composition and ordering: (a) ThinkingBlock renders when thinkingText non-empty, (b) no ThinkingBlock when thinkingText empty, (c) ToolCallCard renders for each tool call, (d) StreamingText renders response, (e) DOM order: thinking before tool calls before streaming text. File: gui/src/__tests__/ChatPanel.test.tsx — verify MessageGroup describe block.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "5e2d68e"
     },
     {
       "id": "step-22",
       "type": "impl",
       "description": "Implement MessageGroup: Show when=thinkingText for ThinkingBlock, For each=toolCalls for ToolCallCard, StreamingText with text/streaming props. Verify step-21 tests pass.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "5e2d68e"
     },
     {
       "id": "step-23",
       "type": "test",
       "description": "Write failing test for full ChatPanel event sequence integration: sendMessage, thinking_delta, text_delta(s), done — verify user message rendered, response text combined, thinking block appears as collapsed, session returns to idle. File: gui/src/__tests__/ChatPanel.test.tsx — verify 'full event sequence' test.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "5e2d68e"
     },
     {
       "id": "step-24",
       "type": "impl",
       "description": "Verify ChatPanel integrates all components: messages rendered via For loop, assistant messages via MessageGroup, system messages via SystemMessage, user messages inline. Verify step-23 tests pass.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "5e2d68e"
     },
     {
       "id": "step-25",
       "type": "test",
       "description": "Write failing performance test: send 200 text_delta events in rapid succession, then fire rAF — verify all content is concatenated in a single flush, test completes within 500ms timeout. File: gui/src/__tests__/claudeStore.test.ts — add to 'rAF delta batching' describe block.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "5feb3af"
     },
     {
       "id": "step-26",
       "type": "impl",
       "description": "Verify rAF batching handles high token volume: buffer accumulates unbounded, single flush concatenates all. No implementation change expected — the existing rAF batching already handles this. Verify step-25 test passes.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "5feb3af"
     }
   ],
   "design_decisions": [
