@@ -703,6 +703,111 @@ mod tests {
         assert!(result.is_undef(), "curl stub should return Undef, got {:?}", result);
     }
 
+    // --- clamp tests (step-1) ---
+
+    #[test]
+    fn clamp_real_within_range() {
+        let result = eval_builtin("clamp", &[Value::Real(5.0), Value::Real(0.0), Value::Real(10.0)]);
+        match result {
+            Value::Real(v) => assert!((v - 5.0).abs() < 1e-12),
+            other => panic!("expected Real(5.0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn clamp_real_below_lo() {
+        let result = eval_builtin("clamp", &[Value::Real(-1.0), Value::Real(0.0), Value::Real(10.0)]);
+        match result {
+            Value::Real(v) => assert!((v - 0.0).abs() < 1e-12),
+            other => panic!("expected Real(0.0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn clamp_real_above_hi() {
+        let result = eval_builtin("clamp", &[Value::Real(15.0), Value::Real(0.0), Value::Real(10.0)]);
+        match result {
+            Value::Real(v) => assert!((v - 10.0).abs() < 1e-12),
+            other => panic!("expected Real(10.0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn clamp_at_lo_boundary() {
+        let result = eval_builtin("clamp", &[Value::Real(0.0), Value::Real(0.0), Value::Real(10.0)]);
+        match result {
+            Value::Real(v) => assert!((v - 0.0).abs() < 1e-12),
+            other => panic!("expected Real(0.0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn clamp_at_hi_boundary() {
+        let result = eval_builtin("clamp", &[Value::Real(10.0), Value::Real(0.0), Value::Real(10.0)]);
+        match result {
+            Value::Real(v) => assert!((v - 10.0).abs() < 1e-12),
+            other => panic!("expected Real(10.0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn clamp_int_preserves_type() {
+        let result = eval_builtin("clamp", &[Value::Int(3), Value::Int(1), Value::Int(7)]);
+        match result {
+            Value::Int(3) => {}
+            other => panic!("expected Int(3), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn clamp_scalar_preserves_dimension() {
+        // 5mm, 0mm, 10mm in SI (m): 0.005, 0.0, 0.01
+        let result = eval_builtin(
+            "clamp",
+            &[
+                Value::Scalar { si_value: 0.005, dimension: DimensionVector::LENGTH },
+                Value::Scalar { si_value: 0.0,   dimension: DimensionVector::LENGTH },
+                Value::Scalar { si_value: 0.01,  dimension: DimensionVector::LENGTH },
+            ],
+        );
+        match result {
+            Value::Scalar { si_value, dimension } => {
+                assert!((si_value - 0.005).abs() < 1e-12);
+                assert_eq!(dimension, DimensionVector::LENGTH);
+            }
+            other => panic!("expected Scalar{{LENGTH}}, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn clamp_dimension_mismatch_returns_undef() {
+        // x in LENGTH, bounds in TIME — should return Undef
+        let result = eval_builtin(
+            "clamp",
+            &[
+                Value::Scalar { si_value: 0.005, dimension: DimensionVector::LENGTH },
+                Value::Scalar { si_value: 0.0,   dimension: DimensionVector::TIME },
+                Value::Scalar { si_value: 10.0,  dimension: DimensionVector::TIME },
+            ],
+        );
+        assert!(result.is_undef(), "clamp with dimension mismatch should be Undef, got {:?}", result);
+    }
+
+    #[test]
+    fn clamp_nan_returns_undef() {
+        let result = eval_builtin(
+            "clamp",
+            &[Value::Real(f64::NAN), Value::Real(0.0), Value::Real(10.0)],
+        );
+        assert!(result.is_undef(), "clamp(NaN,...) should be Undef, got {:?}", result);
+    }
+
+    #[test]
+    fn clamp_wrong_arg_count_returns_undef() {
+        let result = eval_builtin("clamp", &[Value::Real(5.0)]);
+        assert!(result.is_undef(), "clamp with wrong arg count should be Undef, got {:?}", result);
+    }
+
     #[test]
     fn sample_in_stdlib_returns_undef() {
         // sample() in stdlib returns Undef because lambda application
