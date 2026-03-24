@@ -379,7 +379,7 @@ impl Ord for Value {
         use std::cmp::Ordering;
 
         // Type-tag discriminant for cross-type ordering:
-        // Undef=0, Bool=1, Int=2, Real=3, Scalar=4, String=5, Enum=6, List=7, Set=8, Map=9, Option=10, Field=11, Lambda=12, Tensor=13, Complex=14
+        // Undef=0, Bool=1, Int=2, Real=3, Scalar=4, String=5, Enum=6, List=7, Set=8, Map=9, Option=10, Field=11, Lambda=12, Tensor=13, Complex=14, Orientation=15, Range=16, Matrix=17
         fn type_tag(v: &Value) -> u8 {
             match v {
                 Value::Undef => 0,
@@ -399,7 +399,7 @@ impl Ord for Value {
                 Value::Complex { .. } => 14,
                 Value::Orientation { .. } => 15,
                 Value::Range { .. } => 16,
-                Value::Matrix(_) => 255, // Stub — replaced in step-8 with tag=17
+                Value::Matrix(_) => 17,
             }
         }
 
@@ -496,7 +496,7 @@ impl Ord for Value {
                     .then_with(|| aui.cmp(bui))
                     .then_with(|| au.cmp(bu))
             }
-            (Value::Matrix(a), Value::Matrix(b)) => a.cmp(b), // step-8 will adjust type_tag
+            (Value::Matrix(a), Value::Matrix(b)) => a.cmp(b),
             _ => unreachable!("same type tag but different variants"),
         }
     }
