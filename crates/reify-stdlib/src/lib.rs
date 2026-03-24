@@ -1656,6 +1656,77 @@ mod tests {
         );
     }
 
+    // --- cross() tests: dimensionless vectors (step-4) ---
+
+    #[test]
+    fn cross_x_hat_y_hat_equals_z_hat() {
+        // cross([1,0,0], [0,1,0]) == [0,0,1]
+        let a = Value::Tensor(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
+        let b = Value::Tensor(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
+        let result = eval_builtin("cross", &[a, b]);
+        match result {
+            Value::Tensor(items) => {
+                assert_eq!(items.len(), 3, "cross product must have 3 components");
+                let v: Vec<f64> = items.iter().map(|x| x.as_f64().unwrap()).collect();
+                assert!((v[0] - 0.0).abs() < 1e-12, "x component: expected 0.0, got {}", v[0]);
+                assert!((v[1] - 0.0).abs() < 1e-12, "y component: expected 0.0, got {}", v[1]);
+                assert!((v[2] - 1.0).abs() < 1e-12, "z component: expected 1.0, got {}", v[2]);
+            }
+            other => panic!("expected Tensor([0,0,1]), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn cross_anti_commutativity() {
+        // cross(a,b) == -cross(b,a)
+        let a = Value::Tensor(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
+        let b = Value::Tensor(vec![Value::Real(4.0), Value::Real(5.0), Value::Real(6.0)]);
+        let ab = eval_builtin("cross", &[a.clone(), b.clone()]);
+        let ba = eval_builtin("cross", &[b, a]);
+        match (ab, ba) {
+            (Value::Tensor(ab_items), Value::Tensor(ba_items)) => {
+                for (ai, bi) in ab_items.iter().zip(ba_items.iter()) {
+                    let av = ai.as_f64().unwrap();
+                    let bv = bi.as_f64().unwrap();
+                    assert!((av + bv).abs() < 1e-12, "anti-commutativity failed: {} + {} != 0", av, bv);
+                }
+            }
+            other => panic!("expected two Tensors, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn cross_orthogonality() {
+        // dot(a, cross(a, b)) == 0
+        let a = Value::Tensor(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
+        let b = Value::Tensor(vec![Value::Real(4.0), Value::Real(5.0), Value::Real(6.0)]);
+        let c = eval_builtin("cross", &[a.clone(), b]);
+        let dot_result = eval_builtin("dot", &[a, c]);
+        assert_real_approx!(dot_result, 0.0);
+    }
+
+    #[test]
+    fn cross_length_2_tensor_returns_undef() {
+        let a = Value::Tensor(vec![Value::Real(1.0), Value::Real(0.0)]);
+        let b = Value::Tensor(vec![Value::Real(0.0), Value::Real(1.0)]);
+        assert!(eval_builtin("cross", &[a, b]).is_undef(), "cross on 2-element Tensor should be Undef");
+    }
+
+    #[test]
+    fn cross_length_4_tensor_returns_undef() {
+        let a = Value::Tensor(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]);
+        let b = Value::Tensor(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
+        assert!(eval_builtin("cross", &[a, b]).is_undef(), "cross on 4-element Tensor should be Undef");
+    }
+
+    #[test]
+    fn cross_non_tensor_returns_undef() {
+        assert!(
+            eval_builtin("cross", &[Value::Real(1.0), Value::Real(2.0)]).is_undef(),
+            "cross of non-Tensor args should be Undef"
+        );
+    }
+
     // --- dot() tests: dimensioned vectors (step-2) ---
 
     #[test]
