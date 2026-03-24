@@ -129,7 +129,7 @@
       "type": "impl",
       "description": "In the content hash computation (lines 3232-3248), extend the connection_hashes iterator chain to include the frame_constraint: add `.chain(std::iter::once(c.frame_constraint.as_ref().map(|_| ContentHash::of(&[1u8])).unwrap_or(ContentHash(0))))` so the presence/absence of frame alignment affects the template hash.",
       "status": "done",
-      "commit": null
+      "commit": "51e3a20"
     }
   ],
   "design_decisions": [
