@@ -483,6 +483,30 @@ structure def S {
     );
 }
 
+// ── step-13: connector_param_validation_valid_params_ok ──────────────
+
+#[test]
+fn connector_param_validation_valid_params_ok() {
+    let source = r#"
+trait T {}
+structure def BoltSet { param grade : Real = 8.8 }
+structure def S {
+    port a : out T {}
+    port b : in T {}
+    connect a -> b : BoltSet { grade = 10.9 }
+}
+"#;
+
+    let module = compile_module(source);
+
+    // No error for valid param 'grade' which is declared in BoltSet
+    let errors: Vec<_> = module.diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors for valid connector param: {:?}", errors);
+}
+
 // ── step-9: port_type_compatibility_refinement_ok ────────────────────
 
 #[test]
