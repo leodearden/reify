@@ -128,6 +128,37 @@ pub fn neg(operand: CompiledExpr) -> CompiledExpr {
     CompiledExpr::unop(UnOp::Neg, operand, ty)
 }
 
+/// Create a list literal expression, inferring element type from the first element.
+///
+/// Panics if `elements` is empty — use `CompiledExpr::list_literal` directly for empty lists.
+pub fn list_expr(elements: Vec<CompiledExpr>) -> CompiledExpr {
+    assert!(!elements.is_empty(), "list_expr: use CompiledExpr::list_literal for empty lists");
+    let elem_ty = elements[0].result_type.clone();
+    let result_type = Type::List(Box::new(elem_ty));
+    CompiledExpr::list_literal(elements, result_type)
+}
+
+/// Create a set literal expression, inferring element type from the first element.
+///
+/// Panics if `elements` is empty — use `CompiledExpr::set_literal` directly for empty sets.
+pub fn set_expr(elements: Vec<CompiledExpr>) -> CompiledExpr {
+    assert!(!elements.is_empty(), "set_expr: use CompiledExpr::set_literal for empty sets");
+    let elem_ty = elements[0].result_type.clone();
+    let result_type = Type::Set(Box::new(elem_ty));
+    CompiledExpr::set_literal(elements, result_type)
+}
+
+/// Create a map literal expression, inferring key/value types from the first entry.
+///
+/// Panics if `entries` is empty — use `CompiledExpr::map_literal` directly for empty maps.
+pub fn map_expr(entries: Vec<(CompiledExpr, CompiledExpr)>) -> CompiledExpr {
+    assert!(!entries.is_empty(), "map_expr: use CompiledExpr::map_literal for empty maps");
+    let key_ty = entries[0].0.result_type.clone();
+    let val_ty = entries[0].1.result_type.clone();
+    let result_type = Type::Map(Box::new(key_ty), Box::new(val_ty));
+    CompiledExpr::map_literal(entries, result_type)
+}
+
 fn infer_binop_type(op: BinOp, left: &Type, right: &Type) -> Type {
     match op {
         BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge
