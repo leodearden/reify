@@ -167,6 +167,56 @@ structure S { let v = sqrt(4.14) }
     }
 }
 
+/// step-9: Define fn f(x: Int)->Int and fn f(x: Int)->Real (same param types,
+/// different return types — duplicate signatures). Call f(3).
+/// Assert produces an ambiguity error diagnostic that lists both candidate signatures.
+#[test]
+fn ambiguous_call_lists_candidate_signatures() {
+    let source = r#"
+fn f(x: Int) -> Int { x }
+fn f(x: Int) -> Real { x + 0.0 }
+structure S { let v = f(3) }
+"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_ambiguous"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    // Should produce at least one error
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_types::Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "expected at least one error (ambiguous or duplicate sig)"
+    );
+
+    // Find the ambiguous-call error (there may also be a duplicate-sig error)
+    let ambiguous_error = errors
+        .iter()
+        .find(|d| d.message.contains("ambiguous"));
+    assert!(
+        ambiguous_error.is_some(),
+        "expected an 'ambiguous' error, got: {:?}",
+        errors
+    );
+
+    let msg = &ambiguous_error.unwrap().message;
+    // Should list both candidate signatures
+    assert!(
+        msg.contains("f(Int) -> Int"),
+        "ambiguous error should list 'f(Int) -> Int', got: {:?}",
+        msg
+    );
+    assert!(
+        msg.contains("f(Int) -> Real"),
+        "ambiguous error should list 'f(Int) -> Real', got: {:?}",
+        msg
+    );
+}
+
 /// step-1: Define fn f(x: Int)->Int and fn f(x: Real)->Real, call f(3)
 /// where 3 is Int. Assert resolves to UserFunctionCall with return type Int.
 ///
