@@ -576,3 +576,84 @@ fn mcp_server_set_parameter_constraint_verified_after_change() {
         constraints
     );
 }
+
+#[test]
+fn mcp_server_set_parameter_error_preserves_state() {
+    let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/bracket.ri");
+
+    let requests = vec![
+        serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
+        // Attempt to set a non-existent parameter — should return an error
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "reify_set_parameter",
+                "arguments": {"cell_id": "Bracket.nonexistent", "value": "1.0"}
+            }
+        }),
+        // Get parameters to verify state was NOT corrupted by the failed operation
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {
+                "name": "reify_get_parameters",
+                "arguments": {}
+            }
+        }),
+    ];
+
+    let responses = mcp_roundtrip(&[fixture], &requests);
+    assert!(responses.len() >= 3, "expected at least 3 responses");
+
+    // set_parameter with non-existent cell_id should indicate an error
+    let set_response = &responses[1];
+    let is_error = set_response["result"]["isError"] == true;
+    let has_error_field = !set_response["error"].is_null();
+    assert!(
+        is_error || has_error_field,
+        "set_parameter with non-existent cell_id should return an error, got: {:?}",
+        set_response
+    );
+
+    // get_parameters should still return all 5 original parameters with original values
+    let get_response = &responses[2];
+    assert_ne!(
+        get_response["result"]["isError"],
+        true,
+        "get_parameters should not return error after failed set_parameter: {:?}",
+        get_response
+    );
+
+    let get_content = get_response["result"]["content"]
+        .as_array()
+        .expect("should have content array");
+    let get_text = get_content[0]["text"].as_str().expect("should be string");
+    let params: Vec<serde_json::Value> =
+        serde_json::from_str(get_text).expect("should be JSON array of parameters");
+
+    // All 5 original params should be present with original values
+    let expected = [
+        ("width", "0.08 m"),
+        ("height", "0.1 m"),
+        ("thickness", "0.005 m"),
+        ("fillet_radius", "0.003 m"),
+        ("hole_diameter", "0.006 m"),
+    ];
+    for (name, original_value) in &expected {
+        let param = params
+            .iter()
+            .find(|p| p["name"].as_str() == Some(name))
+            .unwrap_or_else(|| panic!("parameter '{}' should be present after failed set_parameter", name));
+        assert_eq!(
+            param["value"].as_str().unwrap_or(""),
+            *original_value,
+            "parameter '{}' should retain original value '{}' after failed set_parameter, got: {:?}",
+            name,
+            original_value,
+            param["value"]
+        );
+    }
+}
