@@ -192,10 +192,13 @@ pub fn format_value(value: &Value) -> String {
         }
         Value::Complex { re, im, dimension } => {
             let unit = dimension_unit_label(dimension);
+            // Use conditional sign handling so negative imaginary parts render
+            // as "3 - 4i" instead of "3 + -4i".
+            let (sign, im_abs) = if *im < 0.0 { ("-", im.abs()) } else { ("+", *im) };
             if unit.is_empty() {
-                format!("{re} + {im}i")
+                format!("{re} {sign} {im_abs}i")
             } else {
-                format!("{re} + {im}i {unit}")
+                format!("{re} {sign} {im_abs}i {unit}")
             }
         }
         Value::Undef => "(undefined)".to_string(),
