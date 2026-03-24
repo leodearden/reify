@@ -226,6 +226,37 @@ pub fn user_fn_call(
     }
 }
 
+/// Create a method call expression.
+pub fn method_call_expr(
+    object: CompiledExpr,
+    method: &str,
+    args: Vec<CompiledExpr>,
+    result_type: Type,
+) -> CompiledExpr {
+    CompiledExpr::method_call(object, method.to_string(), args, result_type)
+}
+
+/// Create a lambda expression with named parameters.
+///
+/// Generates param IDs with `ValueCellId::new("__lambda", name)` for each parameter.
+pub fn lambda_expr(params: Vec<(&str, Type)>, body: CompiledExpr) -> CompiledExpr {
+    let param_types: Vec<Type> = params.iter().map(|(_, ty)| ty.clone()).collect();
+    let return_type = body.result_type.clone();
+    let result_type = Type::Function {
+        params: param_types,
+        return_type: Box::new(return_type),
+    };
+    let param_ids: Vec<ValueCellId> = params
+        .iter()
+        .map(|(name, _)| ValueCellId::new("__lambda", *name))
+        .collect();
+    let compiled_params: Vec<(String, Option<Type>)> = params
+        .into_iter()
+        .map(|(name, ty)| (name.to_string(), Some(ty)))
+        .collect();
+    CompiledExpr::lambda(compiled_params, param_ids, body, vec![], result_type)
+}
+
 fn infer_binop_type(op: BinOp, left: &Type, right: &Type) -> Type {
     match op {
         BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge
