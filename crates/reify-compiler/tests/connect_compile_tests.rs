@@ -416,3 +416,42 @@ structure def S2 {
         "same connector type with different param values must produce different hashes"
     );
 }
+
+// ── step-1: frame_alignment_constraint_when_both_ports_located ───────
+
+#[test]
+fn frame_alignment_constraint_when_both_ports_located() {
+    let source = r#"
+trait Port {}
+trait LocatedPort : Port { param frame : Length }
+structure def Connector {}
+structure def S {
+    port a : out LocatedPort { param frame : Length = 0mm }
+    port b : in LocatedPort { param frame : Length = 0mm }
+    connect a -> b : Connector {}
+}
+"#;
+
+    let module = compile_module(source);
+    let errors: Vec<_> = module.diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    let s = module.templates.iter().find(|t| t.name == "S").expect("template S");
+
+    // frame_constraint should be Some when both ports satisfy LocatedPort
+    assert!(
+        s.connections[0].frame_constraint.is_some(),
+        "expected frame_constraint to be Some when both ports are LocatedPort"
+    );
+
+    // There should be a constraint labeled frame_align_a_b (or frame_align_* pattern)
+    let frame_align_constraints: Vec<_> = s.constraints
+        .iter()
+        .filter(|c| c.label.as_deref().map(|l| l.contains("frame_align")).unwrap_or(false))
+        .collect();
+    assert!(
+        !frame_align_constraints.is_empty(),
+        "expected a constraint with label containing 'frame_align', constraints: {:?}",
+        s.constraints.iter().map(|c| &c.label).collect::<Vec<_>>()
+    );
+}
