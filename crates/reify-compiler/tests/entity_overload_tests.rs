@@ -313,3 +313,53 @@ structure Box<T, U> {
         module.templates.len()
     );
 }
+
+// ── step-12: regression/sanity: unique names do not false-positive ────────
+
+/// Unique entity names across all entity types (structure A, occurrence B,
+/// field C, constraint D) compile without any duplicate-entity errors.
+/// Ensures the check does not false-positive on distinct names.
+#[test]
+fn unique_entity_names_compile_without_errors() {
+    let source = r#"
+structure Alpha {
+    param x : Real = 1.0
+}
+
+occurrence Beta {
+    param duration : Real = 5.0
+}
+
+field def Gamma : Real -> Real { source = analytical { |x| x } }
+
+constraint def Delta { x > 0 }
+"#;
+    let module = compile_module(source);
+
+    // No duplicate-entity errors
+    let dup_errors: Vec<_> = errors_only(&module)
+        .into_iter()
+        .filter(|d| d.message.contains("duplicate entity definition"))
+        .collect();
+    assert!(
+        dup_errors.is_empty(),
+        "expected no duplicate-entity errors for unique names, got: {:?}",
+        dup_errors
+    );
+
+    // Structure Alpha and occurrence Beta both compiled
+    assert_eq!(
+        module.templates.len(),
+        2,
+        "expected 2 compiled templates (Alpha + Beta), got {}",
+        module.templates.len()
+    );
+
+    // Field Gamma compiled
+    assert_eq!(
+        module.fields.len(),
+        1,
+        "expected 1 compiled field (Gamma), got {}",
+        module.fields.len()
+    );
+}
