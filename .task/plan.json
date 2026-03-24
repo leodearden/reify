@@ -1,217 +1,145 @@
 {
-  "task_id": "191",
-  "title": "Qualified trait access: parser",
+  "task_id": "188",
+  "title": "Trait member merging: implementation",
   "files": [
-    "tree-sitter-reify/grammar.js",
-    "tree-sitter-reify/src/parser.c",
-    "tree-sitter-reify/src/grammar.json",
-    "tree-sitter-reify/src/node-types.json",
-    "crates/reify-syntax/src/lib.rs",
-    "crates/reify-syntax/src/ts_parser.rs",
-    "crates/reify-syntax/tests/qualified_access_tests.rs"
+    "crates/reify-compiler/src/lib.rs",
+    "crates/reify-compiler/tests/trait_merge_tests.rs"
   ],
   "modules": [
-    "tree-sitter-reify",
-    "crates/reify-syntax"
+    "crates/reify-compiler"
   ],
-  "analysis": "The task adds two new expression forms to the Reify parser: (1) `TypeName::ident` \u2014 qualified trait access, and (2) `expr.(TypeName::ident)` \u2014 instance-level qualified trait access. The parser is tree-sitter based: grammar.js defines the syntax, tree-sitter generates parser.c, and ts_parser.rs lowers the CST to AST. Currently `::` is not tokenized or used anywhere in the grammar. The `ExprKind` enum in lib.rs has 21 variants; we add 2 more. The lowering code in ts_parser.rs dispatches on tree-sitter node kind strings; we add two new match arms and lowering functions following the established pattern (e.g., `lower_member_access`). Precedence 2 (matching `&&` level) means `::` binds loosely among binary-like operators, but since the right-hand side of `::` is restricted to a bare identifier (not an arbitrary expression), the main effect of precedence 2 is on chaining: `A::B::c` left-associates as `(A::B)::c`, and expressions like `Foo::bar + 1` parse correctly as `(Foo::bar) + 1` because `bar` is consumed as identifier before `+` is considered. Instance qualified access `expr.(Qualified)` uses dot-paren syntax at postfix precedence 8 (same as member_access), with the inner part constrained to be a qualified_access node.",
-  "prerequisites": [
-    {
-      "id": "pre-1",
-      "description": "Add `qualified_access` grammar rule to grammar.js: `prec.left(2, seq(field('qualifier', $._expression), '::', field('member', $.identifier)))`. Add `$.qualified_access` to `_expression` choice list.",
-      "status": "done",
-      "commit": "a2e4f3b",
-      "tests": []
-    },
-    {
-      "id": "pre-2",
-      "description": "Add `instance_qualified_access` grammar rule to grammar.js: `prec.left(8, seq(field('object', $._expression), '.', '(', field('qualified', $.qualified_access), ')'))`. Add `$.instance_qualified_access` to `_expression` choice list. Update precedence comment block to document `::` at level 2.",
-      "status": "done",
-      "commit": "a2e4f3b",
-      "tests": []
-    },
-    {
-      "id": "pre-3",
-      "description": "Regenerate tree-sitter parser: run `npx tree-sitter generate` in tree-sitter-reify/ to produce updated parser.c, grammar.json, and node-types.json.",
-      "status": "done",
-      "commit": "a2e4f3b",
-      "tests": []
-    },
-    {
-      "id": "pre-4",
-      "description": "Add `QualifiedAccess { qualifier: Box<Expr>, member: String }` variant to ExprKind in lib.rs. Represents `TypeName::ident` (and chained `A::B::c`).",
-      "status": "done",
-      "commit": "88ab3f5",
-      "tests": []
-    },
-    {
-      "id": "pre-5",
-      "description": "Add `InstanceQualifiedAccess { object: Box<Expr>, qualified: Box<Expr> }` variant to ExprKind in lib.rs. Represents `expr.(TypeName::ident)`. The `qualified` field holds a QualifiedAccess expr.",
-      "status": "done",
-      "commit": "88ab3f5",
-      "tests": []
-    },
-    {
-      "id": "pre-6",
-      "description": "Create test file crates/reify-syntax/tests/qualified_access_tests.rs with `use reify_syntax::*;` import and `parse_decls` helper following the trait_tests.rs pattern.",
-      "status": "done",
-      "commit": "23678ff",
-      "tests": []
-    }
-  ],
+  "analysis": "Task 188 builds on the trait conformance infrastructure from task 182 (check_trait_conformance + collect_all_requirements) to implement proper member merging when a structure implements multiple traits.\n\nCurrent state (task 182): collect_all_requirements already handles requirement dedup by name+type, requirement conflicts (same name, different type \u2192 error), default param dedup by name+type, default type conflicts (when not overridden), unlabeled constraint conjunctive composition, and diamond inheritance dedup.\n\nThree gaps remain:\n\n1. **Let default type comparison uses Type::Real sentinel.** In collect_all_requirements (line ~4348), DefaultKind::Let(_) maps to Type::Real for dedup comparison. This means two let defaults with the same name but different types (e.g., Length vs Mass) are incorrectly treated as duplicates instead of producing a type conflict error. Fix: Change DefaultKind::Let(LetDecl) to DefaultKind::Let { cell_type: Type, let_decl: LetDecl } and use actual cell_type for comparison.\n\n2. **No expression comparison for let defaults.** Two let defaults with same name and same type but different expressions are silently merged (second dropped). The task requires: same expression \u2192 merge; different expression \u2192 error. Fix: Store LetDecl.content_hash in a tracking map; on collision, compare hashes.\n\n3. **Requirements not cross-checked against defaults from other traits.** If trait A requires `param x : Length` (no default) and trait B provides `param x : Length = 10mm` (default), the structure gets a false 'missing required member' error even though a default is available from the merged trait set. Fix: Before reporting missing member, check if all_defaults contains a matching default.",
+  "prerequisites": [],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing test `parse_basic_qualified_access`: parse `structure S { let x = Rigid::mass }` and assert the let value is `ExprKind::QualifiedAccess { qualifier: Ident(\"Rigid\"), member: \"mass\" }`.",
+      "description": "Create crates/reify-compiler/tests/trait_merge_tests.rs with helpers (compile_module, compile_first_template) and 2 tests: (a) let_defaults_same_name_same_expr_merge \u2014 two traits each with `let area : Real = width * height`, structure implements both, expect 0 errors and exactly 1 'area' value cell. (b) param_requirements_same_name_same_type_merge \u2014 two traits each requiring `param x : Length`, structure provides `param x : Length = 5mm`, expect 0 errors (existing behavior, baseline test).",
       "status": "done",
-      "commit": "501ce34"
+      "commit": "a17cf39"
     },
     {
       "id": "step-2",
-      "type": "impl",
-      "description": "Add `lower_qualified_access` method to ts_parser.rs: extract `qualifier` field (lower as expr) and `member` field (as string), produce QualifiedAccess ExprKind. Add `\"qualified_access\" => self.lower_qualified_access(node)` case to `lower_expr` match.",
+      "type": "test",
+      "description": "Add failing test: let_defaults_same_name_different_type_error \u2014 trait A has `let x : Length = 5mm`, trait B has `let x : Mass = 1kg`, structure implements both. Expect error diagnostic containing 'conflicting'. This will FAIL because DefaultKind::Let uses Type::Real sentinel, making both types appear identical.",
       "status": "done",
-      "commit": "403abea"
+      "commit": "fb53094"
     },
     {
       "id": "step-3",
-      "type": "test",
-      "description": "Write failing test `parse_chained_qualified_access`: parse `structure S { let x = A::B::c }` and assert left-associative nesting: QualifiedAccess { qualifier: QualifiedAccess { qualifier: Ident(\"A\"), member: \"B\" }, member: \"c\" }.",
+      "type": "impl",
+      "description": "Change DefaultKind::Let(LetDecl) to DefaultKind::Let { cell_type: Type, let_decl: LetDecl }. Update compile_trait() to pass the resolved type into the new struct variant. Update all pattern match sites in check_trait_conformance(): (1) pre-registration loop (line ~4178) \u2014 use cell_type instead of Type::Real; (2) injection loop (line ~4211) \u2014 destructure Let { cell_type, let_decl } and use cell_type for the injected ValueCellDecl. Update collect_all_requirements() \u2014 extract cell_type from DefaultKind::Let { cell_type, .. } instead of using Type::Real sentinel. Step-2 test should now pass.",
       "status": "done",
-      "commit": "c58ef30"
+      "commit": "da812a5"
     },
     {
       "id": "step-4",
-      "type": "impl",
-      "description": "Verify chained qualified access works with the prec.left(2) grammar rule. Should pass without changes since the qualifier field accepts any _expression, including another qualified_access.",
+      "type": "test",
+      "description": "Add failing test: let_defaults_same_name_same_type_different_expr_error \u2014 trait A has `let x : Real = width + 1`, trait B has `let x : Real = width * 2`, structure implements both with `param width : Real = 5`. Expect error diagnostic mentioning 'conflicting' and 'expression'. This will FAIL because collect_all_requirements only checks type, not expression content.",
       "status": "done",
-      "commit": "c58ef30"
+      "commit": "5c297c0"
     },
     {
       "id": "step-5",
-      "type": "test",
-      "description": "Write test `parse_qualified_access_in_binary_expr`: parse `structure S { let x = Rigid::mass + 1 }` and assert the let value is BinOp { op: \"+\", left: QualifiedAccess(Ident(\"Rigid\"), \"mass\"), right: NumberLiteral(1.0) }. Validates that `::` with identifier RHS doesn't interfere with arithmetic.",
+      "type": "impl",
+      "description": "Add expression comparison for let defaults in collect_all_requirements. Change seen_defaults from HashMap<String, Type> to HashMap<String, (Type, Option<ContentHash>)>. For DefaultKind::Let, store (cell_type, Some(let_decl.content_hash)). For Param/Constraint, store (type, None). On collision: if both have Some(hash) and hashes differ while types match \u2192 emit 'conflicting let expressions' error. Update the signature of seen_defaults and all its access sites. Step-4 test should now pass.",
       "status": "done",
-      "commit": "a0f28bf"
+      "commit": "7cab2e3"
     },
     {
       "id": "step-6",
-      "type": "impl",
-      "description": "Verify precedence interaction passes. Since the right side of `::` is an identifier (not _expression), `Rigid::mass` is always a complete unit, and `+ 1` applies to the whole qualified_access.",
+      "type": "test",
+      "description": "Add failing test: requirement_satisfied_by_cross_trait_default \u2014 trait A requires `param x : Length` (no default), trait B provides `param x : Length = 10mm` (default). Structure implements A + B with empty body. Expect 0 errors (the default from B satisfies A's requirement). This will FAIL because check_trait_conformance only checks requirements against structure_members, not against available defaults.",
       "status": "done",
-      "commit": "a0f28bf"
+      "commit": "20006da"
     },
     {
       "id": "step-7",
-      "type": "test",
-      "description": "Write failing test `parse_basic_instance_qualified_access`: parse `structure S { let x = motor.(Driveable::torque) }` and assert the let value is `ExprKind::InstanceQualifiedAccess { object: Ident(\"motor\"), qualified: QualifiedAccess(Ident(\"Driveable\"), \"torque\") }`.",
+      "type": "impl",
+      "description": "In check_trait_conformance, before the requirement-checking loop (line ~4114), build a HashMap<String, Type> of available default names from all_defaults (excluding constraints). In the None arm of the requirement check (line ~4132), before emitting 'missing required member', check if the requirement name exists in the defaults map with a matching type. If so, skip the error (the default will satisfy the requirement during injection). If the default exists but with a different type, emit a type mismatch error. Step-6 test should now pass.",
       "status": "done",
-      "commit": "6a4e507"
+      "commit": "d545080"
     },
     {
       "id": "step-8",
-      "type": "impl",
-      "description": "Add `lower_instance_qualified_access` method to ts_parser.rs: extract `object` field (lower as expr) and `qualified` field (lower as expr \u2014 will be a QualifiedAccess), produce InstanceQualifiedAccess ExprKind. Add `\"instance_qualified_access\" => self.lower_instance_qualified_access(node)` to `lower_expr`.",
+      "type": "test",
+      "description": "Add test: let_conflict_resolved_by_structure_override \u2014 trait A has `let x : Real = a + 1`, trait B has `let x : Real = a * 2`, structure implements both and provides its own `let x = a + a`. Expect 0 errors (structure override resolves the conflict). Also add: constraints_compose_conjunctively_across_traits \u2014 trait A has `constraint x > 0mm`, trait B has `constraint x < 100mm`, structure provides param x, expect both constraints injected (>= 2 constraints).",
       "status": "done",
-      "commit": "403abea"
+      "commit": "c86f243"
     },
     {
       "id": "step-9",
-      "type": "test",
-      "description": "Write test `parse_instance_qualified_with_member_chain`: parse `structure S { let x = self.motor.(Driveable::torque) }` and assert InstanceQualifiedAccess { object: MemberAccess { object: Ident(\"self\"), member: \"motor\" }, qualified: QualifiedAccess(Ident(\"Driveable\"), \"torque\") }.",
+      "type": "impl",
+      "description": "If step-8 tests fail: For let conflict resolution by override, update collect_all_requirements to check structure_members before reporting let expression conflict (similar to how default type conflicts already check structure_members at line ~4354). For constraint composition, verify existing behavior is correct (should already work via unnamed defaults always-push logic). Fix any remaining issues.",
       "status": "done",
-      "commit": "6a4e507"
+      "commit": "c86f243"
     },
     {
       "id": "step-10",
-      "type": "impl",
-      "description": "Verify chained member access before instance qualified access works. Should pass since `self.motor` is parsed as member_access (prec 8) and `.(...)` is instance_qualified_access (prec 8, left-associative).",
-      "status": "done",
-      "commit": "6a4e507"
-    },
-    {
-      "id": "step-11",
       "type": "test",
-      "description": "Write test `parse_instance_qualified_with_chained_path`: parse `structure S { let x = obj.(A::B::c) }` and assert InstanceQualifiedAccess { object: Ident(\"obj\"), qualified: QualifiedAccess { qualifier: QualifiedAccess { qualifier: Ident(\"A\"), member: \"B\" }, member: \"c\" } }.",
+      "description": "Add comprehensive mixed-merging test: mixed_merging_params_lets_constraints \u2014 trait A has `param x : Length`, `let area : Real = x * x`, `constraint x > 0mm`. Trait B has `param x : Length`, `let area : Real = x * x`, `constraint x < 1000mm`. Structure implements A + B with `param x : Length = 5mm`. Expect: 0 errors, exactly 1 'x' value cell, exactly 1 'area' value cell, at least 2 constraints. This validates the complete merging pipeline across member kinds.",
       "status": "done",
-      "commit": "6a4e507"
-    },
-    {
-      "id": "step-12",
-      "type": "impl",
-      "description": "Verify nested qualified access inside instance qualified access. Should pass since the inner qualified field lowers recursively.",
-      "status": "done",
-      "commit": "6a4e507"
-    },
-    {
-      "id": "step-13",
-      "type": "test",
-      "description": "Write test `parse_distinct_ast_nodes`: parse `structure S { let a = Rigid::mass  let b = obj.(Rigid::mass) }` and assert `a` produces QualifiedAccess while `b` produces InstanceQualifiedAccess \u2014 distinct ExprKind discriminants.",
-      "status": "done",
-      "commit": "6a4e507"
-    },
-    {
-      "id": "step-14",
-      "type": "impl",
-      "description": "Verify distinct node test passes \u2014 inherent from using separate ExprKind variants. Final cleanup: ensure all existing tests still pass with `cargo test -p reify-syntax`.",
-      "status": "done",
-      "commit": "6a4e507"
+      "commit": "16c3c15"
     }
   ],
   "design_decisions": [
     {
-      "decision": "QualifiedAccess uses `qualifier: Box<Expr>` rather than `qualifier: String`",
-      "rationale": "The task specifies left-associative chaining (`A::B::c`), so the qualifier must accept another QualifiedAccess, not just a bare identifier. Box<Expr> supports this naturally: QualifiedAccess(QualifiedAccess(Ident(A), B), c)."
+      "decision": "Change DefaultKind::Let(LetDecl) to DefaultKind::Let { cell_type: Type, let_decl: LetDecl }",
+      "rationale": "Mirrors DefaultKind::Param which already stores cell_type. The current sentinel value Type::Real causes all let defaults to appear type-identical during deduplication, masking real type conflicts. Storing the actual resolved type enables correct type comparison."
     },
     {
-      "decision": "InstanceQualifiedAccess stores `qualified: Box<Expr>` rather than decomposed type_name/member strings",
-      "rationale": "The inner part of `expr.(TypeName::ident)` is itself a qualified_access that can be chained (`expr.(A::B::c)`). Storing it as Box<Expr> avoids duplicating the QualifiedAccess structure and handles nesting naturally."
+      "decision": "Use LetDecl.content_hash for expression equivalence comparison",
+      "rationale": "ContentHash is already computed during parsing for all declarations and captures structural content. Two let declarations with the same name, type annotation, and expression text will have identical content_hash. This is conservative (whitespace-sensitive) but correct and zero-cost since hashes are pre-computed. No need to implement PartialEq on Expr or add new hash infrastructure."
     },
     {
-      "decision": "Grammar restricts right side of `::` to `$.identifier`, not `$._expression`",
-      "rationale": "The task syntax `TypeName::ident` implies the member is always a bare identifier. This also avoids ambiguity: `Foo::bar + 1` unambiguously parses as `(Foo::bar) + 1` since `bar` is consumed as identifier, then `+ 1` is a separate binary expression."
+      "decision": "Extend seen_defaults to HashMap<String, (Type, Option<ContentHash>)>",
+      "rationale": "Adding Option<ContentHash> to the tracking map enables expression comparison for let defaults without adding a separate data structure. None for param/constraint defaults (expression comparison not needed), Some(hash) for let defaults. Minimal change to existing dedup logic."
     },
     {
-      "decision": "Instance qualified access grammar constrains inner part to `$.qualified_access`",
-      "rationale": "The syntax `expr.(TypeName::ident)` specifically requires a qualified access inside the parentheses. Using `$.qualified_access` instead of `$._expression` prevents nonsensical forms like `expr.(42)` at the grammar level."
+      "decision": "Cross-check requirements against available defaults before reporting missing member",
+      "rationale": "When trait A requires param x and trait B provides default param x (same type), the merged view should see x as available. Without this cross-check, the structure gets a false 'missing required member' error for x even though it will be injected by B's default. This is the semantic heart of 'merge members across all traits'."
     },
     {
-      "decision": "Instance qualified access at precedence 8 (postfix level)",
-      "rationale": "The `expr.(...)` syntax is a postfix operation analogous to member access `expr.member` and index access `expr[i]`. All postfix operations share precedence 8, ensuring consistent left-to-right evaluation: `a.b.(Foo::c)` parses as `(a.b).(Foo::c)`."
+      "decision": "Do not check for param-vs-let kind conflicts (same name, different member kind across traits)",
+      "rationale": "A param (user-settable) and a let (computed) with the same name from different traits represent a semantic conflict, but the task description does not explicitly require this check. The current infrastructure tracks requirements and defaults in separate maps without kind discrimination. Adding kind-conflict detection would require broader refactoring. Deferred to a future task."
     },
     {
-      "decision": "Qualified access at precedence 2 as specified by task",
-      "rationale": "Task explicitly states precedence 2. Since the right side of `::` is restricted to an identifier (not an expression), precedence primarily affects the qualifier side. This is safe for the common use case where qualifiers are identifiers (`Foo::bar`). The compiler can reject non-type qualifiers if arithmetic expressions appear on the left."
+      "decision": "New test file trait_merge_tests.rs (not appending to trait_conformance_tests.rs)",
+      "rationale": "Follows project convention of separate test files per feature area. Merging across multiple traits is a distinct concern from basic single-trait conformance checking. Keeps trait_conformance_tests.rs focused on its current scope."
     }
   ],
   "reuse": [
     {
-      "what": "member_access grammar rule pattern",
-      "where": "tree-sitter-reify/grammar.js line 675",
-      "how": "Both qualified_access and instance_qualified_access follow the same `prec.left(N, seq(field(...), token, field(...)))` pattern as member_access."
+      "what": "collect_all_requirements() function",
+      "where": "crates/reify-compiler/src/lib.rs:4270",
+      "how": "Existing recursive function for traversing refinement chains with diamond dedup. Extend its seen_defaults map and add expression comparison \u2014 no structural changes needed."
     },
     {
-      "what": "lower_member_access implementation pattern",
-      "where": "crates/reify-syntax/src/ts_parser.rs lines 1743-1773",
-      "how": "lower_qualified_access follows the same pattern: extract named fields via child_by_field_name, lower sub-expressions, construct ExprKind."
+      "what": "check_trait_conformance() function",
+      "where": "crates/reify-compiler/src/lib.rs:4041",
+      "how": "Existing function that checks requirements and injects defaults. Add cross-check of requirements against defaults, update DefaultKind::Let pattern matches."
     },
     {
-      "what": "Test helper parse_decls pattern",
-      "where": "crates/reify-syntax/tests/trait_tests.rs lines 9-12",
-      "how": "New test file uses identical parse_decls helper: parse source with ModulePath::single, return (declarations, errors)."
+      "what": "ContentHash for expression comparison",
+      "where": "crates/reify-types/src/hash.rs (ContentHash struct), crates/reify-syntax LetDecl.content_hash field",
+      "how": "Already computed during parsing for every LetDecl. Compare content_hash values to detect expression differences between let defaults with same name and type."
     },
     {
-      "what": "Expression assertion via nested match on let decl",
-      "where": "crates/reify-syntax/tests/trait_tests.rs, lambda_tests.rs",
-      "how": "Tests extract expressions by pattern-matching Declaration::Structure \u2192 members[N] as MemberDecl::Let \u2192 let_decl.value.kind, then assert on ExprKind variant fields."
+      "what": "compile_module / compile_first_template test helpers",
+      "where": "crates/reify-compiler/tests/trait_conformance_tests.rs:10-21",
+      "how": "Same helper pattern (parse + compile + extract) used across all 24 compiler test files. Copy into new trait_merge_tests.rs."
     },
     {
-      "what": "Lowering utilities: span() and node_text()",
-      "where": "crates/reify-syntax/src/ts_parser.rs Lowering impl",
-      "how": "All lowering functions use self.span(node) for SourceSpan and self.node_text(node) for extracting text. The new lowering functions reuse these same utilities."
+      "what": "Error assertion pattern",
+      "where": "crates/reify-compiler/tests/trait_conformance_tests.rs:121-132",
+      "how": "Standard pattern: filter diagnostics by Severity::Error, assert count, check message contains expected substring. Used throughout all test files."
+    },
+    {
+      "what": "Diagnostic::error() builder with DiagnosticLabel",
+      "where": "crates/reify-types/src/diagnostics.rs",
+      "how": "Existing builder pattern for creating error diagnostics with labeled source spans. Used for new error messages (conflicting let expressions, cross-trait type mismatch)."
     }
   ],
-  "_session_id": "191-e0bf1176",
-  "_created_at": "2026-03-24T16:06:05.537937+00:00"
+  "_session_id": "188-e437ff6a",
+  "_created_at": "2026-03-24T16:11:00.074468+00:00"
 }

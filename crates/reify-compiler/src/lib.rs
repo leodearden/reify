@@ -71,7 +71,10 @@ pub enum DefaultKind {
         default_decl: reify_syntax::ParamDecl,
     },
     /// A let with a value expression: `let x = expr`
-    Let(reify_syntax::LetDecl),
+    Let {
+        cell_type: Type,
+        let_decl: reify_syntax::LetDecl,
+    },
     /// A constraint with an expression: `constraint label : expr`
     Constraint(reify_syntax::ConstraintDecl),
 }
@@ -1577,10 +1580,12 @@ fn compile_trait(
                 } else {
                     Type::Real
                 };
-                let _ = ty; // type used for future type checking
                 defaults.push(TraitDefault {
                     name: Some(let_decl.name.clone()),
-                    kind: DefaultKind::Let(let_decl.clone()),
+                    kind: DefaultKind::Let {
+                        cell_type: ty,
+                        let_decl: let_decl.clone(),
+                    },
                     span: let_decl.span,
                 });
             }
@@ -4103,7 +4108,7 @@ fn check_trait_conformance(
     let mut all_defaults: Vec<TraitDefault> = Vec::new();
     let mut visited_traits: HashSet<String> = HashSet::new();
     let mut seen_requirement_names: HashMap<String, Type> = HashMap::new();
-    let mut seen_default_names: HashMap<String, Type> = HashMap::new();
+    let mut seen_default_names: HashMap<String, (Type, Option<ContentHash>)> = HashMap::new();
 
     for trait_bound in structure.trait_bounds {
         collect_all_requirements(
@@ -4119,6 +4124,22 @@ fn check_trait_conformance(
             diagnostics,
         );
     }
+
+    // Build a map of available default names from all_defaults (non-constraint, named).
+    // Used to cross-check requirements: a requirement is satisfied if the structure
+    // provides the member OR if another trait in the bound set provides a matching default.
+    let available_defaults: HashMap<String, Type> = all_defaults
+        .iter()
+        .filter_map(|d| {
+            let name = d.name.as_deref()?;
+            let ty = match &d.kind {
+                DefaultKind::Param { cell_type, .. } => cell_type.clone(),
+                DefaultKind::Let { cell_type, .. } => cell_type.clone(),
+                DefaultKind::Constraint(_) => return None,
+            };
+            Some((name.to_string(), ty))
+        })
+        .collect();
 
     // Check each requirement against structure members.
     for req in &all_requirements {
@@ -4140,16 +4161,39 @@ fn check_trait_conformance(
                         }
                     }
                     None => {
-                        diagnostics.push(
-                            Diagnostic::error(format!(
-                                "missing required member '{}' (expected type: {})",
-                                req.name, expected_type
-                            ))
-                            .with_label(DiagnosticLabel::new(
-                                structure.span,
-                                "required by trait",
-                            )),
-                        );
+                        // Check if a matching default from another trait satisfies this requirement.
+                        match available_defaults.get(&req.name) {
+                            Some(default_type) if default_type == expected_type => {
+                                // Default satisfies the requirement — no error.
+                            }
+                            Some(default_type) => {
+                                // Default exists but has wrong type → type mismatch.
+                                diagnostics.push(
+                                    Diagnostic::error(format!(
+                                        "type mismatch for trait member '{}': \
+                                         requirement expects {}, available default has {}",
+                                        req.name, expected_type, default_type
+                                    ))
+                                    .with_label(DiagnosticLabel::new(
+                                        structure.span,
+                                        "type mismatch",
+                                    )),
+                                );
+                            }
+                            None => {
+                                // No default available — truly missing.
+                                diagnostics.push(
+                                    Diagnostic::error(format!(
+                                        "missing required member '{}' (expected type: {})",
+                                        req.name, expected_type
+                                    ))
+                                    .with_label(DiagnosticLabel::new(
+                                        structure.span,
+                                        "required by trait",
+                                    )),
+                                );
+                            }
+                        }
                     }
                 }
             }
@@ -4185,7 +4229,7 @@ fn check_trait_conformance(
         {
             let ty = match &default.kind {
                 DefaultKind::Param { cell_type, .. } => cell_type.clone(),
-                DefaultKind::Let(_) => Type::Real,
+                DefaultKind::Let { cell_type, .. } => cell_type.clone(),
                 DefaultKind::Constraint(_) => continue,
             };
             scope.register(name, ty);
@@ -4218,7 +4262,7 @@ fn check_trait_conformance(
                     });
                 }
             }
-            DefaultKind::Let(let_decl) => {
+            DefaultKind::Let { cell_type, let_decl } => {
                 let name = default.name.as_deref().expect("DefaultKind::Let always has Some(name)");
                 if !structure_members.contains_key(name) {
                     let cell_id = ValueCellId {
@@ -4234,11 +4278,19 @@ fn check_trait_conformance(
                         diagnostics,
                     );
 
+                    // Use the declared cell_type from the trait annotation when available
+                    // (Type::Real is the fallback when no annotation was provided).
+                    let resolved_type = if *cell_type != Type::Real {
+                        cell_type.clone()
+                    } else {
+                        compiled_expr.result_type.clone()
+                    };
+
                     value_cells.push(ValueCellDecl {
                         id: cell_id,
                         kind: ValueCellKind::Let,
                         visibility: Visibility::Private,
-                        cell_type: compiled_expr.result_type.clone(),
+                        cell_type: resolved_type,
                         default_expr: Some(compiled_expr),
                         span: default.span,
                     });
@@ -4284,7 +4336,7 @@ fn collect_all_requirements(
     defaults: &mut Vec<TraitDefault>,
     visited: &mut HashSet<String>,
     seen_names: &mut HashMap<String, Type>,
-    seen_defaults: &mut HashMap<String, Type>,
+    seen_defaults: &mut HashMap<String, (Type, Option<ContentHash>)>,
     structure_members: &HashMap<String, Type>,
     span: SourceSpan,
     diagnostics: &mut Vec<Diagnostic>,
@@ -4352,17 +4404,18 @@ fn collect_all_requirements(
             // Unnamed defaults (e.g., unlabeled constraints) — always push.
             defaults.push(default.clone());
         } else if let Some(name) = &default.name {
-            // Extract type for dedup comparison.
-            let default_type = match &default.kind {
-                DefaultKind::Param { cell_type, .. } => cell_type.clone(),
-                DefaultKind::Let(_) => Type::Real,
-                DefaultKind::Constraint(_) => Type::Bool, // sentinel for constraint label dedup
+            // Extract type and optional content_hash for dedup comparison.
+            let (default_type, default_hash) = match &default.kind {
+                DefaultKind::Param { cell_type, .. } => (cell_type.clone(), None),
+                DefaultKind::Let { cell_type, let_decl } => {
+                    (cell_type.clone(), Some(let_decl.content_hash))
+                }
+                DefaultKind::Constraint(_) => (Type::Bool, None), // sentinel for label dedup
             };
 
-            if let Some(existing_type) = seen_defaults.get(name.as_str()) {
-                if existing_type != &default_type
-                    && !structure_members.contains_key(name.as_str())
-                {
+            if let Some((existing_type, existing_hash)) = seen_defaults.get(name.as_str()) {
+                let overridden = structure_members.contains_key(name.as_str());
+                if existing_type != &default_type && !overridden {
                     // Same name + different type + not overridden → conflict
                     diagnostics.push(
                         Diagnostic::error(format!(
@@ -4371,11 +4424,26 @@ fn collect_all_requirements(
                         ))
                         .with_label(DiagnosticLabel::new(span, "conflicting trait defaults")),
                     );
+                } else if existing_type == &default_type
+                    && existing_hash.is_some()
+                    && default_hash.is_some()
+                    && existing_hash != &default_hash
+                    && !overridden
+                {
+                    // Same name + same type + different expression + not overridden → conflict
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "conflicting let expressions for '{}': \
+                             two traits provide the same-typed let with different expressions",
+                            name
+                        ))
+                        .with_label(DiagnosticLabel::new(span, "conflicting trait defaults")),
+                    );
                 }
                 // Same name already seen → skip (deduplicate).
                 continue;
             }
-            seen_defaults.insert(name.clone(), default_type);
+            seen_defaults.insert(name.clone(), (default_type, default_hash));
             defaults.push(default.clone());
         }
     }
