@@ -51,7 +51,7 @@ fn infer_value_type(v: &Value) -> Type {
                 .as_ref()
                 .map(|v| infer_value_type(v))
                 .or_else(|| upper.as_ref().map(|v| infer_value_type(v)))
-                .unwrap_or(Type::Real);
+                .unwrap_or_else(|| panic!("literal() cannot infer Range element type for fully unbounded range. Use CompiledExpr::literal(value, type) directly."));
             Type::Range(Box::new(elem_ty))
         }
         Value::Undef => Type::Bool,
