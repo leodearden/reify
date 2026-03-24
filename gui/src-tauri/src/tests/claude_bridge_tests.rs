@@ -432,10 +432,14 @@ async fn sidecar_handle_kill_sets_state_to_not_started() {
 #[tokio::test]
 async fn crash_detection_sets_state_to_crashed_on_eof() {
     use std::sync::Arc;
+    use std::time::Duration;
     use tokio::io::BufReader;
     use tokio::sync::Mutex;
 
-    let state = Arc::new(Mutex::new(SidecarState::Ready));
+    // Start as Starting (not Ready) so wait_ready uses the slow path and waits
+    // for the Notify fired by on_exit. If state were Ready, wait_ready would
+    // return Ok immediately via the fast path before the crash is detected.
+    let state = Arc::new(Mutex::new(SidecarState::Starting));
     // Use a duplex where we control the writer - dropping it simulates crash
     let (data_writer, data_reader) = tokio::io::duplex(1024);
     let reader = BufReader::new(data_reader);
@@ -446,11 +450,10 @@ async fn crash_detection_sets_state_to_crashed_on_eof() {
 
     let handle = SidecarHandle::from_parts(writer, reader, state);
 
-    // Wait for reader task to notice the EOF and set Crashed
-    for _ in 0..50 {
-        tokio::task::yield_now().await;
-    }
-
+    // wait_ready returns Err when the sidecar crashes — deterministic sync
+    // (on_exit fires notify_waiters, wait_ready wakes and sees Crashed state).
+    let result = handle.wait_ready(Duration::from_secs(5)).await;
+    assert!(result.is_err(), "Expected Err since sidecar crashed (EOF)");
     assert!(matches!(*handle.state().lock().await, SidecarState::Crashed(_)));
 }
 
