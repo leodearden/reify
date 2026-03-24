@@ -82,6 +82,28 @@ impl Value {
         }
     }
 
+    /// Create a Range value with normalized inclusivity flags.
+    ///
+    /// When a bound is `None` (unbounded), the corresponding inclusive flag is forced to
+    /// `false` — infinity is never "included". This ensures that two logically identical
+    /// ranges compare as equal and produce the same content hash regardless of which
+    /// inclusive flag the caller passed.
+    pub fn range(
+        lower: Option<Value>,
+        upper: Option<Value>,
+        lower_inclusive: bool,
+        upper_inclusive: bool,
+    ) -> Value {
+        let lower_inclusive = lower_inclusive && lower.is_some();
+        let upper_inclusive = upper_inclusive && upper.is_some();
+        Value::Range {
+            lower: lower.map(Box::new),
+            upper: upper.map(Box::new),
+            lower_inclusive,
+            upper_inclusive,
+        }
+    }
+
     pub fn is_undef(&self) -> bool {
         matches!(self, Value::Undef)
     }
@@ -2178,5 +2200,49 @@ mod tests {
         assert_ne!(r, Value::Int(0));
         assert_ne!(r, Value::Undef);
         assert_ne!(r, Value::Bool(true));
+    }
+
+    // ── Range inclusivity normalization tests (task-364) ─────────────────────
+
+    #[test]
+    fn value_range_normalize_lower_inclusive_when_none() {
+        let r = Value::range(None, Some(Value::Int(10)), true, true);
+        match r {
+            Value::Range { lower_inclusive, .. } => assert!(!lower_inclusive),
+            _ => panic!("expected Range"),
+        }
+    }
+
+    #[test]
+    fn value_range_normalize_upper_inclusive_when_none() {
+        let r = Value::range(Some(Value::Int(0)), None, true, true);
+        match r {
+            Value::Range { upper_inclusive, .. } => assert!(!upper_inclusive),
+            _ => panic!("expected Range"),
+        }
+    }
+
+    #[test]
+    fn value_range_normalize_both_when_none() {
+        let r = Value::range(None, None, true, true);
+        match r {
+            Value::Range { lower_inclusive, upper_inclusive, .. } => {
+                assert!(!lower_inclusive);
+                assert!(!upper_inclusive);
+            }
+            _ => panic!("expected Range"),
+        }
+    }
+
+    #[test]
+    fn value_range_no_normalize_when_some() {
+        let r = Value::range(Some(Value::Int(0)), Some(Value::Int(10)), true, true);
+        match r {
+            Value::Range { lower_inclusive, upper_inclusive, .. } => {
+                assert!(lower_inclusive);
+                assert!(upper_inclusive);
+            }
+            _ => panic!("expected Range"),
+        }
     }
 }
