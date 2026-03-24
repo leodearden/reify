@@ -88,14 +88,14 @@
       "type": "test",
       "description": "Add LSP completion test: in crates/reify-lsp/src/completion.rs tests, verify that BUILTIN_FUNCTIONS contains complex number function names. Assert BUILTIN_FUNCTIONS.contains(&\"complex\"), .contains(&\"real\"), .contains(&\"imag\"), .contains(&\"conjugate\"), .contains(&\"complex_magnitude\"), .contains(&\"phase\"). This will fail until step-11 adds them.",
       "status": "done",
-      "commit": "PENDING"
+      "commit": "772047bc"
     },
     {
       "id": "step-11",
       "type": "impl",
       "description": "Update BUILTIN_FUNCTIONS array in crates/reify-lsp/src/completion.rs to include complex number functions: add \"complex\", \"real\", \"imag\", \"conjugate\", \"complex_magnitude\", \"phase\" to the existing array. Keep existing entries and add a comment grouping the complex functions.",
       "status": "done",
-      "commit": "PENDING"
+      "commit": "772047bc"
     }
   ],
   "design_decisions": [
