@@ -1684,6 +1684,50 @@ mod tests {
         );
     }
 
+    // --- magnitude() tests (step-7) ---
+
+    #[test]
+    fn magnitude_3_4_0_equals_5() {
+        // magnitude([3,4,0]) == 5.0
+        let v = Value::Tensor(vec![Value::Real(3.0), Value::Real(4.0), Value::Real(0.0)]);
+        assert_real_approx!(eval_builtin("magnitude", &[v]), 5.0);
+    }
+
+    #[test]
+    fn magnitude_dimensioned_vector() {
+        // magnitude([3mm,4mm,0mm]) == 5mm = 0.005m as Scalar{LENGTH}
+        let v = Value::Tensor(vec![
+            Value::Scalar { si_value: 0.003, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 0.004, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 0.000, dimension: DimensionVector::LENGTH },
+        ]);
+        assert_scalar_approx!(eval_builtin("magnitude", &[v]), 0.005, DimensionVector::LENGTH);
+    }
+
+    #[test]
+    fn magnitude_zero_vector_returns_zero() {
+        let v = Value::Tensor(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]);
+        assert_real_approx!(eval_builtin("magnitude", &[v]), 0.0);
+    }
+
+    #[test]
+    fn magnitude_2d_vector() {
+        // magnitude([3,4]) == 5.0
+        let v = Value::Tensor(vec![Value::Real(3.0), Value::Real(4.0)]);
+        assert_real_approx!(eval_builtin("magnitude", &[v]), 5.0);
+    }
+
+    #[test]
+    fn magnitude_non_tensor_returns_undef() {
+        assert!(eval_builtin("magnitude", &[Value::Real(5.0)]).is_undef(), "magnitude of non-Tensor should be Undef");
+    }
+
+    #[test]
+    fn magnitude_empty_tensor_returns_undef() {
+        let v = Value::Tensor(vec![]);
+        assert!(eval_builtin("magnitude", &[v]).is_undef(), "magnitude of empty Tensor should be Undef");
+    }
+
     // --- cross() tests: dimensionless vectors (step-4) ---
 
     #[test]
