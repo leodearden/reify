@@ -123,3 +123,65 @@ occurrence Weld {
         module.templates.len()
     );
 }
+
+// ── step-5: cross-type collision: structure + occurrence same name ─────────
+
+/// A structure and an occurrence with the same name produce a
+/// 'duplicate entity definition' error. Labels identify the entity kinds.
+/// Only 1 template is compiled.
+#[test]
+fn structure_and_occurrence_same_name_produce_error() {
+    let source = r#"
+structure Widget {
+    param size : Real = 1.0
+}
+
+occurrence Widget {
+    param duration : Real = 5.0
+}
+"#;
+    let module = compile_module(source);
+    let errors = errors_only(&module);
+
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly 1 error for structure+occurrence collision, got: {:?}",
+        errors
+    );
+
+    let msg = &errors[0].message;
+    assert!(
+        msg.contains("duplicate entity definition") && msg.contains("Widget"),
+        "error should say 'duplicate entity definition' for 'Widget', got: {:?}",
+        msg
+    );
+
+    // Labels should identify both entity kinds
+    assert_eq!(
+        errors[0].labels.len(),
+        2,
+        "expected 2 labels, got {:?}",
+        errors[0].labels
+    );
+    let label_msgs: Vec<&str> = errors[0].labels.iter().map(|l| l.message.as_str()).collect();
+    // One label should mention "occurrence", the other "structure"
+    assert!(
+        label_msgs.iter().any(|m| m.contains("occurrence")),
+        "one label should mention 'occurrence', got: {:?}",
+        label_msgs
+    );
+    assert!(
+        label_msgs.iter().any(|m| m.contains("structure")),
+        "one label should mention 'structure', got: {:?}",
+        label_msgs
+    );
+
+    // Only 1 template compiled (the structure, which was defined first)
+    assert_eq!(
+        module.templates.len(),
+        1,
+        "expected only 1 compiled template, got {}",
+        module.templates.len()
+    );
+}
