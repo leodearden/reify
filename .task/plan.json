@@ -1,220 +1,243 @@
 {
-  "task_id": "307",
-  "title": "Stdlib: wire boolean operations \u2014 union, intersection, difference",
+  "task_id": "195",
+  "title": "Constraint def: parser verification",
   "files": [
-    "crates/reify-compiler/src/lib.rs",
-    "crates/reify-eval/src/lib.rs",
-    "crates/reify-eval/tests/boolean_ops_e2e.rs"
+    "tree-sitter-reify/grammar.js",
+    "tree-sitter-reify/src/parser.c",
+    "tree-sitter-reify/src/grammar.json",
+    "tree-sitter-reify/src/node-types.json",
+    "crates/reify-syntax/src/lib.rs",
+    "crates/reify-syntax/src/ts_parser.rs",
+    "crates/reify-syntax/tests/constraint_def_tests.rs"
   ],
   "modules": [
-    "crates/reify-compiler",
-    "crates/reify-eval"
+    "tree-sitter-reify",
+    "crates/reify-syntax"
   ],
-  "analysis": "The boolean operations infrastructure is fully built at every layer EXCEPT the compiler's function recognition and compilation. Specifically: (1) CompiledGeometryOp::Boolean { op: BooleanOp, left: GeomRef, right: GeomRef } already exists in the compiler types. (2) BooleanOp::{Union,Difference,Intersection} enum exists. (3) The eval layer's compile_geometry_op() already resolves Boolean ops via GeomRef::Step \u2192 step_handles lookup. (4) GeometryOp::{Union,Difference,Intersection} runtime variants exist in reify-types. (5) The OCCT kernel already dispatches to boolean_fuse/cut/common FFI. (6) OCCT FFI is proven working (boundary4_geometry.rs tests boolean_difference at kernel level). The ONLY gap is: is_geometry_function() doesn't include 'union'/'intersection'/'difference'/'union_all'/'intersection_all', and compile_geometry_call() has no match arms for them. The key design challenge is that boolean ops take geometry operands (not scalars), so compilation must recursively compile each arg as a geometry op chain, tracking step indices for GeomRef references. The eval engine accumulates step_handles across all operations in a flat vector, so GeomRef::Step(i) indices must be globally correct within the realization's ops list.\n\nREVIEW FIX: The compiler always passes step_offset: 0 per realization, making GeomRef::Step indices realization-local. However, the eval engine passes the full accumulated step_handles vector (which spans ALL realizations) to compile_geometry_op. When a second realization has boolean ops, Step(0) resolves to the first realization's handle instead of the current realization's first handle. The fix is to pass &step_handles[handle_start..] in all three eval code paths (tessellate_from_values at line 2650, and the two build methods at lines 2461 and 2535), making step_handles lookup realization-local to match the compiler's indexing.",
-  "prerequisites": [],
+  "analysis": "The task requires adding support for top-level `constraint def Name { params, predicate_lines }` parsing. Currently, `ConstraintDecl` exists only as a member-level declaration (inside structures, traits, purposes) using the syntax `constraint <expr>`. The task needs a NEW top-level `ConstraintDef` that is a named, parameterized constraint definition with bare expression predicates in the body.\n\nThe language spec (Section 4.1.3, 10.1, 12.1) defines constraint def syntax with examples like:\n```\nconstraint def MinWallThickness {\n    param wall : Length\n    param process : ManufacturingProcess\n    wall >= process.min_wall_thickness\n}\n```\n\nThe implementation requires three layers:\n1. **Grammar**: Add `constraint_definition` rule to tree-sitter grammar with body items being either `param_declaration`, `let_declaration`, or bare expression predicates (`constraint_def_predicate`)\n2. **AST**: Add `ConstraintDef` struct and `Constraint(ConstraintDef)` variant to `Declaration` enum\n3. **Lowering**: Add `lower_constraint_def` function and dispatch in `lower_source_file`\n\nKey insight: `constraint_definition` (top-level, starts with `constraint def`) operates in `_declaration` context, while `constraint_declaration` (member-level, starts with `constraint <expr>`) operates in `_member` context. No grammar conflict between them.\n\nThe body uses `_constraint_def_body_item` choice: param_declaration, let_declaration, or constraint_def_predicate (bare _expression). Bare expressions are predicate assertions; multiple predicates form a conjunction. Keywords like `param`/`let` disambiguate member declarations from bare expressions.\n\n**Review fix (2026-03-24):** Two robustness issues in `lower_constraint_def` body iteration loop: (1) the `_ => {}` catch-all silently swallows ERROR tree-sitter nodes \u2014 must add explicit \"ERROR\" arm matching `lower_member` and `lower_source_file` patterns; (2) `param_declaration` arm uses bare `self.lower_param(child)` without `check_and_lower!` guard \u2014 must wrap with `check_and_lower!` for consistency with `lower_member`.",
+  "prerequisites": [
+    {
+      "id": "pre-1",
+      "description": "Add `constraint_definition`, `_constraint_def_body_item`, and `constraint_def_predicate` rules to tree-sitter-reify/grammar.js. Add `$.constraint_definition` to the `_declaration` choice. Add `[$.constraint_def_predicate]` to conflicts if needed.",
+      "status": "done",
+      "commit": "730d914",
+      "tests": []
+    },
+    {
+      "id": "pre-2",
+      "description": "Regenerate tree-sitter parser by running `tree-sitter generate` in tree-sitter-reify/. This updates src/parser.c, src/grammar.json, and src/node-types.json.",
+      "status": "done",
+      "commit": "730d914",
+      "tests": []
+    },
+    {
+      "id": "pre-3",
+      "description": "Add `ConstraintDef` struct to crates/reify-syntax/src/lib.rs with fields: name (String), is_pub (bool), type_params (Vec<TypeParamDecl>), params (Vec<ParamDecl>), predicates (Vec<Expr>), span (SourceSpan), content_hash (ContentHash). Add `Constraint(ConstraintDef)` variant to the Declaration enum.",
+      "status": "done",
+      "commit": "730d914",
+      "tests": []
+    }
+  ],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing inline tests in reify-compiler asserting is_geometry_function returns true for 'union', 'intersection', 'difference', 'union_all', 'intersection_all'",
+      "description": "Write failing test `parse_basic_constraint_def` in constraint_def_tests.rs: parse `constraint def Foo { x > 0 }`, assert no errors, assert 1 declaration of type Declaration::Constraint, assert name is 'Foo'.",
       "status": "done",
-      "commit": "bfc1da2"
+      "commit": "852c0f3"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Add 'union' | 'intersection' | 'difference' | 'union_all' | 'intersection_all' to is_geometry_function() match arms",
+      "description": "Add `lower_constraint_def` function in ts_parser.rs extracting name, is_pub, type_params, params, predicates. Add dispatch arm `\"constraint_definition\" => ...` in `lower_source_file`. Follow pattern from lower_purpose/lower_structure.",
       "status": "done",
-      "commit": "4186230"
+      "commit": "0d4776e"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing inline test: parse 'let r = union(box(10mm,10mm,10mm), box(20mm,20mm,20mm))' \u2192 realization with 3 ops: 2 Primitive::Box + 1 Boolean{Union, Step(0), Step(1)}",
+      "description": "Write test `parse_constraint_def_predicate_expr`: verify the predicate expression content \u2014 parse `constraint def Check { a > 5mm }`, assert predicates.len() == 1, assert the predicate is a BinOp with op '>' and left Ident('a').",
       "status": "done",
-      "commit": "cf101cd"
+      "commit": "852c0f3"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Add match arms for 'union'|'intersection'|'difference' in compile_geometry_call: validate 2 args, recursively compile each arg via compile_geometry_call, compute step indices, emit CompiledGeometryOp::Boolean with correct GeomRef::Step references. Include error diagnostics for wrong arity and non-geometry args.",
+      "description": "Verify predicate extraction works in lower_constraint_def by iterating constraint_def_predicate children and lowering their 'expr' field. Fix if needed.",
       "status": "done",
-      "commit": "b228162"
+      "commit": "0d4776e"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write inline test: 'let r = difference(box(20mm,20mm,20mm), box(10mm,10mm,10mm))' \u2192 realization with 3 ops ending in Boolean{Difference}. Should pass from step-4.",
+      "description": "Write test `parse_constraint_def_with_params`: parse `constraint def MinWall { param wall : Length  param process : Process  wall >= process.min_wall }`, assert params.len() == 2, assert params[0].name == 'wall', assert predicates.len() == 1.",
       "status": "done",
-      "commit": "97bea24"
+      "commit": "852c0f3"
     },
     {
       "id": "step-6",
-      "type": "test",
-      "description": "Write inline test: 'let r = intersection(box(10mm,10mm,10mm), box(10mm,10mm,10mm))' \u2192 realization with 3 ops ending in Boolean{Intersection}. Should pass from step-4.",
+      "type": "impl",
+      "description": "Verify param extraction works in lower_constraint_def by iterating param_declaration children and lowering them via existing lower_param. Fix if needed.",
       "status": "done",
-      "commit": "97bea24"
+      "commit": "0d4776e"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing inline test: 'let r = union_all(box(10mm,10mm,10mm), box(10mm,10mm,10mm), box(10mm,10mm,10mm))' \u2192 realization with 5 ops: 3 Primitive::Box + 2 Boolean{Union} (left-fold pattern: Union(Union(box0,box1),box2))",
+      "description": "Write test `parse_constraint_def_multiple_predicates`: parse a constraint def with 3 bare expression predicates (conjunction), assert predicates.len() == 3, verifying multiple predicates represent logical AND.",
       "status": "done",
-      "commit": "ff28ca0"
+      "commit": "852c0f3"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Add match arms for 'union_all'|'intersection_all' in compile_geometry_call: validate >=2 args, recursively compile each arg, left-fold with binary Boolean ops tracking accumulated step indices",
+      "description": "Should already pass since predicates Vec collects all constraint_def_predicate nodes. Verify and fix if needed.",
       "status": "done",
-      "commit": "a4040e3"
+      "commit": "0d4776e"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write inline test: 'let r = union(box(10mm,10mm,10mm))' with 1 arg \u2192 compile_geometry_call returns None and emits 'expects 2 arguments' diagnostic",
+      "description": "Write test `parse_pub_constraint_def`: parse `pub constraint def Visible { x > 0 }`, assert is_pub == true.",
       "status": "done",
-      "commit": "130cf04"
+      "commit": "852c0f3"
     },
     {
       "id": "step-10",
-      "type": "test",
-      "description": "Write inline test: 'let r = union(42, box(10mm,10mm,10mm))' with non-geometry first arg \u2192 compile_geometry_call returns None and emits diagnostic about geometry argument required",
+      "type": "impl",
+      "description": "Should already pass since lower_constraint_def uses has_pub_keyword(). Verify and fix if needed.",
       "status": "done",
-      "commit": "130cf04"
+      "commit": "0d4776e"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write inline test for nested boolean: 'let r = union(difference(box(...), cylinder(...)), sphere(...))' \u2192 realization with 5 ops: Box, Cylinder, Boolean{Difference}, Sphere, Boolean{Union} with correct step indices",
+      "description": "Write test `parse_constraint_def_with_type_params`: parse `constraint def Aligned<T : Rigid> { ... }`, assert type_params.len() == 1, assert type_params[0].name == 'T'.",
       "status": "done",
-      "commit": "07af798"
+      "commit": "852c0f3"
     },
     {
       "id": "step-12",
-      "type": "test",
-      "description": "Create crates/reify-eval/tests/boolean_ops_e2e.rs with OCCT-guarded test: parse+compile+eval 'union(box(10mm,10mm,10mm), box(10mm,10mm,10mm))' through Engine with OcctKernel, verify non-empty STEP output containing ISO-10303-21",
+      "type": "impl",
+      "description": "Should already pass since lower_constraint_def uses lower_type_parameters(). Verify and fix if needed.",
       "status": "done",
-      "commit": "46be438"
+      "commit": "0d4776e"
     },
     {
       "id": "step-13",
-      "type": "impl",
-      "description": "Verify full eval+kernel path works end-to-end. The compile_geometry_op Boolean handler and OCCT kernel boolean ops are already implemented \u2014 fix any issues if e2e test fails.",
+      "type": "test",
+      "description": "Write integration test `parse_constraint_def_complex`: parse a realistic constraint def from the spec (DFM_Milling-style with params, forall quantifier predicates, and multiple predicates), verify all fields.",
       "status": "done",
-      "commit": "46be438"
+      "commit": "852c0f3"
     },
     {
       "id": "step-14",
-      "type": "test",
-      "description": "Add OCCT-guarded e2e test: difference(box(20mm,20mm,20mm), cylinder(5mm,20mm)) \u2192 valid STEP export (box with hole)",
+      "type": "impl",
+      "description": "Should already pass as an integration verification. Fix any edge cases discovered.",
       "status": "done",
-      "commit": "46be438"
+      "commit": "0d4776e"
     },
     {
       "id": "step-15",
       "type": "test",
-      "description": "Add OCCT-guarded e2e test: intersection(box(10mm,10mm,10mm), box(10mm,10mm,10mm)) \u2192 valid STEP export",
+      "description": "Write test `parse_constraint_def_body_syntax_error` in constraint_def_tests.rs: parse a constraint def with a syntax error inside the body (e.g. `constraint def Bad { x >< 0 }` or similar invalid syntax that produces an ERROR tree-sitter node inside the body). Assert that errors is non-empty and contains a ParseError with message matching 'syntax error in constraint body'. This tests the [reviewer_robustness] silent_error_suppression fix \u2014 currently the `_ => {}` catch-all silently swallows ERROR nodes.",
       "status": "done",
-      "commit": "46be438"
+      "commit": "2c867aa"
     },
     {
       "id": "step-16",
-      "type": "test",
-      "description": "Add OCCT-guarded e2e test: union_all with 5 boxes at different positions (nested translates or direct) \u2192 valid STEP export",
+      "type": "impl",
+      "description": "Add explicit `\"ERROR\"` arm to the body iteration match in `lower_constraint_def` (ts_parser.rs line ~633), replacing the silent `_ => {}` catch-all for ERROR nodes. Push a ParseError with message `format!(\"syntax error in constraint body: {}\", self.node_text(child))` and span `self.span(child)`, matching the pattern used in `lower_member` (line 809) and `lower_source_file` (line 158). The `_ => {}` arm remains for non-ERROR unknown node kinds (e.g. punctuation like `{`, `}`).",
       "status": "done",
-      "commit": "46be438"
+      "commit": "2c867aa"
     },
     {
       "id": "step-17",
       "type": "test",
-      "description": "Write failing OCCT-guarded e2e test in boolean_ops_e2e.rs: structure with two geometry let bindings 'let r1 = box(10mm, 10mm, 10mm)' and 'let r2 = union(box(20mm, 20mm, 20mm), box(30mm, 30mm, 30mm))'. Use Engine::tessellate_realizations() (or build()) and verify both realizations produce valid geometry. This test exposes the multi-realization step index bug: r2's Boolean{Union, Step(0), Step(1)} resolves Step(0) to r1's handle instead of r2's first box handle because the eval engine passes the full global step_handles vector instead of a realization-local slice.",
+      "description": "Write test `parse_constraint_def_error_param` in constraint_def_tests.rs: parse a constraint def with a malformed param_declaration inside the body (e.g. `constraint def Bad { param : Length  x > 0 }` \u2014 param missing its name, which gives a param_declaration node with `has_error() == true`). Assert that errors is non-empty and contains a ParseError with message matching 'invalid constraint param'. Assert that the constraint is still constructed (with 0 params) and the valid predicate is still collected. This tests the [reviewer_robustness] missing_error_guard fix \u2014 currently the bare `self.lower_param(child)` silently drops error params without diagnostics.",
       "status": "done",
-      "commit": "4a08e78"
+      "commit": "12f0c52"
     },
     {
       "id": "step-18",
       "type": "impl",
-      "description": "Fix all three geometry eval loops in Engine (crates/reify-eval/src/lib.rs) to pass realization-local step_handles slice to compile_geometry_op. (1) In tessellate_from_values (line ~2650): change '&step_handles' to '&step_handles[handle_start..]' \u2014 handle_start already tracked at line 2644. (2) In the eval-then-build method (line ~2461): add 'let handle_start = step_handles.len()' before the per-realization op loop, then pass '&step_handles[handle_start..]'. (3) In the full build() method (line ~2535): same pattern \u2014 add handle_start tracking and pass realization-local slice. This makes GeomRef::Step indices resolve relative to the current realization, matching the compiler's step_offset: 0 convention.",
+      "description": "Guard the `\"param_declaration\"` arm in `lower_constraint_def` body iteration (ts_parser.rs line ~617-620) with `check_and_lower!` macro, matching the pattern used in `lower_member` (line 786). Replace the bare `if let Some(p) = self.lower_param(child) { params.push(p); }` with: `check_and_lower!(self, child, \"constraint param\", self.lower_param(child).map(|p| { params.push(p); Some(()) }));` \u2014 this checks `child.is_error() || child.has_error()` and emits a diagnostic before skipping the node.",
       "status": "done",
-      "commit": "a737b43"
-    },
-    {
-      "id": "step-19",
-      "type": "test",
-      "description": "Write OCCT-guarded e2e test for multi-realization with nested booleans: 'let r1 = difference(box(20mm,20mm,20mm), cylinder(5mm, 20mm))' and 'let r2 = union(box(10mm,10mm,10mm), sphere(8mm))'. Verify both realizations tessellate to non-empty meshes. This exercises the fix with nested boolean ops where step indices would be even more wrong without the realization-local slice (r2's ops would start at step index 3 globally but the compiler emits Step(0), Step(1), Step(2)).",
-      "status": "done",
-      "commit": "b27abde"
+      "commit": "2c867aa"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Recursive geometry arg compilation for boolean ops",
-      "rationale": "Boolean ops take geometry operands, not scalar values. Each arg (e.g., box(10,10,10)) must be recursively compiled via compile_geometry_call into geometry ops, then referenced by GeomRef::Step index. This reuses the existing compilation infrastructure and produces a flat ops list within one realization."
+      "decision": "ConstraintDef stores `params: Vec<ParamDecl>` and `predicates: Vec<Expr>` as separate fields rather than a unified body Vec",
+      "rationale": "Matches the task description's 'params, predicate_lines' separation. Cleaner API for downstream consumers (compiler can iterate params and predicates independently). If let/sub support is needed later, a `lets: Vec<LetDecl>` field or unified body enum can be added."
     },
     {
-      "decision": "Left-fold pattern for union_all/intersection_all",
-      "rationale": "union_all(a,b,c,d) compiles to Union(Union(Union(a,b),c),d). This maps naturally to binary BooleanOp and accumulates step indices correctly. Left-fold is standard for associative operations and matches OCCT's pairwise boolean API."
+      "decision": "Grammar uses `constraint def` (required `def` keyword) rather than `constraint` alone for top-level definitions",
+      "rationale": "Follows the language spec (Section 4.1.3). The required `def` keyword cleanly disambiguates top-level `constraint def Name { ... }` from member-level `constraint <expr>`. structure_definition uses optional('def'), but constraint_definition requires it because `constraint <expr>` at the top level would be ambiguous without it."
     },
     {
-      "decision": "No geometry variable references in boolean args (only nested calls)",
-      "rationale": "Supporting references to named geometry let bindings (e.g., union(my_box, my_sphere)) would require cross-realization handle resolution at compile time, which the current architecture doesn't support \u2014 each geometry let becomes a separate realization. Nested calls (union(box(...), cylinder(...))) are the natural syntax and fully supported by recursive compilation."
+      "decision": "Grammar body accepts param_declaration, let_declaration, and constraint_def_predicate (bare expression)",
+      "rationale": "Task says 'not preceded by param/let/etc keywords are predicate assertions', implying param and let ARE valid keyword-prefixed body items. Bare expressions (starting with identifiers, literals, operators) are unambiguously distinguishable from keyword-prefixed declarations."
     },
     {
-      "decision": "No separate surface boolean handling",
-      "rationale": "OCCT's boolean_fuse/cut/common work identically on solids and surfaces (BRepAlgoAPI handles both). The same GeometryOp::Union/Difference/Intersection variants and kernel dispatch path handle both cases without any surface-specific code."
+      "decision": "constraint_def_predicate is a named grammar rule wrapping _expression, not an inline anonymous rule",
+      "rationale": "A named node ('constraint_def_predicate') is needed so the lowering code can identify bare expression predicates by node kind, distinguishing them from param_declaration and let_declaration children."
     },
     {
-      "decision": "Use compile_geometry_call for arg validation instead of type checking",
-      "rationale": "Non-geometry args (like scalar literals) are detected when compile_geometry_call returns None for the arg. This produces a clear diagnostic without requiring a separate type-checking pass, keeping the implementation simple and consistent with the existing pattern."
+      "decision": "No semicolons or explicit statement terminators for predicates in the body",
+      "rationale": "Consistent with the rest of the Reify grammar where members (param, let, constraint, etc.) don't use terminators. Tree-sitter's GLR parser resolves expression boundaries by operator precedence \u2014 a new predicate begins when no binary operator connects adjacent expressions."
     },
     {
-      "decision": "Fix multi-realization step indices in eval engine (not compiler)",
-      "rationale": "The compiler correctly emits realization-local step indices (step_offset: 0 per realization). The bug is in the eval engine which passes the full global step_handles vector to compile_geometry_op instead of a realization-local slice. Fixing in eval by passing &step_handles[handle_start..] is minimal (3 call-sites), preserves the compiler's clean per-realization indexing, and matches the existing handle_start tracking in tessellate_from_values. The alternative (making the compiler emit globally-offset indices) would require the compiler to know about other realizations' op counts, coupling compilation order to eval order."
+      "decision": "ERROR nodes in constraint def body get 'syntax error in constraint body' message prefix (not generic 'syntax error')",
+      "rationale": "Using a context-specific message ('in constraint body') helps users locate errors when multiple parse errors are reported. Matches the contextual messaging pattern \u2014 lower_member uses generic 'syntax error' because it's already scoped to a member context, but constraint def body errors benefit from the extra disambiguation."
+    },
+    {
+      "decision": "param_declaration arm uses check_and_lower! macro with label 'constraint param' rather than just 'param'",
+      "rationale": "The label 'constraint param' disambiguates from regular member params in error messages. When a user sees 'invalid constraint param: ...', they know the error is inside a constraint def body, not inside a structure or trait body where 'invalid param: ...' would appear from lower_member."
     }
   ],
   "reuse": [
     {
-      "what": "CompiledGeometryOp::Boolean { op, left, right } variant",
-      "where": "crates/reify-compiler/src/lib.rs line 300",
-      "how": "Already defined with BooleanOp enum and GeomRef fields \u2014 emit directly from compile_geometry_call match arms"
+      "what": "has_pub_keyword() helper",
+      "where": "ts_parser.rs Lowering impl",
+      "how": "Reuse directly for is_pub extraction in lower_constraint_def, same pattern as lower_structure, lower_purpose, lower_trait."
     },
     {
-      "what": "BooleanOp::{Union, Difference, Intersection} enum",
-      "where": "crates/reify-compiler/src/lib.rs line 340",
-      "how": "Map function name to enum variant: 'union'\u2192Union, 'difference'\u2192Difference, 'intersection'\u2192Intersection"
+      "what": "lower_type_parameters() helper",
+      "where": "ts_parser.rs Lowering impl",
+      "how": "Reuse directly for extracting optional type parameters from constraint_definition node."
     },
     {
-      "what": "compile_geometry_op Boolean handler in eval",
-      "where": "crates/reify-eval/src/lib.rs line 2869",
-      "how": "Already resolves GeomRef::Step(idx) \u2192 step_handles[idx] for left/right, maps to GeometryOp::Union/Difference/Intersection \u2014 no changes needed to the function itself, only to the slice passed to it"
+      "what": "lower_param() function",
+      "where": "ts_parser.rs Lowering impl",
+      "how": "Reuse directly to lower param_declaration children in the constraint def body into ParamDecl."
     },
     {
-      "what": "OCCT kernel boolean dispatch",
-      "where": "crates/reify-kernel-occt/src/lib.rs line 174",
-      "how": "Already handles GeometryOp::Union\u2192boolean_fuse, Difference\u2192boolean_cut, Intersection\u2192boolean_common \u2014 no changes needed"
+      "what": "lower_expr() function",
+      "where": "ts_parser.rs Lowering impl",
+      "how": "Reuse directly to lower constraint_def_predicate children (bare expressions) into Expr."
     },
     {
-      "what": "Existing inline test pattern for geometry compilation",
-      "where": "crates/reify-compiler/src/lib.rs line 4670",
-      "how": "Follow exact pattern: parse source string with reify_syntax::parse, compile with compile(), assert realization count and op types via matches!() macro"
+      "what": "check_and_lower! macro",
+      "where": "ts_parser.rs",
+      "how": "Reuse for error-checking child nodes before lowering params and predicates in the body."
     },
     {
-      "what": "compile_geometry_call recursive call pattern",
-      "where": "Function already accepts &Expr and returns Option<Vec<CompiledGeometryOp>>",
-      "how": "Call compile_geometry_call(&args[i], scope, enum_defs, functions, diagnostics) on each raw syntax arg to recursively compile nested geometry calls"
+      "what": "PurposeDef test patterns",
+      "where": "tests/purpose_tests.rs",
+      "how": "Follow the same parse_decls() helper pattern, assertion style, and test naming conventions for constraint_def_tests.rs."
     },
     {
-      "what": "e2e test pattern with OCCT kernel",
-      "where": "crates/reify-eval/tests/e2e_bracket.rs",
-      "how": "Follow pattern: parse\u2192compile\u2192DispatchPlanner+OcctKernelHandle\u2192Engine::new\u2192build\u2192verify STEP output"
+      "what": "span() and content_hash() helpers",
+      "where": "ts_parser.rs Lowering impl",
+      "how": "Reuse for SourceSpan and ContentHash on the ConstraintDef node."
     },
     {
-      "what": "handle_start tracking pattern in tessellate_from_values",
-      "where": "crates/reify-eval/src/lib.rs line 2644",
-      "how": "Already computes handle_start = step_handles.len() before each realization's op loop. Reuse this exact pattern in the two build methods that currently lack it, and change all three call-sites to pass &step_handles[handle_start..] for realization-local indexing."
+      "what": "ERROR handling pattern from lower_member (line 809) and lower_source_file (line 158)",
+      "where": "ts_parser.rs",
+      "how": "Reuse the exact same push-ParseError-with-span pattern for the new \"ERROR\" arm in lower_constraint_def's body iteration loop."
     }
   ],
-  "_session_id": "307-a6974930",
-  "_created_at": "2026-03-24T07:25:08.162380+00:00"
+  "_session_id": "195-84380801",
+  "_created_at": "2026-03-24T07:22:34.651702+00:00"
 }

@@ -22,6 +22,7 @@ pub enum Declaration {
     Trait(TraitDecl),
     Field(FieldDef),
     Purpose(PurposeDef),
+    Constraint(ConstraintDef),
 }
 
 /// A structure definition (the primary entity type in Reify).
@@ -303,6 +304,22 @@ pub struct PurposeParam {
     pub name: String,
     pub entity_kind: String,
     pub span: SourceSpan,
+}
+
+/// `constraint def MinWallThickness { param wall : Length  wall >= process.min_wall }`
+///
+/// A named, parameterized constraint definition at the top level.
+/// The body consists of `param` declarations (the constraint's free variables)
+/// and bare expression predicates (the constraint assertions, forming a conjunction).
+#[derive(Debug, Clone)]
+pub struct ConstraintDef {
+    pub name: String,
+    pub is_pub: bool,
+    pub type_params: Vec<TypeParamDecl>,
+    pub params: Vec<ParamDecl>,
+    pub predicates: Vec<Expr>,
+    pub span: SourceSpan,
+    pub content_hash: ContentHash,
 }
 
 /// The source kind for a field declaration.

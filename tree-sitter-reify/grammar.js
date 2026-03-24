@@ -40,6 +40,7 @@ module.exports = grammar({
       $.trait_declaration,
       $.field_definition,
       $.purpose_declaration,
+      $.constraint_definition,
     ),
 
     // ── Enum ──────────────────────────────────────────────────
@@ -224,6 +225,31 @@ module.exports = grammar({
       $.maximize_declaration,
       $.guarded_block,
     ),
+
+    // ── Constraint definition (top-level) ────────────────────
+    // `constraint def Name<T> { param x : Length  x > 0 }`
+    // Distinct from member-level `constraint_declaration` which starts with
+    // `constraint <expr>`. The required `def` keyword disambiguates.
+    constraint_definition: $ => seq(
+      optional('pub'),
+      'constraint',
+      'def',
+      field('name', $.identifier),
+      optional($.type_parameters),
+      '{',
+      repeat($._constraint_def_body_item),
+      '}',
+    ),
+
+    _constraint_def_body_item: $ => choice(
+      $.param_declaration,
+      $.let_declaration,
+      $.constraint_def_predicate,
+    ),
+
+    // A bare expression predicate inside a constraint def body.
+    // Named node so the lowering code can identify it by kind.
+    constraint_def_predicate: $ => field('expr', $._expression),
 
     // ── Associated type ─────────────────────────────────────
     associated_type: $ => seq(

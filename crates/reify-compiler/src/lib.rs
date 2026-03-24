@@ -1797,6 +1797,9 @@ pub fn compile(
             reify_syntax::Declaration::Purpose(_) => {
                 // Compiled in dedicated purpose pass below.
             }
+            reify_syntax::Declaration::Constraint(_) => {
+                // Constraint definitions: lowering/compilation not yet implemented.
+            }
         }
     }
 
