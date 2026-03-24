@@ -12,7 +12,7 @@
     "crates/reify-cli",
     "crates/reify-mcp"
   ],
-  "analysis": "FULLY IMPLEMENTED \u2014 All code, infrastructure, and tests for this task already exist in the worktree. The `reify mcp-server` subcommand is registered in main.rs (line 30, handler lines 266-317) with `--project-dir <dir>` flag support and optional `[file.ri]` argument. CliToolContext in mcp_context.rs (579 lines) provides a complete engine-backed implementation of ReifyToolContext using Engine directly (not EngineSession, which is a GUI-specific wrapper). It handles: (1) file loading via parse\u2192compile\u2192eval pipeline, (2) source management with dirty tracking, (3) incremental parameter editing via engine.edit_param(), (4) state preservation on failed updates, (5) navigation/selection stubs returning Ok(false)/empty for headless mode. The reify-mcp dependency is already in Cargo.toml. Six integration tests in mcp_integration.rs use the mcp_roundtrip helper (spawns real binary, sends JSON-RPC on stdin, reads responses from stdout with 10s timeout) to cover all 4 required test scenarios plus 2 extras (update_source state preservation, set_parameter accuracy). Steps below are verification-only \u2014 confirming existing implementation compiles and all tests pass.",
+  "analysis": "FULLY IMPLEMENTED \u2014 All code, infrastructure, and tests for this task already exist in the worktree. The `reify mcp-server` subcommand is registered in main.rs (line 30, handler lines 266-317) with `--project-dir <dir>` flag support and optional `[file.ri]` argument. CliToolContext in mcp_context.rs (579 lines) provides a complete engine-backed implementation of ReifyToolContext using Engine directly (not EngineSession, which is a GUI-specific wrapper). It handles: (1) file loading via parse\u2192compile\u2192eval pipeline, (2) source management with dirty tracking, (3) incremental parameter editing via engine.edit_param(), (4) state preservation on failed updates, (5) navigation/selection stubs returning Ok(false)/empty for headless mode. The reify-mcp dependency is already in Cargo.toml. Six integration tests in mcp_integration.rs use the mcp_roundtrip helper (spawns real binary, sends JSON-RPC on stdin, reads responses from stdout with 10s timeout) to cover all 4 required test scenarios plus 2 extras (update_source state preservation, set_parameter accuracy). Steps below are verification-only \u2014 confirming existing implementation compiles and all tests pass.\n\nREVIEW FIXES (steps 8-12): Two blocking issues identified. (1) incorrect_assertion: Tests `mcp_server_set_parameter_changes_value` and `mcp_server_set_parameter_reports_new_value_accurately` pass value \"100\"/\"200\" and assert \"100 m\"/\"200 m\", but the test comments claim intent to set 100mm/200mm. The set_parameter API takes unitless SI numbers, so value \"100\" means 100 meters (not 100mm=0.1m). Fix: correct test values to proper SI (\"0.1\"/\"0.2\"), fix comments, add constraint verification test. (2) state_corruption_on_partial_failure: set_parameter calls set_param_and_invalidate() (mutates param_overrides + invalidates cache) BEFORE edit_param() which can return Err. If edit_param fails, engine state is left inconsistent with dirty cache but no completed re-evaluation. Fix: reorder so edit_param runs first; only call set_param_and_invalidate on success.",
   "prerequisites": [],
   "steps": [
     {
@@ -63,6 +63,41 @@
       "description": "Run full compilation check: cargo build -p reify-cli succeeds, confirming cmd_mcp_server dispatches correctly, CliToolContext implements all 15 ReifyToolContext methods, and all dependencies (reify-mcp, reify-eval, reify-constraints, reify-syntax, reify-compiler) resolve",
       "status": "done",
       "commit": "7adbe16"
+    },
+    {
+      "id": "step-8",
+      "type": "test",
+      "description": "[REVIEW FIX: incorrect_assertion] Fix mcp_server_set_parameter_changes_value test to use SI-correct values. The set_parameter API takes unitless SI numbers, so 100mm should be passed as \"0.1\" (0.1 meters). Changes: (1) update comment from '100mm = 0.1 in SI' to 'Set width to 0.1 m (100mm in SI)'; (2) change value argument from \"100\" to \"0.1\"; (3) change set_parameter response assertion from \"100 m\" to \"0.1 m\"; (4) change get_parameters width assertion from \"100 m\" to \"0.1 m\"; (5) fix comment on line 283 from 'new should be 100 m' to 'new should be 0.1 m (100mm)'.",
+      "status": "done",
+      "commit": "876b3bc"
+    },
+    {
+      "id": "step-9",
+      "type": "test",
+      "description": "[REVIEW FIX: incorrect_assertion] Fix mcp_server_set_parameter_reports_new_value_accurately test to use SI-correct values. Changes: (1) update comment from 'Set width to 200' to 'Set width to 0.2 m (200mm in SI)'; (2) change value argument from \"200\" to \"0.2\"; (3) change assertion from \"200 m\" to \"0.2 m\".",
+      "status": "done",
+      "commit": "5f80d03"
+    },
+    {
+      "id": "step-10",
+      "type": "test",
+      "description": "[REVIEW FIX: incorrect_assertion] Add new integration test mcp_server_set_parameter_constraint_verified_after_change. Set width to \"0.01\" (10mm in SI) which violates constraint `thickness < width/4` (5mm < 10mm/4=2.5mm fails). Verify: (1) set_parameter returns success=true (constraints are soft, not blocking); (2) get_parameters shows width with new value \"0.01 m\"; (3) get_constraints returns all 3 bracket constraints (confirms constraint evaluator still runs after the parameter change at correct SI scale).",
+      "status": "done",
+      "commit": "c1058ea"
+    },
+    {
+      "id": "step-11",
+      "type": "test",
+      "description": "[REVIEW FIX: state_corruption_on_partial_failure] Add new integration test mcp_server_set_parameter_error_preserves_state. Call set_parameter with non-existent cell_id \"Bracket.nonexistent\", verify the response indicates an error (isError=true or error field). Then call get_parameters and assert all 5 original parameters are present with their original values (width=\"0.08 m\", height=\"0.1 m\", thickness=\"0.005 m\", fillet_radius=\"0.003 m\", hole_diameter=\"0.006 m\"), confirming no state corruption from the failed operation.",
+      "status": "done",
+      "commit": "d5d4af8"
+    },
+    {
+      "id": "step-12",
+      "type": "impl",
+      "description": "[REVIEW FIX: state_corruption_on_partial_failure] Fix set_parameter in mcp_context.rs (lines 468-472) to prevent state corruption on partial failure. Reorder so edit_param() is called BEFORE set_param_and_invalidate(). Current order: (1) set_param_and_invalidate mutates param_overrides + invalidates cache, (2) edit_param does incremental eval and may fail. Fixed order: (1) edit_param does incremental eval first \u2014 if it fails, engine state is untouched; (2) set_param_and_invalidate updates bookkeeping only after successful eval. Add comment documenting the ordering invariant: 'edit_param must succeed before mutating engine state via set_param_and_invalidate'.",
+      "status": "done",
+      "commit": "2f1ecbe"
     }
   ],
   "design_decisions": [
@@ -89,6 +124,14 @@
     {
       "decision": "Integration tests use process spawning with mcp_roundtrip helper",
       "rationale": "Tests spawn the real reify binary via Command::new(env!(CARGO_BIN_EXE_reify)), send JSON-RPC on stdin, and read responses from stdout. This provides true end-to-end coverage including argument parsing, tokio runtime creation, and stdio transport. A 10-second timeout with process kill prevents CI deadlocks."
+    },
+    {
+      "decision": "set_parameter value argument is unitless SI",
+      "rationale": "The set_parameter API takes a raw f64 in SI units (meters for Length, radians for Angle, etc.). This matches the engine's internal representation and avoids unit parsing complexity. MCP clients see values displayed as SI (e.g., '0.08 m' for 80mm) and should pass SI values back. Documented via test comments and consistent with get_parameters output format."
+    },
+    {
+      "decision": "edit_param before set_param_and_invalidate ordering",
+      "rationale": "edit_param() performs incremental re-evaluation and may fail. set_param_and_invalidate() mutates param_overrides and invalidates cache entries. Calling edit_param first ensures engine state is only modified after successful evaluation. If edit_param fails, the engine remains in its last consistent state. Currently EngineError only has NotInitialized, but this ordering is defensive against future error variants."
     }
   ],
   "reuse": [
@@ -115,7 +158,7 @@
     {
       "what": "mcp_roundtrip test helper pattern",
       "where": "crates/reify-cli/tests/mcp_integration.rs",
-      "how": "Shared helper spawns reify mcp-server, writes JSON-RPC lines to stdin, reads JSON lines from stdout with 10s timeout. All 6 tests reuse this pattern with different request payloads."
+      "how": "Shared helper spawns reify mcp-server, writes JSON-RPC lines to stdin, reads JSON lines from stdout with 10s timeout. All tests reuse this pattern with different request payloads."
     },
     {
       "what": "bracket.ri test fixture",
@@ -124,5 +167,5 @@
     }
   ],
   "_session_id": "137-c2d0275c",
-  "_created_at": "2026-03-24T09:00:09.732284+00:00"
+  "_created_at": "2026-03-24T10:05:25.398879+00:00"
 }
