@@ -452,6 +452,44 @@ structure def S {
     );
 }
 
+// ── step-5: frame_alignment_via_refinement_chain ─────────────────────
+
+#[test]
+fn frame_alignment_via_refinement_chain() {
+    let source = r#"
+trait Port {}
+trait LocatedPort : Port { param frame : Length }
+trait MechanicalPort : LocatedPort { param max_load : Real }
+structure def Connector {}
+structure def S {
+    port a : out MechanicalPort { param frame : Length = 0mm  param max_load : Real = 100.0 }
+    port b : in MechanicalPort { param frame : Length = 0mm  param max_load : Real = 100.0 }
+    connect a -> b : Connector {}
+}
+"#;
+
+    let module = compile_module(source);
+    let errors: Vec<_> = module.diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    let s = module.templates.iter().find(|t| t.name == "S").expect("template S");
+
+    // MechanicalPort transitively refines LocatedPort, so frame_constraint should be Some
+    assert!(
+        s.connections[0].frame_constraint.is_some(),
+        "expected frame_constraint to be Some when both ports are MechanicalPort (refines LocatedPort)"
+    );
+
+    let frame_align_constraints: Vec<_> = s.constraints
+        .iter()
+        .filter(|c| c.label.as_deref().map(|l| l.contains("frame_align")).unwrap_or(false))
+        .collect();
+    assert!(
+        !frame_align_constraints.is_empty(),
+        "expected a frame_align constraint for MechanicalPort (transitive refinement)"
+    );
+}
+
 // ── step-1: frame_alignment_constraint_when_both_ports_located ───────
 
 #[test]
