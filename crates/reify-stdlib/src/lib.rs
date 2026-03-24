@@ -1355,6 +1355,57 @@ mod tests {
         assert!(result.is_undef(), "lerp with 2 args should be Undef, got {:?}", result);
     }
 
+    // --- lerp fallback tests (step-21) ---
+
+    #[test]
+    fn lerp_fallback_scalar_a_real_b_returns_undef() {
+        // Fallback arm: a is Scalar LENGTH, b is Real → a's dimension would be silently
+        // dropped if we returned Real. Per feedback_silent_defaults_pattern, must return Undef.
+        let result = eval_builtin(
+            "lerp",
+            &[
+                Value::Scalar { si_value: 5.0, dimension: DimensionVector::LENGTH },
+                Value::Real(3.0),
+                Value::Real(0.5),
+            ],
+        );
+        assert!(
+            result.is_undef(),
+            "lerp with Scalar a and Real b should be Undef, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn lerp_fallback_real_a_scalar_b_returns_undef() {
+        // Fallback arm: a is Real, b is Scalar LENGTH → symmetric case, also must be Undef.
+        let result = eval_builtin(
+            "lerp",
+            &[
+                Value::Real(3.0),
+                Value::Scalar { si_value: 5.0, dimension: DimensionVector::LENGTH },
+                Value::Real(0.5),
+            ],
+        );
+        assert!(
+            result.is_undef(),
+            "lerp with Real a and Scalar b should be Undef, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn lerp_fallback_all_dimensionless_returns_real() {
+        // Fallback arm: a is Int, b is Real → both DIMENSIONLESS → valid coercion to Real.
+        assert_real_approx!(
+            eval_builtin(
+                "lerp",
+                &[Value::Int(0), Value::Real(10.0), Value::Real(0.5)],
+            ),
+            5.0
+        );
+    }
+
     // --- remap Real tests (step-15) ---
     // remap(x, from_lo, from_hi, to_lo, to_hi)
     // formula: to_lo + (x - from_lo) * (to_hi - to_lo) / (from_hi - from_lo)
