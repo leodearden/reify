@@ -125,14 +125,57 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
             }
         }),
 
-        "lerp" => ternary(args, |a, b, t| match (a, b, t) {
-            (Value::Real(av), Value::Real(bv), Value::Real(tv)) => {
-                if tv.is_nan() {
+        "lerp" => ternary(args, |a, b, t| {
+            // t must be dimensionless (Real or Int; reject dimensioned Scalar)
+            if let Value::Scalar { dimension, .. } = t {
+                if *dimension != DimensionVector::DIMENSIONLESS {
                     return Value::Undef;
                 }
-                sanitize_value(Value::Real(lerp_f64(*av, *bv, *tv)))
             }
-            _ => Value::Undef,
+            let tv = match t.as_f64() {
+                Some(v) => v,
+                None => return Value::Undef,
+            };
+            if tv.is_nan() {
+                return Value::Undef;
+            }
+            match (a, b) {
+                (Value::Real(av), Value::Real(bv)) => {
+                    sanitize_value(Value::Real(lerp_f64(*av, *bv, tv)))
+                }
+                (
+                    Value::Scalar { si_value: av, dimension: da },
+                    Value::Scalar { si_value: bv, dimension: db },
+                ) => {
+                    if da != db {
+                        return Value::Undef;
+                    }
+                    sanitize_value(Value::Scalar {
+                        si_value: lerp_f64(*av, *bv, tv),
+                        dimension: *da,
+                    })
+                }
+                _ => {
+                    // Fallback: extract f64 from a and b; check dimension consistency
+                    let av = match a.as_f64() {
+                        Some(v) => v,
+                        None => return Value::Undef,
+                    };
+                    let bv = match b.as_f64() {
+                        Some(v) => v,
+                        None => return Value::Undef,
+                    };
+                    let da = a.dimension();
+                    if da != DimensionVector::DIMENSIONLESS && da == b.dimension() {
+                        sanitize_value(Value::Scalar {
+                            si_value: lerp_f64(av, bv, tv),
+                            dimension: da,
+                        })
+                    } else {
+                        sanitize_value(Value::Real(lerp_f64(av, bv, tv)))
+                    }
+                }
+            }
         }),
 
         // --- Trig functions: accept Angle Scalar or bare Real (radians) ---
