@@ -312,3 +312,34 @@ structure S {
         other => panic!("expected plain BinOp(Lt), got {:?}", other),
     }
 }
+
+/// step-15: chained comparison with Scalar quantities — real-world range constraint.
+/// `constraint 2mm < thickness < 10mm` should compile without errors,
+/// produce an And of two comparisons, and have result_type Bool.
+#[test]
+fn scalar_range_constraint() {
+    let source = r#"
+structure S {
+    param thickness : Scalar = 5mm
+    constraint 2mm < thickness < 10mm
+}
+"#;
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    assert!(!template.constraints.is_empty(), "should have at least one constraint");
+
+    let expr = &template.constraints[0].expr;
+    // Result type should be Bool
+    assert_eq!(expr.result_type, reify_types::Type::Bool, "constraint expression should have type Bool");
+
+    // Should be And(Lt(2mm, thickness), Lt(thickness, 10mm))
+    match &expr.kind {
+        CompiledExprKind::BinOp { op, .. } => {
+            assert_eq!(*op, BinOp::And, "top-level op should be And");
+        }
+        other => panic!("expected BinOp(And), got {:?}", other),
+    }
+}
