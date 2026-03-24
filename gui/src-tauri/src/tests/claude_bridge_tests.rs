@@ -249,6 +249,57 @@ fn parse_outbound_missing_required_field_returns_err() {
     assert!(result.is_err());
 }
 
+// --- SidecarHandle::send_message tests (step-15) ---
+
+#[tokio::test]
+async fn send_message_returns_message_id_and_writes_to_stdin() {
+    use std::sync::Arc;
+    use tokio::io::{AsyncReadExt, BufReader};
+    use tokio::sync::Mutex;
+
+    let state = Arc::new(Mutex::new(SidecarState::Ready));
+    // Use duplex so we can read what was written to the "stdin"
+    let (writer, mut reader_end) = tokio::io::duplex(1024);
+    let data: &[u8] = b""; // empty reader - no incoming messages
+    let empty_reader = BufReader::new(data);
+    let mut handle = SidecarHandle::from_parts(writer, empty_reader, state);
+
+    let id = handle.send_message("hello world", None).await.unwrap();
+    assert!(!id.is_empty(), "ID should not be empty");
+    assert!(id.starts_with("msg-"), "ID should start with msg-: {}", id);
+
+    // Read what was written to stdin
+    let mut buf = vec![0u8; 1024];
+    let n = reader_end.read(&mut buf).await.unwrap();
+    let written = std::str::from_utf8(&buf[..n]).unwrap();
+    assert!(written.ends_with('\n'));
+    let json_val: serde_json::Value = serde_json::from_str(written.trim_end()).unwrap();
+    assert_eq!(json_val["type"], "send_message");
+    assert_eq!(json_val["id"], id);
+    assert_eq!(json_val["text"], "hello world");
+}
+
+#[tokio::test]
+async fn send_message_ids_are_unique_across_calls() {
+    use std::sync::Arc;
+    use tokio::io::BufReader;
+    use tokio::sync::Mutex;
+
+    let state = Arc::new(Mutex::new(SidecarState::Ready));
+    let (writer, _reader_end) = tokio::io::duplex(4096); // Keep _reader_end alive
+    let data: &[u8] = b"";
+    let empty_reader = BufReader::new(data);
+    let mut handle = SidecarHandle::from_parts(writer, empty_reader, state);
+
+    let id1 = handle.send_message("msg 1", None).await.unwrap();
+    let id2 = handle.send_message("msg 2", None).await.unwrap();
+    let id3 = handle.send_message("msg 3", None).await.unwrap();
+    assert_ne!(id1, id2);
+    assert_ne!(id2, id3);
+    assert_ne!(id1, id3);
+    drop(_reader_end); // Explicit drop to clarify intent
+}
+
 // --- SidecarState and SidecarHandle tests (step-13) ---
 
 #[test]

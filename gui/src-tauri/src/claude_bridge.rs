@@ -4,6 +4,7 @@
 // Claude Code SDK, handles JSON-line IPC, and bridges sidecar events to
 // Tauri frontend events.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -135,6 +136,9 @@ pub enum SidecarState {
     Crashed(String),
 }
 
+/// Counter for generating unique message IDs per session.
+static MSG_COUNTER: AtomicU64 = AtomicU64::new(0);
+
 /// Handle to a running sidecar process.
 ///
 /// Uses `tokio::sync::Mutex` because operations (send, abort) are async
@@ -187,6 +191,25 @@ impl SidecarHandle {
     /// Get a reference to the state mutex.
     pub fn state(&self) -> &Arc<Mutex<SidecarState>> {
         &self.state
+    }
+
+    /// Send a user message to the sidecar. Returns the generated message ID.
+    ///
+    /// The caller is responsible for ensuring the sidecar is in the Ready state.
+    pub async fn send_message(
+        &mut self,
+        text: &str,
+        context: Option<MessageContext>,
+    ) -> Result<String, String> {
+        let n = MSG_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let id = format!("msg-{}", n);
+        let msg = InboundMessage::SendMessage {
+            id: id.clone(),
+            text: text.to_string(),
+            context,
+        };
+        write_to_sidecar(&mut self.stdin, &msg).await?;
+        Ok(id)
     }
 }
 
