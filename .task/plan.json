@@ -79,7 +79,7 @@
       "type": "test",
       "description": "Add comprehensive mixed-merging test: mixed_merging_params_lets_constraints \u2014 trait A has `param x : Length`, `let area : Real = x * x`, `constraint x > 0mm`. Trait B has `param x : Length`, `let area : Real = x * x`, `constraint x < 1000mm`. Structure implements A + B with `param x : Length = 5mm`. Expect: 0 errors, exactly 1 'x' value cell, exactly 1 'area' value cell, at least 2 constraints. This validates the complete merging pipeline across member kinds.",
       "status": "done",
-      "commit": "placeholder"
+      "commit": "16c3c15"
     }
   ],
   "design_decisions": [
