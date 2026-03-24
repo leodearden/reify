@@ -416,3 +416,285 @@ structure def S2 {
         "same connector type with different param values must produce different hashes"
     );
 }
+
+// ── step-15: content_hash_includes_frame_constraint ──────────────────
+
+#[test]
+fn content_hash_includes_frame_constraint() {
+    // S1 uses LocatedPort (frame_constraint = Some), S2 uses plain Port (frame_constraint = None)
+    let source1 = r#"
+trait Port {}
+trait LocatedPort : Port { param frame : Length }
+structure def Connector {}
+structure def S {
+    port a : out LocatedPort { param frame : Length = 0mm }
+    port b : in LocatedPort { param frame : Length = 0mm }
+    connect a -> b : Connector {}
+}
+"#;
+    let source2 = r#"
+trait Port {}
+structure def Connector {}
+structure def S {
+    port a : out Port {}
+    port b : in Port {}
+    connect a -> b : Connector {}
+}
+"#;
+
+    let module1 = compile_module(source1);
+    let module2 = compile_module(source2);
+
+    let errors1: Vec<_> = module1.diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    let errors2: Vec<_> = module2.diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    assert!(errors1.is_empty(), "unexpected errors in source1: {:?}", errors1);
+    assert!(errors2.is_empty(), "unexpected errors in source2: {:?}", errors2);
+
+    let s1 = module1.templates.iter().find(|t| t.name == "S").expect("S in source1");
+    let s2 = module2.templates.iter().find(|t| t.name == "S").expect("S in source2");
+
+    // S1 has frame_constraint Some, S2 has None — content_hashes must differ
+    assert!(
+        s1.connections[0].frame_constraint.is_some(),
+        "S1 should have frame_constraint Some (LocatedPort)"
+    );
+    assert!(
+        s2.connections[0].frame_constraint.is_none(),
+        "S2 should have frame_constraint None (plain Port)"
+    );
+    assert_ne!(
+        s1.content_hash, s2.content_hash,
+        "template content_hashes should differ when frame_constraint presence differs"
+    );
+}
+
+// ── step-7: port_type_compatibility_mismatch_warning ─────────────────
+
+#[test]
+fn port_type_compatibility_mismatch_warning() {
+    let source = r#"
+trait TraitA {}
+trait TraitB {}
+structure def S {
+    port a : out TraitA {}
+    port b : in TraitB {}
+    connect a -> b
+}
+"#;
+
+    let (_template, diagnostics) = compile_first_template(source);
+
+    // Direction is compatible (Out -> In), so no direction error
+    let dir_errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error && d.message.contains("incompatible port directions"))
+        .collect();
+    assert!(dir_errors.is_empty(), "unexpected direction errors: {:?}", dir_errors);
+
+    // Should emit a warning about incompatible port types
+    let type_warnings: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning
+            && (d.message.contains("incompatible port types") || d.message.contains("port type mismatch")))
+        .collect();
+    assert!(
+        !type_warnings.is_empty(),
+        "expected a warning about incompatible port types, diagnostics: {:?}",
+        diagnostics
+    );
+}
+
+// ── step-11: connector_param_validation_unknown_param ────────────────
+
+#[test]
+fn connector_param_validation_unknown_param() {
+    let source = r#"
+trait T {}
+structure def BoltSet { param grade : Real = 8.8 }
+structure def S {
+    port a : out T {}
+    port b : in T {}
+    connect a -> b : BoltSet { unknown_param = 5.0 }
+}
+"#;
+
+    let module = compile_module(source);
+
+    // Should have an error about unknown_param
+    let unknown_errors: Vec<_> = module.diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error
+            && d.message.contains("unknown")
+            && d.message.contains("unknown_param"))
+        .collect();
+    assert!(
+        !unknown_errors.is_empty(),
+        "expected error about unknown connector param 'unknown_param', diagnostics: {:?}",
+        module.diagnostics
+    );
+}
+
+// ── step-13: connector_param_validation_valid_params_ok ──────────────
+
+#[test]
+fn connector_param_validation_valid_params_ok() {
+    let source = r#"
+trait T {}
+structure def BoltSet { param grade : Real = 8.8 }
+structure def S {
+    port a : out T {}
+    port b : in T {}
+    connect a -> b : BoltSet { grade = 10.9 }
+}
+"#;
+
+    let module = compile_module(source);
+
+    // No error for valid param 'grade' which is declared in BoltSet
+    let errors: Vec<_> = module.diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors for valid connector param: {:?}", errors);
+}
+
+// ── step-9: port_type_compatibility_refinement_ok ────────────────────
+
+#[test]
+fn port_type_compatibility_refinement_ok() {
+    let source = r#"
+trait TraitA {}
+trait TraitB : TraitA {}
+structure def S {
+    port a : out TraitA {}
+    port b : in TraitB {}
+    connect a -> b
+}
+"#;
+
+    let (_template, diagnostics) = compile_first_template(source);
+
+    // No type compatibility warning when TraitB refines TraitA
+    let type_warnings: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning
+            && (d.message.contains("incompatible port types") || d.message.contains("port type mismatch")))
+        .collect();
+    assert!(
+        type_warnings.is_empty(),
+        "unexpected type compatibility warnings: {:?}",
+        type_warnings
+    );
+}
+
+// ── step-3: frame_alignment_none_when_ports_not_located ──────────────
+
+#[test]
+fn frame_alignment_none_when_ports_not_located() {
+    let source = r#"
+trait T {}
+structure def S {
+    port a : out T {}
+    port b : in T {}
+    connect a -> b
+}
+"#;
+
+    let (template, diagnostics) = compile_first_template(source);
+    let errors: Vec<_> = diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    // frame_constraint should be None when ports do not satisfy LocatedPort
+    assert!(
+        template.connections[0].frame_constraint.is_none(),
+        "expected frame_constraint to be None when ports are not LocatedPort"
+    );
+
+    // No constraint with frame_align label should exist
+    let frame_align_constraints: Vec<_> = template.constraints
+        .iter()
+        .filter(|c| c.label.as_deref().map(|l| l.contains("frame_align")).unwrap_or(false))
+        .collect();
+    assert!(
+        frame_align_constraints.is_empty(),
+        "expected no frame_align constraints, but found: {:?}",
+        frame_align_constraints.iter().map(|c| &c.label).collect::<Vec<_>>()
+    );
+}
+
+// ── step-5: frame_alignment_via_refinement_chain ─────────────────────
+
+#[test]
+fn frame_alignment_via_refinement_chain() {
+    let source = r#"
+trait Port {}
+trait LocatedPort : Port { param frame : Length }
+trait MechanicalPort : LocatedPort { param max_load : Real }
+structure def Connector {}
+structure def S {
+    port a : out MechanicalPort { param frame : Length = 0mm  param max_load : Real = 100.0 }
+    port b : in MechanicalPort { param frame : Length = 0mm  param max_load : Real = 100.0 }
+    connect a -> b : Connector {}
+}
+"#;
+
+    let module = compile_module(source);
+    let errors: Vec<_> = module.diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    let s = module.templates.iter().find(|t| t.name == "S").expect("template S");
+
+    // MechanicalPort transitively refines LocatedPort, so frame_constraint should be Some
+    assert!(
+        s.connections[0].frame_constraint.is_some(),
+        "expected frame_constraint to be Some when both ports are MechanicalPort (refines LocatedPort)"
+    );
+
+    let frame_align_constraints: Vec<_> = s.constraints
+        .iter()
+        .filter(|c| c.label.as_deref().map(|l| l.contains("frame_align")).unwrap_or(false))
+        .collect();
+    assert!(
+        !frame_align_constraints.is_empty(),
+        "expected a frame_align constraint for MechanicalPort (transitive refinement)"
+    );
+}
+
+// ── step-1: frame_alignment_constraint_when_both_ports_located ───────
+
+#[test]
+fn frame_alignment_constraint_when_both_ports_located() {
+    let source = r#"
+trait Port {}
+trait LocatedPort : Port { param frame : Length }
+structure def Connector {}
+structure def S {
+    port a : out LocatedPort { param frame : Length = 0mm }
+    port b : in LocatedPort { param frame : Length = 0mm }
+    connect a -> b : Connector {}
+}
+"#;
+
+    let module = compile_module(source);
+    let errors: Vec<_> = module.diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    let s = module.templates.iter().find(|t| t.name == "S").expect("template S");
+
+    // frame_constraint should be Some when both ports satisfy LocatedPort
+    assert!(
+        s.connections[0].frame_constraint.is_some(),
+        "expected frame_constraint to be Some when both ports are LocatedPort"
+    );
+
+    // There should be a constraint labeled frame_align_a_b (or frame_align_* pattern)
+    let frame_align_constraints: Vec<_> = s.constraints
+        .iter()
+        .filter(|c| c.label.as_deref().map(|l| l.contains("frame_align")).unwrap_or(false))
+        .collect();
+    assert!(
+        !frame_align_constraints.is_empty(),
+        "expected a constraint with label containing 'frame_align', constraints: {:?}",
+        s.constraints.iter().map(|c| &c.label).collect::<Vec<_>>()
+    );
+}

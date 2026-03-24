@@ -1,27 +1,20 @@
 {
-  "task_id": "233",
-  "title": "Orientation: Type, Value, constructors",
+  "task_id": "241",
+  "title": "Connector params: compiler",
   "files": [
-    "crates/reify-types/src/ty.rs",
-    "crates/reify-types/src/value.rs",
-    "crates/reify-types/tests/exports.rs",
-    "crates/reify-stdlib/src/lib.rs",
-    "crates/reify-lsp/src/analysis.rs",
-    "crates/reify-constraints/src/classifier.rs"
+    "crates/reify-compiler/src/lib.rs",
+    "crates/reify-compiler/tests/connect_compile_tests.rs"
   ],
   "modules": [
-    "crates/reify-types",
-    "crates/reify-stdlib",
-    "crates/reify-lsp",
-    "crates/reify-constraints"
+    "crates/reify-compiler"
   ],
-  "analysis": "The task adds an Orientation type for representing spatial rotations via unit quaternions. The Type enum (ty.rs) gets a new Orientation(usize) tuple variant where usize is spatial dimension N (2 or 3). The Value enum (value.rs) gets a new Orientation { w, x, y, z } struct variant storing the quaternion components as f64. Five stdlib constructor functions are added to eval_builtin() in lib.rs. All constructors normalize the quaternion to unit length and return Undef for invalid inputs (NaN, Inf, zero-length). The Type enum derives Debug/Clone/PartialEq/Eq/Hash so those are automatic; Display is manual and needs a new arm. The Value enum has manual impls for PartialEq, Ord, Display, and content_hash \u2014 all need new arms. Two downstream crates (reify-lsp, reify-constraints) have exhaustive match statements on Value that will fail to compile without an Orientation arm.",
+  "analysis": "Task 241 enhances the compiler's connector parameter compilation in `compile_connection()` (lines 3692-3869 of lib.rs). The existing implementation already: (1) creates `__connector_N` synthetic sub-components when a connector type is specified (lines 3822-3857), (2) compiles parameter expressions into CompiledExpr values (lines 3827-3832), and (3) generates direction-only compatibility constraints as Bool literals (lines 3746-3820). Two key features remain unimplemented:\n\n**Frame alignment constraints (task item 4):** The `frame_constraint` field on `CompiledConnection` is always set to `None` (line 3866). The language spec (\u00a76.1, item 4) requires that when both connected ports satisfy the `LocatedPort` trait (which adds `param frame : Frame<3>`), the compiler generates a constraint indicating frame alignment is required. The `trait_satisfies()` function (line 3616) already walks refinement chains transitively, so checking if a port's `type_name` refines `LocatedPort` is straightforward. The `ConnectContext` struct currently lacks `trait_registry` access \u2014 it must be added.\n\n**Port type compatibility (task item 3):** Currently only direction compatibility is checked (In/Out/Bidi). The language spec (\u00a76.1, item 2) says port compatibility includes 'matching or complementary traits'. We need to verify that both port type_names are compatible \u2014 either identical, or one refines the other via the trait registry \u2014 and emit diagnostics for mismatches.\n\n**Connector param validation (enhancement for item 2):** The current implementation compiles connector body params blindly without checking them against the connector structure's declared params. When the connector structure template is available among already-compiled templates, we should validate that parameter names match.\n\nAll changes are confined to `compile_connection()` and its surrounding context structs. The `ConnectContext` struct (line 3672) needs `trait_registry` (for LocatedPort/type checking) and `compiled_templates` (for connector param validation). Both are already available in the calling `compile_entity()` function (line 2523). Existing tests in `connect_compile_tests.rs` cover 10 scenarios; this task adds 8 more tests.",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "Verify current workspace compiles and tests pass on the worktree baseline (cargo check --workspace)",
+      "description": "Add `trait_registry: &'a HashMap<String, &'a CompiledTrait>` and `compiled_templates: &'a [TopologyTemplate]` to the `ConnectContext` struct (line 3672). Update both call sites in `compile_entity()` \u2014 the connect block (line 3087) and the chain block (line 3122) \u2014 to pass these new fields from the enclosing function parameters. This is a purely mechanical change with no behavioral impact.",
       "status": "done",
-      "commit": "78c33d1",
+      "commit": "59fb374",
       "tests": []
     }
   ],
@@ -29,219 +22,170 @@
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing tests for Type::Orientation in ty.rs: variant construction with Orientation(3), Display format 'Orientation3', factory method Type::orientation(n), Eq/Hash consistency, is_numeric() returns false, as_name() returns None",
+      "description": "Write failing test `frame_alignment_constraint_when_both_ports_located`: define traits `Port {}` and `LocatedPort : Port { param frame : Length }`, create two ports both typed as `LocatedPort`, connect with a connector. Assert `connections[0].frame_constraint.is_some()` and that a constraint with label containing `frame_align` exists in the template's constraints vec.",
       "status": "done",
-      "commit": "5136510"
+      "commit": "dc82596"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Add Orientation(usize) variant to Type enum, add orientation(n) factory method, add Display arm writing 'Orientation{n}'. Derives (Debug, Clone, PartialEq, Eq, Hash) are automatic.",
+      "description": "In `compile_connection()`, after the direction compatibility constraint block and before pushing the CompiledConnection: look up both ports' type_name from `ctx.ports`. For each local port (bare ident), call `trait_satisfies(type_name, \"LocatedPort\", ctx.trait_registry, &mut visited)`. If both satisfy LocatedPort, create a new CompiledConstraint with `Bool(true)` expr, label `frame_align_{left}_{right}`, push to `acc.constraints`, increment `acc.constraint_index`, and set `frame_constraint: Some(id)`. Otherwise keep `frame_constraint: None`.",
       "status": "done",
-      "commit": "280585a"
+      "commit": "6533874"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing tests for Value::Orientation in value.rs: variant construction, PartialEq (same quaternion equal, different not equal, NaN bitwise equality via to_bits), Ord (type_tag ordering, within-type lexicographic on w/x/y/z bits), Display format '[w, x, y, z]q', content_hash (tag=16, NaN canonicalization, distinct from other variants)",
+      "description": "Write test `frame_alignment_none_when_ports_not_located`: define a plain trait `T {}` (not refining LocatedPort), create two ports typed as `T`, connect with a connector. Assert `connections[0].frame_constraint.is_none()` and no constraint with `frame_align` label exists.",
       "status": "done",
-      "commit": "a3aaf2f"
+      "commit": "071eba4"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Add Orientation { w: f64, x: f64, y: f64, z: f64 } variant to Value enum. Add arms to: content_hash (tag=16 with NaN canonicalization for all 4 components), PartialEq (bitwise f64 comparison), Ord (type_tag=15, compare w/x/y/z via to_bits), Display (format as quaternion). Add is_undef/as_f64/dimension pass-through (Orientation is not numeric, dimension is DIMENSIONLESS).",
+      "description": "Verify the None-case test passes from step-2 logic (trait_satisfies returns false for a trait that doesn't refine LocatedPort). Fix if needed.",
       "status": "done",
-      "commit": "10fb1be"
+      "commit": "071eba4"
     },
     {
       "id": "step-5",
-      "type": "impl",
-      "description": "Fix downstream exhaustive matches: add Value::Orientation arm to format_value() in reify-lsp/src/analysis.rs (format as quaternion string), add Value::Orientation arm to domain classifier in reify-constraints/src/classifier.rs (Orientation doesn't contribute to domain classification, same as Complex/Tensor). Add Type::Orientation and Value::Orientation to exports.rs verification test.",
+      "type": "test",
+      "description": "Write test `frame_alignment_via_refinement_chain`: define `Port {}`, `LocatedPort : Port { param frame : Length }`, `MechanicalPort : LocatedPort { param max_load : Force }`. Create ports typed as `MechanicalPort`, connect with a connector. Assert `frame_constraint.is_some()` \u2014 verifying transitive refinement chains are walked correctly.",
       "status": "done",
-      "commit": "44e5071"
+      "commit": "669107e"
     },
     {
       "id": "step-6",
-      "type": "test",
-      "description": "Write failing test for orient_identity: no-arg call returns Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 }; call with args returns Undef",
+      "type": "impl",
+      "description": "Verify the refinement chain test passes. The existing `trait_satisfies()` already walks chains transitively. If it fails, debug trait registry population to ensure refinements are recorded correctly.",
       "status": "done",
-      "commit": "79778f9"
+      "commit": "669107e"
     },
     {
       "id": "step-7",
-      "type": "impl",
-      "description": "Add orient_identity match arm in eval_builtin: check args.is_empty(), return identity quaternion (1,0,0,0)",
+      "type": "test",
+      "description": "Write failing test `port_type_compatibility_mismatch_warning`: define two unrelated traits `TraitA {}` and `TraitB {}` (neither refines the other). Create `port a : out TraitA` and `port b : in TraitB`, connect `a -> b`. Assert a warning diagnostic is emitted with message containing 'incompatible port types' (or 'port type mismatch'). Direction should still be compatible (out -> in).",
       "status": "done",
-      "commit": "9e2587a"
+      "commit": "bf400c9"
     },
     {
       "id": "step-8",
-      "type": "test",
-      "description": "Write failing tests for orient_quaternion(w,x,y,z): (1) unnormalized input (2,0,0,0) normalizes to (1,0,0,0); (2) already normalized input preserved; (3) arbitrary input normalizes correctly; (4) zero quaternion (0,0,0,0) returns Undef; (5) NaN/Inf input returns Undef; (6) wrong arg count returns Undef",
+      "type": "impl",
+      "description": "In `compile_connection()`, after resolving port directions: add a port type compatibility check. Create a `type_of` closure (similar to existing `dir_of`) that looks up a port's type_name from `ctx.ports`. If both type_names are known and neither `trait_satisfies(left_type, right_type)` nor `trait_satisfies(right_type, left_type)` is true, and the types aren't equal, emit a warning diagnostic about potentially incompatible port types.",
       "status": "done",
-      "commit": "1edde1c"
+      "commit": "b79be73"
     },
     {
       "id": "step-9",
-      "type": "impl",
-      "description": "Add orient_quaternion match arm in eval_builtin: extract 4 f64 args, compute norm, reject zero/non-finite, divide by norm, return normalized Orientation. Add normalize_quaternion(w,x,y,z) -> Option<Value> helper function.",
+      "type": "test",
+      "description": "Write test `port_type_compatibility_refinement_ok`: define `TraitA {}` and `TraitB : TraitA {}`. Create `port a : out TraitA` and `port b : in TraitB`, connect `a -> b`. Assert no type compatibility warning is emitted \u2014 refinement makes them compatible.",
       "status": "done",
-      "commit": "8e11d45"
+      "commit": "73b1c81"
     },
     {
       "id": "step-10",
-      "type": "test",
-      "description": "Write failing tests for orient_axis_angle(axis, angle): (1) 90-deg rotation around Z axis produces correct quaternion (w=cos(pi/4), x=0, y=0, z=sin(pi/4)); (2) 180-deg around X axis; (3) angle as Angle Scalar accepted; (4) zero-length axis returns Undef; (5) non-3D axis returns Undef; (6) wrong arg count returns Undef",
+      "type": "impl",
+      "description": "Verify the refinement compatibility test passes from step-8 logic (trait_satisfies(TraitB, TraitA) returns true because TraitB refines TraitA).",
       "status": "done",
-      "commit": "70075b5"
+      "commit": "73b1c81"
     },
     {
       "id": "step-11",
-      "type": "impl",
-      "description": "Add orient_axis_angle match arm: extract axis via tensor_components_f64 (must be 3 components), extract angle via trig_input pattern (accept Real or Angle Scalar), normalize axis, compute q = (cos(theta/2), sin(theta/2)*axis), return via normalize_quaternion",
+      "type": "test",
+      "description": "Write failing test `connector_param_validation_unknown_param`: define `structure def BoltSet { param grade : Real = 8.8 }` before the connecting structure. Then `connect a -> b : BoltSet { unknown_param = 5.0 }`. Assert an error diagnostic is emitted containing 'unknown' and 'unknown_param'. (BoltSet must be defined first so it's available in compiled_templates.)",
       "status": "done",
-      "commit": "da6eb5c"
+      "commit": "8f613ab"
     },
     {
       "id": "step-12",
-      "type": "test",
-      "description": "Write failing tests for orient_euler(convention, a, b, c): (1) 'xyz' intrinsic with known angles produces correct quaternion; (2) 'zyx' convention; (3) all-zero angles produce identity; (4) invalid convention string returns Undef; (5) non-string convention returns Undef; (6) angles as Angle Scalar accepted; (7) wrong arg count returns Undef",
+      "type": "impl",
+      "description": "In the connector sub-entity block of `compile_connection()`, after compiling args: look up `conn_type` in `ctx.compiled_templates`. If found, collect the template's param-kind value_cells. For each connector body param name, check if it exists in that set. Emit an error for any param name that doesn't match, including the connector type name and available params in the message.",
       "status": "done",
-      "commit": "92ed969"
+      "commit": "970db40"
     },
     {
       "id": "step-13",
-      "type": "impl",
-      "description": "Add orient_euler match arm: extract convention as String, extract 3 angles via trig_input pattern, implement intrinsic Euler-to-quaternion conversion for 6 Tait-Bryan conventions (xyz, xzy, yxz, yzx, zxy, zyx) and 6 proper Euler conventions (xyx, xzx, yxy, yzy, zxz, zyz) by composing elementary rotation quaternions. Return Undef for unrecognized conventions.",
+      "type": "test",
+      "description": "Write test `connector_param_validation_valid_params_ok`: define `structure def BoltSet { param grade : Real = 8.8 }`, then `connect a -> b : BoltSet { grade = 10.9 }`. Assert no error diagnostics \u2014 valid param name matches the declared param.",
       "status": "done",
-      "commit": "1bab91e"
+      "commit": "10d12fe"
     },
     {
       "id": "step-14",
-      "type": "test",
-      "description": "Write failing tests for orient_basis(x_axis, y_axis, z_axis): (1) identity basis vectors produce identity quaternion; (2) 90-deg rotated basis produces correct quaternion; (3) non-orthogonal basis returns Undef; (4) non-3D vectors return Undef; (5) zero-length vector returns Undef; (6) wrong arg count returns Undef",
+      "type": "impl",
+      "description": "Verify the valid-params test passes from step-12 implementation (grade is found in BoltSet's value_cells). Should already pass.",
       "status": "done",
-      "commit": "557258c"
+      "commit": "10d12fe"
     },
     {
       "id": "step-15",
-      "type": "impl",
-      "description": "Add orient_basis match arm: extract 3 axis vectors via tensor_components_f64 (each must be 3 components), verify approximate orthonormality (dot products near zero, magnitudes near 1, within tolerance), build rotation matrix from basis vectors, convert rotation matrix to quaternion using Shepperd's method, return via normalize_quaternion. Return Undef for non-orthonormal input.",
+      "type": "test",
+      "description": "Write test `content_hash_includes_frame_constraint`: compile two modules with identical structures except one has ports typed as LocatedPort (producing frame_constraint Some) and the other has plain Port (producing None). Assert that template content_hashes differ.",
       "status": "done",
-      "commit": "8128684"
+      "commit": "1a755a3"
     },
     {
       "id": "step-16",
-      "type": "test",
-      "description": "Review fix [untested_core_behavior]: Add orient_euler compound rotation tests that exercise quat_mul with multiple non-identity operands. (1) orient_euler('xyz', \u03c0/2, \u03c0/2, 0) \u2014 two non-zero angles \u2014 verifies q_x(\u03c0/2)*q_y(\u03c0/2) composition yields (0.5, 0.5, 0.5, 0.5); (2) orient_euler('zyx', \u03c0/3, \u03c0/4, \u03c0/6) \u2014 three non-zero angles \u2014 verifies full three-way quat_mul composition against analytically computed result; (3) orient_euler('xzx', \u03c0/2, \u03c0/2, 0) \u2014 proper Euler convention with compound rotation. These tests validate the quat_mul Hamilton product and composition ordering that single-axis tests cannot catch.",
-      "status": "done",
-      "commit": "f6f42ca"
-    },
-    {
-      "id": "step-17",
-      "type": "test",
-      "description": "Review fix [missing_validation]: Add orient_basis left-handed (improper rotation) rejection tests. (1) x=(1,0,0), y=(0,1,0), z=(0,0,-1) \u2014 reflection through XY plane, det=-1 \u2014 must return Undef; (2) x=(1,0,0), y=(0,0,1), z=(0,1,0) \u2014 another left-handed basis, det=-1 \u2014 must return Undef; (3) verify that a valid right-handed basis near tolerance still passes (sanity check). These tests will FAIL against the current implementation because orient_basis only checks orthonormality but not handedness (determinant).",
-      "status": "done",
-      "commit": "c6a14f3"
-    },
-    {
-      "id": "step-18",
       "type": "impl",
-      "description": "Review fix [missing_validation]: Add handedness validation to orient_basis. After the dot-product orthonormality checks (line ~448), compute the scalar triple product (determinant): det = xc[0]*(yc[1]*zc[2] - yc[2]*zc[1]) + xc[1]*(yc[2]*zc[0] - yc[0]*zc[2]) + xc[2]*(yc[0]*zc[1] - yc[1]*zc[0]). Return Value::Undef if (det - 1.0).abs() > tol. This rejects left-handed orthonormal bases (det=-1), reflections, and improper rotations that pass orthonormality checks but are not in SO(3).",
+      "description": "In the content hash computation (lines 3232-3248), extend the connection_hashes iterator chain to include the frame_constraint: add `.chain(std::iter::once(c.frame_constraint.as_ref().map(|_| ContentHash::of(&[1u8])).unwrap_or(ContentHash(0))))` so the presence/absence of frame alignment affects the template hash.",
       "status": "done",
-      "commit": "359be1c"
+      "commit": "51e3a20"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Type::Orientation(usize) as a tuple variant, not struct variant",
-      "rationale": "Only one parameter (spatial dimension N), matching task spec. Simpler than struct variant like Point { n, quantity } since orientations are inherently dimensionless \u2014 no quantity parameter needed."
+      "decision": "Frame alignment constraints are compile-time marker constraints (Bool(true)) rather than runtime frame-equality expressions",
+      "rationale": "Port frames are not available at compile time \u2014 they are runtime values resolved during evaluation. The compiler generates a labeled constraint (`frame_align_{left}_{right}`) that signals to the evaluator that frame alignment is required. The evaluator can then construct actual geometric constraints from the port frame value cells. This follows the same pattern as the existing direction compatibility constraint which is also a Bool literal."
     },
     {
-      "decision": "Value::Orientation { w, x, y, z } stores raw quaternion components as f64",
-      "rationale": "Matches existing patterns like Value::Complex { re, im, dimension }. Quaternion components are always dimensionless so no DimensionVector needed. f64 provides sufficient precision for rotation representation."
+      "decision": "Port type compatibility check emits a warning (not error) for mismatched types",
+      "rationale": "At compile time within a single module, we cannot fully verify port compatibility because trait implementations may come from other modules or the standard library. Dotted port references (sub.port) have unknown types at compile time. A warning alerts the user without blocking compilation. Cross-module type checking can be strengthened in a future pass."
     },
     {
-      "decision": "Content hash tag=16 for Orientation, Ord type_tag=15",
-      "rationale": "Next available slots after Complex (content_hash tag=15, Ord type_tag=14). Tags 0-15 are used by existing variants plus the reserved Satisfaction tag at position 10."
+      "decision": "LocatedPort is identified by the well-known name string 'LocatedPort' via trait refinement chains",
+      "rationale": "The language spec explicitly defines LocatedPort as a standard library trait with known semantics (\u00a75.1). The compiler already uses trait_satisfies() for walking refinement chains. Checking if a port's type_name satisfies 'LocatedPort' is consistent with how trait bounds are checked elsewhere. If the name changes, it only needs updating in one place."
     },
     {
-      "decision": "All constructors normalize to unit quaternion unconditionally",
-      "rationale": "Unit quaternion invariant simplifies downstream rotation composition, interpolation, and conversion. Normalization is cheap (one sqrt + 4 divides) and prevents drift. Follows the 'correct by construction' pattern."
+      "decision": "Connector param validation is best-effort \u2014 only checked when connector structure is already compiled",
+      "rationale": "Structures are compiled in declaration order within compile(). If the connector type is defined after the connecting structure, its template isn't available in compiled_templates yet. Full forward-reference validation would require the deferred post-pass mechanism (PendingBoundCheck). For this task, we validate when possible and skip when the template isn't available, matching how the compiler handles other forward references gracefully."
     },
     {
-      "decision": "Return Value::Undef for invalid inputs (NaN, Inf, zero-length) rather than panicking",
-      "rationale": "Consistent with existing stdlib pattern \u2014 all functions return Undef for type mismatches and domain errors. Follows 'silent defaults should be noisy' convention (Undef propagates visibly rather than silently producing garbage)."
-    },
-    {
-      "decision": "orient_euler supports 12 conventions (6 Tait-Bryan + 6 proper Euler) via string parameter",
-      "rationale": "Covers all standard rotation conventions used in engineering (aerospace, robotics, CAD). String parameter ('xyz', 'zyx', etc.) is self-documenting. Invalid convention returns Undef. Implemented by composing elementary quaternion rotations \u2014 no external dependency needed."
-    },
-    {
-      "decision": "orient_basis validates approximate orthonormality with tolerance",
-      "rationale": "Exact orthonormality is unrealistic with floating-point inputs. A tolerance (e.g., 1e-6) allows for minor numerical drift while rejecting clearly non-orthogonal bases. Returns Undef for bases outside tolerance to keep errors noisy."
-    },
-    {
-      "decision": "Downstream crate fixes (reify-lsp, reify-constraints) included in task scope",
-      "rationale": "Both crates have exhaustive match statements on Value that will fail to compile when Orientation is added. Fixes are trivial (one match arm each) but required for workspace-wide cargo check/test to pass."
-    },
-    {
-      "decision": "Use Shepperd's method for rotation-matrix-to-quaternion conversion in orient_basis",
-      "rationale": "Shepperd's method is numerically stable for all rotation matrices (avoids the singularity at trace=-1 that affects naive methods). Well-established algorithm used in production rotation libraries."
-    },
-    {
-      "decision": "orient_basis validates handedness via scalar triple product (determinant)",
-      "rationale": "Review fix: orthonormality alone is necessary but not sufficient for a valid rotation basis. A left-handed orthonormal basis (det=-1) passes unit-magnitude and perpendicularity checks but represents an improper rotation (reflection), not a member of SO(3). Shepperd's method silently produces a geometrically meaningless quaternion for such inputs. The determinant check (det \u2248 +1.0 within tolerance) ensures only proper rotations are accepted; improper inputs return Undef to keep errors noisy."
+      "decision": "ConnectContext gains trait_registry and compiled_templates references rather than adding function parameters",
+      "rationale": "ConnectContext is the established read-only context struct for compile_connection(). Adding fields there keeps the function signature stable and groups related context. Both values are already available in compile_entity() where ConnectContext is constructed."
     }
   ],
   "reuse": [
     {
-      "what": "tensor_components_f64() helper",
-      "where": "crates/reify-stdlib/src/lib.rs:470",
-      "how": "Extract axis vector components in orient_axis_angle and orient_basis. Validates tensor structure, extracts f64 values, and checks dimension consistency."
+      "what": "trait_satisfies() function for transitive refinement checking",
+      "where": "crates/reify-compiler/src/lib.rs line 3616",
+      "how": "Reuse to check if a port's type_name transitively refines 'LocatedPort' for frame alignment, and for bidirectional port type compatibility checking (checking both trait_satisfies(A,B) and trait_satisfies(B,A))."
     },
     {
-      "what": "trig_input() helper",
-      "where": "crates/reify-stdlib/src/lib.rs:415",
-      "how": "Extract angle value in radians from orient_axis_angle and orient_euler arguments. Accepts both bare Real and Angle Scalar, rejects non-angle dimensioned Scalars."
+      "what": "Constraint generation pattern (ConstraintNodeId + CompiledConstraint with Bool literal)",
+      "where": "crates/reify-compiler/src/lib.rs lines 3807-3820 (compatibility constraint block)",
+      "how": "Clone the exact pattern for frame alignment constraints: create ConstraintNodeId from entity_name + constraint_index, push CompiledConstraint with Bool(true) and a descriptive label, increment constraint_index via acc."
     },
     {
-      "what": "sanitize_value() pattern",
-      "where": "crates/reify-stdlib/src/lib.rs:383",
-      "how": "Model the normalize_quaternion helper after this \u2014 return None/Undef for non-finite results."
+      "what": "ConnectContext / ConnectAccumulator context-object pattern",
+      "where": "crates/reify-compiler/src/lib.rs lines 3663-3689",
+      "how": "Extend ConnectContext with trait_registry and compiled_templates fields rather than adding function parameters. Follow the existing borrowing pattern (&'a lifetime)."
     },
     {
-      "what": "unary/binary/ternary helper pattern",
-      "where": "crates/reify-stdlib/src/lib.rs:369-436",
-      "how": "Follow the same arity-checking closure pattern for orient_axis_angle (binary), orient_euler (4-arg custom), orient_quaternion (4-arg custom)."
+      "what": "Content hash chain pattern for connections",
+      "where": "crates/reify-compiler/src/lib.rs lines 3232-3248",
+      "how": "Extend the connection_hashes iterator chain with frame_constraint presence hash, following the same ContentHash / unwrap_or(ContentHash(0)) pattern used for connector_sub."
     },
     {
-      "what": "assert_real_approx! / assert_scalar_approx! test macros",
-      "where": "crates/reify-stdlib/src/lib.rs:515-548",
-      "how": "Create analogous assert_orientation_approx! macro for testing quaternion values with floating-point tolerance (1e-12)."
+      "what": "Test helpers compile_module() / compile_first_template()",
+      "where": "crates/reify-compiler/tests/connect_compile_tests.rs lines 9-20",
+      "how": "All new tests use the existing test helpers. Multi-structure tests use compile_module() with template lookup by name; single-structure tests use compile_first_template()."
     },
     {
-      "what": "Complex variant implementation pattern",
-      "where": "crates/reify-types/src/value.rs:198-207,248-251,344-350,431-449",
-      "how": "Follow same pattern for Orientation in content_hash (NaN canonicalization on each f64 component), PartialEq (bitwise f64 comparison), Ord (compare component bits), Display (formatted output)."
-    },
-    {
-      "what": "Complex format_value arm in LSP",
-      "where": "crates/reify-lsp/src/analysis.rs:193",
-      "how": "Add Orientation arm following the same formatting convention as Complex \u2014 display quaternion components with appropriate formatting."
-    },
-    {
-      "what": "Complex domain classifier arm",
-      "where": "crates/reify-constraints/src/classifier.rs:92",
-      "how": "Add Orientation to the same multi-pattern arm as Complex/Tensor/Lambda/Field \u2014 orientations don't contribute to domain classification."
-    },
-    {
-      "what": "Existing orthonormality tolerance (tol = 1e-6) in orient_basis",
-      "where": "crates/reify-stdlib/src/lib.rs:436",
-      "how": "Reuse the same tolerance for the determinant check \u2014 (det - 1.0).abs() > tol. Consistent with existing dot-product and magnitude tolerance."
+      "what": "Port lookup closure pattern (dir_of)",
+      "where": "crates/reify-compiler/src/lib.rs line 3727",
+      "how": "Create analogous type_of closure that looks up port type_name from ctx.ports for type compatibility checking."
     }
   ],
-  "_session_id": "233-1146333e",
-  "_created_at": "2026-03-24T16:30:52.734413+00:00"
+  "_session_id": "241-125057fc",
+  "_created_at": "2026-03-24T16:48:52.824819+00:00"
 }

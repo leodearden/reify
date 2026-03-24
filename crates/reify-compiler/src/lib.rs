@@ -3090,6 +3090,8 @@ fn compile_entity(
                     scope: &scope,
                     enum_defs,
                     functions,
+                    trait_registry,
+                    compiled_templates,
                 };
                 let mut acc = ConnectAccumulator {
                     constraints: &mut constraints,
@@ -3125,6 +3127,8 @@ fn compile_entity(
                     scope: &scope,
                     enum_defs,
                     functions,
+                    trait_registry,
+                    compiled_templates,
                 };
                 // Desugar chain into pairwise Forward connections
                 for pair in chain_decl.elements.windows(2) {
@@ -3229,7 +3233,7 @@ fn compile_entity(
             ))
         });
 
-        // Connection identity hashes: left_port, operator, right_port, port_mappings, connector_sub
+        // Connection identity hashes: left_port, operator, right_port, port_mappings, connector_sub, frame_constraint
         let connection_hashes = connections.iter().flat_map(|c| {
             std::iter::once(ContentHash::of_str(&c.left_port))
                 .chain(std::iter::once(ContentHash::of(&[c.operator.as_u8()])))
@@ -3243,6 +3247,12 @@ fn compile_entity(
                     c.connector_sub
                         .as_ref()
                         .map(|s| ContentHash::of_str(s))
+                        .unwrap_or(ContentHash(0)),
+                ))
+                .chain(std::iter::once(
+                    c.frame_constraint
+                        .as_ref()
+                        .map(|_| ContentHash::of(&[1u8]))
                         .unwrap_or(ContentHash(0)),
                 ))
         });
@@ -3675,6 +3685,8 @@ struct ConnectContext<'a> {
     scope: &'a CompilationScope,
     enum_defs: &'a [reify_types::EnumDef],
     functions: &'a [CompiledFunction],
+    trait_registry: &'a HashMap<String, &'a CompiledTrait>,
+    compiled_templates: &'a [TopologyTemplate],
 }
 
 /// Per-statement inputs for compiling a single connection.
@@ -3831,6 +3843,34 @@ fn compile_connection(
             })
             .collect();
 
+        // Validate connector params against the connector template (best-effort: only
+        // when the connector structure has already been compiled and is in compiled_templates).
+        if let Some(conn_template) = ctx.compiled_templates.iter().find(|t| t.name == conn_type) {
+            let declared_params: std::collections::HashSet<&str> = conn_template
+                .value_cells
+                .iter()
+                .filter(|vc| matches!(vc.kind, ValueCellKind::Param | ValueCellKind::Auto))
+                .map(|vc| vc.id.member.as_str())
+                .collect();
+            for (param_name, _) in &compiled_args {
+                if !declared_params.contains(param_name.as_str()) {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "unknown connector param '{}' for '{}'; declared params: [{}]",
+                            param_name,
+                            conn_type,
+                            declared_params
+                                .iter()
+                                .copied()
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ))
+                        .with_label(DiagnosticLabel::new(span, "unknown param")),
+                    );
+                }
+            }
+        }
+
         let mut conn_hash = ContentHash::of_str(conn_type)
             .combine(ContentHash::of(&[operator.as_u8()]))
             .combine(ContentHash::of_str(&left_port))
@@ -3856,6 +3896,62 @@ fn compile_connection(
         None
     };
 
+    // Port type compatibility check: warn when bare ports have incompatible types
+    let type_of = |name: &str| -> Option<&str> {
+        ctx.ports.iter().find(|p| p.name == name).map(|p| p.type_name.as_str())
+    };
+    if is_bare(&left_port)
+        && is_bare(&right_port)
+        && let (Some(lt), Some(rt)) = (type_of(&left_port), type_of(&right_port))
+        && lt != rt
+    {
+        let mut visited_l = HashSet::new();
+        let mut visited_r = HashSet::new();
+        let l_refines_r = trait_satisfies(lt, rt, ctx.trait_registry, &mut visited_l);
+        let r_refines_l = trait_satisfies(rt, lt, ctx.trait_registry, &mut visited_r);
+        if !l_refines_r && !r_refines_l {
+            diagnostics.push(
+                Diagnostic::warning(format!(
+                    "incompatible port types: '{}' ({}) and '{}' ({})",
+                    left_port, lt, right_port, rt
+                ))
+                .with_label(DiagnosticLabel::new(span, "port type mismatch")),
+            );
+        }
+    }
+
+    // Frame alignment constraint: emit when both ports satisfy LocatedPort
+    let frame_constraint = if is_bare(&left_port) && is_bare(&right_port) {
+        let left_type = type_of(&left_port);
+        let right_type = type_of(&right_port);
+        match (left_type, right_type) {
+            (Some(lt), Some(rt)) => {
+                let mut visited_l = HashSet::new();
+                let mut visited_r = HashSet::new();
+                let left_located = trait_satisfies(lt, "LocatedPort", ctx.trait_registry, &mut visited_l);
+                let right_located = trait_satisfies(rt, "LocatedPort", ctx.trait_registry, &mut visited_r);
+                if left_located && right_located {
+                    let fa_id = ConstraintNodeId::new(ctx.entity_name, *acc.constraint_index);
+                    let fa_expr = CompiledExpr::literal(Value::Bool(true), Type::Bool);
+                    acc.constraints.push(CompiledConstraint {
+                        id: fa_id.clone(),
+                        label: Some(format!("frame_align_{}_{}", left_port, right_port)),
+                        expr: fa_expr,
+                        domain: None,
+                        span,
+                    });
+                    *acc.constraint_index += 1;
+                    Some(fa_id)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    } else {
+        None
+    };
+
     acc.connections.push(CompiledConnection {
         left_port,
         operator,
@@ -3863,7 +3959,7 @@ fn compile_connection(
         connector_sub,
         compatibility_constraint: compat_id,
         port_mappings: port_mappings.to_vec(),
-        frame_constraint: None,
+        frame_constraint,
         span,
     });
 }
