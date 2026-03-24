@@ -124,6 +124,9 @@ pub fn format_value(v: &Value) -> (String, String) {
             let formatted = format!("{} + {}i", format_number(display_re), format_number(display_im));
             (formatted, unit.to_string())
         }
+        Value::Orientation { w, x, y, z } => {
+            (format!("[{}, {}, {}, {}]q", w, x, y, z), String::new())
+        }
         Value::Undef => ("undefined".to_string(), String::new()),
     }
 }

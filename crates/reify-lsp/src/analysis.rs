@@ -201,6 +201,9 @@ pub fn format_value(value: &Value) -> String {
                 format!("{re} {sign} {im_abs}i {unit}")
             }
         }
+        Value::Orientation { w, x, y, z } => {
+            format!("[{w}, {x}, {y}, {z}]q")
+        }
         Value::Undef => "(undefined)".to_string(),
     }
 }
