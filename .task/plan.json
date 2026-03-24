@@ -1,146 +1,224 @@
 {
-  "task_id": "188",
-  "title": "Trait member merging: implementation",
+  "task_id": "203",
+  "title": "Recursive structures: detection",
   "files": [
     "crates/reify-compiler/src/lib.rs",
-    "crates/reify-compiler/tests/trait_merge_tests.rs"
+    "crates/reify-compiler/tests/recursive_structure_tests.rs"
   ],
   "modules": [
     "crates/reify-compiler"
   ],
-  "analysis": "Task 188 builds on the trait conformance infrastructure from task 182 (check_trait_conformance + collect_all_requirements) to implement proper member merging when a structure implements multiple traits.\n\nCurrent state (task 182): collect_all_requirements already handles requirement dedup by name+type, requirement conflicts (same name, different type \u2192 error), default param dedup by name+type, default type conflicts (when not overridden), unlabeled constraint conjunctive composition, and diamond inheritance dedup.\n\nThree gaps remain:\n\n1. **Let default type comparison uses Type::Real sentinel.** In collect_all_requirements (line ~4348), DefaultKind::Let(_) maps to Type::Real for dedup comparison. This means two let defaults with the same name but different types (e.g., Length vs Mass) are incorrectly treated as duplicates instead of producing a type conflict error. Fix: Change DefaultKind::Let(LetDecl) to DefaultKind::Let { cell_type: Type, let_decl: LetDecl } and use actual cell_type for comparison.\n\n2. **No expression comparison for let defaults.** Two let defaults with same name and same type but different expressions are silently merged (second dropped). The task requires: same expression \u2192 merge; different expression \u2192 error. Fix: Store LetDecl.content_hash in a tracking map; on collision, compare hashes.\n\n3. **Requirements not cross-checked against defaults from other traits.** If trait A requires `param x : Length` (no default) and trait B provides `param x : Length = 10mm` (default), the structure gets a false 'missing required member' error even though a default is available from the merged trait set. Fix: Before reporting missing member, check if all_defaults contains a matching default.",
+  "analysis": "Task 203 requires detecting self-referential structure definitions during compilation. Structures in Reify can contain `sub` declarations that reference other structures (e.g., `sub x = B()`). When structure A contains a sub of type B, and B contains a sub of type A (or transitively through any chain), we have a recursive cycle.\n\nThe compiler already has all the infrastructure needed: (1) TopologyTemplate has `sub_components: Vec<SubComponentDecl>` where each SubComponentDecl has a `structure_name` field identifying the referenced structure. (2) After all templates are compiled (line 1894), a template_registry HashMap<String, &TopologyTemplate> is built for deferred checks. (3) module_dag.rs provides a pattern for DFS cycle detection.\n\nApproach: Add a post-compilation pass (after all templates are compiled, similar to bound checks) that builds a directed graph of structure references from sub_components, then runs DFS to detect cycles. When a cycle is found, emit a diagnostic and tag the participating templates with `is_recursive = true`. This flag will be consumed by downstream tasks for special handling (e.g., preventing infinite elaboration in reify-eval).\n\nThe reference graph is: for each TopologyTemplate T, for each SubComponentDecl S in T.sub_components, add edge T.name -> S.structure_name. Then run DFS with gray/black coloring to find back-edges indicating cycles. When a back-edge is found, extract the cycle path from the DFS stack.\n\nKey design choice: Tag templates with `is_recursive: bool` rather than blocking compilation. Recursive structures may be valid with collection subs or guarded subs \u2014 they need special handling at elaboration time, not outright rejection. The diagnostic is a warning-level note identifying the cycle path.\n\n--- REVIEW FIX (reviewer_robustness/incorrect_cycle_detection) ---\n\nThe DFS-based cycle detection has a bug: the `Some(false)` arm (black/fully-explored node) takes no action, so when a second DFS path reaches a cycle member that's already fully explored, intermediate nodes on that path are never tagged in_cycle. Example: graph A\u2192B, A\u2192D, B\u2192C, D\u2192C, C\u2192A. DFS finds A\u2192B\u2192C\u2192A and marks A,B,C in_cycle. Then A visits D; D visits C (black, in_cycle), but the `Some(false)` arm does nothing \u2014 D is never tagged, yet D participates in the genuine cycle A\u2192D\u2192C\u2192A.\n\nNaive fix (propagate in_cycle when black neighbor is in_cycle) would cause false positives: if X\u2192Y\u2192X is a cycle and Z\u2192Y exists, Z would be wrongly marked even though there's no path Y\u2192Z.\n\nCorrect fix: replace the DFS with Tarjan's SCC algorithm. Tarjan's finds all strongly connected components in O(V+E). Every node in an SCC of size > 1 is a cycle participant. Self-loops (SCC of size 1 with self-edge) are also cycles. This handles multi-path convergence correctly because SCC membership is determined by mutual reachability, not by DFS tree structure. Cycle paths for diagnostics can be reconstructed from the SCC's adjacency sub-graph.",
   "prerequisites": [],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Create crates/reify-compiler/tests/trait_merge_tests.rs with helpers (compile_module, compile_first_template) and 2 tests: (a) let_defaults_same_name_same_expr_merge \u2014 two traits each with `let area : Real = width * height`, structure implements both, expect 0 errors and exactly 1 'area' value cell. (b) param_requirements_same_name_same_type_merge \u2014 two traits each requiring `param x : Length`, structure provides `param x : Length = 5mm`, expect 0 errors (existing behavior, baseline test).",
+      "description": "Write failing test: direct self-reference (structure A has sub x = A()) is detected and tagged as recursive \u2014 assert template.is_recursive == true and a warning diagnostic contains 'recursive structure cycle'",
       "status": "done",
-      "commit": "a17cf39"
+      "commit": "9adda10"
     },
     {
       "id": "step-2",
-      "type": "test",
-      "description": "Add failing test: let_defaults_same_name_different_type_error \u2014 trait A has `let x : Length = 5mm`, trait B has `let x : Mass = 1kg`, structure implements both. Expect error diagnostic containing 'conflicting'. This will FAIL because DefaultKind::Let uses Type::Real sentinel, making both types appear identical.",
+      "type": "impl",
+      "description": "Add `is_recursive: bool` field to TopologyTemplate (default false). Add `detect_recursive_structures()` function that builds adjacency list from templates' sub_components and runs DFS cycle detection. Wire it into compile() after all templates are compiled. Set is_recursive=true on templates in cycles. Emit warning diagnostic with cycle path.",
       "status": "done",
-      "commit": "fb53094"
+      "commit": "99e5cd3"
     },
     {
       "id": "step-3",
-      "type": "impl",
-      "description": "Change DefaultKind::Let(LetDecl) to DefaultKind::Let { cell_type: Type, let_decl: LetDecl }. Update compile_trait() to pass the resolved type into the new struct variant. Update all pattern match sites in check_trait_conformance(): (1) pre-registration loop (line ~4178) \u2014 use cell_type instead of Type::Real; (2) injection loop (line ~4211) \u2014 destructure Let { cell_type, let_decl } and use cell_type for the injected ValueCellDecl. Update collect_all_requirements() \u2014 extract cell_type from DefaultKind::Let { cell_type, .. } instead of using Type::Real sentinel. Step-2 test should now pass.",
+      "type": "test",
+      "description": "Write failing test: mutual recursion (A has sub b = B(), B has sub a = A()) \u2014 both A and B are tagged as is_recursive=true",
       "status": "done",
-      "commit": "da812a5"
+      "commit": "9adda10"
     },
     {
       "id": "step-4",
-      "type": "test",
-      "description": "Add failing test: let_defaults_same_name_same_type_different_expr_error \u2014 trait A has `let x : Real = width + 1`, trait B has `let x : Real = width * 2`, structure implements both with `param width : Real = 5`. Expect error diagnostic mentioning 'conflicting' and 'expression'. This will FAIL because collect_all_requirements only checks type, not expression content.",
+      "type": "impl",
+      "description": "Ensure detect_recursive_structures handles mutual/indirect cycles by propagating is_recursive to all nodes in any cycle, not just the back-edge node",
       "status": "done",
-      "commit": "5c297c0"
+      "commit": "99e5cd3"
     },
     {
       "id": "step-5",
-      "type": "impl",
-      "description": "Add expression comparison for let defaults in collect_all_requirements. Change seen_defaults from HashMap<String, Type> to HashMap<String, (Type, Option<ContentHash>)>. For DefaultKind::Let, store (cell_type, Some(let_decl.content_hash)). For Param/Constraint, store (type, None). On collision: if both have Some(hash) and hashes differ while types match \u2192 emit 'conflicting let expressions' error. Update the signature of seen_defaults and all its access sites. Step-4 test should now pass.",
+      "type": "test",
+      "description": "Write failing test: indirect cycle through 3 structures (A->B->C->A) \u2014 all three tagged as is_recursive=true and diagnostic message contains full cycle path 'A -> B -> C -> A'",
       "status": "done",
-      "commit": "7cab2e3"
+      "commit": "9adda10"
     },
     {
       "id": "step-6",
-      "type": "test",
-      "description": "Add failing test: requirement_satisfied_by_cross_trait_default \u2014 trait A requires `param x : Length` (no default), trait B provides `param x : Length = 10mm` (default). Structure implements A + B with empty body. Expect 0 errors (the default from B satisfies A's requirement). This will FAIL because check_trait_conformance only checks requirements against structure_members, not against available defaults.",
+      "type": "impl",
+      "description": "Ensure cycle path reconstruction works for chains of arbitrary length by tracking the DFS path stack and extracting the cycle when a back edge is found",
       "status": "done",
-      "commit": "20006da"
+      "commit": "99e5cd3"
     },
     {
       "id": "step-7",
-      "type": "impl",
-      "description": "In check_trait_conformance, before the requirement-checking loop (line ~4114), build a HashMap<String, Type> of available default names from all_defaults (excluding constraints). In the None arm of the requirement check (line ~4132), before emitting 'missing required member', check if the requirement name exists in the defaults map with a matching type. If so, skip the error (the default will satisfy the requirement during injection). If the default exists but with a different type, emit a type mismatch error. Step-6 test should now pass.",
+      "type": "test",
+      "description": "Write failing test: non-recursive structures (A->B, C->D, no cycles) \u2014 none tagged as recursive, no warning diagnostics emitted about recursion",
       "status": "done",
-      "commit": "d545080"
+      "commit": "9adda10"
     },
     {
       "id": "step-8",
-      "type": "test",
-      "description": "Add test: let_conflict_resolved_by_structure_override \u2014 trait A has `let x : Real = a + 1`, trait B has `let x : Real = a * 2`, structure implements both and provides its own `let x = a + a`. Expect 0 errors (structure override resolves the conflict). Also add: constraints_compose_conjunctively_across_traits \u2014 trait A has `constraint x > 0mm`, trait B has `constraint x < 100mm`, structure provides param x, expect both constraints injected (>= 2 constraints).",
+      "type": "impl",
+      "description": "Verify non-recursive DAG structures produce no false positives (should already pass if DFS is correct, fix if not)",
       "status": "done",
-      "commit": "c86f243"
+      "commit": "99e5cd3"
     },
     {
       "id": "step-9",
-      "type": "impl",
-      "description": "If step-8 tests fail: For let conflict resolution by override, update collect_all_requirements to check structure_members before reporting let expression conflict (similar to how default type conflicts already check structure_members at line ~4354). For constraint composition, verify existing behavior is correct (should already work via unnamed defaults always-push logic). Fix any remaining issues.",
+      "type": "test",
+      "description": "Write failing test: mixed recursive and non-recursive structures in same module \u2014 only cycle participants are tagged is_recursive=true, others remain false. E.g., A->B->A cycle plus standalone C->D \u2014 C and D stay is_recursive=false",
       "status": "done",
-      "commit": "c86f243"
+      "commit": "9adda10"
     },
     {
       "id": "step-10",
-      "type": "test",
-      "description": "Add comprehensive mixed-merging test: mixed_merging_params_lets_constraints \u2014 trait A has `param x : Length`, `let area : Real = x * x`, `constraint x > 0mm`. Trait B has `param x : Length`, `let area : Real = x * x`, `constraint x < 1000mm`. Structure implements A + B with `param x : Length = 5mm`. Expect: 0 errors, exactly 1 'x' value cell, exactly 1 'area' value cell, at least 2 constraints. This validates the complete merging pipeline across member kinds.",
+      "type": "impl",
+      "description": "Ensure tagging is precise: only structures participating in a cycle get is_recursive=true. Structures that reference a recursive structure but aren't themselves in a cycle remain false.",
       "status": "done",
-      "commit": "16c3c15"
+      "commit": "99e5cd3"
+    },
+    {
+      "id": "step-11",
+      "type": "test",
+      "description": "Write failing test: sub referencing unknown/external structure name does not cause panic or false positive \u2014 structure with sub pointing to non-existent type compiles without recursion diagnostics",
+      "status": "done",
+      "commit": "9adda10"
+    },
+    {
+      "id": "step-12",
+      "type": "impl",
+      "description": "Ensure detect_recursive_structures only adds edges for structure_names that exist in the template set \u2014 skip unknown/external references gracefully",
+      "status": "done",
+      "commit": "99e5cd3"
+    },
+    {
+      "id": "step-13",
+      "type": "test",
+      "description": "Write failing test: structure with multiple sub declarations, one creating a cycle and one not \u2014 structure is correctly tagged as recursive. E.g., A has sub b = B() and sub c = C(), B has sub a = A() \u2014 A and B are recursive, C is not",
+      "status": "done",
+      "commit": "9adda10"
+    },
+    {
+      "id": "step-14",
+      "type": "impl",
+      "description": "Verify all edges from a template are considered (multiple subs), and the diagnostic label points to the specific sub creating the back-edge",
+      "status": "done",
+      "commit": "99e5cd3"
+    },
+    {
+      "id": "step-15",
+      "type": "test",
+      "description": "Write test: structure with no subs at all is not tagged as recursive and produces no recursion diagnostics",
+      "status": "done",
+      "commit": "9adda10"
+    },
+    {
+      "id": "step-16",
+      "type": "impl",
+      "description": "Verify edge case: templates with empty sub_components are handled correctly (no edges added, no iteration issues)",
+      "status": "done",
+      "commit": "99e5cd3"
+    },
+    {
+      "id": "step-17",
+      "type": "test",
+      "description": "Write failing test for multi-path cycle convergence (reviewer bug): graph A\u2192B, A\u2192D, B\u2192C, D\u2192C, C\u2192A. All four structures participate in cycles (A\u2192B\u2192C\u2192A and A\u2192D\u2192C\u2192A). Assert all four are tagged is_recursive=true. This test will FAIL with the current DFS because D is reached via a black (already-explored) node C and the Some(false) arm takes no action, leaving D untagged.",
+      "status": "done",
+      "commit": "c68e309"
+    },
+    {
+      "id": "step-18",
+      "type": "impl",
+      "description": "Replace dfs_detect_cycle with Tarjan's SCC algorithm. Tarjan's correctly finds all strongly connected components in O(V+E) by tracking index and lowlink values on a stack. Tag all nodes in SCCs of size > 1 as in_cycle. Also tag self-loop SCCs (size 1 where node has edge to itself). Reconstruct one representative cycle path per SCC from the adjacency sub-graph for diagnostic messages. Remove the old dfs_detect_cycle function entirely.",
+      "status": "done",
+      "commit": "e6d821d"
+    },
+    {
+      "id": "step-19",
+      "type": "test",
+      "description": "Write test for false-positive resistance: structure Z has sub a = A(), and A\u2192B\u2192A is a cycle, but there is no path from A or B back to Z. Assert Z is NOT tagged is_recursive (Z merely points into a cycle without being part of one). This validates that Tarjan's SCC correctly excludes nodes that have edges into an SCC but aren't members of it.",
+      "status": "done",
+      "commit": "c68e309"
+    },
+    {
+      "id": "step-20",
+      "type": "impl",
+      "description": "Verify the false-positive test passes with Tarjan's SCC (should pass because SCC membership requires mutual reachability \u2014 Z can reach A but A cannot reach Z, so Z is in its own singleton SCC with no self-edge).",
+      "status": "done",
+      "commit": "e6d821d"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Change DefaultKind::Let(LetDecl) to DefaultKind::Let { cell_type: Type, let_decl: LetDecl }",
-      "rationale": "Mirrors DefaultKind::Param which already stores cell_type. The current sentinel value Type::Real causes all let defaults to appear type-identical during deduplication, masking real type conflicts. Storing the actual resolved type enables correct type comparison."
+      "decision": "Add `is_recursive: bool` field to TopologyTemplate rather than a separate data structure",
+      "rationale": "TopologyTemplate is the compiled representation consumed by reify-eval. Tagging it directly makes the information immediately available during elaboration without requiring a side-channel lookup. The field is cheap (1 byte) and zero-cost when false."
     },
     {
-      "decision": "Use LetDecl.content_hash for expression equivalence comparison",
-      "rationale": "ContentHash is already computed during parsing for all declarations and captures structural content. Two let declarations with the same name, type annotation, and expression text will have identical content_hash. This is conservative (whitespace-sensitive) but correct and zero-cost since hashes are pre-computed. No need to implement PartialEq on Expr or add new hash infrastructure."
+      "decision": "Use warning-level diagnostics, not errors, for recursive cycles",
+      "rationale": "Recursive structures are not necessarily invalid \u2014 they may be meaningful with collection subs (bounded count) or guarded subs (conditional inclusion). The task says 'tag for special handling', not 'reject'. Downstream elaboration can decide how to handle them (e.g., depth limits, lazy expansion)."
     },
     {
-      "decision": "Extend seen_defaults to HashMap<String, (Type, Option<ContentHash>)>",
-      "rationale": "Adding Option<ContentHash> to the tracking map enables expression comparison for let defaults without adding a separate data structure. None for param/constraint defaults (expression comparison not needed), Some(hash) for let defaults. Minimal change to existing dedup logic."
+      "decision": "Implement detection as a post-compilation pass rather than inline during compile_entity",
+      "rationale": "Following the existing pattern of deferred bound checks: all templates must be compiled before we can build the full reference graph. Forward references are allowed within a module, so inline detection during entity compilation would miss structures defined later in the file."
     },
     {
-      "decision": "Cross-check requirements against available defaults before reporting missing member",
-      "rationale": "When trait A requires param x and trait B provides default param x (same type), the merged view should see x as available. Without this cross-check, the structure gets a false 'missing required member' error for x even though it will be injected by B's default. This is the semantic heart of 'merge members across all traits'."
+      "decision": "Replace DFS gray/black cycle detection with Tarjan's SCC algorithm",
+      "rationale": "The original DFS approach misses cycle participants reachable through already-explored (black) nodes. When multiple paths converge on a cycle, the DFS only finds members on the first path. Tarjan's SCC correctly identifies ALL nodes in ALL strongly connected components in O(V+E) by tracking index/lowlink values, handling multi-path convergence without the early-exit issue. Cycle paths for diagnostics are reconstructed from each SCC's adjacency sub-graph."
     },
     {
-      "decision": "Do not check for param-vs-let kind conflicts (same name, different member kind across traits)",
-      "rationale": "A param (user-settable) and a let (computed) with the same name from different traits represent a semantic conflict, but the task description does not explicitly require this check. The current infrastructure tracks requirements and defaults in separate maps without kind discrimination. Adding kind-conflict detection would require broader refactoring. Deferred to a future task."
+      "decision": "Place all tests in a dedicated integration test file rather than inline unit tests",
+      "rationale": "Follows the established codebase pattern where each feature area has its own test file in tests/ (e.g., collection_sub_tests.rs, trait_bounds_tests.rs). The tests need the compile + check diagnostics pattern that integration tests use."
     },
     {
-      "decision": "New test file trait_merge_tests.rs (not appending to trait_conformance_tests.rs)",
-      "rationale": "Follows project convention of separate test files per feature area. Merging across multiple traits is a distinct concern from basic single-trait conformance checking. Keeps trait_conformance_tests.rs focused on its current scope."
+      "decision": "Only consider sub_components for reference graph edges, not type_args",
+      "rationale": "Type arguments (e.g., Box<Bolt>) reference structures but don't create containment relationships that cause infinite elaboration. A Box<T> parameterized by T doesn't contain T as a sub \u2014 it's a type parameter. Recursion through sub containment is what causes structural cycles."
+    },
+    {
+      "decision": "Rejected naive propagation fix (mark in_cycle when black neighbor is in_cycle) in favor of Tarjan's SCC",
+      "rationale": "Naive propagation causes false positives: if Z\u2192A where A is in cycle A\u2192B\u2192A, Z would be wrongly tagged because its black neighbor A is in_cycle, even though there's no path from A back to Z. Tarjan's SCC correctly requires mutual reachability for cycle membership."
     }
   ],
   "reuse": [
     {
-      "what": "collect_all_requirements() function",
-      "where": "crates/reify-compiler/src/lib.rs:4270",
-      "how": "Existing recursive function for traversing refinement chains with diamond dedup. Extend its seen_defaults map and add expression comparison \u2014 no structural changes needed."
+      "what": "DFS cycle detection pattern from module_dag.rs",
+      "where": "crates/reify-compiler/src/module_dag.rs lines 118-126",
+      "how": "Adapt the in_progress HashSet + early return pattern for structure reference graph traversal, extending it with path tracking to report cycle chains"
     },
     {
-      "what": "check_trait_conformance() function",
-      "where": "crates/reify-compiler/src/lib.rs:4041",
-      "how": "Existing function that checks requirements and injects defaults. Add cross-check of requirements against defaults, update DefaultKind::Let pattern matches."
+      "what": "Post-compilation pass pattern",
+      "where": "crates/reify-compiler/src/lib.rs lines 1896-1942",
+      "how": "Add the recursive structure detection pass after the existing deferred bound check pass, using the same template_registry HashMap<String, &TopologyTemplate>"
     },
     {
-      "what": "ContentHash for expression comparison",
-      "where": "crates/reify-types/src/hash.rs (ContentHash struct), crates/reify-syntax LetDecl.content_hash field",
-      "how": "Already computed during parsing for every LetDecl. Compare content_hash values to detect expression differences between let defaults with same name and type."
+      "what": "Diagnostic emission pattern with labels",
+      "where": "crates/reify-compiler/src/lib.rs (used throughout, e.g., lines 1783-1802)",
+      "how": "Use Diagnostic::warning() with DiagnosticLabel::new(span, message) pointing to the sub declarations that form the cycle"
     },
     {
-      "what": "compile_module / compile_first_template test helpers",
-      "where": "crates/reify-compiler/tests/trait_conformance_tests.rs:10-21",
-      "how": "Same helper pattern (parse + compile + extract) used across all 24 compiler test files. Copy into new trait_merge_tests.rs."
+      "what": "Test helper compile_no_errors() / compile pattern",
+      "where": "crates/reify-compiler/tests/collection_sub_tests.rs lines 6-27",
+      "how": "Reuse the same pattern: parse source, assert no parse errors, compile, return CompiledModule. Create a compile_module() helper that allows warnings (since recursion detection emits warnings, not errors)."
     },
     {
-      "what": "Error assertion pattern",
-      "where": "crates/reify-compiler/tests/trait_conformance_tests.rs:121-132",
-      "how": "Standard pattern: filter diagnostics by Severity::Error, assert count, check message contains expected substring. Used throughout all test files."
+      "what": "SubComponentDecl.structure_name field",
+      "where": "crates/reify-compiler/src/lib.rs line 208",
+      "how": "Use structure_name from each SubComponentDecl to build the adjacency list edges in the reference graph"
     },
     {
-      "what": "Diagnostic::error() builder with DiagnosticLabel",
-      "where": "crates/reify-types/src/diagnostics.rs",
-      "how": "Existing builder pattern for creating error diagnostics with labeled source spans. Used for new error messages (conflicting let expressions, cross-trait type mismatch)."
+      "what": "TopologyTemplate.sub_components and template name",
+      "where": "crates/reify-compiler/src/lib.rs lines 159-178",
+      "how": "Iterate compiled templates to extract (template.name -> sub.structure_name) edges for graph construction"
+    },
+    {
+      "what": "Tarjan's SCC algorithm (standard)",
+      "where": "Well-known algorithm, no codebase dependency",
+      "how": "Implement iterative Tarjan's with index counter, lowlink array, and explicit stack. Each SCC of size > 1 (or size 1 with self-edge) maps to a set of in_cycle nodes. Reconstruct one cycle path per SCC by walking adjacency within the SCC."
     }
   ],
-  "_session_id": "188-e437ff6a",
-  "_created_at": "2026-03-24T16:11:00.074468+00:00",
-  "_schema_version": 1
+  "_session_id": "203-409aa634",
+  "_created_at": "2026-03-24T08:43:43.061708+00:00"
 }
