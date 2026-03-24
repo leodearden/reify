@@ -122,6 +122,12 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
             }
         }),
 
+        // --- Integer functions ---
+        "mod" => binary(args, |x, y| match (x, y) {
+            (Value::Int(x), Value::Int(y)) if *y != 0 => Value::Int(x % y),
+            _ => Value::Undef,
+        }),
+
         "remap" => {
             // remap(x, from_lo, from_hi, to_lo, to_hi)
             if args.len() != 5 {
