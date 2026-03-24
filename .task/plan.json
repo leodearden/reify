@@ -1,282 +1,152 @@
 {
-  "task_id": "224",
-  "title": "Point/Vector: constructors",
+  "task_id": "278",
+  "title": "Pragma framework: parser",
   "files": [
-    "crates/reify-types/src/value.rs",
-    "crates/reify-stdlib/src/lib.rs",
-    "crates/reify-expr/src/lib.rs",
-    "crates/reify-expr/tests/point_vector_eval_tests.rs",
-    "crates/reify-constraints/src/classifier.rs",
-    "crates/reify-test-support/src/builders.rs",
-    "crates/reify-lsp/src/analysis.rs"
+    "tree-sitter-reify/grammar.js",
+    "crates/reify-syntax/src/lib.rs",
+    "crates/reify-syntax/src/ts_parser.rs",
+    "crates/reify-syntax/tests/pragma_tests.rs"
   ],
   "modules": [
-    "crates/reify-types",
-    "crates/reify-stdlib",
-    "crates/reify-expr",
-    "crates/reify-constraints",
-    "crates/reify-test-support",
-    "crates/reify-lsp"
+    "crates/reify-syntax",
+    "tree-sitter-reify"
   ],
-  "analysis": "Task 224 adds point2/point3/vec2/vec3 stdlib constructor functions. The initial implementation produced Value::Tensor for both points and vectors, making them runtime-indistinguishable. Review found this is a blocking semantic erasure: point2(1,2) and vec2(1,2) produce identical Value::Tensor output, violating the semantic contract implied by four distinct constructor names.\n\nThe fix adds Value::Point(Vec<Value>) and Value::Vector(Vec<Value>) as distinct enum variants in reify-types, matching the existing Type::Point/Type::Vector distinction. The construct_point_or_vector helper gains an is_point: bool parameter and produces the correct variant. tensor_components_f64 is updated to also extract from Point/Vector so existing vector operations (magnitude, normalize, cross, dot, orient) continue to work. eval_expr field access (.x/.y/.z) and arithmetic patterns are updated to handle the new variants. All match-exhaustive sites across 5 crates are updated.\n\nThe Type system already has Type::Point { n, quantity } and Type::Vector { n, quantity }. Adding Value-level distinction ensures runtime values honour the same semantics, enabling downstream code (e.g., affine transforms where points get translation and vectors don't) to distinguish them via pattern matching.",
-  "prerequisites": [
-    {
-      "id": "pre-1",
-      "description": "Verify Value::Point(Vec<Value>) and Value::Vector(Vec<Value>) variants exist from task 223. If not merged yet, this task is blocked.",
-      "status": "done",
-      "commit": "741e9af8",
-      "tests": []
-    }
-  ],
+  "analysis": "The pragma framework parser is ALREADY FULLY IMPLEMENTED on main. All four layers are complete and tested: (1) Grammar: tree-sitter-reify/grammar.js defines `pragma` rule (line 751) with `#immediate_identifier` and optional `(commaSep(pragma_arg))`, `pragma_arg` (line 758) supporting key=value and bare forms, and `_pragma_value` (line 764) restricted to number/string/bool/identifier literals. Pragma appears in `_declaration` (module level, line 47), `_member` (structure/occurrence blocks, line 346), `trait_member` (line 146), `purpose_member` (line 233), and `_constraint_def_body_item` (line 255). (2) AST: lib.rs defines Pragma (line 556), PragmaArg (line 564), PragmaValue (line 572); ParsedModule.pragmas (line 13) for module level; StructureDef.pragmas (line 42), OccurrenceDef.pragmas (line 67), TraitDecl.pragmas (line 293), PurposeDef.pragmas (line 323), ConstraintDef.pragmas (line 351) for block level. (3) Parser: ts_parser.rs implements lower_pragma() (line 781), lower_pragma_arg() (line 806), lower_pragma_value() (line 823); module-level collection in lower_source_file() (line 196); block-level collection in lower_members() (line 1038), lower_trait_members() (line 960), lower_purpose_members() (line 881), and lower_constraint_def() (line 658). (4) Tests: pragma_tests.rs has 12 passing tests covering bare pragmas, key=value args, bare value args, mixed args, multiple module pragmas, block-level pragmas in structure/occurrence/trait/purpose/constraint, scoping isolation, and boolean/number value types. All 12 tests pass. This plan contains verification-only steps confirming the existing implementation satisfies the task requirements. No new code is needed.",
+  "prerequisites": [],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing test: point3_basic \u2014 point3(Scalar(1,L), Scalar(2,L), Scalar(3,L)) produces Value::Point with 3 LENGTH scalars",
+      "description": "Verify existing test parse_bare_module_pragma: bare pragma at module level (#optimize parses to Pragma with name='optimize' and empty args on ParsedModule.pragmas). Run `cargo test -p reify-syntax --test pragma_tests parse_bare_module_pragma` and confirm pass.",
       "status": "done",
-      "commit": "741e9af8"
+      "commit": "b126fef05323740c65841e48bfc19fa293d5e188"
     },
     {
       "id": "step-2",
-      "type": "impl",
-      "description": "Add construct_point_or_vector helper and 'point3' match arm in eval_builtin. Helper validates arg count, all-numeric, same-dimension, returns Value::Point or Value::Vector.",
+      "type": "test",
+      "description": "Verify existing test parse_key_value_pragma_args: pragma with key=value args (#config(level=3, name=\"test\") parses to PragmaArg::KeyValue entries with PragmaValue::Number(3.0) and PragmaValue::String(\"test\")). Run `cargo test -p reify-syntax --test pragma_tests parse_key_value_pragma_args` and confirm pass.",
       "status": "done",
-      "commit": "e632d10c"
+      "commit": "b126fef05323740c65841e48bfc19fa293d5e188"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing test: vec3_basic \u2014 vec3(Scalar(4,L), Scalar(5,L), Scalar(6,L)) produces Value::Vector with 3 LENGTH scalars",
+      "description": "Verify existing test parse_bare_value_pragma_args: pragma with bare value args (#feature(sse2, avx) parses to PragmaArg::Bare(PragmaValue::Ident) entries). Run `cargo test -p reify-syntax --test pragma_tests parse_bare_value_pragma_args` and confirm pass.",
       "status": "done",
-      "commit": "ffb2ab2b"
+      "commit": "b126fef05323740c65841e48bfc19fa293d5e188"
     },
     {
       "id": "step-4",
-      "type": "impl",
-      "description": "Add 'vec3' match arm in eval_builtin, reusing construct_point_or_vector helper",
+      "type": "test",
+      "description": "Verify existing test parse_mixed_pragma_args: mixed pragma args (#config(debug, level=2, name=\"prod\") parses to mix of Bare and KeyValue args with correct types). Run `cargo test -p reify-syntax --test pragma_tests parse_mixed_pragma_args` and confirm pass.",
       "status": "done",
-      "commit": "1a3388b6"
+      "commit": "b126fef05323740c65841e48bfc19fa293d5e188"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing test: point2_basic \u2014 point2(Scalar(7,L), Scalar(8,L)) produces Value::Point with 2 LENGTH scalars",
+      "description": "Verify existing test parse_multiple_module_pragmas: multiple module-level pragmas (#optimize + #config(level=3) both collected in ParsedModule.pragmas with correct order). Run `cargo test -p reify-syntax --test pragma_tests parse_multiple_module_pragmas` and confirm pass.",
       "status": "done",
-      "commit": "c36409a0"
+      "commit": "b126fef05323740c65841e48bfc19fa293d5e188"
     },
     {
       "id": "step-6",
-      "type": "impl",
-      "description": "Add 'point2' match arm in eval_builtin",
+      "type": "test",
+      "description": "Verify existing test parse_block_pragma_in_structure: block-level pragma inside structure (structure S { #internal ... } stores pragma on StructureDef.pragmas, not module.pragmas). Run `cargo test -p reify-syntax --test pragma_tests parse_block_pragma_in_structure` and confirm pass.",
       "status": "done",
-      "commit": "1f0362bf"
+      "commit": "b126fef05323740c65841e48bfc19fa293d5e188"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing test: vec2_basic \u2014 vec2(Scalar(9,L), Scalar(10,L)) produces Value::Vector with 2 LENGTH scalars",
+      "description": "Verify existing test parse_block_pragma_in_occurrence: block-level pragma inside occurrence (occurrence P { #temporal ... } stores pragma on OccurrenceDef.pragmas). Run `cargo test -p reify-syntax --test pragma_tests parse_block_pragma_in_occurrence` and confirm pass.",
       "status": "done",
-      "commit": "081e79b3"
+      "commit": "b126fef05323740c65841e48bfc19fa293d5e188"
     },
     {
       "id": "step-8",
-      "type": "impl",
-      "description": "Add 'vec2' match arm in eval_builtin",
+      "type": "test",
+      "description": "Verify existing test parse_block_pragma_in_trait: block-level pragma inside trait (trait R { #required ... } stores pragma on TraitDecl.pragmas). Run `cargo test -p reify-syntax --test pragma_tests parse_block_pragma_in_trait` and confirm pass.",
       "status": "done",
-      "commit": "001c7301"
+      "commit": "b126fef05323740c65841e48bfc19fa293d5e188"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write test: point3_dimensionless \u2014 point3(Real(1.0), Real(2.0), Real(3.0)) produces Value::Point with 3 dimensionless components (Real values preserved as-is)",
+      "description": "Verify existing test parse_pragma_scoping_isolation: pragma scoping isolation (#module_level at top, #block_level inside S — each appears only in its own scope's Vec<Pragma>). Run `cargo test -p reify-syntax --test pragma_tests parse_pragma_scoping_isolation` and confirm pass.",
       "status": "done",
-      "commit": "f050cb91"
+      "commit": "b126fef05323740c65841e48bfc19fa293d5e188"
     },
     {
       "id": "step-10",
-      "type": "impl",
-      "description": "Verify passes or adjust helper to accept Real/Int as dimensionless components",
+      "type": "test",
+      "description": "Verify existing test parse_pragma_bool_and_number_values: boolean and number pragma values (#feature(enabled=true, count=42) parses to PragmaValue::Bool(true) and PragmaValue::Number(42.0)). Run `cargo test -p reify-syntax --test pragma_tests parse_pragma_bool_and_number_values` and confirm pass.",
       "status": "done",
-      "commit": "f050cb91"
+      "commit": "b126fef05323740c65841e48bfc19fa293d5e188"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write test: dimension_mismatch_undef \u2014 point3(Scalar(1,LENGTH), Scalar(2,MASS), Scalar(3,LENGTH)) returns Value::Undef. Same for vec3, point2, vec2 with mixed dimensions.",
+      "description": "Verify existing test parse_block_pragma_in_purpose: block-level pragma inside purpose (purpose Optimize(...) { #solver ... } stores pragma on PurposeDef.pragmas). Run `cargo test -p reify-syntax --test pragma_tests parse_block_pragma_in_purpose` and confirm pass.",
       "status": "done",
-      "commit": "5ed9dcaa"
+      "commit": "b126fef05323740c65841e48bfc19fa293d5e188"
     },
     {
       "id": "step-12",
-      "type": "impl",
-      "description": "Verify dimension mismatch tests pass (should be handled by construct_point_or_vector helper)",
-      "status": "done",
-      "commit": "5ed9dcaa"
-    },
-    {
-      "id": "step-13",
       "type": "test",
-      "description": "Write test: wrong_arg_count_undef \u2014 point3 with 2 args returns Undef, point2 with 3 args returns Undef, vec3 with 0 args returns Undef, etc.",
+      "description": "Verify existing test parse_block_pragma_in_constraint: block-level pragma inside constraint def (constraint def Positive { #validate ... } stores pragma on ConstraintDef.pragmas). Run `cargo test -p reify-syntax --test pragma_tests parse_block_pragma_in_constraint` and confirm pass.",
       "status": "done",
-      "commit": "1984f0ac"
-    },
-    {
-      "id": "step-14",
-      "type": "impl",
-      "description": "Verify wrong-arg-count tests pass (should be handled by construct_point_or_vector helper)",
-      "status": "done",
-      "commit": "1984f0ac"
-    },
-    {
-      "id": "step-15",
-      "type": "test",
-      "description": "Write test: non_numeric_undef \u2014 point3(String, Scalar, Scalar) returns Undef, vec2(Bool, Bool) returns Undef",
-      "status": "done",
-      "commit": "f4a66de8"
-    },
-    {
-      "id": "step-16",
-      "type": "impl",
-      "description": "Verify non-numeric tests pass (should be handled by construct_point_or_vector helper)",
-      "status": "done",
-      "commit": "f4a66de8"
-    },
-    {
-      "id": "step-17",
-      "type": "test",
-      "description": "Write failing test: point_vector_semantic_distinction \u2014 assert point2(1,2) produces Value::Point, vec2(1,2) produces Value::Vector, and point2(a,b) != vec2(a,b) with identical args. Also test Value::Point and Value::Vector content_hash differ, Display output differs.",
-      "status": "done",
-      "commit": "8c88aa4f"
-    },
-    {
-      "id": "step-18",
-      "type": "impl",
-      "description": "Add Value::Point(Vec<Value>) and Value::Vector(Vec<Value>) variants to the Value enum in value.rs. Implement content_hash (tags 18/19), PartialEq (new match arms), Ord (new type_tags 17/18, match arms), Display (point(...) / vec(...) format). Add dimension() support for Point/Vector deriving from first component.",
-      "status": "done",
-      "commit": "eeb23555"
-    },
-    {
-      "id": "step-19",
-      "type": "impl",
-      "description": "Update construct_point_or_vector to accept is_point: bool and return Value::Point or Value::Vector. Update eval_builtin match arms: point2/point3 pass is_point=true, vec2/vec3 pass is_point=false. Remove stale comment about Value::Tensor.",
-      "status": "done",
-      "commit": "4d62fbf7"
-    },
-    {
-      "id": "step-20",
-      "type": "impl",
-      "description": "Update tensor_components_f64 in stdlib to also extract from Value::Point and Value::Vector, so magnitude/normalize/cross/dot/orient operations work on points and vectors.",
-      "status": "done",
-      "commit": "4d62fbf7"
-    },
-    {
-      "id": "step-21",
-      "type": "impl",
-      "description": "Update existing stdlib tests (steps 1-16) to match on Value::Point for point2/point3 and Value::Vector for vec2/vec3 instead of Value::Tensor.",
-      "status": "done",
-      "commit": "4d62fbf7"
-    },
-    {
-      "id": "step-22",
-      "type": "impl",
-      "description": "Update eval_expr.rs: field access (.x/.y/.z) to also match Value::Point(c) | Value::Vector(c); arithmetic Add/Sub for tensors to also handle Point/Vector; scalar*tensor mul to handle Point/Vector; neg_value to handle Point/Vector. Preserve variant type through operations (Point op stays Point, Vector op stays Vector).",
-      "status": "pending",
-      "commit": null
-    },
-    {
-      "id": "step-23",
-      "type": "impl",
-      "description": "Update remaining crate files: classifier.rs (add Value::Point/Vector to non-numeric pattern), builders.rs infer_value_type (panic with helpful message like Tensor), analysis.rs (add Point/Vector to completion/hover match arms).",
-      "status": "pending",
-      "commit": null
-    },
-    {
-      "id": "step-24",
-      "type": "test",
-      "description": "Update point_vector_eval_tests.rs: change Value::Tensor construction/assertions to Value::Point for point types and Value::Vector for vector types. Verify all eval tests pass with the new variants.",
-      "status": "pending",
-      "commit": null
-    },
-    {
-      "id": "step-25",
-      "type": "test",
-      "description": "Run full cargo test across all crates to verify no regressions from the new Value variants. Fix any remaining exhaustive-match compiler errors.",
-      "status": "pending",
-      "commit": null
+      "commit": "b126fef05323740c65841e48bfc19fa293d5e188"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Single construct_point_or_vector(args, expected_n, is_point) helper handles all 4 constructors",
-      "rationale": "All 4 constructors share identical logic: validate arg count, check all-numeric, check same-dimension, wrap in Point/Vector. A single helper with (expected_count, is_point) params eliminates duplication."
+      "decision": "Pragmas use restricted compile-time values (Ident, Number, String, Bool) rather than full expressions",
+      "rationale": "Pragmas are compiler directives resolved at compile time, so arbitrary runtime expressions would be meaningless. This contrasts with annotations (@name(expr)) which DO accept full expressions. The PragmaValue enum enforces this restriction at the type level."
     },
     {
-      "decision": "Preserve original Value variants in Point/Vector components (don't normalize Real/Int to Scalar)",
-      "rationale": "Real(1.0) and Scalar(1.0, DIMENSIONLESS) both have DIMENSIONLESS dimension per Value::dimension(). Preserving original variants avoids lossy conversion and matches how Tensor currently stores heterogeneous numeric types."
+      "decision": "immediate_identifier token (no whitespace between # and name)",
+      "rationale": "Prevents ambiguity — '#optimize' is a pragma, '# optimize' would be a parse error. Implemented via tree-sitter's token.immediate() which disallows whitespace between the '#' and the identifier."
     },
     {
-      "decision": "Dimension validation uses Value::dimension() method",
-      "rationale": "Value::dimension() already returns DIMENSIONLESS for Real/Int and the actual dimension for Scalar. Checking that all args share the same dimension via this method is clean and consistent with existing patterns like tensor_components_f64."
+      "decision": "Module-level pragmas stored on ParsedModule.pragmas, block-level pragmas stored on block container types",
+      "rationale": "Scoping by storage location — each pragma lives on its enclosing scope's AST node (StructureDef, TraitDecl, PurposeDef, ConstraintDef, OccurrenceDef). No separate 'Scope' type is needed; the container IS the scope."
     },
     {
-      "decision": "Accept Real and Int args as dimensionless point/vector components",
-      "rationale": "The task says 'all components must have the same dimension', not 'all components must be Scalar'. Accepting Real(1.0) for dimensionless points (e.g., unit vectors) is ergonomic and consistent with how other stdlib functions accept numeric types via as_f64."
+      "decision": "Pragmas inside guarded blocks (where ... { ... }) are silently discarded",
+      "rationale": "GuardedGroupDecl has no pragmas field. Guarded blocks are conditional member groups within a structure, not independent compilation scopes. The enclosing structure's pragmas field is the right place for block-level compiler directives."
     },
     {
-      "decision": "Tests go in the existing #[cfg(test)] module inside lib.rs, not separate test files",
-      "rationale": "All existing stdlib tests (abs, sqrt, min, max, cross, dot, magnitude, orient, etc.) are in the inline #[cfg(test)] module. Following this convention keeps tests co-located with the implementation."
+      "decision": "Pragma args support both key=value and bare value forms in the same argument list",
+      "rationale": "Flexibility — some pragmas need named config (#config(level=3)), others need feature flags (#feature(sse2, avx)), and mixed usage is useful (#config(debug, level=2)). The grammar uses a choice() between the two forms in pragma_arg."
     },
     {
-      "decision": "Add Value::Point(Vec<Value>) and Value::Vector(Vec<Value>) as distinct enum variants rather than tagging Value::Tensor",
-      "rationale": "The Type system already distinguishes Type::Point from Type::Vector. Adding distinct Value variants makes runtime values match this semantic distinction, enabling downstream code (affine transforms, geometric operations) to pattern-match on point vs vector. A boolean tag on Tensor would break every existing Tensor match arm. Separate variants let existing Tensor code remain untouched while Point/Vector patterns are added alongside."
-    },
-    {
-      "decision": "tensor_components_f64 accepts Point and Vector in addition to Tensor",
-      "rationale": "Existing stdlib operations (magnitude, normalize, cross, dot, orient) use tensor_components_f64 to extract numeric components. Points and vectors should support these operations, so the helper is extended to match all three container variants."
-    },
-    {
-      "decision": "Arithmetic operations preserve Point/Vector variant type through the result",
-      "rationale": "point3(1,2,3) + point3(4,5,6) should produce a Point, and vec3(1,2,3) + vec3(4,5,6) should produce a Vector. This is consistent with geometric algebra conventions and preserves semantic information through computation chains."
+      "decision": "Separate collection paths for structure/occurrence (lower_members), trait (lower_trait_members), purpose (lower_purpose_members), and constraint def (inline in lower_constraint_def)",
+      "rationale": "Each block type has a different grammar wrapper node (trait_member, purpose_member, _constraint_def_body_item, _member). The wrapper nodes require different iteration patterns, so separate collection functions are needed despite the shared lower_pragma() call."
     }
   ],
   "reuse": [
     {
-      "what": "Value::dimension() method",
-      "where": "crates/reify-types/src/value.rs:122",
-      "how": "Used to extract physical dimension from each constructor arg for same-dimension validation. Returns DIMENSIONLESS for Real/Int, actual dimension for Scalar."
+      "what": "Pragma AST types (Pragma, PragmaArg, PragmaValue)",
+      "where": "crates/reify-syntax/src/lib.rs lines 551-578",
+      "how": "Already defined and used by all block-scope containers and ParsedModule. Downstream crates (reify-compiler boundary tests) already construct these types with pragmas: vec![]."
     },
     {
-      "what": "Value::as_f64() method",
-      "where": "crates/reify-types/src/value.rs:112",
-      "how": "Used to validate that constructor args are numeric (Int, Real, or Scalar). Returns None for non-numeric types."
+      "what": "lower_pragma/lower_pragma_arg/lower_pragma_value functions",
+      "where": "crates/reify-syntax/src/ts_parser.rs lines 778-847",
+      "how": "Shared lowering functions called from module-level (lower_source_file line 196) and all block-level collection functions. The same lower_pragma() is reused across 5 different collection contexts."
     },
     {
-      "what": "DimensionVector constants (LENGTH, MASS, DIMENSIONLESS, etc.)",
-      "where": "crates/reify-types/src/dimension.rs",
-      "how": "Used in tests to construct Scalar values with specific dimensions and validate dimension matching."
+      "what": "Tree-sitter grammar pragma rule and subrules",
+      "where": "tree-sitter-reify/grammar.js lines 748-769",
+      "how": "Pragma rule is referenced by 5 parent rules: _declaration (module), _member (structure/occurrence), trait_member, purpose_member, _constraint_def_body_item. The grammar's commaSep() helper handles comma-separated pragma_arg lists."
     },
     {
-      "what": "eval_builtin match statement pattern",
-      "where": "crates/reify-stdlib/src/lib.rs:7-631",
-      "how": "New match arms follow the existing pattern: match on function name string, validate args, return Value or Value::Undef."
-    },
-    {
-      "what": "assert_scalar_approx macro and test conventions",
-      "where": "crates/reify-stdlib/src/lib.rs:860-877",
-      "how": "Tests follow the same pattern: call eval_builtin with name and args, match on result variant, assert values."
-    },
-    {
-      "what": "Existing Value trait impl patterns (content_hash, PartialEq, Ord, Display)",
-      "where": "crates/reify-types/src/value.rs:130-565",
-      "how": "New Value::Point/Vector arms follow the exact same patterns as Value::Tensor (tag-prefixed hash, same-variant equality, type_tag ordering, bracket-delimited display) with distinct tag bytes."
-    },
-    {
-      "what": "tensor_components_f64 helper",
-      "where": "crates/reify-stdlib/src/lib.rs:830-847",
-      "how": "Extended to also extract from Value::Point/Vector using or-pattern matching, so all existing vector math operations work on points/vectors without further changes."
+      "what": "Existing test helper parse_module() and assertion patterns",
+      "where": "crates/reify-syntax/tests/pragma_tests.rs lines 8-10",
+      "how": "Standard pattern across all 21 test files — wraps reify_syntax::parse() with a test ModulePath. Assertion patterns: errors.is_empty(), pragmas.len(), pattern match on PragmaArg/PragmaValue variants."
     }
   ],
-  "_session_id": "224-d23dd65c",
-  "_created_at": "2026-03-24T22:19:34.015687+00:00",
-  "_schema_version": 1
+  "_session_id": "278-8676abb1",
+  "_created_at": "2026-03-24T22:53:27.879328+00:00"
 }
