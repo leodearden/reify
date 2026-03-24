@@ -25,27 +25,27 @@
       "type": "test",
       "description": "Create crates/reify-expr/tests/option_eval_tests.rs with 2 failing tests: (a) eval_none_produces_option_none — construct a CompiledExprKind::OptionNone expression, evaluate with eval_expr, assert result == Value::Option(None). (b) eval_none_is_not_undef — assert the result of evaluating none is not Value::Undef (verifying Option(None) != Undef at the evaluator level).",
       "status": "done",
-      "commit": null
+      "commit": "7a85c79"
     },
     {
       "id": "step-2",
       "type": "impl",
       "description": "Add OptionNone match arm in eval_expr in crates/reify-expr/src/lib.rs: `CompiledExprKind::OptionNone => Value::Option(None)`. Tests from step-1 pass.",
       "status": "done",
-      "commit": null
+      "commit": "7a85c79"
     },
     {
       "id": "step-3",
       "type": "test",
       "description": "Add 3 failing tests: (a) eval_some_wraps_int — OptionSome(literal(Int(5))) evaluates to Value::Option(Some(Box::new(Value::Int(5)))). (b) eval_some_wraps_bool — OptionSome(literal(Bool(true))) evaluates to Value::Option(Some(Box::new(Value::Bool(true)))). (c) eval_some_wraps_real — OptionSome(literal(Real(3.14))) evaluates to Value::Option(Some(Box::new(Value::Real(3.14)))).",
-      "status": "pending",
+      "status": "done",
       "commit": null
     },
     {
       "id": "step-4",
       "type": "impl",
       "description": "Add OptionSome match arm in eval_expr: `CompiledExprKind::OptionSome(inner) => { let val = eval_expr(inner, ctx); Value::Option(Some(Box::new(val))) }`. IMPORTANT: No Undef short-circuit — wrapping Undef is intentional semantics. Tests from step-3 pass.",
-      "status": "pending",
+      "status": "done",
       "commit": null
     },
     {

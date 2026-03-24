@@ -208,8 +208,10 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
 
         CompiledExprKind::OptionNone => Value::Option(None),
 
-        // OptionSome stub — will be replaced in step-4
-        CompiledExprKind::OptionSome(_inner) => Value::Undef,
+        CompiledExprKind::OptionSome(inner) => {
+            let val = eval_expr(inner, ctx);
+            Value::Option(Some(Box::new(val)))
+        }
 
         CompiledExprKind::Quantifier { kind, variable_id, collection, predicate, .. } => {
             let coll_val = eval_expr(collection, ctx);
