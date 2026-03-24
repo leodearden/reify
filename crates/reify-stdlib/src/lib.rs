@@ -59,6 +59,16 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
             }
         }),
         "pow" => binary_f64(args, |x, y| Value::Real(x.powf(y))),
+        "mod" => binary(args, |a, b| match (a, b) {
+            (Value::Int(x), Value::Int(y)) => {
+                if *y == 0 || (*x == i64::MIN && *y == -1) {
+                    Value::Undef
+                } else {
+                    Value::Int(x % y)
+                }
+            }
+            _ => Value::Undef,
+        }),
 
         // --- Trig functions: accept Angle Scalar or bare Real (radians) ---
         "sin" => unary(args, |v| trig_input(v).map_or(Value::Undef, |r| Value::Real(r.sin()))),
