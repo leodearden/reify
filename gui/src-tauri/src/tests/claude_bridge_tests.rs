@@ -906,8 +906,8 @@ async fn spawn_sidecar_impl_returns_error_for_missing_binary() {
     )
     .await;
 
-    assert!(result.is_err(), "Expected error for missing binary, got Ok");
-    let err = result.unwrap_err();
+    assert!(result.is_err(), "Expected error for missing binary");
+    let err = result.err().expect("Expected Err variant");
     assert!(
         err.contains("Failed to spawn sidecar"),
         "Error should mention 'Failed to spawn sidecar': {}",
