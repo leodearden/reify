@@ -676,6 +676,42 @@ mod tests {
             panic!("expected UserFunctionCall kind");
         }
     }
+
+    // --- method_call_expr and lambda_expr tests (step-9) ---
+
+    #[test]
+    fn method_call_expr_produces_method_call_kind() {
+        let obj = list_expr(vec![literal(Value::Int(1))]);
+        let expr = method_call_expr(obj, "count", vec![], Type::Int);
+        assert_eq!(expr.result_type, Type::Int);
+        if let CompiledExprKind::MethodCall { method, args, .. } = &expr.kind {
+            assert_eq!(method, "count");
+            assert!(args.is_empty());
+        } else {
+            panic!("expected MethodCall kind");
+        }
+    }
+
+    #[test]
+    fn lambda_expr_produces_lambda_with_function_type() {
+        let body = literal(Value::Real(1.0));
+        let expr = lambda_expr(vec![("x", Type::Real)], body);
+        assert_eq!(
+            expr.result_type,
+            Type::Function {
+                params: vec![Type::Real],
+                return_type: Box::new(Type::Real),
+            }
+        );
+        if let CompiledExprKind::Lambda { params, param_ids, .. } = &expr.kind {
+            assert_eq!(params.len(), 1);
+            assert_eq!(params[0].0, "x");
+            assert_eq!(param_ids.len(), 1);
+            assert_eq!(param_ids[0], ValueCellId::new("__lambda", "x"));
+        } else {
+            panic!("expected Lambda kind");
+        }
+    }
 }
 
 /// Builder for `CompiledModule`.
