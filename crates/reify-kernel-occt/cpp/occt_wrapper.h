@@ -40,6 +40,8 @@ std::unique_ptr<OcctShape> fillet_all_edges(const OcctShape& shape, double radiu
 
 std::unique_ptr<OcctShape> translate_shape(const OcctShape& shape, double dx, double dy, double dz);
 std::unique_ptr<OcctShape> rotate_shape(const OcctShape& shape, double ax, double ay, double az, double angle_rad);
+std::unique_ptr<OcctShape> scale_shape(const OcctShape& shape, double factor, double cx, double cy, double cz);
+std::unique_ptr<OcctShape> rotate_around_shape(const OcctShape& shape, double px, double py, double pz, double ax, double ay, double az, double angle_rad);
 
 // --- Mirror / Pattern ---
 
