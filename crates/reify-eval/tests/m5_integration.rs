@@ -580,7 +580,7 @@ trait Sizable {
 
 enum Kind { Small, Medium, Large }
 
-fn scale(x: Real, factor: Real) -> Real { x * factor }
+fn scale(x: Real, factor: Int) -> Real { x * factor }
 
 structure def Widget : Sizable {
     let kind = Kind.Medium

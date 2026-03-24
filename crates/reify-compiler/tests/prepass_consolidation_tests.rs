@@ -50,7 +50,7 @@ fn all_declaration_types_order_independent() {
 
         structure S : Measurable {
             param width : Length = 80mm
-            let v = classify(3.0)
+            let v = classify(3.14)
         }
 
         trait Measurable {
