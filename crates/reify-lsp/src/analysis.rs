@@ -451,4 +451,37 @@ mod tests {
         let v = Value::Option(Some(Box::new(Value::Int(42))));
         assert_eq!(format_value(&v), "some(42)");
     }
+
+    // --- format_value for Complex (step-11) ---
+
+    #[test]
+    fn format_value_complex_positive_im() {
+        let v = Value::Complex {
+            re: 3.0,
+            im: 4.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert_eq!(format_value(&v), "3 + 4i");
+    }
+
+    #[test]
+    fn format_value_complex_negative_im() {
+        // Negative imaginary must display as '3 - 4i', NOT '3 + -4i'.
+        let v = Value::Complex {
+            re: 3.0,
+            im: -4.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert_eq!(format_value(&v), "3 - 4i");
+    }
+
+    #[test]
+    fn format_value_complex_dimensioned() {
+        let v = Value::Complex {
+            re: 3.0,
+            im: 4.0,
+            dimension: DimensionVector::LENGTH,
+        };
+        assert_eq!(format_value(&v), "3 + 4i m");
+    }
 }
