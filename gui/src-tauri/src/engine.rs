@@ -540,6 +540,8 @@ fn format_expr(expr: &reify_types::CompiledExpr) -> String {
             };
             format!("{} {} in {}: {}", keyword, variable, format_expr(collection), format_expr(predicate))
         }
+        CompiledExprKind::OptionSome(inner) => format!("some({})", format_expr(inner)),
+        CompiledExprKind::OptionNone => "none".to_string(),
     }
 }
 

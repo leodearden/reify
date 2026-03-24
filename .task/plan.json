@@ -1,193 +1,114 @@
 {
-  "task_id": "301",
-  "title": "Stdlib: dot, cross, normalize, magnitude linalg builtins",
+  "task_id": "163",
+  "title": "some/none: evaluator",
   "files": [
-    "crates/reify-stdlib/src/lib.rs",
-    "crates/reify-lsp/src/completion.rs"
+    "crates/reify-expr/src/lib.rs",
+    "crates/reify-expr/tests/option_eval_tests.rs"
   ],
   "modules": [
-    "crates/reify-stdlib",
-    "crates/reify-lsp"
+    "crates/reify-expr"
   ],
-  "analysis": "The task adds four linear-algebra builtins to eval_builtin() in reify-stdlib: dot, cross, normalize, magnitude. All operate on Value::Tensor(Vec<Value>) which is the runtime representation of vectors. Each component is either Value::Real, Value::Int, or Value::Scalar{si_value, dimension}. Dimensional tracking uses DimensionVector with mul/div/root operations. The existing pattern uses match arms in eval_builtin() with helper functions (unary, binary, etc.). These four builtins need custom argument validation since they operate on Tensor values (not scalar), so they won't use the existing unary_f64/binary_f64 helpers but will use the unary/binary wrappers for arity checking. The LSP completion list in completion.rs needs the four new function names added to the BUILTIN_FUNCTIONS const array. Key design points: (1) dot requires both args be Tensor of same length, returns scalar with dimension=a.dim*b.dim; (2) cross requires both be Tensor of length 3, returns Tensor(3) with dimension=a.dim*b.dim; (3) normalize computes magnitude then divides each component, returns dimensionless Tensor, zero vector\u2192Undef; (4) magnitude returns sqrt(sum of squares) as Scalar with original dimension. Components may be mixed Int/Real/Scalar \u2014 we extract f64 via as_f64() and track dimensions from Scalar variants. For dimensionless (Int/Real) components, dimension is DIMENSIONLESS throughout. All implementations go in eval_builtin match arms, following the established pattern. Tests follow the existing pattern: call eval_builtin() directly, match on expected Value variant, assert f64 within 1e-12 epsilon.",
-  "prerequisites": [],
+  "analysis": "Task 163 adds evaluation support for `some(expr)` and `none` expression forms in the reify-expr evaluator. Task 162 (dependency, status: done) adds `CompiledExprKind::OptionSome(Box<CompiledExpr>)` and `CompiledExprKind::OptionNone` variants to the enum in reify-types, along with constructor helpers, walk/collect_value_refs/remap_entity arms. This task adds the corresponding match arms in `eval_expr` and comprehensive tests.\n\nThe core semantics:\n- `none` evaluates to `Value::Option(None)`\n- `some(expr)` evaluates the inner expr and wraps: `Value::Option(Some(Box::new(eval(expr))))`\n- Critically, `some(undef)` produces `Value::Option(Some(Box::new(Value::Undef)))` — it does NOT propagate Undef. This preserves the three-way distinction: `Value::Undef` (error/missing), `Value::Option(None)` (intentional absence), `Value::Option(Some(Value::Undef))` (present but value undefined).\n\nThe implementation is small (2-4 lines per variant in eval_expr) but the test suite must verify the subtle Undef-wrapping semantics thoroughly. Tests follow the established pattern in crates/reify-expr/tests/ (lambda_eval_tests.rs, quantifier_eval_tests.rs, etc.).\n\nExisting infrastructure: `Value::Option(Option<Box<Value>>)` already exists with PartialEq, Ord, Display, content_hash. Test helpers `reify_test_support::values::{some_val, none_val, undef}` exist. `CompiledExpr::literal()` and `CompiledExpr::value_ref()` are available for building test expressions. Task 162 should provide `CompiledExpr::option_some()` and/or `CompiledExpr::option_none()` constructors; if not, tests can construct CompiledExpr structs directly.",
+  "prerequisites": [
+    {
+      "id": "pre-1",
+      "description": "Verify task 162 (parser/compiler) has landed: CompiledExprKind::OptionSome and OptionNone variants exist in crates/reify-types/src/expr.rs with walk/collect_value_refs/remap_entity arms and constructor helpers. If constructors are missing, they must be added before tests can be written cleanly.",
+      "status": "blocked",
+      "commit": null,
+      "tests": [],
+      "blocker_note": "Task 162 is marked done in task system but OptionSome/OptionNone variants are absent from codebase (main at 5256c4c and all branches). Escalated as esc-163-25."
+    }
+  ],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing tests for dot() with dimensionless vectors: dot(vec3(1,0,0), vec3(0,1,0))==0 (orthogonal), dot(vec3(1,2,3), vec3(4,5,6))==32 (parallel-ish), dot with mismatched lengths returns Undef, dot of non-Tensor args returns Undef",
+      "description": "Create crates/reify-expr/tests/option_eval_tests.rs with 2 failing tests: (a) eval_none_produces_option_none — construct a CompiledExprKind::OptionNone expression, evaluate with eval_expr, assert result == Value::Option(None). (b) eval_none_is_not_undef — assert the result of evaluating none is not Value::Undef (verifying Option(None) != Undef at the evaluator level).",
       "status": "done",
-      "commit": "f490356"
+      "commit": "7a85c79"
     },
     {
       "id": "step-2",
-      "type": "test",
-      "description": "Write failing tests for dot() with dimensions: dot(vec3(1m,0,0), vec3(1N,0,0)) returns Scalar with si_value=1.0 and dimension=Length*Force, dot of vectors with mismatched component dimensions returns Undef",
+      "type": "impl",
+      "description": "Add OptionNone match arm in eval_expr in crates/reify-expr/src/lib.rs: `CompiledExprKind::OptionNone => Value::Option(None)`. Tests from step-1 pass.",
       "status": "done",
-      "commit": "2e4eee4"
+      "commit": "7a85c79"
     },
     {
       "id": "step-3",
-      "type": "impl",
-      "description": "Implement dot() in eval_builtin: add 'dot' match arm using binary() helper, validate both args are Tensor of same length, extract f64 via as_f64() and dimension via dimension() from each component, check all components within a vector share the same dimension (else Undef), sum products of corresponding components, return Value::Real if both dims are DIMENSIONLESS or Value::Scalar with dim=a_dim.mul(&b_dim) otherwise. Apply sanitize_value to result.",
+      "type": "test",
+      "description": "Add 3 failing tests: (a) eval_some_wraps_int — OptionSome(literal(Int(5))) evaluates to Value::Option(Some(Box::new(Value::Int(5)))). (b) eval_some_wraps_bool — OptionSome(literal(Bool(true))) evaluates to Value::Option(Some(Box::new(Value::Bool(true)))). (c) eval_some_wraps_real — OptionSome(literal(Real(3.14))) evaluates to Value::Option(Some(Box::new(Value::Real(3.14)))).",
       "status": "done",
-      "commit": "8ea70e6"
+      "commit": "0e0037b"
     },
     {
       "id": "step-4",
-      "type": "test",
-      "description": "Write failing tests for cross(): cross(x_hat, y_hat)==z_hat using Real components, anti-commutativity cross(a,b)==-cross(b,a), orthogonality dot(a,cross(a,b))==0, cross on 2-element Tensor returns Undef, cross on non-Tensor returns Undef, cross on length-4 Tensor returns Undef",
+      "type": "impl",
+      "description": "Add OptionSome match arm in eval_expr: `CompiledExprKind::OptionSome(inner) => { let val = eval_expr(inner, ctx); Value::Option(Some(Box::new(val))) }`. IMPORTANT: No Undef short-circuit — wrapping Undef is intentional semantics. Tests from step-3 pass.",
       "status": "done",
-      "commit": "3f03742"
+      "commit": "0e0037b"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing tests for cross() with dimensions: cross of Length vector and Force vector produces Tensor(3) with each component having Length*Force dimension",
+      "description": "Add 3 verification tests for Undef semantics (should pass with step-4 impl): (a) eval_some_undef_produces_option_some_undef — some(literal(Undef)) yields Value::Option(Some(Box::new(Value::Undef))), NOT Value::Undef. (b) eval_some_undef_not_equal_to_none — assert some(undef) != Value::Option(None). (c) eval_some_undef_not_equal_to_bare_undef — assert some(undef) != Value::Undef.",
       "status": "done",
-      "commit": "b2c3df2"
+      "commit": "253633a"
     },
     {
       "id": "step-6",
-      "type": "impl",
-      "description": "Implement cross() in eval_builtin: add 'cross' match arm using binary() helper, validate both args are Tensor of length exactly 3 (else Undef), extract 6 component f64 values and validate dimensions are consistent within each vector, compute cross product (a1*b2-a2*b1, a2*b0-a0*b2, a0*b1-a1*b0), return Tensor(3) with components as Real (dimensionless) or Scalar (with a_dim.mul(&b_dim)). Apply sanitize_value to each component.",
-      "status": "done",
-      "commit": "4fffbc2"
-    },
-    {
-      "id": "step-7",
       "type": "test",
-      "description": "Write failing tests for magnitude(): magnitude(vec3(3,4,0))==5.0 as Real, magnitude(vec3(3mm,4mm,0mm))==0.005 (5mm in SI) as Scalar with LENGTH dimension, magnitude of zero vector returns Real(0.0) or Scalar{0.0}, magnitude of 2D vector works, magnitude of non-Tensor returns Undef, magnitude of empty Tensor returns Undef",
+      "description": "Add 4 verification tests for nesting and value refs (should pass with step-4 impl): (a) eval_some_nested_some — some(some(Int(3))) yields Value::Option(Some(Box::new(Value::Option(Some(Box::new(Value::Int(3))))))). (b) eval_some_wraps_none — some(none) yields Value::Option(Some(Box::new(Value::Option(None)))). (c) eval_some_value_ref — some(value_ref(x)) where x=Int(42) in ValueMap yields Value::Option(Some(Box::new(Value::Int(42)))). (d) eval_some_missing_ref_wraps_undef — some(value_ref(x)) where x is absent from ValueMap yields Value::Option(Some(Box::new(Value::Undef))), not bare Undef.",
       "status": "done",
-      "commit": "f546ac4"
-    },
-    {
-      "id": "step-8",
-      "type": "impl",
-      "description": "Implement magnitude() in eval_builtin: add 'magnitude' match arm using unary() helper, validate arg is Tensor with len>=1, extract f64 via as_f64() from each component, validate consistent dimension across components, compute sqrt(sum of squares), return Value::Real if dimensionless or Value::Scalar with the component dimension. Apply sanitize_value.",
-      "status": "done",
-      "commit": "186ebdd"
-    },
-    {
-      "id": "step-9",
-      "type": "test",
-      "description": "Write failing tests for normalize(): normalize(vec3(3,4,0)) approx equals Tensor([0.6, 0.8, 0.0]) as Real components, normalize(zero_vector) returns Undef, normalize of dimensioned vector (e.g. vec3(3m,4m,0m)) returns dimensionless Real components, normalize of non-Tensor returns Undef, normalize of single-element Tensor returns Tensor([1.0]) or Undef-for-zero",
-      "status": "done",
-      "commit": "13abea6"
-    },
-    {
-      "id": "step-10",
-      "type": "impl",
-      "description": "Implement normalize() in eval_builtin: add 'normalize' match arm using unary() helper, validate arg is Tensor with len>=1, compute magnitude (reuse internal logic from magnitude impl or factor out a helper), if magnitude is 0.0 return Undef, divide each component's f64 by magnitude, return Tensor of Value::Real components (always dimensionless).",
-      "status": "done",
-      "commit": "10d8e7a"
-    },
-    {
-      "id": "step-11",
-      "type": "test",
-      "description": "Write failing test for LSP completions: verify 'dot', 'cross', 'normalize', 'magnitude' are returned by compute_completions as CompletionItemKind::FUNCTION items",
-      "status": "done",
-      "commit": "a97fbd6"
-    },
-    {
-      "id": "step-12",
-      "type": "impl",
-      "description": "Add 'dot', 'cross', 'normalize', 'magnitude' to the BUILTIN_FUNCTIONS const array in crates/reify-lsp/src/completion.rs (line 84-86)",
-      "status": "done",
-      "commit": "597ce0a"
-    },
-    {
-      "id": "step-13",
-      "type": "test",
-      "description": "Write failing tests for normalize() sanitization: (1) normalize(Tensor([NaN, 1.0, 0.0])) returns Undef \u2014 a NaN component causes sum_sq to be NaN, mag to be NaN, mag==0.0 is false, and x/mag produces NaN which must be caught by sanitize_value; (2) normalize(Tensor([Inf, 1.0, 0.0])) returns Undef \u2014 Inf component causes Inf magnitude, division produces NaN/Inf components that must be sanitized; (3) normalize(Tensor([f64::MAX, f64::MAX, 0.0])) returns Undef \u2014 squaring overflows to Inf, magnitude is Inf, division produces NaN that must be sanitized. These tests will FAIL against the current normalize implementation because it does not wrap output components with sanitize_value.",
-      "status": "done",
-      "commit": "0d456c8"
-    },
-    {
-      "id": "step-14",
-      "type": "impl",
-      "description": "Fix normalize() sanitization gap: wrap each output component with sanitize_value in the normalize match arm. Change line 273 from `Value::Tensor(vals.iter().map(|x| Value::Real(x / mag)).collect())` to `Value::Tensor(vals.iter().map(|x| sanitize_value(Value::Real(x / mag))).collect())`. This ensures NaN/Inf from non-finite inputs or overflow is converted to Undef, consistent with cross(), magnitude(), and dot() which all sanitize their outputs. Since sanitize_value returns Undef for NaN/Inf Real values, a Tensor containing any Undef components after sanitization indicates the normalize result is invalid \u2014 but the current Tensor representation allows mixed components, so individual NaN components become Undef within the Tensor. Alternative: add an up-front guard `if vals.iter().any(|x| !x.is_finite()) { return Value::Undef; }` to reject non-finite inputs early and return Undef for the whole result, which is cleaner since a partially-Undef Tensor is not meaningful.",
-      "status": "done",
-      "commit": "df8409e"
+      "commit": "253633a"
     }
   ],
   "design_decisions": [
     {
-      "decision": "All components within a single vector must share the same dimension; mixed dimensions return Undef",
-      "rationale": "A physically meaningful vector like Vector3<Length> has all components in the same dimension. Tensor([Scalar{LENGTH}, Scalar{MASS}, Scalar{TIME}]) is not a valid physical vector. Enforcing this at runtime catches type errors that slipped past the compiler."
+      "decision": "No Undef propagation in OptionSome evaluation",
+      "rationale": "The task description explicitly requires some(undef) to produce Value::Option(Some(Box::new(Value::Undef))), which is distinct from both Value::Option(None) and Value::Undef. This preserves a three-way distinction: error state (Undef), intentional absence (None), and present-but-undefined (Some(Undef)). Unlike BinOp/FunctionCall which short-circuit on Undef, OptionSome must NOT propagate Undef — it wraps whatever the inner expression evaluates to."
     },
     {
-      "decision": "dot() returns Value::Real for dimensionless inputs, Value::Scalar for dimensioned inputs",
-      "rationale": "Follows the existing pattern where dimensionless results use Real (e.g., trig functions return Real) and dimensioned results use Scalar. dot(vec3(1,0,0), vec3(0,1,0)) returns Real(0.0), while dot(vec3(1m,0,0), vec3(1N,0,0)) returns Scalar{si_value:1.0, dimension:Length*Force}."
+      "decision": "New test file option_eval_tests.rs",
+      "rationale": "Following the established pattern: lambda_eval_tests.rs, quantifier_eval_tests.rs, collection_eval_tests.rs each cover a distinct feature area. Option evaluation gets its own file for consistency and clear module boundary."
     },
     {
-      "decision": "normalize() always returns dimensionless Real components, not Scalar{DIMENSIONLESS}",
-      "rationale": "A normalized vector is a pure direction \u2014 dimensionless by definition. Returning Real values rather than Scalar{DIMENSIONLESS} is cleaner and consistent with how trig functions return Real for dimensionless results."
-    },
-    {
-      "decision": "magnitude() preserves the input vector's component dimension directly",
-      "rationale": "sqrt(sum(x_i^2)) has dimension sqrt(D^2) = D. Rather than computing dimension.pow(2) then root(2) through the DimensionVector arithmetic, we preserve the original component dimension since the math is equivalent. This avoids unnecessary rational arithmetic and potential precision issues."
-    },
-    {
-      "decision": "Cross product is restricted to exactly 3-element Tensors",
-      "rationale": "The task specifies 3D only and error for 2D. The standard cross product is only defined in 3D. Any non-3 length returns Undef."
-    },
-    {
-      "decision": "Factor out a tensor_components_f64 helper to extract (Vec<f64>, DimensionVector) from a Tensor",
-      "rationale": "All four builtins need the same extraction logic: validate Tensor, extract f64 from each component, verify dimension consistency. A shared helper avoids code duplication and ensures consistent error handling across dot/cross/magnitude/normalize."
-    },
-    {
-      "decision": "normalize() uses up-front non-finite guard rather than per-component sanitize_value",
-      "rationale": "A partially-Undef Tensor (e.g. Tensor([Undef, Real(0.8), Undef])) is not meaningful for normalize \u2014 the whole result is invalid. An up-front check `if vals.iter().any(|x| !x.is_finite()) { return Value::Undef; }` rejects the entire input cleanly, returning a single Undef. This is more correct than per-component sanitization which would produce a mixed Tensor. The guard also catches the case early before any division arithmetic."
+      "decision": "Rely on task 162 for CompiledExprKind variants and constructor helpers",
+      "rationale": "Task 162 (parser/compiler) adds OptionSome/OptionNone variants to CompiledExprKind. Rust's exhaustive match means walk/collect_value_refs/remap_entity arms must be added at the same time. Constructors are likely added for the compiler's use. If constructors are absent, tests can build CompiledExpr structs directly using the kind enum and ContentHash."
     }
   ],
   "reuse": [
     {
-      "what": "unary() helper function",
-      "where": "crates/reify-stdlib/src/lib.rs line 285",
-      "how": "Use for magnitude() and normalize() which take a single Tensor argument \u2014 validates args.len()==1 and passes by reference"
+      "what": "CompiledExpr::literal() constructor",
+      "where": "crates/reify-types/src/expr.rs:156",
+      "how": "Build inner expressions for some(literal_value) test cases"
     },
     {
-      "what": "binary() helper function",
-      "where": "crates/reify-stdlib/src/lib.rs line 320",
-      "how": "Use for dot() and cross() which take two Tensor arguments \u2014 validates args.len()==2 and passes both by reference"
+      "what": "CompiledExpr::value_ref() constructor",
+      "where": "crates/reify-types/src/expr.rs:166",
+      "how": "Build inner expressions for some(value_ref) test cases with ValueMap"
     },
     {
-      "what": "sanitize_value() function",
-      "where": "crates/reify-stdlib/src/lib.rs line 298",
-      "how": "Apply to magnitude/dot results to convert NaN/Inf to Undef (e.g., if component values overflow during squaring)"
+      "what": "reify_test_support::values::{some_val, none_val, undef}",
+      "where": "crates/reify-test-support/src/values.rs:199-211",
+      "how": "Construct expected Value::Option values in test assertions — saves verbose Box::new wrapping"
     },
     {
-      "what": "Value::as_f64() method",
-      "where": "crates/reify-types/src/value.rs line 81",
-      "how": "Extract numeric value from Int/Real/Scalar components for arithmetic in all four builtins"
+      "what": "EvalContext::simple(&ValueMap) pattern",
+      "where": "Used throughout crates/reify-expr/tests/ (lambda_eval_tests.rs:45, quantifier_eval_tests.rs)",
+      "how": "Standard way to create eval context for tests with no user-defined functions"
     },
     {
-      "what": "Value::dimension() method",
-      "where": "crates/reify-types/src/value.rs line 91",
-      "how": "Get dimension of each tensor component \u2014 returns DIMENSIONLESS for Int/Real, actual dimension for Scalar"
+      "what": "Value::Option(Option<Box<Value>>) variant",
+      "where": "crates/reify-types/src/value.rs",
+      "how": "Already exists with PartialEq, Ord, Display, content_hash — no changes needed to Value enum"
     },
     {
-      "what": "DimensionVector::mul() method",
-      "where": "crates/reify-types/src/dimension.rs line 147",
-      "how": "Combine dimensions in dot() and cross(): result_dim = a_dim.mul(&b_dim)"
-    },
-    {
-      "what": "DimensionVector::DIMENSIONLESS constant",
-      "where": "crates/reify-types/src/dimension.rs line 118",
-      "how": "Check if vectors are dimensionless and as the comparison target for normalize output"
-    },
-    {
-      "what": "FORCE dimension constant",
-      "where": "crates/reify-types/src/dimension.rs line 204",
-      "how": "Use in tests for dot/cross(Length_vector, Force_vector) to verify result dimension is Length*Force"
-    },
-    {
-      "what": "Existing test patterns (match result, assert f64 within epsilon)",
-      "where": "crates/reify-stdlib/src/lib.rs tests module (line 396+)",
-      "how": "Follow the same pattern: call eval_builtin(), match on expected variant, assert with (v - expected).abs() < 1e-12"
+      "what": "Test file structure from lambda_eval_tests.rs",
+      "where": "crates/reify-expr/tests/lambda_eval_tests.rs",
+      "how": "Same imports (reify_expr::{eval_expr, EvalContext}, reify_types::{CompiledExpr, Type, Value, ValueCellId, ValueMap}), helper structure, and assertion patterns"
     }
   ],
-  "_session_id": "301-4bedc068",
-  "_created_at": "2026-03-24T10:59:50.575498+00:00"
+  "_session_id": "163-6300ffc2",
+  "_created_at": "2026-03-24T10:47:53.407410+00:00"
 }

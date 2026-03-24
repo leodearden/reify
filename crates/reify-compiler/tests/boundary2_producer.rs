@@ -128,6 +128,10 @@ fn assert_no_unresolved(expr: &reify_types::CompiledExpr) {
             assert_no_unresolved(collection);
             assert_no_unresolved(predicate);
         }
+        CompiledExprKind::OptionSome(inner) => {
+            assert_no_unresolved(inner);
+        }
+        CompiledExprKind::OptionNone => {}
     }
 }
 

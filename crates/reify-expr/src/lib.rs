@@ -206,6 +206,13 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             eval_method_call(&obj, method, &evaluated_args, &expr.result_type, ctx)
         }
 
+        CompiledExprKind::OptionNone => Value::Option(None),
+
+        CompiledExprKind::OptionSome(inner) => {
+            let val = eval_expr(inner, ctx);
+            Value::Option(Some(Box::new(val)))
+        }
+
         CompiledExprKind::Quantifier { kind, variable_id, collection, predicate, .. } => {
             let coll_val = eval_expr(collection, ctx);
             if coll_val.is_undef() {
