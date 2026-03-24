@@ -778,7 +778,8 @@ fn eval_add(lv: &Value, rv: &Value) -> Value {
         // Point + Point is guarded at BinOp level (returns Undef via Type check), but
         // if called directly here we follow "left operand determines type" → Point.
         (Value::Vector(a), Value::Vector(b)) => componentwise_op(a, b, eval_add, Value::Vector),
-        (Value::Point(a), Value::Point(b)) => componentwise_op(a, b, eval_add, Value::Point),
+        // Point + Point is geometrically undefined (spec 3.3.1).
+        (Value::Point(_), Value::Point(_)) => Value::Undef,
         (Value::Point(a), Value::Vector(b)) => componentwise_op(a, b, eval_add, Value::Point),
         (Value::Vector(a), Value::Point(b)) => componentwise_op(a, b, eval_add, Value::Point),
         _ => Value::Undef,

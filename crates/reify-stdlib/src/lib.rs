@@ -261,6 +261,12 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
         // --- Linear algebra: dot, cross, magnitude, normalize ---
 
         "normalize" => unary(args, |v| {
+            // Determine the output wrapper based on input variant.
+            let wrap: fn(Vec<Value>) -> Value = match v {
+                Value::Vector(_) => Value::Vector,
+                Value::Point(_) => Value::Point,
+                _ => Value::Tensor,
+            };
             let (vals, _dim) = match tensor_components_f64(v) {
                 Some(c) => c,
                 None => return Value::Undef,
@@ -277,7 +283,7 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
             if !mag.is_finite() || mag == 0.0 {
                 return Value::Undef;
             }
-            Value::Tensor(vals.iter().map(|x| Value::Real(x / mag)).collect())
+            wrap(vals.iter().map(|x| Value::Real(x / mag)).collect())
         }),
 
         "magnitude" => unary(args, |v| {
@@ -299,6 +305,13 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
         }),
 
         "cross" => binary(args, |a, b| {
+            // Cross product of two vectors → vector; point inputs are
+            // semantically invalid (cross is only defined for vectors).
+            let wrap: fn(Vec<Value>) -> Value = match (a, b) {
+                (Value::Point(_), _) | (_, Value::Point(_)) => return Value::Undef,
+                (Value::Vector(_), Value::Vector(_)) => Value::Vector,
+                _ => Value::Tensor,
+            };
             let (a_vals, a_dim) = match tensor_components_f64(a) {
                 Some(v) => v,
                 None => return Value::Undef,
@@ -323,7 +336,7 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
                     sanitize_value(Value::Scalar { si_value: v, dimension: result_dim })
                 }
             };
-            Value::Tensor(vec![make_component(cx), make_component(cy), make_component(cz)])
+            wrap(vec![make_component(cx), make_component(cy), make_component(cz)])
         }),
 
         "dot" => binary(args, |a, b| {
