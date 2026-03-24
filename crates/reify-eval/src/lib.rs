@@ -363,7 +363,26 @@ impl Engine {
             injected_ids.push(constraint_id);
         }
 
+        // Update demand registry: demand each newly injected constraint node.
+        for id in &injected_ids {
+            self.demand.add_demand(NodeId::Constraint(id.clone()));
+        }
+
         self.active_purposes.insert(purpose_name.to_string(), injected_ids);
+
+        // Rebuild infrastructure so incremental eval (edit_param) propagates
+        // through purpose constraint dependencies correctly.
+        //
+        // We reborrow eval_state mutably here — the immutable borrow (`state`)
+        // created earlier was already released after inserting into the graph.
+        if let Some(state) = self.eval_state.as_mut() {
+            state.reverse_index =
+                ReverseDependencyIndex::build_from_graph(&state.snapshot.graph);
+            state.trace_map = crate::deps::build_trace_map(&state.snapshot.graph);
+        }
+        if let Some(state) = self.eval_state.as_ref() {
+            self.demand.rebuild_cone(&state.snapshot.graph);
+        }
 
         // Inject the optimization objective if the purpose has one
         if let Some(ref objective) = rewritten_objective {
