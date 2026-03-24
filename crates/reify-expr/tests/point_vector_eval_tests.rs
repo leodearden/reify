@@ -1,7 +1,71 @@
-//! Point/Vector component access evaluation tests (.x, .y, .z).
+//! Point/Vector component access and arithmetic evaluation tests.
 
 use reify_expr::{eval_expr, EvalContext};
-use reify_types::{CompiledExpr, Type, Value, ValueCellId, ValueMap};
+use reify_types::{BinOp, CompiledExpr, Type, UnOp, Value, ValueCellId, ValueMap};
+
+// --- Construction ---
+
+/// Construction of Point3<Length> as Value::Tensor with 3 length components.
+#[test]
+fn construct_point3_length_tensor() {
+    let expr = CompiledExpr::literal(
+        Value::Tensor(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]),
+        Type::point3(Type::length()),
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Tensor(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)])
+    );
+}
+
+/// Construction of Vector3<Length> as Value::Tensor with 3 length components.
+#[test]
+fn construct_vector3_length_tensor() {
+    let expr = CompiledExpr::literal(
+        Value::Tensor(vec![
+            Value::length(4.0),
+            Value::length(5.0),
+            Value::length(6.0),
+        ]),
+        Type::vec3(Type::length()),
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Tensor(vec![Value::length(4.0), Value::length(5.0), Value::length(6.0)])
+    );
+}
+
+/// Construction of Point2<Length> as Value::Tensor with 2 length components.
+#[test]
+fn construct_point2_length_tensor() {
+    let expr = CompiledExpr::literal(
+        Value::Tensor(vec![Value::length(7.0), Value::length(8.0)]),
+        Type::point2(Type::length()),
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::Tensor(vec![Value::length(7.0), Value::length(8.0)]));
+}
+
+/// Construction of Vector2<Dimensionless> as Value::Tensor with 2 Real components.
+#[test]
+fn construct_vector2_dimensionless_tensor() {
+    let expr = CompiledExpr::literal(
+        Value::Tensor(vec![Value::Real(1.0), Value::Real(2.0)]),
+        Type::vec2(Type::dimensionless_scalar()),
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::Tensor(vec![Value::Real(1.0), Value::Real(2.0)]));
+}
 
 // ─── step-1: Basic .x / .y / .z on Point3<Scalar[m]> ───
 
