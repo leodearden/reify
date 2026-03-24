@@ -229,3 +229,47 @@ structure Sensor {
         module.fields.len()
     );
 }
+
+// ── step-9: cross-type collision: constraint + structure same name ─────────
+
+/// A constraint def followed by a structure with the same name produces a
+/// 'duplicate entity definition' error. Constraints reserve names in the
+/// entity namespace even though constraint compilation is not yet implemented.
+#[test]
+fn constraint_and_structure_same_name_produce_error() {
+    let source = r#"
+constraint def Shape { x > 0 }
+
+structure Shape {
+    param side : Real = 1.0
+}
+"#;
+    let module = compile_module(source);
+    let errors = errors_only(&module);
+
+    let dup_errors: Vec<_> = errors
+        .iter()
+        .filter(|d| d.message.contains("duplicate entity definition") && d.message.contains("Shape"))
+        .collect();
+    assert_eq!(
+        dup_errors.len(),
+        1,
+        "expected exactly 1 duplicate-entity error for 'Shape', got errors: {:?}",
+        errors
+    );
+
+    assert_eq!(
+        dup_errors[0].labels.len(),
+        2,
+        "expected 2 labels (duplicate + first), got {:?}",
+        dup_errors[0].labels
+    );
+
+    // The structure 'Shape' is a duplicate — should not be compiled
+    assert_eq!(
+        module.templates.len(),
+        0,
+        "expected 0 compiled templates (structure 'Shape' is a duplicate of constraint 'Shape'), got {}",
+        module.templates.len()
+    );
+}
