@@ -74,6 +74,115 @@ fn parse_annotation_with_identifier_arg() {
     }
 }
 
+// ── Step 11/12: multiple annotations on one declaration ──────────────────────
+
+#[test]
+fn parse_multiple_annotations_on_structure() {
+    let source = "@test\n@deprecated(\"old\")\nstructure S {}";
+    let module = parse_module(source);
+    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+
+    let s = match &module.declarations[0] {
+        Declaration::Structure(s) => s,
+        other => panic!("expected Structure, got {:?}", other),
+    };
+
+    assert_eq!(
+        s.annotations.len(),
+        2,
+        "expected 2 annotations, got {:?}",
+        s.annotations
+    );
+    // First annotation: @test with no args
+    assert_eq!(s.annotations[0].name, "test");
+    assert!(
+        s.annotations[0].args.is_empty(),
+        "expected no args for @test"
+    );
+    // Second annotation: @deprecated("old")
+    assert_eq!(s.annotations[1].name, "deprecated");
+    assert_eq!(s.annotations[1].args.len(), 1, "expected 1 arg for @deprecated");
+    match &s.annotations[1].args[0].kind {
+        ExprKind::StringLiteral(s) => assert_eq!(s, "old"),
+        other => panic!("expected StringLiteral(\"old\"), got {:?}", other),
+    }
+}
+
+// ── Step 9/10: annotation with multiple args ─────────────────────────────────
+
+#[test]
+fn parse_annotation_with_multiple_args() {
+    let source = r#"@config("prod", 3, true) structure S {}"#;
+    let module = parse_module(source);
+    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+
+    let s = match &module.declarations[0] {
+        Declaration::Structure(s) => s,
+        other => panic!("expected Structure, got {:?}", other),
+    };
+
+    assert_eq!(s.annotations.len(), 1, "expected 1 annotation");
+    assert_eq!(s.annotations[0].name, "config");
+    assert_eq!(
+        s.annotations[0].args.len(),
+        3,
+        "expected 3 args, got {:?}",
+        s.annotations[0].args
+    );
+
+    // First arg: StringLiteral("prod")
+    match &s.annotations[0].args[0].kind {
+        ExprKind::StringLiteral(s) => assert_eq!(s, "prod"),
+        other => panic!("expected StringLiteral(\"prod\"), got {:?}", other),
+    }
+    // Second arg: NumberLiteral(3.0)
+    match &s.annotations[0].args[1].kind {
+        ExprKind::NumberLiteral(n) => assert!((*n - 3.0).abs() < 1e-10, "expected 3.0, got {n}"),
+        other => panic!("expected NumberLiteral(3.0), got {:?}", other),
+    }
+    // Third arg: BoolLiteral(true)
+    match &s.annotations[0].args[2].kind {
+        ExprKind::BoolLiteral(b) => assert!(*b, "expected true"),
+        other => panic!("expected BoolLiteral(true), got {:?}", other),
+    }
+}
+
+// ── Step 7/8: annotation with complex expression arg ─────────────────────────
+
+#[test]
+fn parse_annotation_with_complex_expression_arg() {
+    let source = "@tolerance(width * 0.01) structure S { param width: Real }";
+    let module = parse_module(source);
+    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+
+    let s = match &module.declarations[0] {
+        Declaration::Structure(s) => s,
+        other => panic!("expected Structure, got {:?}", other),
+    };
+
+    assert_eq!(s.annotations.len(), 1, "expected 1 annotation");
+    assert_eq!(s.annotations[0].name, "tolerance");
+    assert_eq!(s.annotations[0].args.len(), 1, "expected 1 arg");
+
+    match &s.annotations[0].args[0].kind {
+        ExprKind::BinOp { op, left, right } => {
+            assert_eq!(op, "*");
+            match &left.kind {
+                ExprKind::Ident(name) => assert_eq!(name, "width"),
+                other => panic!("expected Ident(\"width\"), got {:?}", other),
+            }
+            match &right.kind {
+                ExprKind::NumberLiteral(n) => assert!(
+                    (*n - 0.01).abs() < 1e-10,
+                    "expected 0.01, got {n}"
+                ),
+                other => panic!("expected NumberLiteral(0.01), got {:?}", other),
+            }
+        }
+        other => panic!("expected BinOp(*), got {:?}", other),
+    }
+}
+
 // ── Step 3/4: annotation with string literal arg ──────────────────────────────
 
 #[test]
@@ -104,4 +213,142 @@ fn parse_annotation_with_string_arg() {
         ExprKind::StringLiteral(s) => assert_eq!(s, "use NewS"),
         other => panic!("expected StringLiteral(\"use NewS\"), got {:?}", other),
     }
+}
+
+// ── Step 13/14: annotation on each remaining declaration type ─────────────────
+
+#[test]
+fn parse_annotation_on_function() {
+    let source = "@pure fn area(w: Real, h: Real) -> Real { w * h }";
+    let module = parse_module(source);
+    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+
+    let f = match &module.declarations[0] {
+        Declaration::Function(f) => f,
+        other => panic!("expected Function, got {:?}", other),
+    };
+    assert_eq!(f.annotations.len(), 1, "expected 1 annotation");
+    assert_eq!(f.annotations[0].name, "pure");
+    assert!(f.annotations[0].args.is_empty());
+}
+
+#[test]
+fn parse_annotation_on_trait() {
+    let source = "@marker trait Rigid { param mass: Mass }";
+    let module = parse_module(source);
+    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+
+    let t = match &module.declarations[0] {
+        Declaration::Trait(t) => t,
+        other => panic!("expected Trait, got {:?}", other),
+    };
+    assert_eq!(t.annotations.len(), 1, "expected 1 annotation");
+    assert_eq!(t.annotations[0].name, "marker");
+    assert!(t.annotations[0].args.is_empty());
+}
+
+#[test]
+fn parse_annotation_on_enum() {
+    let source = "@flags enum Dir { In, Out }";
+    let module = parse_module(source);
+    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+
+    let e = match &module.declarations[0] {
+        Declaration::Enum(e) => e,
+        other => panic!("expected Enum, got {:?}", other),
+    };
+    assert_eq!(e.annotations.len(), 1, "expected 1 annotation");
+    assert_eq!(e.annotations[0].name, "flags");
+    assert!(e.annotations[0].args.is_empty());
+}
+
+#[test]
+fn parse_annotation_on_import() {
+    let source = "@reexport import std.math";
+    let module = parse_module(source);
+    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+
+    let i = match &module.declarations[0] {
+        Declaration::Import(i) => i,
+        other => panic!("expected Import, got {:?}", other),
+    };
+    assert_eq!(i.annotations.len(), 1, "expected 1 annotation");
+    assert_eq!(i.annotations[0].name, "reexport");
+    assert!(i.annotations[0].args.is_empty());
+}
+
+#[test]
+fn parse_annotation_on_field_def() {
+    let source = "@cached field def temp : Point3 -> Scalar { source = analytical { |p| p } }";
+    let module = parse_module(source);
+    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+
+    let f = match &module.declarations[0] {
+        Declaration::Field(f) => f,
+        other => panic!("expected Field, got {:?}", other),
+    };
+    assert_eq!(f.annotations.len(), 1, "expected 1 annotation");
+    assert_eq!(f.annotations[0].name, "cached");
+    assert!(f.annotations[0].args.is_empty());
+}
+
+#[test]
+fn parse_annotation_on_purpose() {
+    let source =
+        "@strict purpose mfg_ready(subject: Structure) { constraint subject.params == subject.params }";
+    let module = parse_module(source);
+    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+
+    let p = match &module.declarations[0] {
+        Declaration::Purpose(p) => p,
+        other => panic!("expected Purpose, got {:?}", other),
+    };
+    assert_eq!(p.annotations.len(), 1, "expected 1 annotation");
+    assert_eq!(p.annotations[0].name, "strict");
+    assert!(p.annotations[0].args.is_empty());
+}
+
+#[test]
+fn parse_annotation_on_constraint_def() {
+    let source = "@builtin constraint def MinWall { x > 0 }";
+    let module = parse_module(source);
+    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+
+    let c = match &module.declarations[0] {
+        Declaration::Constraint(c) => c,
+        other => panic!("expected Constraint, got {:?}", other),
+    };
+    assert_eq!(c.annotations.len(), 1, "expected 1 annotation");
+    assert_eq!(c.annotations[0].name, "builtin");
+    assert!(c.annotations[0].args.is_empty());
+}
+
+#[test]
+fn parse_annotation_on_unit() {
+    let source = "@si unit meter : Length";
+    let module = parse_module(source);
+    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+
+    let u = match &module.declarations[0] {
+        Declaration::Unit(u) => u,
+        other => panic!("expected Unit, got {:?}", other),
+    };
+    assert_eq!(u.annotations.len(), 1, "expected 1 annotation");
+    assert_eq!(u.annotations[0].name, "si");
+    assert!(u.annotations[0].args.is_empty());
+}
+
+#[test]
+fn parse_annotation_on_occurrence() {
+    let source = "@async occurrence def Heat { param rate: Real }";
+    let module = parse_module(source);
+    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+
+    let o = match &module.declarations[0] {
+        Declaration::Occurrence(o) => o,
+        other => panic!("expected Occurrence, got {:?}", other),
+    };
+    assert_eq!(o.annotations.len(), 1, "expected 1 annotation");
+    assert_eq!(o.annotations[0].name, "async");
+    assert!(o.annotations[0].args.is_empty());
 }

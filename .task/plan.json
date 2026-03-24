@@ -87,57 +87,57 @@
       "id": "step-7",
       "type": "test",
       "description": "Write test: annotation with complex expression arg (`@tolerance(width * 0.01) structure S { param width: Real }`). Assert annotation arg is ExprKind::BinOp with op='*', left=Ident(\"width\"), right=NumberLiteral(0.01).",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "PENDING"
     },
     {
       "id": "step-8",
       "type": "impl",
       "description": "Verify complex expression parsing works in annotation context. Should work from step-4 since we use the general `lower_expr()`. Fix if needed.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "PENDING"
     },
     {
       "id": "step-9",
       "type": "test",
       "description": "Write test: annotation with multiple args (`@config(\"prod\", 3, true) structure S {}`). Assert annotation has 3 args: StringLiteral(\"prod\"), NumberLiteral(3.0), BoolLiteral(true).",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "PENDING"
     },
     {
       "id": "step-10",
       "type": "impl",
       "description": "Verify multiple args work \u2014 commaSep in grammar produces multiple expression children. Fix collection logic if it doesn't iterate all expression children correctly.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "PENDING"
     },
     {
       "id": "step-11",
       "type": "test",
       "description": "Write test: multiple annotations on one declaration (`@test\\n@deprecated(\"old\")\\nstructure S {}`). Assert declaration has 2 annotations: first with name='test' and no args, second with name='deprecated' and 1 string arg.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "PENDING"
     },
     {
       "id": "step-12",
       "type": "impl",
       "description": "Verify multiple pending annotations accumulate and all attach to the next declaration. The `std::mem::take(&mut pending_annotations)` pattern moves all accumulated annotations at once.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "PENDING"
     },
     {
       "id": "step-13",
       "type": "test",
       "description": "Write tests: annotation on each remaining declaration type \u2014 fn (`@pure fn area(w: Real, h: Real) -> Real { w * h }`), trait (`@marker trait Rigid { param mass: Real }`), enum (`@flags enum Dir { In, Out }`), import (`@reexport import std.math`), field def (`@cached field def temp : Point3 -> Real { source = analytical { |p| p } }`), purpose (`@strict purpose mfg_ready(s: Structure) { constraint s > 0 }`), constraint def (`@builtin constraint def MinWall { param w: Real  w > 0 }`), unit (`@si unit meter : Length`), occurrence (`@async occurrence Heat {}`).",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "PENDING"
     },
     {
       "id": "step-14",
       "type": "impl",
       "description": "Ensure all 10 declaration branches in `lower_source_file()` drain pending_annotations into the declaration's annotations field. Add the drain pattern to any branches that were missed in step-2.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "PENDING"
     },
     {
       "id": "step-15",
