@@ -4,6 +4,43 @@
 //! messages with candidate listing, arity disambiguation, and evaluator
 //! disambiguation of same-name/same-arity/different-type overloads.
 
+/// step-3: Define only fn f(x: Real)->Real, call f(3) where 3 is Int.
+/// Assert produces a "no matching overload" error that lists the candidate.
+/// Verifies: Int→Real widening is NOT used during resolution, and zero-match
+/// errors list the available candidates with full signatures.
+#[test]
+fn no_match_error_lists_candidates_when_int_arg_misses_real_param() {
+    let source = r#"
+fn f(x: Real) -> Real { x }
+structure S { let v = f(3) }
+"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_no_match"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    // Should produce exactly one error
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_types::Severity::Error)
+        .collect();
+    assert_eq!(errors.len(), 1, "expected exactly 1 error, got: {:?}", errors);
+
+    let msg = &errors[0].message;
+    assert!(
+        msg.contains("no matching overload"),
+        "error should say 'no matching overload', got: {:?}",
+        msg
+    );
+    // Candidate should be listed with full signature
+    assert!(
+        msg.contains("f(Real) -> Real"),
+        "error should list candidate 'f(Real) -> Real', got: {:?}",
+        msg
+    );
+}
+
 /// step-1: Define fn f(x: Int)->Int and fn f(x: Real)->Real, call f(3)
 /// where 3 is Int. Assert resolves to UserFunctionCall with return type Int.
 ///

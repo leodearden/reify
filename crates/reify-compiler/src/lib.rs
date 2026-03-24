@@ -543,6 +543,10 @@ fn convert_type_params(decls: &[reify_syntax::TypeParamDecl]) -> Vec<reify_types
 
 /// Check if an argument type is compatible with a parameter type.
 /// Exact match always works. Int→Real widening is allowed.
+///
+/// Not used in overload resolution (which uses exact matching), but preserved
+/// for potential use in other type-compatibility checks.
+#[allow(dead_code)]
 fn type_compatible(param_ty: &Type, arg_ty: &Type) -> bool {
     if param_ty == arg_ty {
         return true;
