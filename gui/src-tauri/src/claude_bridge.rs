@@ -152,12 +152,13 @@ type SharedStdin = Arc<Mutex<Box<dyn AsyncWrite + Unpin + Send>>>;
 
 /// Handle to a running sidecar process.
 ///
-/// Uses `tokio::sync::Mutex` because operations (send, abort) are async
-/// and the lock must be held across await points.
+/// State uses `std::sync::Mutex` (not tokio) because state transitions
+/// are instantaneous assignments — no await points inside the lock.
+/// `stdin` uses `tokio::sync::Mutex` because writes span await points.
 pub struct SidecarHandle {
     stdin: SharedStdin,
     reader_handle: JoinHandle<()>,
-    state: Arc<Mutex<SidecarState>>,
+    state: Arc<std::sync::Mutex<SidecarState>>,
     /// Notified when the sidecar sends the "ready" message.
     ready_notify: Arc<Notify>,
     /// The OS child process, if started via `set_child`.
@@ -168,7 +169,7 @@ impl SidecarHandle {
     /// Construct a SidecarHandle from pre-existing I/O parts.
     /// The reader task handles Ready state transitions and crash detection.
     /// Use [`from_parts_with_mcp`] to also wire up event emission and MCP interception.
-    pub fn from_parts<W, R>(writer: W, reader: R, state: Arc<Mutex<SidecarState>>) -> Self
+    pub fn from_parts<W, R>(writer: W, reader: R, state: Arc<std::sync::Mutex<SidecarState>>) -> Self
     where
         W: AsyncWrite + Unpin + Send + 'static,
         R: AsyncBufRead + Unpin + Send + 'static,
@@ -187,7 +188,7 @@ impl SidecarHandle {
     pub fn from_parts_with_mcp<W, R, F>(
         writer: W,
         reader: R,
-        state: Arc<Mutex<SidecarState>>,
+        state: Arc<std::sync::Mutex<SidecarState>>,
         engine: Arc<std::sync::Mutex<crate::engine::EngineSession>>,
         event_sink: F,
     ) -> Self
@@ -204,7 +205,7 @@ impl SidecarHandle {
     fn new_inner<R, F>(
         stdin: SharedStdin,
         reader: R,
-        state: Arc<Mutex<SidecarState>>,
+        state: Arc<std::sync::Mutex<SidecarState>>,
         mcp_config: Option<(Arc<std::sync::Mutex<crate::engine::EngineSession>>, F)>,
     ) -> Self
     where
@@ -224,12 +225,8 @@ impl SidecarHandle {
                 move |msg| {
                     // 1. State transition: Ready message
                     if let OutboundMessage::Ready = &msg {
-                        let state_inner = Arc::clone(&state_for_ready);
-                        let notify_inner = Arc::clone(&notify_for_reader);
-                        tokio::spawn(async move {
-                            *state_inner.lock().await = SidecarState::Ready;
-                            notify_inner.notify_waiters();
-                        });
+                        *state_for_ready.lock().unwrap() = SidecarState::Ready;
+                        notify_for_reader.notify_waiters();
                     }
 
                     // 2. Event emission and MCP interception
@@ -271,15 +268,13 @@ impl SidecarHandle {
                     // on_exit: set state to Crashed unless we're already NotStarted (killed).
                     // Also notify waiters so anyone blocked in wait_ready wakes immediately
                     // instead of hanging for the full timeout.
-                    let state_inner = state_for_crash;
-                    let notify_inner = notify_for_crash;
-                    tokio::spawn(async move {
-                        let mut s = state_inner.lock().await;
+                    {
+                        let mut s = state_for_crash.lock().unwrap();
                         if !matches!(*s, SidecarState::NotStarted) {
                             *s = SidecarState::Crashed("sidecar exited unexpectedly".to_string());
                         }
-                        notify_inner.notify_waiters();
-                    });
+                    } // guard dropped before notify_waiters
+                    notify_for_crash.notify_waiters();
                 },
             )
             .await;
@@ -289,7 +284,7 @@ impl SidecarHandle {
     }
 
     /// Get a reference to the state mutex.
-    pub fn state(&self) -> &Arc<Mutex<SidecarState>> {
+    pub fn state(&self) -> &Arc<std::sync::Mutex<SidecarState>> {
         &self.state
     }
 
@@ -305,7 +300,7 @@ impl SidecarHandle {
     /// Slow path: awaits `ready_notify` with the given timeout.
     pub async fn wait_ready(&self, timeout: Duration) -> Result<(), String> {
         // Fast path: already Ready
-        if matches!(*self.state.lock().await, SidecarState::Ready) {
+        if matches!(*self.state.lock().unwrap(), SidecarState::Ready) {
             return Ok(());
         }
 
@@ -314,7 +309,7 @@ impl SidecarHandle {
         let notified = self.ready_notify.notified();
         // Re-check under the subscription to avoid missing a notification that
         // arrived between the fast-path check and the subscribe.
-        if matches!(*self.state.lock().await, SidecarState::Ready) {
+        if matches!(*self.state.lock().unwrap(), SidecarState::Ready) {
             return Ok(());
         }
 
@@ -323,7 +318,7 @@ impl SidecarHandle {
             .map_err(|_| format!("Timeout waiting for sidecar ready after {}ms", timeout.as_millis()))?;
 
         // Re-check state: notification may have been triggered by a crash, not Ready.
-        let state = self.state.lock().await;
+        let state = self.state.lock().unwrap();
         match &*state {
             SidecarState::Ready => Ok(()),
             SidecarState::Crashed(msg) => Err(format!("sidecar crashed: {}", msg)),
@@ -355,7 +350,7 @@ impl SidecarHandle {
         // 2. Abort the reader task.
         self.reader_handle.abort();
         // 3. Mark as not started.
-        *self.state.lock().await = SidecarState::NotStarted;
+        *self.state.lock().unwrap() = SidecarState::NotStarted;
     }
 
     /// Send an abort signal to the sidecar (cancels the current message).
@@ -405,7 +400,7 @@ pub async fn claude_send_message_impl(
     match guard.as_mut() {
         None => Err("sidecar not started".to_string()),
         Some(handle) => {
-            let state = handle.state().lock().await.clone();
+            let state = handle.state().lock().unwrap().clone();
             match state {
                 SidecarState::Ready => handle.send_message(text, context).await,
                 SidecarState::Crashed(msg) => Err(format!("sidecar crashed: {}", msg)),
@@ -479,7 +474,7 @@ where
     };
 
     let reader = BufReader::new(stdout);
-    let sidecar_state = Arc::new(Mutex::new(SidecarState::Starting));
+    let sidecar_state = Arc::new(std::sync::Mutex::new(SidecarState::Starting));
     let mut handle = SidecarHandle::from_parts_with_mcp(stdin, reader, sidecar_state, engine, event_sink);
     handle.set_child(proc);
     Ok(handle)
