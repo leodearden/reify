@@ -1,81 +1,174 @@
 {
-  "task_id": "2",
-  "title": "Extract complex_abs helper to deduplicate magnitude/complex_magnitude",
+  "task_id": "168",
+  "title": "Collection generate: implementation",
   "files": [
-    "crates/reify-stdlib/src/lib.rs"
+    "crates/reify-expr/src/lib.rs",
+    "crates/reify-expr/tests/collection_eval_tests.rs"
   ],
   "modules": [
-    "crates/reify-stdlib"
+    "crates/reify-expr"
   ],
-  "analysis": "The `complex_magnitude` match arm (lines 427-437) duplicates the Complex branch of `magnitude` (lines 285-291) verbatim. Both compute `(re*re + im*im).sqrt()` then branch on `dimension == DimensionVector::DIMENSIONLESS` to return either `sanitize_value(Value::Real(mag))` or `sanitize_value(Value::Scalar { si_value: mag, dimension })`. The fix is to extract a private `#[inline(always)] fn complex_abs(re: f64, im: f64, dimension: DimensionVector) -> Value` helper placed in the private helpers section (after `unary` at line 653, before `normalize_quaternion` at line 655). Both call sites then delegate to `complex_abs`. Additionally, we add a `complex_magnitude_overflow_returns_undef` test following the established pattern from `complex_add_overflow_returns_undef` (line 3309) and `complex_mul_overflow_returns_undef` (line 3297). The new test goes in the `// ── complex_magnitude() tests (step-5)` section before line 3391 (the closing brace). All changes are confined to a single file: `crates/reify-stdlib/src/lib.rs`.",
+  "analysis": "The evaluator already handles `generate` as a MethodCall on List values (crates/reify-expr/src/lib.rs lines 562-580), invoked as `[].generate(n, |i| expr)`. There is one existing test (eval_method_generate_list) covering the basic happy path `[].generate(3, |i| i*2) -> [0, 2, 4]`. However, the task requires `List.generate(n, |i| expr)` as a 'static method / stdlib function', meaning it should be callable WITHOUT a List receiver. The approach: add `generate` as a FunctionCall handler in eval_expr (alongside `sample`, which similarly needs EvalContext for lambda application), and add comprehensive edge-case tests for both the new FunctionCall path and the existing MethodCall path. Note: `generate` CANNOT live in reify-stdlib/eval_builtin because it requires EvalContext for apply_lambda (same reason `sample` is in reify-expr). The compiler (not in scope) will fall through to FunctionCall for unknown function names, so `generate(n, fn)` will compile correctly. The result_type metadata may be wrong (defaults to first arg's type), but evaluation is correct regardless.",
   "prerequisites": [],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write `complex_magnitude_overflow_returns_undef` test in the `// ── complex_magnitude() tests (step-5)` section (before line 3391). Pattern: create `Value::Complex { re: f64::MAX, im: f64::MAX, dimension: DimensionVector::DIMENSIONLESS }`, call `eval_builtin(\"complex_magnitude\", &[z])`, assert `.is_undef()` with message 'complex_magnitude with f64::MAX components must return Undef (Inf overflow)'. This parallels `complex_add_overflow_returns_undef` at line 3309. The test should pass immediately (sanitize_value already catches Inf from f64::MAX²+f64::MAX²→Inf), establishing the behavioral contract before refactoring.",
+      "description": "Write failing test: `generate` as FunctionCall basic case. Construct CompiledExprKind::FunctionCall with ResolvedFunction{name:'generate'}, two args: Int(3) literal and lambda |i| i*2. Verify result is Value::List([Int(0), Int(2), Int(4)]). Test name: eval_fn_generate_basic.",
       "status": "done",
-      "commit": "be9c2da9"
+      "commit": "c1087b69"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Extract `#[inline(always)] fn complex_abs(re: f64, im: f64, dimension: DimensionVector) -> Value` helper. Place it after `unary()` (line 653) and before `normalize_quaternion()` (line 655). Body: `let mag = (re * re + im * im).sqrt(); if dimension == DimensionVector::DIMENSIONLESS { sanitize_value(Value::Real(mag)) } else { sanitize_value(Value::Scalar { si_value: mag, dimension }) }`. Then replace the `magnitude` Complex branch (lines 285-291) with `return complex_abs(*re, *im, *dimension);` and replace the `complex_magnitude` match arm body (lines 428-434) with `complex_abs(*re, *im, *dimension)`. Run `cargo test -p reify-stdlib` to verify all existing tests plus the new overflow test pass.",
+      "description": "Add 'generate' match arm to the FunctionCall dispatch in eval_expr (crates/reify-expr/src/lib.rs ~line 86, after the gradient/divergence/curl arm). Pattern: `\"generate\" if evaluated_args.len() == 2 => { match &evaluated_args[0] { Value::Int(n) => { let results: Vec<Value> = (0..*n).map(|i| apply_lambda(&evaluated_args[1], &[Value::Int(i)], ctx)).collect(); Value::List(results) }, _ => Value::Undef } }`.",
       "status": "done",
-      "commit": "8268785a"
+      "commit": "439c49b3"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Final verification: run `cargo test -p reify-stdlib` confirming all tests pass including: complex_magnitude_3_4_returns_5, complex_magnitude_dimensioned_returns_scalar, complex_magnitude_non_complex_returns_undef, complex_magnitude_voltage, complex_magnitude_overflow_returns_undef, and all magnitude tests. This confirms the refactor is behavior-preserving.",
+      "description": "Write test: FunctionCall generate(0, |i| i) -> empty list []. Construct FunctionCall with Int(0) count and identity lambda. Verify result is Value::List(vec![]). Test name: eval_fn_generate_zero_count.",
       "status": "done",
-      "commit": "8268785a"
+      "commit": "e2a11d2a"
+    },
+    {
+      "id": "step-4",
+      "type": "impl",
+      "description": "Verify zero-count works (Rust 0..0 range is empty, produces empty Vec). Should pass without changes.",
+      "status": "done",
+      "commit": "e2a11d2a"
+    },
+    {
+      "id": "step-5",
+      "type": "test",
+      "description": "Write test: MethodCall [].generate(Undef, |i| i) -> Undef. Use CompiledExpr::method_call with first arg being a ValueRef to an unresolved cell (producing Undef at eval time). Verify result is Value::Undef. Test name: eval_method_generate_undef_count.",
+      "status": "done",
+      "commit": "1dcdd546"
+    },
+    {
+      "id": "step-6",
+      "type": "impl",
+      "description": "Verify Undef count handling in MethodCall path. The match &args[0] { Value::Int(n) => ..., _ => return Value::Undef } already covers this. Should pass without changes.",
+      "status": "done",
+      "commit": "1dcdd546"
+    },
+    {
+      "id": "step-7",
+      "type": "test",
+      "description": "Write test: MethodCall [].generate(-3, |i| i) -> empty list []. Negative count should produce an empty list via Rust range semantics (0i64..-3i64 is empty). Test name: eval_method_generate_negative_count.",
+      "status": "done",
+      "commit": "2e8260d2"
+    },
+    {
+      "id": "step-8",
+      "type": "impl",
+      "description": "Verify negative count produces empty list. Rust Range 0..-3 iterates zero times. Should pass without changes.",
+      "status": "done",
+      "commit": "2e8260d2"
+    },
+    {
+      "id": "step-9",
+      "type": "test",
+      "description": "Write test: MethodCall [].generate(3.0, |i| i) -> Undef. Real (non-Int) count should return Undef since match on Value::Int excludes Value::Real. Test name: eval_method_generate_real_count.",
+      "status": "done",
+      "commit": "71d70e3b"
+    },
+    {
+      "id": "step-10",
+      "type": "impl",
+      "description": "Verify Real count returns Undef. The match on Value::Int in the generate handler falls through to _ => Value::Undef for Real values. Should pass without changes.",
+      "status": "done",
+      "commit": "71d70e3b"
+    },
+    {
+      "id": "step-11",
+      "type": "test",
+      "description": "Write test: MethodCall [].generate(4, |i| i) identity lambda -> [0, 1, 2, 3]. Tests that indices 0..n-1 are correctly passed to the lambda. Test name: eval_method_generate_identity.",
+      "status": "done",
+      "commit": "2afa517b"
+    },
+    {
+      "id": "step-12",
+      "type": "impl",
+      "description": "Verify identity lambda works. apply_lambda with identity body (just ValueRef to param) returns the Int index directly. Should pass without changes.",
+      "status": "done",
+      "commit": "2afa517b"
+    },
+    {
+      "id": "step-13",
+      "type": "test",
+      "description": "Write test: MethodCall generate with wrong arity (1 arg only - count but no lambda) -> Undef. Tests the args.len() != 2 guard. Test name: eval_method_generate_wrong_arity.",
+      "status": "done",
+      "commit": "434cd38d"
+    },
+    {
+      "id": "step-14",
+      "type": "impl",
+      "description": "Verify wrong-arity guard works. The if args.len() != 2 { return Value::Undef } check at line 563 already handles this. Should pass without changes.",
+      "status": "done",
+      "commit": "434cd38d"
+    },
+    {
+      "id": "step-15",
+      "type": "test",
+      "description": "Write test: FunctionCall generate with Undef n -> Undef. The FunctionCall dispatch has automatic Undef short-circuit (lines 72-73), so Undef count never reaches the handler. Construct FunctionCall where first arg evaluates to Undef (ValueRef to missing cell). Test name: eval_fn_generate_undef_count.",
+      "status": "done",
+      "commit": "d3e0c548"
+    },
+    {
+      "id": "step-16",
+      "type": "impl",
+      "description": "Verify FunctionCall Undef propagation works. The automatic short-circuit `if evaluated_args.iter().any(|v| v.is_undef()) { return Value::Undef; }` fires before reaching the generate handler. Should pass without changes.",
+      "status": "done",
+      "commit": "d3e0c548"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Name the helper `complex_abs` rather than `complex_magnitude_inner` or similar",
-      "rationale": "The operation is mathematically the complex absolute value (modulus). `complex_abs` is concise, standard mathematical terminology, and clearly conveys intent. It also distinguishes from the public-facing `complex_magnitude` builtin name."
+      "decision": "Add generate as a FunctionCall handler in eval_expr rather than in reify-stdlib/eval_builtin",
+      "rationale": "generate requires EvalContext for apply_lambda, which eval_builtin does not receive. The precedent is 'sample', which is similarly handled in eval_expr's FunctionCall match (lines 78-92) because it needs EvalContext for field lambda application."
     },
     {
-      "decision": "Take `re: f64, im: f64, dimension: DimensionVector` by value rather than by reference",
-      "rationale": "All three types are Copy (f64 is 8 bytes, DimensionVector is a [Rational; 9] which derives Copy). Passing by value avoids lifetime noise at call sites where we destructure `&Value::Complex { re, im, dimension }` and would otherwise need to dereference. Callers pass `*re, *im, *dimension`."
+      "decision": "Keep existing MethodCall handler unchanged; add FunctionCall path alongside it",
+      "rationale": "The MethodCall path ([].generate(n, fn)) already works and has a test. The FunctionCall path (generate(n, fn)) provides the 'static method / stdlib function' semantics the task requires, without needing a List receiver. Both paths coexist for maximum flexibility."
     },
     {
-      "decision": "Place helper between `unary` and `normalize_quaternion` in the private helpers section",
-      "rationale": "This groups it with other private computation helpers rather than inside the `eval_builtin` match block. It follows the existing code organization pattern where `sanitize_value`, `unary`, `binary`, `normalize_quaternion` etc. are all private fns after the main dispatch function."
+      "decision": "Negative count produces empty list rather than Undef",
+      "rationale": "Rust range 0..n where n<0 produces an empty iterator, giving Value::List(vec![]). This is consistent with generate(0, fn) -> [] and is the least-surprise behavior. The task does not specify negative-count semantics, and empty-list is a safe, non-error default."
     },
     {
-      "decision": "Mark as `#[inline(always)]` per the task description",
-      "rationale": "The function is tiny (a sqrt + a branch + sanitize_value call) and called from two hot paths in `eval_builtin`. Inlining avoids function call overhead and matches the task specification."
-    },
-    {
-      "decision": "Write the overflow test first even though it passes immediately",
-      "rationale": "The test validates that the sanitize_value defense-in-depth continues to work for complex_magnitude after the refactor. Writing it first establishes the behavioral contract before we touch the implementation. f64::MAX² + f64::MAX² overflows to Inf, which sanitize_value converts to Undef."
+      "decision": "No changes to reify-stdlib despite it being listed in task modules",
+      "rationale": "The stdlib crate's eval_builtin function does not receive EvalContext, which is required for lambda application via apply_lambda. All lambda-aware functions (map, filter, generate, fold, sample) are handled in reify-expr's eval_expr dispatch. Adding generate to stdlib would require an architectural change (passing EvalContext to eval_builtin) which is out of scope."
     }
   ],
   "reuse": [
     {
-      "what": "`sanitize_value` function (line 706)",
-      "where": "crates/reify-stdlib/src/lib.rs",
-      "how": "Called inside `complex_abs` to convert non-finite results (NaN, Inf) to Undef, exactly as both current call sites already do."
+      "what": "FunctionCall lambda-dispatch pattern (sample handler)",
+      "where": "crates/reify-expr/src/lib.rs lines 78-92",
+      "how": "Copy the same pattern: add a match arm in the FunctionCall dispatch that checks function name and arity, then uses apply_lambda with EvalContext. The generate handler mirrors the sample handler structure."
     },
     {
-      "what": "`unary` helper (line 648)",
-      "where": "crates/reify-stdlib/src/lib.rs",
-      "how": "Both `magnitude` and `complex_magnitude` already use `unary(args, |v| ...)` — this stays unchanged; only the closure body changes to delegate to `complex_abs`."
+      "what": "Existing generate MethodCall implementation",
+      "where": "crates/reify-expr/src/lib.rs lines 562-580",
+      "how": "The FunctionCall handler replicates the same core logic but without the obj/receiver check. Core logic: match Int count from first arg, iterate 0..count, apply_lambda for each index, collect into List."
     },
     {
-      "what": "Overflow test pattern from `complex_add_overflow_returns_undef` (line 3309) and `complex_mul_overflow_returns_undef` (line 3297)",
-      "where": "crates/reify-stdlib/src/lib.rs",
-      "how": "The new `complex_magnitude_overflow_returns_undef` test follows the identical pattern: construct Complex with f64::MAX components, call eval_builtin, assert `.is_undef()` with descriptive message."
+      "what": "Test helpers: make_value_lambda and lambda_literal",
+      "where": "crates/reify-expr/tests/collection_eval_tests.rs lines 486-513",
+      "how": "Reuse these existing helpers to construct lambda CompiledExpr values for all generate tests. lambda_literal wraps make_value_lambda into a CompiledExpr::Literal."
     },
     {
-      "what": "`DimensionVector::DIMENSIONLESS` constant",
-      "where": "crates/reify-types/src/dimension.rs",
-      "how": "Used in both the helper function (for the dimensionless branch) and in the test (for constructing the test Complex value)."
+      "what": "CompiledExpr::method_call constructor",
+      "where": "crates/reify-types/src/expr.rs lines 640-660",
+      "how": "Reuse for constructing MethodCall test expressions, following the pattern established in eval_method_generate_list and other collection tests."
+    },
+    {
+      "what": "ResolvedFunction struct for FunctionCall construction",
+      "where": "crates/reify-types/src/expr.rs lines 135-139",
+      "how": "Construct ResolvedFunction { name: 'generate', qualified_name: 'std::generate' } for FunctionCall test expressions, following the pattern from make_function_call (line 691)."
     }
   ],
-  "_session_id": "2-1ab7323c",
-  "_created_at": "2026-03-24T21:10:15.236515+00:00"
+  "_session_id": "168-3c2dc753",
+  "_created_at": "2026-03-24T21:32:53.914563+00:00"
 }
