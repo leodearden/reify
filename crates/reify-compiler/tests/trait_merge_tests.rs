@@ -248,6 +248,75 @@ structure def Q : HasLowerBound + HasUpperBound {
     );
 }
 
+/// Step 10: Comprehensive mixed-merging test.
+/// Trait A: `param x : Length`, `let area : Real = x * x`, `constraint x > 0mm`.
+/// Trait B: `param x : Length`, `let area : Real = x * x`, `constraint x < 1000mm`.
+/// Structure implements A + B with `param x : Length = 5mm`.
+/// Expect: 0 errors, exactly 1 'x' value cell, exactly 1 'area' value cell,
+/// at least 2 constraints (one from each trait).
+#[test]
+fn mixed_merging_params_lets_constraints() {
+    let source = r#"
+trait GeomA {
+    param x : Length
+    let area : Real = x * x
+    constraint x > 0mm
+}
+
+trait GeomB {
+    param x : Length
+    let area : Real = x * x
+    constraint x < 1000mm
+}
+
+structure def M : GeomA + GeomB {
+    param x : Length = 5mm
+}
+"#;
+
+    let (template, diagnostics) = compile_first_template(source);
+
+    // No error-severity diagnostics expected.
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    // Exactly 1 'x' value cell (the structure's own).
+    let x_cells: Vec<_> = template
+        .value_cells
+        .iter()
+        .filter(|vc| vc.id.member == "x")
+        .collect();
+    assert_eq!(
+        x_cells.len(),
+        1,
+        "expected exactly 1 'x' value cell, got {}",
+        x_cells.len()
+    );
+
+    // Exactly 1 'area' value cell (dedup of identical let defaults).
+    let area_cells: Vec<_> = template
+        .value_cells
+        .iter()
+        .filter(|vc| vc.id.member == "area")
+        .collect();
+    assert_eq!(
+        area_cells.len(),
+        1,
+        "expected exactly 1 'area' value cell, got {}",
+        area_cells.len()
+    );
+
+    // At least 2 constraints injected (one from each trait — both unlabeled).
+    assert!(
+        template.constraints.len() >= 2,
+        "expected at least 2 constraints (one per trait), got {}",
+        template.constraints.len()
+    );
+}
+
 /// Step 1b: Two traits each requiring `param x : Length`.
 /// Structure provides `param x : Length = 5mm` — requirement dedup baseline.
 /// Expect 0 errors (existing behavior).
