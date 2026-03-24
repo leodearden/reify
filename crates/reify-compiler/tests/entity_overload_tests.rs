@@ -185,3 +185,47 @@ occurrence Widget {
         module.templates.len()
     );
 }
+
+// ── step-7: cross-type collision: field + structure same name ─────────────
+
+/// A field def followed by a structure with the same name produces a
+/// 'duplicate entity definition' error. The first-declared entity wins.
+#[test]
+fn field_and_structure_same_name_produce_error() {
+    let source = r#"
+field def Sensor : Real -> Real { source = analytical { |x| x } }
+
+structure Sensor {
+    param value : Real = 0.0
+}
+"#;
+    let module = compile_module(source);
+    let errors = errors_only(&module);
+
+    // Should have at least one duplicate-entity error (may have other warnings)
+    let dup_errors: Vec<_> = errors
+        .iter()
+        .filter(|d| d.message.contains("duplicate entity definition") && d.message.contains("Sensor"))
+        .collect();
+    assert_eq!(
+        dup_errors.len(),
+        1,
+        "expected exactly 1 duplicate-entity error for 'Sensor', got errors: {:?}",
+        errors
+    );
+
+    // First-declared entity (field) wins: no template should be compiled for Sensor
+    assert_eq!(
+        module.templates.len(),
+        0,
+        "expected 0 compiled templates (structure 'Sensor' is a duplicate), got {}",
+        module.templates.len()
+    );
+    // The field should still be compiled
+    assert_eq!(
+        module.fields.len(),
+        1,
+        "expected the field 'Sensor' to be compiled, got {}",
+        module.fields.len()
+    );
+}
