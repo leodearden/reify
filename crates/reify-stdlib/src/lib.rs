@@ -353,6 +353,15 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
         "constrained" => Value::Undef,
         "partially_determined" => Value::Undef,
 
+        // --- Orientation constructors ---
+        "orient_identity" => {
+            if args.is_empty() {
+                Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 }
+            } else {
+                Value::Undef
+            }
+        }
+
         // --- Field operations (stubs) ---
         // These are handled by reify-expr's eval_expr FunctionCall interceptor
         // for actual lambda application; the stdlib entries serve as documentation
