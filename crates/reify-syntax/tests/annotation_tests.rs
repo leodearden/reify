@@ -468,3 +468,44 @@ fn parse_annotation_attaches_to_following_declaration() {
     );
     assert_eq!(b.annotations[0].name, "middle");
 }
+
+// ── Step 23/24: annotation leakage on failed lowering ────────────────────────
+//
+// Bug: when a declaration node is encountered but its lower_* function returns
+// None (e.g. function missing a name), the pending_annotations Vec is not
+// consumed — the annotations "leak" and attach to the *next* successfully-
+// lowered declaration instead.
+//
+// This test uses `fn (x: Real) -> Real { x }` (function without a name) which
+// should cause lower_function() to return None.  The @leaked annotation must
+// NOT carry forward to the following `structure Good {}`.
+#[test]
+fn annotation_does_not_leak_past_failed_lowering() {
+    // A function without a name triggers lower_function() → None.
+    let source = "@leaked\nfn (x: Real) -> Real { x }\nstructure Good {}";
+    let module = parse_module(source);
+
+    // Good should appear as the only declaration.
+    let good_decls: Vec<_> = module
+        .declarations
+        .iter()
+        .filter_map(|d| match d {
+            Declaration::Structure(s) => Some(s),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        good_decls.len(),
+        1,
+        "expected 1 structure declaration, got {:?}",
+        module.declarations
+    );
+    assert_eq!(good_decls[0].name, "Good");
+
+    // @leaked must NOT have attached to Good.
+    assert!(
+        good_decls[0].annotations.is_empty(),
+        "@leaked annotation must not leak to Good; got {:?}",
+        good_decls[0].annotations
+    );
+}
