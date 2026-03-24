@@ -759,6 +759,62 @@ describe('claudeStore', () => {
     });
   });
 
+  describe('bridge-mode error handling', () => {
+    beforeEach(() => {
+      vi.clearAllMocks();
+    });
+
+    it('when bridgeSendMessage rejects, orphaned assistant message is marked complete with error', async () => {
+      (bridge.claudeSendMessage as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('Connection refused'));
+
+      const store = createClaudeStore({});
+      store.sendMessage('hello', {});
+
+      // Wait for the .catch() to execute
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+      const assistantMsg = store.state.messages.find((m) => m.role === 'assistant') as any;
+      expect(assistantMsg!.complete).toBe(true);
+      expect(assistantMsg!.error).toBeTruthy();
+    });
+
+    it('when bridgeSendMessage rejects, a system error message is added to state.messages', async () => {
+      (bridge.claudeSendMessage as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('Connection refused'));
+
+      const store = createClaudeStore({});
+      store.sendMessage('hello', {});
+
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+      const systemMsgs = store.state.messages.filter((m) => m.role === 'system');
+      expect(systemMsgs).toHaveLength(1);
+    });
+
+    it('when bridgeSendMessage rejects, sessionStatus is reset to idle', async () => {
+      (bridge.claudeSendMessage as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('Network error'));
+
+      const store = createClaudeStore({});
+      store.sendMessage('hello', {});
+
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+      expect(store.state.sessionStatus).toBe('idle');
+    });
+
+    it('when bridgeSendMessage rejects, the error message is included on the assistant message', async () => {
+      (bridge.claudeSendMessage as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('Connection refused'));
+
+      const store = createClaudeStore({});
+      store.sendMessage('hello', {});
+
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+      const assistantMsg = store.state.messages.find((m) => m.role === 'assistant') as any;
+      expect(typeof assistantMsg!.error).toBe('string');
+      expect(assistantMsg!.error.length).toBeGreaterThan(0);
+    });
+  });
+
   describe('bridge-mode ID reconciliation', () => {
     const BRIDGE_ID = 'bridge-id-reconcile';
 
