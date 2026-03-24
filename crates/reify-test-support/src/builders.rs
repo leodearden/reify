@@ -148,6 +148,8 @@ pub struct TopologyTemplateBuilder {
     name: String,
     entity_kind: EntityKind,
     visibility: reify_compiler::Visibility,
+    type_params: Vec<TypeParam>,
+    trait_bounds: Vec<String>,
     value_cells: Vec<ValueCellDecl>,
     constraints: Vec<CompiledConstraint>,
     realizations: Vec<RealizationDecl>,
@@ -163,6 +165,8 @@ impl TopologyTemplateBuilder {
             name: name.into(),
             entity_kind: EntityKind::Structure,
             visibility: reify_compiler::Visibility::Private,
+            type_params: Vec::new(),
+            trait_bounds: Vec::new(),
             value_cells: Vec::new(),
             constraints: Vec::new(),
             realizations: Vec::new(),
@@ -171,6 +175,18 @@ impl TopologyTemplateBuilder {
             structure_controlling: HashSet::new(),
             objective: None,
         }
+    }
+
+    /// Declare a trait bound this structure conforms to.
+    pub fn trait_bound(mut self, name: impl Into<String>) -> Self {
+        self.trait_bounds.push(name.into());
+        self
+    }
+
+    /// Add a type parameter to this structure.
+    pub fn type_param(mut self, param: TypeParam) -> Self {
+        self.type_params.push(param);
+        self
     }
 
     pub fn visibility(mut self, vis: reify_compiler::Visibility) -> Self {
@@ -387,8 +403,8 @@ impl TopologyTemplateBuilder {
             name: self.name,
             entity_kind: self.entity_kind,
             visibility: self.visibility,
-            type_params: vec![],
-            trait_bounds: vec![],
+            type_params: self.type_params,
+            trait_bounds: self.trait_bounds,
             value_cells: self.value_cells,
             constraints: self.constraints,
             realizations: self.realizations,
@@ -524,6 +540,48 @@ mod tests {
         let ct1 = TraitDefBuilder::new("Rigid").build();
         let ct2 = TraitDefBuilder::new("Flexible").build();
         assert_ne!(ct1.content_hash, ct2.content_hash);
+    }
+
+    // step-5: failing tests for TopologyTemplateBuilder trait extensions
+    #[test]
+    fn topology_with_trait_bound() {
+        let template = TopologyTemplateBuilder::new("Bolt")
+            .trait_bound("Rigid")
+            .build();
+        assert_eq!(template.trait_bounds.len(), 1);
+        assert_eq!(template.trait_bounds[0], "Rigid");
+    }
+
+    #[test]
+    fn topology_with_multiple_trait_bounds() {
+        let template = TopologyTemplateBuilder::new("Bolt")
+            .trait_bound("Rigid")
+            .trait_bound("Fastener")
+            .build();
+        assert_eq!(template.trait_bounds.len(), 2);
+        assert!(template.trait_bounds.contains(&"Rigid".to_string()));
+        assert!(template.trait_bounds.contains(&"Fastener".to_string()));
+    }
+
+    #[test]
+    fn topology_with_type_param() {
+        use reify_types::{TraitBound, TraitRef};
+        let param = TypeParam {
+            name: "T".to_string(),
+            bounds: vec![TraitBound {
+                trait_ref: TraitRef {
+                    name: "Rigid".to_string(),
+                    type_args: vec![],
+                },
+            }],
+            default: None,
+        };
+        let template = TopologyTemplateBuilder::new("Container")
+            .type_param(param)
+            .build();
+        assert_eq!(template.type_params.len(), 1);
+        assert_eq!(template.type_params[0].name, "T");
+        assert_eq!(template.type_params[0].bounds[0].trait_ref.name, "Rigid");
     }
 }
 
