@@ -1944,6 +1944,64 @@ mod tests {
         assert_eq!(o.dimension(), DimensionVector::DIMENSIONLESS);
     }
 
+    // ── Range Ord tests (step-5) ─────────────────────────────────────────────
+
+    #[test]
+    fn value_range_ord_cross_type_after_orientation() {
+        // Range has type_tag=16, Orientation=15 → Range > Orientation
+        let range = make_range(None, None, false, false);
+        let orient = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+        assert!(range > orient);
+        assert!(orient < range);
+    }
+
+    #[test]
+    fn value_range_ord_cross_type_before_undef() {
+        // Range has type_tag=16, Undef=0 → Range > Undef
+        let range = make_range(None, None, false, false);
+        assert!(range > Value::Undef);
+    }
+
+    #[test]
+    fn value_range_ord_within_type_lower_inclusive_first() {
+        // lower_inclusive=false < lower_inclusive=true (false=0 < true=1)
+        let r_open = make_range(Some(Value::Int(0)), Some(Value::Int(10)), false, true);
+        let r_closed = make_range(Some(Value::Int(0)), Some(Value::Int(10)), true, true);
+        assert!(r_open < r_closed);
+    }
+
+    #[test]
+    fn value_range_ord_within_type_lower_bound_none_before_some() {
+        // None lower < Some lower (Option ordering: None < Some)
+        let r_unbounded = make_range(None, Some(Value::Int(10)), false, true);
+        let r_bounded = make_range(Some(Value::Int(0)), Some(Value::Int(10)), false, true);
+        assert!(r_unbounded < r_bounded);
+    }
+
+    #[test]
+    fn value_range_ord_within_type_upper_inclusive_after_lower() {
+        // When lower_inclusive and lower are equal, compare upper_inclusive
+        let r_open_upper = make_range(Some(Value::Int(0)), Some(Value::Int(10)), true, false);
+        let r_closed_upper = make_range(Some(Value::Int(0)), Some(Value::Int(10)), true, true);
+        assert!(r_open_upper < r_closed_upper);
+    }
+
+    #[test]
+    fn value_range_ord_within_type_upper_bound_none_before_some() {
+        // None upper < Some upper
+        let r_unbounded = make_range(Some(Value::Int(0)), None, true, false);
+        let r_bounded = make_range(Some(Value::Int(0)), Some(Value::Int(10)), true, false);
+        assert!(r_unbounded < r_bounded);
+    }
+
+    #[test]
+    fn value_range_ord_equal_ranges() {
+        use std::cmp::Ordering;
+        let r1 = make_range(Some(Value::Int(0)), Some(Value::Int(10)), true, false);
+        let r2 = make_range(Some(Value::Int(0)), Some(Value::Int(10)), true, false);
+        assert_eq!(r1.cmp(&r2), Ordering::Equal);
+    }
+
     // ── Range PartialEq tests (step-3) ───────────────────────────────────────
 
     fn make_range(
