@@ -1,30 +1,19 @@
 {
-  "task_id": "224",
-  "title": "Point/Vector: constructors",
+  "task_id": "158",
+  "title": "Chained comparisons: tests",
   "files": [
-    "crates/reify-types/src/value.rs",
-    "crates/reify-stdlib/src/lib.rs",
-    "crates/reify-expr/src/lib.rs",
-    "crates/reify-expr/tests/point_vector_eval_tests.rs",
-    "crates/reify-constraints/src/classifier.rs",
-    "crates/reify-test-support/src/builders.rs",
-    "crates/reify-lsp/src/analysis.rs"
+    "crates/reify-eval/tests/chained_comparison_eval.rs"
   ],
   "modules": [
-    "crates/reify-types",
-    "crates/reify-stdlib",
-    "crates/reify-expr",
-    "crates/reify-constraints",
-    "crates/reify-test-support",
-    "crates/reify-lsp"
+    "crates/reify-eval"
   ],
-  "analysis": "Task 224 adds point2/point3/vec2/vec3 stdlib constructor functions. The initial implementation produced Value::Tensor for both points and vectors, making them runtime-indistinguishable. Review found this is a blocking semantic erasure: point2(1,2) and vec2(1,2) produce identical Value::Tensor output, violating the semantic contract implied by four distinct constructor names.\n\nThe fix adds Value::Point(Vec<Value>) and Value::Vector(Vec<Value>) as distinct enum variants in reify-types, matching the existing Type::Point/Type::Vector distinction. The construct_point_or_vector helper gains an is_point: bool parameter and produces the correct variant. tensor_components_f64 is updated to also extract from Point/Vector so existing vector operations (magnitude, normalize, cross, dot, orient) continue to work. eval_expr field access (.x/.y/.z) and arithmetic patterns are updated to handle the new variants. All match-exhaustive sites across 5 crates are updated.\n\nThe Type system already has Type::Point { n, quantity } and Type::Vector { n, quantity }. Adding Value-level distinction ensures runtime values honour the same semantics, enabling downstream code (e.g., affine transforms where points get translation and vectors don't) to distinguish them via pattern matching.",
+  "analysis": "Task 158 is a test-only task for the chained comparison feature implemented in task 157. Task 157 already added compiler-level desugaring tests (9 tests in crates/reify-compiler/tests/chained_comparison_tests.rs) verifying that `a < b < c` desugars to `And(Lt(a,b), Lt(b,c))`. Task 158 adds >=10 eval-level E2E tests that exercise the full parse \u2192 compile \u2192 eval pipeline, covering: (1) `2mm < thickness < 10mm` with various thickness values (satisfied, boundary, violated), (2) 3-element chains, (3) mixed operators like `a <= b < c`, (4) Undef propagation when middle position is auto/indeterminate, (5) dimensional consistency checks (mixed dimensions \u2192 Undef), and (6) desugaring correctness verified via compiled output inspection.\n\nThe eval tests follow the established pattern from field_eval_tests.rs and fn_eval.rs: parse source \u2192 compile \u2192 Engine.eval() \u2192 check values. The `eval_source` helper pattern is reused. Chained comparisons desugar at compile time into And-chains of pairwise comparisons. At eval time, comparisons use eval_cmp which checks dimension compatibility (returns Undef on mismatch), and And uses Kleene three-valued logic (false \u2227 Undef = false, true \u2227 Undef = Undef). Tests verify both the Bool result values and Undef propagation behaviors.\n\nKey implementation detail: dimensional values in source use literal suffixes (e.g., `5mm`, `10mm`). These parse as Scalar{si_value, LENGTH} with mm \u2192 meters conversion (0.001 factor). The eval_cmp function compares si_value after verifying dimensions match.",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "Verify Value::Point(Vec<Value>) and Value::Vector(Vec<Value>) variants exist from task 223. If not merged yet, this task is blocked.",
+      "description": "Verify task 157 (chained comparison desugaring implementation) is complete and merged. The desugaring pass in reify-compiler must transform `a < b < c` into `And(Lt(a,b), Lt(b,c))` before eval tests can pass.",
       "status": "done",
-      "commit": "741e9af8",
+      "commit": "4460ee16",
       "tests": []
     }
   ],
@@ -32,251 +21,142 @@
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing test: point3_basic \u2014 point3(Scalar(1,L), Scalar(2,L), Scalar(3,L)) produces Value::Point with 3 LENGTH scalars",
+      "description": "Write eval_source helper and test: chain_range_satisfied \u2014 `2mm < thickness < 10mm` with thickness=5mm. Parse+compile+eval, verify let binding evaluates to Value::Bool(true).",
       "status": "done",
-      "commit": "741e9af8"
+      "commit": "4460ee16"
     },
     {
       "id": "step-2",
-      "type": "impl",
-      "description": "Add construct_point_or_vector helper and 'point3' match arm in eval_builtin. Helper validates arg count, all-numeric, same-dimension, returns Value::Point or Value::Vector.",
+      "type": "test",
+      "description": "Write test: chain_range_violated_below \u2014 `2mm < thickness < 10mm` with thickness=1mm \u2192 Value::Bool(false). First pairwise `2mm < 1mm` is false, so And short-circuits to false.",
       "status": "done",
-      "commit": "e632d10c"
+      "commit": "4460ee16"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing test: vec3_basic \u2014 vec3(Scalar(4,L), Scalar(5,L), Scalar(6,L)) produces Value::Vector with 3 LENGTH scalars",
+      "description": "Write test: chain_range_violated_above \u2014 `2mm < thickness < 10mm` with thickness=15mm \u2192 Value::Bool(false). First pairwise `2mm < 15mm` is true, second `15mm < 10mm` is false.",
       "status": "done",
-      "commit": "ffb2ab2b"
+      "commit": "4460ee16"
     },
     {
       "id": "step-4",
-      "type": "impl",
-      "description": "Add 'vec3' match arm in eval_builtin, reusing construct_point_or_vector helper",
+      "type": "test",
+      "description": "Write test: chain_boundary_strict_lt_at_lower \u2014 `2mm < thickness < 10mm` with thickness=2mm \u2192 Value::Bool(false). Strict less-than excludes the boundary value.",
       "status": "done",
-      "commit": "1a3388b6"
+      "commit": "4460ee16"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing test: point2_basic \u2014 point2(Scalar(7,L), Scalar(8,L)) produces Value::Point with 2 LENGTH scalars",
+      "description": "Write test: chain_boundary_strict_lt_at_upper \u2014 `2mm < thickness < 10mm` with thickness=10mm \u2192 Value::Bool(false). Strict less-than excludes the upper boundary.",
       "status": "done",
-      "commit": "c36409a0"
+      "commit": "4460ee16"
     },
     {
       "id": "step-6",
-      "type": "impl",
-      "description": "Add 'point2' match arm in eval_builtin",
+      "type": "test",
+      "description": "Write test: three_element_chain_all_satisfied \u2014 `a < b < c < d` with a=1, b=2, c=3, d=4 \u2192 Value::Bool(true). Desugared to And(And(Lt(1,2), Lt(2,3)), Lt(3,4)), all true.",
       "status": "done",
-      "commit": "1f0362bf"
+      "commit": "4460ee16"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing test: vec2_basic \u2014 vec2(Scalar(9,L), Scalar(10,L)) produces Value::Vector with 2 LENGTH scalars",
+      "description": "Write test: three_element_chain_middle_violated \u2014 `a < b < c < d` with a=1, b=5, c=3, d=10 \u2192 Value::Bool(false). Lt(5,3) is false, so And-chain is false.",
       "status": "done",
-      "commit": "081e79b3"
+      "commit": "4460ee16"
     },
     {
       "id": "step-8",
-      "type": "impl",
-      "description": "Add 'vec2' match arm in eval_builtin",
+      "type": "test",
+      "description": "Write test: mixed_operators_le_lt_boundary \u2014 `a <= b < c` with a=5, b=5, c=10 \u2192 Value::Bool(true). Le(5,5) is true, Lt(5,10) is true, And is true. Verifies <= boundary works in mixed chains.",
       "status": "done",
-      "commit": "001c7301"
+      "commit": "4460ee16"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write test: point3_dimensionless \u2014 point3(Real(1.0), Real(2.0), Real(3.0)) produces Value::Point with 3 dimensionless components (Real values preserved as-is)",
+      "description": "Write test: mixed_operators_le_lt_violated \u2014 `a <= b < c` with a=5, b=4, c=10 \u2192 Value::Bool(false). Le(5,4) is false. Verifies mixed operator violation.",
       "status": "done",
-      "commit": "f050cb91"
+      "commit": "4460ee16"
     },
     {
       "id": "step-10",
-      "type": "impl",
-      "description": "Verify passes or adjust helper to accept Real/Int as dimensionless components",
+      "type": "test",
+      "description": "Write test: undef_middle_position \u2014 structure with auto param x (no default, no solver), `let result = 0 < x < 100`. Since x is Undef, Lt(0,Undef) \u2192 Undef, And(Undef, ...) \u2192 Undef. Verify result is Value::Undef.",
       "status": "done",
-      "commit": "f050cb91"
+      "commit": "4460ee16"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write test: dimension_mismatch_undef \u2014 point3(Scalar(1,LENGTH), Scalar(2,MASS), Scalar(3,LENGTH)) returns Value::Undef. Same for vec3, point2, vec2 with mixed dimensions.",
+      "description": "Write test: dimensional_mismatch_returns_undef \u2014 `let result = 2mm < mass_param < 10mm` where mass_param has MASS dimension (e.g., 5kg). eval_cmp returns Undef for LENGTH vs MASS comparison. Verify result is Undef.",
       "status": "done",
-      "commit": "5ed9dcaa"
+      "commit": "4460ee16"
     },
     {
       "id": "step-12",
-      "type": "impl",
-      "description": "Verify dimension mismatch tests pass (should be handled by construct_point_or_vector helper)",
-      "status": "done",
-      "commit": "5ed9dcaa"
-    },
-    {
-      "id": "step-13",
       "type": "test",
-      "description": "Write test: wrong_arg_count_undef \u2014 point3 with 2 args returns Undef, point2 with 3 args returns Undef, vec3 with 0 args returns Undef, etc.",
+      "description": "Write test: desugaring_structure_verified \u2014 compile `2mm < thickness < 10mm` and inspect the compiled expression. Verify top-level is BinOp::And, left is BinOp::Lt with Literal(2mm) and ValueRef(thickness), right is BinOp::Lt with ValueRef(thickness) and Literal(10mm). Result type is Bool.",
       "status": "done",
-      "commit": "1984f0ac"
-    },
-    {
-      "id": "step-14",
-      "type": "impl",
-      "description": "Verify wrong-arg-count tests pass (should be handled by construct_point_or_vector helper)",
-      "status": "done",
-      "commit": "1984f0ac"
-    },
-    {
-      "id": "step-15",
-      "type": "test",
-      "description": "Write test: non_numeric_undef \u2014 point3(String, Scalar, Scalar) returns Undef, vec2(Bool, Bool) returns Undef",
-      "status": "done",
-      "commit": "f4a66de8"
-    },
-    {
-      "id": "step-16",
-      "type": "impl",
-      "description": "Verify non-numeric tests pass (should be handled by construct_point_or_vector helper)",
-      "status": "done",
-      "commit": "f4a66de8"
-    },
-    {
-      "id": "step-17",
-      "type": "test",
-      "description": "Write failing test: point_vector_semantic_distinction \u2014 assert point2(1,2) produces Value::Point, vec2(1,2) produces Value::Vector, and point2(a,b) != vec2(a,b) with identical args. Also test Value::Point and Value::Vector content_hash differ, Display output differs.",
-      "status": "done",
-      "commit": "8c88aa4f"
-    },
-    {
-      "id": "step-18",
-      "type": "impl",
-      "description": "Add Value::Point(Vec<Value>) and Value::Vector(Vec<Value>) variants to the Value enum in value.rs. Implement content_hash (tags 18/19), PartialEq (new match arms), Ord (new type_tags 17/18, match arms), Display (point(...) / vec(...) format). Add dimension() support for Point/Vector deriving from first component.",
-      "status": "done",
-      "commit": "eeb23555"
-    },
-    {
-      "id": "step-19",
-      "type": "impl",
-      "description": "Update construct_point_or_vector to accept is_point: bool and return Value::Point or Value::Vector. Update eval_builtin match arms: point2/point3 pass is_point=true, vec2/vec3 pass is_point=false. Remove stale comment about Value::Tensor.",
-      "status": "done",
-      "commit": "4d62fbf7"
-    },
-    {
-      "id": "step-20",
-      "type": "impl",
-      "description": "Update tensor_components_f64 in stdlib to also extract from Value::Point and Value::Vector, so magnitude/normalize/cross/dot/orient operations work on points and vectors.",
-      "status": "done",
-      "commit": "4d62fbf7"
-    },
-    {
-      "id": "step-21",
-      "type": "impl",
-      "description": "Update existing stdlib tests (steps 1-16) to match on Value::Point for point2/point3 and Value::Vector for vec2/vec3 instead of Value::Tensor.",
-      "status": "done",
-      "commit": "4d62fbf7"
-    },
-    {
-      "id": "step-22",
-      "type": "impl",
-      "description": "Update eval_expr.rs: field access (.x/.y/.z) to also match Value::Point(c) | Value::Vector(c); arithmetic Add/Sub for tensors to also handle Point/Vector; scalar*tensor mul to handle Point/Vector; neg_value to handle Point/Vector. Preserve variant type through operations (Point op stays Point, Vector op stays Vector).",
-      "status": "pending",
-      "commit": null
-    },
-    {
-      "id": "step-23",
-      "type": "impl",
-      "description": "Update remaining crate files: classifier.rs (add Value::Point/Vector to non-numeric pattern), builders.rs infer_value_type (panic with helpful message like Tensor), analysis.rs (add Point/Vector to completion/hover match arms).",
-      "status": "pending",
-      "commit": null
-    },
-    {
-      "id": "step-24",
-      "type": "test",
-      "description": "Update point_vector_eval_tests.rs: change Value::Tensor construction/assertions to Value::Point for point types and Value::Vector for vector types. Verify all eval tests pass with the new variants.",
-      "status": "pending",
-      "commit": null
-    },
-    {
-      "id": "step-25",
-      "type": "test",
-      "description": "Run full cargo test across all crates to verify no regressions from the new Value variants. Fix any remaining exhaustive-match compiler errors.",
-      "status": "pending",
-      "commit": null
+      "commit": "4460ee16"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Single construct_point_or_vector(args, expected_n, is_point) helper handles all 4 constructors",
-      "rationale": "All 4 constructors share identical logic: validate arg count, check all-numeric, check same-dimension, wrap in Point/Vector. A single helper with (expected_count, is_point) params eliminates duplication."
+      "decision": "All eval tests go in a single new file crates/reify-eval/tests/chained_comparison_eval.rs",
+      "rationale": "Follows the existing pattern of per-feature eval test files (guard_eval.rs, fn_eval.rs, field_eval_tests.rs). Keeps chained comparison eval tests separate from the compiler-level desugaring tests in crates/reify-compiler/tests/chained_comparison_tests.rs."
     },
     {
-      "decision": "Preserve original Value variants in Point/Vector components (don't normalize Real/Int to Scalar)",
-      "rationale": "Real(1.0) and Scalar(1.0, DIMENSIONLESS) both have DIMENSIONLESS dimension per Value::dimension(). Preserving original variants avoids lossy conversion and matches how Tensor currently stores heterogeneous numeric types."
+      "decision": "Use `let result = <chain>` pattern instead of `constraint <chain>` for most eval tests",
+      "rationale": "Let bindings produce directly observable values in the EvalResult.values map, making assertions straightforward. Constraints are evaluated by the check() path which requires MockConstraintChecker setup. Using let bindings simplifies tests while still exercising the same desugared expression evaluation path."
     },
     {
-      "decision": "Dimension validation uses Value::dimension() method",
-      "rationale": "Value::dimension() already returns DIMENSIONLESS for Real/Int and the actual dimension for Scalar. Checking that all args share the same dimension via this method is clean and consistent with existing patterns like tensor_components_f64."
+      "decision": "Include one desugaring-verification test (step-12) in the eval test file rather than modifying the compiler test file",
+      "rationale": "Task 158 is scoped to creating new tests. The existing compiler tests cover desugaring structurally. Step 12 adds a focused dimensional desugaring verification that examines the compiled output for the specific `2mm < thickness < 10mm` case mentioned in the task description, without modifying the existing compiler test file which belongs to task 157."
     },
     {
-      "decision": "Accept Real and Int args as dimensionless point/vector components",
-      "rationale": "The task says 'all components must have the same dimension', not 'all components must be Scalar'. Accepting Real(1.0) for dimensionless points (e.g., unit vectors) is ergonomic and consistent with how other stdlib functions accept numeric types via as_f64."
+      "decision": "Use eval_source helper following field_eval_tests.rs pattern",
+      "rationale": "The eval_source helper (parse \u2192 compile \u2192 Engine.eval()) is an established pattern in the eval test crate. It provides the cleanest test API for E2E verification. Tests only need to construct source strings and check result.values."
     },
     {
-      "decision": "Tests go in the existing #[cfg(test)] module inside lib.rs, not separate test files",
-      "rationale": "All existing stdlib tests (abs, sqrt, min, max, cross, dot, magnitude, orient, etc.) are in the inline #[cfg(test)] module. Following this convention keeps tests co-located with the implementation."
-    },
-    {
-      "decision": "Add Value::Point(Vec<Value>) and Value::Vector(Vec<Value>) as distinct enum variants rather than tagging Value::Tensor",
-      "rationale": "The Type system already distinguishes Type::Point from Type::Vector. Adding distinct Value variants makes runtime values match this semantic distinction, enabling downstream code (affine transforms, geometric operations) to pattern-match on point vs vector. A boolean tag on Tensor would break every existing Tensor match arm. Separate variants let existing Tensor code remain untouched while Point/Vector patterns are added alongside."
-    },
-    {
-      "decision": "tensor_components_f64 accepts Point and Vector in addition to Tensor",
-      "rationale": "Existing stdlib operations (magnitude, normalize, cross, dot, orient) use tensor_components_f64 to extract numeric components. Points and vectors should support these operations, so the helper is extended to match all three container variants."
-    },
-    {
-      "decision": "Arithmetic operations preserve Point/Vector variant type through the result",
-      "rationale": "point3(1,2,3) + point3(4,5,6) should produce a Point, and vec3(1,2,3) + vec3(4,5,6) should produce a Vector. This is consistent with geometric algebra conventions and preserves semantic information through computation chains."
+      "decision": "Test dimensional mismatch through eval-time Value::Undef rather than compile-time diagnostics",
+      "rationale": "The compiler does not reject dimension-mismatched comparisons at compile time \u2014 eval_cmp in reify-expr handles this at runtime by returning Value::Undef when Scalar dimensions don't match. This is consistent with the existing cmp_scalar_different_dimension_undef unit test in reify-expr."
     }
   ],
   "reuse": [
     {
-      "what": "Value::dimension() method",
-      "where": "crates/reify-types/src/value.rs:122",
-      "how": "Used to extract physical dimension from each constructor arg for same-dimension validation. Returns DIMENSIONLESS for Real/Int, actual dimension for Scalar."
+      "what": "eval_source helper pattern",
+      "where": "crates/reify-eval/tests/field_eval_tests.rs:10-24",
+      "how": "Replicate the parse \u2192 compile \u2192 eval helper function that returns EvalResult. Use reify_syntax::parse, reify_compiler::compile, MockConstraintChecker, Engine::new, engine.eval()."
     },
     {
-      "what": "Value::as_f64() method",
-      "where": "crates/reify-types/src/value.rs:112",
-      "how": "Used to validate that constructor args are numeric (Int, Real, or Scalar). Returns None for non-numeric types."
+      "what": "MockConstraintChecker",
+      "where": "crates/reify-test-support/src/mocks.rs",
+      "how": "Used as the constraint checker for Engine::new(). Default implementation returns empty results which is sufficient for eval-only tests."
     },
     {
-      "what": "DimensionVector constants (LENGTH, MASS, DIMENSIONLESS, etc.)",
-      "where": "crates/reify-types/src/dimension.rs",
-      "how": "Used in tests to construct Scalar values with specific dimensions and validate dimension matching."
+      "what": "ValueCellId::new for value lookups",
+      "where": "crates/reify-types/src/identity.rs",
+      "how": "Construct IDs like ValueCellId::new('S', 'result') to look up evaluated values in result.values HashMap."
     },
     {
-      "what": "eval_builtin match statement pattern",
-      "where": "crates/reify-stdlib/src/lib.rs:7-631",
-      "how": "New match arms follow the existing pattern: match on function name string, validate args, return Value or Value::Undef."
+      "what": "compile_first_template helper pattern",
+      "where": "crates/reify-compiler/tests/chained_comparison_tests.rs:9-16",
+      "how": "Reused for the desugaring verification test (step 12) that inspects compiled IR structure."
     },
     {
-      "what": "assert_scalar_approx macro and test conventions",
-      "where": "crates/reify-stdlib/src/lib.rs:860-877",
-      "how": "Tests follow the same pattern: call eval_builtin with name and args, match on result variant, assert values."
+      "what": "BinOp/CompiledExprKind pattern matching",
+      "where": "crates/reify-compiler/tests/chained_comparison_tests.rs:38-61",
+      "how": "Pattern for asserting desugared expression structure: match on CompiledExprKind::BinOp { op, left, right } and recursively verify operator types."
     },
     {
-      "what": "Existing Value trait impl patterns (content_hash, PartialEq, Ord, Display)",
-      "where": "crates/reify-types/src/value.rs:130-565",
-      "how": "New Value::Point/Vector arms follow the exact same patterns as Value::Tensor (tag-prefixed hash, same-variant equality, type_tag ordering, bracket-delimited display) with distinct tag bytes."
-    },
-    {
-      "what": "tensor_components_f64 helper",
-      "where": "crates/reify-stdlib/src/lib.rs:830-847",
-      "how": "Extended to also extract from Value::Point/Vector using or-pattern matching, so all existing vector math operations work on points/vectors without further changes."
+      "what": "Value comparison (Bool, Undef, Scalar)",
+      "where": "crates/reify-types/src/value.rs",
+      "how": "Assert against Value::Bool(true), Value::Bool(false), Value::Undef for test expectations. Value implements PartialEq."
     }
   ],
-  "_session_id": "224-d23dd65c",
-  "_created_at": "2026-03-24T22:19:34.015687+00:00",
-  "_schema_version": 1
+  "_session_id": "158-788828ff",
+  "_created_at": "2026-03-24T22:59:29.002387+00:00"
 }
