@@ -922,7 +922,7 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
                                             } else {
                                                 Value::Undef
                                             };
-                                        eval_mul(&a_elems[kk], &b_kj)
+                                        eval_mul(a_elems.get(kk).unwrap_or(&Value::Undef), &b_kj)
                                     })
                                     .collect();
                                 if prods.iter().any(|v| v.is_undef()) {
