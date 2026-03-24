@@ -398,6 +398,11 @@ fn is_geometry_function(name: &str) -> bool {
             | "shell"
             | "thicken"
             | "draft"
+            | "union"
+            | "intersection"
+            | "difference"
+            | "union_all"
+            | "intersection_all"
     )
 }
 
@@ -2653,7 +2658,7 @@ fn compile_entity(
     for member in structure.members {
         if let reify_syntax::MemberDecl::Let(let_decl) = member
             && is_geometry_let(&let_decl.value)
-            && let Some(ops) = compile_geometry_call(&let_decl.value, &scope, enum_defs, functions, diagnostics)
+            && let Some(ops) = compile_geometry_call(&let_decl.value, &scope, enum_defs, functions, diagnostics, 0)
         {
             realizations.push(RealizationDecl {
                 id: RealizationNodeId::new(entity_name, realization_index),
@@ -4346,17 +4351,158 @@ fn is_geometry_let(expr: &reify_syntax::Expr) -> bool {
 /// - `box(width, height, depth)`
 /// - `cylinder(radius, height)`
 /// - `sphere(radius)`
+///
+/// Boolean operations (union, intersection, difference) take nested geometry
+/// call expressions as arguments. Each arg is recursively compiled into ops,
+/// and GeomRef::Step indices are assigned globally using `step_offset` (the
+/// index of the first op this call will emit in the flat step_handles array).
 fn compile_geometry_call(
     expr: &reify_syntax::Expr,
     scope: &CompilationScope,
     enum_defs: &[reify_types::EnumDef],
     functions: &[CompiledFunction],
     diagnostics: &mut Vec<Diagnostic>,
+    step_offset: usize,
 ) -> Option<Vec<CompiledGeometryOp>> {
     let (name, args) = match &expr.kind {
         reify_syntax::ExprKind::FunctionCall { name, args } => (name.as_str(), args),
         _ => return None,
     };
+
+    // Boolean ops: args are nested geometry calls, NOT scalars.
+    // Handle before scalar arg compilation below.
+    match name {
+        "union" | "intersection" | "difference" => {
+            if args.len() != 2 {
+                diagnostics.push(Diagnostic::error(format!(
+                    "{}() expects 2 arguments, got {}",
+                    name,
+                    args.len()
+                )));
+                return None;
+            }
+            let bool_op = match name {
+                "union" => BooleanOp::Union,
+                "intersection" => BooleanOp::Intersection,
+                "difference" => BooleanOp::Difference,
+                _ => unreachable!(),
+            };
+            // Compile left arg recursively.
+            let left_ops = match compile_geometry_call(
+                &args[0], scope, enum_defs, functions, diagnostics, step_offset,
+            ) {
+                Some(ops) => ops,
+                None => {
+                    // Only emit extra diagnostic if no FunctionCall was detected
+                    // (i.e., arg is a literal or ident — not a geometry expression).
+                    if !matches!(args[0].kind, reify_syntax::ExprKind::FunctionCall { .. }) {
+                        diagnostics.push(Diagnostic::error(format!(
+                            "{}() argument 1 must be a geometry expression",
+                            name
+                        )));
+                    }
+                    return None;
+                }
+            };
+            let left_result_step = step_offset + left_ops.len() - 1;
+            let right_offset = step_offset + left_ops.len();
+            // Compile right arg recursively.
+            let right_ops = match compile_geometry_call(
+                &args[1], scope, enum_defs, functions, diagnostics, right_offset,
+            ) {
+                Some(ops) => ops,
+                None => {
+                    if !matches!(args[1].kind, reify_syntax::ExprKind::FunctionCall { .. }) {
+                        diagnostics.push(Diagnostic::error(format!(
+                            "{}() argument 2 must be a geometry expression",
+                            name
+                        )));
+                    }
+                    return None;
+                }
+            };
+            let right_result_step = right_offset + right_ops.len() - 1;
+            let mut all_ops = left_ops;
+            all_ops.extend(right_ops);
+            all_ops.push(CompiledGeometryOp::Boolean {
+                op: bool_op,
+                left: GeomRef::Step(left_result_step),
+                right: GeomRef::Step(right_result_step),
+            });
+            return Some(all_ops);
+        }
+        "union_all" | "intersection_all" => {
+            if args.len() < 2 {
+                diagnostics.push(Diagnostic::error(format!(
+                    "{}() expects at least 2 arguments, got {}",
+                    name,
+                    args.len()
+                )));
+                return None;
+            }
+            let bool_op = match name {
+                "union_all" => BooleanOp::Union,
+                "intersection_all" => BooleanOp::Intersection,
+                _ => unreachable!(),
+            };
+            // Left-fold: compile all args, interleaving binary Boolean ops.
+            // After each pair (accumulator, next_arg), emit a Boolean op whose
+            // result becomes the next accumulator.
+            let mut all_ops: Vec<CompiledGeometryOp> = Vec::new();
+            let mut current_offset = step_offset;
+
+            // Compile first arg.
+            let first_ops = match compile_geometry_call(
+                &args[0], scope, enum_defs, functions, diagnostics, current_offset,
+            ) {
+                Some(ops) => ops,
+                None => {
+                    if !matches!(args[0].kind, reify_syntax::ExprKind::FunctionCall { .. }) {
+                        diagnostics.push(Diagnostic::error(format!(
+                            "{}() argument 1 must be a geometry expression",
+                            name
+                        )));
+                    }
+                    return None;
+                }
+            };
+            let mut accumulator_step = current_offset + first_ops.len() - 1;
+            current_offset += first_ops.len();
+            all_ops.extend(first_ops);
+
+            // Fold remaining args left-to-right.
+            for (i, arg) in args.iter().enumerate().skip(1) {
+                let arg_ops = match compile_geometry_call(
+                    arg, scope, enum_defs, functions, diagnostics, current_offset,
+                ) {
+                    Some(ops) => ops,
+                    None => {
+                        if !matches!(arg.kind, reify_syntax::ExprKind::FunctionCall { .. }) {
+                            diagnostics.push(Diagnostic::error(format!(
+                                "{}() argument {} must be a geometry expression",
+                                name,
+                                i + 1
+                            )));
+                        }
+                        return None;
+                    }
+                };
+                let arg_result_step = current_offset + arg_ops.len() - 1;
+                current_offset += arg_ops.len();
+                all_ops.extend(arg_ops);
+                // Emit binary op: (accumulator, arg) → new accumulator at current_offset.
+                all_ops.push(CompiledGeometryOp::Boolean {
+                    op: bool_op,
+                    left: GeomRef::Step(accumulator_step),
+                    right: GeomRef::Step(arg_result_step),
+                });
+                accumulator_step = current_offset;
+                current_offset += 1;
+            }
+            return Some(all_ops);
+        }
+        _ => {}
+    }
 
     let compiled_args: Vec<CompiledExpr> = args
         .iter()
@@ -4836,6 +4982,297 @@ mod tests {
         );
     }
 
+    // --- Boolean function recognition tests (step-1) ---
+
+    #[test]
+    fn compile_geometry_union_recognized() {
+        assert!(is_geometry_function("union"));
+    }
+
+    #[test]
+    fn compile_geometry_intersection_recognized() {
+        assert!(is_geometry_function("intersection"));
+    }
+
+    #[test]
+    fn compile_geometry_difference_recognized() {
+        assert!(is_geometry_function("difference"));
+    }
+
+    #[test]
+    fn compile_geometry_union_all_recognized() {
+        assert!(is_geometry_function("union_all"));
+    }
+
+    #[test]
+    fn compile_geometry_intersection_all_recognized() {
+        assert!(is_geometry_function("intersection_all"));
+    }
+
+    // --- Binary boolean op compilation tests (step-3) ---
+
+    #[test]
+    fn compile_union_nested_calls_produces_three_ops() {
+        let source = r#"structure S {
+    let r = union(box(10mm, 10mm, 10mm), box(20mm, 20mm, 20mm))
+}"#;
+        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_union"));
+        assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+        let compiled = compile(&parsed);
+        let template = &compiled.templates[0];
+        // union(box, box) should produce 1 realization with 3 ops
+        assert_eq!(
+            template.realizations.len(),
+            1,
+            "expected 1 realization, got {}",
+            template.realizations.len()
+        );
+        let ops = &template.realizations[0].operations;
+        assert_eq!(ops.len(), 3, "expected 3 ops (box, box, union), got {}", ops.len());
+        assert!(
+            matches!(ops[0], CompiledGeometryOp::Primitive { kind: PrimitiveKind::Box, .. }),
+            "expected Primitive::Box at ops[0], got {:?}",
+            ops[0]
+        );
+        assert!(
+            matches!(ops[1], CompiledGeometryOp::Primitive { kind: PrimitiveKind::Box, .. }),
+            "expected Primitive::Box at ops[1], got {:?}",
+            ops[1]
+        );
+        assert!(
+            matches!(
+                ops[2],
+                CompiledGeometryOp::Boolean {
+                    op: BooleanOp::Union,
+                    left: GeomRef::Step(0),
+                    right: GeomRef::Step(1)
+                }
+            ),
+            "expected Boolean{{Union, Step(0), Step(1)}} at ops[2], got {:?}",
+            ops[2]
+        );
+    }
+
+    // --- Nested boolean compilation test (step-11) ---
+
+    #[test]
+    fn compile_nested_boolean_produces_five_ops() {
+        // union(difference(box, cylinder), sphere)
+        // Expected flat ops:
+        //   0: Box
+        //   1: Cylinder
+        //   2: Boolean{Difference, Step(0), Step(1)}
+        //   3: Sphere
+        //   4: Boolean{Union, Step(2), Step(3)}
+        let source = r#"structure S {
+    let r = union(difference(box(20mm, 20mm, 20mm), cylinder(5mm, 20mm)), sphere(10mm))
+}"#;
+        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_nested_bool"));
+        assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+        let compiled = compile(&parsed);
+        let template = &compiled.templates[0];
+        assert_eq!(template.realizations.len(), 1, "expected 1 realization");
+        let ops = &template.realizations[0].operations;
+        assert_eq!(
+            ops.len(), 5,
+            "expected 5 ops for nested boolean, got {}: {:?}",
+            ops.len(), ops
+        );
+        assert!(
+            matches!(ops[0], CompiledGeometryOp::Primitive { kind: PrimitiveKind::Box, .. }),
+            "ops[0] expected Box, got {:?}", ops[0]
+        );
+        assert!(
+            matches!(ops[1], CompiledGeometryOp::Primitive { kind: PrimitiveKind::Cylinder, .. }),
+            "ops[1] expected Cylinder, got {:?}", ops[1]
+        );
+        assert!(
+            matches!(
+                ops[2],
+                CompiledGeometryOp::Boolean { op: BooleanOp::Difference, left: GeomRef::Step(0), right: GeomRef::Step(1) }
+            ),
+            "ops[2] expected Boolean{{Difference,0,1}}, got {:?}", ops[2]
+        );
+        assert!(
+            matches!(ops[3], CompiledGeometryOp::Primitive { kind: PrimitiveKind::Sphere, .. }),
+            "ops[3] expected Sphere, got {:?}", ops[3]
+        );
+        assert!(
+            matches!(
+                ops[4],
+                CompiledGeometryOp::Boolean { op: BooleanOp::Union, left: GeomRef::Step(2), right: GeomRef::Step(3) }
+            ),
+            "ops[4] expected Boolean{{Union,2,3}}, got {:?}", ops[4]
+        );
+    }
+
+    // --- Error case tests for boolean arg validation (step-9, step-10) ---
+
+    #[test]
+    fn compile_union_wrong_arity_emits_diagnostic() {
+        // union(box(...)) with 1 arg should fail with arity diagnostic
+        let source = r#"structure S {
+    let r = union(box(10mm, 10mm, 10mm))
+}"#;
+        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_union_arity"));
+        assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+        let compiled = compile(&parsed);
+        let template = &compiled.templates[0];
+        // Should produce no realization (compilation failed)
+        assert_eq!(
+            template.realizations.len(), 0,
+            "expected 0 realizations for wrong-arity union, got {}",
+            template.realizations.len()
+        );
+        // Should have a diagnostic mentioning "expects 2 arguments"
+        assert!(
+            compiled.diagnostics.iter().any(|d| d.message.contains("expects 2 arguments")),
+            "expected 'expects 2 arguments' diagnostic, got: {:?}",
+            compiled.diagnostics
+        );
+    }
+
+    #[test]
+    fn compile_union_non_geometry_arg_emits_diagnostic() {
+        // union(42, box(...)) — first arg is a scalar literal, not geometry
+        // The parser may reject bare number literals in function position,
+        // so we use a param reference (Scalar param) which is a valid expr but not geometry.
+        let source = r#"structure S {
+    param w: Scalar = 10mm
+    let r = union(w, box(10mm, 10mm, 10mm))
+}"#;
+        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_union_nongeom"));
+        assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+        let compiled = compile(&parsed);
+        let template = &compiled.templates[0];
+        // Should produce no realization (compilation failed)
+        assert_eq!(
+            template.realizations.len(), 0,
+            "expected 0 realizations for non-geometry arg union, got {}",
+            template.realizations.len()
+        );
+        // Should have at least one diagnostic
+        assert!(
+            !compiled.diagnostics.is_empty(),
+            "expected diagnostics for non-geometry arg, got none"
+        );
+    }
+
+    // --- union_all / intersection_all fold compilation tests (step-7) ---
+
+    #[test]
+    fn compile_union_all_three_args_produces_five_ops() {
+        // union_all(a, b, c) → left-fold: Union(Union(a,b), c)
+        // ops: Box_a, Box_b, Boolean{Union,Step(0),Step(1)}, Box_c, Boolean{Union,Step(2),Step(3)}
+        let source = r#"structure S {
+    let r = union_all(box(10mm, 10mm, 10mm), box(10mm, 10mm, 10mm), box(10mm, 10mm, 10mm))
+}"#;
+        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_union_all"));
+        assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+        let compiled = compile(&parsed);
+        let template = &compiled.templates[0];
+        assert_eq!(template.realizations.len(), 1, "expected 1 realization");
+        let ops = &template.realizations[0].operations;
+        assert_eq!(
+            ops.len(), 5,
+            "expected 5 ops for union_all(3 args), got {}: {:?}",
+            ops.len(), ops
+        );
+        // ops[0]: Box
+        assert!(
+            matches!(ops[0], CompiledGeometryOp::Primitive { kind: PrimitiveKind::Box, .. }),
+            "expected Box at ops[0]"
+        );
+        // ops[1]: Box
+        assert!(
+            matches!(ops[1], CompiledGeometryOp::Primitive { kind: PrimitiveKind::Box, .. }),
+            "expected Box at ops[1]"
+        );
+        // ops[2]: Union(Step(0), Step(1))
+        assert!(
+            matches!(
+                ops[2],
+                CompiledGeometryOp::Boolean { op: BooleanOp::Union, left: GeomRef::Step(0), right: GeomRef::Step(1) }
+            ),
+            "expected Boolean{{Union,Step(0),Step(1)}} at ops[2], got {:?}", ops[2]
+        );
+        // ops[3]: Box
+        assert!(
+            matches!(ops[3], CompiledGeometryOp::Primitive { kind: PrimitiveKind::Box, .. }),
+            "expected Box at ops[3]"
+        );
+        // ops[4]: Union(Step(2), Step(3))
+        assert!(
+            matches!(
+                ops[4],
+                CompiledGeometryOp::Boolean { op: BooleanOp::Union, left: GeomRef::Step(2), right: GeomRef::Step(3) }
+            ),
+            "expected Boolean{{Union,Step(2),Step(3)}} at ops[4], got {:?}", ops[4]
+        );
+    }
+
+    // --- difference and intersection compilation tests (step-5, step-6) ---
+
+    #[test]
+    fn compile_difference_nested_calls_produces_three_ops() {
+        let source = r#"structure S {
+    let r = difference(box(20mm, 20mm, 20mm), box(10mm, 10mm, 10mm))
+}"#;
+        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_diff"));
+        assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+        let compiled = compile(&parsed);
+        let template = &compiled.templates[0];
+        assert_eq!(template.realizations.len(), 1, "expected 1 realization");
+        let ops = &template.realizations[0].operations;
+        assert_eq!(ops.len(), 3, "expected 3 ops (box, box, difference)");
+        assert!(
+            matches!(ops[0], CompiledGeometryOp::Primitive { kind: PrimitiveKind::Box, .. }),
+            "expected Box at ops[0]"
+        );
+        assert!(
+            matches!(ops[1], CompiledGeometryOp::Primitive { kind: PrimitiveKind::Box, .. }),
+            "expected Box at ops[1]"
+        );
+        assert!(
+            matches!(
+                ops[2],
+                CompiledGeometryOp::Boolean {
+                    op: BooleanOp::Difference,
+                    left: GeomRef::Step(0),
+                    right: GeomRef::Step(1)
+                }
+            ),
+            "expected Boolean{{Difference, Step(0), Step(1)}} at ops[2], got {:?}",
+            ops[2]
+        );
+    }
+
+    #[test]
+    fn compile_intersection_nested_calls_produces_three_ops() {
+        let source = r#"structure S {
+    let r = intersection(box(10mm, 10mm, 10mm), box(10mm, 10mm, 10mm))
+}"#;
+        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_isect"));
+        assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+        let compiled = compile(&parsed);
+        let template = &compiled.templates[0];
+        assert_eq!(template.realizations.len(), 1, "expected 1 realization");
+        let ops = &template.realizations[0].operations;
+        assert_eq!(ops.len(), 3, "expected 3 ops (box, box, intersection)");
+        assert!(
+            matches!(
+                ops[2],
+                CompiledGeometryOp::Boolean {
+                    op: BooleanOp::Intersection,
+                    left: GeomRef::Step(0),
+                    right: GeomRef::Step(1)
+                }
+            ),
+            "expected Boolean{{Intersection, Step(0), Step(1)}} at ops[2], got {:?}",
+            ops[2]
+        );
+    }
+
     // --- Step 11: Directly test the catch-all branch in compile_geometry_call ---
 
     #[test]
@@ -4858,7 +5295,7 @@ mod tests {
         let functions: Vec<CompiledFunction> = vec![];
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
-        let result = compile_geometry_call(&expr, &scope, &enum_defs, &functions, &mut diagnostics);
+        let result = compile_geometry_call(&expr, &scope, &enum_defs, &functions, &mut diagnostics, 0);
 
         assert!(result.is_none(), "unrecognized geometry fn should return None");
         assert!(

@@ -2456,9 +2456,10 @@ impl Engine {
 
             for template in &module.templates {
                 for realization in &template.realizations {
+                    let handle_start = step_handles.len();
                     for op in &realization.operations {
                         total_ops += 1;
-                        let geom_op = compile_geometry_op(op, &values, &step_handles, &module.functions);
+                        let geom_op = compile_geometry_op(op, &values, &step_handles[handle_start..], &module.functions);
                         match geom_op {
                             Some(geom_op) => match kernel.execute(&geom_op) {
                                 Ok(handle) => {
@@ -2529,10 +2530,11 @@ impl Engine {
 
             for template in &module.templates {
                 for realization in &template.realizations {
+                    let handle_start = step_handles.len();
                     for op in &realization.operations {
                         total_ops += 1;
                         let geom_op =
-                            compile_geometry_op(op, &check_result.values, &step_handles, &module.functions);
+                            compile_geometry_op(op, &check_result.values, &step_handles[handle_start..], &module.functions);
                         match geom_op {
                             Some(geom_op) => match kernel.execute(&geom_op) {
                                 Ok(handle) => {
@@ -2647,7 +2649,7 @@ impl Engine {
                     let geom_op = compile_geometry_op(
                         op,
                         values,
-                        &step_handles,
+                        &step_handles[handle_start..],
                         &module.functions,
                     );
                     match geom_op {

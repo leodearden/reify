@@ -1,118 +1,220 @@
 {
-  "task_id": "147",
-  "title": "Fix sidecar streaming and IPC field alignment (Task 134 remediation)",
+  "task_id": "307",
+  "title": "Stdlib: wire boolean operations \u2014 union, intersection, difference",
   "files": [
-    "gui/sidecar/src/session.ts",
-    "gui/sidecar/src/index.ts",
-    "gui/sidecar/src/__tests__/session.test.ts"
+    "crates/reify-compiler/src/lib.rs",
+    "crates/reify-eval/src/lib.rs",
+    "crates/reify-eval/tests/boolean_ops_e2e.rs"
   ],
   "modules": [
-    "gui/sidecar"
+    "crates/reify-compiler",
+    "crates/reify-eval"
   ],
-  "analysis": "Task 147 remediates 4 blockers from task 134 in the gui/sidecar module. After thorough code review, the specific bugs are:\n\n1. **ToolResult field misalignment** (session.ts:174): `block.tool_use_id` (a UUID like `toolu_abc123`) is mapped to the `tool_name` field on the outbound ToolResult. The GUI's claudeStore.ts matches tool results to tool calls by `tool_name`, so this value must be the actual tool name (e.g., `reify_get_source`). Fix: change `seenToolIds: Set<string>` to `toolNameById: Map<string, string>` to track the tool_use_id\u2192name mapping from tool_use blocks, then look up the correct name when emitting tool_result.\n\n2. **Non-blocking input loop** (index.ts:48): `await session.handleMessage(msg)` inside the `for await` loop blocks reading the next line from stdin. When a user sends `send_message` (which spawns a claude CLI subprocess and streams its output), an `abort` message can't be read until the first handler completes \u2014 by which time the abort is useless. Fix: dispatch `send_message` handling without awaiting, so the loop continues reading and can process `abort` immediately.\n\n3. **session.destroy() lifecycle**: No cleanup mechanism exists. When the sidecar process receives SIGTERM/SIGINT or input EOF, any spawned `claude` CLI subprocess is orphaned. The shutdown handler in index.ts just calls `input.destroy()`. Fix: add `destroy()` method to SidecarSession that aborts in-flight requests and sets a destroyed guard flag, then wire it to the shutdown handler and input-end in index.ts.\n\n4. **Streaming chunk handling** (session.ts:142-185): `lastTextLen` and `lastThinkingLen` are single counters that don't reset between assistant turns within one SDK invocation. When Claude responds with text \u2192 calls a tool \u2192 responds with more text (multi-turn within `--print` mode), the counters from turn 1 carry over. Turn 2's text starts shorter than the accumulated counter, so the `block.text.length > lastTextLen` check fails and no deltas are emitted for turn 2. Fix: detect new turn by noticing text/thinking length decreased, then reset counters.",
+  "analysis": "The boolean operations infrastructure is fully built at every layer EXCEPT the compiler's function recognition and compilation. Specifically: (1) CompiledGeometryOp::Boolean { op: BooleanOp, left: GeomRef, right: GeomRef } already exists in the compiler types. (2) BooleanOp::{Union,Difference,Intersection} enum exists. (3) The eval layer's compile_geometry_op() already resolves Boolean ops via GeomRef::Step \u2192 step_handles lookup. (4) GeometryOp::{Union,Difference,Intersection} runtime variants exist in reify-types. (5) The OCCT kernel already dispatches to boolean_fuse/cut/common FFI. (6) OCCT FFI is proven working (boundary4_geometry.rs tests boolean_difference at kernel level). The ONLY gap is: is_geometry_function() doesn't include 'union'/'intersection'/'difference'/'union_all'/'intersection_all', and compile_geometry_call() has no match arms for them. The key design challenge is that boolean ops take geometry operands (not scalars), so compilation must recursively compile each arg as a geometry op chain, tracking step indices for GeomRef references. The eval engine accumulates step_handles across all operations in a flat vector, so GeomRef::Step(i) indices must be globally correct within the realization's ops list.\n\nREVIEW FIX: The compiler always passes step_offset: 0 per realization, making GeomRef::Step indices realization-local. However, the eval engine passes the full accumulated step_handles vector (which spans ALL realizations) to compile_geometry_op. When a second realization has boolean ops, Step(0) resolves to the first realization's handle instead of the current realization's first handle. The fix is to pass &step_handles[handle_start..] in all three eval code paths (tessellate_from_values at line 2650, and the two build methods at lines 2461 and 2535), making step_handles lookup realization-local to match the compiler's indexing.",
   "prerequisites": [],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing test: tool_result emits correct tool_name (the actual tool name from the corresponding tool_use block, not the tool_use_id UUID). Mock a CLI response with tool_use block (id='toolu_abc', name='reify_get_source') followed by tool_result block (tool_use_id='toolu_abc'). Assert the emitted ToolResult has tool_name='reify_get_source', not 'toolu_abc'.",
+      "description": "Write failing inline tests in reify-compiler asserting is_geometry_function returns true for 'union', 'intersection', 'difference', 'union_all', 'intersection_all'",
       "status": "done",
-      "commit": "f8476b8"
+      "commit": "bfc1da2"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Fix ToolResult field misalignment in session.ts: Change `seenToolIds: Set<string>` to `toolNameById: Map<string, string>` that maps tool_use_id\u2192tool_name. In the tool_use handler, call `toolNameById.set(block.id, block.name)` instead of `seenToolIds.add(block.id)`. In the tool_result handler, look up `toolNameById.get(block.tool_use_id) ?? ''` for the tool_name field. Also update the dedup check to use `toolNameById.has(block.id)`.",
+      "description": "Add 'union' | 'intersection' | 'difference' | 'union_all' | 'intersection_all' to is_geometry_function() match arms",
       "status": "done",
-      "commit": "beda4ad"
+      "commit": "4186230"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing test: abort message is processed during in-flight send_message when using the main() entrypoint. Create input/output PassThrough streams, write a send_message line (with mock spawn that hangs), then immediately write an abort line. Assert that done (not timeout error) is emitted, proving abort was processed while send_message was in-flight.",
+      "description": "Write failing inline test: parse 'let r = union(box(10mm,10mm,10mm), box(20mm,20mm,20mm))' \u2192 realization with 3 ops: 2 Primitive::Box + 1 Boolean{Union, Step(0), Step(1)}",
       "status": "done",
-      "commit": "a4a5d1c"
+      "commit": "cf101cd"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Fix non-blocking input loop in index.ts: Instead of `await session.handleMessage(msg)` for all messages, use fire-and-forget dispatch: `session.handleMessage(msg).catch(...)` without await. This allows the for-await loop to continue reading lines while a send_message handler is in flight, enabling abort to be processed immediately. Since abort/clear_session handlers are synchronous, they resolve instantly anyway.",
+      "description": "Add match arms for 'union'|'intersection'|'difference' in compile_geometry_call: validate 2 args, recursively compile each arg via compile_geometry_call, compute step indices, emit CompiledGeometryOp::Boolean with correct GeomRef::Step references. Include error diagnostics for wrong arity and non-geometry args.",
       "status": "done",
-      "commit": "87d5b5a"
+      "commit": "b228162"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing tests for session.destroy() lifecycle: (a) destroy() aborts in-flight request and emits done, (b) handleMessage after destroy() is a no-op (does not spawn processes or emit messages), (c) destroy() is idempotent (calling twice doesn't throw).",
+      "description": "Write inline test: 'let r = difference(box(20mm,20mm,20mm), box(10mm,10mm,10mm))' \u2192 realization with 3 ops ending in Boolean{Difference}. Should pass from step-4.",
       "status": "done",
-      "commit": "54683b8"
+      "commit": "97bea24"
     },
     {
       "id": "step-6",
-      "type": "impl",
-      "description": "Add destroy() method to SidecarSession: sets a `private destroyed = false` flag, aborts any in-flight request via abortController.abort(), and clears sessionId. Guard handleMessage() with early return if destroyed. Wire destroy() into index.ts: call session.destroy() in the shutdown handler (SIGTERM/SIGINT) and in the finally block after the input loop ends.",
+      "type": "test",
+      "description": "Write inline test: 'let r = intersection(box(10mm,10mm,10mm), box(10mm,10mm,10mm))' \u2192 realization with 3 ops ending in Boolean{Intersection}. Should pass from step-4.",
       "status": "done",
-      "commit": "b6576ab"
+      "commit": "97bea24"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing test: multi-turn streaming delta reset. Mock a CLI response simulating two assistant turns within one invocation: turn 1 has thinking + text + tool_use, then turn 2 has new text (with shorter initial length than turn 1's accumulated text). Assert that text_delta events are emitted for BOTH turns \u2014 proving counters reset between turns rather than suppressing turn 2 deltas.",
+      "description": "Write failing inline test: 'let r = union_all(box(10mm,10mm,10mm), box(10mm,10mm,10mm), box(10mm,10mm,10mm))' \u2192 realization with 5 ops: 3 Primitive::Box + 2 Boolean{Union} (left-fold pattern: Union(Union(box0,box1),box2))",
       "status": "done",
-      "commit": "b9c1882"
+      "commit": "ff28ca0"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Fix streaming chunk handling in session.ts invokeSdk(): Before processing each text/thinking block, detect if the block's current length is LESS than the tracked length (indicating a new turn started). If so, reset lastTextLen/lastThinkingLen to 0 and clear the toolNameById map. This ensures delta extraction works correctly across multi-turn conversations within a single SDK invocation.",
+      "description": "Add match arms for 'union_all'|'intersection_all' in compile_geometry_call: validate >=2 args, recursively compile each arg, left-fold with binary Boolean ops tracking accumulated step indices",
       "status": "done",
-      "commit": "ea83e0e"
+      "commit": "a4040e3"
+    },
+    {
+      "id": "step-9",
+      "type": "test",
+      "description": "Write inline test: 'let r = union(box(10mm,10mm,10mm))' with 1 arg \u2192 compile_geometry_call returns None and emits 'expects 2 arguments' diagnostic",
+      "status": "done",
+      "commit": "130cf04"
+    },
+    {
+      "id": "step-10",
+      "type": "test",
+      "description": "Write inline test: 'let r = union(42, box(10mm,10mm,10mm))' with non-geometry first arg \u2192 compile_geometry_call returns None and emits diagnostic about geometry argument required",
+      "status": "done",
+      "commit": "130cf04"
+    },
+    {
+      "id": "step-11",
+      "type": "test",
+      "description": "Write inline test for nested boolean: 'let r = union(difference(box(...), cylinder(...)), sphere(...))' \u2192 realization with 5 ops: Box, Cylinder, Boolean{Difference}, Sphere, Boolean{Union} with correct step indices",
+      "status": "done",
+      "commit": "07af798"
+    },
+    {
+      "id": "step-12",
+      "type": "test",
+      "description": "Create crates/reify-eval/tests/boolean_ops_e2e.rs with OCCT-guarded test: parse+compile+eval 'union(box(10mm,10mm,10mm), box(10mm,10mm,10mm))' through Engine with OcctKernel, verify non-empty STEP output containing ISO-10303-21",
+      "status": "done",
+      "commit": "46be438"
+    },
+    {
+      "id": "step-13",
+      "type": "impl",
+      "description": "Verify full eval+kernel path works end-to-end. The compile_geometry_op Boolean handler and OCCT kernel boolean ops are already implemented \u2014 fix any issues if e2e test fails.",
+      "status": "done",
+      "commit": "46be438"
+    },
+    {
+      "id": "step-14",
+      "type": "test",
+      "description": "Add OCCT-guarded e2e test: difference(box(20mm,20mm,20mm), cylinder(5mm,20mm)) \u2192 valid STEP export (box with hole)",
+      "status": "done",
+      "commit": "46be438"
+    },
+    {
+      "id": "step-15",
+      "type": "test",
+      "description": "Add OCCT-guarded e2e test: intersection(box(10mm,10mm,10mm), box(10mm,10mm,10mm)) \u2192 valid STEP export",
+      "status": "done",
+      "commit": "46be438"
+    },
+    {
+      "id": "step-16",
+      "type": "test",
+      "description": "Add OCCT-guarded e2e test: union_all with 5 boxes at different positions (nested translates or direct) \u2192 valid STEP export",
+      "status": "done",
+      "commit": "46be438"
+    },
+    {
+      "id": "step-17",
+      "type": "test",
+      "description": "Write failing OCCT-guarded e2e test in boolean_ops_e2e.rs: structure with two geometry let bindings 'let r1 = box(10mm, 10mm, 10mm)' and 'let r2 = union(box(20mm, 20mm, 20mm), box(30mm, 30mm, 30mm))'. Use Engine::tessellate_realizations() (or build()) and verify both realizations produce valid geometry. This test exposes the multi-realization step index bug: r2's Boolean{Union, Step(0), Step(1)} resolves Step(0) to r1's handle instead of r2's first box handle because the eval engine passes the full global step_handles vector instead of a realization-local slice.",
+      "status": "done",
+      "commit": "4a08e78"
+    },
+    {
+      "id": "step-18",
+      "type": "impl",
+      "description": "Fix all three geometry eval loops in Engine (crates/reify-eval/src/lib.rs) to pass realization-local step_handles slice to compile_geometry_op. (1) In tessellate_from_values (line ~2650): change '&step_handles' to '&step_handles[handle_start..]' \u2014 handle_start already tracked at line 2644. (2) In the eval-then-build method (line ~2461): add 'let handle_start = step_handles.len()' before the per-realization op loop, then pass '&step_handles[handle_start..]'. (3) In the full build() method (line ~2535): same pattern \u2014 add handle_start tracking and pass realization-local slice. This makes GeomRef::Step indices resolve relative to the current realization, matching the compiler's step_offset: 0 convention.",
+      "status": "done",
+      "commit": "a737b43"
+    },
+    {
+      "id": "step-19",
+      "type": "test",
+      "description": "Write OCCT-guarded e2e test for multi-realization with nested booleans: 'let r1 = difference(box(20mm,20mm,20mm), cylinder(5mm, 20mm))' and 'let r2 = union(box(10mm,10mm,10mm), sphere(8mm))'. Verify both realizations tessellate to non-empty meshes. This exercises the fix with nested boolean ops where step indices would be even more wrong without the realization-local slice (r2's ops would start at step index 3 globally but the compiler emits Step(0), Step(1), Step(2)).",
+      "status": "done",
+      "commit": "b27abde"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Use Map<tool_use_id, tool_name> instead of adding tool_use_id to the IPC protocol types",
-      "rationale": "Minimizes the change footprint \u2014 keeps the existing IPC protocol unchanged (ToolResult still uses tool_name for matching). The GUI's claudeStore.ts already matches by tool_name, so fixing the sidecar to emit the correct name is sufficient. Adding tool_use_id to the protocol would require coordinated changes to both sidecar types and the GUI store, which is out of scope for a remediation task."
+      "decision": "Recursive geometry arg compilation for boolean ops",
+      "rationale": "Boolean ops take geometry operands, not scalar values. Each arg (e.g., box(10,10,10)) must be recursively compiled via compile_geometry_call into geometry ops, then referenced by GeomRef::Step index. This reuses the existing compilation infrastructure and produces a flat ops list within one realization."
     },
     {
-      "decision": "Fire-and-forget dispatch for all message types in the input loop, not just send_message",
-      "rationale": "Simplifies the code \u2014 abort and clear_session handlers are synchronous (resolve immediately), so not awaiting them has no behavioral difference. The only message that takes time is send_message (spawns CLI process). A uniform dispatch pattern is cleaner than type-checking in the loop."
+      "decision": "Left-fold pattern for union_all/intersection_all",
+      "rationale": "union_all(a,b,c,d) compiles to Union(Union(Union(a,b),c),d). This maps naturally to binary BooleanOp and accumulates step indices correctly. Left-fold is standard for associative operations and matches OCCT's pairwise boolean API."
     },
     {
-      "decision": "Detect new turn by text/thinking length decrease rather than per-block-index tracking",
-      "rationale": "The Claude CLI stream-json format replays the full content array for each partial event. When a new turn starts, the first text block will have length < lastTextLen. This simple heuristic correctly identifies turn boundaries without complex per-block-index bookkeeping. It handles the common case (single text/thinking block per turn) cleanly."
+      "decision": "No geometry variable references in boolean args (only nested calls)",
+      "rationale": "Supporting references to named geometry let bindings (e.g., union(my_box, my_sphere)) would require cross-realization handle resolution at compile time, which the current architecture doesn't support \u2014 each geometry let becomes a separate realization. Nested calls (union(box(...), cylinder(...))) are the natural syntax and fully supported by recursive compilation."
     },
     {
-      "decision": "Add destroyed guard flag instead of throwing from destroy()",
-      "rationale": "A guard flag with silent early return is more robust for shutdown scenarios where messages may still be in the pipeline. Throwing would propagate errors that are expected during shutdown, complicating error handling. Silent no-op after destroy is the standard pattern for disposable resources."
+      "decision": "No separate surface boolean handling",
+      "rationale": "OCCT's boolean_fuse/cut/common work identically on solids and surfaces (BRepAlgoAPI handles both). The same GeometryOp::Union/Difference/Intersection variants and kernel dispatch path handle both cases without any surface-specific code."
     },
     {
-      "decision": "No changes to gui/sidecar/src/types.ts",
-      "rationale": "The TypeScript interfaces are correct as-is. The bug is in session.ts putting the wrong value (tool_use_id UUID) into the tool_name field, not in the field definition itself. No new fields or type changes are needed."
+      "decision": "Use compile_geometry_call for arg validation instead of type checking",
+      "rationale": "Non-geometry args (like scalar literals) are detected when compile_geometry_call returns None for the arg. This produces a clear diagnostic without requiring a separate type-checking pass, keeping the implementation simple and consistent with the existing pattern."
+    },
+    {
+      "decision": "Fix multi-realization step indices in eval engine (not compiler)",
+      "rationale": "The compiler correctly emits realization-local step indices (step_offset: 0 per realization). The bug is in the eval engine which passes the full global step_handles vector to compile_geometry_op instead of a realization-local slice. Fixing in eval by passing &step_handles[handle_start..] is minimal (3 call-sites), preserves the compiler's clean per-realization indexing, and matches the existing handle_start tracking in tessellate_from_values. The alternative (making the compiler emit globally-offset indices) would require the compiler to know about other realizations' op counts, coupling compilation order to eval order."
     }
   ],
   "reuse": [
     {
-      "what": "createMockProcess() test helper",
-      "where": "gui/sidecar/src/__tests__/session.test.ts:19-38",
-      "how": "Reuse the existing helper for creating mock CLI processes with streaming events. Extend event arrays with tool_use + tool_result blocks for new tests, and create multi-turn event sequences for streaming reset tests."
+      "what": "CompiledGeometryOp::Boolean { op, left, right } variant",
+      "where": "crates/reify-compiler/src/lib.rs line 300",
+      "how": "Already defined with BooleanOp enum and GeomRef fields \u2014 emit directly from compile_geometry_call match arms"
     },
     {
-      "what": "collectOutput() test helper",
-      "where": "gui/sidecar/src/__tests__/session.test.ts:523-556",
-      "how": "Reuse the existing helper for collecting outbound messages from the main() entrypoint in the non-blocking input loop test."
+      "what": "BooleanOp::{Union, Difference, Intersection} enum",
+      "where": "crates/reify-compiler/src/lib.rs line 340",
+      "how": "Map function name to enum variant: 'union'\u2192Union, 'difference'\u2192Difference, 'intersection'\u2192Intersection"
     },
     {
-      "what": "Hanging mock process pattern with abort listener",
-      "where": "gui/sidecar/src/__tests__/session.test.ts:138-155",
-      "how": "Reuse the established pattern for creating mock processes that hang until aborted (for testing abort behavior through main() and destroy() lifecycle)."
+      "what": "compile_geometry_op Boolean handler in eval",
+      "where": "crates/reify-eval/src/lib.rs line 2869",
+      "how": "Already resolves GeomRef::Step(idx) \u2192 step_handles[idx] for left/right, maps to GeometryOp::Union/Difference/Intersection \u2014 no changes needed to the function itself, only to the slice passed to it"
     },
     {
-      "what": "AbortController pattern for process lifecycle",
-      "where": "gui/sidecar/src/session.ts:83,120-121",
-      "how": "The existing abort controller pattern (create per-request, pass signal to spawn, abort on timeout/user-abort) is extended naturally for the destroy() method \u2014 destroy() calls abort() on the active controller."
+      "what": "OCCT kernel boolean dispatch",
+      "where": "crates/reify-kernel-occt/src/lib.rs line 174",
+      "how": "Already handles GeometryOp::Union\u2192boolean_fuse, Difference\u2192boolean_cut, Intersection\u2192boolean_common \u2014 no changes needed"
+    },
+    {
+      "what": "Existing inline test pattern for geometry compilation",
+      "where": "crates/reify-compiler/src/lib.rs line 4670",
+      "how": "Follow exact pattern: parse source string with reify_syntax::parse, compile with compile(), assert realization count and op types via matches!() macro"
+    },
+    {
+      "what": "compile_geometry_call recursive call pattern",
+      "where": "Function already accepts &Expr and returns Option<Vec<CompiledGeometryOp>>",
+      "how": "Call compile_geometry_call(&args[i], scope, enum_defs, functions, diagnostics) on each raw syntax arg to recursively compile nested geometry calls"
+    },
+    {
+      "what": "e2e test pattern with OCCT kernel",
+      "where": "crates/reify-eval/tests/e2e_bracket.rs",
+      "how": "Follow pattern: parse\u2192compile\u2192DispatchPlanner+OcctKernelHandle\u2192Engine::new\u2192build\u2192verify STEP output"
+    },
+    {
+      "what": "handle_start tracking pattern in tessellate_from_values",
+      "where": "crates/reify-eval/src/lib.rs line 2644",
+      "how": "Already computes handle_start = step_handles.len() before each realization's op loop. Reuse this exact pattern in the two build methods that currently lack it, and change all three call-sites to pass &step_handles[handle_start..] for realization-local indexing."
     }
   ],
-  "_session_id": "147-d149c2b5",
-  "_created_at": "2026-03-24T07:01:02.719035+00:00"
+  "_session_id": "307-a6974930",
+  "_created_at": "2026-03-24T07:25:08.162380+00:00"
 }
