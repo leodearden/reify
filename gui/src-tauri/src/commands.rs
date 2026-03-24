@@ -3,6 +3,7 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
+use crate::claude_bridge::SidecarHandle;
 use crate::engine::EngineSession;
 use crate::types::{FileData, GuiState, SourceLocation};
 use crate::watcher::FileWatcher;
@@ -14,6 +15,9 @@ pub struct AppState {
     pub last_state: Mutex<Option<GuiState>>,
     /// File watcher for the currently loaded .ri file (re-targeted on open_file_engine).
     pub watcher: Mutex<Option<FileWatcher>>,
+    /// Claude Code SDK sidecar handle (lazily spawned on first claude_send_message).
+    /// Uses tokio::sync::Mutex because sidecar operations span await points.
+    pub sidecar: tokio::sync::Mutex<Option<SidecarHandle>>,
 }
 
 // --- Helper functions for testability ---
