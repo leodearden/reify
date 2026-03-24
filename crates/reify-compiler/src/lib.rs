@@ -3090,6 +3090,8 @@ fn compile_entity(
                     scope: &scope,
                     enum_defs,
                     functions,
+                    trait_registry,
+                    compiled_templates,
                 };
                 let mut acc = ConnectAccumulator {
                     constraints: &mut constraints,
@@ -3125,6 +3127,8 @@ fn compile_entity(
                     scope: &scope,
                     enum_defs,
                     functions,
+                    trait_registry,
+                    compiled_templates,
                 };
                 // Desugar chain into pairwise Forward connections
                 for pair in chain_decl.elements.windows(2) {
@@ -3675,6 +3679,8 @@ struct ConnectContext<'a> {
     scope: &'a CompilationScope,
     enum_defs: &'a [reify_types::EnumDef],
     functions: &'a [CompiledFunction],
+    trait_registry: &'a HashMap<String, &'a CompiledTrait>,
+    compiled_templates: &'a [TopologyTemplate],
 }
 
 /// Per-statement inputs for compiling a single connection.
