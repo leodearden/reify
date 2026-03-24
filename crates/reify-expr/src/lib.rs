@@ -621,7 +621,9 @@ fn eval_method_call(obj: &Value, method: &str, args: &[Value], result_type: &Typ
                 _ => unreachable!(),
             };
             match obj {
-                Value::Tensor(components) => {
+                Value::Tensor(components)
+                | Value::Point(components)
+                | Value::Vector(components) => {
                     components.get(index).cloned().unwrap_or(Value::Undef)
                 }
                 _ => Value::Undef,
@@ -720,6 +722,27 @@ fn eval_or(left: &CompiledExpr, right: &CompiledExpr, ctx: &EvalContext) -> Valu
     }
 }
 
+/// Apply a binary op component-wise to two equal-length slices.
+/// Wraps the result with the provided constructor (`Value::Point`, `Value::Vector`,
+/// or `Value::Tensor`).  Returns `Value::Undef` on length mismatch, empty inputs,
+/// or any component producing `Undef`.
+fn componentwise_op(
+    a: &[Value],
+    b: &[Value],
+    op: fn(&Value, &Value) -> Value,
+    wrap: fn(Vec<Value>) -> Value,
+) -> Value {
+    if a.is_empty() || b.is_empty() || a.len() != b.len() {
+        return Value::Undef;
+    }
+    let results: Vec<Value> = a.iter().zip(b.iter()).map(|(x, y)| op(x, y)).collect();
+    if results.iter().any(|v| v.is_undef()) {
+        Value::Undef
+    } else {
+        wrap(results)
+    }
+}
+
 fn eval_add(lv: &Value, rv: &Value) -> Value {
     match (lv, rv) {
         (Value::Int(a), Value::Int(b)) => Value::Int(a + b),
@@ -748,20 +771,17 @@ fn eval_add(lv: &Value, rv: &Value) -> Value {
         }
         (Value::String(a), Value::String(b)) => Value::String(format!("{}{}", a, b)),
         // Component-wise Tensor addition
-        (Value::Tensor(a), Value::Tensor(b)) => {
-            if a.is_empty() || b.is_empty() {
-                return Value::Undef; // empty-tensor arithmetic is degenerate
-            }
-            if a.len() != b.len() {
-                return Value::Undef;
-            }
-            let results: Vec<Value> = a.iter().zip(b.iter()).map(|(x, y)| eval_add(x, y)).collect();
-            if results.iter().any(|v| v.is_undef()) {
-                Value::Undef
-            } else {
-                Value::Tensor(results)
-            }
-        }
+        (Value::Tensor(a), Value::Tensor(b)) => componentwise_op(a, b, eval_add, Value::Tensor),
+        // Component-wise Point/Vector addition.
+        // Point + Vector or Vector + Point → Point (displacement).
+        // Vector + Vector → Vector.
+        // Point + Point is guarded at BinOp level (returns Undef via Type check), but
+        // if called directly here we follow "left operand determines type" → Point.
+        (Value::Vector(a), Value::Vector(b)) => componentwise_op(a, b, eval_add, Value::Vector),
+        // Point + Point is geometrically undefined (spec 3.3.1).
+        (Value::Point(_), Value::Point(_)) => Value::Undef,
+        (Value::Point(a), Value::Vector(b)) => componentwise_op(a, b, eval_add, Value::Point),
+        (Value::Vector(a), Value::Point(b)) => componentwise_op(a, b, eval_add, Value::Point),
         _ => Value::Undef,
     }
 }
@@ -825,20 +845,15 @@ fn eval_sub(lv: &Value, rv: &Value) -> Value {
             }
         }
         // Component-wise Tensor subtraction
-        (Value::Tensor(a), Value::Tensor(b)) => {
-            if a.is_empty() || b.is_empty() {
-                return Value::Undef; // empty-tensor arithmetic is degenerate
-            }
-            if a.len() != b.len() {
-                return Value::Undef;
-            }
-            let results: Vec<Value> = a.iter().zip(b.iter()).map(|(x, y)| eval_sub(x, y)).collect();
-            if results.iter().any(|v| v.is_undef()) {
-                Value::Undef
-            } else {
-                Value::Tensor(results)
-            }
-        }
+        (Value::Tensor(a), Value::Tensor(b)) => componentwise_op(a, b, eval_sub, Value::Tensor),
+        // Component-wise Point/Vector subtraction.
+        // Point - Point → Vector (displacement).
+        // Vector - Vector → Vector.
+        // Point - Vector → Point (displaced point).
+        // Vector - Point is geometrically invalid → Undef (falls through to default).
+        (Value::Vector(a), Value::Vector(b)) => componentwise_op(a, b, eval_sub, Value::Vector),
+        (Value::Point(a), Value::Point(b)) => componentwise_op(a, b, eval_sub, Value::Vector),
+        (Value::Point(a), Value::Vector(b)) => componentwise_op(a, b, eval_sub, Value::Point),
         _ => Value::Undef,
     }
 }
@@ -877,13 +892,35 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
         },
         // Scalar * Tensor or Tensor * Scalar: scale each component
         (Value::Tensor(components), scalar) | (scalar, Value::Tensor(components))
-            if !matches!(scalar, Value::Tensor(_)) =>
+            if !matches!(scalar, Value::Tensor(_) | Value::Point(_) | Value::Vector(_)) =>
         {
             let results: Vec<Value> = components.iter().map(|c| eval_mul(c, scalar)).collect();
             if results.iter().any(|v| v.is_undef()) {
                 Value::Undef
             } else {
                 Value::Tensor(results)
+            }
+        }
+        // Scalar * Point or Point * Scalar: scale each component, preserve Point type
+        (Value::Point(components), scalar) | (scalar, Value::Point(components))
+            if !matches!(scalar, Value::Tensor(_) | Value::Point(_) | Value::Vector(_)) =>
+        {
+            let results: Vec<Value> = components.iter().map(|c| eval_mul(c, scalar)).collect();
+            if results.iter().any(|v| v.is_undef()) {
+                Value::Undef
+            } else {
+                Value::Point(results)
+            }
+        }
+        // Scalar * Vector or Vector * Scalar: scale each component, preserve Vector type
+        (Value::Vector(components), scalar) | (scalar, Value::Vector(components))
+            if !matches!(scalar, Value::Tensor(_) | Value::Point(_) | Value::Vector(_)) =>
+        {
+            let results: Vec<Value> = components.iter().map(|c| eval_mul(c, scalar)).collect();
+            if results.iter().any(|v| v.is_undef()) {
+                Value::Undef
+            } else {
+                Value::Vector(results)
             }
         }
         // Matrix * Vector: rank-2 Tensor (rows of Tensors) × rank-1 Tensor (flat elements).
@@ -1047,12 +1084,36 @@ fn eval_div(lv: &Value, rv: &Value) -> Value {
             dimension: *dimension,
         },
         // Tensor / Scalar: divide each component by the scalar
-        (Value::Tensor(components), scalar) if !matches!(scalar, Value::Tensor(_)) => {
+        (Value::Tensor(components), scalar)
+            if !matches!(scalar, Value::Tensor(_) | Value::Point(_) | Value::Vector(_)) =>
+        {
             let results: Vec<Value> = components.iter().map(|c| eval_div(c, scalar)).collect();
             if results.iter().any(|v| v.is_undef()) {
                 Value::Undef
             } else {
                 Value::Tensor(results)
+            }
+        }
+        // Point / Scalar: divide each component, preserve Point type
+        (Value::Point(components), scalar)
+            if !matches!(scalar, Value::Tensor(_) | Value::Point(_) | Value::Vector(_)) =>
+        {
+            let results: Vec<Value> = components.iter().map(|c| eval_div(c, scalar)).collect();
+            if results.iter().any(|v| v.is_undef()) {
+                Value::Undef
+            } else {
+                Value::Point(results)
+            }
+        }
+        // Vector / Scalar: divide each component, preserve Vector type
+        (Value::Vector(components), scalar)
+            if !matches!(scalar, Value::Tensor(_) | Value::Point(_) | Value::Vector(_)) =>
+        {
+            let results: Vec<Value> = components.iter().map(|c| eval_div(c, scalar)).collect();
+            if results.iter().any(|v| v.is_undef()) {
+                Value::Undef
+            } else {
+                Value::Vector(results)
             }
         }
         _ => Value::Undef,
@@ -1215,6 +1276,22 @@ fn neg_value(v: Value) -> Value {
                 Value::Undef
             } else {
                 Value::Tensor(results)
+            }
+        }
+        Value::Point(components) => {
+            let results: Vec<Value> = components.into_iter().map(neg_value).collect();
+            if results.iter().any(|x| x.is_undef()) {
+                Value::Undef
+            } else {
+                Value::Point(results)
+            }
+        }
+        Value::Vector(components) => {
+            let results: Vec<Value> = components.into_iter().map(neg_value).collect();
+            if results.iter().any(|x| x.is_undef()) {
+                Value::Undef
+            } else {
+                Value::Vector(results)
             }
         }
         _ => Value::Undef,

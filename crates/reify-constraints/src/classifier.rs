@@ -89,11 +89,13 @@ impl ConstraintClassifier {
                         | Value::Lambda { .. }
                         | Value::Field { .. }
                         | Value::Tensor(_)
+                        | Value::Point(_)
+                        | Value::Vector(_)
                         | Value::Complex { .. }
                         | Value::Orientation { .. }
                         | Value::Range { .. } => {
-                            // Collection, enum, lambda, field, tensor, Complex, Orientation,
-                            // and Range types don't contribute to domain classification.
+                            // Collection, enum, lambda, field, tensor, Point, Vector, Complex,
+                            // Orientation, and Range types don't contribute to domain classification.
                         }
                     }
                 }

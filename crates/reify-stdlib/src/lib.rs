@@ -261,6 +261,12 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
         // --- Linear algebra: dot, cross, magnitude, normalize ---
 
         "normalize" => unary(args, |v| {
+            // Determine the output wrapper based on input variant.
+            let wrap: fn(Vec<Value>) -> Value = match v {
+                Value::Vector(_) => Value::Vector,
+                Value::Point(_) => Value::Point,
+                _ => Value::Tensor,
+            };
             let (vals, _dim) = match tensor_components_f64(v) {
                 Some(c) => c,
                 None => return Value::Undef,
@@ -277,7 +283,7 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
             if !mag.is_finite() || mag == 0.0 {
                 return Value::Undef;
             }
-            Value::Tensor(vals.iter().map(|x| Value::Real(x / mag)).collect())
+            wrap(vals.iter().map(|x| Value::Real(x / mag)).collect())
         }),
 
         "magnitude" => unary(args, |v| {
@@ -299,6 +305,13 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
         }),
 
         "cross" => binary(args, |a, b| {
+            // Cross product of two vectors → vector; point inputs are
+            // semantically invalid (cross is only defined for vectors).
+            let wrap: fn(Vec<Value>) -> Value = match (a, b) {
+                (Value::Point(_), _) | (_, Value::Point(_)) => return Value::Undef,
+                (Value::Vector(_), Value::Vector(_)) => Value::Vector,
+                _ => Value::Tensor,
+            };
             let (a_vals, a_dim) = match tensor_components_f64(a) {
                 Some(v) => v,
                 None => return Value::Undef,
@@ -323,7 +336,7 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
                     sanitize_value(Value::Scalar { si_value: v, dimension: result_dim })
                 }
             };
-            Value::Tensor(vec![make_component(cx), make_component(cy), make_component(cz)])
+            wrap(vec![make_component(cx), make_component(cy), make_component(cz)])
         }),
 
         "dot" => binary(args, |a, b| {
@@ -619,6 +632,12 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
             normalize_quaternion(c, s * nax, s * nay, s * naz).unwrap_or(Value::Undef)
         }
 
+        // --- Point/Vector constructors ---
+        "point2" => construct_point_or_vector(args, 2, true),
+        "point3" => construct_point_or_vector(args, 3, true),
+        "vec2"   => construct_point_or_vector(args, 2, false),
+        "vec3"   => construct_point_or_vector(args, 3, false),
+
         // --- Field operations (stubs) ---
         // These are handled by reify-expr's eval_expr FunctionCall interceptor
         // for actual lambda application; the stdlib entries serve as documentation
@@ -629,6 +648,35 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
         "curl" => Value::Undef,       // Numeric differentiation not yet implemented
 
         _ => Value::Undef,
+    }
+}
+
+/// Validate args for a point/vector constructor and return `Value::Point` or `Value::Vector`.
+///
+/// Validates:
+/// 1. `args.len() == expected_n`
+/// 2. All args are numeric (Int, Real, or Scalar — `as_f64()` returns Some)
+/// 3. All args share the same physical dimension
+///
+/// Returns `Value::Undef` on any validation failure.
+/// When `is_point` is `true`, returns `Value::Point`; otherwise returns `Value::Vector`.
+fn construct_point_or_vector(args: &[Value], expected_n: usize, is_point: bool) -> Value {
+    if args.len() != expected_n {
+        return Value::Undef;
+    }
+    // All args must be numeric
+    if !args.iter().all(|a| a.as_f64().is_some()) {
+        return Value::Undef;
+    }
+    // All args must share the same physical dimension
+    let first_dim = args[0].dimension();
+    if !args.iter().all(|a| a.dimension() == first_dim) {
+        return Value::Undef;
+    }
+    if is_point {
+        Value::Point(args.to_vec())
+    } else {
+        Value::Vector(args.to_vec())
     }
 }
 
@@ -794,11 +842,12 @@ fn lerp_f64(a: f64, b: f64, t: f64) -> f64 {
 /// - All components support `as_f64()`.
 /// - All components share the same dimension (or all are dimensionless).
 ///
-/// Returns `None` for non-Tensor values, empty Tensors, non-numeric components,
-/// or Tensors with mixed dimensions.
+/// Returns `None` for non-Tensor/Point/Vector values, empty containers, non-numeric
+/// components, or containers with mixed dimensions.
 fn tensor_components_f64(v: &Value) -> Option<(Vec<f64>, DimensionVector)> {
     let items = match v {
-        Value::Tensor(items) if !items.is_empty() => items,
+        Value::Tensor(items) | Value::Point(items) | Value::Vector(items)
+            if !items.is_empty() => items,
         _ => return None,
     };
     let first_dim = items[0].dimension();
@@ -3404,5 +3453,261 @@ mod tests {
             eval_builtin("complex_magnitude", &[z]).is_undef(),
             "complex_magnitude with f64::MAX components must return Undef (Inf overflow)"
         );
+    }
+
+    // --- non-numeric args → Undef ---
+
+    #[test]
+    fn point3_non_numeric_undef() {
+        // point3(String, Scalar, Scalar) → Undef
+        let args = vec![
+            Value::String("hello".to_string()),
+            Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 2.0, dimension: DimensionVector::LENGTH },
+        ];
+        assert!(eval_builtin("point3", &args).is_undef(), "non-numeric first arg must return Undef");
+    }
+
+    #[test]
+    fn vec2_non_numeric_undef() {
+        // vec2(Bool, Bool) → Undef
+        let args = vec![Value::Bool(true), Value::Bool(false)];
+        assert!(eval_builtin("vec2", &args).is_undef(), "Bool args must return Undef");
+    }
+
+    // --- wrong arg count → Undef ---
+
+    #[test]
+    fn point3_wrong_arg_count_undef() {
+        // point3 with 2 args → Undef
+        let args2 = vec![
+            Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 2.0, dimension: DimensionVector::LENGTH },
+        ];
+        assert!(eval_builtin("point3", &args2).is_undef(), "point3 with 2 args must be Undef");
+        // point3 with 0 args → Undef
+        assert!(eval_builtin("point3", &[]).is_undef(), "point3 with 0 args must be Undef");
+        // point3 with 4 args → Undef
+        let args4 = vec![
+            Value::Real(1.0), Value::Real(2.0), Value::Real(3.0), Value::Real(4.0),
+        ];
+        assert!(eval_builtin("point3", &args4).is_undef(), "point3 with 4 args must be Undef");
+    }
+
+    #[test]
+    fn point2_wrong_arg_count_undef() {
+        // point2 with 3 args → Undef
+        let args3 = vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)];
+        assert!(eval_builtin("point2", &args3).is_undef(), "point2 with 3 args must be Undef");
+        // point2 with 1 arg → Undef
+        assert!(eval_builtin("point2", &[Value::Real(1.0)]).is_undef(), "point2 with 1 arg must be Undef");
+    }
+
+    #[test]
+    fn vec3_wrong_arg_count_undef() {
+        assert!(eval_builtin("vec3", &[]).is_undef(), "vec3 with 0 args must be Undef");
+        let args2 = vec![Value::Real(1.0), Value::Real(2.0)];
+        assert!(eval_builtin("vec3", &args2).is_undef(), "vec3 with 2 args must be Undef");
+    }
+
+    #[test]
+    fn vec2_wrong_arg_count_undef() {
+        assert!(eval_builtin("vec2", &[]).is_undef(), "vec2 with 0 args must be Undef");
+        let args3 = vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)];
+        assert!(eval_builtin("vec2", &args3).is_undef(), "vec2 with 3 args must be Undef");
+    }
+
+    // --- dimension mismatch → Undef ---
+
+    #[test]
+    fn point3_dimension_mismatch_undef() {
+        // point3(Scalar(1,LENGTH), Scalar(2,MASS), Scalar(3,LENGTH)) → Undef
+        let args = vec![
+            Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 2.0, dimension: DimensionVector::MASS },
+            Value::Scalar { si_value: 3.0, dimension: DimensionVector::LENGTH },
+        ];
+        assert!(eval_builtin("point3", &args).is_undef(), "mixed dimensions must return Undef");
+    }
+
+    #[test]
+    fn vec3_dimension_mismatch_undef() {
+        let args = vec![
+            Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 2.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 3.0, dimension: DimensionVector::MASS },
+        ];
+        assert!(eval_builtin("vec3", &args).is_undef(), "mixed dimensions must return Undef");
+    }
+
+    #[test]
+    fn point2_dimension_mismatch_undef() {
+        let args = vec![
+            Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 2.0, dimension: DimensionVector::MASS },
+        ];
+        assert!(eval_builtin("point2", &args).is_undef(), "mixed dimensions must return Undef");
+    }
+
+    #[test]
+    fn vec2_dimension_mismatch_undef() {
+        let args = vec![
+            Value::Scalar { si_value: 1.0, dimension: DimensionVector::MASS },
+            Value::Scalar { si_value: 2.0, dimension: DimensionVector::LENGTH },
+        ];
+        assert!(eval_builtin("vec2", &args).is_undef(), "mixed dimensions must return Undef");
+    }
+
+    // --- dimensionless components ---
+
+    #[test]
+    fn point3_dimensionless() {
+        // point3(Real(1.0), Real(2.0), Real(3.0)) → Value::Point with Real components preserved
+        let args = vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)];
+        let result = eval_builtin("point3", &args);
+        match result {
+            Value::Point(ref items) => {
+                assert_eq!(items.len(), 3);
+                assert!(matches!(&items[0], Value::Real(v) if (*v - 1.0).abs() < 1e-12));
+                assert!(matches!(&items[1], Value::Real(v) if (*v - 2.0).abs() < 1e-12));
+                assert!(matches!(&items[2], Value::Real(v) if (*v - 3.0).abs() < 1e-12));
+            }
+            other => panic!("expected Point with Real components, got {:?}", other),
+        }
+    }
+
+    // --- vec2 ---
+
+    #[test]
+    fn vec2_basic() {
+        // vec2(9.0, 10.0) → Value::Vector([Real(9.0), Real(10.0)])
+        let args = vec![Value::Real(9.0), Value::Real(10.0)];
+        let result = eval_builtin("vec2", &args);
+        match result {
+            Value::Vector(ref items) => {
+                assert_eq!(items.len(), 2);
+                assert!(matches!(&items[0], Value::Real(v) if (*v - 9.0).abs() < 1e-12));
+                assert!(matches!(&items[1], Value::Real(v) if (*v - 10.0).abs() < 1e-12));
+            }
+            other => panic!("expected Vector, got {:?}", other),
+        }
+    }
+
+    // --- point2 ---
+
+    #[test]
+    fn point2_basic() {
+        // point2(7m, 8m) → Value::Point([Scalar(7,L), Scalar(8,L)])
+        let args = vec![
+            Value::Scalar { si_value: 7.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 8.0, dimension: DimensionVector::LENGTH },
+        ];
+        let result = eval_builtin("point2", &args);
+        match result {
+            Value::Point(ref items) => {
+                assert_eq!(items.len(), 2);
+                assert_scalar_approx!(items[0].clone(), 7.0, DimensionVector::LENGTH);
+                assert_scalar_approx!(items[1].clone(), 8.0, DimensionVector::LENGTH);
+            }
+            other => panic!("expected Point, got {:?}", other),
+        }
+    }
+
+    // --- vec3 ---
+
+    #[test]
+    fn vec3_basic() {
+        // vec3(4m, 5m, 6m) → Value::Vector([Scalar(4,L), Scalar(5,L), Scalar(6,L)])
+        let args = vec![
+            Value::Scalar { si_value: 4.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 5.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 6.0, dimension: DimensionVector::LENGTH },
+        ];
+        let result = eval_builtin("vec3", &args);
+        match result {
+            Value::Vector(ref items) => {
+                assert_eq!(items.len(), 3);
+                assert_scalar_approx!(items[0].clone(), 4.0, DimensionVector::LENGTH);
+                assert_scalar_approx!(items[1].clone(), 5.0, DimensionVector::LENGTH);
+                assert_scalar_approx!(items[2].clone(), 6.0, DimensionVector::LENGTH);
+            }
+            other => panic!("expected Vector, got {:?}", other),
+        }
+    }
+
+    // --- point3 ---
+
+    #[test]
+    fn point3_basic() {
+        // point3(1m, 2m, 3m) → Value::Point([Scalar(1,L), Scalar(2,L), Scalar(3,L)])
+        let args = vec![
+            Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 2.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 3.0, dimension: DimensionVector::LENGTH },
+        ];
+        let result = eval_builtin("point3", &args);
+        match result {
+            Value::Point(ref items) => {
+                assert_eq!(items.len(), 3);
+                assert_scalar_approx!(items[0].clone(), 1.0, DimensionVector::LENGTH);
+                assert_scalar_approx!(items[1].clone(), 2.0, DimensionVector::LENGTH);
+                assert_scalar_approx!(items[2].clone(), 3.0, DimensionVector::LENGTH);
+            }
+            other => panic!("expected Point, got {:?}", other),
+        }
+    }
+
+    // --- Semantic distinction: point vs vector ---
+
+    #[test]
+    fn point_vector_semantic_distinction() {
+        // point2 and vec2 with identical args must produce distinct Value variants
+        let a = Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH };
+        let b = Value::Scalar { si_value: 2.0, dimension: DimensionVector::LENGTH };
+
+        let p2 = eval_builtin("point2", &[a.clone(), b.clone()]);
+        let v2 = eval_builtin("vec2",   &[a.clone(), b.clone()]);
+
+        // point2 must produce Value::Point
+        assert!(
+            matches!(&p2, Value::Point(items) if items.len() == 2),
+            "expected Value::Point(2), got {:?}",
+            p2
+        );
+
+        // vec2 must produce Value::Vector
+        assert!(
+            matches!(&v2, Value::Vector(items) if items.len() == 2),
+            "expected Value::Vector(2), got {:?}",
+            v2
+        );
+
+        // point2(a,b) != vec2(a,b) — different variants
+        assert_ne!(p2, v2, "point2 and vec2 with identical args must differ");
+
+        // point3 vs vec3
+        let c = Value::Scalar { si_value: 3.0, dimension: DimensionVector::LENGTH };
+        let p3 = eval_builtin("point3", &[a.clone(), b.clone(), c.clone()]);
+        let v3 = eval_builtin("vec3",   &[a.clone(), b.clone(), c.clone()]);
+
+        assert!(
+            matches!(&p3, Value::Point(items) if items.len() == 3),
+            "expected Value::Point(3), got {:?}",
+            p3
+        );
+        assert!(
+            matches!(&v3, Value::Vector(items) if items.len() == 3),
+            "expected Value::Vector(3), got {:?}",
+            v3
+        );
+        assert_ne!(p3, v3, "point3 and vec3 with identical args must differ");
+
+        // Display: point(...) vs vec(...)
+        if let Value::Point(items) = &p2 {
+            let _ = items; // variants accessible
+        }
+        if let Value::Vector(items) = &v2 {
+            let _ = items;
+        }
     }
 }

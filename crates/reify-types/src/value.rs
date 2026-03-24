@@ -50,6 +50,10 @@ pub enum Value {
     },
     /// Rank-r tensor: recursive nesting of Vec<Value> (innermost elements are scalars).
     Tensor(Vec<Value>),
+    /// Geometric point with n components (all sharing the same dimension).
+    Point(Vec<Value>),
+    /// Geometric vector with n components (all sharing the same dimension).
+    Vector(Vec<Value>),
     /// Complex number: re and im share one dimension (e.g., complex impedance in ohms).
     Complex { re: f64, im: f64, dimension: DimensionVector },
     /// Orientation as a unit quaternion (w + xi + yj + zk).
@@ -123,6 +127,10 @@ impl Value {
         match self {
             Value::Scalar { dimension, .. } => *dimension,
             Value::Complex { dimension, .. } => *dimension,
+            // Point/Vector: dimension derives from the first component (all components share one dimension).
+            Value::Point(items) | Value::Vector(items) => {
+                items.first().map(|v| v.dimension()).unwrap_or(DimensionVector::DIMENSIONLESS)
+            }
             _ => DimensionVector::DIMENSIONLESS,
         }
     }
@@ -226,6 +234,22 @@ impl Value {
                 }
                 h
             }
+            Value::Point(items) => {
+                let mut h = ContentHash::of(&[18]);
+                h = h.combine(ContentHash::of(&(items.len() as u64).to_le_bytes()));
+                for item in items {
+                    h = h.combine(item.content_hash());
+                }
+                h
+            }
+            Value::Vector(items) => {
+                let mut h = ContentHash::of(&[19]);
+                h = h.combine(ContentHash::of(&(items.len() as u64).to_le_bytes()));
+                for item in items {
+                    h = h.combine(item.content_hash());
+                }
+                h
+            }
             Value::Complex { re, im, dimension } => {
                 // tag=15; NaN canonicalization for both re and im; combine with dimension hash
                 let re_bits = if re.is_nan() { f64::NAN.to_bits() } else { re.to_bits() };
@@ -290,6 +314,8 @@ impl PartialEq for Value {
             }
             (Value::List(a), Value::List(b)) => a == b,
             (Value::Tensor(a), Value::Tensor(b)) => a == b,
+            (Value::Point(a), Value::Point(b)) => a == b,
+            (Value::Vector(a), Value::Vector(b)) => a == b,
             (Value::Set(a), Value::Set(b)) => a == b,
             (Value::Map(a), Value::Map(b)) => a == b,
             (Value::Option(a), Value::Option(b)) => a == b,
@@ -364,7 +390,7 @@ impl Ord for Value {
         use std::cmp::Ordering;
 
         // Type-tag discriminant for cross-type ordering:
-        // Undef=0, Bool=1, Int=2, Real=3, Scalar=4, String=5, Enum=6, List=7, Set=8, Map=9, Option=10, Field=11, Lambda=12, Tensor=13, Complex=14
+        // Undef=0, Bool=1, Int=2, Real=3, Scalar=4, String=5, Enum=6, List=7, Set=8, Map=9, Option=10, Field=11, Lambda=12, Tensor=13, Complex=14, Orientation=15, Range=16, Point=17, Vector=18
         fn type_tag(v: &Value) -> u8 {
             match v {
                 Value::Undef => 0,
@@ -384,6 +410,8 @@ impl Ord for Value {
                 Value::Complex { .. } => 14,
                 Value::Orientation { .. } => 15,
                 Value::Range { .. } => 16,
+                Value::Point(_) => 17,
+                Value::Vector(_) => 18,
             }
         }
 
@@ -413,6 +441,8 @@ impl Ord for Value {
             }
             (Value::List(a), Value::List(b)) => a.cmp(b),
             (Value::Tensor(a), Value::Tensor(b)) => a.cmp(b),
+            (Value::Point(a), Value::Point(b)) => a.cmp(b),
+            (Value::Vector(a), Value::Vector(b)) => a.cmp(b),
             (Value::Set(a), Value::Set(b)) => a.cmp(b),
             (Value::Map(a), Value::Map(b)) => {
                 // Lexicographic on (key, value) pairs in sorted key order
@@ -524,6 +554,26 @@ impl std::fmt::Display for Value {
                     write!(f, "{}", item)?;
                 }
                 write!(f, "]")
+            }
+            Value::Point(items) => {
+                write!(f, "point(")?;
+                for (i, item) in items.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", item)?;
+                }
+                write!(f, ")")
+            }
+            Value::Vector(items) => {
+                write!(f, "vec(")?;
+                for (i, item) in items.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", item)?;
+                }
+                write!(f, ")")
             }
             Value::Set(items) => {
                 write!(f, "{{")?;

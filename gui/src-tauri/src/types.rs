@@ -118,6 +118,14 @@ pub fn format_value(v: &Value) -> (String, String) {
             let strs: Vec<String> = items.iter().map(|v| format_value(v).0).collect();
             (format!("[{}]", strs.join(", ")), String::new())
         }
+        Value::Point(items) => {
+            let strs: Vec<String> = items.iter().map(|v| format_value(v).0).collect();
+            (format!("point({})", strs.join(", ")), String::new())
+        }
+        Value::Vector(items) => {
+            let strs: Vec<String> = items.iter().map(|v| format_value(v).0).collect();
+            (format!("vec({})", strs.join(", ")), String::new())
+        }
         Value::Complex { re, im, dimension } => {
             let (display_re, unit) = convert_si_to_display(*re, *dimension);
             let (display_im, _) = convert_si_to_display(*im, *dimension);

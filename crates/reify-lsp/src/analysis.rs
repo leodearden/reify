@@ -186,6 +186,14 @@ pub fn format_value(value: &Value) -> String {
             let inner: Vec<String> = items.iter().map(format_value).collect();
             format!("[{}]", inner.join(", "))
         }
+        Value::Point(items) => {
+            let inner: Vec<String> = items.iter().map(format_value).collect();
+            format!("point({})", inner.join(", "))
+        }
+        Value::Vector(items) => {
+            let inner: Vec<String> = items.iter().map(format_value).collect();
+            format!("vec({})", inner.join(", "))
+        }
         Value::Lambda { .. } => "<lambda>".to_string(),
         Value::Field { domain_type, codomain_type, source, .. } => {
             format!("Field<{}, {}>({:?})", domain_type, codomain_type, source)
