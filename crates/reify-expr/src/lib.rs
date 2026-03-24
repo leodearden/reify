@@ -766,6 +766,39 @@ fn eval_add(lv: &Value, rv: &Value) -> Value {
     }
 }
 
+/// Compute the dot-product sum of an iterator of already-multiplied product values.
+///
+/// Uses `try_fold` for a single-pass, short-circuiting accumulation:
+/// - If the iterator is empty → returns `Value::Undef`
+/// - If any product is `Undef` → short-circuits to `Value::Undef`
+/// - If any partial sum from `eval_add` is `Undef` (e.g. dimension mismatch) → short-circuits
+///
+/// This eliminates the triple-pass collect→check→reduce pattern.
+fn eval_dot(mut products: impl Iterator<Item = Value>) -> Value {
+    // Seed with first product; short-circuit immediately if it's Undef.
+    let first = match products.next() {
+        None => return Value::Undef, // empty iterator
+        Some(v) => v,
+    };
+    if first.is_undef() {
+        return Value::Undef;
+    }
+    // Fold remaining products into running sum, short-circuiting on Undef.
+    products
+        .try_fold(first, |acc, prod| {
+            if prod.is_undef() {
+                return Err(());
+            }
+            let sum = eval_add(&acc, &prod);
+            if sum.is_undef() {
+                Err(())
+            } else {
+                Ok(sum)
+            }
+        })
+        .unwrap_or(Value::Undef)
+}
+
 fn eval_sub(lv: &Value, rv: &Value) -> Value {
     match (lv, rv) {
         (Value::Int(a), Value::Int(b)) => Value::Int(a - b),
@@ -855,6 +888,9 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
         }
         // Matrix * Vector: rank-2 Tensor (rows of Tensors) × rank-1 Tensor (flat elements).
         // Produces a rank-1 Tensor (vector) of dot-product results.
+        // Uses eval_dot for each row's dot product (single-pass, short-circuiting on Undef).
+        // Uses try_fold over rows for row-level early exit: if any row's dot product is Undef,
+        // the entire mat*vec short-circuits to Undef.
         (Value::Tensor(rows), Value::Tensor(vec_elems))
             if !rows.is_empty()
                 && !vec_elems.is_empty()
@@ -862,35 +898,28 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
                 && !matches!(vec_elems[0], Value::Tensor(_)) =>
         {
             let k = vec_elems.len();
-            let result_elems: Vec<Value> = rows
-                .iter()
-                .map(|row| {
-                    if let Value::Tensor(row_elems) = row {
+            rows.iter()
+                .try_fold(Vec::with_capacity(rows.len()), |mut acc, row| {
+                    let dot = if let Value::Tensor(row_elems) = row {
                         if row_elems.len() != k {
-                            return Value::Undef;
+                            Value::Undef
+                        } else {
+                            eval_dot(
+                                row_elems.iter().zip(vec_elems.iter()).map(|(a, b)| eval_mul(a, b)),
+                            )
                         }
-                        let prods: Vec<Value> = row_elems
-                            .iter()
-                            .zip(vec_elems.iter())
-                            .map(|(a, b)| eval_mul(a, b))
-                            .collect();
-                        if prods.iter().any(|v| v.is_undef()) {
-                            return Value::Undef;
-                        }
-                        prods
-                            .into_iter()
-                            .reduce(|acc, x| eval_add(&acc, &x))
-                            .unwrap_or(Value::Undef)
                     } else {
                         Value::Undef
+                    };
+                    if dot.is_undef() {
+                        Err(())
+                    } else {
+                        acc.push(dot);
+                        Ok(acc)
                     }
                 })
-                .collect();
-            if result_elems.iter().any(|v| v.is_undef()) {
-                Value::Undef
-            } else {
-                Value::Tensor(result_elems)
-            }
+                .map(Value::Tensor)
+                .unwrap_or(Value::Undef)
         }
         // Matrix * Matrix: rank-2 Tensor × rank-2 Tensor.
         // Computes standard O(m*n*k) matrix multiplication with automatic
@@ -921,48 +950,46 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
             };
 
             // C[i][j] = sum(A[i][kk] * B[kk][j] for kk in 0..k)
-            let c_rows: Vec<Value> = a_rows
+            // Uses eval_dot for each cell's dot product (single-pass, short-circuiting).
+            // Uses try_fold at two levels:
+            //   - cell level: if any cell in a row is Undef, skip remaining cells
+            //   - row level:  if any row is Undef, skip remaining rows
+            a_rows
                 .iter()
-                .map(|a_row| {
-                    if let Value::Tensor(a_elems) = a_row {
-                        let c_row: Vec<Value> = (0..n)
-                            .map(|j| {
-                                let prods: Vec<Value> = (0..k)
-                                    .map(|kk| {
-                                        let b_kj =
-                                            if let Value::Tensor(b_row_k) = &b_rows[kk] {
-                                                b_row_k.get(j).cloned().unwrap_or(Value::Undef)
-                                            } else {
-                                                Value::Undef
-                                            };
-                                        eval_mul(a_elems.get(kk).unwrap_or(&Value::Undef), &b_kj)
-                                    })
-                                    .collect();
-                                if prods.iter().any(|v| v.is_undef()) {
-                                    return Value::Undef;
+                .try_fold(Vec::with_capacity(a_rows.len()), |mut c_rows, a_row| {
+                    let row_result = if let Value::Tensor(a_elems) = a_row {
+                        // Build this row of C via cell-level try_fold.
+                        (0..n)
+                            .try_fold(Vec::with_capacity(n), |mut c_row, j| {
+                                let cell = eval_dot((0..k).map(|kk| {
+                                    let b_kj = if let Value::Tensor(b_row_k) = &b_rows[kk] {
+                                        b_row_k.get(j).cloned().unwrap_or(Value::Undef)
+                                    } else {
+                                        Value::Undef
+                                    };
+                                    eval_mul(a_elems.get(kk).unwrap_or(&Value::Undef), &b_kj)
+                                }));
+                                if cell.is_undef() {
+                                    Err(())
+                                } else {
+                                    c_row.push(cell);
+                                    Ok(c_row)
                                 }
-                                prods
-                                    .into_iter()
-                                    .reduce(|acc, x| eval_add(&acc, &x))
-                                    .unwrap_or(Value::Undef)
                             })
-                            .collect();
-                        if c_row.iter().any(|v| v.is_undef()) {
-                            Value::Undef
-                        } else {
-                            Value::Tensor(c_row)
-                        }
+                            .map(Value::Tensor)
+                            .unwrap_or(Value::Undef)
                     } else {
                         Value::Undef
+                    };
+                    if row_result.is_undef() {
+                        Err(())
+                    } else {
+                        c_rows.push(row_result);
+                        Ok(c_rows)
                     }
                 })
-                .collect();
-
-            if c_rows.iter().any(|v| v.is_undef()) {
-                Value::Undef
-            } else {
-                Value::Tensor(c_rows)
-            }
+                .map(Value::Tensor)
+                .unwrap_or(Value::Undef)
         }
         _ => Value::Undef,
     }
@@ -2358,6 +2385,60 @@ mod tests {
             Value::Real(v) => assert!((v - 7.0).abs() < 1e-12, "expected 7.0, got {}", v),
             other => panic!("expected Real(7.0), got {:?}", other),
         }
+    }
+
+    // ── eval_dot unit tests ──────────────────────────────────────
+
+    #[test]
+    fn eval_dot_sums_real_products() {
+        // [Real(1.0), Real(2.0), Real(3.0)] → Real(6.0)
+        let products = vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)];
+        let result = eval_dot(products.into_iter());
+        assert_eq!(result, Value::Real(6.0));
+    }
+
+    #[test]
+    fn eval_dot_short_circuits_on_undef() {
+        // [Undef, Real(2.0)] → Undef (first product is Undef)
+        let products = vec![Value::Undef, Value::Real(2.0)];
+        let result = eval_dot(products.into_iter());
+        assert!(result.is_undef(), "expected Undef, got {:?}", result);
+    }
+
+    #[test]
+    fn eval_dot_empty_returns_undef() {
+        // empty iterator → Undef
+        let result = eval_dot(std::iter::empty());
+        assert!(result.is_undef(), "expected Undef for empty iterator");
+    }
+
+    #[test]
+    fn eval_dot_single_product() {
+        // single Real passes through
+        let result = eval_dot(std::iter::once(Value::Real(42.0)));
+        assert_eq!(result, Value::Real(42.0));
+    }
+
+    #[test]
+    fn eval_dot_scalar_dimension_sum() {
+        // Scalar{LENGTH} values sum correctly: 1m + 2m + 3m = 6m
+        let products = vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)];
+        let result = eval_dot(products.into_iter());
+        assert_eq!(result, Value::length(6.0));
+    }
+
+    #[test]
+    fn eval_dot_dimension_mismatch_in_sum() {
+        // Scalar{LENGTH} + Scalar{MASS} → Undef from eval_add
+        let products = vec![
+            Value::length(1.0),
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::MASS,
+            },
+        ];
+        let result = eval_dot(products.into_iter());
+        assert!(result.is_undef(), "expected Undef for dimension mismatch in sum");
     }
 
     // ── Match non-enum discriminant ──────────────────────────────
