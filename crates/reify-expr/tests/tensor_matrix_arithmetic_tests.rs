@@ -581,3 +581,33 @@ fn empty_matrix_add_returns_undef() {
     let expr = CompiledExpr::binop(BinOp::Add, a, b, Type::Real);
     assert_eq!(eval(&expr), Value::Undef);
 }
+
+// ── step-17: Jagged-matrix panic in Matrix*Matrix ──────────────────────────
+//
+// This test will FAIL (panic) until step-18 fixes the safe-indexing in eval_mul.
+
+/// Jagged A matrix (row 0 has 3 cols, row 1 has 2 cols) * well-formed 3×2 B → Undef, not panic.
+///
+/// Reproduces the index-out-of-bounds panic at lib.rs ~line 925 (`a_elems[kk]`) where
+/// the inner-dimension k is derived from row 0 (k=3), but row 1 only has 2 elements,
+/// so kk=2 overflows `a_elems` for that row.
+#[test]
+fn matrix_mat_mul_jagged_a_returns_undef_not_panic() {
+    // A has a jagged structure: row 0 has 3 elements, row 1 has only 2.
+    let jagged_a = CompiledExpr::literal(
+        Value::Tensor(vec![
+            Value::Tensor(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]),
+            Value::Tensor(vec![Value::Real(4.0), Value::Real(5.0)]), // only 2 elements (jagged)
+        ]),
+        Type::Real,
+    );
+    // Well-formed 3×2 B matrix.
+    let b = mat(vec![
+        vec![Value::Real(1.0), Value::Real(0.0)],
+        vec![Value::Real(0.0), Value::Real(1.0)],
+        vec![Value::Real(1.0), Value::Real(1.0)],
+    ]);
+    let expr = CompiledExpr::binop(BinOp::Mul, jagged_a, b, Type::Real);
+    // Must return Undef rather than panicking with index out of bounds.
+    assert_eq!(eval(&expr), Value::Undef);
+}
