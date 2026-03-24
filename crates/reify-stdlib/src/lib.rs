@@ -281,6 +281,15 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
         }),
 
         "magnitude" => unary(args, |v| {
+            // Handle Complex before the Tensor fallback.
+            if let Value::Complex { re, im, dimension } = v {
+                let mag = (re * re + im * im).sqrt();
+                return if *dimension == DimensionVector::DIMENSIONLESS {
+                    sanitize_value(Value::Real(mag))
+                } else {
+                    sanitize_value(Value::Scalar { si_value: mag, dimension: *dimension })
+                };
+            }
             let (vals, dim) = match tensor_components_f64(v) {
                 Some(c) => c,
                 None => return Value::Undef,
@@ -341,6 +350,104 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
             } else {
                 sanitize_value(Value::Scalar { si_value: sum, dimension: result_dim })
             }
+        }),
+
+        // --- Complex number functions ---
+
+        // complex(re, im) constructor: both args must be numeric with matching dimensions.
+        // Returns Value::Complex { re, im, dimension }.
+        // Returns Undef on: wrong arg count, non-numeric, mismatched dimensions, NaN/Inf.
+        "complex" => {
+            if args.len() != 2 {
+                return Value::Undef;
+            }
+            let re = match args[0].as_f64() {
+                Some(v) => v,
+                None => return Value::Undef,
+            };
+            let im = match args[1].as_f64() {
+                Some(v) => v,
+                None => return Value::Undef,
+            };
+            let dim_re = args[0].dimension();
+            let dim_im = args[1].dimension();
+            if dim_re != dim_im {
+                return Value::Undef;
+            }
+            if !re.is_finite() || !im.is_finite() {
+                return Value::Undef;
+            }
+            Value::Complex { re, im, dimension: dim_re }
+        }
+
+        // re(z): extract real part. Returns Real if DIMENSIONLESS, Scalar otherwise.
+        "re" => unary(args, |v| match v {
+            Value::Complex { re, dimension, .. } => {
+                if *dimension == DimensionVector::DIMENSIONLESS {
+                    Value::Real(*re)
+                } else {
+                    Value::Scalar { si_value: *re, dimension: *dimension }
+                }
+            }
+            _ => Value::Undef,
+        }),
+
+        // im(z): extract imaginary part. Returns Real if DIMENSIONLESS, Scalar otherwise.
+        "im" => unary(args, |v| match v {
+            Value::Complex { im, dimension, .. } => {
+                if *dimension == DimensionVector::DIMENSIONLESS {
+                    Value::Real(*im)
+                } else {
+                    Value::Scalar { si_value: *im, dimension: *dimension }
+                }
+            }
+            _ => Value::Undef,
+        }),
+
+        // conjugate(z): negate the imaginary part, preserve re and dimension.
+        "conjugate" => unary(args, |v| match v {
+            Value::Complex { re, im, dimension } => {
+                Value::Complex { re: *re, im: -im, dimension: *dimension }
+            }
+            _ => Value::Undef,
+        }),
+
+        // phase(z): compute atan2(im, re), return Scalar with ANGLE dimension.
+        "phase" => unary(args, |v| match v {
+            Value::Complex { re, im, .. } => {
+                let angle = im.atan2(*re);
+                sanitize_value(Value::Scalar { si_value: angle, dimension: DimensionVector::ANGLE })
+            }
+            _ => Value::Undef,
+        }),
+
+        // complex_add(a, b): add two complex numbers with matching dimensions.
+        "complex_add" => binary(args, |a, b| match (a, b) {
+            (
+                Value::Complex { re: ar, im: ai, dimension: ad },
+                Value::Complex { re: br, im: bi, dimension: bd },
+            ) => {
+                if ad != bd {
+                    return Value::Undef;
+                }
+                Value::Complex { re: ar + br, im: ai + bi, dimension: *ad }
+            }
+            _ => Value::Undef,
+        }),
+
+        // complex_mul(a, b): multiply two complex numbers, combining dimensions via mul().
+        // (a+bi)(c+di) = (ac-bd) + (ad+bc)i
+        "complex_mul" => binary(args, |a, b| match (a, b) {
+            (
+                Value::Complex { re: ar, im: ai, dimension: ad },
+                Value::Complex { re: br, im: bi, dimension: bd },
+            ) => {
+                let re = ar * br - ai * bi;
+                let im = ar * bi + ai * br;
+                let dimension = ad.mul(bd);
+                sanitize_value(Value::Complex { re, im, dimension })
+            }
+            _ => Value::Undef,
         }),
 
         // --- Determinacy predicates (stubs) ---
