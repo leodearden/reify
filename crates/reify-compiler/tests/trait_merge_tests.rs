@@ -168,6 +168,86 @@ structure def W : NeedsX + ProvidesX {
     );
 }
 
+/// Step 8a: Trait A has `let x : Real = a + 1`, trait B has `let x : Real = a * 2`.
+/// Structure implements both and provides its own `let x : Real = a + a`.
+/// Structure override resolves the conflict — expect 0 errors.
+#[test]
+fn let_conflict_resolved_by_structure_override() {
+    let source = r#"
+trait A {
+    let x : Real = a + 1.0
+}
+
+trait B {
+    let x : Real = a * 2.0
+}
+
+structure def R : A + B {
+    param a : Real = 5.0
+    let x : Real = a + a
+}
+"#;
+
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected 0 errors (structure override resolves let conflict), got: {:?}",
+        errors
+    );
+
+    // Exactly 1 'x' value cell (the structure's own, not any trait default).
+    let x_cells: Vec<_> = template
+        .value_cells
+        .iter()
+        .filter(|vc| vc.id.member == "x")
+        .collect();
+    assert_eq!(
+        x_cells.len(),
+        1,
+        "expected exactly 1 'x' value cell, got {}",
+        x_cells.len()
+    );
+}
+
+/// Step 8b: Trait A has `constraint x > 0mm`, trait B has `constraint x < 100mm`.
+/// Structure provides `param x : Length = 5mm`. Both constraints should be injected.
+#[test]
+fn constraints_compose_conjunctively_across_traits() {
+    let source = r#"
+trait HasLowerBound {
+    constraint x > 0mm
+}
+
+trait HasUpperBound {
+    constraint x < 100mm
+}
+
+structure def Q : HasLowerBound + HasUpperBound {
+    param x : Length = 5mm
+}
+"#;
+
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    // At least 2 constraints injected (one from each trait).
+    assert!(
+        template.constraints.len() >= 2,
+        "expected at least 2 constraints (one from each trait), got {}",
+        template.constraints.len()
+    );
+}
+
 /// Step 1b: Two traits each requiring `param x : Length`.
 /// Structure provides `param x : Length = 5mm` — requirement dedup baseline.
 /// Expect 0 errors (existing behavior).
