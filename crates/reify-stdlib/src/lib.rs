@@ -3388,4 +3388,18 @@ mod tests {
         // unlike generic magnitude which handles Tensors, complex_magnitude rejects non-Complex
         assert!(eval_builtin("complex_magnitude", &[Value::Real(5.0)]).is_undef());
     }
+
+    #[test]
+    fn complex_magnitude_overflow_returns_undef() {
+        // f64::MAX² + f64::MAX² overflows to +Inf; sanitize_value must catch it.
+        let z = Value::Complex {
+            re: f64::MAX,
+            im: f64::MAX,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            eval_builtin("complex_magnitude", &[z]).is_undef(),
+            "complex_magnitude with f64::MAX components must return Undef (Inf overflow)"
+        );
+    }
 }
