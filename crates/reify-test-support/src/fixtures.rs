@@ -1,8 +1,8 @@
-use reify_compiler::CompiledModule;
+use reify_compiler::{CompiledModule, RequirementKind};
 use reify_syntax::ParsedModule;
 use reify_types::{BinOp, ContentHash, DimensionVector, ModulePath, SourceSpan, Type, Value};
 
-use crate::builders::{CompiledModuleBuilder, TopologyTemplateBuilder};
+use crate::builders::{CompiledModuleBuilder, TopologyTemplateBuilder, TraitDefBuilder};
 
 /// The canonical bracket source code for end-to-end testing.
 pub fn bracket_source() -> &'static str {
@@ -408,6 +408,68 @@ pub fn bracket_compiled_module() -> CompiledModule {
         .build()
 }
 
+/// Create a `CompiledModule` with the `Rigid` trait and a `Bolt` structure that conforms to it.
+///
+/// Trait `Rigid`:
+///   - requires `param mass: Mass` (DimensionVector::MASS)
+///   - provides default constraint: `mass > 0kg`
+///
+/// Structure `Bolt: Rigid`:
+///   - `param mass: Mass = 1kg` (default 1.0 SI = 1 kg)
+///
+/// Used to test trait conformance checking.
+pub fn rigid_trait_module() -> CompiledModule {
+    use reify_compiler::DefaultKind;
+    use reify_syntax::{ConstraintDecl, Expr, ExprKind};
+    use reify_types::DimensionVector;
+
+    let mass_type = Type::Scalar { dimension: DimensionVector::MASS };
+
+    // Rigid trait: requires param mass: Mass; default constraint mass > 0kg
+    let mass_constraint_decl = ConstraintDecl {
+        label: Some("mass_positive".to_string()),
+        expr: Expr {
+            kind: ExprKind::BinOp {
+                op: ">".to_string(),
+                left: Box::new(Expr {
+                    kind: ExprKind::Ident("mass".to_string()),
+                    span: SourceSpan::new(0, 0),
+                }),
+                right: Box::new(Expr {
+                    kind: ExprKind::QuantityLiteral {
+                        value: 0.0,
+                        unit: "kg".to_string(),
+                    },
+                    span: SourceSpan::new(0, 0),
+                }),
+            },
+            span: SourceSpan::new(0, 0),
+        },
+        where_clause: None,
+        span: SourceSpan::new(0, 0),
+        content_hash: ContentHash::of_str("constraint mass > 0kg"),
+    };
+
+    let rigid_trait = TraitDefBuilder::new("Rigid")
+        .requirement("mass", RequirementKind::Param(mass_type.clone()))
+        .default(Some("mass_positive"), DefaultKind::Constraint(mass_constraint_decl))
+        .build();
+
+    // Bolt: Rigid with param mass: Mass = 1kg (1.0 SI)
+    let bolt_template = TopologyTemplateBuilder::new("Bolt")
+        .trait_bound("Rigid")
+        .param("Bolt", "mass", mass_type, Some(crate::builders::literal(Value::Scalar {
+            si_value: 1.0,
+            dimension: DimensionVector::MASS,
+        })))
+        .build();
+
+    CompiledModuleBuilder::new(ModulePath::single("rigid_trait"))
+        .trait_def(rigid_trait)
+        .template(bolt_template)
+        .build()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -470,6 +532,31 @@ mod tests {
         assert!(source.contains("param width"));
         assert!(source.contains("constraint thickness > 2mm"));
         assert!(source.contains("let body = box("));
+    }
+
+    // step-9: failing test for rigid_trait_module fixture
+    #[test]
+    fn rigid_trait_module_structure() {
+        let module = rigid_trait_module();
+        // 1 trait: Rigid
+        assert_eq!(module.trait_defs.len(), 1);
+        let rigid = &module.trait_defs[0];
+        assert_eq!(rigid.name, "Rigid");
+        // Rigid requires param mass: Mass
+        assert_eq!(rigid.required_members.len(), 1);
+        assert_eq!(rigid.required_members[0].name, "mass");
+        // Rigid has 1 default: constraint mass > 0kg
+        assert_eq!(rigid.defaults.len(), 1);
+        // 1 template: Bolt
+        assert_eq!(module.templates.len(), 1);
+        let bolt = &module.templates[0];
+        assert_eq!(bolt.name, "Bolt");
+        // Bolt conforms to Rigid
+        assert_eq!(bolt.trait_bounds.len(), 1);
+        assert_eq!(bolt.trait_bounds[0], "Rigid");
+        // Bolt has param mass
+        let mass_cell = bolt.value_cells.iter().find(|vc| vc.id.member == "mass");
+        assert!(mass_cell.is_some(), "Bolt should have param mass");
     }
 
     #[test]
