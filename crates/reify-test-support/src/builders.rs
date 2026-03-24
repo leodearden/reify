@@ -143,6 +143,51 @@ use reify_compiler::{
 };
 use reify_types::{ConstraintNodeId, RealizationNodeId, TypeParam};
 
+// --- Constraint expression helpers ---
+
+/// Create a range constraint: two `CompiledConstraint`s for `member > min_expr` and `member < max_expr`.
+///
+/// Returns a `Vec` of two constraints with indices 0 and 1. Callers can add them to a
+/// `TopologyTemplateBuilder` via `.constraint(entity, idx, None, expr)`.
+pub fn range_constraint(
+    entity: &str,
+    member: &str,
+    cell_type: Type,
+    min_expr: CompiledExpr,
+    max_expr: CompiledExpr,
+) -> Vec<CompiledConstraint> {
+    let ref_expr = value_ref_typed(entity, member, cell_type);
+    let lower = CompiledConstraint {
+        id: ConstraintNodeId::new(entity, 0),
+        label: None,
+        expr: gt(ref_expr.clone(), min_expr),
+        span: SourceSpan::new(0, 0),
+        domain: None,
+    };
+    let upper = CompiledConstraint {
+        id: ConstraintNodeId::new(entity, 1),
+        label: None,
+        expr: lt(ref_expr, max_expr),
+        span: SourceSpan::new(0, 0),
+        domain: None,
+    };
+    vec![lower, upper]
+}
+
+/// Create an equality constraint expression: `member == target_expr`.
+///
+/// Returns a single `CompiledExpr` with `Type::Bool` result. Add to a
+/// `TopologyTemplateBuilder` via `.constraint(entity, idx, None, expr)`.
+pub fn equality_constraint(
+    entity: &str,
+    member: &str,
+    cell_type: Type,
+    target_expr: CompiledExpr,
+) -> CompiledExpr {
+    let ref_expr = value_ref_typed(entity, member, cell_type);
+    eq(ref_expr, target_expr)
+}
+
 /// Builder for `TopologyTemplate`.
 pub struct TopologyTemplateBuilder {
     name: String,
@@ -786,5 +831,36 @@ mod module_builder_tests {
             .build();
         assert_eq!(module.trait_defs.len(), 1);
         assert_eq!(module.trait_defs[0].name, "Rigid");
+    }
+
+    // step-13: failing tests for constraint expression helpers
+    #[test]
+    fn range_constraint_returns_two_constraints() {
+        let entity = "Beam";
+        let constraints = range_constraint(
+            entity,
+            "width",
+            Type::length(),
+            literal(Value::Scalar { si_value: 0.01, dimension: DimensionVector::LENGTH }),
+            literal(Value::Scalar { si_value: 0.5, dimension: DimensionVector::LENGTH }),
+        );
+        // range_constraint produces: [width > min, width < max]
+        assert_eq!(constraints.len(), 2);
+        // Both should be CompiledConstraint with Bool result type
+        assert_eq!(constraints[0].expr.result_type, Type::Bool);
+        assert_eq!(constraints[1].expr.result_type, Type::Bool);
+    }
+
+    #[test]
+    fn equality_constraint_returns_one_expr() {
+        let entity = "Beam";
+        let expr = equality_constraint(
+            entity,
+            "ratio",
+            Type::Real,
+            literal(Value::Real(2.0)),
+        );
+        // equality_constraint: ratio == 2.0 → Bool
+        assert_eq!(expr.result_type, Type::Bool);
     }
 }
