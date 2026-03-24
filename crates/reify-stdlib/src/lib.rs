@@ -896,6 +896,62 @@ mod tests {
         assert!(result.is_undef(), "clamp with wrong arg count should be Undef, got {:?}", result);
     }
 
+    // --- clamp edge-case tests (step-9): inverted range and NaN bounds ---
+
+    #[test]
+    fn clamp_inverted_range_real_returns_undef() {
+        // lo > hi: f64::clamp panics with assert!(min <= max) — guard should return Undef
+        let result = eval_builtin(
+            "clamp",
+            &[Value::Real(5.0), Value::Real(10.0), Value::Real(0.0)],
+        );
+        assert!(result.is_undef(), "clamp with inverted Real range should be Undef, got {:?}", result);
+    }
+
+    #[test]
+    fn clamp_inverted_range_int_returns_undef() {
+        // lo > hi: i64::clamp has debug_assert — guard should return Undef in all build modes
+        let result = eval_builtin(
+            "clamp",
+            &[Value::Int(5), Value::Int(10), Value::Int(0)],
+        );
+        assert!(result.is_undef(), "clamp with inverted Int range should be Undef, got {:?}", result);
+    }
+
+    #[test]
+    fn clamp_inverted_range_scalar_returns_undef() {
+        // 5mm lo=10mm hi=0mm (inverted): guard should return Undef
+        let result = eval_builtin(
+            "clamp",
+            &[
+                Value::Scalar { si_value: 0.005, dimension: DimensionVector::LENGTH },
+                Value::Scalar { si_value: 0.010, dimension: DimensionVector::LENGTH },
+                Value::Scalar { si_value: 0.000, dimension: DimensionVector::LENGTH },
+            ],
+        );
+        assert!(result.is_undef(), "clamp with inverted Scalar range should be Undef, got {:?}", result);
+    }
+
+    #[test]
+    fn clamp_nan_lo_returns_undef() {
+        // NaN lo bound: f64::clamp panics because NaN <= x is false — guard should return Undef
+        let result = eval_builtin(
+            "clamp",
+            &[Value::Real(5.0), Value::Real(f64::NAN), Value::Real(10.0)],
+        );
+        assert!(result.is_undef(), "clamp(5.0, NaN, 10.0) should be Undef, got {:?}", result);
+    }
+
+    #[test]
+    fn clamp_nan_hi_returns_undef() {
+        // NaN hi bound: f64::clamp panics because NaN <= x is false — guard should return Undef
+        let result = eval_builtin(
+            "clamp",
+            &[Value::Real(5.0), Value::Real(0.0), Value::Real(f64::NAN)],
+        );
+        assert!(result.is_undef(), "clamp(5.0, 0.0, NaN) should be Undef, got {:?}", result);
+    }
+
     // --- mod tests (step-7) ---
 
     #[test]
