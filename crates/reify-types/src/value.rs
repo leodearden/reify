@@ -50,6 +50,8 @@ pub enum Value {
     },
     /// Rank-r tensor: recursive nesting of Vec<Value> (innermost elements are scalars).
     Tensor(Vec<Value>),
+    /// Complex number: re and im share one dimension (e.g., complex impedance in ohms).
+    Complex { re: f64, im: f64, dimension: DimensionVector },
     /// Undefined — not yet determined or computation failed.
     Undef,
 }
@@ -89,6 +91,7 @@ impl Value {
     pub fn dimension(&self) -> DimensionVector {
         match self {
             Value::Scalar { dimension, .. } => *dimension,
+            Value::Complex { dimension, .. } => *dimension,
             _ => DimensionVector::DIMENSIONLESS,
         }
     }
@@ -192,6 +195,16 @@ impl Value {
                 }
                 h
             }
+            Value::Complex { re, im, dimension } => {
+                // tag=15; NaN canonicalization for both re and im; combine with dimension hash
+                let re_bits = if re.is_nan() { f64::NAN.to_bits() } else { re.to_bits() };
+                let im_bits = if im.is_nan() { f64::NAN.to_bits() } else { im.to_bits() };
+                let mut buf = [0u8; 17];
+                buf[0] = 15;
+                buf[1..9].copy_from_slice(&re_bits.to_le_bytes());
+                buf[9..17].copy_from_slice(&im_bits.to_le_bytes());
+                ContentHash::of(&buf).combine(dimension.content_hash())
+            }
             Value::Undef => ContentHash::of(&[5]),
         }
     }
@@ -232,6 +245,10 @@ impl PartialEq for Value {
                         })
                 }
             }
+            (
+                Value::Complex { re: ar, im: ai, dimension: ad },
+                Value::Complex { re: br, im: bi, dimension: bd },
+            ) => ar.to_bits() == br.to_bits() && ai.to_bits() == bi.to_bits() && ad == bd,
             (Value::Undef, Value::Undef) => true,
             _ => false,
         }
@@ -251,7 +268,7 @@ impl Ord for Value {
         use std::cmp::Ordering;
 
         // Type-tag discriminant for cross-type ordering:
-        // Undef=0, Bool=1, Int=2, Real=3, Scalar=4, String=5, Enum=6, List=7, Set=8, Map=9, Option=10, Field=11, Lambda=12, Tensor=13
+        // Undef=0, Bool=1, Int=2, Real=3, Scalar=4, String=5, Enum=6, List=7, Set=8, Map=9, Option=10, Field=11, Lambda=12, Tensor=13, Complex=14
         fn type_tag(v: &Value) -> u8 {
             match v {
                 Value::Undef => 0,
@@ -268,6 +285,7 @@ impl Ord for Value {
                 Value::Field { .. } => 11,
                 Value::Lambda { .. } => 12,
                 Value::Tensor(_) => 13,
+                Value::Complex { .. } => 14,
             }
         }
 
@@ -321,6 +339,14 @@ impl Ord for Value {
                     .then_with(|| {
                         sorted_captures(ac).cmp(&sorted_captures(bc))
                     })
+            }
+            (
+                Value::Complex { re: ar, im: ai, dimension: ad },
+                Value::Complex { re: br, im: bi, dimension: bd },
+            ) => {
+                ad.cmp(bd)
+                    .then_with(|| ar.to_bits().cmp(&br.to_bits()))
+                    .then_with(|| ai.to_bits().cmp(&bi.to_bits()))
             }
             _ => unreachable!("same type tag but different variants"),
         }
@@ -401,6 +427,25 @@ impl std::fmt::Display for Value {
                     write!(f, "{}", name)?;
                 }
                 write!(f, "| <lambda>")
+            }
+            Value::Complex { re, im, dimension } => {
+                // Format re and im using Real's whole-number convention (no trailing .0)
+                let fmt_f64 = |v: f64| -> String {
+                    if v == v.trunc() && v.is_finite() {
+                        format!("{:.0}", v)
+                    } else {
+                        format!("{}", v)
+                    }
+                };
+                let re_str = fmt_f64(*re);
+                let im_abs_str = fmt_f64(im.abs());
+                let sign = if im.is_sign_negative() { "-" } else { "+" };
+                if dimension.is_dimensionless() {
+                    write!(f, "{}{}{}", re_str, sign, im_abs_str)?;
+                    write!(f, "i")
+                } else {
+                    write!(f, "({}{}{}i) {}", re_str, sign, im_abs_str, dimension)
+                }
             }
             Value::Undef => write!(f, "undef"),
         }
