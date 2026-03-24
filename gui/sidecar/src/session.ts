@@ -21,6 +21,7 @@ export class SidecarSession {
   private config: SessionConfig;
   private sessionId: string | null = null;
   private abortController: AbortController | null = null;
+  private destroyed = false;
 
   /** Called when the session produces an outbound message. */
   onOutput: (msg: OutboundMessage) => void = () => {};
@@ -37,9 +38,22 @@ export class SidecarSession {
   }
 
   /**
+   * Dispose the session: abort any in-flight request and prevent further
+   * message handling. Safe to call multiple times (idempotent).
+   */
+  destroy(): void {
+    if (this.destroyed) return;
+    this.destroyed = true;
+    this.abortController?.abort();
+    this.sessionId = null;
+  }
+
+  /**
    * Dispatch an inbound message to the appropriate handler.
+   * Returns immediately (no-op) if the session has been destroyed.
    */
   async handleMessage(msg: InboundMessage): Promise<void> {
+    if (this.destroyed) return;
     switch (msg.type) {
       case 'send_message':
         await this.handleSendMessage(msg.id, msg.text, msg.context);
@@ -141,7 +155,8 @@ export class SidecarSession {
     // Track content lengths for delta extraction from partial messages
     let lastTextLen = 0;
     let lastThinkingLen = 0;
-    const seenToolIds = new Set<string>();
+    // Maps tool_use_id → tool_name so tool_result blocks can emit the correct name
+    const toolNameById = new Map<string, string>();
 
     // Parse streaming JSON events from stdout
     try {
@@ -151,16 +166,32 @@ export class SidecarSession {
 
           if (event.type === 'assistant' && event.message?.content) {
             for (const block of event.message.content) {
-              if (block.type === 'text' && block.text && block.text.length > lastTextLen) {
-                const delta = block.text.slice(lastTextLen);
-                lastTextLen = block.text.length;
-                this.onOutput({ type: 'text_delta', id, content: delta });
-              } else if (block.type === 'thinking' && block.thinking && block.thinking.length > lastThinkingLen) {
-                const delta = block.thinking.slice(lastThinkingLen);
-                lastThinkingLen = block.thinking.length;
-                this.onOutput({ type: 'thinking_delta', id, content: delta });
-              } else if (block.type === 'tool_use' && block.id && !seenToolIds.has(block.id)) {
-                seenToolIds.add(block.id);
+              // Detect new turn: if text/thinking length decreased, counters
+              // from the previous turn carry over — reset them so deltas emit correctly.
+              if (block.type === 'text' && block.text) {
+                if (block.text.length < lastTextLen) {
+                  lastTextLen = 0;
+                  lastThinkingLen = 0;
+                  toolNameById.clear();
+                }
+                if (block.text.length > lastTextLen) {
+                  const delta = block.text.slice(lastTextLen);
+                  lastTextLen = block.text.length;
+                  this.onOutput({ type: 'text_delta', id, content: delta });
+                }
+              } else if (block.type === 'thinking' && block.thinking) {
+                if (block.thinking.length < lastThinkingLen) {
+                  lastTextLen = 0;
+                  lastThinkingLen = 0;
+                  toolNameById.clear();
+                }
+                if (block.thinking.length > lastThinkingLen) {
+                  const delta = block.thinking.slice(lastThinkingLen);
+                  lastThinkingLen = block.thinking.length;
+                  this.onOutput({ type: 'thinking_delta', id, content: delta });
+                }
+              } else if (block.type === 'tool_use' && block.id && !toolNameById.has(block.id)) {
+                toolNameById.set(block.id, block.name);
                 this.onOutput({
                   type: 'tool_call',
                   id,
@@ -171,7 +202,7 @@ export class SidecarSession {
                 this.onOutput({
                   type: 'tool_result',
                   id,
-                  tool_name: block.tool_use_id ?? '',
+                  tool_name: toolNameById.get(block.tool_use_id) ?? '',
                   result: block.content,
                 });
               }

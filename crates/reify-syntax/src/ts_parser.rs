@@ -150,6 +150,16 @@ impl<'a> Lowering<'a> {
                         self.declarations.push(Declaration::Purpose(decl));
                     }
                 }
+                "constraint_definition" => {
+                    if let Some(decl) = self.lower_constraint_def(child) {
+                        self.declarations.push(Declaration::Constraint(decl));
+                    }
+                }
+                "unit_declaration" => {
+                    if let Some(decl) = self.lower_unit(child) {
+                        self.declarations.push(Declaration::Unit(decl));
+                    }
+                }
                 "ERROR" => {
                     self.errors.push(ParseError {
                         message: format!("syntax error: {}", self.node_text(child)),
@@ -589,6 +599,88 @@ impl<'a> Lowering<'a> {
             type_params,
             params,
             members,
+            span: self.span(node),
+            content_hash: self.content_hash(node),
+        })
+    }
+
+    // ── Constraint definition lowering ───────────────────────────
+
+    fn lower_constraint_def(&mut self, node: tree_sitter::Node) -> Option<ConstraintDef> {
+        let name_node = node.child_by_field_name("name")?;
+        let name = self.node_text(name_node).to_string();
+
+        let is_pub = self.has_pub_keyword(node);
+        let type_params = self.lower_type_parameters(node);
+
+        let mut params = Vec::new();
+        let mut predicates = Vec::new();
+
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            match child.kind() {
+                "param_declaration" => {
+                    let _ = check_and_lower!(self, child, "constraint param",
+                        self.lower_param(child).map(|p| params.push(p)));
+                }
+                "let_declaration" => {
+                    // let declarations in constraint def body are ignored for now
+                    // (captured in params/predicates separation; future: add lets field)
+                }
+                "constraint_def_predicate" => {
+                    if let Some(expr_node) = child.child_by_field_name("expr")
+                        && let Some(expr) = self.lower_expr(expr_node)
+                    {
+                        predicates.push(expr);
+                    }
+                }
+                "ERROR" => {
+                    self.errors.push(ParseError {
+                        message: format!(
+                            "syntax error in constraint body: {}",
+                            self.node_text(child)
+                        ),
+                        span: self.span(child),
+                    });
+                }
+                _ => {}
+            }
+        }
+
+        Some(ConstraintDef {
+            name,
+            is_pub,
+            type_params,
+            params,
+            predicates,
+            span: self.span(node),
+            content_hash: self.content_hash(node),
+        })
+    }
+
+    fn lower_unit(&mut self, node: tree_sitter::Node) -> Option<UnitDecl> {
+        let name_node = node.child_by_field_name("name")?;
+        let name = self.node_text(name_node).to_string();
+
+        let is_pub = self.has_pub_keyword(node);
+
+        let type_node = node.child_by_field_name("type")?;
+        let dimension_type = self.lower_type_expr_node(type_node);
+
+        let conversion = node
+            .child_by_field_name("conversion")
+            .and_then(|n| self.lower_expr(n));
+
+        let offset = node
+            .child_by_field_name("offset")
+            .and_then(|n| self.lower_expr(n));
+
+        Some(UnitDecl {
+            name,
+            is_pub,
+            dimension_type,
+            conversion,
+            offset,
             span: self.span(node),
             content_hash: self.content_hash(node),
         })

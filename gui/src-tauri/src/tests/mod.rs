@@ -6,6 +6,7 @@ mod lsp_bridge_tests;
 mod mcp_context_tests;
 mod mcp_dispatch_tests;
 mod watcher_tests;
+mod claude_bridge_tests;
 
 // Step 11: Module structure verification — importing all public types.
 #[test]

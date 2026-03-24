@@ -40,6 +40,8 @@ module.exports = grammar({
       $.trait_declaration,
       $.field_definition,
       $.purpose_declaration,
+      $.constraint_definition,
+      $.unit_declaration,
     ),
 
     // ── Enum ──────────────────────────────────────────────────
@@ -223,6 +225,45 @@ module.exports = grammar({
       $.minimize_declaration,
       $.maximize_declaration,
       $.guarded_block,
+    ),
+
+    // ── Constraint definition (top-level) ────────────────────
+    // `constraint def Name<T> { param x : Length  x > 0 }`
+    // Distinct from member-level `constraint_declaration` which starts with
+    // `constraint <expr>`. The required `def` keyword disambiguates.
+    constraint_definition: $ => seq(
+      optional('pub'),
+      'constraint',
+      'def',
+      field('name', $.identifier),
+      optional($.type_parameters),
+      '{',
+      repeat($._constraint_def_body_item),
+      '}',
+    ),
+
+    _constraint_def_body_item: $ => choice(
+      $.param_declaration,
+      $.let_declaration,
+      $.constraint_def_predicate,
+    ),
+
+    // A bare expression predicate inside a constraint def body.
+    // Named node so the lowering code can identify it by kind.
+    constraint_def_predicate: $ => field('expr', $._expression),
+
+    // ── Unit declaration (top-level) ─────────────────────────
+    // `unit meter : Length`
+    // `unit mm : Length = 0.001`
+    // `unit degC : Temperature = 1 offset 273.15`
+    unit_declaration: $ => seq(
+      optional('pub'),
+      'unit',
+      field('name', $.identifier),
+      ':',
+      field('type', $.type_expr),
+      optional(seq('=', field('conversion', $._expression))),
+      optional(seq('offset', field('offset', $._expression))),
     ),
 
     // ── Associated type ─────────────────────────────────────

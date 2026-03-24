@@ -114,6 +114,10 @@ pub fn format_value(v: &Value) -> (String, String) {
         Value::Field { domain_type, codomain_type, source, .. } => {
             (format!("Field<{}, {}>({:?})", domain_type, codomain_type, source), String::new())
         }
+        Value::Tensor(items) => {
+            let strs: Vec<String> = items.iter().map(|v| format_value(v).0).collect();
+            (format!("[{}]", strs.join(", ")), String::new())
+        }
         Value::Undef => ("undefined".to_string(), String::new()),
     }
 }

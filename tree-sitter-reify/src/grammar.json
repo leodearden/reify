@@ -43,6 +43,14 @@
         {
           "type": "SYMBOL",
           "name": "purpose_declaration"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "constraint_definition"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "unit_declaration"
         }
       ]
     },
@@ -1000,6 +1008,182 @@
         {
           "type": "SYMBOL",
           "name": "guarded_block"
+        }
+      ]
+    },
+    "constraint_definition": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "STRING",
+              "value": "pub"
+            },
+            {
+              "type": "BLANK"
+            }
+          ]
+        },
+        {
+          "type": "STRING",
+          "value": "constraint"
+        },
+        {
+          "type": "STRING",
+          "value": "def"
+        },
+        {
+          "type": "FIELD",
+          "name": "name",
+          "content": {
+            "type": "SYMBOL",
+            "name": "identifier"
+          }
+        },
+        {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "SYMBOL",
+              "name": "type_parameters"
+            },
+            {
+              "type": "BLANK"
+            }
+          ]
+        },
+        {
+          "type": "STRING",
+          "value": "{"
+        },
+        {
+          "type": "REPEAT",
+          "content": {
+            "type": "SYMBOL",
+            "name": "_constraint_def_body_item"
+          }
+        },
+        {
+          "type": "STRING",
+          "value": "}"
+        }
+      ]
+    },
+    "_constraint_def_body_item": {
+      "type": "CHOICE",
+      "members": [
+        {
+          "type": "SYMBOL",
+          "name": "param_declaration"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "let_declaration"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "constraint_def_predicate"
+        }
+      ]
+    },
+    "constraint_def_predicate": {
+      "type": "FIELD",
+      "name": "expr",
+      "content": {
+        "type": "SYMBOL",
+        "name": "_expression"
+      }
+    },
+    "unit_declaration": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "STRING",
+              "value": "pub"
+            },
+            {
+              "type": "BLANK"
+            }
+          ]
+        },
+        {
+          "type": "STRING",
+          "value": "unit"
+        },
+        {
+          "type": "FIELD",
+          "name": "name",
+          "content": {
+            "type": "SYMBOL",
+            "name": "identifier"
+          }
+        },
+        {
+          "type": "STRING",
+          "value": ":"
+        },
+        {
+          "type": "FIELD",
+          "name": "type",
+          "content": {
+            "type": "SYMBOL",
+            "name": "type_expr"
+          }
+        },
+        {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "SEQ",
+              "members": [
+                {
+                  "type": "STRING",
+                  "value": "="
+                },
+                {
+                  "type": "FIELD",
+                  "name": "conversion",
+                  "content": {
+                    "type": "SYMBOL",
+                    "name": "_expression"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "BLANK"
+            }
+          ]
+        },
+        {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "SEQ",
+              "members": [
+                {
+                  "type": "STRING",
+                  "value": "offset"
+                },
+                {
+                  "type": "FIELD",
+                  "name": "offset",
+                  "content": {
+                    "type": "SYMBOL",
+                    "name": "_expression"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "BLANK"
+            }
+          ]
         }
       ]
     },

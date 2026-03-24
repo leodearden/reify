@@ -1557,7 +1557,7 @@ enum Color { Red, Green, Blue }"#;
 /// Calling a user-defined function from a structure should compile to UserFunctionCall.
 #[test]
 fn compile_user_function_call() {
-    let source = "fn double(x: Real) -> Real { x + x }\nstructure S { let v = double(3) }";
+    let source = "fn double(x: Real) -> Real { x + x }\nstructure S { let v = double(1.5) }";
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_fn_call"));
     assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
 
@@ -1622,7 +1622,7 @@ fn compile_overload_resolution_picks_correct() {
 /// Forward reference: structure calls a function declared AFTER it.
 #[test]
 fn compile_function_forward_reference() {
-    let source = "structure S { let v = double(3) }\nfn double(x: Real) -> Real { x + x }";
+    let source = "structure S { let v = double(1.5) }\nfn double(x: Real) -> Real { x + x }";
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_fn_fwd"));
     assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
 

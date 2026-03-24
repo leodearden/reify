@@ -182,6 +182,10 @@ pub fn format_value(value: &Value) -> String {
             None => "none".to_string(),
             Some(v) => format!("some({})", format_value(v)),
         },
+        Value::Tensor(items) => {
+            let inner: Vec<String> = items.iter().map(format_value).collect();
+            format!("[{}]", inner.join(", "))
+        }
         Value::Lambda { .. } => "<lambda>".to_string(),
         Value::Field { domain_type, codomain_type, source, .. } => {
             format!("Field<{}, {}>({:?})", domain_type, codomain_type, source)

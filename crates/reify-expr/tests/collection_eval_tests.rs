@@ -610,12 +610,12 @@ fn eval_method_filter_empty_result() {
     assert_eq!(result, Value::List(vec![]));
 }
 
-// ─── step-39: .filter Undef propagation ───
+// ─── step-39: .filter conservative undef retention ───
 
 #[test]
 fn eval_method_filter_undef_propagation() {
-    // [1, undef, 3].filter(|x| x > 0) -> Undef
-    // When x is Undef, Gt(Undef, 0) returns Undef, and filter propagates Undef.
+    // [1, undef, 3].filter(|x| x > 0) -> [1, undef, 3]
+    // When x is Undef, Gt(Undef, 0) returns Undef, and filter conservatively retains the element.
     let x_id = ValueCellId::new("$lambda_filter_u.S", "x");
     let body = CompiledExpr::binop(
         BinOp::Gt,
@@ -642,7 +642,160 @@ fn eval_method_filter_undef_propagation() {
     );
     let values = ValueMap::new();
     let result = eval_expr(&expr, &EvalContext::simple(&values));
-    assert!(result.is_undef(), "[1, undef, 3].filter(|x| x > 0) should be Undef");
+    assert_eq!(
+        result,
+        Value::List(vec![Value::Int(1), Value::Undef, Value::Int(3)]),
+        "[1, undef, 3].filter(|x| x > 0) should conservatively retain undef elements"
+    );
+}
+
+// ─── task-166 step-3: .filter mixed undef and false results ───
+
+#[test]
+fn eval_method_filter_undef_mixed_results() {
+    // [1, undef, -1, undef, 5].filter(|x| x > 0) -> [1, undef, undef, 5]
+    // true results are included, false results are excluded, undef results are conservatively retained.
+    let x_id = ValueCellId::new("$lambda_filter_mix.S", "x");
+    let body = CompiledExpr::binop(
+        BinOp::Gt,
+        CompiledExpr::value_ref(x_id.clone(), Type::Int),
+        CompiledExpr::literal(Value::Int(0), Type::Int),
+        Type::Bool,
+    );
+    let lambda_arg = lambda_literal(vec![("x", x_id)], body, ValueMap::new());
+
+    let undef_id1 = ValueCellId::new("S", "missing_mix_1");
+    let undef_id2 = ValueCellId::new("S", "missing_mix_2");
+    let list = CompiledExpr::list_literal(
+        vec![
+            CompiledExpr::literal(Value::Int(1), Type::Int),
+            CompiledExpr::value_ref(undef_id1, Type::Int),
+            CompiledExpr::literal(Value::Int(-1), Type::Int),
+            CompiledExpr::value_ref(undef_id2, Type::Int),
+            CompiledExpr::literal(Value::Int(5), Type::Int),
+        ],
+        Type::List(Box::new(Type::Int)),
+    );
+    let expr = CompiledExpr::method_call(
+        list,
+        "filter".to_string(),
+        vec![lambda_arg],
+        Type::List(Box::new(Type::Int)),
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::List(vec![Value::Int(1), Value::Undef, Value::Undef, Value::Int(5)]),
+        "[1, undef, -1, undef, 5].filter(|x| x > 0) should return [1, undef, undef, 5]"
+    );
+}
+
+// ─── task-166 step-4: .filter all-undef list ───
+
+#[test]
+fn eval_method_filter_all_undef() {
+    // [undef, undef].filter(|x| x > 0) -> [undef, undef]
+    // All elements have unknown predicate value; all are conservatively retained.
+    let x_id = ValueCellId::new("$lambda_filter_all_u.S", "x");
+    let body = CompiledExpr::binop(
+        BinOp::Gt,
+        CompiledExpr::value_ref(x_id.clone(), Type::Int),
+        CompiledExpr::literal(Value::Int(0), Type::Int),
+        Type::Bool,
+    );
+    let lambda_arg = lambda_literal(vec![("x", x_id)], body, ValueMap::new());
+
+    let undef_id1 = ValueCellId::new("S", "missing_all_u_1");
+    let undef_id2 = ValueCellId::new("S", "missing_all_u_2");
+    let list = CompiledExpr::list_literal(
+        vec![
+            CompiledExpr::value_ref(undef_id1, Type::Int),
+            CompiledExpr::value_ref(undef_id2, Type::Int),
+        ],
+        Type::List(Box::new(Type::Int)),
+    );
+    let expr = CompiledExpr::method_call(
+        list,
+        "filter".to_string(),
+        vec![lambda_arg],
+        Type::List(Box::new(Type::Int)),
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::List(vec![Value::Undef, Value::Undef]),
+        "[undef, undef].filter(|x| x > 0) should return [undef, undef]"
+    );
+}
+
+// ─── task-166 step-5: .filter non-Bool predicate returns Undef ───
+
+#[test]
+fn eval_method_filter_non_bool_predicate() {
+    // [1, 2, 3].filter(|x| x * 2) where predicate returns Int (not Bool)
+    // -> Value::Undef for the entire filter (type error, not incomplete information)
+    let x_id = ValueCellId::new("$lambda_filter_nb.S", "x");
+    let body = CompiledExpr::binop(
+        BinOp::Mul,
+        CompiledExpr::value_ref(x_id.clone(), Type::Int),
+        CompiledExpr::literal(Value::Int(2), Type::Int),
+        Type::Int,
+    );
+    let lambda_arg = lambda_literal(vec![("x", x_id)], body, ValueMap::new());
+
+    let list = CompiledExpr::list_literal(
+        vec![
+            CompiledExpr::literal(Value::Int(1), Type::Int),
+            CompiledExpr::literal(Value::Int(2), Type::Int),
+            CompiledExpr::literal(Value::Int(3), Type::Int),
+        ],
+        Type::List(Box::new(Type::Int)),
+    );
+    let expr = CompiledExpr::method_call(
+        list,
+        "filter".to_string(),
+        vec![lambda_arg],
+        Type::List(Box::new(Type::Int)),
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert!(
+        result.is_undef(),
+        "[1, 2, 3].filter(|x| x * 2) with non-Bool predicate should return Undef (type error)"
+    );
+}
+
+// ─── task-166 step-6: .filter empty list ───
+
+#[test]
+fn eval_method_filter_empty_list() {
+    // [].filter(|x| x > 0) -> []
+    // The degenerate case: loop body never executes, result is always an empty list.
+    let x_id = ValueCellId::new("$lambda_filter_emp.S", "x");
+    let body = CompiledExpr::binop(
+        BinOp::Gt,
+        CompiledExpr::value_ref(x_id.clone(), Type::Int),
+        CompiledExpr::literal(Value::Int(0), Type::Int),
+        Type::Bool,
+    );
+    let lambda_arg = lambda_literal(vec![("x", x_id)], body, ValueMap::new());
+
+    let list = CompiledExpr::list_literal(vec![], Type::List(Box::new(Type::Int)));
+    let expr = CompiledExpr::method_call(
+        list,
+        "filter".to_string(),
+        vec![lambda_arg],
+        Type::List(Box::new(Type::Int)),
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::List(vec![]),
+        "[].filter(|x| x > 0) should return []"
+    );
 }
 
 // ─── step-17/18: MethodCall .fold ───
@@ -1195,7 +1348,7 @@ fn eval_undef_count() {
 
 #[test]
 fn eval_list_with_undef_count() {
-    // [1, undef, 3].count -> Int(3) (count the structure, not the values)
+    // [1, undef, 3].count -> Undef (count must propagate uncertainty when any element is Undef — three-valued logic)
     let undef_id = ValueCellId::new("S", "missing_elem");
     let list = CompiledExpr::list_literal(
         vec![
@@ -1208,7 +1361,42 @@ fn eval_list_with_undef_count() {
     let expr = CompiledExpr::method_call(list, "count".to_string(), vec![], Type::Int);
     let values = ValueMap::new();
     let result = eval_expr(&expr, &EvalContext::simple(&values));
-    assert_eq!(result, Value::Int(3));
+    assert!(result.is_undef(), "[1,undef,3].count should be Undef (uncertain membership)");
+}
+
+#[test]
+fn eval_method_count_set_with_undef() {
+    // {1, undef, 3}.count -> Undef (Set arm of .count() fix matches List arm)
+    let undef_id = ValueCellId::new("S", "missing_set_elem");
+    let set = CompiledExpr::set_literal(
+        vec![
+            CompiledExpr::literal(Value::Int(1), Type::Int),
+            CompiledExpr::value_ref(undef_id, Type::Int),
+            CompiledExpr::literal(Value::Int(3), Type::Int),
+        ],
+        Type::Set(Box::new(Type::Int)),
+    );
+    let expr = CompiledExpr::method_call(set, "count".to_string(), vec![], Type::Int);
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert!(result.is_undef(), "{{1,undef,3}}.count should be Undef (uncertain membership)");
+}
+
+#[test]
+fn eval_method_count_definite_list() {
+    // [1, 2, 3].count -> Int(3) — regression guard: undef-check must not break the normal case
+    let list = CompiledExpr::list_literal(
+        vec![
+            CompiledExpr::literal(Value::Int(1), Type::Int),
+            CompiledExpr::literal(Value::Int(2), Type::Int),
+            CompiledExpr::literal(Value::Int(3), Type::Int),
+        ],
+        Type::List(Box::new(Type::Int)),
+    );
+    let expr = CompiledExpr::method_call(list, "count".to_string(), vec![], Type::Int);
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::Int(3), "[1,2,3].count should be Int(3)");
 }
 
 #[test]
@@ -1603,4 +1791,258 @@ fn eval_method_all_any_with_user_function() {
         Value::Bool(false),
         "[1,3,5].any(is_even) should be false"
     );
+}
+
+// ─── step-1/2: concat Undef propagation ───
+
+#[test]
+fn eval_method_concat_undef_object() {
+    // undef.concat([1, 2]) -> Undef
+    // The MethodCall dispatch short-circuits on obj.is_undef() (line 202 of lib.rs).
+    let undef_id = ValueCellId::new("S", "missing_concat_obj");
+    let obj = CompiledExpr::value_ref(undef_id, Type::List(Box::new(Type::Int)));
+    let arg = CompiledExpr::list_literal(
+        vec![
+            CompiledExpr::literal(Value::Int(1), Type::Int),
+            CompiledExpr::literal(Value::Int(2), Type::Int),
+        ],
+        Type::List(Box::new(Type::Int)),
+    );
+    let expr = CompiledExpr::method_call(
+        obj,
+        "concat".to_string(),
+        vec![arg],
+        Type::List(Box::new(Type::Int)),
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert!(result.is_undef(), "concat on Undef object should be Undef");
+}
+
+#[test]
+fn eval_method_concat_undef_arg() {
+    // [1, 2].concat(undef) -> Undef
+    // The (List, List) match catch-all returns Undef when arg is not a List.
+    let list = CompiledExpr::list_literal(
+        vec![
+            CompiledExpr::literal(Value::Int(1), Type::Int),
+            CompiledExpr::literal(Value::Int(2), Type::Int),
+        ],
+        Type::List(Box::new(Type::Int)),
+    );
+    let undef_id = ValueCellId::new("S", "missing_concat_arg");
+    let arg = CompiledExpr::value_ref(undef_id, Type::List(Box::new(Type::Int)));
+    let expr = CompiledExpr::method_call(
+        list,
+        "concat".to_string(),
+        vec![arg],
+        Type::List(Box::new(Type::Int)),
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert!(result.is_undef(), "concat with Undef arg should be Undef");
+}
+
+// ─── step-3/4: concat empty list identity ───
+
+#[test]
+fn eval_method_concat_empty_left() {
+    // [].concat([1, 2]) -> [1, 2]
+    let empty = CompiledExpr::list_literal(vec![], Type::List(Box::new(Type::Int)));
+    let right = CompiledExpr::list_literal(
+        vec![
+            CompiledExpr::literal(Value::Int(1), Type::Int),
+            CompiledExpr::literal(Value::Int(2), Type::Int),
+        ],
+        Type::List(Box::new(Type::Int)),
+    );
+    let expr = CompiledExpr::method_call(
+        empty,
+        "concat".to_string(),
+        vec![right],
+        Type::List(Box::new(Type::Int)),
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::List(vec![Value::Int(1), Value::Int(2)]));
+}
+
+#[test]
+fn eval_method_concat_empty_right() {
+    // [1, 2].concat([]) -> [1, 2]
+    let left = CompiledExpr::list_literal(
+        vec![
+            CompiledExpr::literal(Value::Int(1), Type::Int),
+            CompiledExpr::literal(Value::Int(2), Type::Int),
+        ],
+        Type::List(Box::new(Type::Int)),
+    );
+    let empty = CompiledExpr::list_literal(vec![], Type::List(Box::new(Type::Int)));
+    let expr = CompiledExpr::method_call(
+        left,
+        "concat".to_string(),
+        vec![empty],
+        Type::List(Box::new(Type::Int)),
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::List(vec![Value::Int(1), Value::Int(2)]));
+}
+
+#[test]
+fn eval_method_concat_both_empty() {
+    // [].concat([]) -> []
+    let left = CompiledExpr::list_literal(vec![], Type::List(Box::new(Type::Int)));
+    let right = CompiledExpr::list_literal(vec![], Type::List(Box::new(Type::Int)));
+    let expr = CompiledExpr::method_call(
+        left,
+        "concat".to_string(),
+        vec![right],
+        Type::List(Box::new(Type::Int)),
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::List(vec![]));
+}
+
+// ─── step-5/6: concat different element types and Undef elements ───
+
+#[test]
+fn eval_method_concat_string_lists() {
+    // ["a", "b"].concat(["c"]) -> ["a", "b", "c"]
+    let left = CompiledExpr::list_literal(
+        vec![
+            CompiledExpr::literal(Value::String("a".to_string()), Type::String),
+            CompiledExpr::literal(Value::String("b".to_string()), Type::String),
+        ],
+        Type::List(Box::new(Type::String)),
+    );
+    let right = CompiledExpr::list_literal(
+        vec![CompiledExpr::literal(Value::String("c".to_string()), Type::String)],
+        Type::List(Box::new(Type::String)),
+    );
+    let expr = CompiledExpr::method_call(
+        left,
+        "concat".to_string(),
+        vec![right],
+        Type::List(Box::new(Type::String)),
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::List(vec![
+            Value::String("a".to_string()),
+            Value::String("b".to_string()),
+            Value::String("c".to_string()),
+        ])
+    );
+}
+
+#[test]
+fn eval_method_concat_with_undef_elements() {
+    // [1, undef].concat([undef, 4]) -> [1, undef, undef, 4]
+    // Undef elements inside lists are preserved, not filtered.
+    let undef_id1 = ValueCellId::new("S", "missing_elem_1");
+    let undef_id2 = ValueCellId::new("S", "missing_elem_2");
+    let left = CompiledExpr::list_literal(
+        vec![
+            CompiledExpr::literal(Value::Int(1), Type::Int),
+            CompiledExpr::value_ref(undef_id1, Type::Int),
+        ],
+        Type::List(Box::new(Type::Int)),
+    );
+    let right = CompiledExpr::list_literal(
+        vec![
+            CompiledExpr::value_ref(undef_id2, Type::Int),
+            CompiledExpr::literal(Value::Int(4), Type::Int),
+        ],
+        Type::List(Box::new(Type::Int)),
+    );
+    let expr = CompiledExpr::method_call(
+        left,
+        "concat".to_string(),
+        vec![right],
+        Type::List(Box::new(Type::Int)),
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::List(vec![Value::Int(1), Value::Undef, Value::Undef, Value::Int(4)])
+    );
+}
+
+// ─── step-7/8: concat error / edge cases ───
+
+#[test]
+fn eval_method_concat_non_list_arg() {
+    // [1, 2].concat(42) -> Undef (non-list argument falls through match catch-all)
+    let list = CompiledExpr::list_literal(
+        vec![
+            CompiledExpr::literal(Value::Int(1), Type::Int),
+            CompiledExpr::literal(Value::Int(2), Type::Int),
+        ],
+        Type::List(Box::new(Type::Int)),
+    );
+    let non_list_arg = CompiledExpr::literal(Value::Int(42), Type::Int);
+    let expr = CompiledExpr::method_call(
+        list,
+        "concat".to_string(),
+        vec![non_list_arg],
+        Type::List(Box::new(Type::Int)),
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert!(result.is_undef(), "concat with non-list arg should be Undef");
+}
+
+#[test]
+fn eval_method_concat_zero_args() {
+    // [1, 2].concat() -> Undef (wrong arg count: 0)
+    let list = CompiledExpr::list_literal(
+        vec![
+            CompiledExpr::literal(Value::Int(1), Type::Int),
+            CompiledExpr::literal(Value::Int(2), Type::Int),
+        ],
+        Type::List(Box::new(Type::Int)),
+    );
+    let expr = CompiledExpr::method_call(
+        list,
+        "concat".to_string(),
+        vec![],
+        Type::List(Box::new(Type::Int)),
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert!(result.is_undef(), "concat with 0 args should be Undef");
+}
+
+#[test]
+fn eval_method_concat_two_args() {
+    // [1, 2].concat([3], [4]) -> Undef (wrong arg count: 2)
+    let list = CompiledExpr::list_literal(
+        vec![
+            CompiledExpr::literal(Value::Int(1), Type::Int),
+            CompiledExpr::literal(Value::Int(2), Type::Int),
+        ],
+        Type::List(Box::new(Type::Int)),
+    );
+    let arg1 = CompiledExpr::list_literal(
+        vec![CompiledExpr::literal(Value::Int(3), Type::Int)],
+        Type::List(Box::new(Type::Int)),
+    );
+    let arg2 = CompiledExpr::list_literal(
+        vec![CompiledExpr::literal(Value::Int(4), Type::Int)],
+        Type::List(Box::new(Type::Int)),
+    );
+    let expr = CompiledExpr::method_call(
+        list,
+        "concat".to_string(),
+        vec![arg1, arg2],
+        Type::List(Box::new(Type::Int)),
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert!(result.is_undef(), "concat with 2 args should be Undef");
 }
