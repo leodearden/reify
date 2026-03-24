@@ -46,6 +46,9 @@ function resultSummary(toolCall: ToolCallInfo): string | null {
   if (toolCall.toolName === 'reify_get_parameters' && Array.isArray(toolCall.result)) {
     return `${toolCall.result.length} parameters`;
   }
+  if (toolCall.toolName === 'reify_get_constraints' && Array.isArray(toolCall.result)) {
+    return `${toolCall.result.length} constraints`;
+  }
   return null;
 }
 
