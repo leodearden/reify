@@ -2247,6 +2247,103 @@ mod tests {
         assert!(eval_builtin("orient_axis_angle", &[axis.clone(), Value::Real(1.0), Value::Real(2.0)]).is_undef());
     }
 
+    // ── orient_euler tests (step-12) ──────────────────────────────────────
+
+    #[test]
+    fn orient_euler_xyz_single_axis() {
+        // Intrinsic xyz with (π/2, 0, 0): rotation of π/2 about X
+        // = quaternion (cos(π/4), sin(π/4), 0, 0)
+        let cos_pi_4 = std::f64::consts::FRAC_PI_4.cos();
+        let sin_pi_4 = std::f64::consts::FRAC_PI_4.sin();
+        assert_orientation_approx!(
+            eval_builtin("orient_euler", &[
+                Value::String("xyz".into()),
+                Value::Real(std::f64::consts::FRAC_PI_2),
+                Value::Real(0.0),
+                Value::Real(0.0),
+            ]),
+            cos_pi_4, sin_pi_4, 0.0, 0.0
+        );
+    }
+
+    #[test]
+    fn orient_euler_zyx_single_axis() {
+        // Intrinsic zyx with (π/2, 0, 0): rotation of π/2 about Z
+        // = quaternion (cos(π/4), 0, 0, sin(π/4))
+        let cos_pi_4 = std::f64::consts::FRAC_PI_4.cos();
+        let sin_pi_4 = std::f64::consts::FRAC_PI_4.sin();
+        assert_orientation_approx!(
+            eval_builtin("orient_euler", &[
+                Value::String("zyx".into()),
+                Value::Real(std::f64::consts::FRAC_PI_2),
+                Value::Real(0.0),
+                Value::Real(0.0),
+            ]),
+            cos_pi_4, 0.0, 0.0, sin_pi_4
+        );
+    }
+
+    #[test]
+    fn orient_euler_zero_angles_is_identity() {
+        assert_orientation_approx!(
+            eval_builtin("orient_euler", &[
+                Value::String("xyz".into()),
+                Value::Real(0.0),
+                Value::Real(0.0),
+                Value::Real(0.0),
+            ]),
+            1.0, 0.0, 0.0, 0.0
+        );
+    }
+
+    #[test]
+    fn orient_euler_invalid_convention_returns_undef() {
+        assert!(eval_builtin("orient_euler", &[
+            Value::String("abc".into()),
+            Value::Real(0.0),
+            Value::Real(0.0),
+            Value::Real(0.0),
+        ]).is_undef());
+    }
+
+    #[test]
+    fn orient_euler_non_string_convention_returns_undef() {
+        assert!(eval_builtin("orient_euler", &[
+            Value::Real(0.0),
+            Value::Real(0.0),
+            Value::Real(0.0),
+            Value::Real(0.0),
+        ]).is_undef());
+    }
+
+    #[test]
+    fn orient_euler_angle_scalar_accepted() {
+        // Same as xyz (π/2, 0, 0) but with Angle Scalar
+        let cos_pi_4 = std::f64::consts::FRAC_PI_4.cos();
+        let sin_pi_4 = std::f64::consts::FRAC_PI_4.sin();
+        assert_orientation_approx!(
+            eval_builtin("orient_euler", &[
+                Value::String("xyz".into()),
+                Value::Scalar {
+                    si_value: std::f64::consts::FRAC_PI_2,
+                    dimension: DimensionVector::ANGLE,
+                },
+                Value::Real(0.0),
+                Value::Real(0.0),
+            ]),
+            cos_pi_4, sin_pi_4, 0.0, 0.0
+        );
+    }
+
+    #[test]
+    fn orient_euler_wrong_arg_count_returns_undef() {
+        assert!(eval_builtin("orient_euler", &[]).is_undef());
+        assert!(eval_builtin("orient_euler", &[
+            Value::String("xyz".into()),
+            Value::Real(0.0),
+        ]).is_undef());
+    }
+
     #[test]
     fn dot_mixed_component_dimensions_returns_undef() {
         // A Tensor with mixed dimensions is not a valid physical vector
