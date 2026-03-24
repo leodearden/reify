@@ -464,12 +464,14 @@ impl ReifyToolContext for CliToolContext {
             _ => Value::Real(numeric_val),
         };
 
-        // Apply the parameter change via incremental edit
+        // Apply the parameter change via incremental edit.
+        // edit_param must succeed before mutating engine state via set_param_and_invalidate:
+        // if edit_param fails, param_overrides and cache remain in their last consistent state.
         let engine = state.engine.as_mut().unwrap();
-        engine.set_param_and_invalidate(&cell_id_obj, new_value.clone());
         engine
-            .edit_param(cell_id_obj, new_value.clone())
+            .edit_param(cell_id_obj.clone(), new_value.clone())
             .map_err(|e| ToolError::EngineError(format!("incremental eval failed: {e}")))?;
+        engine.set_param_and_invalidate(&cell_id_obj, new_value.clone());
 
         let unit = dimension_unit(&ty);
         Ok(SetParamResult {
