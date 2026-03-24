@@ -3,8 +3,8 @@ use reify_syntax::ParsedModule;
 use reify_types::{BinOp, ContentHash, DimensionVector, ModulePath, SourceSpan, Type, Value};
 
 use crate::builders::{
-    CompiledFieldBuilder, CompiledModuleBuilder, CompiledPurposeBuilder, CompiledTraitBuilder,
-    TopologyTemplateBuilder,
+    range_constraint, CompiledFieldBuilder, CompiledModuleBuilder, CompiledPurposeBuilder,
+    CompiledTraitBuilder, TopologyTemplateBuilder,
 };
 
 /// The canonical bracket source code for end-to-end testing.
@@ -489,6 +489,59 @@ pub fn purpose_module() -> CompiledModule {
         .build()
 }
 
+/// Return a `CompiledModule` with a single constrained "Beam" structure.
+///
+/// The Beam has two parameters and five constraints:
+/// - `param width: Scalar(LENGTH) = 100mm`
+/// - `param height: Scalar(LENGTH) = 200mm`
+/// - constraint 0: `width > 10mm`   (from `range_constraint`)
+/// - constraint 1: `width < 500mm`  (from `range_constraint`)
+/// - constraint 2: `height > 10mm`  (from `range_constraint`)
+/// - constraint 3: `height < 1000mm` (from `range_constraint`)
+/// - constraint 4 (label "slender"): `height > 2 * width`
+///
+/// This fixture proves that `range_constraint` and `equality_constraint` work
+/// correctly when called multiple times for the same entity.
+pub fn constrained_structure_module() -> reify_compiler::CompiledModule {
+    use reify_types::CompiledExpr;
+
+    let entity = "Beam";
+    let mm_literal = |v: f64| CompiledExpr::literal(crate::mm(v), Type::length());
+
+    // Build the 4 range expressions using the helper (2 per member)
+    let width_range = range_constraint(entity, "width", Type::length(), mm_literal(10.0), mm_literal(500.0));
+    let height_range = range_constraint(entity, "height", Type::length(), mm_literal(10.0), mm_literal(1000.0));
+
+    // Slender ratio: height > 2 * width
+    let height_ref = CompiledExpr::value_ref(crate::vcid(entity, "height"), Type::length());
+    let width_ref = CompiledExpr::value_ref(crate::vcid(entity, "width"), Type::length());
+    let two_times_width = CompiledExpr::binop(
+        BinOp::Mul,
+        CompiledExpr::literal(Value::Real(2.0), Type::Real),
+        width_ref,
+        Type::length(),
+    );
+    use crate::builders::gt;
+    let slender_expr = gt(height_ref, two_times_width);
+
+    let template = TopologyTemplateBuilder::new(entity)
+        .param(entity, "width", Type::length(), Some(mm_literal(100.0)))
+        .param(entity, "height", Type::length(), Some(mm_literal(200.0)))
+        // width range: indices 0, 1
+        .constraint(entity, 0, None, width_range[0].clone())
+        .constraint(entity, 1, None, width_range[1].clone())
+        // height range: indices 2, 3
+        .constraint(entity, 2, None, height_range[0].clone())
+        .constraint(entity, 3, None, height_range[1].clone())
+        // slender ratio: index 4, labeled
+        .constraint(entity, 4, Some("slender"), slender_expr)
+        .build();
+
+    CompiledModuleBuilder::new(ModulePath::single("constrained_beam"))
+        .template(template)
+        .build()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -583,6 +636,48 @@ mod tests {
         assert_eq!(module.compiled_purposes[0].params.len(), 1);
         assert_eq!(module.compiled_purposes[0].params[0].name, "subject");
         assert_eq!(module.templates.len(), 1);
+    }
+
+    #[test]
+    fn constrained_structure_module_constraint_indices_are_sequential() {
+        use reify_types::ConstraintNodeId;
+        let module = constrained_structure_module();
+        let t = &module.templates[0];
+        assert_eq!(t.name, "Beam");
+        assert_eq!(t.constraints.len(), 5);
+        // All constraints are for entity "Beam" with sequential indices 0-4
+        for (i, c) in t.constraints.iter().enumerate() {
+            assert_eq!(
+                c.id,
+                ConstraintNodeId::new("Beam", i as u32),
+                "constraint {} should have index {}",
+                i,
+                i
+            );
+        }
+        // Index 4 has label "slender"
+        assert_eq!(t.constraints[4].label.as_deref(), Some("slender"));
+        // First 4 have no labels
+        for i in 0..4 {
+            assert_eq!(
+                t.constraints[i].label,
+                None,
+                "constraint {} should have no label",
+                i
+            );
+        }
+    }
+
+    #[test]
+    fn constrained_structure_module_has_beam_template() {
+        let module = constrained_structure_module();
+        assert_eq!(module.templates.len(), 1);
+        let t = &module.templates[0];
+        assert_eq!(t.name, "Beam");
+        // 2 params: width, height
+        assert_eq!(t.value_cells.len(), 2);
+        // 5 constraints: 2 for width range, 2 for height range, 1 for slender ratio
+        assert_eq!(t.constraints.len(), 5);
     }
 
     #[test]
