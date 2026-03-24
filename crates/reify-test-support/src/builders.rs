@@ -51,7 +51,7 @@ fn infer_value_type(v: &Value) -> Type {
                 .as_ref()
                 .map(|v| infer_value_type(v))
                 .or_else(|| upper.as_ref().map(|v| infer_value_type(v)))
-                .unwrap_or(Type::Real);
+                .unwrap_or_else(|| panic!("literal() cannot infer Range element type for fully unbounded range. Use CompiledExpr::literal(value, type) directly."));
             Type::Range(Box::new(elem_ty))
         }
         Value::Undef => Type::Bool,
@@ -712,6 +712,39 @@ mod tests {
     fn literal_empty_list_uses_int_fallback() {
         let expr = literal(Value::List(vec![]));
         assert_eq!(expr.result_type, Type::List(Box::new(Type::Int)));
+    }
+
+    #[test]
+    #[should_panic(expected = "literal() cannot infer Range element type")]
+    fn literal_fully_unbounded_range_panics() {
+        let _ = literal(Value::Range {
+            lower: None,
+            upper: None,
+            lower_inclusive: false,
+            upper_inclusive: false,
+        });
+    }
+
+    #[test]
+    fn literal_range_with_lower_bound_infers_type() {
+        let expr = literal(Value::Range {
+            lower: Some(Box::new(Value::Int(1))),
+            upper: None,
+            lower_inclusive: true,
+            upper_inclusive: false,
+        });
+        assert_eq!(expr.result_type, Type::Range(Box::new(Type::Int)));
+    }
+
+    #[test]
+    fn literal_range_with_upper_bound_only_infers_type() {
+        let expr = literal(Value::Range {
+            lower: None,
+            upper: Some(Box::new(Value::Real(5.0))),
+            lower_inclusive: false,
+            upper_inclusive: true,
+        });
+        assert_eq!(expr.result_type, Type::Range(Box::new(Type::Real)));
     }
 
     #[test]

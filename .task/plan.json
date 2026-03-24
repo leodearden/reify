@@ -1,257 +1,75 @@
 {
-  "task_id": "288",
-  "title": "Complex<Q>: constructor and tests",
+  "task_id": "362",
+  "title": "Fix silent Type::Real default for fully-unbounded Range in test builders",
   "files": [
-    "crates/reify-stdlib/src/lib.rs"
+    "crates/reify-test-support/src/builders.rs"
   ],
   "modules": [
-    "crates/reify-stdlib"
+    "crates/reify-test-support"
   ],
-  "analysis": "Task 288 adds a complex(re, im) constructor and supporting functions to the stdlib. All type infrastructure is already in place: Type::Complex(Box<Type>) exists in reify-types/ty.rs (line 45), Value::Complex { re, im, dimension } exists in value.rs (line 54), Display/PartialEq/Ord/content_hash are implemented, and downstream match arms (LSP, constraints, classifier) already handle Complex. The test-support builders.rs also handles Complex for type inference (line 47). The only remaining work is adding stdlib functions to eval_builtin() in lib.rs and writing comprehensive tests. The implementation follows the established pattern: constructor functions validated via match arms in the eval_builtin match statement, with unary/binary helpers for arg count validation, sanitize_value for NaN/Inf defense, and dimension comparison using DimensionVector equality. Functions added: complex(re,im) constructor, re(z)/im(z) accessors, conjugate(z), phase(z), complex_add(a,b), complex_mul(a,b), and extending existing magnitude(z) for Complex. All operations respect dimensions: construction requires matching dimensions, addition requires matching dimensions, multiplication combines dimensions via DimensionVector::mul(), and accessors/magnitude return Scalar when dimensioned or Real when dimensionless.",
-  "prerequisites": [
-    {
-      "id": "pre-1",
-      "description": "Verify current workspace compiles and tests pass on the worktree baseline (cargo check --workspace && cargo test -p reify-stdlib)",
-      "status": "done",
-      "commit": "661275f",
-      "tests": []
-    }
-  ],
+  "analysis": "The `infer_value_type` function in `crates/reify-test-support/src/builders.rs` (line 49-56) handles `Value::Range { lower, upper, .. }` by chaining `lower.map(infer_value_type).or_else(|| upper.map(infer_value_type)).unwrap_or(Type::Real)`. When both bounds are `None` (fully-unbounded range), this silently defaults to `Type::Real`, violating the project convention against silent defaults (feedback_silent_defaults_pattern.md). The `Value::Tensor` arm at line 44-46 already correctly panics with a descriptive message directing users to `CompiledExpr::literal(value, type)`. The fix mirrors this pattern for Range. Only one file is affected since both the implementation and tests live in `builders.rs`. No callers currently construct fully-unbounded ranges via `literal()`, so this is a safety net against future misuse.",
+  "prerequisites": [],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing tests for complex(re, im) constructor with dimensionless args: complex(Real, Real), complex(Int, Int), complex(Int, Real) mixed coercion. Verify each returns Value::Complex with DIMENSIONLESS dimension.",
+      "description": "Write a `#[test]` `#[should_panic(expected = \"literal() cannot infer Range element type\")]` test named `literal_fully_unbounded_range_panics` that calls `literal(Value::Range { lower: None, upper: None, lower_inclusive: false, upper_inclusive: false })`. This test will FAIL because the current code silently returns Type::Real instead of panicking. Place it in the existing `mod tests` block near line 715, after the other literal_* tests.",
       "status": "done",
-      "commit": "4261452"
+      "commit": "d29f313"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Add 'complex' match arm to eval_builtin: validate 2 args, extract f64 via as_f64(), extract dimension via Value::dimension(), require both dimensions equal, construct Value::Complex { re, im, dimension }. Apply sanitize_value pattern for NaN/Inf.",
+      "description": "In the `Value::Range` arm of `infer_value_type` (line 54), replace `.unwrap_or(Type::Real)` with `.unwrap_or_else(|| panic!(\"literal() cannot infer Range element type for fully unbounded range. Use CompiledExpr::literal(value, type) directly.\"))`. This mirrors the Tensor arm's panic pattern at line 45. The step-1 test now passes.",
       "status": "done",
-      "commit": "575f1b6"
+      "commit": "0017317"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing test for complex(Scalar{5mm}, Scalar{3mm}) → Complex{0.005, 0.003, LENGTH}. Verify dimension is preserved from Scalar arguments.",
+      "description": "Add positive test `literal_range_with_lower_bound_infers_type` verifying `literal(Value::Range { lower: Some(Box::new(Value::Int(1))), upper: None, lower_inclusive: true, upper_inclusive: false })` produces `Type::Range(Box::new(Type::Int))`. Ensures the lower-bound inference path still works.",
       "status": "done",
-      "commit": "4261452"
+      "commit": "402f66c"
     },
     {
       "id": "step-4",
-      "type": "impl",
-      "description": "Ensure the 'complex' arm handles Scalar arguments correctly — dimension extraction from Value::dimension() already returns the Scalar's dimension, so this should pass after step-2 impl. Fix if needed.",
-      "status": "done",
-      "commit": "575f1b6"
-    },
-    {
-      "id": "step-5",
       "type": "test",
-      "description": "Write failing tests for error cases: (1) dimension mismatch complex(3mm, 4s) → Undef, (2) mixed Real+Scalar complex(Real(3.0), Scalar{4,LENGTH}) → Undef, (3) wrong arg count complex()/complex(1,2,3) → Undef, (4) non-numeric complex('hi', 3) → Undef, (5) NaN arg → Undef, (6) Inf arg → Undef.",
+      "description": "Add positive test `literal_range_with_upper_bound_only_infers_type` verifying `literal(Value::Range { lower: None, upper: Some(Box::new(Value::Real(5.0))), lower_inclusive: false, upper_inclusive: true })` produces `Type::Range(Box::new(Type::Real))`. Covers the or_else fallback branch (upper bound used when lower is None).",
       "status": "done",
-      "commit": "4261452"
-    },
-    {
-      "id": "step-6",
-      "type": "impl",
-      "description": "Add NaN/Inf sanitization to the 'complex' arm: check re.is_finite() && im.is_finite(), return Undef if not. Other error cases (mismatch, wrong count, non-numeric) should already be handled by step-2 impl.",
-      "status": "done",
-      "commit": "575f1b6"
-    },
-    {
-      "id": "step-7",
-      "type": "test",
-      "description": "Write failing tests for re(z) and im(z) accessors: (1) re(Complex{3,4,DIMLESS}) → Real(3.0), (2) im(Complex{3,4,DIMLESS}) → Real(4.0), (3) re(Complex{5,3,LENGTH}) → Scalar{5.0, LENGTH}, (4) im(Complex{5,3,LENGTH}) → Scalar{3.0, LENGTH}, (5) re(non-complex) → Undef, (6) im(non-complex) → Undef.",
-      "status": "done",
-      "commit": "4261452"
-    },
-    {
-      "id": "step-8",
-      "type": "impl",
-      "description": "Add 're' and 'im' match arms to eval_builtin using unary() helper. Match Value::Complex, return Real when dimension is DIMENSIONLESS, Scalar with the complex's dimension otherwise. Return Undef for non-Complex input.",
-      "status": "done",
-      "commit": "575f1b6"
-    },
-    {
-      "id": "step-9",
-      "type": "test",
-      "description": "Write failing tests for conjugate(z): (1) conjugate(Complex{3,4,DIMLESS}) → Complex{3,-4,DIMLESS}, (2) conjugate(Complex{5,3,LENGTH}) → Complex{5,-3,LENGTH} preserves dimension, (3) conjugate(non-complex) → Undef.",
-      "status": "done",
-      "commit": "4261452"
-    },
-    {
-      "id": "step-10",
-      "type": "impl",
-      "description": "Add 'conjugate' match arm to eval_builtin using unary() helper. Match Value::Complex, return Complex with negated im, same re and dimension. Return Undef for non-Complex.",
-      "status": "done",
-      "commit": "575f1b6"
-    },
-    {
-      "id": "step-11",
-      "type": "test",
-      "description": "Write failing tests for magnitude on Complex: (1) magnitude(Complex{3,4,DIMLESS}) → Real(5.0), (2) magnitude(Complex{3,4,LENGTH}) → Scalar{5.0, LENGTH}. These should currently fail because magnitude only handles Tensor via tensor_components_f64.",
-      "status": "done",
-      "commit": "4261452"
-    },
-    {
-      "id": "step-12",
-      "type": "impl",
-      "description": "Extend the existing 'magnitude' match arm in eval_builtin to handle Value::Complex before the Tensor fallback. Compute sqrt(re²+im²), return Real if DIMENSIONLESS, Scalar with dimension otherwise. Apply sanitize_value.",
-      "status": "done",
-      "commit": "575f1b6"
-    },
-    {
-      "id": "step-13",
-      "type": "test",
-      "description": "Write failing tests for phase(z): (1) phase(Complex{1,1,DIMLESS}) → Scalar{π/4, ANGLE}, (2) phase(Complex{1,0,DIMLESS}) → Scalar{0.0, ANGLE}, (3) phase(Complex{0,1,DIMLESS}) → Scalar{π/2, ANGLE}, (4) phase(non-complex) → Undef.",
-      "status": "done",
-      "commit": "4261452"
-    },
-    {
-      "id": "step-14",
-      "type": "impl",
-      "description": "Add 'phase' match arm to eval_builtin using unary() helper. Match Value::Complex, compute atan2(im, re), return Scalar{angle, ANGLE}. Return Undef for non-Complex. Apply sanitize_value for degenerate cases.",
-      "status": "done",
-      "commit": "575f1b6"
-    },
-    {
-      "id": "step-15",
-      "type": "test",
-      "description": "Write failing tests for complex_add(a, b): (1) complex_add(Complex{1,2,DIMLESS}, Complex{3,4,DIMLESS}) → Complex{4,6,DIMLESS}, (2) complex_add(Complex{a,b,LENGTH}, Complex{c,d,LENGTH}) → Complex{a+c,b+d,LENGTH}, (3) complex_add with mismatched dimensions → Undef, (4) complex_add with non-complex arg → Undef.",
-      "status": "done",
-      "commit": "4261452"
-    },
-    {
-      "id": "step-16",
-      "type": "impl",
-      "description": "Add 'complex_add' match arm to eval_builtin using binary() helper. Match two Value::Complex, verify dimensions match, return Complex{re1+re2, im1+im2, dimension}. Return Undef for dimension mismatch or non-Complex args.",
-      "status": "done",
-      "commit": "575f1b6"
-    },
-    {
-      "id": "step-17",
-      "type": "test",
-      "description": "Write failing tests for complex_mul(a, b) with dimensional analysis: (1) complex_mul(Complex{1,2,DIMLESS}, Complex{3,4,DIMLESS}) → Complex{-5,10,DIMLESS} via (1+2i)(3+4i)=(3-8)+(4+6)i, (2) complex_mul with dimensioned args → result dimension is D1.mul(D2), (3) complex_mul with non-complex → Undef.",
-      "status": "done",
-      "commit": "4261452"
-    },
-    {
-      "id": "step-18",
-      "type": "impl",
-      "description": "Add 'complex_mul' match arm to eval_builtin using binary() helper. Match two Value::Complex, compute (ac-bd, ad+bc) for (a+bi)(c+di), combine dimensions via DimensionVector::mul(). Apply sanitize_value for overflow.",
-      "status": "done",
-      "commit": "575f1b6"
-    },
-    {
-      "id": "step-19",
-      "type": "test",
-      "description": "Write Complex<Impedance> integration test: construct impedance dimension (kg·m²·s⁻³·A⁻²), create complex(Scalar{50,IMPEDANCE}, Scalar{-25,IMPEDANCE}) representing 50-25j Ω, verify re/im/magnitude/conjugate/phase all return correct values with impedance dimension preserved.",
-      "status": "done",
-      "commit": "4261452"
-    },
-    {
-      "id": "step-20",
-      "type": "test",
-      "description": "Write failing tests for sanitize_value Complex arm: (1) complex_mul with f64::MAX components to trigger Inf overflow → must return Undef, (2) complex_add with f64::MAX components to trigger Inf overflow → must return Undef. These tests will currently FAIL because sanitize_value() has no Value::Complex arm — the _ => v wildcard passes Complex values through unchanged even when re or im is NaN/Inf.",
-      "status": "done",
-      "commit": "b6ccbb7"
-    },
-    {
-      "id": "step-21",
-      "type": "impl",
-      "description": "Add Value::Complex arm to sanitize_value(): `Value::Complex { re, im, .. } if re.is_nan() || re.is_infinite() || im.is_nan() || im.is_infinite() => Value::Undef`. Also wrap complex_add result in sanitize_value() (currently missing — line 433 returns bare Value::Complex without sanitization).",
-      "status": "done",
-      "commit": "fbc0750"
+      "commit": "402f66c"
     }
   ],
   "design_decisions": [
     {
-      "decision": "All complex operations implemented as stdlib functions, not as operator extensions in reify-expr",
-      "rationale": "Keeps scope focused on stdlib (the primary target), makes all behaviors directly testable via eval_builtin(), and avoids modifying the expression evaluator's binary operation dispatch. Operator support for Complex arithmetic in reify-expr can be added as a follow-up task."
+      "decision": "Use `unwrap_or_else(|| panic!(...))` instead of restructuring the match arm",
+      "rationale": "Keeps the existing chain structure (lower → upper → panic) readable and minimally invasive. The panic only triggers when both bounds are None, preserving the valid inference paths intact."
     },
     {
-      "decision": "Dimension must match exactly for construction — no coercion between dimensionless and dimensioned",
-      "rationale": "The task spec says 'both arguments must have the same dimension'. complex(Real(3.0), Scalar{4, LENGTH}) returns Undef because Real has DIMENSIONLESS dimension while Scalar has LENGTH. This follows the 'logic errors should be noisy' principle from feedback_silent_defaults_pattern."
+      "decision": "Panic message mirrors the Tensor arm's wording pattern",
+      "rationale": "Consistency with the existing Tensor panic at line 45: 'literal() cannot infer X type (reason). Use CompiledExpr::literal(value, type) directly.' Both direct users to the explicit-type alternative."
     },
     {
-      "decision": "re/im accessors return Scalar when dimensioned, Real when dimensionless",
-      "rationale": "Follows the exact pattern used by the existing magnitude() function for Tensors: if dimension == DIMENSIONLESS return Real, else return Scalar{value, dimension}. Keeps type consistency in the dimension system."
-    },
-    {
-      "decision": "phase() returns Scalar with ANGLE dimension",
-      "rationale": "Consistent with existing atan2/asin/acos/atan functions in stdlib, which all return Scalar{value, ANGLE}. This ensures phase values participate correctly in dimensional analysis."
-    },
-    {
-      "decision": "complex_mul combines dimensions via DimensionVector::mul()",
-      "rationale": "Matches how Scalar multiplication works in eval_mul (reify-expr line 813: dimension: ad.mul(bd)). This enables physically meaningful operations like Complex<Impedance> * Complex<Current> = Complex<Voltage>."
-    },
-    {
-      "decision": "NaN/Inf arguments to complex() produce Undef",
-      "rationale": "Follows the sanitize_value defense-in-depth pattern used throughout stdlib. Non-finite values are domain errors that should not silently propagate."
-    },
-    {
-      "decision": "Use function names 'complex_add' and 'complex_mul' for binary complex operations",
-      "rationale": "Avoids ambiguity with the generic add/mul operators and makes the complex-specific behavior explicit. These are stdlib-level operations called via eval_builtin, not operator overloads."
-    },
-    {
-      "decision": "sanitize_value must cover Value::Complex to make NaN/Inf defense effective for all f64-carrying variants",
-      "rationale": "Review finding [reviewer_robustness/ineffective_error_guard]: the existing sanitize_value only had Real and Scalar arms, so the Complex arm in complex_mul was a no-op. Adding the Complex arm makes the defense-in-depth pattern consistent across all three scalar-like Value variants. Also wrap complex_add result in sanitize_value for consistency with complex_mul."
+      "decision": "Add positive tests for lower-only and upper-only Range bounds alongside the panic test",
+      "rationale": "The change modifies a code path handling three cases (lower present, upper present, neither). Testing both valid paths ensures no regression from the change, and the panic test covers the invalid third case."
     }
   ],
   "reuse": [
     {
-      "what": "binary() helper function",
-      "where": "crates/reify-stdlib/src/lib.rs line 606",
-      "how": "Use for complex_add and complex_mul to validate arg count (exactly 2) before applying operation"
+      "what": "Existing Tensor panic pattern",
+      "where": "crates/reify-test-support/src/builders.rs line 44-46",
+      "how": "Mirror the panic message format: 'literal() cannot infer X type (reason). Use CompiledExpr::literal(value, type) directly.'"
     },
     {
-      "what": "unary() helper function",
-      "where": "crates/reify-stdlib/src/lib.rs line 526",
-      "how": "Use for re, im, conjugate, phase to validate single arg before applying operation"
+      "what": "Existing literal_* test patterns in mod tests",
+      "where": "crates/reify-test-support/src/builders.rs lines 663-715",
+      "how": "Follow the same structure: construct a Value, call literal(), assert on result_type. Add #[should_panic] for the panic test."
     },
     {
-      "what": "sanitize_value() function",
-      "where": "crates/reify-stdlib/src/lib.rs line 691",
-      "how": "Apply to complex construction result to catch NaN/Inf from arguments. Also apply to magnitude and phase results. Must be extended with Value::Complex arm."
-    },
-    {
-      "what": "Value::as_f64() method",
-      "where": "crates/reify-types/src/value.rs line 83",
-      "how": "Extract f64 from Int, Real, or Scalar arguments for the complex constructor"
-    },
-    {
-      "what": "Value::dimension() method",
-      "where": "crates/reify-types/src/value.rs line 93",
-      "how": "Extract dimension from both constructor arguments and verify they match"
-    },
-    {
-      "what": "DimensionVector::mul() method",
-      "where": "crates/reify-types/src/dimension.rs line 147",
-      "how": "Combine dimensions in complex_mul: result dimension = D1.mul(D2)"
-    },
-    {
-      "what": "Existing magnitude handler pattern",
-      "where": "crates/reify-stdlib/src/lib.rs line 283",
-      "how": "Extend with a Complex check before the tensor_components_f64 path: match Value::Complex first, compute sqrt(re²+im²)"
-    },
-    {
-      "what": "assert_real_approx! and assert_scalar_approx! test macros",
-      "where": "crates/reify-stdlib/src/lib.rs lines 716-750",
-      "how": "Use for asserting magnitude/phase results in tests"
-    },
-    {
-      "what": "Orientation constructor test patterns",
-      "where": "crates/reify-stdlib/src/lib.rs lines 2244-2636",
-      "how": "Follow the same test structure: test happy path, test edge cases, test wrong arg count → Undef, test invalid input → Undef"
-    },
-    {
-      "what": "Existing sanitize_value Real/Scalar guard pattern",
-      "where": "crates/reify-stdlib/src/lib.rs lines 691-699",
-      "how": "Follow same pattern for Complex: match on the variant, check is_nan()/is_infinite() on contained f64 fields, return Undef"
+      "what": "Value::Range struct shape",
+      "where": "crates/reify-types/src/value.rs line 58-62",
+      "how": "Construct Range values directly in tests using Value::Range { lower, upper, lower_inclusive, upper_inclusive } matching the struct definition."
     }
   ],
-  "_session_id": "288-4214edb0",
-  "_created_at": "2026-03-24T17:14:15.609428+00:00"
+  "_session_id": "362-094fb15d",
+  "_created_at": "2026-03-24T17:16:01.467479+00:00"
 }
