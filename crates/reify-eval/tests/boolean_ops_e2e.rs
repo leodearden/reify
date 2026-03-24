@@ -92,3 +92,78 @@ fn boolean_union_all_three_boxes_e2e() {
 }"#;
     run_boolean_e2e(source);
 }
+
+/// Step-17: two geometry let bindings — r1 = simple box, r2 = boolean union.
+///
+/// This test exposes the multi-realization step index bug: when the eval engine
+/// passes the full global step_handles vector to compile_geometry_op, r2's
+/// Boolean{Union, Step(0), Step(1)} resolves Step(0) to r1's handle instead of
+/// r2's first box handle. The fix (step-18) passes a realization-local slice.
+///
+/// For tessellate_realizations: both realizations must tessellate successfully
+/// and produce non-empty meshes without geometry errors.
+#[test]
+fn boolean_multi_realization_step_index_e2e() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!("skipping: OCCT not available");
+        return;
+    }
+
+    let source = r#"structure S {
+    let r1 = box(10mm, 10mm, 10mm)
+    let r2 = union(box(20mm, 20mm, 20mm), box(30mm, 30mm, 30mm))
+}"#;
+
+    // Parse
+    let parsed = reify_syntax::parse(source, ModulePath::single("test_bool_multi"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    // Compile
+    let compiled = reify_compiler::compile(&parsed);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_types::Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "compile errors: {:?}", errors);
+
+    // Should have 1 template with 2 realizations (r1 and r2)
+    assert_eq!(compiled.templates.len(), 1, "expected 1 template");
+    assert_eq!(
+        compiled.templates[0].realizations.len(),
+        2,
+        "expected 2 realizations (r1 and r2)"
+    );
+
+    // Tessellate with real OCCT kernel — tests the realization-local step index path
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let mut planner = reify_geometry::DispatchPlanner::new();
+    planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
+
+    let result = engine.tessellate_realizations(&compiled);
+
+    // No geometry errors
+    let geom_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_types::Severity::Error)
+        .collect();
+    assert!(geom_errors.is_empty(), "geometry errors: {:?}", geom_errors);
+
+    // Both realizations must produce tessellated meshes
+    assert_eq!(
+        result.meshes.len(),
+        2,
+        "expected 2 meshes (one per realization), got {}",
+        result.meshes.len()
+    );
+    assert!(
+        !result.meshes[0].1.vertices.is_empty(),
+        "r1 (box) mesh should have vertices"
+    );
+    assert!(
+        !result.meshes[1].1.vertices.is_empty(),
+        "r2 (union) mesh should have vertices"
+    );
+}
