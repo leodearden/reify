@@ -698,3 +698,159 @@ structure def S {
         s.constraints.iter().map(|c| &c.label).collect::<Vec<_>>()
     );
 }
+
+// ── step-1: connector_with_params_and_port_mappings ───────────────────
+
+#[test]
+fn connector_with_params_and_port_mappings() {
+    // A connect statement that has BOTH connector params AND port mappings.
+    // Syntax: `connect a -> b : BoltSet { grade = 10.9  shaft -> bore }`
+    let source = r#"
+trait T {}
+structure def BoltSet { param grade : Real = 8.8 }
+structure def S {
+    port a : out T {}
+    port b : in T {}
+    connect a -> b : BoltSet { grade = 10.9  shaft -> bore }
+}
+"#;
+
+    let module = compile_module(source);
+    let errors: Vec<_> = module.diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    let s = module.templates.iter().find(|t| t.name == "S").expect("template S");
+
+    // Should have exactly 1 connection
+    assert_eq!(s.connections.len(), 1);
+    let conn = &s.connections[0];
+
+    // Should have a connector_sub pointing to __connector_0
+    assert!(conn.connector_sub.is_some(), "expected connector_sub to be Some");
+    let connector_name = conn.connector_sub.as_ref().unwrap();
+    assert!(
+        connector_name.starts_with("__connector_"),
+        "expected __connector_ prefix, got {}",
+        connector_name
+    );
+
+    // Port mappings should be propagated
+    assert_eq!(
+        conn.port_mappings,
+        vec![("shaft".to_string(), "bore".to_string())],
+        "expected port_mappings to contain (shaft, bore)"
+    );
+
+    // The connector sub-component should exist with structure_name BoltSet and have the grade arg
+    let sub = s.sub_components.iter().find(|s| s.name == *connector_name)
+        .expect("connector sub-component");
+    assert_eq!(sub.structure_name, "BoltSet");
+    let grade_arg = sub.args.iter().find(|(name, _)| name == "grade");
+    assert!(grade_arg.is_some(), "expected 'grade' arg in connector sub-component");
+}
+
+// ── step-3: multiple_connectors_per_entity ────────────────────────────
+
+#[test]
+fn multiple_connectors_per_entity() {
+    // Two connect statements with connectors in the same structure.
+    // Verifies that __connector_0 and __connector_1 are created with distinct names.
+    let source = r#"
+trait T {}
+structure def BoltSet { param grade : Real = 8.8 }
+structure def RivetSet { param diameter : Real = 6.0 }
+structure def S {
+    port a : out T {}
+    port b : in T {}
+    port c : out T {}
+    port d : in T {}
+    connect a -> b : BoltSet { grade = 10.9 }
+    connect c -> d : RivetSet { diameter = 8.0 }
+}
+"#;
+
+    let module = compile_module(source);
+    let errors: Vec<_> = module.diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    let s = module.templates.iter().find(|t| t.name == "S").expect("template S");
+
+    // Should have exactly 2 connections
+    assert_eq!(s.connections.len(), 2);
+
+    // Both connections should have connector_sub set
+    let c0_name = s.connections[0].connector_sub.as_ref()
+        .expect("expected connector_sub for connection 0");
+    let c1_name = s.connections[1].connector_sub.as_ref()
+        .expect("expected connector_sub for connection 1");
+
+    // Names must be __connector_0 and __connector_1
+    assert_eq!(c0_name, "__connector_0", "first connector should be __connector_0");
+    assert_eq!(c1_name, "__connector_1", "second connector should be __connector_1");
+
+    // Sub-components for both connectors must exist
+    let sub0 = s.sub_components.iter().find(|s| s.name == "__connector_0")
+        .expect("__connector_0 sub-component");
+    let sub1 = s.sub_components.iter().find(|s| s.name == "__connector_1")
+        .expect("__connector_1 sub-component");
+
+    assert_eq!(sub0.structure_name, "BoltSet",  "connector_0 should be BoltSet");
+    assert_eq!(sub1.structure_name, "RivetSet", "connector_1 should be RivetSet");
+}
+
+// ── step-5: connector_args_reference_parent_params ────────────────────
+
+#[test]
+fn connector_args_reference_parent_params() {
+    // Connector parameter expression references parent structure's param 'g'.
+    // The compiled arg should contain a ValueRef to entity S, member g.
+    let source = r#"
+trait T {}
+structure def BoltSet { param grade : Real = 8.8 }
+structure def S {
+    param g : Real = 8.8
+    port a : out T {}
+    port b : in T {}
+    connect a -> b : BoltSet { grade = g }
+}
+"#;
+
+    let module = compile_module(source);
+    let errors: Vec<_> = module.diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    let s = module.templates.iter().find(|t| t.name == "S").expect("template S");
+
+    assert_eq!(s.connections.len(), 1);
+    let conn = &s.connections[0];
+
+    let connector_name = conn.connector_sub.as_ref()
+        .expect("expected connector_sub");
+    let sub = s.sub_components.iter().find(|sc| sc.name == *connector_name)
+        .expect("connector sub-component");
+    assert_eq!(sub.structure_name, "BoltSet");
+
+    // Find the 'grade' arg
+    let (_, grade_expr) = sub.args.iter().find(|(name, _)| name == "grade")
+        .expect("expected 'grade' arg in connector sub-component");
+
+    // The expression should be a ValueRef (referencing the parent param 'g')
+    let has_value_ref = matches!(
+        &grade_expr.kind,
+        CompiledExprKind::ValueRef(id) if id.entity == "S" && id.member == "g"
+    );
+    assert!(
+        has_value_ref,
+        "expected grade expr to be a ValueRef to S.g, got: {:?}",
+        grade_expr.kind
+    );
+}
