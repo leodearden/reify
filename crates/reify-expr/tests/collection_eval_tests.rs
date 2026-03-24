@@ -730,6 +730,43 @@ fn eval_method_filter_all_undef() {
     );
 }
 
+// ─── task-166 step-5: .filter non-Bool predicate returns Undef ───
+
+#[test]
+fn eval_method_filter_non_bool_predicate() {
+    // [1, 2, 3].filter(|x| x * 2) where predicate returns Int (not Bool)
+    // -> Value::Undef for the entire filter (type error, not incomplete information)
+    let x_id = ValueCellId::new("$lambda_filter_nb.S", "x");
+    let body = CompiledExpr::binop(
+        BinOp::Mul,
+        CompiledExpr::value_ref(x_id.clone(), Type::Int),
+        CompiledExpr::literal(Value::Int(2), Type::Int),
+        Type::Int,
+    );
+    let lambda_arg = lambda_literal(vec![("x", x_id)], body, ValueMap::new());
+
+    let list = CompiledExpr::list_literal(
+        vec![
+            CompiledExpr::literal(Value::Int(1), Type::Int),
+            CompiledExpr::literal(Value::Int(2), Type::Int),
+            CompiledExpr::literal(Value::Int(3), Type::Int),
+        ],
+        Type::List(Box::new(Type::Int)),
+    );
+    let expr = CompiledExpr::method_call(
+        list,
+        "filter".to_string(),
+        vec![lambda_arg],
+        Type::List(Box::new(Type::Int)),
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert!(
+        result.is_undef(),
+        "[1, 2, 3].filter(|x| x * 2) with non-Bool predicate should return Undef (type error)"
+    );
+}
+
 // ─── step-17/18: MethodCall .fold ───
 
 #[test]
