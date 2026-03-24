@@ -1383,6 +1383,23 @@ fn eval_method_count_set_with_undef() {
 }
 
 #[test]
+fn eval_method_count_definite_list() {
+    // [1, 2, 3].count -> Int(3) — regression guard: undef-check must not break the normal case
+    let list = CompiledExpr::list_literal(
+        vec![
+            CompiledExpr::literal(Value::Int(1), Type::Int),
+            CompiledExpr::literal(Value::Int(2), Type::Int),
+            CompiledExpr::literal(Value::Int(3), Type::Int),
+        ],
+        Type::List(Box::new(Type::Int)),
+    );
+    let expr = CompiledExpr::method_call(list, "count".to_string(), vec![], Type::Int);
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::Int(3), "[1,2,3].count should be Int(3)");
+}
+
+#[test]
 fn eval_list_with_undef_sum() {
     // [1, undef, 3].sum -> Undef
     let undef_id = ValueCellId::new("S", "missing_elem2");
