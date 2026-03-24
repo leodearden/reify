@@ -70,6 +70,19 @@ describe('ToolCallCard', () => {
     expect(screen.getByText(/3 parameters/i)).toBeTruthy();
   });
 
+  it('for reify_get_constraints with result containing array, shows constraint count summary', () => {
+    render(() => (
+      <ToolCallCard
+        toolCall={makeTool({
+          toolName: 'reify_get_constraints',
+          status: 'complete',
+          result: [{ id: 'c1', violated: true }, { id: 'c2', violated: false }],
+        })}
+      />
+    ));
+    expect(screen.getByText(/2 constraints/i)).toBeTruthy();
+  });
+
   it('read tools (reify_get_*) have blue icon class', () => {
     render(() => <ToolCallCard toolCall={makeTool({ toolName: 'reify_get_source' })} />);
     const card = screen.getByTestId('tool-call-card');
