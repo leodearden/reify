@@ -2414,6 +2414,66 @@ mod tests {
         ]).is_undef());
     }
 
+    // ── orient_basis tests (step-14) ──────────────────────────────────────
+
+    #[test]
+    fn orient_basis_identity_basis() {
+        // Standard basis = identity rotation
+        let x = Value::Tensor(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
+        let y = Value::Tensor(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
+        let z = Value::Tensor(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
+        assert_orientation_approx!(
+            eval_builtin("orient_basis", &[x, y, z]),
+            1.0, 0.0, 0.0, 0.0
+        );
+    }
+
+    #[test]
+    fn orient_basis_90deg_rotated() {
+        // 90° rotation around Z: X→Y, Y→-X, Z→Z
+        // = quaternion (cos(π/4), 0, 0, sin(π/4))
+        let x = Value::Tensor(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
+        let y = Value::Tensor(vec![Value::Real(-1.0), Value::Real(0.0), Value::Real(0.0)]);
+        let z = Value::Tensor(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
+        let cos_pi_4 = std::f64::consts::FRAC_PI_4.cos();
+        let sin_pi_4 = std::f64::consts::FRAC_PI_4.sin();
+        assert_orientation_approx!(
+            eval_builtin("orient_basis", &[x, y, z]),
+            cos_pi_4, 0.0, 0.0, sin_pi_4
+        );
+    }
+
+    #[test]
+    fn orient_basis_non_orthogonal_returns_undef() {
+        let x = Value::Tensor(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
+        let y = Value::Tensor(vec![Value::Real(1.0), Value::Real(1.0), Value::Real(0.0)]);
+        let z = Value::Tensor(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
+        assert!(eval_builtin("orient_basis", &[x, y, z]).is_undef());
+    }
+
+    #[test]
+    fn orient_basis_non_3d_returns_undef() {
+        let x = Value::Tensor(vec![Value::Real(1.0), Value::Real(0.0)]);
+        let y = Value::Tensor(vec![Value::Real(0.0), Value::Real(1.0)]);
+        let z = Value::Tensor(vec![Value::Real(0.0), Value::Real(0.0)]);
+        assert!(eval_builtin("orient_basis", &[x, y, z]).is_undef());
+    }
+
+    #[test]
+    fn orient_basis_zero_length_returns_undef() {
+        let x = Value::Tensor(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]);
+        let y = Value::Tensor(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
+        let z = Value::Tensor(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
+        assert!(eval_builtin("orient_basis", &[x, y, z]).is_undef());
+    }
+
+    #[test]
+    fn orient_basis_wrong_arg_count_returns_undef() {
+        assert!(eval_builtin("orient_basis", &[]).is_undef());
+        let x = Value::Tensor(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
+        assert!(eval_builtin("orient_basis", &[x]).is_undef());
+    }
+
     #[test]
     fn dot_mixed_component_dimensions_returns_undef() {
         // A Tensor with mixed dimensions is not a valid physical vector
