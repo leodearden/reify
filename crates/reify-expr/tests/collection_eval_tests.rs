@@ -2067,6 +2067,29 @@ fn eval_method_concat_two_args() {
 // ─── task-168: generate as FunctionCall ───
 
 #[test]
+fn eval_method_generate_undef_count() {
+    // [].generate(Undef, |i| i) -> Undef
+    // The count arg (ValueRef to missing cell) evaluates to Undef; match arm _ => Undef fires.
+    let i_id = ValueCellId::new("$lambda_undef_gen.S", "i");
+    let body = CompiledExpr::value_ref(i_id.clone(), Type::Int);
+    let lambda_arg = lambda_literal(vec![("i", i_id)], body, ValueMap::new());
+
+    let undef_count_id = ValueCellId::new("$missing.S", "count");
+    let count_arg = CompiledExpr::value_ref(undef_count_id, Type::Int); // evaluates to Undef
+
+    let list = CompiledExpr::list_literal(vec![], Type::List(Box::new(Type::Int)));
+    let expr = CompiledExpr::method_call(
+        list,
+        "generate".to_string(),
+        vec![count_arg, lambda_arg],
+        Type::List(Box::new(Type::Int)),
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert!(result.is_undef(), "generate with Undef count should return Undef");
+}
+
+#[test]
 fn eval_fn_generate_zero_count() {
     // generate(0, |i| i) -> []
     let i_id = ValueCellId::new("$lambda_fgen0.S", "i");
