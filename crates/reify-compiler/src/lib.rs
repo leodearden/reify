@@ -551,6 +551,74 @@ fn type_compatible(param_ty: &Type, arg_ty: &Type) -> bool {
     matches!((param_ty, arg_ty), (Type::Real, Type::Int))
 }
 
+/// Result of attempting to resolve a function call against user-defined functions.
+enum OverloadResolution<'a> {
+    /// Exactly one user-defined function matches by name, arity, and exact param types.
+    Resolved(&'a CompiledFunction),
+    /// No user-defined function has this name at all — fall through to stdlib.
+    NoUserFunctions,
+    /// User-defined functions with this name exist, but none match the given arg types.
+    /// Carries all same-name candidates for error reporting.
+    NoMatch(Vec<&'a CompiledFunction>),
+    /// Multiple user-defined functions match — ambiguous call.
+    /// Carries all matching candidates for error reporting.
+    Ambiguous(Vec<&'a CompiledFunction>),
+}
+
+/// Resolve a function call against the list of compiled user functions.
+///
+/// Uses **exact** type matching (param_ty == arg_ty). Int→Real widening is
+/// NOT applied during overload resolution so that `f(Int)` and `f(Real)` are
+/// treated as distinct overloads.
+fn resolve_function_overload<'a>(
+    name: &str,
+    arg_types: &[Type],
+    functions: &'a [CompiledFunction],
+) -> OverloadResolution<'a> {
+    // All user functions with the given name (for error reporting).
+    let named: Vec<&CompiledFunction> = functions
+        .iter()
+        .filter(|f| f.name == name)
+        .collect();
+
+    if named.is_empty() {
+        return OverloadResolution::NoUserFunctions;
+    }
+
+    // Among named functions, filter by arity and exact param types.
+    let matches: Vec<&CompiledFunction> = named
+        .iter()
+        .copied()
+        .filter(|f| {
+            f.params.len() == arg_types.len()
+                && f.params
+                    .iter()
+                    .zip(arg_types.iter())
+                    .all(|((_, param_ty), arg_ty)| param_ty == arg_ty)
+        })
+        .collect();
+
+    match matches.len() {
+        1 => OverloadResolution::Resolved(matches[0]),
+        0 => OverloadResolution::NoMatch(named),
+        _ => OverloadResolution::Ambiguous(matches),
+    }
+}
+
+/// Format a function signature for error messages: `name(T1, T2) -> Ret`.
+fn format_fn_signature(f: &CompiledFunction) -> String {
+    format!(
+        "{}({}) -> {}",
+        f.name,
+        f.params
+            .iter()
+            .map(|(_, t)| format!("{}", t))
+            .collect::<Vec<_>>()
+            .join(", "),
+        f.return_type
+    )
+}
+
 // --- BinOp resolution ---
 
 /// Parse a string operator into a `BinOp`.
@@ -852,87 +920,102 @@ fn compile_expr_guarded(
                 .map(|arg| compile_expr_guarded(arg, scope, enum_defs, functions, diagnostics, current_guard, lambda_counter))
                 .collect();
 
-            // Check user-defined functions first: match on name, arg count, and arg types
-            let candidates: Vec<&CompiledFunction> = functions
-                .iter()
-                .filter(|f| {
-                    f.name == *name
-                        && f.params.len() == compiled_args.len()
-                        && f.params.iter().zip(compiled_args.iter()).all(
-                            |((_, param_ty), arg)| type_compatible(param_ty, &arg.result_type),
-                        )
-                })
-                .collect();
+            let arg_types: Vec<Type> = compiled_args.iter().map(|a| a.result_type.clone()).collect();
 
-            if candidates.len() == 1 {
-                // Exactly one user fn matches — emit UserFunctionCall
-                let matched_fn = candidates[0];
-                let result_type = matched_fn.return_type.clone();
-                let content_hash = {
-                    let mut h = ContentHash::of(&[6])
-                        .combine(ContentHash::of_str(name));
-                    for arg in &compiled_args {
-                        h = h.combine(arg.content_hash);
+            match resolve_function_overload(name, &arg_types, functions) {
+                OverloadResolution::Resolved(matched_fn) => {
+                    // Exactly one user fn matches — emit UserFunctionCall
+                    let result_type = matched_fn.return_type.clone();
+                    let content_hash = {
+                        let mut h = ContentHash::of(&[6])
+                            .combine(ContentHash::of_str(name));
+                        for arg in &compiled_args {
+                            h = h.combine(arg.content_hash);
+                        }
+                        h
+                    };
+                    CompiledExpr {
+                        kind: CompiledExprKind::UserFunctionCall {
+                            function_name: name.clone(),
+                            args: compiled_args,
+                        },
+                        result_type,
+                        content_hash,
                     }
-                    h
-                };
-                CompiledExpr {
-                    kind: CompiledExprKind::UserFunctionCall {
-                        function_name: name.clone(),
-                        args: compiled_args,
-                    },
-                    result_type,
-                    content_hash,
                 }
-            } else if candidates.len() > 1 {
-                // Ambiguous overload
-                diagnostics.push(
-                    Diagnostic::error(format!(
-                        "ambiguous function call: {} candidates match {}({})",
-                        candidates.len(),
-                        name,
+                OverloadResolution::Ambiguous(candidates) => {
+                    // Multiple user fns match — ambiguous call
+                    let candidate_sigs: Vec<String> =
+                        candidates.iter().map(|f| format_fn_signature(f)).collect();
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "ambiguous function call: {} candidates match {}({}): {}",
+                            candidates.len(),
+                            name,
+                            arg_types
+                                .iter()
+                                .map(|t| format!("{}", t))
+                                .collect::<Vec<_>>()
+                                .join(", "),
+                            candidate_sigs.join(", ")
+                        ))
+                        .with_label(DiagnosticLabel::new(expr.span, "ambiguous call")),
+                    );
+                    CompiledExpr::literal(Value::Undef, Type::Real)
+                }
+                OverloadResolution::NoMatch(named_candidates) => {
+                    // User functions with this name exist, but none match — error with candidates
+                    let candidate_sigs: Vec<String> =
+                        named_candidates.iter().map(|f| format_fn_signature(f)).collect();
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "no matching overload for {}({}), candidates: {}",
+                            name,
+                            arg_types
+                                .iter()
+                                .map(|t| format!("{}", t))
+                                .collect::<Vec<_>>()
+                                .join(", "),
+                            candidate_sigs.join(", ")
+                        ))
+                        .with_label(DiagnosticLabel::new(expr.span, "no matching overload")),
+                    );
+                    CompiledExpr::literal(Value::Undef, Type::Real)
+                }
+                OverloadResolution::NoUserFunctions => {
+                    // No user fn with this name — fall through to stdlib FunctionCall
+                    let resolved = ResolvedFunction {
+                        name: name.clone(),
+                        qualified_name: format!("std::{}", name),
+                    };
+
+                    // Infer a result type — for geometry functions, use a placeholder
+                    let result_type = if is_geometry_function(name) {
+                        Type::dimensionless_scalar()
+                    } else {
                         compiled_args
-                            .iter()
-                            .map(|a| format!("{}", a.result_type))
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    ))
-                    .with_label(DiagnosticLabel::new(expr.span, "ambiguous call")),
-                );
-                CompiledExpr::literal(Value::Undef, Type::Real)
-            } else {
-                // No user fn matches — fall through to stdlib FunctionCall
-                let resolved = ResolvedFunction {
-                    name: name.clone(),
-                    qualified_name: format!("std::{}", name),
-                };
+                            .first()
+                            .map(|a| a.result_type.clone())
+                            .unwrap_or(Type::Real)
+                    };
 
-                // Infer a result type — for geometry functions, use a placeholder
-                let result_type = if is_geometry_function(name) {
-                    Type::dimensionless_scalar()
-                } else {
-                    compiled_args
-                        .first()
-                        .map(|a| a.result_type.clone())
-                        .unwrap_or(Type::Real)
-                };
+                    let content_hash = {
+                        let mut h = ContentHash::of(&[4])
+                            .combine(ContentHash::of_str(&resolved.qualified_name));
+                        for arg in &compiled_args {
+                            h = h.combine(arg.content_hash);
+                        }
+                        h
+                    };
 
-                let content_hash = {
-                    let mut h = ContentHash::of(&[4])
-                        .combine(ContentHash::of_str(&resolved.qualified_name));
-                    for arg in &compiled_args {
-                        h = h.combine(arg.content_hash);
+                    CompiledExpr {
+                        kind: CompiledExprKind::FunctionCall {
+                            function: resolved,
+                            args: compiled_args,
+                        },
+                        result_type,
+                        content_hash,
                     }
-                    h
-                };
-
-                CompiledExpr {
-                    kind: CompiledExprKind::FunctionCall {
-                        function: resolved,
-                        args: compiled_args,
-                    },
-                    result_type,
-                    content_hash,
                 }
             }
         }
