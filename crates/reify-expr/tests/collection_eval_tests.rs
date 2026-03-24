@@ -2067,6 +2067,22 @@ fn eval_method_concat_two_args() {
 // ─── task-168: generate as FunctionCall ───
 
 #[test]
+fn eval_method_generate_wrong_arity() {
+    // [].generate(3) -> Undef (missing lambda arg, only 1 arg passed)
+    let list = CompiledExpr::list_literal(vec![], Type::List(Box::new(Type::Int)));
+    let count_arg = CompiledExpr::literal(Value::Int(3), Type::Int);
+    let expr = CompiledExpr::method_call(
+        list,
+        "generate".to_string(),
+        vec![count_arg], // only 1 arg, not 2
+        Type::List(Box::new(Type::Int)),
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert!(result.is_undef(), "generate with only 1 arg should return Undef");
+}
+
+#[test]
 fn eval_method_generate_identity() {
     // [].generate(4, |i| i) -> [0, 1, 2, 3]
     let i_id = ValueCellId::new("$lambda_id_gen.S", "i");
