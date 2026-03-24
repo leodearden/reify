@@ -159,14 +159,14 @@
       "type": "test",
       "description": "Write tests for annotated entity fixtures: trait_structure_module() returns CompiledModule with 1 trait_def (\"Rigid\" requiring thickness:Length), 1 template (\"Plate\" with thickness param), 0 diagnostics. field_module() returns module with 1 field (analytical), 1 template. purpose_module() returns module with 1 compiled_purpose, 1 template. Assert expected counts and key field values.",
       "status": "done",
-      "commit": "pending"
+      "commit": "9550026"
     },
     {
       "id": "step-22",
       "type": "impl",
       "description": "Implement annotated entity fixtures in fixtures.rs using the new builders: trait_structure_module()->CompiledModule (CompiledTraitBuilder::new(\"Rigid\").require_param(\"thickness\",Type::length()).build() + TopologyTemplateBuilder::new(\"Plate\") with thickness param). field_module()->CompiledModule (CompiledFieldBuilder::new(\"temp\",..).analytical(lambda).build() + template). purpose_module()->CompiledModule (CompiledPurposeBuilder::new(\"mfg_ready\").param(\"subject\",\"Structure\").constraint(..).build() + template).",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "aad3efb"
     }
   ],
   "design_decisions": [
@@ -245,6 +245,6 @@
       "how": "Field operation helpers and fixture construction use these to build constraint expressions without verbose CompiledExpr construction"
     }
   ],
-  "_session_id": "289-5c7e2f5f",
-  "_created_at": "2026-03-24T07:45:08.996375+00:00"
+  "_session_id": "225-b6308673",
+  "_created_at": "2026-03-24T08:25:30.556293+00:00"
 }
