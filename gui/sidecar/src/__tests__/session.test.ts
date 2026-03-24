@@ -315,6 +315,78 @@ describe('SidecarSession', () => {
   });
 });
 
+describe('SidecarSession multi-turn streaming', () => {
+  let session: SidecarSession;
+  let outputs: OutboundMessage[];
+
+  beforeEach(() => {
+    outputs = [];
+    session = new SidecarSession({
+      model: 'claude-opus-4-6',
+      workingDirectory: '/tmp/test-project',
+      systemPrompt: 'Test.',
+    });
+    session.onOutput = (msg) => outputs.push(msg);
+    vi.mocked(spawn).mockReset();
+  });
+
+  it('text_delta events emitted for both turns in a multi-turn invocation', async () => {
+    // Simulate two assistant turns within a single SDK invocation:
+    // Turn 1: thinking + text + tool_use
+    // Turn 2: new text (starts shorter than turn 1's accumulated text length)
+    //
+    // The bug: lastTextLen carries over from turn 1 (e.g. 12 for "Hello world!").
+    // Turn 2's first text event is "Hi" (length 2), which is < lastTextLen (12),
+    // so the `block.text.length > lastTextLen` check fails and no delta is emitted.
+    vi.mocked(spawn).mockImplementation((() => createMockProcess([
+      // Turn 1 partial events
+      { type: 'assistant', message: { content: [{ type: 'thinking', thinking: 'Let' }] } },
+      { type: 'assistant', message: { content: [{ type: 'thinking', thinking: 'Let me think' }] } },
+      { type: 'assistant', message: { content: [
+        { type: 'thinking', thinking: 'Let me think' },
+        { type: 'text', text: 'Hello ' },
+      ] } },
+      { type: 'assistant', message: { content: [
+        { type: 'thinking', thinking: 'Let me think' },
+        { type: 'text', text: 'Hello world!' },
+      ] } },
+      // Turn 1 completes with tool_use
+      { type: 'assistant', message: { content: [
+        { type: 'thinking', thinking: 'Let me think' },
+        { type: 'text', text: 'Hello world!' },
+        { type: 'tool_use', id: 'toolu_mt1', name: 'reify_get_source', input: { file: 'f.ri' } },
+      ] } },
+      // Turn 2 starts: new text block with shorter initial content
+      { type: 'assistant', message: { content: [
+        { type: 'text', text: 'Hi' },
+      ] } },
+      { type: 'assistant', message: { content: [
+        { type: 'text', text: 'Hi there!' },
+      ] } },
+      { type: 'result', session_id: 'sess-mt' },
+    ])) as any);
+
+    await session.init();
+    outputs.length = 0;
+
+    await session.handleMessage({ type: 'send_message', id: 'msg-mt', text: 'Multi-turn' });
+
+    // Collect text_delta events
+    const textDeltas = outputs.filter((o) => o.type === 'text_delta');
+    const deltaContents = textDeltas.map((o) => (o as any).content);
+
+    // Turn 1 should produce: "Hello " then "world!"
+    expect(deltaContents).toContain('Hello ');
+    expect(deltaContents).toContain('world!');
+
+    // Turn 2 should produce: "Hi" then " there!" — proving counters reset
+    // THIS IS THE FAILING PART with the current implementation:
+    // "Hi" (len=2) < lastTextLen (12) so no delta is emitted
+    expect(deltaContents).toContain('Hi');
+    expect(deltaContents).toContain(' there!');
+  });
+});
+
 describe('SidecarSession destroy() lifecycle', () => {
   let outputs: OutboundMessage[];
 
