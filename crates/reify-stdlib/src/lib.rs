@@ -125,6 +125,16 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
             }
         }),
 
+        "lerp" => ternary(args, |a, b, t| match (a, b, t) {
+            (Value::Real(av), Value::Real(bv), Value::Real(tv)) => {
+                if tv.is_nan() {
+                    return Value::Undef;
+                }
+                sanitize_value(Value::Real(lerp_f64(*av, *bv, *tv)))
+            }
+            _ => Value::Undef,
+        }),
+
         // --- Trig functions: accept Angle Scalar or bare Real (radians) ---
         "sin" => unary(args, |v| trig_input(v).map_or(Value::Undef, |r| Value::Real(r.sin()))),
         "cos" => unary(args, |v| trig_input(v).map_or(Value::Undef, |r| Value::Real(r.cos()))),
