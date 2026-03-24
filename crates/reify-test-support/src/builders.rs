@@ -813,6 +813,55 @@ mod tests {
             panic!("expected FunctionCall kind for curl_call");
         }
     }
+
+    // --- CompiledFieldBuilder tests (step-13) ---
+
+    #[test]
+    fn compiled_field_builder_analytical_produces_field() {
+        use reify_compiler::CompiledFieldSource;
+        let body = literal(Value::Real(1.0));
+        let field = CompiledFieldBuilder::new("temp", Type::Geometry, Type::Real)
+            .analytical(body)
+            .build();
+        assert_eq!(field.name, "temp");
+        assert!(!field.is_pub);
+        assert_eq!(field.domain_type, Type::Geometry);
+        assert_eq!(field.codomain_type, Type::Real);
+        assert!(matches!(field.source, CompiledFieldSource::Analytical { .. }));
+        assert_ne!(field.content_hash, ContentHash(0));
+    }
+
+    #[test]
+    fn compiled_field_builder_public_sampled() {
+        use reify_compiler::CompiledFieldSource;
+        let field = CompiledFieldBuilder::new("vel", Type::Geometry, Type::Real)
+            .public()
+            .sampled(vec![("resolution", literal(Value::Int(32)))])
+            .build();
+        assert!(field.is_pub);
+        assert!(matches!(field.source, CompiledFieldSource::Sampled { .. }));
+        assert_ne!(field.content_hash, ContentHash(0));
+    }
+
+    #[test]
+    fn compiled_field_builder_composed() {
+        use reify_compiler::CompiledFieldSource;
+        let body = literal(Value::Real(0.0));
+        let field = CompiledFieldBuilder::new("composed_f", Type::Geometry, Type::Real)
+            .composed(body)
+            .build();
+        assert!(matches!(field.source, CompiledFieldSource::Composed { .. }));
+    }
+
+    #[test]
+    fn compiled_field_builder_imported() {
+        use reify_compiler::CompiledFieldSource;
+        let field = CompiledFieldBuilder::new("ext", Type::Geometry, Type::Real)
+            .imported()
+            .build();
+        assert!(matches!(field.source, CompiledFieldSource::Imported));
+        assert_ne!(field.content_hash, ContentHash(0));
+    }
 }
 
 /// Builder for `CompiledModule`.
