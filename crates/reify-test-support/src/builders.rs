@@ -1366,6 +1366,36 @@ mod trait_builder_tests {
     }
 }
 
+// --- Tests for constraint expression helpers ---
+
+#[cfg(test)]
+mod constraint_helper_tests {
+    use super::*;
+
+    #[test]
+    fn range_constraint_returns_two_bool_exprs() {
+        let exprs = range_constraint(
+            "Beam",
+            "width",
+            Type::length(),
+            literal(crate::mm(10.0)),
+            literal(crate::mm(500.0)),
+        );
+        assert_eq!(exprs.len(), 2, "range_constraint should return exactly 2 exprs");
+        assert_eq!(exprs[0].result_type, Type::Bool, "first expr should be Bool");
+        assert_eq!(exprs[1].result_type, Type::Bool, "second expr should be Bool");
+        // First expr should be a Gt comparison, second a Lt comparison
+        assert!(
+            matches!(&exprs[0].kind, CompiledExprKind::BinOp { op: BinOp::Gt, .. }),
+            "first expr should be Gt"
+        );
+        assert!(
+            matches!(&exprs[1].kind, CompiledExprKind::BinOp { op: BinOp::Lt, .. }),
+            "second expr should be Lt"
+        );
+    }
+}
+
 // --- Tests for extended CompiledModuleBuilder (step-19) ---
 
 #[cfg(test)]
