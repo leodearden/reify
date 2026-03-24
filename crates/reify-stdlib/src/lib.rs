@@ -890,6 +890,65 @@ mod tests {
         assert!(result.is_undef(), "clamp with wrong arg count should be Undef, got {:?}", result);
     }
 
+    // --- mod tests (step-7) ---
+
+    #[test]
+    fn mod_basic() {
+        let result = eval_builtin("mod", &[Value::Int(7), Value::Int(3)]);
+        match result {
+            Value::Int(1) => {}
+            other => panic!("expected Int(1), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn mod_exact_division() {
+        let result = eval_builtin("mod", &[Value::Int(10), Value::Int(5)]);
+        match result {
+            Value::Int(0) => {}
+            other => panic!("expected Int(0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn mod_negative_dividend() {
+        // Rust remainder semantics: -7 % 3 == -1 (sign of dividend)
+        let result = eval_builtin("mod", &[Value::Int(-7), Value::Int(3)]);
+        match result {
+            Value::Int(-1) => {}
+            other => panic!("expected Int(-1), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn mod_negative_divisor() {
+        // 7 % -3 == 1 in Rust (sign of dividend)
+        let result = eval_builtin("mod", &[Value::Int(7), Value::Int(-3)]);
+        match result {
+            Value::Int(1) => {}
+            other => panic!("expected Int(1), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn mod_by_zero_returns_undef() {
+        let result = eval_builtin("mod", &[Value::Int(7), Value::Int(0)]);
+        assert!(result.is_undef(), "mod(7,0) should be Undef, got {:?}", result);
+    }
+
+    #[test]
+    fn mod_non_int_returns_undef() {
+        // mod is strictly Int — Real args return Undef
+        let result = eval_builtin("mod", &[Value::Real(7.0), Value::Real(3.0)]);
+        assert!(result.is_undef(), "mod(7.0, 3.0) should be Undef, got {:?}", result);
+    }
+
+    #[test]
+    fn mod_wrong_arg_count_returns_undef() {
+        let result = eval_builtin("mod", &[Value::Int(7)]);
+        assert!(result.is_undef(), "mod with wrong arg count should be Undef, got {:?}", result);
+    }
+
     // --- remap tests (step-5) ---
 
     #[test]
