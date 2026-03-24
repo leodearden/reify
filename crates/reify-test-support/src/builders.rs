@@ -1321,3 +1321,72 @@ mod trait_builder_tests {
         assert_eq!(t.type_params.len(), 0);
     }
 }
+
+// --- Tests for extended CompiledModuleBuilder (step-19) ---
+
+#[cfg(test)]
+mod module_builder_extension_tests {
+    use super::*;
+    use reify_types::{EnumDef, ModulePath};
+
+    fn module_path() -> ModulePath {
+        ModulePath::new(vec!["test".to_string()])
+    }
+
+    #[test]
+    fn module_builder_with_trait_def() {
+        let t = CompiledTraitBuilder::new("Rigid")
+            .require_param("thickness", Type::length())
+            .build();
+        let module = CompiledModuleBuilder::new(module_path())
+            .trait_def(t)
+            .build();
+        assert_eq!(module.trait_defs.len(), 1);
+        assert_eq!(module.trait_defs[0].name, "Rigid");
+    }
+
+    #[test]
+    fn module_builder_with_field() {
+        use reify_compiler::CompiledFieldSource;
+        let body = literal(Value::Real(1.0));
+        let f = CompiledFieldBuilder::new("temp", Type::Geometry, Type::Real)
+            .analytical(body)
+            .build();
+        let module = CompiledModuleBuilder::new(module_path())
+            .field(f)
+            .build();
+        assert_eq!(module.fields.len(), 1);
+        assert_eq!(module.fields[0].name, "temp");
+    }
+
+    #[test]
+    fn module_builder_with_enum_def() {
+        let e = EnumDef { name: "Color".to_string(), variants: vec!["Red".to_string(), "Blue".to_string()] };
+        let module = CompiledModuleBuilder::new(module_path())
+            .enum_def(e)
+            .build();
+        assert_eq!(module.enum_defs.len(), 1);
+        assert_eq!(module.enum_defs[0].name, "Color");
+        assert_eq!(module.enum_defs[0].variants.len(), 2);
+    }
+
+    #[test]
+    fn module_builder_with_compiled_purpose() {
+        let p = CompiledPurposeBuilder::new("mfg_ready")
+            .param("subject", "Structure")
+            .build();
+        let module = CompiledModuleBuilder::new(module_path())
+            .compiled_purpose(p)
+            .build();
+        assert_eq!(module.compiled_purposes.len(), 1);
+        assert_eq!(module.compiled_purposes[0].name, "mfg_ready");
+    }
+
+    #[test]
+    fn module_builder_hash_changes_with_new_fields() {
+        let empty_module = CompiledModuleBuilder::new(module_path()).build();
+        let t = CompiledTraitBuilder::new("Rigid").build();
+        let with_trait = CompiledModuleBuilder::new(module_path()).trait_def(t).build();
+        assert_ne!(empty_module.content_hash, with_trait.content_hash);
+    }
+}

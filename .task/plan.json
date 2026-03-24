@@ -138,14 +138,14 @@
       "type": "impl",
       "description": "Implement CompiledTraitBuilder struct{name, is_pub, type_params: Vec<TypeParam>, refinements: Vec<String>, required_members: Vec<TraitRequirement>, defaults: Vec<TraitDefault>}. Methods: new(name)->Self, public()->Self, type_param(name,bounds:Vec<TraitBound>)->Self (adds TypeParam{name,bounds,default:None}), refinement(name)->Self, require_param(name,ty)->Self (adds TraitRequirement with RequirementKind::Param(ty)), require_let(name,ty)->Self, require_sub(name,structure)->Self, build()->CompiledTrait with content_hash from name+members.",
       "status": "done",
-      "commit": "pending"
+      "commit": "938fcaa"
     },
     {
       "id": "step-19",
       "type": "test",
       "description": "Write tests for extended CompiledModuleBuilder: CompiledModuleBuilder::new(path).trait_def(compiled_trait).field(compiled_field).enum_def(EnumDef{name:\"Color\",variants:vec![\"Red\",\"Blue\"]}).compiled_purpose(purpose).template(tpl).build() produces CompiledModule where trait_defs.len()==1, fields.len()==1, enum_defs.len()==1, compiled_purposes.len()==1. Assert content_hash changes when these new fields are added (differs from empty module hash).",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "pending"
     },
     {
       "id": "step-20",
