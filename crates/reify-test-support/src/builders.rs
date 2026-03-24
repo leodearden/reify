@@ -405,39 +405,61 @@ impl TopologyTemplateBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reify_types::CompiledExprKind;
     use std::collections::{BTreeMap, BTreeSet};
 
     #[test]
-    #[should_panic(expected = "literal() not yet implemented for M5 type")]
-    fn literal_panics_on_enum_value() {
-        literal(Value::Enum {
-            type_name: "X".into(),
-            variant: "Y".into(),
+    fn literal_enum_produces_enum_type() {
+        let expr = literal(Value::Enum {
+            type_name: "Color".into(),
+            variant: "Red".into(),
         });
+        assert_eq!(expr.result_type, Type::Enum("Color".to_string()));
+        assert!(matches!(expr.kind, CompiledExprKind::Literal(Value::Enum { .. })));
     }
 
     #[test]
-    #[should_panic(expected = "literal() not yet implemented for M5 type")]
-    fn literal_panics_on_list_value() {
-        literal(Value::List(vec![]));
+    fn literal_list_produces_list_type() {
+        let expr = literal(Value::List(vec![Value::Int(1), Value::Int(2)]));
+        assert_eq!(expr.result_type, Type::List(Box::new(Type::Int)));
+        assert!(matches!(expr.kind, CompiledExprKind::Literal(Value::List(_))));
     }
 
     #[test]
-    #[should_panic(expected = "literal() not yet implemented for M5 type")]
-    fn literal_panics_on_set_value() {
-        literal(Value::Set(BTreeSet::new()));
+    fn literal_set_produces_set_type() {
+        let mut s = BTreeSet::new();
+        s.insert(Value::Int(1));
+        let expr = literal(Value::Set(s));
+        assert_eq!(expr.result_type, Type::Set(Box::new(Type::Int)));
     }
 
     #[test]
-    #[should_panic(expected = "literal() not yet implemented for M5 type")]
-    fn literal_panics_on_map_value() {
-        literal(Value::Map(BTreeMap::new()));
+    fn literal_map_produces_map_type() {
+        let mut m = BTreeMap::new();
+        m.insert(Value::String("k".into()), Value::Int(1));
+        let expr = literal(Value::Map(m));
+        assert_eq!(
+            expr.result_type,
+            Type::Map(Box::new(Type::String), Box::new(Type::Int))
+        );
     }
 
     #[test]
-    #[should_panic(expected = "literal() not yet implemented for M5 type")]
-    fn literal_panics_on_option_value() {
-        literal(Value::Option(None));
+    fn literal_option_some_produces_option_type() {
+        let expr = literal(Value::Option(Some(Box::new(Value::Int(1)))));
+        assert_eq!(expr.result_type, Type::Option(Box::new(Type::Int)));
+    }
+
+    #[test]
+    fn literal_option_none_produces_option_bool_fallback() {
+        let expr = literal(Value::Option(None));
+        assert_eq!(expr.result_type, Type::Option(Box::new(Type::Bool)));
+    }
+
+    #[test]
+    fn literal_empty_list_uses_int_fallback() {
+        let expr = literal(Value::List(vec![]));
+        assert_eq!(expr.result_type, Type::List(Box::new(Type::Int)));
     }
 
     #[test]
