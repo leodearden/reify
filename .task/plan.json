@@ -86,14 +86,14 @@
       "id": "step-11",
       "type": "test",
       "description": "Write new Complex entries in crates/reify-types/tests/exports.rs at the end of all_m5_types_exported(), after the Matrix block. Add a '--- Complex variant ---' section with: (a) Type::Complex direct construction `let _tc_direct = reify_types::Type::Complex(Box::new(reify_types::Type::Real));`, (b) Type::complex factory `let _tc_factory = reify_types::Type::complex(reify_types::Type::length());`, (c) Value::Complex construction `let _vc = reify_types::Value::Complex { re: 3.0, im: 4.0, dimension: reify_types::DimensionVector::DIMENSIONLESS };`. Run `cargo test -p reify-types -- exports` and confirm all_m5_types_exported passes.",
-      "status": "pending",
+      "status": "done",
       "commit": null
     },
     {
       "id": "step-12",
       "type": "impl",
       "description": "The export test entries are the implementation for step-11 (the test IS the verification). Run full `cargo test -p reify-types` and confirm all tests pass (both unit and integration). This is the only code change in this task.",
-      "status": "pending",
+      "status": "done",
       "commit": null
     }
   ],
