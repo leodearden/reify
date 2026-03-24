@@ -102,3 +102,59 @@ structure S {
         other => panic!("expected BinOp(And) at top level, got {:?}", other),
     }
 }
+
+/// step-5: `constraint a < b < c < d` desugars to `And(And(Lt(a,b), Lt(b,c)), Lt(c,d))`.
+/// Verifies the recursive left-folded And structure with 3 pairwise comparisons.
+#[test]
+fn three_operator_chain_left_folds() {
+    let source = r#"
+structure S {
+    param a : Int = 1
+    param b : Int = 2
+    param c : Int = 3
+    param d : Int = 4
+    constraint a < b < c < d
+}
+"#;
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    assert!(!template.constraints.is_empty(), "should have at least one constraint");
+
+    let expr = &template.constraints[0].expr;
+    // Outer: And(And(...), Lt(c,d))
+    match &expr.kind {
+        CompiledExprKind::BinOp { op, left, right } => {
+            assert_eq!(*op, BinOp::And, "outermost op should be And");
+            // right should be Lt(c, d)
+            match &right.kind {
+                CompiledExprKind::BinOp { op: rop, .. } => {
+                    assert_eq!(*rop, BinOp::Lt, "outermost right should be Lt(c,d)");
+                }
+                other => panic!("expected BinOp(Lt) for outermost right, got {:?}", other),
+            }
+            // left should be And(Lt(a,b), Lt(b,c))
+            match &left.kind {
+                CompiledExprKind::BinOp { op: lop, left: ll, right: lr } => {
+                    assert_eq!(*lop, BinOp::And, "inner left op should be And");
+                    match &ll.kind {
+                        CompiledExprKind::BinOp { op: llop, .. } => {
+                            assert_eq!(*llop, BinOp::Lt, "inner And left should be Lt(a,b)");
+                        }
+                        other => panic!("expected BinOp(Lt) for inner And left, got {:?}", other),
+                    }
+                    match &lr.kind {
+                        CompiledExprKind::BinOp { op: lrop, .. } => {
+                            assert_eq!(*lrop, BinOp::Lt, "inner And right should be Lt(b,c)");
+                        }
+                        other => panic!("expected BinOp(Lt) for inner And right, got {:?}", other),
+                    }
+                }
+                other => panic!("expected BinOp(And) for inner left, got {:?}", other),
+            }
+        }
+        other => panic!("expected BinOp(And) at outer level, got {:?}", other),
+    }
+}
