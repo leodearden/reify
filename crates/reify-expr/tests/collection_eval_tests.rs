@@ -1365,6 +1365,24 @@ fn eval_list_with_undef_count() {
 }
 
 #[test]
+fn eval_method_count_set_with_undef() {
+    // {1, undef, 3}.count -> Undef (Set arm of .count() fix matches List arm)
+    let undef_id = ValueCellId::new("S", "missing_set_elem");
+    let set = CompiledExpr::set_literal(
+        vec![
+            CompiledExpr::literal(Value::Int(1), Type::Int),
+            CompiledExpr::value_ref(undef_id, Type::Int),
+            CompiledExpr::literal(Value::Int(3), Type::Int),
+        ],
+        Type::Set(Box::new(Type::Int)),
+    );
+    let expr = CompiledExpr::method_call(set, "count".to_string(), vec![], Type::Int);
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert!(result.is_undef(), "{{1,undef,3}}.count should be Undef (uncertain membership)");
+}
+
+#[test]
 fn eval_list_with_undef_sum() {
     // [1, undef, 3].sum -> Undef
     let undef_id = ValueCellId::new("S", "missing_elem2");
