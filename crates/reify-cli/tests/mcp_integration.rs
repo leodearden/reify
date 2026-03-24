@@ -211,14 +211,14 @@ fn mcp_server_set_parameter_changes_value() {
 
     let requests = vec![
         serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
-        // Set width to 100 (100mm = 0.1 in SI)
+        // Set width to 0.1 m (100mm in SI)
         serde_json::json!({
             "jsonrpc": "2.0",
             "id": 2,
             "method": "tools/call",
             "params": {
                 "name": "reify_set_parameter",
-                "arguments": {"cell_id": "Bracket.width", "value": "100"}
+                "arguments": {"cell_id": "Bracket.width", "value": "0.1"}
             }
         }),
         // Get parameters to verify the change
@@ -261,8 +261,8 @@ fn mcp_server_set_parameter_changes_value() {
     // Verify set_parameter response itself reports the correct new value
     assert_eq!(
         set_result["new_value"].as_str().unwrap_or(""),
-        "100 m",
-        "set_parameter response new_value should be '100 m', got: {:?}",
+        "0.1 m",
+        "set_parameter response new_value should be '0.1 m', got: {:?}",
         set_result["new_value"]
     );
 
@@ -280,10 +280,10 @@ fn mcp_server_set_parameter_changes_value() {
         .expect("should have width parameter");
 
     let width_value = width_param["value"].as_str().unwrap_or("");
-    // Original was 80mm (0.08 m SI), new should be 100 m after setting to 100
+    // Original was 80mm (0.08 m SI), new should be 0.1 m (100mm) after setting to 0.1
     assert_eq!(
-        width_value, "100 m",
-        "width should be 100 m after setting to 100"
+        width_value, "0.1 m",
+        "width should be 0.1 m (100mm) after setting to 0.1"
     );
 }
 
@@ -420,14 +420,14 @@ fn mcp_server_set_parameter_reports_new_value_accurately() {
 
     let requests = vec![
         serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
-        // Set width to 200
+        // Set width to 0.2 m (200mm in SI)
         serde_json::json!({
             "jsonrpc": "2.0",
             "id": 2,
             "method": "tools/call",
             "params": {
                 "name": "reify_set_parameter",
-                "arguments": {"cell_id": "Bracket.width", "value": "200"}
+                "arguments": {"cell_id": "Bracket.width", "value": "0.2"}
             }
         }),
     ];
@@ -464,8 +464,196 @@ fn mcp_server_set_parameter_reports_new_value_accurately() {
     // rather than blindly reporting success.
     assert_eq!(
         set_result["new_value"].as_str().unwrap_or(""),
-        "200 m",
-        "set_parameter new_value should be '200 m' after setting width to 200, got: {:?}",
+        "0.2 m",
+        "set_parameter new_value should be '0.2 m' after setting width to 0.2, got: {:?}",
         set_result["new_value"]
     );
+}
+
+#[test]
+fn mcp_server_set_parameter_constraint_verified_after_change() {
+    let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/bracket.ri");
+
+    let requests = vec![
+        serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
+        // Set width to 0.01 m (10mm in SI). This violates: thickness < width/4
+        // because thickness=5mm and width/4=2.5mm, so 5mm < 2.5mm is false.
+        // Constraints are soft, so set_parameter still returns success=true.
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "reify_set_parameter",
+                "arguments": {"cell_id": "Bracket.width", "value": "0.01"}
+            }
+        }),
+        // Get parameters to verify the new width is applied
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {
+                "name": "reify_get_parameters",
+                "arguments": {}
+            }
+        }),
+        // Get constraints to verify the constraint evaluator still runs at correct SI scale
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "tools/call",
+            "params": {
+                "name": "reify_get_constraints",
+                "arguments": {}
+            }
+        }),
+    ];
+
+    let responses = mcp_roundtrip(&[fixture], &requests);
+    assert!(responses.len() >= 4, "expected at least 4 responses");
+
+    // set_parameter should return success=true (constraints are soft, not blocking)
+    let set_response = &responses[1];
+    assert_ne!(
+        set_response["result"]["isError"],
+        true,
+        "set_parameter should not return error even with constraint violation: {:?}",
+        set_response
+    );
+    let set_content = set_response["result"]["content"]
+        .as_array()
+        .expect("should have content array");
+    let set_text = set_content[0]["text"].as_str().expect("content[0].text should be string");
+    let set_result: serde_json::Value =
+        serde_json::from_str(set_text).expect("set_parameter result should be JSON");
+    assert_eq!(
+        set_result["success"], true,
+        "set_parameter should return success=true even with constraint violation: {:?}",
+        set_result
+    );
+
+    // get_parameters should show width = "0.01 m"
+    let get_response = &responses[2];
+    let get_content = get_response["result"]["content"]
+        .as_array()
+        .expect("should have content array");
+    let get_text = get_content[0]["text"].as_str().expect("should be string");
+    let params: Vec<serde_json::Value> =
+        serde_json::from_str(get_text).expect("should be JSON array of parameters");
+    let width_param = params
+        .iter()
+        .find(|p| p["name"].as_str() == Some("width"))
+        .expect("should have width parameter");
+    assert_eq!(
+        width_param["value"].as_str().unwrap_or(""),
+        "0.01 m",
+        "width should be 0.01 m after setting to 0.01, got: {:?}",
+        width_param["value"]
+    );
+
+    // get_constraints should return all 3 bracket constraints (confirming constraint evaluator runs)
+    let constraints_response = &responses[3];
+    assert_ne!(
+        constraints_response["result"]["isError"],
+        true,
+        "get_constraints should not return error: {:?}",
+        constraints_response
+    );
+    let constraints_content = constraints_response["result"]["content"]
+        .as_array()
+        .expect("should have content array");
+    let constraints_text = constraints_content[0]["text"]
+        .as_str()
+        .expect("content[0].text should be string");
+    let constraints: Vec<serde_json::Value> =
+        serde_json::from_str(constraints_text).expect("constraints result should be JSON array");
+    assert_eq!(
+        constraints.len(),
+        3,
+        "bracket.ri has 3 constraints, got {}: {:?}",
+        constraints.len(),
+        constraints
+    );
+}
+
+#[test]
+fn mcp_server_set_parameter_error_preserves_state() {
+    let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/bracket.ri");
+
+    let requests = vec![
+        serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
+        // Attempt to set a non-existent parameter — should return an error
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "reify_set_parameter",
+                "arguments": {"cell_id": "Bracket.nonexistent", "value": "1.0"}
+            }
+        }),
+        // Get parameters to verify state was NOT corrupted by the failed operation
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {
+                "name": "reify_get_parameters",
+                "arguments": {}
+            }
+        }),
+    ];
+
+    let responses = mcp_roundtrip(&[fixture], &requests);
+    assert!(responses.len() >= 3, "expected at least 3 responses");
+
+    // set_parameter with non-existent cell_id should indicate an error
+    let set_response = &responses[1];
+    let is_error = set_response["result"]["isError"] == true;
+    let has_error_field = !set_response["error"].is_null();
+    assert!(
+        is_error || has_error_field,
+        "set_parameter with non-existent cell_id should return an error, got: {:?}",
+        set_response
+    );
+
+    // get_parameters should still return all 5 original parameters with original values
+    let get_response = &responses[2];
+    assert_ne!(
+        get_response["result"]["isError"],
+        true,
+        "get_parameters should not return error after failed set_parameter: {:?}",
+        get_response
+    );
+
+    let get_content = get_response["result"]["content"]
+        .as_array()
+        .expect("should have content array");
+    let get_text = get_content[0]["text"].as_str().expect("should be string");
+    let params: Vec<serde_json::Value> =
+        serde_json::from_str(get_text).expect("should be JSON array of parameters");
+
+    // All 5 original params should be present with original values
+    let expected = [
+        ("width", "0.08 m"),
+        ("height", "0.1 m"),
+        ("thickness", "0.005 m"),
+        ("fillet_radius", "0.003 m"),
+        ("hole_diameter", "0.006 m"),
+    ];
+    for (name, original_value) in &expected {
+        let param = params
+            .iter()
+            .find(|p| p["name"].as_str() == Some(name))
+            .unwrap_or_else(|| panic!("parameter '{}' should be present after failed set_parameter", name));
+        assert_eq!(
+            param["value"].as_str().unwrap_or(""),
+            *original_value,
+            "parameter '{}' should retain original value '{}' after failed set_parameter, got: {:?}",
+            name,
+            original_value,
+            param["value"]
+        );
+    }
 }
