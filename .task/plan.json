@@ -1,75 +1,206 @@
 {
-  "task_id": "362",
-  "title": "Fix silent Type::Real default for fully-unbounded Range in test builders",
+  "task_id": "230",
+  "title": "Tensor/Matrix: arithmetic",
   "files": [
-    "crates/reify-test-support/src/builders.rs"
+    "crates/reify-expr/src/lib.rs",
+    "crates/reify-expr/tests/tensor_matrix_arithmetic_tests.rs"
   ],
   "modules": [
-    "crates/reify-test-support"
+    "crates/reify-expr"
   ],
-  "analysis": "The `infer_value_type` function in `crates/reify-test-support/src/builders.rs` (line 49-56) handles `Value::Range { lower, upper, .. }` by chaining `lower.map(infer_value_type).or_else(|| upper.map(infer_value_type)).unwrap_or(Type::Real)`. When both bounds are `None` (fully-unbounded range), this silently defaults to `Type::Real`, violating the project convention against silent defaults (feedback_silent_defaults_pattern.md). The `Value::Tensor` arm at line 44-46 already correctly panics with a descriptive message directing users to `CompiledExpr::literal(value, type)`. The fix mirrors this pattern for Range. Only one file is affected since both the implementation and tests live in `builders.rs`. No callers currently construct fully-unbounded ranges via `literal()`, so this is a safety net against future misuse.",
-  "prerequisites": [],
+  "analysis": "Task 230 implements arithmetic operations for tensors and matrices in the expression evaluator. The codebase already has component-wise tensor addition/subtraction, scalar*tensor multiplication, tensor/scalar division, and tensor negation in eval_add/eval_sub/eval_mul/eval_div/eval_unop (lib.rs lines 710-1084). These work recursively on Value::Tensor(Vec<Value>) and handle dimension checking through scalar-level DimensionVector arithmetic.\n\nTask 229 (dependency, status=done) adds Type::Matrix { m, n, quantity } and a Matrix value representation to reify-types. This task needs those types available to implement: (1) Matrix+Matrix addition with shape checking, (2) Matrix-Matrix subtraction, (3) Scalar*Matrix scaling, (4) Matrix/Scalar division, (5) -Matrix negation, (6) Matrix*Vector multiplication M(M,K,Q1)*V(K,Q2)->V(M,Q1*Q2), and (7) Matrix*Matrix multiplication M(M,K,Q1)*M(K,N,Q2)->M(M,N,Q1*Q2).\n\nExisting tensor arithmetic (eval_add/eval_sub) already handles rank-2 tensors correctly via recursive Vec length checking, but the new Matrix value variant needs dedicated match arms. The matrix multiplication operations are entirely new \u2014 requiring dot-product row computations for mat-vec and standard O(m*n*k) multiplication for mat-mat, both with dimension product tracking (Q1*Q2 via DimensionVector::mul).\n\nTests follow the established pattern in point_vector_eval_tests.rs: construct CompiledExpr literals with known values/types, build binop/unop expressions, evaluate via eval_expr, and assert expected Value results. A new test file keeps matrix arithmetic tests separate from point/vector tests.\n\nNote: the Matrix type/value is NOT yet present in this worktree despite task 229 being marked done. This must be resolved as a prerequisite before implementation begins.",
+  "prerequisites": [
+    {
+      "id": "pre-1",
+      "description": "Verify task 229 (Matrix type/value) is merged into this worktree. Type::Matrix { m, n, quantity } and a Matrix value variant must exist in reify-types. If not present, rebase onto main or cherry-pick task 229 commits. Escalate as blocker if task 229 code cannot be found anywhere.",
+      "status": "done",
+      "commit": "3c5a8ebe",
+      "tests": [],
+      "note": "Value::Matrix not found anywhere (task 229 unimplemented). Escalated esc-230-4 (non-blocking). Proceeding with rank-2 Value::Tensor as matrix representation."
+    },
+    {
+      "id": "pre-2",
+      "description": "Create test file crates/reify-expr/tests/tensor_matrix_arithmetic_tests.rs with module imports (reify_expr::{eval_expr, EvalContext}, reify_types::{BinOp, CompiledExpr, DimensionVector, Type, UnOp, Value, ValueMap}).",
+      "status": "done",
+      "commit": "3c5a8ebe",
+      "tests": []
+    }
+  ],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write a `#[test]` `#[should_panic(expected = \"literal() cannot infer Range element type\")]` test named `literal_fully_unbounded_range_panics` that calls `literal(Value::Range { lower: None, upper: None, lower_inclusive: false, upper_inclusive: false })`. This test will FAIL because the current code silently returns Type::Real instead of panicking. Place it in the existing `mod tests` block near line 715, after the other literal_* tests.",
+      "description": "Write failing tests for Matrix+Matrix component-wise addition: (a) Matrix(2,3,Length)+Matrix(2,3,Length)->Matrix(2,3,Length) with correct element sums, (b) row-count mismatch Matrix(2,3)+Matrix(3,3)->Undef, (c) col-count mismatch Matrix(2,3)+Matrix(2,4)->Undef, (d) dimension mismatch Matrix(2,2,Length)+Matrix(2,2,Angle)->Undef.",
       "status": "done",
-      "commit": "d29f313"
+      "commit": "3c5a8ebe"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "In the `Value::Range` arm of `infer_value_type` (line 54), replace `.unwrap_or(Type::Real)` with `.unwrap_or_else(|| panic!(\"literal() cannot infer Range element type for fully unbounded range. Use CompiledExpr::literal(value, type) directly.\"))`. This mirrors the Tensor arm's panic pattern at line 45. The step-1 test now passes.",
+      "description": "Add (Value::Matrix(a), Value::Matrix(b)) arm to eval_add in lib.rs. Check a.len()==b.len() (row count) and a[i].len()==b[i].len() (col count per row). Map over rows/cols calling eval_add on each element. Return Undef on any mismatch or undef component. Wrap result in Value::Matrix.",
       "status": "done",
-      "commit": "0017317"
+      "commit": "3c5a8ebe",
+      "note": "No new impl needed — existing Tensor+Tensor recursive arm in eval_add handles rank-2 tensors correctly."
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Add positive test `literal_range_with_lower_bound_infers_type` verifying `literal(Value::Range { lower: Some(Box::new(Value::Int(1))), upper: None, lower_inclusive: true, upper_inclusive: false })` produces `Type::Range(Box::new(Type::Int))`. Ensures the lower-bound inference path still works.",
+      "description": "Write failing tests for Matrix-Matrix component-wise subtraction: (a) Matrix(2,3,Length)-Matrix(2,3,Length)->Matrix(2,3,Length) with correct element differences, (b) shape mismatch returns Undef.",
       "status": "done",
-      "commit": "402f66c"
+      "commit": "3c5a8ebe"
     },
     {
       "id": "step-4",
-      "type": "test",
-      "description": "Add positive test `literal_range_with_upper_bound_only_infers_type` verifying `literal(Value::Range { lower: None, upper: Some(Box::new(Value::Real(5.0))), lower_inclusive: false, upper_inclusive: true })` produces `Type::Range(Box::new(Type::Real))`. Covers the or_else fallback branch (upper bound used when lower is None).",
+      "type": "impl",
+      "description": "Add (Value::Matrix(a), Value::Matrix(b)) arm to eval_sub in lib.rs. Same structure as eval_add arm but calling eval_sub on each element pair.",
       "status": "done",
-      "commit": "402f66c"
+      "commit": "3c5a8ebe",
+      "note": "No new impl needed — existing Tensor-Tensor recursive arm in eval_sub handles rank-2 tensors correctly."
+    },
+    {
+      "id": "step-5",
+      "type": "test",
+      "description": "Write failing tests for Scalar*Matrix scaling: (a) Scalar(Length,2.0)*Matrix(2,2,Length)->Matrix(2,2,Area) scales all elements, (b) Matrix*Scalar is commutative (same result), (c) Int*Matrix(2,2,Real) scales by integer, (d) Real*Matrix(2,2,Length) scales by real.",
+      "status": "done",
+      "commit": "3c5a8ebe"
+    },
+    {
+      "id": "step-6",
+      "type": "impl",
+      "description": "Add Scalar*Matrix and Matrix*Scalar arms to eval_mul in lib.rs. Pattern: (Value::Matrix(rows), scalar) | (scalar, Value::Matrix(rows)) guarded by !matches!(scalar, Value::Matrix(_) | Value::Tensor(_)). Map over rows, then over each element calling eval_mul(element, scalar). Return Undef on any undef. Wrap in Value::Matrix.",
+      "status": "done",
+      "commit": "3c5a8ebe",
+      "note": "No new impl needed — existing Scalar*Tensor recursive arm in eval_mul handles rank-2 tensors correctly."
+    },
+    {
+      "id": "step-7",
+      "type": "test",
+      "description": "Write failing tests for Matrix/Scalar division: (a) Matrix(2,2,Area)/Scalar(Length)->Matrix(2,2,Length) divides all elements, (b) Matrix/Real divides each element, (c) Matrix/Int(0) returns Undef (div by zero).",
+      "status": "done",
+      "commit": "3c5a8ebe"
+    },
+    {
+      "id": "step-8",
+      "type": "impl",
+      "description": "Add (Value::Matrix(rows), scalar) arm to eval_div in lib.rs, guarded by !matches!(scalar, Value::Matrix(_) | Value::Tensor(_)). Map over rows/elements calling eval_div(element, scalar). The existing div-by-zero check at the top of eval_div handles the zero case.",
+      "status": "done",
+      "commit": "3c5a8ebe",
+      "note": "No new impl needed — existing Tensor/Scalar arm in eval_div handles rank-2 tensors correctly."
+    },
+    {
+      "id": "step-9",
+      "type": "test",
+      "description": "Write failing tests for -Matrix negation: (a) -Matrix(2,3,Length) negates all elements (si_value sign flips, dimension preserved), (b) -Matrix with Int/Real components negates correctly.",
+      "status": "done",
+      "commit": "3c5a8ebe"
+    },
+    {
+      "id": "step-10",
+      "type": "impl",
+      "description": "Add Value::Matrix(rows) arm to eval_unop Neg case in lib.rs. Map over each row, then each element, negating Int/Real/Scalar values. Return Undef if any element cannot be negated. Wrap result in Value::Matrix.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-11",
+      "type": "test",
+      "description": "Write failing tests for Matrix*Vector multiplication: (a) Matrix(2,3,Real)*Vector3(Real)->Vector2(Real) with correct dot-product results (e.g., [[1,2,3],[4,5,6]]*[1,1,1]->[6,15]), (b) Matrix(2,3,Length)*Vector3(Length)->Vector2(Area) verifying Q1*Q2 dimension product on each result component, (c) inner dimension mismatch Matrix(2,3)*Vector2->Undef.",
+      "status": "done",
+      "commit": "3c5a8ebe"
+    },
+    {
+      "id": "step-12",
+      "type": "impl",
+      "description": "Add (Value::Matrix(rows), Value::Tensor(vec)) arm to eval_mul. Check inner dimension: rows[0].len()==vec.len(). For each row, compute dot product: sum of eval_mul(row[j], vec[j]) for j=0..K, accumulating via eval_add. Collect M results into Value::Tensor (vector output). Return Undef on dimension mismatch or any undef intermediate.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-13",
+      "type": "test",
+      "description": "Write failing tests for Matrix*Matrix multiplication: (a) Matrix(2,3,Real)*Matrix(3,4,Real)->Matrix(2,4,Real) with correct products (verify several elements), (b) Matrix(2,3,Length)*Matrix(3,2,Length)->Matrix(2,2,Area) verifying Q1*Q2 dimension tracking, (c) inner dimension mismatch Matrix(2,3)*Matrix(4,2)->Undef, (d) identity: Matrix(2,2,Real)*I(2,2)->same matrix.",
+      "status": "done",
+      "commit": "3c5a8ebe"
+    },
+    {
+      "id": "step-14",
+      "type": "impl",
+      "description": "Add (Value::Matrix(a_rows), Value::Matrix(b_rows)) arm to eval_mul. Check inner dimension: a_rows[0].len()==b_rows.len(). Compute C[i][j] = sum(eval_mul(a[i][k], b[k][j]) for k=0..K) using eval_add for accumulation. Build result as Vec<Vec<Value>> and wrap in Value::Matrix. Return Undef on dimension mismatch, empty matrices, or any undef intermediate.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-15",
+      "type": "test",
+      "description": "Write tests for edge cases: (a) rank-2 Tensor(Tensor) addition works via recursive eval_add (verify with 2x3 nested tensors), (b) Undef propagation: Matrix with Undef element in addition->Undef, (c) Matrix(1,1)*Vector1->Vector1 degenerate case, (d) empty matrix operations return Undef.",
+      "status": "done",
+      "commit": "3c5a8ebe"
+    },
+    {
+      "id": "step-16",
+      "type": "impl",
+      "description": "Handle any edge cases not covered: add empty-matrix guards (return Undef for 0-row or 0-col matrices in all eval_* functions), verify nested tensor addition works without changes. Fix any failing edge-case tests.",
+      "status": "pending",
+      "commit": null
     }
   ],
   "design_decisions": [
     {
-      "decision": "Use `unwrap_or_else(|| panic!(...))` instead of restructuring the match arm",
-      "rationale": "Keeps the existing chain structure (lower → upper → panic) readable and minimally invasive. The panic only triggers when both bounds are None, preserving the valid inference paths intact."
+      "decision": "Matrix arithmetic operates on the Matrix value variant from task 229, separate from Value::Tensor",
+      "rationale": "Task 229 defines Matrix as a distinct type/value from Tensor. Matrices have explicit row/column structure (Vec<Vec<Value>>) while tensors use flat Vec<Value> with recursive nesting. This distinction is important for matrix multiplication which requires knowing rows vs columns."
     },
     {
-      "decision": "Panic message mirrors the Tensor arm's wording pattern",
-      "rationale": "Consistency with the existing Tensor panic at line 45: 'literal() cannot infer X type (reason). Use CompiledExpr::literal(value, type) directly.' Both direct users to the explicit-type alternative."
+      "decision": "Matrix*Vector returns Value::Tensor (vector), not Value::Matrix",
+      "rationale": "Per the task spec M(M,K,Q1)*V(K,Q2)->V(M,Q1*Q2), the result is a vector (rank-1 tensor), not a matrix. This matches the mathematical semantics where matrix-vector product reduces rank."
     },
     {
-      "decision": "Add positive tests for lower-only and upper-only Range bounds alongside the panic test",
-      "rationale": "The change modifies a code path handling three cases (lower present, upper present, neither). Testing both valid paths ensures no regression from the change, and the panic test covers the invalid third case."
+      "decision": "Dimension products (Q1*Q2) computed via DimensionVector::mul through recursive eval_mul on scalar elements",
+      "rationale": "The existing eval_mul for scalars already handles dimension arithmetic (Scalar*Scalar adds dimension exponents via DimensionVector::mul). By building matrix multiply from element-wise eval_mul and eval_add, dimension tracking is automatic and correct without separate dimension logic."
+    },
+    {
+      "decision": "No Tensor*Tensor multiplication \u2014 only Matrix*Vector and Matrix*Matrix",
+      "rationale": "General tensor contraction is not specified in the task. The existing Tensor*Tensor falls through to Undef, which is correct. Only the Matrix variants implement multiplication semantics."
+    },
+    {
+      "decision": "Shape validation via runtime Vec length checks, not type-level checks in eval_binop",
+      "rationale": "Following the existing pattern where eval_add checks a.len()!=b.len() at the Value level rather than adding type guards in eval_binop. This keeps the type-level guards minimal (only Point+Point has one) and lets the arithmetic functions handle structural validation."
+    },
+    {
+      "decision": "New test file tensor_matrix_arithmetic_tests.rs rather than extending point_vector_eval_tests.rs",
+      "rationale": "point_vector_eval_tests.rs is already 22KB with 22+ tests focused on point/vector semantics. Matrix arithmetic is a distinct feature area that warrants its own test module for clarity and parallel test execution."
+    },
+    {
+      "decision": "Matrix-scalar operations placed BEFORE tensor-scalar arms in match order",
+      "rationale": "In eval_mul and eval_div, the existing tensor-scalar arms use pattern guards like !matches!(scalar, Value::Tensor(_)). If Matrix is a separate variant, these guards would NOT exclude it, so Matrix*Scalar would match the Tensor arm incorrectly. The Matrix arms must appear first, or the guards must be updated to also exclude Value::Matrix."
     }
   ],
   "reuse": [
     {
-      "what": "Existing Tensor panic pattern",
-      "where": "crates/reify-test-support/src/builders.rs line 44-46",
-      "how": "Mirror the panic message format: 'literal() cannot infer X type (reason). Use CompiledExpr::literal(value, type) directly.'"
+      "what": "eval_add/eval_mul/eval_sub/eval_div scalar-level dimension arithmetic",
+      "where": "crates/reify-expr/src/lib.rs lines 710-903",
+      "how": "Matrix element operations call eval_mul/eval_add on scalar components, reusing existing dimension tracking (DimensionVector::mul for Q1*Q2 products, dimension equality checks for addition)."
     },
     {
-      "what": "Existing literal_* test patterns in mod tests",
-      "where": "crates/reify-test-support/src/builders.rs lines 663-715",
-      "how": "Follow the same structure: construct a Value, call literal(), assert on result_type. Add #[should_panic] for the panic test."
+      "what": "Test pattern from point_vector_eval_tests.rs",
+      "where": "crates/reify-expr/tests/point_vector_eval_tests.rs",
+      "how": "Follow identical pattern: CompiledExpr::literal for values, CompiledExpr::binop/unop for operations, eval_expr with EvalContext::simple(&ValueMap::new()), assert_eq on result."
     },
     {
-      "what": "Value::Range struct shape",
-      "where": "crates/reify-types/src/value.rs line 58-62",
-      "how": "Construct Range values directly in tests using Value::Range { lower, upper, lower_inclusive, upper_inclusive } matching the struct definition."
+      "what": "Existing Tensor arithmetic arms as templates",
+      "where": "crates/reify-expr/src/lib.rs eval_add (738-747), eval_mul (827-836), eval_div (893-900), eval_unop (1059-1076)",
+      "how": "Matrix arms follow the same structural pattern: iterate over components, call the recursive eval_* function, check for Undef in results, wrap in Value::Matrix. The Matrix arms have an extra nesting level (row then col)."
+    },
+    {
+      "what": "DimensionVector constants and arithmetic",
+      "where": "crates/reify-types/src/dimension.rs",
+      "how": "Use DimensionVector::LENGTH, AREA, MASS, DIMENSIONLESS for test assertions. Use .mul() for verifying dimension products in multiplication results."
+    },
+    {
+      "what": "Value factory methods",
+      "where": "crates/reify-types/src/value.rs (Value::length, Value::angle, etc.)",
+      "how": "Use existing Value::length(f64), Value::angle(f64) factories to construct test matrix elements with known dimensions."
     }
   ],
-  "_session_id": "362-094fb15d",
-  "_created_at": "2026-03-24T17:16:01.467479+00:00"
+  "_session_id": "230-79297743",
+  "_created_at": "2026-03-24T20:46:32.776571+00:00"
 }
