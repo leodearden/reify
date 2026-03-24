@@ -32,7 +32,7 @@
       "type": "impl",
       "description": "Add `\"real\"` to the `\"re\"` match arm using Rust's or-pattern: change `\"re\" => unary(args, |v| match v {` to `\"re\" | \"real\" => unary(args, |v| match v {`. This shares the exact same closure for both names with zero code duplication.",
       "status": "done",
-      "commit": "PENDING"
+      "commit": "efa5f533"
     },
     {
       "id": "step-3",
@@ -46,7 +46,7 @@
       "type": "impl",
       "description": "Add `\"imag\"` to the `\"im\"` match arm using or-pattern: change `\"im\" => unary(args, |v| match v {` to `\"im\" | \"imag\" => unary(args, |v| match v {`.",
       "status": "done",
-      "commit": "PENDING"
+      "commit": "efa5f533"
     },
     {
       "id": "step-5",
@@ -60,28 +60,28 @@
       "type": "impl",
       "description": "Add `\"complex_magnitude\"` match arm to eval_builtin: `\"complex_magnitude\" => unary(args, |v| match v { Value::Complex { re, im, dimension } => { let mag = (re*re + im*im).sqrt(); if *dimension == DimensionVector::DIMENSIONLESS { sanitize_value(Value::Real(mag)) } else { sanitize_value(Value::Scalar { si_value: mag, dimension: *dimension }) } } _ => Value::Undef })`. This is the Complex branch extracted from the generic `magnitude` function, without the Tensor fallback.",
       "status": "done",
-      "commit": "PENDING"
+      "commit": "efa5f533"
     },
     {
       "id": "step-7",
       "type": "test",
       "description": "Write Voltage dimension spec tests: (1) complex_voltage_preserves_dimension — build voltage_dim = MASS·LENGTH²·TIME⁻³·CURRENT⁻¹, create complex(Scalar{3,voltage}, Scalar{4,voltage}), assert result is Complex with voltage dimension, (2) real_voltage_returns_scalar — real(complex_voltage) → Scalar{3, voltage}, (3) imag_voltage_returns_scalar — imag(complex_voltage) → Scalar{4, voltage}, (4) complex_magnitude_voltage — complex_magnitude(complex_voltage) → Scalar{5, voltage}, (5) conjugate_voltage_preserves_dim — conjugate flips im sign, preserves voltage dimension. These exercise existing logic with the specific Voltage dimension from the task spec.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "PENDING"
     },
     {
       "id": "step-8",
       "type": "test",
       "description": "Write dimension mismatch spec test: complex_voltage_current_mismatch_returns_undef — build voltage_dim and current_dim (DimensionVector::CURRENT), call eval_builtin(\"complex\", &[Scalar{3, voltage}, Scalar{4, current}]), assert result is Undef because Voltage ≠ Current dimensions.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "PENDING"
     },
     {
       "id": "step-9",
       "type": "test",
       "description": "Write phase degree-equivalent verification test: phase_1_plus_i_approx_45_deg — create Complex{1,1,DIMLESS}, call phase(), assert result is Scalar with ANGLE dimension and si_value ≈ π/4 ≈ 0.7854 radians (which is 45°). Add comment noting 45° equivalence. This verifies the specific task-spec case phase(1+i)≈45deg.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "PENDING"
     },
     {
       "id": "step-10",
