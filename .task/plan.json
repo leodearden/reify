@@ -8,7 +8,7 @@
   "modules": [
     "crates/reify-expr"
   ],
-  "analysis": "Task 163 adds evaluation support for `some(expr)` and `none` expression forms in the reify-expr evaluator. Task 162 (dependency, status: done) adds `CompiledExprKind::OptionSome(Box<CompiledExpr>)` and `CompiledExprKind::OptionNone` variants to the enum in reify-types, along with constructor helpers, walk/collect_value_refs/remap_entity arms. This task adds the corresponding match arms in `eval_expr` and comprehensive tests.\n\nThe core semantics:\n- `none` evaluates to `Value::Option(None)`\n- `some(expr)` evaluates the inner expr and wraps: `Value::Option(Some(Box::new(eval(expr))))`\n- Critically, `some(undef)` produces `Value::Option(Some(Box::new(Value::Undef)))` \u2014 it does NOT propagate Undef. This preserves the three-way distinction: `Value::Undef` (error/missing), `Value::Option(None)` (intentional absence), `Value::Option(Some(Value::Undef))` (present but value undefined).\n\nThe implementation is small (2-4 lines per variant in eval_expr) but the test suite must verify the subtle Undef-wrapping semantics thoroughly. Tests follow the established pattern in crates/reify-expr/tests/ (lambda_eval_tests.rs, quantifier_eval_tests.rs, etc.).\n\nExisting infrastructure: `Value::Option(Option<Box<Value>>)` already exists with PartialEq, Ord, Display, content_hash. Test helpers `reify_test_support::values::{some_val, none_val, undef}` exist. `CompiledExpr::literal()` and `CompiledExpr::value_ref()` are available for building test expressions. Task 162 should provide `CompiledExpr::option_some()` and/or `CompiledExpr::option_none()` constructors; if not, tests can construct CompiledExpr structs directly.",
+  "analysis": "Task 163 adds evaluation support for `some(expr)` and `none` expression forms in the reify-expr evaluator. Task 162 (dependency, status: done) adds `CompiledExprKind::OptionSome(Box<CompiledExpr>)` and `CompiledExprKind::OptionNone` variants to the enum in reify-types, along with constructor helpers, walk/collect_value_refs/remap_entity arms. This task adds the corresponding match arms in `eval_expr` and comprehensive tests.\n\nThe core semantics:\n- `none` evaluates to `Value::Option(None)`\n- `some(expr)` evaluates the inner expr and wraps: `Value::Option(Some(Box::new(eval(expr))))`\n- Critically, `some(undef)` produces `Value::Option(Some(Box::new(Value::Undef)))` — it does NOT propagate Undef. This preserves the three-way distinction: `Value::Undef` (error/missing), `Value::Option(None)` (intentional absence), `Value::Option(Some(Value::Undef))` (present but value undefined).\n\nThe implementation is small (2-4 lines per variant in eval_expr) but the test suite must verify the subtle Undef-wrapping semantics thoroughly. Tests follow the established pattern in crates/reify-expr/tests/ (lambda_eval_tests.rs, quantifier_eval_tests.rs, etc.).\n\nExisting infrastructure: `Value::Option(Option<Box<Value>>)` already exists with PartialEq, Ord, Display, content_hash. Test helpers `reify_test_support::values::{some_val, none_val, undef}` exist. `CompiledExpr::literal()` and `CompiledExpr::value_ref()` are available for building test expressions. Task 162 should provide `CompiledExpr::option_some()` and/or `CompiledExpr::option_none()` constructors; if not, tests can construct CompiledExpr structs directly.",
   "prerequisites": [
     {
       "id": "pre-1",
@@ -23,42 +23,42 @@
     {
       "id": "step-1",
       "type": "test",
-      "description": "Create crates/reify-expr/tests/option_eval_tests.rs with 2 failing tests: (a) eval_none_produces_option_none \u2014 construct a CompiledExprKind::OptionNone expression, evaluate with eval_expr, assert result == Value::Option(None). (b) eval_none_is_not_undef \u2014 assert the result of evaluating none is not Value::Undef (verifying Option(None) != Undef at the evaluator level).",
-      "status": "pending",
+      "description": "Create crates/reify-expr/tests/option_eval_tests.rs with 2 failing tests: (a) eval_none_produces_option_none — construct a CompiledExprKind::OptionNone expression, evaluate with eval_expr, assert result == Value::Option(None). (b) eval_none_is_not_undef — assert the result of evaluating none is not Value::Undef (verifying Option(None) != Undef at the evaluator level).",
+      "status": "done",
       "commit": null
     },
     {
       "id": "step-2",
       "type": "impl",
       "description": "Add OptionNone match arm in eval_expr in crates/reify-expr/src/lib.rs: `CompiledExprKind::OptionNone => Value::Option(None)`. Tests from step-1 pass.",
-      "status": "pending",
+      "status": "done",
       "commit": null
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Add 3 failing tests: (a) eval_some_wraps_int \u2014 OptionSome(literal(Int(5))) evaluates to Value::Option(Some(Box::new(Value::Int(5)))). (b) eval_some_wraps_bool \u2014 OptionSome(literal(Bool(true))) evaluates to Value::Option(Some(Box::new(Value::Bool(true)))). (c) eval_some_wraps_real \u2014 OptionSome(literal(Real(3.14))) evaluates to Value::Option(Some(Box::new(Value::Real(3.14)))).",
+      "description": "Add 3 failing tests: (a) eval_some_wraps_int — OptionSome(literal(Int(5))) evaluates to Value::Option(Some(Box::new(Value::Int(5)))). (b) eval_some_wraps_bool — OptionSome(literal(Bool(true))) evaluates to Value::Option(Some(Box::new(Value::Bool(true)))). (c) eval_some_wraps_real — OptionSome(literal(Real(3.14))) evaluates to Value::Option(Some(Box::new(Value::Real(3.14)))).",
       "status": "pending",
       "commit": null
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Add OptionSome match arm in eval_expr: `CompiledExprKind::OptionSome(inner) => { let val = eval_expr(inner, ctx); Value::Option(Some(Box::new(val))) }`. IMPORTANT: No Undef short-circuit \u2014 wrapping Undef is intentional semantics. Tests from step-3 pass.",
+      "description": "Add OptionSome match arm in eval_expr: `CompiledExprKind::OptionSome(inner) => { let val = eval_expr(inner, ctx); Value::Option(Some(Box::new(val))) }`. IMPORTANT: No Undef short-circuit — wrapping Undef is intentional semantics. Tests from step-3 pass.",
       "status": "pending",
       "commit": null
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Add 3 verification tests for Undef semantics (should pass with step-4 impl): (a) eval_some_undef_produces_option_some_undef \u2014 some(literal(Undef)) yields Value::Option(Some(Box::new(Value::Undef))), NOT Value::Undef. (b) eval_some_undef_not_equal_to_none \u2014 assert some(undef) != Value::Option(None). (c) eval_some_undef_not_equal_to_bare_undef \u2014 assert some(undef) != Value::Undef.",
+      "description": "Add 3 verification tests for Undef semantics (should pass with step-4 impl): (a) eval_some_undef_produces_option_some_undef — some(literal(Undef)) yields Value::Option(Some(Box::new(Value::Undef))), NOT Value::Undef. (b) eval_some_undef_not_equal_to_none — assert some(undef) != Value::Option(None). (c) eval_some_undef_not_equal_to_bare_undef — assert some(undef) != Value::Undef.",
       "status": "pending",
       "commit": null
     },
     {
       "id": "step-6",
       "type": "test",
-      "description": "Add 4 verification tests for nesting and value refs (should pass with step-4 impl): (a) eval_some_nested_some \u2014 some(some(Int(3))) yields Value::Option(Some(Box::new(Value::Option(Some(Box::new(Value::Int(3))))))). (b) eval_some_wraps_none \u2014 some(none) yields Value::Option(Some(Box::new(Value::Option(None)))). (c) eval_some_value_ref \u2014 some(value_ref(x)) where x=Int(42) in ValueMap yields Value::Option(Some(Box::new(Value::Int(42)))). (d) eval_some_missing_ref_wraps_undef \u2014 some(value_ref(x)) where x is absent from ValueMap yields Value::Option(Some(Box::new(Value::Undef))), not bare Undef.",
+      "description": "Add 4 verification tests for nesting and value refs (should pass with step-4 impl): (a) eval_some_nested_some — some(some(Int(3))) yields Value::Option(Some(Box::new(Value::Option(Some(Box::new(Value::Int(3))))))). (b) eval_some_wraps_none — some(none) yields Value::Option(Some(Box::new(Value::Option(None)))). (c) eval_some_value_ref — some(value_ref(x)) where x=Int(42) in ValueMap yields Value::Option(Some(Box::new(Value::Int(42)))). (d) eval_some_missing_ref_wraps_undef — some(value_ref(x)) where x is absent from ValueMap yields Value::Option(Some(Box::new(Value::Undef))), not bare Undef.",
       "status": "pending",
       "commit": null
     }
@@ -66,7 +66,7 @@
   "design_decisions": [
     {
       "decision": "No Undef propagation in OptionSome evaluation",
-      "rationale": "The task description explicitly requires some(undef) to produce Value::Option(Some(Box::new(Value::Undef))), which is distinct from both Value::Option(None) and Value::Undef. This preserves a three-way distinction: error state (Undef), intentional absence (None), and present-but-undefined (Some(Undef)). Unlike BinOp/FunctionCall which short-circuit on Undef, OptionSome must NOT propagate Undef \u2014 it wraps whatever the inner expression evaluates to."
+      "rationale": "The task description explicitly requires some(undef) to produce Value::Option(Some(Box::new(Value::Undef))), which is distinct from both Value::Option(None) and Value::Undef. This preserves a three-way distinction: error state (Undef), intentional absence (None), and present-but-undefined (Some(Undef)). Unlike BinOp/FunctionCall which short-circuit on Undef, OptionSome must NOT propagate Undef — it wraps whatever the inner expression evaluates to."
     },
     {
       "decision": "New test file option_eval_tests.rs",
@@ -91,7 +91,7 @@
     {
       "what": "reify_test_support::values::{some_val, none_val, undef}",
       "where": "crates/reify-test-support/src/values.rs:199-211",
-      "how": "Construct expected Value::Option values in test assertions \u2014 saves verbose Box::new wrapping"
+      "how": "Construct expected Value::Option values in test assertions — saves verbose Box::new wrapping"
     },
     {
       "what": "EvalContext::simple(&ValueMap) pattern",
@@ -101,7 +101,7 @@
     {
       "what": "Value::Option(Option<Box<Value>>) variant",
       "where": "crates/reify-types/src/value.rs",
-      "how": "Already exists with PartialEq, Ord, Display, content_hash \u2014 no changes needed to Value enum"
+      "how": "Already exists with PartialEq, Ord, Display, content_hash — no changes needed to Value enum"
     },
     {
       "what": "Test file structure from lambda_eval_tests.rs",

@@ -3614,6 +3614,10 @@ fn collect_body_refs_inner(expr: &CompiledExpr, refs: &mut Vec<ValueCellId>) {
                 collect_body_refs_inner(arg, refs);
             }
         }
+        CompiledExprKind::OptionSome(inner) => {
+            collect_body_refs_inner(inner, refs);
+        }
+        CompiledExprKind::OptionNone => {}
     }
 }
 

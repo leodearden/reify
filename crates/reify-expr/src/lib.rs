@@ -206,8 +206,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             eval_method_call(&obj, method, &evaluated_args, &expr.result_type, ctx)
         }
 
-        // OptionNone stub — will be replaced in step-2
-        CompiledExprKind::OptionNone => Value::Undef,
+        CompiledExprKind::OptionNone => Value::Option(None),
 
         // OptionSome stub — will be replaced in step-4
         CompiledExprKind::OptionSome(_inner) => Value::Undef,
