@@ -34,6 +34,40 @@ fn conformance_empty_trait_no_errors() {
     assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
 }
 
+/// step-3: missing required param → MissingParam error.
+#[test]
+fn conformance_missing_param_error() {
+    let trait_def = CompiledTrait {
+        name: "HasWidth".to_string(),
+        is_pub: true,
+        type_params: vec![],
+        refinements: vec![],
+        required_members: vec![TraitRequirement {
+            name: "width".to_string(),
+            kind: RequirementKind::Param(Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            }),
+            span: test_span(),
+        }],
+        defaults: vec![],
+        content_hash: ContentHash::of_str("HasWidth"),
+    };
+    let structure_members: std::collections::HashMap<String, Type> =
+        std::collections::HashMap::new();
+    let errors = check_trait_conformance(&structure_members, &trait_def);
+    assert_eq!(errors.len(), 1, "expected 1 error, got: {:?}", errors);
+    match &errors[0] {
+        ConformanceError::MissingParam { name, expected_type } => {
+            assert_eq!(name, "width");
+            assert_eq!(
+                *expected_type,
+                Type::Scalar { dimension: DimensionVector::LENGTH }
+            );
+        }
+        other => panic!("expected MissingParam, got: {:?}", other),
+    }
+}
+
 /// Helper: parse source and compile, returning the CompiledModule.
 fn compile_module(source: &str) -> CompiledModule {
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
