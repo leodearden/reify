@@ -212,4 +212,22 @@ fn all_m5_types_exported() {
 
     // Value::Range with unbounded ends
     let _vr_unbounded = reify_types::Value::range(None, None, false, false);
+
+    // --- Matrix variants (step-9) ---
+
+    // Type::Matrix (direct construction)
+    let _tm_direct = reify_types::Type::Matrix {
+        m: 3,
+        n: 2,
+        quantity: Box::new(reify_types::Type::Real),
+    };
+
+    // Type::matrix factory method
+    let _tm_factory = reify_types::Type::matrix(2, 4, reify_types::Type::length());
+
+    // Value::Matrix construction (2×3 integer matrix)
+    let _vm = reify_types::Value::Matrix(vec![
+        vec![reify_types::Value::Int(1), reify_types::Value::Int(2), reify_types::Value::Int(3)],
+        vec![reify_types::Value::Int(4), reify_types::Value::Int(5), reify_types::Value::Int(6)],
+    ]);
 }
