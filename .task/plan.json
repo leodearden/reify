@@ -3,13 +3,14 @@
   "title": "Stdlib: wire boolean operations \u2014 union, intersection, difference",
   "files": [
     "crates/reify-compiler/src/lib.rs",
+    "crates/reify-eval/src/lib.rs",
     "crates/reify-eval/tests/boolean_ops_e2e.rs"
   ],
   "modules": [
     "crates/reify-compiler",
     "crates/reify-eval"
   ],
-  "analysis": "The boolean operations infrastructure is fully built at every layer EXCEPT the compiler's function recognition and compilation. Specifically: (1) CompiledGeometryOp::Boolean { op: BooleanOp, left: GeomRef, right: GeomRef } already exists in the compiler types. (2) BooleanOp::{Union,Difference,Intersection} enum exists. (3) The eval layer's compile_geometry_op() already resolves Boolean ops via GeomRef::Step \u2192 step_handles lookup. (4) GeometryOp::{Union,Difference,Intersection} runtime variants exist in reify-types. (5) The OCCT kernel already dispatches to boolean_fuse/cut/common FFI. (6) OCCT FFI is proven working (boundary4_geometry.rs tests boolean_difference at kernel level). The ONLY gap is: is_geometry_function() doesn't include 'union'/'intersection'/'difference'/'union_all'/'intersection_all', and compile_geometry_call() has no match arms for them. The key design challenge is that boolean ops take geometry operands (not scalars), so compilation must recursively compile each arg as a geometry op chain, tracking step indices for GeomRef references. The eval engine accumulates step_handles across all operations in a flat vector, so GeomRef::Step(i) indices must be globally correct within the realization's ops list.",
+  "analysis": "The boolean operations infrastructure is fully built at every layer EXCEPT the compiler's function recognition and compilation. Specifically: (1) CompiledGeometryOp::Boolean { op: BooleanOp, left: GeomRef, right: GeomRef } already exists in the compiler types. (2) BooleanOp::{Union,Difference,Intersection} enum exists. (3) The eval layer's compile_geometry_op() already resolves Boolean ops via GeomRef::Step \u2192 step_handles lookup. (4) GeometryOp::{Union,Difference,Intersection} runtime variants exist in reify-types. (5) The OCCT kernel already dispatches to boolean_fuse/cut/common FFI. (6) OCCT FFI is proven working (boundary4_geometry.rs tests boolean_difference at kernel level). The ONLY gap is: is_geometry_function() doesn't include 'union'/'intersection'/'difference'/'union_all'/'intersection_all', and compile_geometry_call() has no match arms for them. The key design challenge is that boolean ops take geometry operands (not scalars), so compilation must recursively compile each arg as a geometry op chain, tracking step indices for GeomRef references. The eval engine accumulates step_handles across all operations in a flat vector, so GeomRef::Step(i) indices must be globally correct within the realization's ops list.\n\nREVIEW FIX: The compiler always passes step_offset: 0 per realization, making GeomRef::Step indices realization-local. However, the eval engine passes the full accumulated step_handles vector (which spans ALL realizations) to compile_geometry_op. When a second realization has boolean ops, Step(0) resolves to the first realization's handle instead of the current realization's first handle. The fix is to pass &step_handles[handle_start..] in all three eval code paths (tessellate_from_values at line 2650, and the two build methods at lines 2461 and 2535), making step_handles lookup realization-local to match the compiler's indexing.",
   "prerequisites": [],
   "steps": [
     {
@@ -123,6 +124,27 @@
       "description": "Add OCCT-guarded e2e test: union_all with 5 boxes at different positions (nested translates or direct) \u2192 valid STEP export",
       "status": "done",
       "commit": "46be438"
+    },
+    {
+      "id": "step-17",
+      "type": "test",
+      "description": "Write failing OCCT-guarded e2e test in boolean_ops_e2e.rs: structure with two geometry let bindings 'let r1 = box(10mm, 10mm, 10mm)' and 'let r2 = union(box(20mm, 20mm, 20mm), box(30mm, 30mm, 30mm))'. Use Engine::tessellate_realizations() (or build()) and verify both realizations produce valid geometry. This test exposes the multi-realization step index bug: r2's Boolean{Union, Step(0), Step(1)} resolves Step(0) to r1's handle instead of r2's first box handle because the eval engine passes the full global step_handles vector instead of a realization-local slice.",
+      "status": "done",
+      "commit": "4a08e78"
+    },
+    {
+      "id": "step-18",
+      "type": "impl",
+      "description": "Fix all three geometry eval loops in Engine (crates/reify-eval/src/lib.rs) to pass realization-local step_handles slice to compile_geometry_op. (1) In tessellate_from_values (line ~2650): change '&step_handles' to '&step_handles[handle_start..]' \u2014 handle_start already tracked at line 2644. (2) In the eval-then-build method (line ~2461): add 'let handle_start = step_handles.len()' before the per-realization op loop, then pass '&step_handles[handle_start..]'. (3) In the full build() method (line ~2535): same pattern \u2014 add handle_start tracking and pass realization-local slice. This makes GeomRef::Step indices resolve relative to the current realization, matching the compiler's step_offset: 0 convention.",
+      "status": "done",
+      "commit": "a737b43"
+    },
+    {
+      "id": "step-19",
+      "type": "test",
+      "description": "Write OCCT-guarded e2e test for multi-realization with nested booleans: 'let r1 = difference(box(20mm,20mm,20mm), cylinder(5mm, 20mm))' and 'let r2 = union(box(10mm,10mm,10mm), sphere(8mm))'. Verify both realizations tessellate to non-empty meshes. This exercises the fix with nested boolean ops where step indices would be even more wrong without the realization-local slice (r2's ops would start at step index 3 globally but the compiler emits Step(0), Step(1), Step(2)).",
+      "status": "done",
+      "commit": "b27abde"
     }
   ],
   "design_decisions": [
@@ -145,6 +167,10 @@
     {
       "decision": "Use compile_geometry_call for arg validation instead of type checking",
       "rationale": "Non-geometry args (like scalar literals) are detected when compile_geometry_call returns None for the arg. This produces a clear diagnostic without requiring a separate type-checking pass, keeping the implementation simple and consistent with the existing pattern."
+    },
+    {
+      "decision": "Fix multi-realization step indices in eval engine (not compiler)",
+      "rationale": "The compiler correctly emits realization-local step indices (step_offset: 0 per realization). The bug is in the eval engine which passes the full global step_handles vector to compile_geometry_op instead of a realization-local slice. Fixing in eval by passing &step_handles[handle_start..] is minimal (3 call-sites), preserves the compiler's clean per-realization indexing, and matches the existing handle_start tracking in tessellate_from_values. The alternative (making the compiler emit globally-offset indices) would require the compiler to know about other realizations' op counts, coupling compilation order to eval order."
     }
   ],
   "reuse": [
@@ -161,7 +187,7 @@
     {
       "what": "compile_geometry_op Boolean handler in eval",
       "where": "crates/reify-eval/src/lib.rs line 2869",
-      "how": "Already resolves GeomRef::Step(idx) \u2192 step_handles[idx] for left/right, maps to GeometryOp::Union/Difference/Intersection \u2014 no changes needed"
+      "how": "Already resolves GeomRef::Step(idx) \u2192 step_handles[idx] for left/right, maps to GeometryOp::Union/Difference/Intersection \u2014 no changes needed to the function itself, only to the slice passed to it"
     },
     {
       "what": "OCCT kernel boolean dispatch",
@@ -184,11 +210,11 @@
       "how": "Follow pattern: parse\u2192compile\u2192DispatchPlanner+OcctKernelHandle\u2192Engine::new\u2192build\u2192verify STEP output"
     },
     {
-      "what": "step_handles accumulation across ops",
-      "where": "crates/reify-eval/src/lib.rs line 2454",
-      "how": "Engine accumulates handles in flat vector across all ops in all realizations. GeomRef::Step indices are globally valid within this vector, enabling multi-op realizations (primitives + boolean) to reference each other correctly."
+      "what": "handle_start tracking pattern in tessellate_from_values",
+      "where": "crates/reify-eval/src/lib.rs line 2644",
+      "how": "Already computes handle_start = step_handles.len() before each realization's op loop. Reuse this exact pattern in the two build methods that currently lack it, and change all three call-sites to pass &step_handles[handle_start..] for realization-local indexing."
     }
   ],
   "_session_id": "307-a6974930",
-  "_created_at": "2026-03-24T07:03:00.925229+00:00"
+  "_created_at": "2026-03-24T07:25:08.162380+00:00"
 }
