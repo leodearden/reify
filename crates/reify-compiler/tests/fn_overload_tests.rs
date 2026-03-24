@@ -41,6 +41,93 @@ structure S { let v = f(3) }
     );
 }
 
+/// step-5: Define fn f(x: Int)->Int and fn f(x: Int, y: Int)->Int, call f(5).
+/// Assert resolves to the 1-arity overload (UserFunctionCall with return type Int).
+/// Verifies arity-based disambiguation works.
+#[test]
+fn overload_arity_disambiguation_selects_one_arg_overload() {
+    let source = r#"
+fn f(x: Int) -> Int { x }
+fn f(x: Int, y: Int) -> Int { x + y }
+structure S { let v = f(5) }
+"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_arity_disam"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_types::Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+
+    let template = &compiled.templates[0];
+    let v_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "v")
+        .expect("should have 'v' value cell");
+    let v_expr = v_cell.default_expr.as_ref().expect("let should have expr");
+
+    match &v_expr.kind {
+        reify_types::CompiledExprKind::UserFunctionCall { function_name, args } => {
+            assert_eq!(function_name, "f");
+            assert_eq!(args.len(), 1, "should select the 1-arity overload");
+        }
+        other => panic!("expected UserFunctionCall, got {:?}", other),
+    }
+    assert_eq!(
+        v_expr.result_type,
+        reify_types::Type::Int,
+        "1-arity overload returns Int"
+    );
+}
+
+/// step-6 (additional): Define fn f(x: Int)->Int and fn f(x: Int, y: Int)->Int,
+/// call f(1, 2). Assert resolves to the 2-arity overload.
+#[test]
+fn overload_arity_disambiguation_selects_two_arg_overload() {
+    let source = r#"
+fn f(x: Int) -> Int { x }
+fn f(x: Int, y: Int) -> Int { x + y }
+structure S { let v = f(1, 2) }
+"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_arity_disam2"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_types::Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+
+    let template = &compiled.templates[0];
+    let v_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "v")
+        .expect("should have 'v' value cell");
+    let v_expr = v_cell.default_expr.as_ref().expect("let should have expr");
+
+    match &v_expr.kind {
+        reify_types::CompiledExprKind::UserFunctionCall { function_name, args } => {
+            assert_eq!(function_name, "f");
+            assert_eq!(args.len(), 2, "should select the 2-arity overload");
+        }
+        other => panic!("expected UserFunctionCall, got {:?}", other),
+    }
+    assert_eq!(
+        v_expr.result_type,
+        reify_types::Type::Int,
+        "2-arity overload returns Int"
+    );
+}
+
 /// step-1: Define fn f(x: Int)->Int and fn f(x: Real)->Real, call f(3)
 /// where 3 is Int. Assert resolves to UserFunctionCall with return type Int.
 ///
