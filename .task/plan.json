@@ -1,154 +1,248 @@
 {
-  "task_id": "222",
-  "title": "Point/Vector: Type variants",
+  "task_id": "207",
+  "title": "Unit declarations: parser",
   "files": [
-    "crates/reify-types/src/ty.rs",
-    "crates/reify-types/tests/exports.rs"
+    "tree-sitter-reify/grammar.js",
+    "tree-sitter-reify/src/parser.c",
+    "tree-sitter-reify/src/grammar.json",
+    "tree-sitter-reify/src/node-types.json",
+    "crates/reify-syntax/src/lib.rs",
+    "crates/reify-syntax/src/ts_parser.rs",
+    "crates/reify-syntax/tests/unit_decl_tests.rs"
   ],
   "modules": [
-    "crates/reify-types"
+    "tree-sitter-reify",
+    "crates/reify-syntax"
   ],
-  "analysis": "The Type enum in crates/reify-types/src/ty.rs currently has 15 variants with #[derive(Debug, Clone, PartialEq, Eq, Hash)]. Display is manually implemented in the same file. Factory methods (length(), angle(), dimensionless_scalar()) follow a consistent pattern of constructing Type variants with preset fields. The only exhaustive match on Type is the Display impl itself \u2014 all other match sites in the codebase (cpsat.rs, compiler, etc.) use wildcard catch-all arms, so adding two new variants will only require updating ty.rs and the exports integration test. No content_hash impl exists for Type (it uses derived Hash), so no hash tag assignments needed. The new Point { n, quantity } and Vector { n, quantity } variants follow the same structural pattern as List(Box<Type>) and Set(Box<Type>) \u2014 a container with an inner type \u2014 but additionally carry a dimensionality parameter n:usize. Display will follow the format Point{n}<{quantity}> (e.g., Point3<Scalar[m]>) and Vector{n}<{quantity}> consistent with the existing angle-bracket convention for generic types.",
-  "prerequisites": [],
+  "analysis": "The task requires adding parser support for `unit ident : type_expr (= expr)? (offset expr)?` declarations. This is a new top-level declaration type, structurally analogous to `constraint_definition` or `enum_declaration`.\n\nThe implementation requires three layers:\n1. **Grammar (tree-sitter-reify/grammar.js):** Add `unit_declaration` rule to the grammar with fields for name, dimension type, optional conversion expression (`= expr`), and optional offset expression (`offset expr`). Add `$.unit_declaration` to the `_declaration` choice.\n2. **AST (crates/reify-syntax/src/lib.rs):** Add `UnitDecl` struct with fields: name, is_pub, dimension_type (TypeExpr), conversion (Option<Expr>), offset (Option<Expr>), span, content_hash. Add `Unit(UnitDecl)` variant to the `Declaration` enum.\n3. **Lowering (crates/reify-syntax/src/ts_parser.rs):** Add `lower_unit` function following the pattern from `lower_enum`/`lower_constraint_def`. Add dispatch arm `\"unit_declaration\"` in `lower_source_file`.\n\nKey design consideration: `'unit'` and `'offset'` become reserved keywords. `'unit'` doesn't conflict with the `$.unit` alias in `quantity_literal` because that alias references `$.immediate_identifier` (a `token.immediate` rule requiring no whitespace). `'offset'` as a keyword prevents expression-greedy parsing from consuming it as an identifier in the conversion expression \u2014 e.g., `unit degC : Temperature = 1 offset 273.15` correctly parses `conversion = 1` then `offset = 273.15`.\n\nTask 208 (unit registry) and 209 (user-defined units) depend on this parser task. The `UnitDecl` AST node must carry enough information for the compiler to build a unit registry: name for lookup, dimension_type for dimensional analysis, conversion expression for SI multiplier computation, and offset expression for affine unit conversions (e.g., Celsius/Fahrenheit).\n\nTest strategy from task: simple unit (base unit, no conversion/offset), derived unit (with conversion factor), offset unit (with both conversion and offset).",
+  "prerequisites": [
+    {
+      "id": "pre-1",
+      "description": "Add `unit_declaration` rule to tree-sitter-reify/grammar.js: `seq(optional('pub'), 'unit', field('name', $.identifier), ':', field('type', $.type_expr), optional(seq('=', field('conversion', $._expression))), optional(seq('offset', field('offset', $._expression))))`. Add `$.unit_declaration` to the `_declaration` choice. Add `[$.unit_declaration]` to conflicts array (optional clauses may need GLR disambiguation).",
+      "status": "done",
+      "commit": "9866603",
+      "tests": []
+    },
+    {
+      "id": "pre-2",
+      "description": "Regenerate tree-sitter parser by running `npx tree-sitter generate` in tree-sitter-reify/. This updates src/parser.c, src/grammar.json, and src/node-types.json.",
+      "status": "done",
+      "commit": "9866603",
+      "tests": []
+    },
+    {
+      "id": "pre-3",
+      "description": "Add `UnitDecl` struct to crates/reify-syntax/src/lib.rs with fields: name (String), is_pub (bool), dimension_type (TypeExpr), conversion (Option<Expr>), offset (Option<Expr>), span (SourceSpan), content_hash (ContentHash). Add `Unit(UnitDecl)` variant to the Declaration enum.",
+      "status": "done",
+      "commit": "9866603",
+      "tests": []
+    }
+  ],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing tests for Point variant Display: assert Point { n:3, quantity: Type::length() } displays as 'Point3<Scalar[m]>', Point { n:2, quantity: Type::Real } as 'Point2<Real>', Point { n:1, quantity: Type::Int } as 'Point1<Int>'",
+      "description": "Write failing test `parse_simple_unit` in unit_decl_tests.rs: parse `unit meter : Length`, assert no errors, assert 1 declaration of type Declaration::Unit, assert name is 'meter', assert dimension_type.name is 'Length', assert conversion is None, assert offset is None.",
       "status": "done",
-      "commit": "6712fef"
+      "commit": "9866603"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Add Point { n: usize, quantity: Box<Type> } variant to Type enum and add Display match arm: write!(f, 'Point{}<{}>', n, quantity)",
+      "description": "Add `lower_unit` function in ts_parser.rs extracting name (from 'name' field), is_pub (via has_pub_keyword), dimension_type (from 'type' field via lower_type_expr_node), conversion (from optional 'conversion' field via lower_expr), offset (from optional 'offset' field via lower_expr). Add dispatch arm `\"unit_declaration\" => { if let Some(decl) = self.lower_unit(child) { self.declarations.push(Declaration::Unit(decl)); } }` in `lower_source_file`.",
       "status": "done",
-      "commit": "10dbab1"
+      "commit": "9866603"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing tests for Vector variant Display: assert Vector { n:3, quantity: Type::length() } displays as 'Vector3<Scalar[m]>', Vector { n:2, quantity: Type::Real } as 'Vector2<Real>'",
+      "description": "Write test `parse_derived_unit` in unit_decl_tests.rs: parse `unit mm : Length = 0.001`, assert no errors, assert name is 'mm', assert dimension_type.name is 'Length', assert conversion is Some with NumberLiteral(0.001), assert offset is None.",
       "status": "done",
-      "commit": "658a8e2"
+      "commit": "9866603"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Add Vector { n: usize, quantity: Box<Type> } variant to Type enum and add Display match arm: write!(f, 'Vector{}<{}>', n, quantity)",
+      "description": "Verify conversion expression extraction works in lower_unit. The optional 'conversion' field from child_by_field_name should already work via lower_expr. Fix if needed.",
       "status": "done",
-      "commit": "0f8bcd9"
+      "commit": "9866603"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing tests for factory methods: assert Type::point2(Type::length()) == Type::Point { n:2, quantity: Box::new(Type::length()) } and Type::point3(Type::Real) == Type::Point { n:3, quantity: Box::new(Type::Real) }",
+      "description": "Write test `parse_offset_unit` in unit_decl_tests.rs: parse `unit degC : Temperature = 1 offset 273.15`, assert no errors, assert name is 'degC', assert dimension_type.name is 'Temperature', assert conversion is Some with NumberLiteral(1.0), assert offset is Some with NumberLiteral(273.15).",
       "status": "done",
-      "commit": "8b251e9"
+      "commit": "9866603"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Implement pub fn point2(quantity: Type) -> Self and pub fn point3(quantity: Type) -> Self factory methods on Type impl block",
+      "description": "Verify offset expression extraction works in lower_unit. The optional 'offset' field from child_by_field_name should already work via lower_expr. Fix if needed.",
       "status": "done",
-      "commit": "1fd02c2"
+      "commit": "9866603"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing tests for factory methods: assert Type::vec2(Type::length()) == Type::Vector { n:2, quantity: Box::new(Type::length()) } and Type::vec3(Type::Real) == Type::Vector { n:3, quantity: Box::new(Type::Real) }",
+      "description": "Write test `parse_pub_unit` in unit_decl_tests.rs: parse `pub unit mm : Length = 0.001`, assert no errors, assert is_pub is true, assert name is 'mm'.",
       "status": "done",
-      "commit": "5969093"
+      "commit": "9866603"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Implement pub fn vec2(quantity: Type) -> Self and pub fn vec3(quantity: Type) -> Self factory methods on Type impl block",
+      "description": "Should already pass since lower_unit uses has_pub_keyword(). Verify and fix if needed.",
       "status": "done",
-      "commit": "88a92bf"
+      "commit": "9866603"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write tests for Eq and Hash: (a) Point3<Length> == Point3<Length>, (b) Point3<Length> != Point2<Length>, (c) Point3<Length> != Point3<Real>, (d) Point3<Length> != Vector3<Length>, (e) same assertions for Vector, (f) Hash consistency: equal types produce equal hashes via HashMap insert+lookup",
+      "description": "Write test `parse_unit_complex_conversion` in unit_decl_tests.rs: parse `unit inch : Length = 25.4 * 0.001`, assert no errors, assert conversion is Some with BinOp { op: '*', left: NumberLiteral(25.4), right: NumberLiteral(0.001) }.",
       "status": "done",
-      "commit": "f26ca73"
+      "commit": "9866603"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Verify Eq/Hash tests pass (derived automatically \u2014 no code change expected). Also add test asserting Point and Vector are not numeric via is_numeric(), which should pass from the existing match wildcard-free is_numeric() using matches!() macro",
+      "description": "Should already pass since the conversion field accepts any _expression and lower_expr handles BinOp. Verify and fix if needed.",
       "status": "done",
-      "commit": "88d118a"
+      "commit": "9866603"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Add Point and Vector variant construction to the all_m5_types_exported test in tests/exports.rs: construct Type::Point and Type::Vector variants, use Type::point3() and Type::vec3() factories, verify accessible from crate root",
+      "description": "Write test `parse_unit_quantity_literal_conversion` in unit_decl_tests.rs: parse `unit thou : Length = 0.0254mm`, assert no errors, assert conversion is Some with QuantityLiteral { value: 0.0254, unit: 'mm' }. This validates that quantity literals work in conversion expressions (critical for task 209 user-defined units).",
       "status": "done",
-      "commit": "4d8556f"
+      "commit": "9866603"
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "No impl change expected for exports \u2014 Type is already re-exported. Run full cargo test -p reify-types to verify everything passes end-to-end.",
+      "description": "Should already pass since lower_expr handles quantity_literal. Verify and fix if needed.",
       "status": "done",
-      "commit": "021e749"
+      "commit": "9866603"
+    },
+    {
+      "id": "step-13",
+      "type": "test",
+      "description": "Write test `parse_unit_offset_only` in unit_decl_tests.rs: parse `unit kelvin : Temperature offset 273.15`, assert no errors, assert conversion is None, assert offset is Some with NumberLiteral(273.15). This validates that offset works without a conversion expression.",
+      "status": "done",
+      "commit": "9866603"
+    },
+    {
+      "id": "step-14",
+      "type": "impl",
+      "description": "Should already pass since both optional clauses are independent in the grammar. Verify and fix if needed.",
+      "status": "done",
+      "commit": "9866603"
+    },
+    {
+      "id": "step-15",
+      "type": "test",
+      "description": "Write test `parse_unit_parameterized_dimension_type` in unit_decl_tests.rs: parse `unit newton : Derived<Force> = 1`, assert no errors, assert dimension_type.name is 'Derived', assert dimension_type.type_args has 1 entry with name 'Force'. This validates TypeExpr with type arguments for the dimension type.",
+      "status": "done",
+      "commit": "9866603"
+    },
+    {
+      "id": "step-16",
+      "type": "impl",
+      "description": "Should already pass since lower_type_expr_node handles parameterized_type. Verify and fix if needed.",
+      "status": "done",
+      "commit": "9866603"
+    },
+    {
+      "id": "step-17",
+      "type": "test",
+      "description": "Write test `parse_multiple_unit_declarations` in unit_decl_tests.rs: parse source with 3 unit declarations (meter, mm, inch), assert 3 declarations all of type Declaration::Unit, assert names are correct. Verifies multiple unit declarations coexist.",
+      "status": "done",
+      "commit": "9866603"
+    },
+    {
+      "id": "step-18",
+      "type": "impl",
+      "description": "Should already pass since lower_source_file iterates all children. Verify and fix if needed.",
+      "status": "done",
+      "commit": "9866603"
+    },
+    {
+      "id": "step-19",
+      "type": "test",
+      "description": "Write test `parse_unit_among_other_declarations` in unit_decl_tests.rs: parse source with a structure, unit declaration, and enum interleaved, assert all 3 are parsed correctly (Structure, Unit, Enum). Verifies unit declarations interoperate with existing declaration types.",
+      "status": "done",
+      "commit": "9866603"
+    },
+    {
+      "id": "step-20",
+      "type": "impl",
+      "description": "Should already pass since the _declaration choice includes all declaration types. Verify and fix if needed.",
+      "status": "done",
+      "commit": "9866603"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Use Point{n}<{quantity}> Display format (e.g., Point3<Scalar[m]>) rather than domain-specific names like Point3<Length>",
-      "rationale": "Consistent with existing generic type Display conventions (List<Int>, Set<String>, Field<Real, Real>). The inner type's Display is reused verbatim. If a friendlier 'Length' alias is desired, that would be a Type alias feature, not a Point-specific Display hack."
+      "decision": "UnitDecl uses `dimension_type: TypeExpr` rather than a plain `String` for the type annotation",
+      "rationale": "TypeExpr supports both simple types (`Length`) and parameterized types (`Derived<Force>`), which future dimension algebra may require. Consistent with how other declarations store type information (ParamDecl, LetDecl, FnParam). Task 208 (registry) needs the full TypeExpr for dimensional analysis."
     },
     {
-      "decision": "Use Vector{n}<{quantity}> as Display format, not Vec{n}<...>",
-      "rationale": "Avoids ambiguity with Rust's Vec<T> and is more explicit for the CAD/engineering domain. The variant name in the enum is Vector, so Display should match."
+      "decision": "Both `conversion` and `offset` are `Option<Expr>` \u2014 fully general expression types, not just numeric literals",
+      "rationale": "Task 209 shows `unit thou : Length = 0.0254mm` where the conversion uses a quantity literal. Future units may use arithmetic expressions (`25.4 * 0.001`). General expressions give maximum flexibility with zero extra implementation cost (reuse lower_expr). The compiler (task 208) evaluates these to numeric values."
     },
     {
-      "decision": "Both Point and Vector store n:usize + quantity:Box<Type> with identical structure",
-      "rationale": "Mathematically a Point and a Vector in an affine space are distinct types even though they share the same representation (n-tuple of quantities). Keeping them as separate variants enables the type checker to distinguish them, which is important for geometric correctness (you can subtract points to get a vector, but cannot add two points)."
+      "decision": "'unit' and 'offset' become reserved keywords in the grammar",
+      "rationale": "'unit' is a declaration keyword like 'structure', 'enum', 'fn' \u2014 all effectively reserved. 'offset' as a keyword prevents the expression parser from consuming it as an identifier in the conversion expression, ensuring `= 1 offset 273.15` correctly parses as two clauses. Tree-sitter's tokenization gives string literals priority over the identifier regex. The `immediate_identifier` in quantity_literal is unaffected (token.immediate requires no whitespace, so `5unit` still works)."
     },
     {
-      "decision": "Factory methods only for n=2 and n=3 (point2, point3, vec2, vec3)",
-      "rationale": "Task specifies these four. The general variant Type::Point { n, quantity } supports arbitrary dimensions, but 2D and 3D are the common cases in CAD that deserve convenience constructors."
+      "decision": "No `type_params` field on UnitDecl (unlike ConstraintDef or StructureDef)",
+      "rationale": "The task syntax `unit ident : type_expr (= expr)? (offset expr)?` has no type parameter syntax. Units are concrete (mm, inch, degC), not generic. If parameterized units are needed later, the grammar and AST can be extended."
     },
     {
-      "decision": "Eq and Hash are derived, no custom implementation needed",
-      "rationale": "Both new variants contain only usize (which derives Eq/Hash trivially) and Box<Type> (which delegates to Type's derived Eq/Hash). The derive macro handles this correctly with structural equality and deterministic hashing."
+      "decision": "UnitDecl includes `is_pub: bool` following the convention of all other Declaration types",
+      "rationale": "Task 209 explicitly requires `pub unit` for cross-module unit imports. Adding is_pub now (via `optional('pub')` in the grammar) avoids a future grammar change."
     },
     {
-      "decision": "Steps 9-10 test Eq/Hash even though it's derived",
-      "rationale": "Explicit tests document the contract and catch regressions if someone later changes the derive to a manual implementation. Following the pattern of existing tests (e.g., type_field_variant tests equality)."
+      "decision": "Grammar uses `optional(seq('offset', field('offset', $._expression)))` as a keyword-prefixed clause, not a separate member or struct field syntax",
+      "rationale": "Matches the task's specified syntax `(offset expr)?`. The offset clause is specific to unit declarations (affine conversions like Celsius), not a general-purpose feature. A keyword prefix clearly delimits where the conversion expression ends and the offset begins."
     }
   ],
   "reuse": [
     {
-      "what": "Existing #[derive(Debug, Clone, PartialEq, Eq, Hash)] on Type enum",
-      "where": "crates/reify-types/src/ty.rs line 4",
-      "how": "New Point and Vector variants get Eq/Hash for free from the derive macro \u2014 no manual implementation needed."
+      "what": "has_pub_keyword() helper",
+      "where": "ts_parser.rs Lowering impl",
+      "how": "Reuse directly for is_pub extraction in lower_unit, same pattern as lower_structure, lower_enum, lower_constraint_def."
     },
     {
-      "what": "Factory method pattern from Type::length(), Type::angle()",
-      "where": "crates/reify-types/src/ty.rs lines 42-60",
-      "how": "Follow identical pattern: pub fn point3(quantity: Type) -> Self { Type::Point { n: 3, quantity: Box::new(quantity) } }"
+      "what": "lower_type_expr_node() helper",
+      "where": "ts_parser.rs Lowering impl",
+      "how": "Reuse directly for extracting the dimension_type from the 'type' field node. Handles both bare identifiers (Length) and parameterized types (Derived<Force>)."
     },
     {
-      "what": "Display arm pattern from List/Set/Field variants",
-      "where": "crates/reify-types/src/ty.rs lines 206-216",
-      "how": "Point/Vector Display follows the same write!(f, ...) pattern, using the inner type's Display trait via {} format."
+      "what": "lower_expr() function",
+      "where": "ts_parser.rs Lowering impl",
+      "how": "Reuse directly to lower optional conversion and offset expressions. Handles all expression types including NumberLiteral, QuantityLiteral, BinOp."
     },
     {
-      "what": "Test patterns from existing type_field_variant and type_list_display tests",
-      "where": "crates/reify-types/src/ty.rs lines 77-189",
-      "how": "New tests follow the same assert_eq!(format!('{}', ty), expected) and equality assertion patterns."
+      "what": "span() and content_hash() helpers",
+      "where": "ts_parser.rs Lowering impl",
+      "how": "Reuse for SourceSpan and ContentHash on the UnitDecl node."
     },
     {
-      "what": "Integration test pattern from all_m5_types_exported",
-      "where": "crates/reify-types/tests/exports.rs lines 47-142",
-      "how": "Add Point/Vector variant construction under a new section in the existing test function, following the same let _var = reify_types::Type::Variant pattern."
+      "what": "child_by_field_name() pattern",
+      "where": "ts_parser.rs throughout",
+      "how": "Same field extraction pattern as lower_enum, lower_import, etc. Use child_by_field_name('name'), child_by_field_name('type'), child_by_field_name('conversion'), child_by_field_name('offset')."
+    },
+    {
+      "what": "constraint_def_tests.rs test patterns",
+      "where": "tests/constraint_def_tests.rs",
+      "how": "Follow the same parse_decls() helper pattern, assertion style, match-on-Declaration-variant idiom, and test naming conventions for unit_decl_tests.rs."
+    },
+    {
+      "what": "Grammar _declaration choice and lower_source_file dispatch patterns",
+      "where": "grammar.js and ts_parser.rs",
+      "how": "Add $.unit_declaration to the _declaration choice (same as constraint_definition, enum_declaration, etc.). Add 'unit_declaration' match arm in lower_source_file dispatch (same pattern as all other declaration types)."
     }
   ],
-  "_session_id": "222-f112dec9",
-  "_created_at": "2026-03-24T07:45:46.897202+00:00"
+  "_session_id": "207-8eceede1",
+  "_created_at": "2026-03-24T07:57:43.553773+00:00"
 }

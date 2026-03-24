@@ -41,6 +41,7 @@ module.exports = grammar({
       $.field_definition,
       $.purpose_declaration,
       $.constraint_definition,
+      $.unit_declaration,
     ),
 
     // ── Enum ──────────────────────────────────────────────────
@@ -250,6 +251,20 @@ module.exports = grammar({
     // A bare expression predicate inside a constraint def body.
     // Named node so the lowering code can identify it by kind.
     constraint_def_predicate: $ => field('expr', $._expression),
+
+    // ── Unit declaration (top-level) ─────────────────────────
+    // `unit meter : Length`
+    // `unit mm : Length = 0.001`
+    // `unit degC : Temperature = 1 offset 273.15`
+    unit_declaration: $ => seq(
+      optional('pub'),
+      'unit',
+      field('name', $.identifier),
+      ':',
+      field('type', $.type_expr),
+      optional(seq('=', field('conversion', $._expression))),
+      optional(seq('offset', field('offset', $._expression))),
+    ),
 
     // ── Associated type ─────────────────────────────────────
     associated_type: $ => seq(

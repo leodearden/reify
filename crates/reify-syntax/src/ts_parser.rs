@@ -155,6 +155,11 @@ impl<'a> Lowering<'a> {
                         self.declarations.push(Declaration::Constraint(decl));
                     }
                 }
+                "unit_declaration" => {
+                    if let Some(decl) = self.lower_unit(child) {
+                        self.declarations.push(Declaration::Unit(decl));
+                    }
+                }
                 "ERROR" => {
                     self.errors.push(ParseError {
                         message: format!("syntax error: {}", self.node_text(child)),
@@ -648,6 +653,34 @@ impl<'a> Lowering<'a> {
             type_params,
             params,
             predicates,
+            span: self.span(node),
+            content_hash: self.content_hash(node),
+        })
+    }
+
+    fn lower_unit(&mut self, node: tree_sitter::Node) -> Option<UnitDecl> {
+        let name_node = node.child_by_field_name("name")?;
+        let name = self.node_text(name_node).to_string();
+
+        let is_pub = self.has_pub_keyword(node);
+
+        let type_node = node.child_by_field_name("type")?;
+        let dimension_type = self.lower_type_expr_node(type_node);
+
+        let conversion = node
+            .child_by_field_name("conversion")
+            .and_then(|n| self.lower_expr(n));
+
+        let offset = node
+            .child_by_field_name("offset")
+            .and_then(|n| self.lower_expr(n));
+
+        Some(UnitDecl {
+            name,
+            is_pub,
+            dimension_type,
+            conversion,
+            offset,
             span: self.span(node),
             content_hash: self.content_hash(node),
         })
