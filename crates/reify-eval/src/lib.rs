@@ -402,11 +402,24 @@ impl Engine {
             None => return, // Not active — no-op
         };
 
-        // Remove each injected constraint from the evaluation graph
+        // Update demand registry: remove demand for each ejected constraint node.
+        for id in &injected_ids {
+            self.demand.remove_demand(&NodeId::Constraint(id.clone()));
+        }
+
+        // Remove each injected constraint from the evaluation graph, then
+        // rebuild the infrastructure so subsequent edit_param() calls no longer
+        // route through purpose constraint dependencies.
         if let Some(state) = self.eval_state.as_mut() {
             for constraint_id in &injected_ids {
                 state.snapshot.graph.constraints.remove(constraint_id);
             }
+            state.reverse_index =
+                ReverseDependencyIndex::build_from_graph(&state.snapshot.graph);
+            state.trace_map = crate::deps::build_trace_map(&state.snapshot.graph);
+        }
+        if let Some(state) = self.eval_state.as_ref() {
+            self.demand.rebuild_cone(&state.snapshot.graph);
         }
 
         // Remove the objective if one was injected
