@@ -586,6 +586,18 @@ mod tests {
     }
 
     #[test]
+    fn constrained_structure_module_has_beam_template() {
+        let module = constrained_structure_module();
+        assert_eq!(module.templates.len(), 1);
+        let t = &module.templates[0];
+        assert_eq!(t.name, "Beam");
+        // 2 params: width, height
+        assert_eq!(t.value_cells.len(), 2);
+        // 5 constraints: 2 for width range, 2 for height range, 1 for slender ratio
+        assert_eq!(t.constraints.len(), 5);
+    }
+
+    #[test]
     fn parent_child_module_structure() {
         let module = parent_child_module();
         assert_eq!(module.templates.len(), 2);
