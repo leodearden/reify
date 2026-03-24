@@ -116,15 +116,15 @@
       "id": "step-15",
       "type": "test",
       "description": "Write tests for CompiledPurposeBuilder: CompiledPurposeBuilder::new(\"mfg_ready\").param(\"subject\",\"Structure\").constraint(\"subject\",0,Some(\"thick_enough\"),gt_expr).build() produces CompiledPurpose with name, 1 param (name:\"subject\",entity_kind:\"Structure\"), 1 constraint with label. .objective(Minimize{..}).schema_query(\"subject\",\"params\",vec![vcid]).build() adds objective and resolved_queries. Assert content_hash non-zero.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "79e4488"
     },
     {
       "id": "step-16",
       "type": "impl",
       "description": "Implement CompiledPurposeBuilder struct{name, is_pub, params: Vec<CompiledPurposeParam>, constraints: Vec<CompiledConstraint>, objective: Option<OptimizationObjective>, resolved_queries: Vec<ResolvedSchemaQuery>}. Methods: new(name)->Self, public()->Self, param(name,entity_kind)->Self, constraint(entity,index,label,expr)->Self, objective(obj)->Self, schema_query(param_name,query_kind,resolved_ids)->Self, build()->CompiledPurpose with content_hash from name+constraints+queries.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "pending"
     },
     {
       "id": "step-17",
