@@ -30,6 +30,30 @@ fn parse_bare_module_pragma() {
     );
 }
 
+// ── Step 5/6: pragma with bare value args ────────────────────────
+
+#[test]
+fn parse_bare_value_pragma_args() {
+    let source = "#feature(sse2, avx)\nstructure S {}";
+    let module = parse_module(source);
+    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+    assert_eq!(module.pragmas.len(), 1, "expected 1 pragma");
+
+    let pragma = &module.pragmas[0];
+    assert_eq!(pragma.name, "feature");
+    assert_eq!(pragma.args.len(), 2, "expected 2 args, got {:?}", pragma.args);
+
+    match &pragma.args[0] {
+        PragmaArg::Bare(PragmaValue::Ident(s)) => assert_eq!(s, "sse2"),
+        other => panic!("expected Bare(Ident('sse2')), got {:?}", other),
+    }
+
+    match &pragma.args[1] {
+        PragmaArg::Bare(PragmaValue::Ident(s)) => assert_eq!(s, "avx"),
+        other => panic!("expected Bare(Ident('avx')), got {:?}", other),
+    }
+}
+
 // ── Step 3/4: pragma with key=value args ─────────────────────────
 
 #[test]
