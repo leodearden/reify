@@ -175,7 +175,9 @@ impl SidecarHandle {
         R: AsyncBufRead + Unpin + Send + 'static,
     {
         let stdin: SharedStdin = Arc::new(Mutex::new(Box::new(writer)));
-        Self::new_inner::<R, fn(&str, Value)>(stdin, reader, state, None)
+        Self::new_inner::<R, fn(String, Value) -> Result<Value, String>, fn(&str, Value)>(
+            stdin, reader, state, None,
+        )
     }
 
     /// Construct a SidecarHandle with full event and MCP wiring.
@@ -183,33 +185,37 @@ impl SidecarHandle {
     /// The reader task will:
     /// - Transition state to Ready on ready message
     /// - Emit all outbound messages to `event_sink` via [`outbound_to_event`]
-    /// - For `tool_call` messages with a `reify_` prefix, call [`crate::mcp_context::mcp_tool_call_impl`]
-    ///   and write the result back to the sidecar as a `tool_result` inbound message
-    pub fn from_parts_with_mcp<W, R, F>(
+    /// - For `tool_call` messages with a `reify_` prefix, call `tool_dispatch` synchronously
+    ///   and write the result back to the sidecar as a `tool_result` inbound message.
+    ///   `tool_dispatch` receives the tool name and input; the engine dependency lives
+    ///   at the call site (e.g. `main.rs`), not inside this module.
+    pub fn from_parts_with_mcp<W, R, D, F>(
         writer: W,
         reader: R,
         state: Arc<std::sync::Mutex<SidecarState>>,
-        engine: Arc<std::sync::Mutex<crate::engine::EngineSession>>,
+        tool_dispatch: D,
         event_sink: F,
     ) -> Self
     where
         W: AsyncWrite + Unpin + Send + 'static,
         R: AsyncBufRead + Unpin + Send + 'static,
+        D: Fn(String, Value) -> Result<Value, String> + Send + Sync + 'static,
         F: Fn(&str, Value) + Send + Sync + 'static,
     {
         let stdin: SharedStdin = Arc::new(Mutex::new(Box::new(writer)));
-        Self::new_inner(stdin, reader, state, Some((engine, event_sink)))
+        Self::new_inner(stdin, reader, state, Some((tool_dispatch, event_sink)))
     }
 
     /// Internal constructor shared by `from_parts` and `from_parts_with_mcp`.
-    fn new_inner<R, F>(
+    fn new_inner<R, D, F>(
         stdin: SharedStdin,
         reader: R,
         state: Arc<std::sync::Mutex<SidecarState>>,
-        mcp_config: Option<(Arc<std::sync::Mutex<crate::engine::EngineSession>>, F)>,
+        mcp_config: Option<(D, F)>,
     ) -> Self
     where
         R: AsyncBufRead + Unpin + Send + 'static,
+        D: Fn(String, Value) -> Result<Value, String> + Send + Sync + 'static,
         F: Fn(&str, Value) + Send + Sync + 'static,
     {
         let ready_notify = Arc::new(Notify::new());
@@ -230,7 +236,7 @@ impl SidecarHandle {
                     }
 
                     // 2. Event emission and MCP interception
-                    if let Some((ref engine, ref sink)) = mcp_config {
+                    if let Some((ref dispatch, ref sink)) = mcp_config {
                         let (event_name, payload) = outbound_to_event(&msg);
                         sink(event_name, payload);
 
@@ -240,24 +246,19 @@ impl SidecarHandle {
                                 let id = id.clone();
                                 let tool_name = tool_name.clone();
                                 let tool_input = tool_input.clone();
-                                let engine_clone = Arc::clone(engine);
+                                // tool_dispatch is synchronous — call it directly here,
+                                // then spawn only for the async stdin write.
+                                let result_val = match dispatch(tool_name.clone(), tool_input) {
+                                    Ok(v) => v,
+                                    Err(e) => serde_json::json!({ "error": e }),
+                                };
+                                let response = InboundMessage::ToolResult {
+                                    id,
+                                    tool_name,
+                                    result: result_val,
+                                };
                                 let stdin_clone = Arc::clone(&stdin_for_reader);
                                 tokio::spawn(async move {
-                                    let ctx = crate::mcp_context::TauriToolContext::new(engine_clone);
-                                    let result = crate::mcp_context::mcp_tool_call_impl(
-                                        &tool_name,
-                                        tool_input,
-                                        &ctx,
-                                    );
-                                    let result_val = match result {
-                                        Ok(v) => v,
-                                        Err(e) => serde_json::json!({ "error": e }),
-                                    };
-                                    let response = InboundMessage::ToolResult {
-                                        id,
-                                        tool_name,
-                                        result: result_val,
-                                    };
                                     let mut writer = stdin_clone.lock().await;
                                     write_to_sidecar(&mut *writer, &response).await.ok();
                                 });
@@ -443,12 +444,13 @@ pub async fn claude_clear_session_impl(
 /// the returned handle in the shared sidecar slot.
 ///
 /// Returns `Err` if the process cannot be spawned or if stdin/stdout are unavailable.
-pub async fn spawn_sidecar_impl<F>(
+pub async fn spawn_sidecar_impl<D, F>(
     path: &Path,
-    engine: Arc<std::sync::Mutex<crate::engine::EngineSession>>,
+    tool_dispatch: D,
     event_sink: F,
 ) -> Result<SidecarHandle, String>
 where
+    D: Fn(String, Value) -> Result<Value, String> + Send + Sync + 'static,
     F: Fn(&str, Value) + Send + Sync + 'static,
 {
     let mut proc = tokio::process::Command::new(path)
@@ -475,7 +477,7 @@ where
 
     let reader = BufReader::new(stdout);
     let sidecar_state = Arc::new(std::sync::Mutex::new(SidecarState::Starting));
-    let mut handle = SidecarHandle::from_parts_with_mcp(stdin, reader, sidecar_state, engine, event_sink);
+    let mut handle = SidecarHandle::from_parts_with_mcp(stdin, reader, sidecar_state, tool_dispatch, event_sink);
     handle.set_child(proc);
     Ok(handle)
 }

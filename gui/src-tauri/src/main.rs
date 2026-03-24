@@ -316,10 +316,20 @@ async fn claude_send_message(
                 .unwrap_or_else(|_| std::path::PathBuf::from("sidecar/reify-sidecar"));
 
             let app_for_events = app.clone();
-            let engine = Arc::clone(&state.engine);
+            let app_for_dispatch = app.clone();
+            let engine_for_dispatch = Arc::clone(&state.engine);
             let handle = reify_gui::claude_bridge::spawn_sidecar_impl(
                 &sidecar_path,
-                engine,
+                move |tool_name: String, tool_input: serde_json::Value| {
+                    let app_clone = app_for_dispatch.clone();
+                    let ctx = reify_gui::mcp_context::TauriToolContext::with_event_emitter(
+                        engine_for_dispatch.clone(),
+                        move |event_name, payload| {
+                            app_clone.emit(event_name, payload).ok();
+                        },
+                    );
+                    reify_gui::mcp_context::mcp_tool_call_impl(&tool_name, tool_input, &ctx)
+                },
                 move |name: &str, payload| {
                     app_for_events.emit(name, payload).ok();
                 },

@@ -317,15 +317,6 @@ async fn claude_send_message_impl_errors_when_sidecar_not_ready() {
 async fn from_parts_with_mcp_intercepts_reify_tool_calls() {
     use std::sync::Arc;
     use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
-    use reify_constraints::SimpleConstraintChecker;
-    use reify_test_support::MockGeometryKernel;
-    use crate::engine::EngineSession;
-
-    // Set up engine for MCP dispatch
-    let checker = SimpleConstraintChecker;
-    let kernel = MockGeometryKernel::new();
-    let session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
-    let engine = Arc::new(std::sync::Mutex::new(session));
 
     // stdin_writer: Rust writes here → sidecar reads it (we read from stdin_reader to inspect)
     // stdout_writer: simulates sidecar writing → Rust reader task processes it
@@ -341,7 +332,9 @@ async fn from_parts_with_mcp_intercepts_reify_tool_calls() {
         stdin_writer,
         reader,
         state,
-        engine,
+        |_tool_name: String, _tool_input: serde_json::Value| -> Result<serde_json::Value, String> {
+            Ok(serde_json::json!({}))
+        },
         move |name: &str, payload: serde_json::Value| {
             events_clone.lock().unwrap().push((name.to_string(), payload));
         },
@@ -918,19 +911,10 @@ async fn shutdown_sidecar_kills_and_clears_handle() {
 #[tokio::test]
 async fn spawn_sidecar_impl_returns_error_for_missing_binary() {
     use std::path::Path;
-    use std::sync::Arc;
-    use reify_constraints::SimpleConstraintChecker;
-    use reify_test_support::MockGeometryKernel;
-    use crate::engine::EngineSession;
-
-    let checker = SimpleConstraintChecker;
-    let kernel = MockGeometryKernel::new();
-    let session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
-    let engine = Arc::new(std::sync::Mutex::new(session));
 
     let result = spawn_sidecar_impl(
         Path::new("/tmp/no-such-sidecar-binary"),
-        engine,
+        |_: String, _: serde_json::Value| -> Result<serde_json::Value, String> { Ok(serde_json::Value::Null) },
         |_name: &str, _payload: serde_json::Value| {},
     )
     .await;
@@ -947,20 +931,11 @@ async fn spawn_sidecar_impl_returns_error_for_missing_binary() {
 #[tokio::test]
 async fn spawn_sidecar_impl_returns_handle_for_valid_binary() {
     use std::path::Path;
-    use std::sync::Arc;
-    use reify_constraints::SimpleConstraintChecker;
-    use reify_test_support::MockGeometryKernel;
-    use crate::engine::EngineSession;
-
-    let checker = SimpleConstraintChecker;
-    let kernel = MockGeometryKernel::new();
-    let session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
-    let engine = Arc::new(std::sync::Mutex::new(session));
 
     // /bin/cat keeps stdin open and produces no unexpected stdout — ideal minimal live process
     let result = spawn_sidecar_impl(
         Path::new("/bin/cat"),
-        engine,
+        |_: String, _: serde_json::Value| -> Result<serde_json::Value, String> { Ok(serde_json::Value::Null) },
         |_name: &str, _payload: serde_json::Value| {},
     )
     .await;
@@ -1244,6 +1219,63 @@ async fn state_accessor_returns_std_sync_mutex() {
     assert!(matches!(*guard, SidecarState::Ready));
 }
 
+// --- S1: tool_dispatch callback decoupling tests (step-6/step-7) ---
+
+#[tokio::test]
+async fn from_parts_with_tool_dispatch_intercepts_reify_calls() {
+    use std::sync::Arc;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
+
+    // stdin_writer: Rust writes here → sidecar reads it (we read from stdin_reader)
+    // stdout_writer: simulates sidecar writing → Rust reader task processes it
+    let (stdin_writer, mut stdin_reader) = tokio::io::duplex(4096);
+    let (mut stdout_writer, stdout_reader) = tokio::io::duplex(4096);
+    let reader = BufReader::new(stdout_reader);
+    let state = Arc::new(std::sync::Mutex::new(SidecarState::Ready));
+
+    let events = Arc::new(std::sync::Mutex::new(vec![]));
+    let events_clone = Arc::clone(&events);
+
+    // tool_dispatch closure instead of engine — fails because current API requires engine
+    let _handle = SidecarHandle::from_parts_with_mcp(
+        stdin_writer,
+        reader,
+        state,
+        |tool_name: String, _input: serde_json::Value| -> Result<serde_json::Value, String> {
+            Ok(serde_json::json!({ "dispatched": tool_name }))
+        },
+        move |name: &str, payload: serde_json::Value| {
+            events_clone.lock().unwrap().push((name.to_string(), payload));
+        },
+    );
+
+    // Inject a reify_ tool_call from simulated sidecar stdout
+    let tool_call =
+        r#"{"type":"tool_call","id":"msg-1","tool_name":"reify_get_shape","tool_input":{"name":"cube1"}}"#;
+    stdout_writer
+        .write_all(format!("{}\n", tool_call).as_bytes())
+        .await
+        .unwrap();
+
+    // Await the tool_result written back to sidecar stdin
+    let mut buf = vec![0u8; 4096];
+    let n = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        stdin_reader.read(&mut buf),
+    )
+    .await
+    .expect("Timeout: tool_result was never written back")
+    .unwrap_or(0);
+    assert!(n > 0, "Expected tool_result to be written back");
+    let written = std::str::from_utf8(&buf[..n]).unwrap();
+    let json_val: serde_json::Value =
+        serde_json::from_str(written.trim()).unwrap_or(serde_json::json!(null));
+    assert_eq!(json_val["type"], "tool_result");
+    assert_eq!(json_val["tool_name"], "reify_get_shape");
+    assert_eq!(json_val["result"]["dispatched"], "reify_get_shape");
+    drop(stdout_writer);
+}
+
 // --- S4: outbound_to_event &'static str return type tests (step-2/step-3) ---
 
 #[test]
@@ -1258,25 +1290,17 @@ fn outbound_to_event_returns_static_str() {
 async fn event_sink_accepts_str_ref() {
     use std::sync::Arc;
     use tokio::io::BufReader;
-    use reify_constraints::SimpleConstraintChecker;
-    use reify_test_support::MockGeometryKernel;
-    use crate::engine::EngineSession;
 
     let state = Arc::new(std::sync::Mutex::new(SidecarState::Ready));
     let (writer, _reader_end) = tokio::io::duplex(1024);
     let empty_reader = BufReader::new(&b""[..]);
 
-    let checker = SimpleConstraintChecker;
-    let kernel = MockGeometryKernel::new();
-    let session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
-    let engine = Arc::new(std::sync::Mutex::new(session));
-
-    // event_sink typed as Fn(&str, Value) — fails because current bound is Fn(String, Value)
+    // event_sink typed as Fn(&str, Value) — fails if bound is Fn(String, Value)
     let _handle = SidecarHandle::from_parts_with_mcp(
         writer,
         empty_reader,
         state,
-        engine,
+        |_: String, _: Value| -> Result<Value, String> { Ok(Value::Null) },
         |_name: &str, _payload: Value| {},
     );
 }
