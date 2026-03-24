@@ -310,6 +310,7 @@ fn main() {
         engine: Arc::new(Mutex::new(session)),
         last_state: std::sync::Mutex::new(None),
         watcher: Mutex::new(None),
+        sidecar: tokio::sync::Mutex::new(None),
     };
 
     tauri::Builder::default()

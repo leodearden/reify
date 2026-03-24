@@ -23,6 +23,7 @@ fn app_state_constructible() {
         engine: Arc::new(Mutex::new(session)),
         last_state: Mutex::new(None),
         watcher: Mutex::new(None),
+        sidecar: tokio::sync::Mutex::new(None),
     };
 }
 

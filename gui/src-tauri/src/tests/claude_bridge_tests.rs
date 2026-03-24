@@ -249,6 +249,29 @@ fn parse_outbound_missing_required_field_returns_err() {
     assert!(result.is_err());
 }
 
+// --- AppState sidecar field tests (step-21) ---
+
+#[test]
+fn app_state_has_sidecar_field() {
+    use std::sync::{Arc, Mutex};
+    use reify_constraints::SimpleConstraintChecker;
+    use reify_test_support::MockGeometryKernel;
+    use crate::commands::AppState;
+    use crate::engine::EngineSession;
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    // AppState should be constructible with the new sidecar field
+    let _state = AppState {
+        engine: Arc::new(Mutex::new(session)),
+        last_state: Mutex::new(None),
+        watcher: Mutex::new(None),
+        sidecar: tokio::sync::Mutex::new(None),
+    };
+}
+
 // --- SidecarHandle::kill and crash detection tests (step-19) ---
 
 #[tokio::test]
