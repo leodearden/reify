@@ -1,169 +1,259 @@
 {
-  "task_id": "191",
-  "title": "Qualified trait access: parser",
+  "task_id": "264",
+  "title": "Annotation framework: parser",
   "files": [
     "tree-sitter-reify/grammar.js",
     "tree-sitter-reify/src/parser.c",
+    "tree-sitter-reify/src/grammar.json",
+    "tree-sitter-reify/src/node-types.json",
     "crates/reify-syntax/src/lib.rs",
     "crates/reify-syntax/src/ts_parser.rs",
-    "crates/reify-syntax/tests/qualified_access_tests.rs"
+    "crates/reify-syntax/tests/annotation_tests.rs"
   ],
   "modules": [
     "tree-sitter-reify",
     "crates/reify-syntax"
   ],
-  "analysis": "This task adds two new expression forms to the parser: (1) `TypeName::ident` as QualifiedAccess (precedence 2, left-associative) and (2) `expr.(TypeName::ident)` as InstanceQualifiedAccess (precedence 8, left-associative postfix). The implementation spans three layers: grammar rules in tree-sitter-reify/grammar.js, AST node variants in reify-syntax/src/lib.rs (ExprKind enum), and CST→AST lowering functions in reify-syntax/src/ts_parser.rs. Both forms already exist in the current branch — grammar rules (qualified_access at prec.left(2), instance_qualified_access at prec.left(8)), AST variants (QualifiedAccess, InstanceQualifiedAccess), lowering functions (lower_qualified_access, lower_instance_qualified_access), and 7 integration tests all pass. The compiler crate already has a placeholder match arm for both variants that emits a diagnostic (resolution is out of scope for this parser task). Verification should confirm all 7 tests pass and no regressions exist.",
+  "analysis": "Task requires adding `@ident` and `@ident(args)` annotation syntax to reify-syntax. The crate already has an analogous feature: pragmas (`#name(args)`) with `Pragma`/`PragmaArg`/`PragmaValue` types. Annotations differ in: (1) prefix is `@` not `#`, (2) args are full expressions not just compile-time constants, (3) they attach to the *next* declaration rather than floating as module/block metadata.\n\nThe parser uses a two-phase architecture: tree-sitter grammar.js defines the CST, then ts_parser.rs lowers CST to AST. We need changes at both levels.\n\n**Grammar approach**: Add `annotation` as a new rule in `_declaration` (sibling to `pragma`). In the lowering pass (`lower_source_file`), collect pending annotations and attach them to the next declaration encountered. This mirrors how doc-comment association works in many parsers.\n\n**AST approach**: New `Annotation` struct with `name: String`, `args: Vec<Expr>`, `span: SourceSpan`. Add `pub annotations: Vec<Annotation>` to all 10 declaration structs (StructureDef, OccurrenceDef, ImportDecl, EnumDecl, FnDef, TraitDecl, FieldDef, PurposeDef, ConstraintDef, UnitDecl). Using `Vec<Expr>` for args since the task says args can be string literals, identifiers, or expressions \u2014 all of which are expressions in the grammar.\n\n**Scope**: Top-level declarations only. Member-level annotation support would require adding the field to 11 more struct types and is a natural follow-up task.",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "Ensure tree-sitter-reify grammar includes qualified_access rule: `prec.left(2, seq(field('qualifier', $._expression), '::', field('member', $.identifier)))` and instance_qualified_access rule: `prec.left(8, seq(field('object', $._expression), '.', '(', field('qualified', $.qualified_access), ')'))`. Both must be listed in the _expression choice. Regenerate parser.c if grammar.js was modified.",
+      "description": "Add `annotation` grammar rule to grammar.js: `seq('@', field('name', alias($.immediate_identifier, $.identifier)), optional(seq('(', commaSep($._expression), ')')))`. Add `$.annotation` to `_declaration` choice. Regenerate parser with `tree-sitter generate` in tree-sitter-reify/.",
       "status": "done",
-      "commit": "31ae3f7a",
+      "commit": "b44e5a90",
       "tests": []
+    },
+    {
+      "id": "pre-2",
+      "description": "Add `Annotation` struct to lib.rs: `pub struct Annotation { pub name: String, pub args: Vec<Expr>, pub span: SourceSpan }`. Add `pub annotations: Vec<Annotation>` field to all 10 declaration types (StructureDef, OccurrenceDef, ImportDecl, EnumDecl, FnDef, TraitDecl, FieldDef, PurposeDef, ConstraintDef, UnitDecl).",
+      "status": "done",
+      "commit": "632b3db0",
+      "tests": []
+    },
+    {
+      "id": "pre-3",
+      "description": "Add `annotations: vec![]` to all struct literals in ts_parser.rs lowering functions (lower_structure, lower_occurrence, lower_import, lower_enum, lower_function, lower_trait, lower_field, lower_purpose, lower_constraint_def, lower_unit) and any downstream code constructing these types. Verify all existing tests still pass \u2014 this is a no-op change.",
+      "status": "done",
+      "commit": "b5a59c27",
+      "tests": [
+        "cargo test -p reify-syntax"
+      ]
     }
   ],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write test `parse_basic_qualified_access`: parse `structure S { let x = Rigid::mass }`, assert no errors, assert the let value is ExprKind::QualifiedAccess with qualifier=Ident(\"Rigid\") and member=\"mass\".",
-      "status": "done",
-      "commit": "31ae3f7a"
+      "description": "Write failing test: bare annotation on structure (`@test structure S { param x: Real }`). Assert declaration has 1 annotation with name='test' and empty args.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Add ExprKind::QualifiedAccess { qualifier: Box<Expr>, member: String } variant to lib.rs. Add `lower_qualified_access` function in ts_parser.rs that reads 'qualifier' and 'member' fields from the tree-sitter node. Add dispatch case `\"qualified_access\" => self.lower_qualified_access(node)` in lower_expr. Verify step-1 test passes.",
-      "status": "done",
-      "commit": "31ae3f7a"
+      "description": "Implement `lower_annotation()` in ts_parser.rs: extract name from field 'name' node, collect expression args by iterating children. Modify `lower_source_file()` to use a `pending_annotations: Vec<Annotation>` \u2014 on 'annotation' node push to pending, on each declaration-kind branch drain via `std::mem::take(&mut pending_annotations)` into the declaration's `annotations` field.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write test `parse_chained_qualified_access`: parse `structure S { let x = A::B::c }`, assert nested QualifiedAccess { qualifier: QualifiedAccess { qualifier: Ident(\"A\"), member: \"B\" }, member: \"c\" } — verifying left-associative chaining.",
-      "status": "done",
-      "commit": "31ae3f7a"
+      "description": "Write failing test: annotation with string literal arg (`@deprecated(\"use NewS\") structure S {}`). Assert annotation has 1 arg that is ExprKind::StringLiteral(\"use NewS\").",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Verify left-associativity — the `prec.left(2, ...)` grammar rule handles chaining automatically. The recursive `lower_expr` call on the qualifier field naturally produces nested QualifiedAccess nodes. Step-3 test should pass without code changes.",
-      "status": "done",
-      "commit": "31ae3f7a"
+      "description": "Extend `lower_annotation()` to collect expression args: iterate named children of the annotation node that are expression nodes (not 'name' field), lower each via `lower_expr()`, push to args Vec. The grammar's `commaSep($._expression)` produces expression children directly.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write test `parse_qualified_access_in_binary_expr`: parse `structure S { let x = Rigid::mass + 1 }`, assert BinOp { op: \"+\", left: QualifiedAccess(Rigid, mass), right: NumberLiteral(1.0) } — verifying precedence 2 binds tighter than precedence 5 additive but can participate in larger expressions.",
-      "status": "done",
-      "commit": "31ae3f7a"
+      "description": "Write test: annotation with identifier arg (`@category(mechanical) structure S {}`). Assert annotation has 1 arg that is ExprKind::Ident(\"mechanical\").",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Verify precedence interaction — QualifiedAccess at prec 2 is lower than additive prec 5, so `Rigid::mass + 1` parses as `(Rigid::mass) + 1` because `::` binds its operands before `+` claims the left side. Step-5 test should pass without code changes.",
-      "status": "done",
-      "commit": "31ae3f7a"
+      "description": "Verify identifier args work \u2014 identifiers are expressions, so lower_expr() handles them. If test fails, debug the child iteration to ensure identifier nodes inside annotation parens are reached.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write test `parse_basic_instance_qualified_access`: parse `structure S { let x = motor.(Driveable::torque) }`, assert InstanceQualifiedAccess { object: Ident(\"motor\"), qualified: QualifiedAccess(Ident(\"Driveable\"), \"torque\") }.",
-      "status": "done",
-      "commit": "31ae3f7a"
+      "description": "Write test: annotation with complex expression arg (`@tolerance(width * 0.01) structure S { param width: Real }`). Assert annotation arg is ExprKind::BinOp with op='*', left=Ident(\"width\"), right=NumberLiteral(0.01).",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Add ExprKind::InstanceQualifiedAccess { object: Box<Expr>, qualified: Box<Expr> } variant to lib.rs. Add `lower_instance_qualified_access` function in ts_parser.rs that reads 'object' and 'qualified' fields. Add dispatch case `\"instance_qualified_access\" => self.lower_instance_qualified_access(node)` in lower_expr. Verify step-7 test passes.",
-      "status": "done",
-      "commit": "31ae3f7a"
+      "description": "Verify complex expression parsing works in annotation context. Should work from step-4 since we use the general `lower_expr()`. Fix if needed.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write test `parse_instance_qualified_with_member_chain`: parse `structure S { let x = self.motor.(Driveable::torque) }`, assert InstanceQualifiedAccess { object: MemberAccess(Ident(\"self\"), \"motor\"), qualified: QualifiedAccess(Ident(\"Driveable\"), \"torque\") } — verifying that the object field can be a chained member access expression.",
-      "status": "done",
-      "commit": "31ae3f7a"
+      "description": "Write test: annotation with multiple args (`@config(\"prod\", 3, true) structure S {}`). Assert annotation has 3 args: StringLiteral(\"prod\"), NumberLiteral(3.0), BoolLiteral(true).",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Verify member chain interaction — both instance_qualified_access and member_access are at prec.left(8), so `self.motor.(...)` parses left-to-right: first `self.motor` as MemberAccess, then `(MemberAccess).(...)` as InstanceQualifiedAccess. Step-9 test should pass without code changes.",
-      "status": "done",
-      "commit": "31ae3f7a"
+      "description": "Verify multiple args work \u2014 commaSep in grammar produces multiple expression children. Fix collection logic if it doesn't iterate all expression children correctly.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write test `parse_instance_qualified_with_chained_path`: parse `structure S { let x = obj.(A::B::c) }`, assert InstanceQualifiedAccess { object: Ident(\"obj\"), qualified: QualifiedAccess { qualifier: QualifiedAccess(Ident(\"A\"), \"B\"), member: \"c\" } } — verifying the qualified field supports chained qualified paths.",
-      "status": "done",
-      "commit": "31ae3f7a"
+      "description": "Write test: multiple annotations on one declaration (`@test\\n@deprecated(\"old\")\\nstructure S {}`). Assert declaration has 2 annotations: first with name='test' and no args, second with name='deprecated' and 1 string arg.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "Verify chained path inside instance qualified — the grammar constrains `field('qualified', $.qualified_access)` which is itself left-recursive. Step-11 test should pass without code changes.",
-      "status": "done",
-      "commit": "31ae3f7a"
+      "description": "Verify multiple pending annotations accumulate and all attach to the next declaration. The `std::mem::take(&mut pending_annotations)` pattern moves all accumulated annotations at once.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-13",
       "type": "test",
-      "description": "Write test `parse_distinct_ast_nodes`: parse `structure S { let a = Rigid::mass  let b = obj.(Rigid::mass) }`, assert first member is QualifiedAccess and second is InstanceQualifiedAccess — verifying both forms produce distinct AST node variants as required by the task.",
-      "status": "done",
-      "commit": "31ae3f7a"
+      "description": "Write tests: annotation on each remaining declaration type \u2014 fn (`@pure fn area(w: Real, h: Real) -> Real { w * h }`), trait (`@marker trait Rigid { param mass: Real }`), enum (`@flags enum Dir { In, Out }`), import (`@reexport import std.math`), field def (`@cached field def temp : Point3 -> Real { source = analytical { |p| p } }`), purpose (`@strict purpose mfg_ready(s: Structure) { constraint s > 0 }`), constraint def (`@builtin constraint def MinWall { param w: Real  w > 0 }`), unit (`@si unit meter : Length`), occurrence (`@async occurrence Heat {}`).",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-14",
+      "type": "impl",
+      "description": "Ensure all 10 declaration branches in `lower_source_file()` drain pending_annotations into the declaration's annotations field. Add the drain pattern to any branches that were missed in step-2.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-15",
+      "type": "test",
+      "description": "Write test: empty annotation arg list (`@test() structure S {}`). Assert annotation has name='test' and empty args Vec (0 args, not parse error).",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-16",
+      "type": "impl",
+      "description": "Verify empty arg list works \u2014 commaSep returns optional, so empty parens `()` should produce 0 expression children. Fix if needed.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-17",
+      "type": "test",
+      "description": "Write test: annotations interspersed with pragmas. Case A: `#optimize\\n@test\\nstructure S {}` \u2014 assert 1 module pragma and structure has 1 annotation. Case B: `@test\\n#optimize\\nstructure S {}` \u2014 annotation attaches to structure, pragma goes to module level.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-18",
+      "type": "impl",
+      "description": "Ensure the lowering loop correctly separates pragma and annotation handling: pragma nodes go to module_pragmas (existing behavior), annotation nodes accumulate in pending_annotations, declaration nodes consume pending_annotations. Pragmas between annotations and declarations should not interfere.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-19",
+      "type": "test",
+      "description": "Write edge case test: trailing annotation with no following declaration (`structure S {}\\n@orphan`). Assert S has 0 annotations and no parse errors. The orphan annotation is silently dropped.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-20",
+      "type": "impl",
+      "description": "Verify trailing annotations don't cause panics or spurious errors. The pending_annotations Vec is simply dropped at end of lowering \u2014 no special handling needed.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-21",
+      "type": "test",
+      "description": "Write test: annotation between two declarations (`structure A {}\\n@middle\\nstructure B {}`). Assert A has 0 annotations, B has 1 annotation named 'middle'. Verifies pending_annotations resets after draining.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-22",
+      "type": "impl",
+      "description": "Verify pending_annotations resets correctly after being drained to A. The `std::mem::take` pattern replaces the Vec with an empty Vec, so subsequent annotations accumulate fresh for B.",
+      "status": "pending",
+      "commit": null
     }
   ],
   "design_decisions": [
     {
-      "decision": "QualifiedAccess qualifier is Box<Expr> (not String) to support chaining",
-      "rationale": "Chained qualified access like `A::B::c` requires the qualifier to be an expression that can itself be a QualifiedAccess. Using Box<Expr> enables left-recursive chaining: `(A::B)::c` where `A::B` is a QualifiedAccess and the outer `(A::B)::c` is also a QualifiedAccess. A String qualifier would only allow single-level `TypeName::ident`."
+      "decision": "Add `annotation` as a top-level `_declaration` choice in the grammar (sibling to `pragma`), not embedded in each declaration rule.",
+      "rationale": "Minimizes grammar changes (one new rule vs modifying 10 declaration rules). Follows the pragma precedent. The lowering pass handles attachment to the next declaration via pending-annotations accumulation, which is simpler and more maintainable."
     },
     {
-      "decision": "Qualified access at precedence 2 (same level as &&)",
-      "rationale": "Precedence 2 means `::` binds tighter than logical operators (&&, ||) but looser than comparison, arithmetic, and postfix operators. This allows `Rigid::mass + 1` to parse as `(Rigid::mass) + 1` naturally, and `A::b && C::d` to parse as `(A::b) && (C::d)`. This matches the intuition that `::` is a tight access operator, though not as tight as `.` (prec 8)."
+      "decision": "Use `Vec<Expr>` for annotation args rather than `Vec<PragmaValue>` or a new `AnnotationArg` enum.",
+      "rationale": "Task says args can be 'string literals, identifiers, or expressions'. Since the first two are subsets of expressions, using `Expr` directly leverages the existing `lower_expr()` infrastructure with zero new lowering code. It's also more extensible \u2014 any future expression feature automatically works in annotations."
     },
     {
-      "decision": "Instance qualified access constrains inner field to $.qualified_access (not $._expression)",
-      "rationale": "The grammar rule `field('qualified', $.qualified_access)` prevents nonsensical forms like `expr.(42)` or `expr.(x + y)`. Only `TypeName::ident` chains are allowed inside the parenthesized part. This is enforced at the grammar level for free."
+      "decision": "Scope to top-level declarations only (the 10 variants of the `Declaration` enum), not member declarations.",
+      "rationale": "The task says 'AST declaration nodes' which maps to the `Declaration` enum. Adding annotations to all 11 `MemberDecl` variants would triple the scope. The pattern established here (grammar rule + pending-annotations lowering) can be reused for member annotations in a follow-up task."
     },
     {
-      "decision": "Instance qualified access at precedence 8 (postfix level)",
-      "rationale": "Instance qualified access `expr.(T::m)` is syntactically a postfix operator on the object expression, like member access `expr.member`. Putting it at prec 8 (same as member_access, function_call, index_access) allows natural left-to-right chaining: `self.motor.(Driveable::torque)` parses as `(self.motor).(Driveable::torque)`."
+      "decision": "Use `@` + `immediate_identifier` (no whitespace between @ and name), matching the pragma pattern of `#` + `immediate_identifier`.",
+      "rationale": "Consistency with existing pragma syntax. Prevents ambiguity where `@ ident` with a space could be parsed as two separate tokens."
     },
     {
-      "decision": "No separate TypeName AST node — qualifier uses Ident",
-      "rationale": "At the parser level, `Rigid` in `Rigid::mass` is just an identifier. Semantic analysis (trait resolution in the compiler) will distinguish type names from variable names. Keeping the qualifier as a plain Expr avoids premature semantic coupling in the parser."
+      "decision": "Silently drop annotations not followed by a declaration (orphan annotations), rather than emitting a parse error.",
+      "rationale": "Consistent with how trailing pragmas are handled (they go to module_pragmas even at end of file). Tree-sitter error recovery is better when the grammar is permissive. Semantic validation ('annotation must precede a declaration') can be added in a later compiler pass if desired."
+    },
+    {
+      "decision": "No key=value syntax for annotation args (positional only), unlike pragmas which support key=value.",
+      "rationale": "Task description specifies 'string literals, identifiers, or expressions' as valid arg types with no mention of key=value pairs. Keeping args as positional expressions is simpler. Key=value can be added later if needed by introducing an AnnotationArg enum."
     }
   ],
   "reuse": [
     {
-      "what": "Existing lower_expr dispatch pattern",
-      "where": "crates/reify-syntax/src/ts_parser.rs (lower_expr match)",
-      "how": "Add two new match arms (`\"qualified_access\"` and `\"instance_qualified_access\"`) following the same pattern as other expression kinds like `\"member_access\"` and `\"binary_expression\"`."
+      "what": "Pragma grammar pattern (`#` + immediate_identifier + optional args)",
+      "where": "tree-sitter-reify/grammar.js lines 750-768",
+      "how": "Copy pragma rule structure, replace `#` with `@`, use `_expression` instead of `_pragma_value` for args. Drop the key=value form from pragma_arg \u2014 annotation args are positional expressions only."
     },
     {
-      "what": "lower_member_access structure as template for lower_qualified_access",
-      "where": "crates/reify-syntax/src/ts_parser.rs (lines 1863-1893)",
-      "how": "Both functions read a node and two named fields, lower one as expression and one as text, then construct an ExprKind variant. The qualified_access lowering mirrors this pattern exactly."
+      "what": "`lower_pragma()` lowering pattern",
+      "where": "crates/reify-syntax/src/ts_parser.rs lines 712-732",
+      "how": "Mirror the pattern for `lower_annotation()`: extract name from 'name' field, iterate named children for args. Replace pragma-specific arg lowering with calls to `lower_expr()` for each expression child."
     },
     {
-      "what": "ExprKind enum extension pattern",
-      "where": "crates/reify-syntax/src/lib.rs (ExprKind enum)",
-      "how": "Add two new variants following the established pattern of doc comments + field types. QualifiedAccess mirrors MemberAccess structure; InstanceQualifiedAccess is similar but with two Box<Expr> fields."
+      "what": "Pending-collection pattern from module pragma lowering",
+      "where": "crates/reify-syntax/src/ts_parser.rs lines 167-171 (pragma branch in lower_source_file)",
+      "how": "Same pattern but with a `pending_annotations` Vec that drains into declarations via `std::mem::take` instead of pushing to `module_pragmas`."
     },
     {
-      "what": "Test helper parse_decls",
-      "where": "crates/reify-syntax/tests/qualified_access_tests.rs",
-      "how": "Reuse the standard test pattern: `parse_decls(source) -> (Vec<Declaration>, Vec<ParseError>)` calling `reify_syntax::parse()` with a test ModulePath. This pattern is used across all 20 test files."
+      "what": "`lower_expr()` for expression parsing",
+      "where": "crates/reify-syntax/src/ts_parser.rs expression lowering infrastructure",
+      "how": "Reuse directly for annotation args \u2014 no new expression parsing needed. Handles all expression kinds (literals, identifiers, binary ops, function calls, etc.)."
     },
     {
-      "what": "Tree-sitter prec.left grammar pattern",
-      "where": "tree-sitter-reify/grammar.js",
-      "how": "The qualified_access rule uses `prec.left(N, seq(field(...), token, field(...)))` identical to how binary_expression and member_access define left-associative rules."
+      "what": "`commaSep()` helper in grammar.js",
+      "where": "tree-sitter-reify/grammar.js lines 8-10",
+      "how": "Use for comma-separated annotation args: `commaSep($._expression)`, same pattern as list_literal, argument_list, etc."
+    },
+    {
+      "what": "Test pattern from pragma_tests.rs",
+      "where": "crates/reify-syntax/tests/pragma_tests.rs",
+      "how": "Mirror the `parse_module()` helper and assertion pattern. Test structure: parse source, check errors empty, match on declaration variant, assert annotation fields."
     }
   ],
-  "_session_id": "191-5658d92e",
-  "_created_at": "2026-03-24T21:25:30.140132+00:00"
+  "_session_id": "264-23000fa5",
+  "_created_at": "2026-03-24T21:44:05.390137+00:00"
 }
