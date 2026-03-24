@@ -2582,6 +2582,50 @@ mod tests {
         assert!(eval_builtin("orient_basis", &[x]).is_undef());
     }
 
+    // ── orient_basis left-handed rejection tests (step-17) ───────────────
+
+    #[test]
+    fn orient_basis_left_handed_reflection_xy_plane_returns_undef() {
+        // x=(1,0,0), y=(0,1,0), z=(0,0,-1): reflection through XY plane, det=-1
+        // Orthonormal but left-handed — must return Undef (not in SO(3)).
+        let x = Value::Tensor(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
+        let y = Value::Tensor(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
+        let z = Value::Tensor(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(-1.0)]);
+        assert!(
+            eval_builtin("orient_basis", &[x, y, z]).is_undef(),
+            "left-handed basis (z-reflection) should be rejected"
+        );
+    }
+
+    #[test]
+    fn orient_basis_left_handed_swapped_yz_returns_undef() {
+        // x=(1,0,0), y=(0,0,1), z=(0,1,0): another left-handed basis, det=-1
+        // Y and Z swapped relative to right-handed standard.
+        let x = Value::Tensor(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
+        let y = Value::Tensor(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
+        let z = Value::Tensor(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
+        assert!(
+            eval_builtin("orient_basis", &[x, y, z]).is_undef(),
+            "left-handed basis (y-z swap) should be rejected"
+        );
+    }
+
+    #[test]
+    fn orient_basis_right_handed_near_tolerance_passes() {
+        // A valid right-handed basis that's slightly off from exact (within tolerance).
+        // Should still produce a valid orientation.
+        let eps = 1e-8; // well within the 1e-6 tolerance
+        let x = Value::Tensor(vec![Value::Real(1.0 - eps), Value::Real(eps), Value::Real(0.0)]);
+        let y = Value::Tensor(vec![Value::Real(-eps), Value::Real(1.0 - eps), Value::Real(0.0)]);
+        let z = Value::Tensor(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
+        let result = eval_builtin("orient_basis", &[x, y, z]);
+        assert!(
+            !result.is_undef(),
+            "right-handed basis near tolerance should produce valid orientation, got {:?}",
+            result
+        );
+    }
+
     #[test]
     fn dot_mixed_component_dimensions_returns_undef() {
         // A Tensor with mixed dimensions is not a valid physical vector
