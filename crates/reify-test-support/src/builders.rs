@@ -794,10 +794,13 @@ impl CompiledModuleBuilder {
 
             let function_hashes = self.functions.iter().map(|f| f.content_hash);
 
+            let trait_def_hashes = self.trait_defs.iter().map(|t| t.content_hash);
+
             let all_hashes = std::iter::once(path_hash)
                 .chain(template_hashes)
                 .chain(import_hashes)
-                .chain(function_hashes);
+                .chain(function_hashes)
+                .chain(trait_def_hashes);
 
             ContentHash::combine_all(all_hashes)
         };
