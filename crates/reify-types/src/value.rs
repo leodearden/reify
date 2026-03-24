@@ -54,6 +54,13 @@ pub enum Value {
     Complex { re: f64, im: f64, dimension: DimensionVector },
     /// Orientation as a unit quaternion (w + xi + yj + zk).
     Orientation { w: f64, x: f64, y: f64, z: f64 },
+    /// Range with optional inclusive/exclusive bounds.
+    Range {
+        lower: Option<Box<Value>>,
+        upper: Option<Box<Value>>,
+        lower_inclusive: bool,
+        upper_inclusive: bool,
+    },
     /// Undefined — not yet determined or computation failed.
     Undef,
 }
@@ -220,6 +227,19 @@ impl Value {
                 buf[25..33].copy_from_slice(&canon(z).to_le_bytes());
                 ContentHash::of(&buf)
             }
+            Value::Range { lower, upper, lower_inclusive, upper_inclusive } => {
+                // tag=17; flags then optional bounds
+                let mut h = ContentHash::of(&[17, *lower_inclusive as u8, *upper_inclusive as u8]);
+                match lower {
+                    None => h = h.combine(ContentHash::of(&[0])),
+                    Some(v) => h = h.combine(ContentHash::of(&[1])).combine(v.content_hash()),
+                }
+                match upper {
+                    None => h = h.combine(ContentHash::of(&[0])),
+                    Some(v) => h = h.combine(ContentHash::of(&[1])).combine(v.content_hash()),
+                }
+                h
+            }
             Value::Undef => ContentHash::of(&[5]),
         }
     }
@@ -273,6 +293,10 @@ impl PartialEq for Value {
                     && ay.to_bits() == by.to_bits()
                     && az.to_bits() == bz.to_bits()
             }
+            (
+                Value::Range { lower: al, upper: au, lower_inclusive: ali, upper_inclusive: aui },
+                Value::Range { lower: bl, upper: bu, lower_inclusive: bli, upper_inclusive: bui },
+            ) => al == bl && au == bu && ali == bli && aui == bui,
             (Value::Undef, Value::Undef) => true,
             _ => false,
         }
@@ -311,6 +335,7 @@ impl Ord for Value {
                 Value::Tensor(_) => 13,
                 Value::Complex { .. } => 14,
                 Value::Orientation { .. } => 15,
+                Value::Range { .. } => 16,
             }
         }
 
@@ -381,6 +406,15 @@ impl Ord for Value {
                     .then_with(|| ax.to_bits().cmp(&bx.to_bits()))
                     .then_with(|| ay.to_bits().cmp(&by.to_bits()))
                     .then_with(|| az.to_bits().cmp(&bz.to_bits()))
+            }
+            (
+                Value::Range { lower: al, upper: au, lower_inclusive: ali, upper_inclusive: aui },
+                Value::Range { lower: bl, upper: bu, lower_inclusive: bli, upper_inclusive: bui },
+            ) => {
+                ali.cmp(bli)
+                    .then_with(|| al.cmp(bl))
+                    .then_with(|| aui.cmp(bui))
+                    .then_with(|| au.cmp(bu))
             }
             _ => unreachable!("same type tag but different variants"),
         }
@@ -491,6 +525,19 @@ impl std::fmt::Display for Value {
                     }
                 };
                 write!(f, "[{}, {}, {}, {}]q", fmt_f64(*w), fmt_f64(*x), fmt_f64(*y), fmt_f64(*z))
+            }
+            Value::Range { lower, upper, lower_inclusive, upper_inclusive } => {
+                let lb = if *lower_inclusive { '[' } else { '(' };
+                let ub = if *upper_inclusive { ']' } else { ')' };
+                let lower_str = match lower {
+                    None => "-inf".to_string(),
+                    Some(v) => format!("{}", v),
+                };
+                let upper_str = match upper {
+                    None => "inf".to_string(),
+                    Some(v) => format!("{}", v),
+                };
+                write!(f, "{}{}..{}{}", lb, lower_str, upper_str, ub)
             }
             Value::Undef => write!(f, "undef"),
         }
@@ -1895,5 +1942,241 @@ mod tests {
     fn value_orientation_dimension_dimensionless() {
         let o = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
         assert_eq!(o.dimension(), DimensionVector::DIMENSIONLESS);
+    }
+
+    // ── Range Display tests (step-9) ─────────────────────────────────────────
+
+    #[test]
+    fn value_range_display_closed_inclusive() {
+        let r = make_range(Some(Value::Int(0)), Some(Value::Int(10)), true, true);
+        assert_eq!(format!("{}", r), "[0..10]");
+    }
+
+    #[test]
+    fn value_range_display_open_exclusive() {
+        let r = make_range(Some(Value::Int(0)), Some(Value::Int(10)), false, false);
+        assert_eq!(format!("{}", r), "(0..10)");
+    }
+
+    #[test]
+    fn value_range_display_half_open_lower_inclusive() {
+        let r = make_range(Some(Value::Int(0)), Some(Value::Int(10)), true, false);
+        assert_eq!(format!("{}", r), "[0..10)");
+    }
+
+    #[test]
+    fn value_range_display_half_open_upper_inclusive() {
+        let r = make_range(Some(Value::Int(0)), Some(Value::Int(10)), false, true);
+        assert_eq!(format!("{}", r), "(0..10]");
+    }
+
+    #[test]
+    fn value_range_display_unbounded_lower() {
+        let r = make_range(None, Some(Value::Int(10)), false, true);
+        assert_eq!(format!("{}", r), "(-inf..10]");
+    }
+
+    #[test]
+    fn value_range_display_unbounded_upper() {
+        let r = make_range(Some(Value::Int(0)), None, true, false);
+        assert_eq!(format!("{}", r), "[0..inf)");
+    }
+
+    #[test]
+    fn value_range_display_fully_unbounded() {
+        let r = make_range(None, None, false, false);
+        assert_eq!(format!("{}", r), "(-inf..inf)");
+    }
+
+    #[test]
+    fn value_range_display_real_bounds() {
+        let r = make_range(Some(Value::Real(1.5)), Some(Value::Real(3.5)), true, false);
+        assert_eq!(format!("{}", r), "[1.5..3.5)");
+    }
+
+    // ── Range content_hash tests (step-7) ───────────────────────────────────
+
+    #[test]
+    fn value_range_content_hash_deterministic() {
+        let r1 = make_range(Some(Value::Int(0)), Some(Value::Int(10)), true, false);
+        let r2 = make_range(Some(Value::Int(0)), Some(Value::Int(10)), true, false);
+        assert_eq!(r1.content_hash(), r2.content_hash());
+    }
+
+    #[test]
+    fn value_range_content_hash_different_bounds_differ() {
+        let r1 = make_range(Some(Value::Int(0)), Some(Value::Int(10)), true, false);
+        let r2 = make_range(Some(Value::Int(1)), Some(Value::Int(10)), true, false);
+        assert_ne!(r1.content_hash(), r2.content_hash());
+    }
+
+    #[test]
+    fn value_range_content_hash_none_vs_some_differ() {
+        let r_none = make_range(None, Some(Value::Int(10)), false, true);
+        let r_some = make_range(Some(Value::Int(0)), Some(Value::Int(10)), false, true);
+        assert_ne!(r_none.content_hash(), r_some.content_hash());
+    }
+
+    #[test]
+    fn value_range_content_hash_inclusivity_differs() {
+        let r_open = make_range(Some(Value::Int(0)), Some(Value::Int(10)), false, false);
+        let r_half = make_range(Some(Value::Int(0)), Some(Value::Int(10)), true, false);
+        let r_closed = make_range(Some(Value::Int(0)), Some(Value::Int(10)), true, true);
+        assert_ne!(r_open.content_hash(), r_half.content_hash());
+        assert_ne!(r_half.content_hash(), r_closed.content_hash());
+        assert_ne!(r_open.content_hash(), r_closed.content_hash());
+    }
+
+    #[test]
+    fn value_range_content_hash_no_collision_with_orientation() {
+        // Range tag=17 should not collide with Orientation tag=16
+        let range = make_range(None, None, false, false);
+        let orient = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+        assert_ne!(range.content_hash(), orient.content_hash());
+    }
+
+    #[test]
+    fn value_range_content_hash_both_none_deterministic() {
+        let r1 = make_range(None, None, false, false);
+        let r2 = make_range(None, None, false, false);
+        assert_eq!(r1.content_hash(), r2.content_hash());
+    }
+
+    // ── Range Ord tests (step-5) ─────────────────────────────────────────────
+
+    #[test]
+    fn value_range_ord_cross_type_after_orientation() {
+        // Range has type_tag=16, Orientation=15 → Range > Orientation
+        let range = make_range(None, None, false, false);
+        let orient = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+        assert!(range > orient);
+        assert!(orient < range);
+    }
+
+    #[test]
+    fn value_range_ord_cross_type_before_undef() {
+        // Range has type_tag=16, Undef=0 → Range > Undef
+        let range = make_range(None, None, false, false);
+        assert!(range > Value::Undef);
+    }
+
+    #[test]
+    fn value_range_ord_within_type_lower_inclusive_first() {
+        // lower_inclusive=false < lower_inclusive=true (false=0 < true=1)
+        let r_open = make_range(Some(Value::Int(0)), Some(Value::Int(10)), false, true);
+        let r_closed = make_range(Some(Value::Int(0)), Some(Value::Int(10)), true, true);
+        assert!(r_open < r_closed);
+    }
+
+    #[test]
+    fn value_range_ord_within_type_lower_bound_none_before_some() {
+        // None lower < Some lower (Option ordering: None < Some)
+        let r_unbounded = make_range(None, Some(Value::Int(10)), false, true);
+        let r_bounded = make_range(Some(Value::Int(0)), Some(Value::Int(10)), false, true);
+        assert!(r_unbounded < r_bounded);
+    }
+
+    #[test]
+    fn value_range_ord_within_type_upper_inclusive_after_lower() {
+        // When lower_inclusive and lower are equal, compare upper_inclusive
+        let r_open_upper = make_range(Some(Value::Int(0)), Some(Value::Int(10)), true, false);
+        let r_closed_upper = make_range(Some(Value::Int(0)), Some(Value::Int(10)), true, true);
+        assert!(r_open_upper < r_closed_upper);
+    }
+
+    #[test]
+    fn value_range_ord_within_type_upper_bound_none_before_some() {
+        // None upper < Some upper
+        let r_unbounded = make_range(Some(Value::Int(0)), None, true, false);
+        let r_bounded = make_range(Some(Value::Int(0)), Some(Value::Int(10)), true, false);
+        assert!(r_unbounded < r_bounded);
+    }
+
+    #[test]
+    fn value_range_ord_equal_ranges() {
+        use std::cmp::Ordering;
+        let r1 = make_range(Some(Value::Int(0)), Some(Value::Int(10)), true, false);
+        let r2 = make_range(Some(Value::Int(0)), Some(Value::Int(10)), true, false);
+        assert_eq!(r1.cmp(&r2), Ordering::Equal);
+    }
+
+    // ── Range PartialEq tests (step-3) ───────────────────────────────────────
+
+    fn make_range(
+        lower: Option<Value>,
+        upper: Option<Value>,
+        lower_inclusive: bool,
+        upper_inclusive: bool,
+    ) -> Value {
+        Value::Range {
+            lower: lower.map(Box::new),
+            upper: upper.map(Box::new),
+            lower_inclusive,
+            upper_inclusive,
+        }
+    }
+
+    #[test]
+    fn value_range_equal_ranges_are_equal() {
+        let r1 = make_range(Some(Value::Int(0)), Some(Value::Int(10)), true, false);
+        let r2 = make_range(Some(Value::Int(0)), Some(Value::Int(10)), true, false);
+        assert_eq!(r1, r2);
+    }
+
+    #[test]
+    fn value_range_different_lower_not_equal() {
+        let r1 = make_range(Some(Value::Int(0)), Some(Value::Int(10)), true, true);
+        let r2 = make_range(Some(Value::Int(1)), Some(Value::Int(10)), true, true);
+        assert_ne!(r1, r2);
+    }
+
+    #[test]
+    fn value_range_different_upper_not_equal() {
+        let r1 = make_range(Some(Value::Int(0)), Some(Value::Int(10)), true, true);
+        let r2 = make_range(Some(Value::Int(0)), Some(Value::Int(20)), true, true);
+        assert_ne!(r1, r2);
+    }
+
+    #[test]
+    fn value_range_different_lower_inclusive_not_equal() {
+        let r1 = make_range(Some(Value::Int(0)), Some(Value::Int(10)), true, true);
+        let r2 = make_range(Some(Value::Int(0)), Some(Value::Int(10)), false, true);
+        assert_ne!(r1, r2);
+    }
+
+    #[test]
+    fn value_range_different_upper_inclusive_not_equal() {
+        let r1 = make_range(Some(Value::Int(0)), Some(Value::Int(10)), true, true);
+        let r2 = make_range(Some(Value::Int(0)), Some(Value::Int(10)), true, false);
+        assert_ne!(r1, r2);
+    }
+
+    #[test]
+    fn value_range_none_vs_some_lower_not_equal() {
+        let r1 = make_range(None, Some(Value::Int(10)), false, true);
+        let r2 = make_range(Some(Value::Int(0)), Some(Value::Int(10)), false, true);
+        assert_ne!(r1, r2);
+    }
+
+    #[test]
+    fn value_range_none_vs_some_upper_not_equal() {
+        let r1 = make_range(Some(Value::Int(0)), None, true, false);
+        let r2 = make_range(Some(Value::Int(0)), Some(Value::Int(10)), true, false);
+        assert_ne!(r1, r2);
+    }
+
+    #[test]
+    fn value_range_both_none_equal() {
+        let r1 = make_range(None, None, false, false);
+        let r2 = make_range(None, None, false, false);
+        assert_eq!(r1, r2);
+    }
+
+    #[test]
+    fn value_range_not_equal_to_other_variants() {
+        let r = make_range(Some(Value::Int(0)), Some(Value::Int(10)), true, false);
+        assert_ne!(r, Value::Int(0));
+        assert_ne!(r, Value::Undef);
+        assert_ne!(r, Value::Bool(true));
     }
 }

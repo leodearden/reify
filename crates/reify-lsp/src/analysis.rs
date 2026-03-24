@@ -204,6 +204,24 @@ pub fn format_value(value: &Value) -> String {
         Value::Orientation { w, x, y, z } => {
             format!("[{w}, {x}, {y}, {z}]q")
         }
+        Value::Range {
+            lower,
+            upper,
+            lower_inclusive,
+            upper_inclusive,
+        } => {
+            let lb = if *lower_inclusive { '[' } else { '(' };
+            let ub = if *upper_inclusive { ']' } else { ')' };
+            let lower_str = match lower {
+                None => "-inf".to_string(),
+                Some(v) => format_value(v),
+            };
+            let upper_str = match upper {
+                None => "+inf".to_string(),
+                Some(v) => format_value(v),
+            };
+            format!("{lb}{lower_str}..{upper_str}{ub}")
+        }
         Value::Undef => "(undefined)".to_string(),
     }
 }

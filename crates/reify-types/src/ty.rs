@@ -45,6 +45,8 @@ pub enum Type {
     Complex(Box<Type>),
     /// Orientation in N-dimensional space (unit quaternion for N=3, angle for N=2).
     Orientation(usize),
+    /// Range over a comparable element type (e.g., Range<Int>, Range<Scalar[m]>).
+    Range(Box<Type>),
 }
 
 impl Type {
@@ -102,6 +104,11 @@ impl Type {
     /// Shorthand for an orientation in N-dimensional space.
     pub fn orientation(n: usize) -> Self {
         Type::Orientation(n)
+    }
+
+    /// Shorthand for a range over a given element type.
+    pub fn range(inner: Type) -> Self {
+        Type::Range(Box::new(inner))
     }
 
     /// Is this type a numeric type (Int, Real, or Scalar)?
@@ -512,6 +519,74 @@ mod tests {
         assert_eq!(Type::Orientation(3).as_name(), None);
     }
 
+    // ── Range tests (step-1) ─────────────────────────────────────────────────
+
+    #[test]
+    fn type_range_construction() {
+        let r_int = Type::Range(Box::new(Type::Int));
+        let r_real = Type::Range(Box::new(Type::Real));
+        // Distinct inner types
+        assert_ne!(r_int, r_real);
+        // Same inner type equal
+        assert_eq!(Type::Range(Box::new(Type::Int)), Type::Range(Box::new(Type::Int)));
+    }
+
+    #[test]
+    fn type_range_display_int() {
+        assert_eq!(format!("{}", Type::Range(Box::new(Type::Int))), "Range<Int>");
+    }
+
+    #[test]
+    fn type_range_display_scalar() {
+        assert_eq!(
+            format!("{}", Type::Range(Box::new(Type::length()))),
+            "Range<Scalar[m]>"
+        );
+    }
+
+    #[test]
+    fn type_range_display_real() {
+        assert_eq!(format!("{}", Type::Range(Box::new(Type::Real))), "Range<Real>");
+    }
+
+    #[test]
+    fn type_range_factory() {
+        assert_eq!(Type::range(Type::Int), Type::Range(Box::new(Type::Int)));
+        assert_eq!(Type::range(Type::Real), Type::Range(Box::new(Type::Real)));
+    }
+
+    #[test]
+    fn type_range_eq_and_hash() {
+        use std::collections::HashMap;
+
+        let r_int_a = Type::range(Type::Int);
+        let r_int_b = Type::range(Type::Int);
+        let r_real = Type::range(Type::Real);
+
+        assert_eq!(r_int_a, r_int_b);
+        assert_ne!(r_int_a, r_real);
+        // Range(Int) != Int
+        assert_ne!(r_int_a, Type::Int);
+
+        // Hash consistency
+        let mut map: HashMap<Type, &str> = HashMap::new();
+        map.insert(r_int_a.clone(), "r_int");
+        assert_eq!(map.get(&r_int_b), Some(&"r_int"));
+        assert_eq!(map.get(&r_real), None);
+    }
+
+    #[test]
+    fn type_range_not_numeric() {
+        assert!(!Type::range(Type::Int).is_numeric());
+        assert!(!Type::range(Type::Real).is_numeric());
+        assert!(!Type::range(Type::length()).is_numeric());
+    }
+
+    #[test]
+    fn type_range_as_name_none() {
+        assert_eq!(Type::range(Type::Int).as_name(), None);
+    }
+
     #[test]
     fn type_point_display() {
         let p3_length = Type::Point {
@@ -566,6 +641,7 @@ impl std::fmt::Display for Type {
             Type::Tensor { rank, n, quantity } => write!(f, "Tensor{}x{}<{}>", rank, n, quantity),
             Type::Complex(inner) => write!(f, "Complex<{}>", inner),
             Type::Orientation(n) => write!(f, "Orientation{}", n),
+            Type::Range(inner) => write!(f, "Range<{}>", inner),
         }
     }
 }
