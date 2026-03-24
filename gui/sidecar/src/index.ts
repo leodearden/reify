@@ -32,6 +32,7 @@ export async function main(
 
   // Handle graceful shutdown
   const shutdown = () => {
+    session.destroy();
     input.destroy();
   };
   process.on('SIGTERM', shutdown);
@@ -40,12 +41,18 @@ export async function main(
   // Initialize session (emits ready)
   await session.init();
 
-  // Process inbound messages
+  // Process inbound messages — fire-and-forget so the loop can read the
+  // next line (e.g. abort) while a send_message handler is still in flight.
   try {
     for await (const line of createLineReader(input)) {
       try {
         const msg = parseInboundMessage(line);
-        await session.handleMessage(msg);
+        session.handleMessage(msg).catch((err: unknown) => {
+          const message = err instanceof Error ? err.message : String(err);
+          sendMessage(output, { type: 'error', id: '', message }).catch((e: unknown) => {
+            console.error('Failed to send error message:', e);
+          });
+        });
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
         await sendMessage(output, { type: 'error', id: '', message });
@@ -54,5 +61,6 @@ export async function main(
   } finally {
     process.removeListener('SIGTERM', shutdown);
     process.removeListener('SIGINT', shutdown);
+    session.destroy();
   }
 }

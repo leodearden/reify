@@ -240,6 +240,44 @@ describe('SidecarSession', () => {
     expect((errorMsgs[0] as any).id).toBe('msg-4');
   });
 
+  it('tool_result emits correct tool_name from corresponding tool_use block', async () => {
+    // The tool_use block has id='toolu_abc' and name='reify_get_source'.
+    // The tool_result block references tool_use_id='toolu_abc'.
+    // The emitted ToolResult must carry tool_name='reify_get_source', not the UUID 'toolu_abc'.
+    vi.mocked(spawn).mockImplementation((() => createMockProcess([
+      {
+        type: 'assistant',
+        message: {
+          content: [
+            { type: 'tool_use', id: 'toolu_abc', name: 'reify_get_source', input: { file: 'main.ri' } },
+          ],
+        },
+      },
+      {
+        type: 'assistant',
+        message: {
+          content: [
+            { type: 'tool_use', id: 'toolu_abc', name: 'reify_get_source', input: { file: 'main.ri' } },
+            { type: 'tool_result', tool_use_id: 'toolu_abc', content: 'file contents' },
+          ],
+        },
+      },
+      { type: 'result', session_id: 'sess-tr' },
+    ])) as any);
+
+    await session.init();
+    outputs.length = 0;
+
+    await session.handleMessage({ type: 'send_message', id: 'msg-tr', text: 'Read file' });
+
+    const toolResults = outputs.filter((o) => o.type === 'tool_result');
+    expect(toolResults).toHaveLength(1);
+    // tool_name must be the actual tool name, NOT the UUID tool_use_id
+    expect((toolResults[0] as any).tool_name).toBe('reify_get_source');
+    expect((toolResults[0] as any).tool_name).not.toBe('toolu_abc');
+    expect((toolResults[0] as any).result).toBe('file contents');
+  });
+
   it('multiple sequential messages use session_id for resume', async () => {
     const mockSpawn = vi.mocked(spawn);
 
@@ -274,6 +312,178 @@ describe('SidecarSession', () => {
     const secondCallArgs = mockSpawn.mock.calls[1]?.[1] as string[];
     expect(secondCallArgs).toContain('--resume');
     expect(secondCallArgs).toContain('sess-abc');
+  });
+});
+
+describe('SidecarSession multi-turn streaming', () => {
+  let session: SidecarSession;
+  let outputs: OutboundMessage[];
+
+  beforeEach(() => {
+    outputs = [];
+    session = new SidecarSession({
+      model: 'claude-opus-4-6',
+      workingDirectory: '/tmp/test-project',
+      systemPrompt: 'Test.',
+    });
+    session.onOutput = (msg) => outputs.push(msg);
+    vi.mocked(spawn).mockReset();
+  });
+
+  it('text_delta events emitted for both turns in a multi-turn invocation', async () => {
+    // Simulate two assistant turns within a single SDK invocation:
+    // Turn 1: thinking + text + tool_use
+    // Turn 2: new text (starts shorter than turn 1's accumulated text length)
+    //
+    // The bug: lastTextLen carries over from turn 1 (e.g. 12 for "Hello world!").
+    // Turn 2's first text event is "Hi" (length 2), which is < lastTextLen (12),
+    // so the `block.text.length > lastTextLen` check fails and no delta is emitted.
+    vi.mocked(spawn).mockImplementation((() => createMockProcess([
+      // Turn 1 partial events
+      { type: 'assistant', message: { content: [{ type: 'thinking', thinking: 'Let' }] } },
+      { type: 'assistant', message: { content: [{ type: 'thinking', thinking: 'Let me think' }] } },
+      { type: 'assistant', message: { content: [
+        { type: 'thinking', thinking: 'Let me think' },
+        { type: 'text', text: 'Hello ' },
+      ] } },
+      { type: 'assistant', message: { content: [
+        { type: 'thinking', thinking: 'Let me think' },
+        { type: 'text', text: 'Hello world!' },
+      ] } },
+      // Turn 1 completes with tool_use
+      { type: 'assistant', message: { content: [
+        { type: 'thinking', thinking: 'Let me think' },
+        { type: 'text', text: 'Hello world!' },
+        { type: 'tool_use', id: 'toolu_mt1', name: 'reify_get_source', input: { file: 'f.ri' } },
+      ] } },
+      // Turn 2 starts: new text block with shorter initial content
+      { type: 'assistant', message: { content: [
+        { type: 'text', text: 'Hi' },
+      ] } },
+      { type: 'assistant', message: { content: [
+        { type: 'text', text: 'Hi there!' },
+      ] } },
+      { type: 'result', session_id: 'sess-mt' },
+    ])) as any);
+
+    await session.init();
+    outputs.length = 0;
+
+    await session.handleMessage({ type: 'send_message', id: 'msg-mt', text: 'Multi-turn' });
+
+    // Collect text_delta events
+    const textDeltas = outputs.filter((o) => o.type === 'text_delta');
+    const deltaContents = textDeltas.map((o) => (o as any).content);
+
+    // Turn 1 should produce: "Hello " then "world!"
+    expect(deltaContents).toContain('Hello ');
+    expect(deltaContents).toContain('world!');
+
+    // Turn 2 should produce: "Hi" then " there!" — proving counters reset
+    // THIS IS THE FAILING PART with the current implementation:
+    // "Hi" (len=2) < lastTextLen (12) so no delta is emitted
+    expect(deltaContents).toContain('Hi');
+    expect(deltaContents).toContain(' there!');
+  });
+});
+
+describe('SidecarSession destroy() lifecycle', () => {
+  let outputs: OutboundMessage[];
+
+  beforeEach(() => {
+    outputs = [];
+    vi.mocked(spawn).mockReset();
+  });
+
+  it('destroy() aborts in-flight request and emits done', async () => {
+    const mockProc = new EventEmitter() as any;
+    const stdout = new PassThrough();
+    mockProc.stdout = stdout;
+    mockProc.stderr = new PassThrough();
+    mockProc.stdin = new PassThrough();
+    mockProc.exitCode = null;
+
+    vi.mocked(spawn).mockImplementation(((_cmd: string, _args: string[], opts: any) => {
+      if (opts?.signal) {
+        opts.signal.addEventListener('abort', () => {
+          stdout.end();
+          mockProc.exitCode = null;
+          mockProc.emit('close', null);
+        });
+      }
+      return mockProc;
+    }) as any);
+
+    const session = new SidecarSession({
+      model: 'claude-opus-4-6',
+      workingDirectory: '/tmp/test-project',
+      systemPrompt: 'Test.',
+    });
+    session.onOutput = (msg) => outputs.push(msg);
+
+    await session.init();
+    outputs.length = 0;
+
+    // Start a hanging send_message
+    const msgPromise = session.handleMessage({
+      type: 'send_message',
+      id: 'msg-destroy',
+      text: 'Hang',
+    });
+
+    // Give it a tick to set up
+    await new Promise((r) => setTimeout(r, 10));
+
+    // Destroy should abort the in-flight request
+    session.destroy();
+
+    await msgPromise;
+
+    // Should emit done (not error) on destroy
+    const dones = outputs.filter((o) => o.type === 'done');
+    expect(dones).toHaveLength(1);
+    expect(dones[0]).toEqual({ type: 'done', id: 'msg-destroy' });
+
+    const errors = outputs.filter((o) => o.type === 'error');
+    expect(errors).toHaveLength(0);
+  });
+
+  it('handleMessage after destroy() is a no-op (does not spawn or emit)', async () => {
+    const session = new SidecarSession({
+      model: 'claude-opus-4-6',
+      workingDirectory: '/tmp/test-project',
+      systemPrompt: 'Test.',
+    });
+    session.onOutput = (msg) => outputs.push(msg);
+
+    await session.init();
+    outputs.length = 0;
+
+    session.destroy();
+
+    // After destroy, handleMessage should be a no-op
+    await session.handleMessage({ type: 'send_message', id: 'msg-after', text: 'Post-destroy' });
+
+    // spawn should NOT have been called (no subprocess spawned)
+    expect(vi.mocked(spawn)).not.toHaveBeenCalled();
+
+    // No messages emitted (not even done or error)
+    expect(outputs).toHaveLength(0);
+  });
+
+  it('destroy() is idempotent — calling twice does not throw', async () => {
+    const session = new SidecarSession({
+      model: 'claude-opus-4-6',
+      workingDirectory: '/tmp/test-project',
+      systemPrompt: 'Test.',
+    });
+    session.onOutput = (msg) => outputs.push(msg);
+
+    await session.init();
+
+    // Both calls should complete without throwing
+    expect(() => session.destroy()).not.toThrow();
+    expect(() => session.destroy()).not.toThrow();
   });
 });
 
@@ -630,5 +840,72 @@ describe('entrypoint wiring', () => {
     // The first message should be 'ready'
     expect(msgs.length).toBeGreaterThanOrEqual(1);
     expect(msgs[0]).toEqual({ type: 'ready' });
+  });
+
+  it('abort message is processed while send_message is in-flight (non-blocking input loop)', async () => {
+    // Create a mock process that hangs until the abort signal fires
+    const hangingProc = new EventEmitter() as any;
+    const hangStdout = new PassThrough();
+    hangingProc.stdout = hangStdout;
+    hangingProc.stderr = new PassThrough();
+    hangingProc.stdin = new PassThrough();
+    hangingProc.exitCode = null;
+
+    vi.mocked(spawn).mockImplementation(((_cmd: string, _args: string[], opts: any) => {
+      if (opts?.signal) {
+        opts.signal.addEventListener('abort', () => {
+          hangStdout.end();
+          hangingProc.exitCode = null;
+          hangingProc.emit('close', null);
+        });
+      }
+      return hangingProc;
+    }) as any);
+
+    const input = new PassThrough();
+    const output = new PassThrough();
+
+    // Collect messages as they arrive (don't wait for end)
+    const receivedMsgs: OutboundMessage[] = [];
+    let outputBuf = '';
+    output.on('data', (chunk: Buffer) => {
+      outputBuf += chunk.toString();
+      let idx: number;
+      while ((idx = outputBuf.indexOf('\n')) !== -1) {
+        const line = outputBuf.slice(0, idx);
+        outputBuf = outputBuf.slice(idx + 1);
+        if (line.length > 0) receivedMsgs.push(JSON.parse(line));
+      }
+    });
+
+    const mainPromise = main(input, output);
+
+    // Wait for ready
+    await new Promise((r) => setTimeout(r, 30));
+
+    // Send a hanging message, then immediately send abort
+    input.write(JSON.stringify({ type: 'send_message', id: 'nb-1', text: 'Hang' }) + '\n');
+    // Small delay so send_message is dispatched before abort is written
+    await new Promise((r) => setTimeout(r, 10));
+    input.write(JSON.stringify({ type: 'abort' }) + '\n');
+
+    // Wait up to 200ms for the abort to be processed and done emitted
+    const deadline = Date.now() + 200;
+    while (Date.now() < deadline) {
+      if (receivedMsgs.some((m) => m.type === 'done')) break;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+
+    // End input so main's for-await loop can exit
+    input.end();
+
+    // Race main against a ceiling so we don't hang the test suite if main stalls
+    await Promise.race([mainPromise, new Promise((r) => setTimeout(r, 500))]);
+
+    // The abort must have been processed while send_message was in-flight:
+    // done should have been emitted for 'nb-1'
+    const dones = receivedMsgs.filter((m) => m.type === 'done');
+    expect(dones).toHaveLength(1);
+    expect(dones[0]).toEqual({ type: 'done', id: 'nb-1' });
   });
 });
