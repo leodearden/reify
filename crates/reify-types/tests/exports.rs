@@ -159,4 +159,22 @@ fn all_m5_types_exported() {
     let _pp2 = reify_types::Type::point2(reify_types::Type::Real);
     let _vv3 = reify_types::Type::vec3(reify_types::Type::Real);
     let _vv2 = reify_types::Type::vec2(reify_types::Type::Real);
+
+    // --- Tensor variant ---
+
+    // Type::Tensor (direct construction)
+    let _tt2x3 = reify_types::Type::Tensor {
+        rank: 2,
+        n: 3,
+        quantity: Box::new(reify_types::Type::length()),
+    };
+
+    // Type::tensor factory method
+    let _tt_factory = reify_types::Type::tensor(1, 4, reify_types::Type::Real);
+
+    // Value::Tensor construction
+    let _vt = reify_types::Value::Tensor(vec![
+        reify_types::Value::Int(1),
+        reify_types::Value::Int(2),
+    ]);
 }
