@@ -541,13 +541,13 @@ module.exports = grammar({
     // ── Expressions ─────────────────────────────────────────
     // Precedence (low → high):
     //   1: || (or)
-    //   2: && (and)
+    //   2: && (and), :: (qualified access)
     //   3: ==, != (equality)
     //   4: <, >, <=, >= (comparison)
     //   5: +, - (additive)
     //   6: *, / (multiplicative)
     //   7: unary -, ! (unary)
-    //   8: postfix (member access, function call)
+    //   8: postfix (member access, function call, instance qualified access)
 
     _expression: $ => choice(
       $.binary_expression,
@@ -556,6 +556,8 @@ module.exports = grammar({
       $.match_expression,
       $.lambda_expression,
       $.quantifier_expression,
+      $.qualified_access,
+      $.instance_qualified_access,
       $.index_access,
       $._primary_expression,
     ),
@@ -676,6 +678,24 @@ module.exports = grammar({
       field('object', $._expression),
       '.',
       field('member', $.identifier),
+    )),
+
+    // Qualified trait access: `TypeName::ident` (left-associative, prec 2)
+    // Right side is restricted to a bare identifier to avoid ambiguity.
+    qualified_access: $ => prec.left(2, seq(
+      field('qualifier', $._expression),
+      '::',
+      field('member', $.identifier),
+    )),
+
+    // Instance-level qualified trait access: `expr.(TypeName::ident)`
+    // Inner part is constrained to qualified_access to prevent `expr.(42)`.
+    instance_qualified_access: $ => prec.left(8, seq(
+      field('object', $._expression),
+      '.',
+      '(',
+      field('qualified', $.qualified_access),
+      ')',
     )),
 
     parenthesized_expression: $ => seq('(', $._expression, ')'),
