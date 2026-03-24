@@ -417,6 +417,57 @@ structure def S2 {
     );
 }
 
+// ── step-15: content_hash_includes_frame_constraint ──────────────────
+
+#[test]
+fn content_hash_includes_frame_constraint() {
+    // S1 uses LocatedPort (frame_constraint = Some), S2 uses plain Port (frame_constraint = None)
+    let source1 = r#"
+trait Port {}
+trait LocatedPort : Port { param frame : Length }
+structure def Connector {}
+structure def S {
+    port a : out LocatedPort { param frame : Length = 0mm }
+    port b : in LocatedPort { param frame : Length = 0mm }
+    connect a -> b : Connector {}
+}
+"#;
+    let source2 = r#"
+trait Port {}
+structure def Connector {}
+structure def S {
+    port a : out Port {}
+    port b : in Port {}
+    connect a -> b : Connector {}
+}
+"#;
+
+    let module1 = compile_module(source1);
+    let module2 = compile_module(source2);
+
+    let errors1: Vec<_> = module1.diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    let errors2: Vec<_> = module2.diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    assert!(errors1.is_empty(), "unexpected errors in source1: {:?}", errors1);
+    assert!(errors2.is_empty(), "unexpected errors in source2: {:?}", errors2);
+
+    let s1 = module1.templates.iter().find(|t| t.name == "S").expect("S in source1");
+    let s2 = module2.templates.iter().find(|t| t.name == "S").expect("S in source2");
+
+    // S1 has frame_constraint Some, S2 has None — content_hashes must differ
+    assert!(
+        s1.connections[0].frame_constraint.is_some(),
+        "S1 should have frame_constraint Some (LocatedPort)"
+    );
+    assert!(
+        s2.connections[0].frame_constraint.is_none(),
+        "S2 should have frame_constraint None (plain Port)"
+    );
+    assert_ne!(
+        s1.content_hash, s2.content_hash,
+        "template content_hashes should differ when frame_constraint presence differs"
+    );
+}
+
 // ── step-7: port_type_compatibility_mismatch_warning ─────────────────
 
 #[test]
