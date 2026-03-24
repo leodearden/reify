@@ -3900,23 +3900,23 @@ fn compile_connection(
     let type_of = |name: &str| -> Option<&str> {
         ctx.ports.iter().find(|p| p.name == name).map(|p| p.type_name.as_str())
     };
-    if is_bare(&left_port) && is_bare(&right_port) {
-        if let (Some(lt), Some(rt)) = (type_of(&left_port), type_of(&right_port)) {
-            if lt != rt {
-                let mut visited_l = HashSet::new();
-                let mut visited_r = HashSet::new();
-                let l_refines_r = trait_satisfies(lt, rt, ctx.trait_registry, &mut visited_l);
-                let r_refines_l = trait_satisfies(rt, lt, ctx.trait_registry, &mut visited_r);
-                if !l_refines_r && !r_refines_l {
-                    diagnostics.push(
-                        Diagnostic::warning(format!(
-                            "incompatible port types: '{}' ({}) and '{}' ({})",
-                            left_port, lt, right_port, rt
-                        ))
-                        .with_label(DiagnosticLabel::new(span, "port type mismatch")),
-                    );
-                }
-            }
+    if is_bare(&left_port)
+        && is_bare(&right_port)
+        && let (Some(lt), Some(rt)) = (type_of(&left_port), type_of(&right_port))
+        && lt != rt
+    {
+        let mut visited_l = HashSet::new();
+        let mut visited_r = HashSet::new();
+        let l_refines_r = trait_satisfies(lt, rt, ctx.trait_registry, &mut visited_l);
+        let r_refines_l = trait_satisfies(rt, lt, ctx.trait_registry, &mut visited_r);
+        if !l_refines_r && !r_refines_l {
+            diagnostics.push(
+                Diagnostic::warning(format!(
+                    "incompatible port types: '{}' ({}) and '{}' ({})",
+                    left_port, lt, right_port, rt
+                ))
+                .with_label(DiagnosticLabel::new(span, "port type mismatch")),
+            );
         }
     }
 
