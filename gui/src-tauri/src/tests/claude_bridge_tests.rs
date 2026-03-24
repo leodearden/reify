@@ -1102,3 +1102,20 @@ fn format_inbound_send_message_with_context_includes_context() {
     let json_val: serde_json::Value = serde_json::from_str(line.trim_end()).unwrap();
     assert_eq!(json_val["context"]["selected_entity"], "box1");
 }
+
+// --- New coverage tests (task-354) ---
+
+#[tokio::test]
+async fn claude_abort_impl_errors_when_sidecar_is_none() {
+    let sidecar: tokio::sync::Mutex<Option<SidecarHandle>> = tokio::sync::Mutex::new(None);
+
+    let result = claude_abort_impl(&sidecar).await;
+
+    assert!(result.is_err(), "Expected error when sidecar is not started");
+    let msg = result.unwrap_err();
+    assert!(
+        msg.contains("not started"),
+        "Error should mention 'not started': {}",
+        msg
+    );
+}
