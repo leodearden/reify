@@ -420,14 +420,14 @@ fn mcp_server_set_parameter_reports_new_value_accurately() {
 
     let requests = vec![
         serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
-        // Set width to 200
+        // Set width to 0.2 m (200mm in SI)
         serde_json::json!({
             "jsonrpc": "2.0",
             "id": 2,
             "method": "tools/call",
             "params": {
                 "name": "reify_set_parameter",
-                "arguments": {"cell_id": "Bracket.width", "value": "200"}
+                "arguments": {"cell_id": "Bracket.width", "value": "0.2"}
             }
         }),
     ];
@@ -464,8 +464,8 @@ fn mcp_server_set_parameter_reports_new_value_accurately() {
     // rather than blindly reporting success.
     assert_eq!(
         set_result["new_value"].as_str().unwrap_or(""),
-        "200 m",
-        "set_parameter new_value should be '200 m' after setting width to 200, got: {:?}",
+        "0.2 m",
+        "set_parameter new_value should be '0.2 m' after setting width to 0.2, got: {:?}",
         set_result["new_value"]
     );
 }
