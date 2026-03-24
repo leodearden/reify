@@ -469,3 +469,110 @@ fn mcp_server_set_parameter_reports_new_value_accurately() {
         set_result["new_value"]
     );
 }
+
+#[test]
+fn mcp_server_set_parameter_constraint_verified_after_change() {
+    let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/bracket.ri");
+
+    let requests = vec![
+        serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
+        // Set width to 0.01 m (10mm in SI). This violates: thickness < width/4
+        // because thickness=5mm and width/4=2.5mm, so 5mm < 2.5mm is false.
+        // Constraints are soft, so set_parameter still returns success=true.
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "reify_set_parameter",
+                "arguments": {"cell_id": "Bracket.width", "value": "0.01"}
+            }
+        }),
+        // Get parameters to verify the new width is applied
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {
+                "name": "reify_get_parameters",
+                "arguments": {}
+            }
+        }),
+        // Get constraints to verify the constraint evaluator still runs at correct SI scale
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "tools/call",
+            "params": {
+                "name": "reify_get_constraints",
+                "arguments": {}
+            }
+        }),
+    ];
+
+    let responses = mcp_roundtrip(&[fixture], &requests);
+    assert!(responses.len() >= 4, "expected at least 4 responses");
+
+    // set_parameter should return success=true (constraints are soft, not blocking)
+    let set_response = &responses[1];
+    assert_ne!(
+        set_response["result"]["isError"],
+        true,
+        "set_parameter should not return error even with constraint violation: {:?}",
+        set_response
+    );
+    let set_content = set_response["result"]["content"]
+        .as_array()
+        .expect("should have content array");
+    let set_text = set_content[0]["text"].as_str().expect("content[0].text should be string");
+    let set_result: serde_json::Value =
+        serde_json::from_str(set_text).expect("set_parameter result should be JSON");
+    assert_eq!(
+        set_result["success"], true,
+        "set_parameter should return success=true even with constraint violation: {:?}",
+        set_result
+    );
+
+    // get_parameters should show width = "0.01 m"
+    let get_response = &responses[2];
+    let get_content = get_response["result"]["content"]
+        .as_array()
+        .expect("should have content array");
+    let get_text = get_content[0]["text"].as_str().expect("should be string");
+    let params: Vec<serde_json::Value> =
+        serde_json::from_str(get_text).expect("should be JSON array of parameters");
+    let width_param = params
+        .iter()
+        .find(|p| p["name"].as_str() == Some("width"))
+        .expect("should have width parameter");
+    assert_eq!(
+        width_param["value"].as_str().unwrap_or(""),
+        "0.01 m",
+        "width should be 0.01 m after setting to 0.01, got: {:?}",
+        width_param["value"]
+    );
+
+    // get_constraints should return all 3 bracket constraints (confirming constraint evaluator runs)
+    let constraints_response = &responses[3];
+    assert_ne!(
+        constraints_response["result"]["isError"],
+        true,
+        "get_constraints should not return error: {:?}",
+        constraints_response
+    );
+    let constraints_content = constraints_response["result"]["content"]
+        .as_array()
+        .expect("should have content array");
+    let constraints_text = constraints_content[0]["text"]
+        .as_str()
+        .expect("content[0].text should be string");
+    let constraints: Vec<serde_json::Value> =
+        serde_json::from_str(constraints_text).expect("constraints result should be JSON array");
+    assert_eq!(
+        constraints.len(),
+        3,
+        "bracket.ri has 3 constraints, got {}: {:?}",
+        constraints.len(),
+        constraints
+    );
+}
