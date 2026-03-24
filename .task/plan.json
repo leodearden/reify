@@ -1,0 +1,118 @@
+{
+  "task_id": "147",
+  "title": "Fix sidecar streaming and IPC field alignment (Task 134 remediation)",
+  "files": [
+    "gui/sidecar/src/session.ts",
+    "gui/sidecar/src/index.ts",
+    "gui/sidecar/src/__tests__/session.test.ts"
+  ],
+  "modules": [
+    "gui/sidecar"
+  ],
+  "analysis": "Task 147 remediates 4 blockers from task 134 in the gui/sidecar module. After thorough code review, the specific bugs are:\n\n1. **ToolResult field misalignment** (session.ts:174): `block.tool_use_id` (a UUID like `toolu_abc123`) is mapped to the `tool_name` field on the outbound ToolResult. The GUI's claudeStore.ts matches tool results to tool calls by `tool_name`, so this value must be the actual tool name (e.g., `reify_get_source`). Fix: change `seenToolIds: Set<string>` to `toolNameById: Map<string, string>` to track the tool_use_id\u2192name mapping from tool_use blocks, then look up the correct name when emitting tool_result.\n\n2. **Non-blocking input loop** (index.ts:48): `await session.handleMessage(msg)` inside the `for await` loop blocks reading the next line from stdin. When a user sends `send_message` (which spawns a claude CLI subprocess and streams its output), an `abort` message can't be read until the first handler completes \u2014 by which time the abort is useless. Fix: dispatch `send_message` handling without awaiting, so the loop continues reading and can process `abort` immediately.\n\n3. **session.destroy() lifecycle**: No cleanup mechanism exists. When the sidecar process receives SIGTERM/SIGINT or input EOF, any spawned `claude` CLI subprocess is orphaned. The shutdown handler in index.ts just calls `input.destroy()`. Fix: add `destroy()` method to SidecarSession that aborts in-flight requests and sets a destroyed guard flag, then wire it to the shutdown handler and input-end in index.ts.\n\n4. **Streaming chunk handling** (session.ts:142-185): `lastTextLen` and `lastThinkingLen` are single counters that don't reset between assistant turns within one SDK invocation. When Claude responds with text \u2192 calls a tool \u2192 responds with more text (multi-turn within `--print` mode), the counters from turn 1 carry over. Turn 2's text starts shorter than the accumulated counter, so the `block.text.length > lastTextLen` check fails and no deltas are emitted for turn 2. Fix: detect new turn by noticing text/thinking length decreased, then reset counters.",
+  "prerequisites": [],
+  "steps": [
+    {
+      "id": "step-1",
+      "type": "test",
+      "description": "Write failing test: tool_result emits correct tool_name (the actual tool name from the corresponding tool_use block, not the tool_use_id UUID). Mock a CLI response with tool_use block (id='toolu_abc', name='reify_get_source') followed by tool_result block (tool_use_id='toolu_abc'). Assert the emitted ToolResult has tool_name='reify_get_source', not 'toolu_abc'.",
+      "status": "done",
+      "commit": "f8476b8"
+    },
+    {
+      "id": "step-2",
+      "type": "impl",
+      "description": "Fix ToolResult field misalignment in session.ts: Change `seenToolIds: Set<string>` to `toolNameById: Map<string, string>` that maps tool_use_id\u2192tool_name. In the tool_use handler, call `toolNameById.set(block.id, block.name)` instead of `seenToolIds.add(block.id)`. In the tool_result handler, look up `toolNameById.get(block.tool_use_id) ?? ''` for the tool_name field. Also update the dedup check to use `toolNameById.has(block.id)`.",
+      "status": "done",
+      "commit": "beda4ad"
+    },
+    {
+      "id": "step-3",
+      "type": "test",
+      "description": "Write failing test: abort message is processed during in-flight send_message when using the main() entrypoint. Create input/output PassThrough streams, write a send_message line (with mock spawn that hangs), then immediately write an abort line. Assert that done (not timeout error) is emitted, proving abort was processed while send_message was in-flight.",
+      "status": "done",
+      "commit": "a4a5d1c"
+    },
+    {
+      "id": "step-4",
+      "type": "impl",
+      "description": "Fix non-blocking input loop in index.ts: Instead of `await session.handleMessage(msg)` for all messages, use fire-and-forget dispatch: `session.handleMessage(msg).catch(...)` without await. This allows the for-await loop to continue reading lines while a send_message handler is in flight, enabling abort to be processed immediately. Since abort/clear_session handlers are synchronous, they resolve instantly anyway.",
+      "status": "done",
+      "commit": "87d5b5a"
+    },
+    {
+      "id": "step-5",
+      "type": "test",
+      "description": "Write failing tests for session.destroy() lifecycle: (a) destroy() aborts in-flight request and emits done, (b) handleMessage after destroy() is a no-op (does not spawn processes or emit messages), (c) destroy() is idempotent (calling twice doesn't throw).",
+      "status": "done",
+      "commit": "54683b8"
+    },
+    {
+      "id": "step-6",
+      "type": "impl",
+      "description": "Add destroy() method to SidecarSession: sets a `private destroyed = false` flag, aborts any in-flight request via abortController.abort(), and clears sessionId. Guard handleMessage() with early return if destroyed. Wire destroy() into index.ts: call session.destroy() in the shutdown handler (SIGTERM/SIGINT) and in the finally block after the input loop ends.",
+      "status": "done",
+      "commit": "b6576ab"
+    },
+    {
+      "id": "step-7",
+      "type": "test",
+      "description": "Write failing test: multi-turn streaming delta reset. Mock a CLI response simulating two assistant turns within one invocation: turn 1 has thinking + text + tool_use, then turn 2 has new text (with shorter initial length than turn 1's accumulated text). Assert that text_delta events are emitted for BOTH turns \u2014 proving counters reset between turns rather than suppressing turn 2 deltas.",
+      "status": "done",
+      "commit": "b9c1882"
+    },
+    {
+      "id": "step-8",
+      "type": "impl",
+      "description": "Fix streaming chunk handling in session.ts invokeSdk(): Before processing each text/thinking block, detect if the block's current length is LESS than the tracked length (indicating a new turn started). If so, reset lastTextLen/lastThinkingLen to 0 and clear the toolNameById map. This ensures delta extraction works correctly across multi-turn conversations within a single SDK invocation.",
+      "status": "done",
+      "commit": "ea83e0e"
+    }
+  ],
+  "design_decisions": [
+    {
+      "decision": "Use Map<tool_use_id, tool_name> instead of adding tool_use_id to the IPC protocol types",
+      "rationale": "Minimizes the change footprint \u2014 keeps the existing IPC protocol unchanged (ToolResult still uses tool_name for matching). The GUI's claudeStore.ts already matches by tool_name, so fixing the sidecar to emit the correct name is sufficient. Adding tool_use_id to the protocol would require coordinated changes to both sidecar types and the GUI store, which is out of scope for a remediation task."
+    },
+    {
+      "decision": "Fire-and-forget dispatch for all message types in the input loop, not just send_message",
+      "rationale": "Simplifies the code \u2014 abort and clear_session handlers are synchronous (resolve immediately), so not awaiting them has no behavioral difference. The only message that takes time is send_message (spawns CLI process). A uniform dispatch pattern is cleaner than type-checking in the loop."
+    },
+    {
+      "decision": "Detect new turn by text/thinking length decrease rather than per-block-index tracking",
+      "rationale": "The Claude CLI stream-json format replays the full content array for each partial event. When a new turn starts, the first text block will have length < lastTextLen. This simple heuristic correctly identifies turn boundaries without complex per-block-index bookkeeping. It handles the common case (single text/thinking block per turn) cleanly."
+    },
+    {
+      "decision": "Add destroyed guard flag instead of throwing from destroy()",
+      "rationale": "A guard flag with silent early return is more robust for shutdown scenarios where messages may still be in the pipeline. Throwing would propagate errors that are expected during shutdown, complicating error handling. Silent no-op after destroy is the standard pattern for disposable resources."
+    },
+    {
+      "decision": "No changes to gui/sidecar/src/types.ts",
+      "rationale": "The TypeScript interfaces are correct as-is. The bug is in session.ts putting the wrong value (tool_use_id UUID) into the tool_name field, not in the field definition itself. No new fields or type changes are needed."
+    }
+  ],
+  "reuse": [
+    {
+      "what": "createMockProcess() test helper",
+      "where": "gui/sidecar/src/__tests__/session.test.ts:19-38",
+      "how": "Reuse the existing helper for creating mock CLI processes with streaming events. Extend event arrays with tool_use + tool_result blocks for new tests, and create multi-turn event sequences for streaming reset tests."
+    },
+    {
+      "what": "collectOutput() test helper",
+      "where": "gui/sidecar/src/__tests__/session.test.ts:523-556",
+      "how": "Reuse the existing helper for collecting outbound messages from the main() entrypoint in the non-blocking input loop test."
+    },
+    {
+      "what": "Hanging mock process pattern with abort listener",
+      "where": "gui/sidecar/src/__tests__/session.test.ts:138-155",
+      "how": "Reuse the established pattern for creating mock processes that hang until aborted (for testing abort behavior through main() and destroy() lifecycle)."
+    },
+    {
+      "what": "AbortController pattern for process lifecycle",
+      "where": "gui/sidecar/src/session.ts:83,120-121",
+      "how": "The existing abort controller pattern (create per-request, pass signal to spawn, abort on timeout/user-abort) is extended naturally for the destroy() method \u2014 destroy() calls abort() on the active controller."
+    }
+  ],
+  "_session_id": "147-d149c2b5",
+  "_created_at": "2026-03-24T07:01:02.719035+00:00"
+}
