@@ -104,7 +104,17 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
             }
             _ => {
                 // Fallback: try to extract f64 from all three args.
-                // If all dimensions agree and are non-DIMENSIONLESS, reconstruct Scalar.
+                // If all three were Scalar with matching dimension, the explicit Scalar arm above
+                // handles them. In this fallback, at least one arg is non-Scalar. Non-Scalar
+                // Value::dimension() always returns DIMENSIONLESS, so any non-DIMENSIONLESS
+                // dimension means a type mismatch that would silently drop the dimension.
+                // Return Undef to keep logic errors noisy.
+                if x.dimension() != DimensionVector::DIMENSIONLESS
+                    || lo.dimension() != DimensionVector::DIMENSIONLESS
+                    || hi.dimension() != DimensionVector::DIMENSIONLESS
+                {
+                    return Value::Undef;
+                }
                 let (xv, lov, hiv) = match (x.as_f64(), lo.as_f64(), hi.as_f64()) {
                     (Some(a), Some(b), Some(c)) => (a, b, c),
                     _ => return Value::Undef,
@@ -112,16 +122,7 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
                 if xv.is_nan() || !valid_f64_range(lov, hiv) {
                     return Value::Undef;
                 }
-                let result = xv.clamp(lov, hiv);
-                let dx = x.dimension();
-                if dx != DimensionVector::DIMENSIONLESS
-                    && dx == lo.dimension()
-                    && dx == hi.dimension()
-                {
-                    sanitize_value(Value::Scalar { si_value: result, dimension: dx })
-                } else {
-                    sanitize_value(Value::Real(result))
-                }
+                sanitize_value(Value::Real(xv.clamp(lov, hiv)))
             }
         }),
 
