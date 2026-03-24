@@ -4868,6 +4868,50 @@ mod tests {
         assert!(is_geometry_function("intersection_all"));
     }
 
+    // --- Binary boolean op compilation tests (step-3) ---
+
+    #[test]
+    fn compile_union_nested_calls_produces_three_ops() {
+        let source = r#"structure S {
+    let r = union(box(10mm, 10mm, 10mm), box(20mm, 20mm, 20mm))
+}"#;
+        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_union"));
+        assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+        let compiled = compile(&parsed);
+        let template = &compiled.templates[0];
+        // union(box, box) should produce 1 realization with 3 ops
+        assert_eq!(
+            template.realizations.len(),
+            1,
+            "expected 1 realization, got {}",
+            template.realizations.len()
+        );
+        let ops = &template.realizations[0].operations;
+        assert_eq!(ops.len(), 3, "expected 3 ops (box, box, union), got {}", ops.len());
+        assert!(
+            matches!(ops[0], CompiledGeometryOp::Primitive { kind: PrimitiveKind::Box, .. }),
+            "expected Primitive::Box at ops[0], got {:?}",
+            ops[0]
+        );
+        assert!(
+            matches!(ops[1], CompiledGeometryOp::Primitive { kind: PrimitiveKind::Box, .. }),
+            "expected Primitive::Box at ops[1], got {:?}",
+            ops[1]
+        );
+        assert!(
+            matches!(
+                ops[2],
+                CompiledGeometryOp::Boolean {
+                    op: BooleanOp::Union,
+                    left: GeomRef::Step(0),
+                    right: GeomRef::Step(1)
+                }
+            ),
+            "expected Boolean{{Union, Step(0), Step(1)}} at ops[2], got {:?}",
+            ops[2]
+        );
+    }
+
     // --- Step 11: Directly test the catch-all branch in compile_geometry_call ---
 
     #[test]
