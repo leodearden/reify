@@ -127,10 +127,10 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
 
         "lerp" => ternary(args, |a, b, t| {
             // t must be dimensionless (Real or Int; reject dimensioned Scalar)
-            if let Value::Scalar { dimension, .. } = t {
-                if *dimension != DimensionVector::DIMENSIONLESS {
-                    return Value::Undef;
-                }
+            if let Value::Scalar { dimension, .. } = t
+                && *dimension != DimensionVector::DIMENSIONLESS
+            {
+                return Value::Undef;
             }
             let tv = match t.as_f64() {
                 Some(v) => v,
