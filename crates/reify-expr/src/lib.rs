@@ -834,6 +834,117 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
                 Value::Tensor(results)
             }
         }
+        // Matrix * Vector: rank-2 Tensor (rows of Tensors) × rank-1 Tensor (flat elements).
+        // Produces a rank-1 Tensor (vector) of dot-product results.
+        (Value::Tensor(rows), Value::Tensor(vec_elems))
+            if !rows.is_empty()
+                && !vec_elems.is_empty()
+                && matches!(rows[0], Value::Tensor(_))
+                && !matches!(vec_elems[0], Value::Tensor(_)) =>
+        {
+            let k = vec_elems.len();
+            let result_elems: Vec<Value> = rows
+                .iter()
+                .map(|row| {
+                    if let Value::Tensor(row_elems) = row {
+                        if row_elems.len() != k {
+                            return Value::Undef;
+                        }
+                        let prods: Vec<Value> = row_elems
+                            .iter()
+                            .zip(vec_elems.iter())
+                            .map(|(a, b)| eval_mul(a, b))
+                            .collect();
+                        if prods.iter().any(|v| v.is_undef()) {
+                            return Value::Undef;
+                        }
+                        prods
+                            .into_iter()
+                            .reduce(|acc, x| eval_add(&acc, &x))
+                            .unwrap_or(Value::Undef)
+                    } else {
+                        Value::Undef
+                    }
+                })
+                .collect();
+            if result_elems.iter().any(|v| v.is_undef()) {
+                Value::Undef
+            } else {
+                Value::Tensor(result_elems)
+            }
+        }
+        // Matrix * Matrix: rank-2 Tensor × rank-2 Tensor.
+        // Computes standard O(m*n*k) matrix multiplication with automatic
+        // dimension tracking via eval_mul/eval_add on scalar elements.
+        (Value::Tensor(a_rows), Value::Tensor(b_rows))
+            if !a_rows.is_empty()
+                && !b_rows.is_empty()
+                && matches!(a_rows[0], Value::Tensor(_))
+                && matches!(b_rows[0], Value::Tensor(_)) =>
+        {
+            let k = b_rows.len(); // inner dimension (B's row count)
+            // Verify A's column count equals B's row count
+            let a_cols = if let Value::Tensor(first_a) = &a_rows[0] {
+                first_a.len()
+            } else {
+                return Value::Undef;
+            };
+            if a_cols != k {
+                return Value::Undef;
+            }
+            let n = if let Value::Tensor(first_b) = &b_rows[0] {
+                if first_b.is_empty() {
+                    return Value::Undef;
+                }
+                first_b.len()
+            } else {
+                return Value::Undef;
+            };
+
+            // C[i][j] = sum(A[i][kk] * B[kk][j] for kk in 0..k)
+            let c_rows: Vec<Value> = a_rows
+                .iter()
+                .map(|a_row| {
+                    if let Value::Tensor(a_elems) = a_row {
+                        let c_row: Vec<Value> = (0..n)
+                            .map(|j| {
+                                let prods: Vec<Value> = (0..k)
+                                    .map(|kk| {
+                                        let b_kj =
+                                            if let Value::Tensor(b_row_k) = &b_rows[kk] {
+                                                b_row_k.get(j).cloned().unwrap_or(Value::Undef)
+                                            } else {
+                                                Value::Undef
+                                            };
+                                        eval_mul(&a_elems[kk], &b_kj)
+                                    })
+                                    .collect();
+                                if prods.iter().any(|v| v.is_undef()) {
+                                    return Value::Undef;
+                                }
+                                prods
+                                    .into_iter()
+                                    .reduce(|acc, x| eval_add(&acc, &x))
+                                    .unwrap_or(Value::Undef)
+                            })
+                            .collect();
+                        if c_row.iter().any(|v| v.is_undef()) {
+                            Value::Undef
+                        } else {
+                            Value::Tensor(c_row)
+                        }
+                    } else {
+                        Value::Undef
+                    }
+                })
+                .collect();
+
+            if c_rows.iter().any(|v| v.is_undef()) {
+                Value::Undef
+            } else {
+                Value::Tensor(c_rows)
+            }
+        }
         _ => Value::Undef,
     }
 }
