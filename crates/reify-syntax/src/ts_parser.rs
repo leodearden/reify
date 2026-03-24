@@ -118,62 +118,73 @@ impl<'a> Lowering<'a> {
         for child in node.children(&mut cursor) {
             match child.kind() {
                 "structure_definition" => {
+                    let annotations = std::mem::take(&mut pending_annotations);
                     if let Some(mut decl) = self.lower_structure(child) {
-                        decl.annotations = std::mem::take(&mut pending_annotations);
+                        decl.annotations = annotations;
                         self.declarations.push(Declaration::Structure(decl));
                     }
+                    // annotations dropped here if lowering failed — no leakage
                 }
                 "occurrence_definition" => {
+                    let annotations = std::mem::take(&mut pending_annotations);
                     if let Some(mut decl) = self.lower_occurrence(child) {
-                        decl.annotations = std::mem::take(&mut pending_annotations);
+                        decl.annotations = annotations;
                         self.declarations.push(Declaration::Occurrence(decl));
                     }
                 }
                 "import_declaration" => {
+                    let annotations = std::mem::take(&mut pending_annotations);
                     if let Some(mut decl) = self.lower_import(child) {
-                        decl.annotations = std::mem::take(&mut pending_annotations);
+                        decl.annotations = annotations;
                         self.declarations.push(Declaration::Import(decl));
                     }
                 }
                 "enum_declaration" => {
+                    let annotations = std::mem::take(&mut pending_annotations);
                     if let Some(mut decl) = self.lower_enum(child) {
-                        decl.annotations = std::mem::take(&mut pending_annotations);
+                        decl.annotations = annotations;
                         self.declarations.push(Declaration::Enum(decl));
                     }
                 }
                 "function_definition" => {
+                    let annotations = std::mem::take(&mut pending_annotations);
                     if let Some(mut decl) = self.lower_function(child) {
-                        decl.annotations = std::mem::take(&mut pending_annotations);
+                        decl.annotations = annotations;
                         self.declarations.push(Declaration::Function(decl));
                     }
                 }
                 "trait_declaration" => {
+                    let annotations = std::mem::take(&mut pending_annotations);
                     if let Some(mut decl) = self.lower_trait(child) {
-                        decl.annotations = std::mem::take(&mut pending_annotations);
+                        decl.annotations = annotations;
                         self.declarations.push(Declaration::Trait(decl));
                     }
                 }
                 "field_definition" => {
+                    let annotations = std::mem::take(&mut pending_annotations);
                     if let Some(mut decl) = self.lower_field(child) {
-                        decl.annotations = std::mem::take(&mut pending_annotations);
+                        decl.annotations = annotations;
                         self.declarations.push(Declaration::Field(decl));
                     }
                 }
                 "purpose_declaration" => {
+                    let annotations = std::mem::take(&mut pending_annotations);
                     if let Some(mut decl) = self.lower_purpose(child) {
-                        decl.annotations = std::mem::take(&mut pending_annotations);
+                        decl.annotations = annotations;
                         self.declarations.push(Declaration::Purpose(decl));
                     }
                 }
                 "constraint_definition" => {
+                    let annotations = std::mem::take(&mut pending_annotations);
                     if let Some(mut decl) = self.lower_constraint_def(child) {
-                        decl.annotations = std::mem::take(&mut pending_annotations);
+                        decl.annotations = annotations;
                         self.declarations.push(Declaration::Constraint(decl));
                     }
                 }
                 "unit_declaration" => {
+                    let annotations = std::mem::take(&mut pending_annotations);
                     if let Some(mut decl) = self.lower_unit(child) {
-                        decl.annotations = std::mem::take(&mut pending_annotations);
+                        decl.annotations = annotations;
                         self.declarations.push(Declaration::Unit(decl));
                     }
                 }
@@ -188,6 +199,9 @@ impl<'a> Lowering<'a> {
                     }
                 }
                 "ERROR" => {
+                    // Consume any pending annotations so they don't leak past a
+                    // syntax error to the next successfully-parsed declaration.
+                    let _ = std::mem::take(&mut pending_annotations);
                     self.errors.push(ParseError {
                         message: format!("syntax error: {}", self.node_text(child)),
                         span: self.span(child),
