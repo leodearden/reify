@@ -60,3 +60,45 @@ structure S {
         other => panic!("expected BinOp(And) at top level, got {:?}", other),
     }
 }
+
+/// step-3: `constraint a < b <= c` desugars to `And(Lt(a,b), Le(b,c))`.
+/// Both operator variants are preserved in the desugared output.
+#[test]
+fn mixed_operators_chain_preserves_ops() {
+    let source = r#"
+structure S {
+    param a : Int = 1
+    param b : Int = 2
+    param c : Int = 3
+    constraint a < b <= c
+}
+"#;
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    assert!(!template.constraints.is_empty(), "should have at least one constraint");
+
+    let expr = &template.constraints[0].expr;
+    match &expr.kind {
+        CompiledExprKind::BinOp { op, left, right } => {
+            assert_eq!(*op, BinOp::And, "top-level op should be And");
+            // left should be Lt(a, b)
+            match &left.kind {
+                CompiledExprKind::BinOp { op: lop, .. } => {
+                    assert_eq!(*lop, BinOp::Lt, "left pairwise op should be Lt");
+                }
+                other => panic!("expected BinOp for left, got {:?}", other),
+            }
+            // right should be Le(b, c)
+            match &right.kind {
+                CompiledExprKind::BinOp { op: rop, .. } => {
+                    assert_eq!(*rop, BinOp::Le, "right pairwise op should be Le");
+                }
+                other => panic!("expected BinOp for right, got {:?}", other),
+            }
+        }
+        other => panic!("expected BinOp(And) at top level, got {:?}", other),
+    }
+}
