@@ -20,49 +20,49 @@
       "type": "test",
       "description": "Verify integration test mcp_server_tools_list_returns_16_tools exists and passes: spawns `reify mcp-server` with bracket.ri fixture, sends initialize + tools/list JSON-RPC requests, asserts response contains exactly 16 tools",
       "status": "done",
-      "commit": "PLACEHOLDER"
+      "commit": "7adbe16"
     },
     {
       "id": "step-2",
       "type": "test",
       "description": "Verify integration test mcp_server_get_parameters_returns_bracket_params exists and passes: sends tools/call with reify_get_parameters, asserts all 5 bracket params (width, height, thickness, fillet_radius, hole_diameter) with Bracket.* cell_ids and non-empty values",
       "status": "done",
-      "commit": "PLACEHOLDER"
+      "commit": "7adbe16"
     },
     {
       "id": "step-3",
       "type": "test",
       "description": "Verify integration test mcp_server_set_parameter_changes_value exists and passes: sends tools/call with reify_set_parameter(cell_id=Bracket.width, value=100), then reify_get_parameters, asserts set_parameter returns success=true with new_value='100 m' and subsequent get_parameters confirms the change",
       "status": "done",
-      "commit": "PLACEHOLDER"
+      "commit": "7adbe16"
     },
     {
       "id": "step-4",
       "type": "test",
       "description": "Verify integration test mcp_server_language_reference_returns_content exists and passes: sends tools/call with reify_language_reference(topic=geometry), asserts non-empty content array containing geometry-related keywords (box, cylinder, geometry, Geometry)",
       "status": "done",
-      "commit": "PLACEHOLDER"
+      "commit": "7adbe16"
     },
     {
       "id": "step-5",
       "type": "test",
       "description": "Verify integration test mcp_server_set_parameter_reports_new_value_accurately exists and passes: sends tools/call with reify_set_parameter(cell_id=Bracket.width, value=200), asserts response new_value='200 m' confirming edit_param result is used for accurate reporting",
       "status": "done",
-      "commit": "PLACEHOLDER"
+      "commit": "7adbe16"
     },
     {
       "id": "step-6",
       "type": "test",
       "description": "Verify integration test mcp_server_update_source_invalid_preserves_state exists and passes: sends update_source with invalid 'enum { }' content, then get_source and get_parameters, asserts original bracket.ri content and all 5 params are preserved (state invariant: files/compiled/engine always reflect last successful state)",
       "status": "done",
-      "commit": "PLACEHOLDER"
+      "commit": "7adbe16"
     },
     {
       "id": "step-7",
       "type": "impl",
       "description": "Run full compilation check: cargo build -p reify-cli succeeds, confirming cmd_mcp_server dispatches correctly, CliToolContext implements all 15 ReifyToolContext methods, and all dependencies (reify-mcp, reify-eval, reify-constraints, reify-syntax, reify-compiler) resolve",
       "status": "done",
-      "commit": "PLACEHOLDER"
+      "commit": "7adbe16"
     }
   ],
   "design_decisions": [
