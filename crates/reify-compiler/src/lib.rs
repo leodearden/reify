@@ -71,7 +71,10 @@ pub enum DefaultKind {
         default_decl: reify_syntax::ParamDecl,
     },
     /// A let with a value expression: `let x = expr`
-    Let(reify_syntax::LetDecl),
+    Let {
+        cell_type: Type,
+        let_decl: reify_syntax::LetDecl,
+    },
     /// A constraint with an expression: `constraint label : expr`
     Constraint(reify_syntax::ConstraintDecl),
 }
@@ -1567,10 +1570,12 @@ fn compile_trait(
                 } else {
                     Type::Real
                 };
-                let _ = ty; // type used for future type checking
                 defaults.push(TraitDefault {
                     name: Some(let_decl.name.clone()),
-                    kind: DefaultKind::Let(let_decl.clone()),
+                    kind: DefaultKind::Let {
+                        cell_type: ty,
+                        let_decl: let_decl.clone(),
+                    },
                     span: let_decl.span,
                 });
             }
@@ -4175,7 +4180,7 @@ fn check_trait_conformance(
         {
             let ty = match &default.kind {
                 DefaultKind::Param { cell_type, .. } => cell_type.clone(),
-                DefaultKind::Let(_) => Type::Real,
+                DefaultKind::Let { cell_type, .. } => cell_type.clone(),
                 DefaultKind::Constraint(_) => continue,
             };
             scope.register(name, ty);
@@ -4208,7 +4213,7 @@ fn check_trait_conformance(
                     });
                 }
             }
-            DefaultKind::Let(let_decl) => {
+            DefaultKind::Let { cell_type, let_decl } => {
                 let name = default.name.as_deref().expect("DefaultKind::Let always has Some(name)");
                 if !structure_members.contains_key(name) {
                     let cell_id = ValueCellId {
@@ -4224,11 +4229,19 @@ fn check_trait_conformance(
                         diagnostics,
                     );
 
+                    // Use the declared cell_type from the trait annotation when available
+                    // (Type::Real is the fallback when no annotation was provided).
+                    let resolved_type = if *cell_type != Type::Real {
+                        cell_type.clone()
+                    } else {
+                        compiled_expr.result_type.clone()
+                    };
+
                     value_cells.push(ValueCellDecl {
                         id: cell_id,
                         kind: ValueCellKind::Let,
                         visibility: Visibility::Private,
-                        cell_type: compiled_expr.result_type.clone(),
+                        cell_type: resolved_type,
                         default_expr: Some(compiled_expr),
                         span: default.span,
                     });
@@ -4345,7 +4358,7 @@ fn collect_all_requirements(
             // Extract type for dedup comparison.
             let default_type = match &default.kind {
                 DefaultKind::Param { cell_type, .. } => cell_type.clone(),
-                DefaultKind::Let(_) => Type::Real,
+                DefaultKind::Let { cell_type, .. } => cell_type.clone(),
                 DefaultKind::Constraint(_) => Type::Bool, // sentinel for constraint label dedup
             };
 
