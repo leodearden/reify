@@ -138,7 +138,7 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
 
         // --- Integer functions ---
         "mod" => binary(args, |x, y| match (x, y) {
-            (Value::Int(x), Value::Int(y)) if *y != 0 => Value::Int(x % y),
+            (Value::Int(x), Value::Int(y)) if *y != 0 && !(*x == i64::MIN && *y == -1) => Value::Int(x % y),
             _ => Value::Undef,
         }),
 
@@ -1023,6 +1023,13 @@ mod tests {
     fn mod_wrong_arg_count_returns_undef() {
         let result = eval_builtin("mod", &[Value::Int(7)]);
         assert!(result.is_undef(), "mod with wrong arg count should be Undef, got {:?}", result);
+    }
+
+    #[test]
+    fn mod_i64_min_neg1_returns_undef() {
+        // i64::MIN % -1 overflows (panics in debug builds) — must return Undef
+        let result = eval_builtin("mod", &[Value::Int(i64::MIN), Value::Int(-1)]);
+        assert!(result.is_undef(), "mod(i64::MIN, -1) should be Undef, got {:?}", result);
     }
 
     // --- remap tests (step-5) ---
