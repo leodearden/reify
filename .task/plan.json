@@ -4,12 +4,15 @@
   "files": [
     "crates/reify-types/src/ty.rs",
     "crates/reify-types/src/value.rs",
-    "crates/reify-types/tests/exports.rs"
+    "crates/reify-types/tests/exports.rs",
+    "crates/reify-expr/src/lib.rs",
+    "crates/reify-expr/tests/tensor_matrix_arithmetic_tests.rs"
   ],
   "modules": [
-    "crates/reify-types"
+    "crates/reify-types",
+    "crates/reify-expr"
   ],
-  "analysis": "Task 229 adds a Matrix type and value to the reify type system. The Matrix type is structurally similar to the existing Tensor variant: `Matrix { m: usize, n: usize, quantity: Box<Type> }` where m=rows, n=cols. Matrix values use `Vec<Vec<Value>>` (m rows of n elements each), unlike Tensor's flat `Vec<Value>` with recursive nesting. The implementation touches three files: ty.rs (Type enum variant + factory + Display), value.rs (Value enum variant + PartialEq + Ord + Display + content_hash), and tests/exports.rs (integration test). The Type enum derives Eq/Hash so no manual impl needed there. The Value enum has custom PartialEq, Ord, Display, and content_hash that all require explicit new arms. Content hash will use tag 18 (next after Range=17). Ord type_tag will use 17 (next after Range=16). The existing Tensor implementation serves as the closest pattern to follow. is_numeric already returns false via wildcard miss, and as_name returns None via wildcard catch-all — no changes needed for those methods, just test coverage.",
+  "analysis": "Task 229 adds a Matrix type and value to the reify type system. The Matrix type is structurally similar to the existing Tensor variant: `Matrix { m: usize, n: usize, quantity: Box<Type> }` where m=rows, n=cols. Matrix values use `Vec<Vec<Value>>` (m rows of n elements each), unlike Tensor's flat `Vec<Value>` with recursive nesting. The implementation touches three files: ty.rs (Type enum variant + factory + Display), value.rs (Value enum variant + PartialEq + Ord + Display + content_hash), and tests/exports.rs (integration test). The Type enum derives Eq/Hash so no manual impl needed there. The Value enum has custom PartialEq, Ord, Display, and content_hash that all require explicit new arms. Content hash will use tag 18 (next after Range=17). Ord type_tag will use 17 (next after Range=16). The existing Tensor implementation serves as the closest pattern to follow. is_numeric already returns false via wildcard miss, and as_name returns None via wildcard catch-all — no changes needed for those methods, just test coverage.\n\n**Review fix (dual_representation_conflict):** The codebase already represents matrices as rank-2 nested `Value::Tensor` (Tensor of Tensor rows) — all 28 tests in `tensor_matrix_arithmetic_tests.rs` and all arithmetic functions in `reify-expr` (`eval_add`, `eval_sub`, `eval_mul`, `eval_div`, `neg_value`) pattern-match exclusively on `Value::Tensor`. The new `Value::Matrix` is a user-facing literal/display form. To prevent silent `Undef` production when `Value::Matrix` enters the arithmetic engine, we add: (1) doc comments on `Value::Matrix` and `Type::Matrix` clarifying the relationship, (2) `Value::canonicalize_matrix(self) -> Self` conversion method (Matrix→nested Tensor, no-op for others), (3) `Value::try_into_matrix(self) -> Option<Self>` reverse conversion, (4) canonicalization calls in `eval_binop` and `neg_value` in `reify-expr/src/lib.rs` so Matrix operands are converted to nested Tensor before arithmetic dispatch.",
   "prerequisites": [],
   "steps": [
     {
@@ -81,6 +84,34 @@
       "description": "The export test entries are written in step-9 (test IS the impl for integration tests). Verify `cargo test -p reify-types` passes all tests including new Matrix tests.",
       "status": "done",
       "commit": "22687aac"
+    },
+    {
+      "id": "step-11",
+      "type": "test",
+      "description": "Write failing tests in value.rs for Matrix↔Tensor conversion methods: (a) `canonicalize_matrix` converts Matrix([[1,2],[3,4]]) to Tensor([Tensor([1,2]), Tensor([3,4])]); (b) `canonicalize_matrix` is identity for non-Matrix variants (Int, Tensor, Undef); (c) `canonicalize_matrix` on empty Matrix([[],[]]) produces Tensor([Tensor([]), Tensor([])]); (d) `try_into_matrix` converts rank-2 nested Tensor([Tensor([1,2]), Tensor([3,4])]) to Some(Matrix([[1,2],[3,4]])); (e) `try_into_matrix` returns None for rank-1 Tensor([1,2,3]); (f) `try_into_matrix` returns None for non-Tensor values (Int, Matrix); (g) round-trip: matrix.clone().canonicalize_matrix().try_into_matrix() == Some(matrix)",
+      "status": "done",
+      "commit": "9ed04a74"
+    },
+    {
+      "id": "step-12",
+      "type": "impl",
+      "description": "In value.rs: (1) Update doc comment on `Value::Matrix` to: 'User-facing matrix literal (m rows × n cols). Before arithmetic evaluation, canonicalized to nested Value::Tensor (rank-2 Tensor where each element is a Tensor row) via canonicalize_matrix(). The evaluator in reify-expr operates exclusively on the nested-Tensor representation for matrix arithmetic.' (2) Add `pub fn canonicalize_matrix(self) -> Self` method: match self { Value::Matrix(rows) => Value::Tensor(rows.into_iter().map(Value::Tensor).collect()), other => other }. (3) Add `pub fn try_into_matrix(self) -> Option<Self>` method: match self { Value::Tensor(rows) if !rows.is_empty() && rows.iter().all(|r| matches!(r, Value::Tensor(_))) => convert inner Tensors to Vec<Vec<Value>> and return Some(Matrix(...)), _ => None }. (4) Update doc comment on Type::Matrix in ty.rs to: 'User-facing m×n matrix type. Semantically, evaluation treats matrices as rank-2 tensors; Type::Matrix preserves distinct row (m) and column (n) dimensions while Type::Tensor uses a single n for all dimensions.'",
+      "status": "done",
+      "commit": "daad7fc2"
+    },
+    {
+      "id": "step-13",
+      "type": "test",
+      "description": "Write failing tests in crates/reify-expr/tests/tensor_matrix_arithmetic_tests.rs (new section at end of file) for Value::Matrix canonicalization through the evaluator: (a) Matrix + Matrix: Matrix([[Int(1),Int(2)],[Int(3),Int(4)]]) + Matrix([[Int(10),Int(20)],[Int(30),Int(40)]]) == Tensor([Tensor([Int(11),Int(22)]),Tensor([Int(33),Int(44)])]); (b) Scalar * Matrix: Real(2.0) * Matrix([[Int(1),Int(2)]]) == Tensor([Tensor([...scaled...])]); (c) -Matrix: negation of Matrix([[Int(1),Int(-2)]]) == Tensor([Tensor([Int(-1),Int(2)])]); (d) Matrix * Vector: 2x2 Matrix * 2-elem Tensor vector produces correct dot-product Tensor result. All tests construct BinOp/UnOp CompiledExpr with Matrix literals and verify eval_expr produces the correct nested-Tensor result (not Undef).",
+      "status": "done",
+      "commit": "8e4589fe"
+    },
+    {
+      "id": "step-14",
+      "type": "impl",
+      "description": "In crates/reify-expr/src/lib.rs: (1) In `eval_binop` (line ~642-643), after `let lv = eval_expr(left, ctx);` and `let rv = eval_expr(right, ctx);`, add canonicalization: `let lv = lv.canonicalize_matrix();` and `let rv = rv.canonicalize_matrix();`. This ensures Matrix operands become nested Tensor before any arithmetic dispatch. (2) In `neg_value` (line ~1180), add a `Value::Matrix(_)` arm before the wildcard that calls `neg_value(v.canonicalize_matrix())` to convert then negate. Alternatively, canonicalize at the top: `let v = v.canonicalize_matrix();` before the match. Verify all existing tensor_matrix_arithmetic_tests still pass plus new Matrix canonicalization tests.",
+      "status": "done",
+      "commit": "e231c8c4"
     }
   ],
   "design_decisions": [
@@ -103,6 +134,18 @@
     {
       "decision": "Ord within-type comparison delegates to Vec<Vec<Value>>::cmp",
       "rationale": "Since Value implements Ord, Vec<Value> and Vec<Vec<Value>> automatically get lexicographic Ord. This is consistent with how List and Tensor delegate to Vec<Value>::cmp."
+    },
+    {
+      "decision": "Value::Matrix is a user-facing literal form, canonicalized to nested Tensor for evaluation (Option 2 from review)",
+      "rationale": "The codebase has 28 existing tests and 5 arithmetic functions (eval_add, eval_sub, eval_mul, eval_div, neg_value) that exclusively pattern-match on nested Value::Tensor for matrix operations. Rewriting all of these to also handle Value::Matrix would be high-cost and create maintenance burden (every new arithmetic feature must handle both representations). Instead, a single canonicalization step at the eval_binop/neg_value entry points converts Matrix→nested Tensor, reusing the entire existing arithmetic engine. The O(m×n) copy cost is negligible compared to the actual arithmetic operations."
+    },
+    {
+      "decision": "Canonicalization placed in eval_binop and neg_value, not in eval_expr",
+      "rationale": "Placing canonicalization in eval_binop (which dispatches all binary arithmetic and comparisons) and neg_value (unary negation) covers all arithmetic paths. Placing it in eval_expr would be too broad — it would canonicalize Matrix literals on read even when no arithmetic is performed, and would affect FunctionCall, MethodCall, and other paths that may want the original Matrix form. The targeted placement is minimal and precise."
+    },
+    {
+      "decision": "try_into_matrix requires non-empty rows and all-Tensor elements",
+      "rationale": "An empty Tensor([]) is ambiguous — it could be an empty vector or an empty matrix. Requiring at least one row and all elements to be Tensor(_) ensures the conversion is unambiguous. This matches the detection heuristic used in eval_mul (lines 858-862) which checks matches!(rows[0], Value::Tensor(_))."
     }
   ],
   "reuse": [
@@ -140,8 +183,18 @@
       "what": "exports.rs Tensor test pattern",
       "where": "crates/reify-types/tests/exports.rs lines 163-179",
       "how": "Matrix export test follows same structure: direct Type construction, factory method, Value construction"
+    },
+    {
+      "what": "Existing nested-Tensor arithmetic engine",
+      "where": "crates/reify-expr/src/lib.rs lines 723-1195 (eval_add, eval_sub, eval_mul, eval_div, neg_value)",
+      "how": "By canonicalizing Value::Matrix to nested Value::Tensor, all 5 arithmetic functions and their 28 existing tests are reused without modification. The canonicalization step transforms Matrix([[a,b],[c,d]]) into Tensor([Tensor([a,b]),Tensor([c,d])]) which the arithmetic engine already understands."
+    },
+    {
+      "what": "tensor_matrix_arithmetic_tests.rs test patterns",
+      "where": "crates/reify-expr/tests/tensor_matrix_arithmetic_tests.rs lines 1-614",
+      "how": "New Matrix canonicalization tests follow the same helper functions (lit, eval_simple, etc.) and assertion patterns as the existing 28 tensor-as-matrix tests. The new tests verify that Matrix literal inputs produce the same results as equivalent nested Tensor inputs."
     }
   ],
   "_session_id": "229-5956ad39",
-  "_created_at": "2026-03-24T22:39:09.047733+00:00"
+  "_created_at": "2026-03-24T23:03:03.900214+00:00"
 }
