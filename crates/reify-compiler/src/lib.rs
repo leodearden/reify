@@ -1901,7 +1901,28 @@ pub fn compile(
                     seen_entity_names.insert(structure.name.clone(), (structure.span, "structure"));
                 }
             }
-            // Occurrence, Import, Purpose, Constraint handled in pass 2 / purpose pass
+            reify_syntax::Declaration::Occurrence(occurrence) => {
+                if let Some((first_span, first_kind)) = seen_entity_names.get(&occurrence.name) {
+                    // Duplicate entity name — emit error; pass 2 will skip compilation.
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "duplicate entity definition '{}'",
+                            occurrence.name
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            occurrence.span,
+                            "occurrence defined here",
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            *first_span,
+                            format!("first defined as {} here", first_kind),
+                        )),
+                    );
+                } else {
+                    seen_entity_names.insert(occurrence.name.clone(), (occurrence.span, "occurrence"));
+                }
+            }
+            // Import, Purpose, Constraint handled in pass 2 / purpose pass
             _ => {}
         }
     }
@@ -1981,9 +2002,16 @@ pub fn compile(
                 // Already compiled in trait pre-pass above.
             }
             reify_syntax::Declaration::Occurrence(occurrence) => {
-                let entity_ref = EntityDefRef::from(occurrence);
-                let template = compile_entity(&entity_ref, EntityKind::Occurrence, &enum_defs, &functions, &trait_registry, &field_registry, &mut pending_bound_checks, &mut diagnostics, &templates);
-                templates.push(template);
+                // Only compile the first definition; duplicates have a different
+                // span than the one recorded in seen_entity_names.
+                let is_first_def = seen_entity_names
+                    .get(&occurrence.name)
+                    .map_or(true, |(first_span, _)| *first_span == occurrence.span);
+                if is_first_def {
+                    let entity_ref = EntityDefRef::from(occurrence);
+                    let template = compile_entity(&entity_ref, EntityKind::Occurrence, &enum_defs, &functions, &trait_registry, &field_registry, &mut pending_bound_checks, &mut diagnostics, &templates);
+                    templates.push(template);
+                }
             }
             reify_syntax::Declaration::Field(_) => {
                 // Already compiled in field pre-pass above.
