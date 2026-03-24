@@ -1426,6 +1426,32 @@ mod constraint_helper_tests {
     }
 
     #[test]
+    fn range_constraint_composable_for_multiple_members() {
+        // Call range_constraint twice for different members of the same entity.
+        // All 4 resulting expressions should be valid Bool expressions.
+        // This proves the API is safe for repeated calls (core fix for S1).
+        let width_exprs = range_constraint(
+            "Beam",
+            "width",
+            Type::length(),
+            literal(crate::mm(10.0)),
+            literal(crate::mm(500.0)),
+        );
+        let height_exprs = range_constraint(
+            "Beam",
+            "height",
+            Type::length(),
+            literal(crate::mm(10.0)),
+            literal(crate::mm(1000.0)),
+        );
+        let all_exprs: Vec<_> = width_exprs.into_iter().chain(height_exprs).collect();
+        assert_eq!(all_exprs.len(), 4, "should have 4 constraint expressions total");
+        for expr in &all_exprs {
+            assert_eq!(expr.result_type, Type::Bool, "all exprs should be Bool");
+        }
+    }
+
+    #[test]
     fn range_constraint_returns_two_bool_exprs() {
         let exprs = range_constraint(
             "Beam",
