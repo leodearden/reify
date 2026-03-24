@@ -582,6 +582,42 @@ fn empty_matrix_add_returns_undef() {
     assert_eq!(eval(&expr), Value::Undef);
 }
 
+// ── step-3 (task-374): mat*vec Undef propagation contracts ─────────────────
+//
+// These tests verify existing Undef propagation behavior as behavioral
+// contracts before the refactoring in steps 4-6.
+
+/// mat*vec where products in a row have mixed dimensions (Area + Angle*Length)
+/// causes eval_add to return Undef for that row → whole result is Undef.
+#[test]
+fn mat_vec_mul_undef_in_row_dimension_mismatch() {
+    // A = [[Length(1), Angle(1)]], v = [Length(1), Length(1)]
+    // Products: Length*Length=Area, Angle*Length=AngleLength
+    // Sum: Area + AngleLength → dimension mismatch → eval_add returns Undef
+    let a = mat(vec![vec![Value::length(1.0), Value::angle(1.0)]]);
+    let v = vec_lit(vec![Value::length(1.0), Value::length(1.0)]);
+    let expr = CompiledExpr::binop(BinOp::Mul, a, v, Type::Real);
+    assert_eq!(eval(&expr), Value::Undef);
+}
+
+/// mat*vec where only row 0 has a column-count mismatch → that row is Undef →
+/// entire result is Undef (even though row 1 would be valid on its own).
+#[test]
+fn mat_vec_mul_first_row_undef_returns_undef() {
+    // Row 0 has 3 elements but v has 2 → row 0 is Undef (inner-dim mismatch)
+    // Row 1 has 2 elements matching v → would produce Real(3.0) normally
+    let jagged_a = CompiledExpr::literal(
+        Value::Tensor(vec![
+            Value::Tensor(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]),
+            Value::Tensor(vec![Value::Real(1.0), Value::Real(2.0)]),
+        ]),
+        Type::Real,
+    );
+    let v = vec_lit(vec![Value::Real(1.0), Value::Real(1.0)]);
+    let expr = CompiledExpr::binop(BinOp::Mul, jagged_a, v, Type::Real);
+    assert_eq!(eval(&expr), Value::Undef);
+}
+
 // ── step-17: Jagged-matrix panic in Matrix*Matrix ──────────────────────────
 //
 // This test will FAIL (panic) until step-18 fixes the safe-indexing in eval_mul.
