@@ -186,6 +186,27 @@ mod tests {
         // Not numeric
         assert!(!field_ty.is_numeric());
     }
+
+    #[test]
+    fn type_point_display() {
+        let p3_length = Type::Point {
+            n: 3,
+            quantity: Box::new(Type::length()),
+        };
+        assert_eq!(format!("{}", p3_length), "Point3<Scalar[m]>");
+
+        let p2_real = Type::Point {
+            n: 2,
+            quantity: Box::new(Type::Real),
+        };
+        assert_eq!(format!("{}", p2_real), "Point2<Real>");
+
+        let p1_int = Type::Point {
+            n: 1,
+            quantity: Box::new(Type::Int),
+        };
+        assert_eq!(format!("{}", p1_int), "Point1<Int>");
+    }
 }
 
 impl std::fmt::Display for Type {
