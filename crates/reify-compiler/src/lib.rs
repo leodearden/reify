@@ -2087,7 +2087,7 @@ pub fn compile(
 /// Only edges to structures that exist in the template set are considered; unknown/external
 /// structure references are silently skipped to avoid false positives.
 fn detect_recursive_structures(
-    templates: &mut Vec<TopologyTemplate>,
+    templates: &mut [TopologyTemplate],
     diagnostics: &mut Vec<reify_types::Diagnostic>,
 ) {
     // Build an index: name -> index in templates
