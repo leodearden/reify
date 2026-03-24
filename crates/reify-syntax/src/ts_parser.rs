@@ -111,57 +111,86 @@ impl<'a> Lowering<'a> {
         }
 
         // Second pass: lower all declarations.
+        // Annotations immediately before a declaration are accumulated in
+        // `pending_annotations` and drained into the declaration's `annotations` field.
+        let mut pending_annotations: Vec<Annotation> = Vec::new();
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             match child.kind() {
                 "structure_definition" => {
-                    if let Some(decl) = self.lower_structure(child) {
+                    let annotations = std::mem::take(&mut pending_annotations);
+                    if let Some(mut decl) = self.lower_structure(child) {
+                        decl.annotations = annotations;
                         self.declarations.push(Declaration::Structure(decl));
                     }
+                    // annotations dropped here if lowering failed — no leakage
                 }
                 "occurrence_definition" => {
-                    if let Some(decl) = self.lower_occurrence(child) {
+                    let annotations = std::mem::take(&mut pending_annotations);
+                    if let Some(mut decl) = self.lower_occurrence(child) {
+                        decl.annotations = annotations;
                         self.declarations.push(Declaration::Occurrence(decl));
                     }
                 }
                 "import_declaration" => {
-                    if let Some(decl) = self.lower_import(child) {
+                    let annotations = std::mem::take(&mut pending_annotations);
+                    if let Some(mut decl) = self.lower_import(child) {
+                        decl.annotations = annotations;
                         self.declarations.push(Declaration::Import(decl));
                     }
                 }
                 "enum_declaration" => {
-                    if let Some(decl) = self.lower_enum(child) {
+                    let annotations = std::mem::take(&mut pending_annotations);
+                    if let Some(mut decl) = self.lower_enum(child) {
+                        decl.annotations = annotations;
                         self.declarations.push(Declaration::Enum(decl));
                     }
                 }
                 "function_definition" => {
-                    if let Some(decl) = self.lower_function(child) {
+                    let annotations = std::mem::take(&mut pending_annotations);
+                    if let Some(mut decl) = self.lower_function(child) {
+                        decl.annotations = annotations;
                         self.declarations.push(Declaration::Function(decl));
                     }
                 }
                 "trait_declaration" => {
-                    if let Some(decl) = self.lower_trait(child) {
+                    let annotations = std::mem::take(&mut pending_annotations);
+                    if let Some(mut decl) = self.lower_trait(child) {
+                        decl.annotations = annotations;
                         self.declarations.push(Declaration::Trait(decl));
                     }
                 }
                 "field_definition" => {
-                    if let Some(decl) = self.lower_field(child) {
+                    let annotations = std::mem::take(&mut pending_annotations);
+                    if let Some(mut decl) = self.lower_field(child) {
+                        decl.annotations = annotations;
                         self.declarations.push(Declaration::Field(decl));
                     }
                 }
                 "purpose_declaration" => {
-                    if let Some(decl) = self.lower_purpose(child) {
+                    let annotations = std::mem::take(&mut pending_annotations);
+                    if let Some(mut decl) = self.lower_purpose(child) {
+                        decl.annotations = annotations;
                         self.declarations.push(Declaration::Purpose(decl));
                     }
                 }
                 "constraint_definition" => {
-                    if let Some(decl) = self.lower_constraint_def(child) {
+                    let annotations = std::mem::take(&mut pending_annotations);
+                    if let Some(mut decl) = self.lower_constraint_def(child) {
+                        decl.annotations = annotations;
                         self.declarations.push(Declaration::Constraint(decl));
                     }
                 }
                 "unit_declaration" => {
-                    if let Some(decl) = self.lower_unit(child) {
+                    let annotations = std::mem::take(&mut pending_annotations);
+                    if let Some(mut decl) = self.lower_unit(child) {
+                        decl.annotations = annotations;
                         self.declarations.push(Declaration::Unit(decl));
+                    }
+                }
+                "annotation" => {
+                    if let Some(annotation) = self.lower_annotation(child) {
+                        pending_annotations.push(annotation);
                     }
                 }
                 "pragma" => {
@@ -170,6 +199,9 @@ impl<'a> Lowering<'a> {
                     }
                 }
                 "ERROR" => {
+                    // Consume any pending annotations so they don't leak past a
+                    // syntax error to the next successfully-parsed declaration.
+                    let _ = std::mem::take(&mut pending_annotations);
                     self.errors.push(ParseError {
                         message: format!("syntax error: {}", self.node_text(child)),
                         span: self.span(child),
@@ -255,6 +287,7 @@ impl<'a> Lowering<'a> {
             is_pub,
             span: self.span(node),
             content_hash: self.content_hash(node),
+            annotations: vec![],
         })
     }
 
@@ -280,6 +313,7 @@ impl<'a> Lowering<'a> {
             variants,
             span: self.span(node),
             content_hash: self.content_hash(node),
+            annotations: vec![],
         })
     }
 
@@ -494,6 +528,7 @@ impl<'a> Lowering<'a> {
             body,
             span: self.span(node),
             content_hash: self.content_hash(node),
+            annotations: vec![],
         })
     }
 
@@ -520,6 +555,7 @@ impl<'a> Lowering<'a> {
             span: self.span(node),
             content_hash: self.content_hash(node),
             pragmas,
+            annotations: vec![],
         })
     }
 
@@ -545,6 +581,7 @@ impl<'a> Lowering<'a> {
             source,
             span: self.span(node),
             content_hash: self.content_hash(node),
+            annotations: vec![],
         })
     }
 
@@ -612,6 +649,7 @@ impl<'a> Lowering<'a> {
             span: self.span(node),
             content_hash: self.content_hash(node),
             pragmas,
+            annotations: vec![],
         })
     }
 
@@ -673,6 +711,7 @@ impl<'a> Lowering<'a> {
             span: self.span(node),
             content_hash: self.content_hash(node),
             pragmas,
+            annotations: vec![],
         })
     }
 
@@ -701,6 +740,36 @@ impl<'a> Lowering<'a> {
             offset,
             span: self.span(node),
             content_hash: self.content_hash(node),
+            annotations: vec![],
+        })
+    }
+
+    // ── Annotation lowering ───────────────────────────────────
+
+    /// Lower an `annotation` CST node to an `Annotation` AST node.
+    ///
+    /// Grammar: `'@' name:immediate_identifier ('(' commaSep(_expression) ')')?`
+    fn lower_annotation(&self, node: tree_sitter::Node) -> Option<Annotation> {
+        let name_node = node.child_by_field_name("name")?;
+        let name = self.node_text(name_node).to_string();
+
+        // Collect expression args from named children (skipping the name field itself).
+        let mut args = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            // The 'name' field child is the identifier; all other named children
+            // are expression args produced by commaSep($._expression).
+            if child.id() != name_node.id()
+                && let Some(expr) = self.lower_expr(child)
+            {
+                args.push(expr);
+            }
+        }
+
+        Some(Annotation {
+            name,
+            args,
+            span: self.span(node),
         })
     }
 
@@ -1012,6 +1081,7 @@ impl<'a> Lowering<'a> {
             span: self.span(node),
             content_hash,
             pragmas,
+            annotations: vec![],
         })
     }
 
@@ -1034,6 +1104,7 @@ impl<'a> Lowering<'a> {
             span: self.span(node),
             content_hash,
             pragmas,
+            annotations: vec![],
         })
     }
 

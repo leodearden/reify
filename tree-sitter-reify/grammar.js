@@ -45,6 +45,7 @@ module.exports = grammar({
       $.constraint_definition,
       $.unit_declaration,
       $.pragma,
+      $.annotation,
     ),
 
     // ── Enum ──────────────────────────────────────────────────
@@ -765,6 +766,15 @@ module.exports = grammar({
       $.string_literal,
       $.bool_literal,
       $.identifier,
+    ),
+
+    // ── Annotation ──────────────────────────────────────────
+    // `@test` or `@deprecated("use NewS")` — attaches to the next declaration.
+    // '@' must be immediately followed by the name (no whitespace allowed).
+    annotation: $ => seq(
+      '@',
+      field('name', alias($.immediate_identifier, $.identifier)),
+      optional(seq('(', commaSep($._expression), ')')),
     ),
 
     // ── Comments ────────────────────────────────────────────

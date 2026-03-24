@@ -294,6 +294,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
         span: SourceSpan::new(0, 387),
         content_hash,
         pragmas: vec![],
+        annotations: vec![],
     };
 
     ParsedModule {
