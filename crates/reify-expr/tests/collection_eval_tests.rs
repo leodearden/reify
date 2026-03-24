@@ -649,6 +649,48 @@ fn eval_method_filter_undef_propagation() {
     );
 }
 
+// ─── task-166 step-3: .filter mixed undef and false results ───
+
+#[test]
+fn eval_method_filter_undef_mixed_results() {
+    // [1, undef, -1, undef, 5].filter(|x| x > 0) -> [1, undef, undef, 5]
+    // true results are included, false results are excluded, undef results are conservatively retained.
+    let x_id = ValueCellId::new("$lambda_filter_mix.S", "x");
+    let body = CompiledExpr::binop(
+        BinOp::Gt,
+        CompiledExpr::value_ref(x_id.clone(), Type::Int),
+        CompiledExpr::literal(Value::Int(0), Type::Int),
+        Type::Bool,
+    );
+    let lambda_arg = lambda_literal(vec![("x", x_id)], body, ValueMap::new());
+
+    let undef_id1 = ValueCellId::new("S", "missing_mix_1");
+    let undef_id2 = ValueCellId::new("S", "missing_mix_2");
+    let list = CompiledExpr::list_literal(
+        vec![
+            CompiledExpr::literal(Value::Int(1), Type::Int),
+            CompiledExpr::value_ref(undef_id1, Type::Int),
+            CompiledExpr::literal(Value::Int(-1), Type::Int),
+            CompiledExpr::value_ref(undef_id2, Type::Int),
+            CompiledExpr::literal(Value::Int(5), Type::Int),
+        ],
+        Type::List(Box::new(Type::Int)),
+    );
+    let expr = CompiledExpr::method_call(
+        list,
+        "filter".to_string(),
+        vec![lambda_arg],
+        Type::List(Box::new(Type::Int)),
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::List(vec![Value::Int(1), Value::Undef, Value::Undef, Value::Int(5)]),
+        "[1, undef, -1, undef, 5].filter(|x| x > 0) should return [1, undef, undef, 5]"
+    );
+}
+
 // ─── step-17/18: MethodCall .fold ───
 
 #[test]
