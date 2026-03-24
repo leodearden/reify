@@ -14,7 +14,7 @@ pub fn literal(v: Value) -> CompiledExpr {
         Value::Scalar { dimension, .. } => Type::Scalar {
             dimension: *dimension,
         },
-        Value::Enum { .. } | Value::List(_) | Value::Set(_) | Value::Map(_) | Value::Option(_) | Value::Lambda { .. } | Value::Field { .. } => {
+        Value::Enum { .. } | Value::List(_) | Value::Set(_) | Value::Map(_) | Value::Option(_) | Value::Lambda { .. } | Value::Field { .. } | Value::Tensor(_) => {
             panic!("literal() not yet implemented for M5 type: {:?}. Use CompiledExpr::literal(value, type) directly.", v)
         }
         Value::Undef => Type::Bool, // arbitrary for undef

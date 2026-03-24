@@ -1,154 +1,193 @@
 {
-  "task_id": "222",
-  "title": "Point/Vector: Type variants",
+  "task_id": "228",
+  "title": "Tensor: Type and Value",
   "files": [
     "crates/reify-types/src/ty.rs",
+    "crates/reify-types/src/value.rs",
     "crates/reify-types/tests/exports.rs"
   ],
   "modules": [
     "crates/reify-types"
   ],
-  "analysis": "The Type enum in crates/reify-types/src/ty.rs currently has 15 variants with #[derive(Debug, Clone, PartialEq, Eq, Hash)]. Display is manually implemented in the same file. Factory methods (length(), angle(), dimensionless_scalar()) follow a consistent pattern of constructing Type variants with preset fields. The only exhaustive match on Type is the Display impl itself \u2014 all other match sites in the codebase (cpsat.rs, compiler, etc.) use wildcard catch-all arms, so adding two new variants will only require updating ty.rs and the exports integration test. No content_hash impl exists for Type (it uses derived Hash), so no hash tag assignments needed. The new Point { n, quantity } and Vector { n, quantity } variants follow the same structural pattern as List(Box<Type>) and Set(Box<Type>) \u2014 a container with an inner type \u2014 but additionally carry a dimensionality parameter n:usize. Display will follow the format Point{n}<{quantity}> (e.g., Point3<Scalar[m]>) and Vector{n}<{quantity}> consistent with the existing angle-bracket convention for generic types.",
+  "analysis": "Task 228 adds a Tensor variant to both the Type and Value enums in crates/reify-types. The Type variant stores rank (number of nesting levels), n (dimension per level), and quantity (the element type, boxed). This follows the same pattern as the recently-added Point { n, quantity } and Vector { n, quantity } from Task 222. The Value variant stores elements as a Vec<Value> with recursive nesting: rank-1 tensors hold n scalar Values, rank-k tensors hold n Tensor values of rank-(k-1). Type derives Debug/Clone/PartialEq/Eq/Hash automatically \u2014 no manual trait impls needed. Value has custom PartialEq, Ord, Display, and content_hash implementations that each need a new Tensor arm. content_hash uses domain-separated tag bytes; tags 0-13 are taken, so Tensor gets tag [14]. Value Ord uses type_tags 0-12; Tensor gets tag 13. No changes to lib.rs re-exports are needed since Type and Value are already re-exported as whole enums \u2014 new variants are automatically visible. The Display format for Type::Tensor follows the Point/Vector convention of encoding parameters in the name: Tensor{rank}x{n}<{quantity}>. For Value::Tensor, display uses bracket notation identical to List: [elem, elem, ...], which naturally nests for higher-rank tensors.",
   "prerequisites": [],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing tests for Point variant Display: assert Point { n:3, quantity: Type::length() } displays as 'Point3<Scalar[m]>', Point { n:2, quantity: Type::Real } as 'Point2<Real>', Point { n:1, quantity: Type::Int } as 'Point1<Int>'",
+      "description": "Write failing test for Type::tensor(rank, n, q) factory method: assert Type::tensor(2, 3, Type::length()) produces Type::Tensor { rank: 2, n: 3, quantity: Box::new(Type::length()) }, and Type::tensor(1, 4, Type::Real) produces the corresponding variant.",
       "status": "done",
-      "commit": "6712fef"
+      "commit": "f446cfa"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Add Point { n: usize, quantity: Box<Type> } variant to Type enum and add Display match arm: write!(f, 'Point{}<{}>', n, quantity)",
+      "description": "Add Tensor { rank: usize, n: usize, quantity: Box<Type> } variant to Type enum (after Vector at line ~41 in ty.rs). Add pub fn tensor(rank: usize, n: usize, quantity: Type) -> Self factory method in impl Type block. This also implicitly provides Eq/Hash via existing #[derive].",
       "status": "done",
-      "commit": "10dbab1"
+      "commit": "f446cfa"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing tests for Vector variant Display: assert Vector { n:3, quantity: Type::length() } displays as 'Vector3<Scalar[m]>', Vector { n:2, quantity: Type::Real } as 'Vector2<Real>'",
+      "description": "Write failing test for Type::Tensor Display: assert Tensor(2,3,length) displays as 'Tensor2x3<Scalar[m]>', Tensor(1,4,Real) as 'Tensor1x4<Real>', Tensor(3,2,Int) as 'Tensor3x2<Int>'.",
       "status": "done",
-      "commit": "658a8e2"
+      "commit": "f446cfa"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Add Vector { n: usize, quantity: Box<Type> } variant to Type enum and add Display match arm: write!(f, 'Vector{}<{}>', n, quantity)",
+      "description": "Add Display match arm for Type::Tensor in fmt::Display impl: write!(f, \"Tensor{}x{}<{}>\", rank, n, quantity). Follows Point/Vector display pattern of embedding parameters in the type name.",
       "status": "done",
-      "commit": "0f8bcd9"
+      "commit": "f446cfa"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing tests for factory methods: assert Type::point2(Type::length()) == Type::Point { n:2, quantity: Box::new(Type::length()) } and Type::point3(Type::Real) == Type::Point { n:3, quantity: Box::new(Type::Real) }",
+      "description": "Write failing test for Type::Tensor Eq and Hash: (a) Tensor(2,3,Length) == Tensor(2,3,Length), (b) Tensor(2,3,Length) != Tensor(1,3,Length) (different rank), (c) Tensor(2,3,Length) != Tensor(2,4,Length) (different n), (d) Tensor(2,3,Length) != Tensor(2,3,Real) (different quantity), (e) Tensor != Vector/Point with same n/quantity, (f) HashMap insert+lookup consistency.",
       "status": "done",
-      "commit": "8b251e9"
+      "commit": "f446cfa"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Implement pub fn point2(quantity: Type) -> Self and pub fn point3(quantity: Type) -> Self factory methods on Type impl block",
+      "description": "No code change needed \u2014 Eq and Hash are provided by #[derive] on Type. Tests pass after step 2. Also add test asserting Type::Tensor is not numeric (is_numeric() returns false), which passes from existing matches! macro exclusion.",
       "status": "done",
-      "commit": "1fd02c2"
+      "commit": "f446cfa"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing tests for factory methods: assert Type::vec2(Type::length()) == Type::Vector { n:2, quantity: Box::new(Type::length()) } and Type::vec3(Type::Real) == Type::Vector { n:3, quantity: Box::new(Type::Real) }",
+      "description": "Write failing test for Value::Tensor construction and PartialEq: (a) rank-1 tensor with 3 length scalars equals itself rebuilt, (b) tensors with different elements are unequal, (c) rank-2 nested tensor (Tensor of Tensors) equals itself, (d) Tensor([Int(1), Int(2)]) != List([Int(1), Int(2)]) \u2014 distinct variants.",
       "status": "done",
-      "commit": "5969093"
+      "commit": "e1a00c4"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Implement pub fn vec2(quantity: Type) -> Self and pub fn vec3(quantity: Type) -> Self factory methods on Type impl block",
+      "description": "Add Tensor(Vec<Value>) variant to Value enum. Add PartialEq arm: (Value::Tensor(a), Value::Tensor(b)) => a == b. Recursive equality through Vec<Value>::PartialEq.",
       "status": "done",
-      "commit": "88a92bf"
+      "commit": "e1a00c4"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write tests for Eq and Hash: (a) Point3<Length> == Point3<Length>, (b) Point3<Length> != Point2<Length>, (c) Point3<Length> != Point3<Real>, (d) Point3<Length> != Vector3<Length>, (e) same assertions for Vector, (f) Hash consistency: equal types produce equal hashes via HashMap insert+lookup",
+      "description": "Write failing test for Value::Tensor Display: rank-1 tensor of 3 length scalars displays as '[0.08 m, 0.1 m, 0.12 m]', rank-2 nested tensor of Ints displays as '[[1, 2], [3, 4]]' with natural bracket nesting.",
       "status": "done",
-      "commit": "f26ca73"
+      "commit": "e1a00c4"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Verify Eq/Hash tests pass (derived automatically \u2014 no code change expected). Also add test asserting Point and Vector are not numeric via is_numeric(), which should pass from the existing match wildcard-free is_numeric() using matches!() macro",
+      "description": "Add Display match arm for Value::Tensor: write bracket-delimited comma-separated format '[elem1, elem2, ...]', identical pattern to Value::List Display arm.",
       "status": "done",
-      "commit": "88d118a"
+      "commit": "e1a00c4"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Add Point and Vector variant construction to the all_m5_types_exported test in tests/exports.rs: construct Type::Point and Type::Vector variants, use Type::point3() and Type::vec3() factories, verify accessible from crate root",
+      "description": "Write failing test for Value::Tensor content_hash: (a) determinism \u2014 identical rank-1 tensors produce identical hashes, (b) different elements produce different hashes, (c) Tensor hash differs from List hash with identical elements (tag [14] vs [7] separation), (d) nested rank-2 tensor hash is deterministic.",
       "status": "done",
-      "commit": "4d8556f"
+      "commit": "e1a00c4"
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "No impl change expected for exports \u2014 Type is already re-exported. Run full cargo test -p reify-types to verify everything passes end-to-end.",
+      "description": "Add content_hash arm for Value::Tensor: tag [14], combine element count as u64 LE bytes, then combine each element's content_hash. Follows List pattern (tag [7]) but with distinct tag byte for domain separation.",
       "status": "done",
-      "commit": "021e749"
+      "commit": "e1a00c4"
+    },
+    {
+      "id": "step-13",
+      "type": "test",
+      "description": "Write failing test for Value::Tensor Ord: (a) Tensor type_tag (13) > Lambda type_tag (12) \u2014 cross-type ordering, (b) within-type lexicographic comparison of elements, (c) shorter tensor < longer tensor with same prefix elements.",
+      "status": "done",
+      "commit": "e1a00c4"
+    },
+    {
+      "id": "step-14",
+      "type": "impl",
+      "description": "Add Tensor to type_tag() function in Ord impl as tag 13. Add Ord match arm: (Value::Tensor(a), Value::Tensor(b)) => a.cmp(b) for lexicographic Vec comparison.",
+      "status": "done",
+      "commit": "e1a00c4"
+    },
+    {
+      "id": "step-15",
+      "type": "test",
+      "description": "Write integration test entries in exports.rs verifying Type::Tensor direct construction, Type::tensor() factory, and Value::Tensor construction are accessible from crate root.",
+      "status": "done",
+      "commit": "c88eb58"
+    },
+    {
+      "id": "step-16",
+      "type": "impl",
+      "description": "Add Tensor entries to all_m5_types_exported test in exports.rs: Type::Tensor { rank, n, quantity } direct construction, Type::tensor() factory call, and Value::Tensor(vec![...]) construction. Run full cargo test -p reify-types to verify everything passes end-to-end.",
+      "status": "done",
+      "commit": "c88eb58"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Use Point{n}<{quantity}> Display format (e.g., Point3<Scalar[m]>) rather than domain-specific names like Point3<Length>",
-      "rationale": "Consistent with existing generic type Display conventions (List<Int>, Set<String>, Field<Real, Real>). The inner type's Display is reused verbatim. If a friendlier 'Length' alias is desired, that would be a Type alias feature, not a Point-specific Display hack."
+      "decision": "Type variant: Tensor { rank: usize, n: usize, quantity: Box<Type> }",
+      "rationale": "Matches task spec exactly. Follows Point/Vector pattern of { n: usize, quantity: Box<Type> } with added rank parameter. All dimensions of the tensor are the same size n (uniform tensor), consistent with mathematical rank-r tensors over an n-dimensional space."
     },
     {
-      "decision": "Use Vector{n}<{quantity}> as Display format, not Vec{n}<...>",
-      "rationale": "Avoids ambiguity with Rust's Vec<T> and is more explicit for the CAD/engineering domain. The variant name in the enum is Vector, so Display should match."
+      "decision": "Value variant: Tensor(Vec<Value>) with recursive nesting",
+      "rationale": "Task specifies 'nested Vec<Value> (rank levels of nesting, innermost elements are Scalars)'. Rank-1 tensors hold n scalar Values; rank-k tensors hold n Tensor values of rank-(k-1). The type system (Type::Tensor) carries shape info, so Value doesn't duplicate rank/n. This is the simplest representation matching the spec."
     },
     {
-      "decision": "Both Point and Vector store n:usize + quantity:Box<Type> with identical structure",
-      "rationale": "Mathematically a Point and a Vector in an affine space are distinct types even though they share the same representation (n-tuple of quantities). Keeping them as separate variants enables the type checker to distinguish them, which is important for geometric correctness (you can subtract points to get a vector, but cannot add two points)."
+      "decision": "Display format: Tensor{rank}x{n}<{quantity}> for Type (e.g., 'Tensor2x3<Scalar[m]>')",
+      "rationale": "Mirrors Point/Vector display pattern (PointN<Q>, VectorN<Q>) but encodes both rank and n since tensors have two size parameters. The 'x' separator is natural for dimension notation in engineering contexts."
     },
     {
-      "decision": "Factory methods only for n=2 and n=3 (point2, point3, vec2, vec3)",
-      "rationale": "Task specifies these four. The general variant Type::Point { n, quantity } supports arbitrary dimensions, but 2D and 3D are the common cases in CAD that deserve convenience constructors."
+      "decision": "Display format: [elem, elem, ...] for Value::Tensor (same as List)",
+      "rationale": "Tensor values display as bracket-delimited arrays. Rank-2+ tensors display nested brackets automatically via recursive Display on inner Tensor values. Visually identical to List display, but distinguished at the type level. This is the natural mathematical notation."
     },
     {
-      "decision": "Eq and Hash are derived, no custom implementation needed",
-      "rationale": "Both new variants contain only usize (which derives Eq/Hash trivially) and Box<Type> (which delegates to Type's derived Eq/Hash). The derive macro handles this correctly with structural equality and deterministic hashing."
+      "decision": "content_hash tag byte: [14]",
+      "rationale": "Tags 0-9 are used by existing Value variants, [10] is exclusively reserved for Satisfaction, [11] is Option, [12] is Lambda, [13] is Field. Tag [14] is the next available sequential tag."
     },
     {
-      "decision": "Steps 9-10 test Eq/Hash even though it's derived",
-      "rationale": "Explicit tests document the contract and catch regressions if someone later changes the derive to a manual implementation. Following the pattern of existing tests (e.g., type_field_variant tests equality)."
+      "decision": "Ord type_tag: 13 (after Lambda=12)",
+      "rationale": "Current type_tags are 0-12 (Undef through Lambda). Tensor gets 13, placing it after Lambda in cross-type ordering. This is the next sequential tag, maintaining the established convention."
     }
   ],
   "reuse": [
     {
-      "what": "Existing #[derive(Debug, Clone, PartialEq, Eq, Hash)] on Type enum",
+      "what": "Point/Vector variant pattern in Type enum",
+      "where": "crates/reify-types/src/ty.rs lines 38-41",
+      "how": "Tensor follows the same { n: usize, quantity: Box<Type> } structural pattern with an additional rank:usize field. Factory method, Display arm, and test patterns are direct templates."
+    },
+    {
+      "what": "Existing #[derive(Debug, Clone, PartialEq, Eq, Hash)] on Type",
       "where": "crates/reify-types/src/ty.rs line 4",
-      "how": "New Point and Vector variants get Eq/Hash for free from the derive macro \u2014 no manual implementation needed."
+      "how": "Tensor variant gets Eq/Hash for free from the derive macro \u2014 no manual implementation needed for Type."
     },
     {
-      "what": "Factory method pattern from Type::length(), Type::angle()",
-      "where": "crates/reify-types/src/ty.rs lines 42-60",
-      "how": "Follow identical pattern: pub fn point3(quantity: Type) -> Self { Type::Point { n: 3, quantity: Box::new(quantity) } }"
+      "what": "Value::List Display pattern",
+      "where": "crates/reify-types/src/value.rs lines 337-346",
+      "how": "Value::Tensor Display uses identical bracket-delimited comma-separated format as Value::List."
     },
     {
-      "what": "Display arm pattern from List/Set/Field variants",
-      "where": "crates/reify-types/src/ty.rs lines 206-216",
-      "how": "Point/Vector Display follows the same write!(f, ...) pattern, using the inner type's Display trait via {} format."
+      "what": "Value::List content_hash pattern",
+      "where": "crates/reify-types/src/value.rs lines 134-141",
+      "how": "Tensor content_hash follows the same tag + length + element-hash-combine pattern as List, but with tag [14] instead of [7]."
     },
     {
-      "what": "Test patterns from existing type_field_variant and type_list_display tests",
-      "where": "crates/reify-types/src/ty.rs lines 77-189",
-      "how": "New tests follow the same assert_eq!(format!('{}', ty), expected) and equality assertion patterns."
+      "what": "Value::List PartialEq and Ord arms",
+      "where": "crates/reify-types/src/value.rs lines 203, 286",
+      "how": "Tensor PartialEq delegates to Vec<Value>::eq, and Ord delegates to Vec<Value>::cmp, identical to the List arms."
     },
     {
-      "what": "Integration test pattern from all_m5_types_exported",
-      "where": "crates/reify-types/tests/exports.rs lines 47-142",
-      "how": "Add Point/Vector variant construction under a new section in the existing test function, following the same let _var = reify_types::Type::Variant pattern."
+      "what": "Point/Vector Eq/Hash test pattern",
+      "where": "crates/reify-types/src/ty.rs lines 222-259",
+      "how": "Tensor Eq/Hash tests follow the same structure: construct equal values and assert_eq, construct different values and assert_ne, verify HashMap insert+lookup."
+    },
+    {
+      "what": "exports.rs integration test pattern",
+      "where": "crates/reify-types/tests/exports.rs lines 143-161",
+      "how": "Add Tensor entries following the Point/Vector export test pattern: direct construction + factory method + Value variant."
     }
   ],
-  "_session_id": "222-f112dec9",
-  "_created_at": "2026-03-24T07:45:46.897202+00:00"
+  "_session_id": "228-cb6c8a99",
+  "_created_at": "2026-03-24T08:04:37.732233+00:00"
 }

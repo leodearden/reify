@@ -86,8 +86,9 @@ impl ConstraintClassifier {
                         | Value::Map(_)
                         | Value::Option(_)
                         | Value::Lambda { .. }
-                        | Value::Field { .. } => {
-                            // Collection, enum, lambda, and field types don't contribute to domain classification
+                        | Value::Field { .. }
+                        | Value::Tensor(_) => {
+                            // Collection, enum, lambda, field, and tensor types don't contribute to domain classification
                         }
                     }
                 }
