@@ -283,3 +283,32 @@ structure S {
         other => panic!("expected plain BinOp(Lt), got {:?}", other),
     }
 }
+
+/// step-13: single comparison `a < b` stays as plain `Lt(a,b)` — no desugaring.
+/// Regression test ensuring desugaring only activates for actual chains (>2 operands).
+#[test]
+fn single_comparison_stays_plain() {
+    let source = r#"
+structure S {
+    param a : Int = 1
+    param b : Int = 2
+    constraint a < b
+}
+"#;
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    assert!(!template.constraints.is_empty(), "should have at least one constraint");
+
+    let expr = &template.constraints[0].expr;
+    match &expr.kind {
+        CompiledExprKind::BinOp { op, left, right } => {
+            assert_eq!(*op, BinOp::Lt, "single comparison should stay as Lt, not wrapped in And");
+            assert!(matches!(&left.kind, CompiledExprKind::ValueRef(_)), "left should be value ref a");
+            assert!(matches!(&right.kind, CompiledExprKind::ValueRef(_)), "right should be value ref b");
+        }
+        other => panic!("expected plain BinOp(Lt), got {:?}", other),
+    }
+}
