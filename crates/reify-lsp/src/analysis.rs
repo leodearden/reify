@@ -190,6 +190,17 @@ pub fn format_value(value: &Value) -> String {
         Value::Field { domain_type, codomain_type, source, .. } => {
             format!("Field<{}, {}>({:?})", domain_type, codomain_type, source)
         }
+        Value::Complex { re, im, dimension } => {
+            let unit = dimension_unit_label(dimension);
+            // Use conditional sign handling so negative imaginary parts render
+            // as "3 - 4i" instead of "3 + -4i".
+            let (sign, im_abs) = if *im < 0.0 { ("-", im.abs()) } else { ("+", *im) };
+            if unit.is_empty() {
+                format!("{re} {sign} {im_abs}i")
+            } else {
+                format!("{re} {sign} {im_abs}i {unit}")
+            }
+        }
         Value::Undef => "(undefined)".to_string(),
     }
 }
@@ -442,5 +453,38 @@ mod tests {
     fn format_value_option_some() {
         let v = Value::Option(Some(Box::new(Value::Int(42))));
         assert_eq!(format_value(&v), "some(42)");
+    }
+
+    // --- format_value for Complex (step-11) ---
+
+    #[test]
+    fn format_value_complex_positive_im() {
+        let v = Value::Complex {
+            re: 3.0,
+            im: 4.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert_eq!(format_value(&v), "3 + 4i");
+    }
+
+    #[test]
+    fn format_value_complex_negative_im() {
+        // Negative imaginary must display as '3 - 4i', NOT '3 + -4i'.
+        let v = Value::Complex {
+            re: 3.0,
+            im: -4.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert_eq!(format_value(&v), "3 - 4i");
+    }
+
+    #[test]
+    fn format_value_complex_dimensioned() {
+        let v = Value::Complex {
+            re: 3.0,
+            im: 4.0,
+            dimension: DimensionVector::LENGTH,
+        };
+        assert_eq!(format_value(&v), "3 + 4i m");
     }
 }

@@ -8,7 +8,8 @@ use reify_types::{CompiledExpr, CompiledExprKind, ConstraintDomain, Type, Value}
 /// Internal flags collected during expression tree traversal.
 #[derive(Default)]
 struct DomainFlags {
-    /// Saw a numeric leaf (Scalar, Real, Int) or numeric-typed ValueRef.
+    /// Saw a numeric leaf (Scalar, Real, or Int) or numeric-typed ValueRef.
+    /// Note: Complex is excluded — Type::is_numeric() returns false for Complex.
     has_numeric: bool,
     /// Saw a Bool leaf or Bool-typed ValueRef.
     has_logical: bool,
@@ -87,8 +88,12 @@ impl ConstraintClassifier {
                         | Value::Option(_)
                         | Value::Lambda { .. }
                         | Value::Field { .. }
-                        | Value::Tensor(_) => {
-                            // Collection, enum, lambda, field, and tensor types don't contribute to domain classification
+                        | Value::Tensor(_)
+                        | Value::Complex { .. } => {
+                            // Collection, enum, lambda, field, tensor, and Complex types
+                            // don't contribute to domain classification.
+                            // Complex is not numeric (Type::is_numeric() returns false for
+                            // Complex); needs its own domain if special routing is required.
                         }
                     }
                 }
@@ -174,5 +179,39 @@ mod tests {
         let boolean = CompiledExpr::literal(Value::Bool(true), Type::Bool);
         let expr = CompiledExpr::binop(BinOp::And, num, boolean, Type::Bool);
         assert_eq!(ConstraintClassifier::classify(&expr), ConstraintDomain::CrossDomain);
+    }
+
+    #[test]
+    fn literal_complex_is_dimensional_via_default() {
+        // A standalone Complex literal should classify as Dimensional via the
+        // no-flags-set default path (not via has_numeric), since Complex is not
+        // numeric (Type::is_numeric() returns false for Complex).
+        let expr = CompiledExpr::literal(
+            Value::Complex {
+                re: 3.0,
+                im: 4.0,
+                dimension: DimensionVector::DIMENSIONLESS,
+            },
+            Type::complex(Type::Real),
+        );
+        assert_eq!(ConstraintClassifier::classify(&expr), ConstraintDomain::Dimensional);
+    }
+
+    #[test]
+    fn literal_complex_with_bool_is_logical_not_cross_domain() {
+        // A binop combining a Complex literal and a Bool literal should classify
+        // as Logical (only has_logical set), NOT CrossDomain. If Complex incorrectly
+        // sets has_numeric=true, the result would be CrossDomain instead of Logical.
+        let complex_expr = CompiledExpr::literal(
+            Value::Complex {
+                re: 3.0,
+                im: 4.0,
+                dimension: DimensionVector::DIMENSIONLESS,
+            },
+            Type::complex(Type::Real),
+        );
+        let bool_expr = CompiledExpr::literal(Value::Bool(true), Type::Bool);
+        let expr = CompiledExpr::binop(BinOp::And, complex_expr, bool_expr, Type::Bool);
+        assert_eq!(ConstraintClassifier::classify(&expr), ConstraintDomain::Logical);
     }
 }

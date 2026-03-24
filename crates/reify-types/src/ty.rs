@@ -41,6 +41,8 @@ pub enum Type {
     Vector { n: usize, quantity: Box<Type> },
     /// Rank-r tensor with n elements per dimension and a quantity type (e.g., Tensor2x3<Scalar[m]>).
     Tensor { rank: usize, n: usize, quantity: Box<Type> },
+    /// Complex number type with a quantity type (e.g., Complex<Scalar[Ω]>).
+    Complex(Box<Type>),
 }
 
 impl Type {
@@ -88,6 +90,11 @@ impl Type {
     /// Shorthand for a rank-r tensor with n elements per dimension and a given quantity type.
     pub fn tensor(rank: usize, n: usize, quantity: Type) -> Self {
         Type::Tensor { rank, n, quantity: Box::new(quantity) }
+    }
+
+    /// Shorthand for a complex number type with a given quantity type.
+    pub fn complex(q: Type) -> Self {
+        Type::Complex(Box::new(q))
     }
 
     /// Is this type a numeric type (Int, Real, or Scalar)?
@@ -360,6 +367,74 @@ mod tests {
         assert!(!Type::tensor(2, 2, Type::Real).is_numeric());
     }
 
+    // ── Complex tests (step-1) ────────────────────────────────────────────────
+
+    #[test]
+    fn type_complex_display_real() {
+        assert_eq!(format!("{}", Type::complex(Type::Real)), "Complex<Real>");
+    }
+
+    #[test]
+    fn type_complex_display_scalar() {
+        assert_eq!(
+            format!("{}", Type::complex(Type::length())),
+            "Complex<Scalar[m]>"
+        );
+    }
+
+    #[test]
+    fn type_complex_display_nested() {
+        assert_eq!(
+            format!("{}", Type::complex(Type::complex(Type::Real))),
+            "Complex<Complex<Real>>"
+        );
+    }
+
+    #[test]
+    fn type_complex_factory_eq_variant() {
+        assert_eq!(
+            Type::complex(Type::Real),
+            Type::Complex(Box::new(Type::Real))
+        );
+        assert_eq!(
+            Type::complex(Type::Int),
+            Type::Complex(Box::new(Type::Int))
+        );
+    }
+
+    #[test]
+    fn type_complex_eq_and_hash() {
+        use std::collections::HashMap;
+
+        let c_real = Type::complex(Type::Real);
+        let c_real2 = Type::complex(Type::Real);
+        let c_int = Type::complex(Type::Int);
+
+        // Equal complex types are equal
+        assert_eq!(c_real, c_real2);
+        // Different inner types are not equal
+        assert_ne!(c_real, c_int);
+        // complex(Real) != Real
+        assert_ne!(c_real, Type::Real);
+
+        // Hash consistency: equal values produce equal hashes via HashMap
+        let mut map: HashMap<Type, &str> = HashMap::new();
+        map.insert(c_real.clone(), "c_real");
+        assert_eq!(map.get(&c_real2), Some(&"c_real"));
+        assert_eq!(map.get(&c_int), None);
+    }
+
+    #[test]
+    fn type_complex_not_numeric() {
+        assert!(!Type::complex(Type::Real).is_numeric());
+        assert!(!Type::complex(Type::Int).is_numeric());
+    }
+
+    #[test]
+    fn type_complex_as_name_none() {
+        assert_eq!(Type::complex(Type::Real).as_name(), None);
+    }
+
     #[test]
     fn type_vector_display() {
         let v3_length = Type::Vector {
@@ -427,6 +502,7 @@ impl std::fmt::Display for Type {
             Type::Point { n, quantity } => write!(f, "Point{}<{}>", n, quantity),
             Type::Vector { n, quantity } => write!(f, "Vector{}<{}>", n, quantity),
             Type::Tensor { rank, n, quantity } => write!(f, "Tensor{}x{}<{}>", rank, n, quantity),
+            Type::Complex(inner) => write!(f, "Complex<{}>", inner),
         }
     }
 }
