@@ -669,4 +669,71 @@ describe('entrypoint wiring', () => {
     expect(msgs.length).toBeGreaterThanOrEqual(1);
     expect(msgs[0]).toEqual({ type: 'ready' });
   });
+
+  it('abort message is processed while send_message is in-flight (non-blocking input loop)', async () => {
+    // Create a mock process that hangs until the abort signal fires
+    const hangingProc = new EventEmitter() as any;
+    const hangStdout = new PassThrough();
+    hangingProc.stdout = hangStdout;
+    hangingProc.stderr = new PassThrough();
+    hangingProc.stdin = new PassThrough();
+    hangingProc.exitCode = null;
+
+    vi.mocked(spawn).mockImplementation(((_cmd: string, _args: string[], opts: any) => {
+      if (opts?.signal) {
+        opts.signal.addEventListener('abort', () => {
+          hangStdout.end();
+          hangingProc.exitCode = null;
+          hangingProc.emit('close', null);
+        });
+      }
+      return hangingProc;
+    }) as any);
+
+    const input = new PassThrough();
+    const output = new PassThrough();
+
+    // Collect messages as they arrive (don't wait for end)
+    const receivedMsgs: OutboundMessage[] = [];
+    let outputBuf = '';
+    output.on('data', (chunk: Buffer) => {
+      outputBuf += chunk.toString();
+      let idx: number;
+      while ((idx = outputBuf.indexOf('\n')) !== -1) {
+        const line = outputBuf.slice(0, idx);
+        outputBuf = outputBuf.slice(idx + 1);
+        if (line.length > 0) receivedMsgs.push(JSON.parse(line));
+      }
+    });
+
+    const mainPromise = main(input, output);
+
+    // Wait for ready
+    await new Promise((r) => setTimeout(r, 30));
+
+    // Send a hanging message, then immediately send abort
+    input.write(JSON.stringify({ type: 'send_message', id: 'nb-1', text: 'Hang' }) + '\n');
+    // Small delay so send_message is dispatched before abort is written
+    await new Promise((r) => setTimeout(r, 10));
+    input.write(JSON.stringify({ type: 'abort' }) + '\n');
+
+    // Wait up to 200ms for the abort to be processed and done emitted
+    const deadline = Date.now() + 200;
+    while (Date.now() < deadline) {
+      if (receivedMsgs.some((m) => m.type === 'done')) break;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+
+    // End input so main's for-await loop can exit
+    input.end();
+
+    // Race main against a ceiling so we don't hang the test suite if main stalls
+    await Promise.race([mainPromise, new Promise((r) => setTimeout(r, 500))]);
+
+    // The abort must have been processed while send_message was in-flight:
+    // done should have been emitted for 'nb-1'
+    const dones = receivedMsgs.filter((m) => m.type === 'done');
+    expect(dones).toHaveLength(1);
+    expect(dones[0]).toEqual({ type: 'done', id: 'nb-1' });
+  });
 });
