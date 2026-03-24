@@ -610,12 +610,12 @@ fn eval_method_filter_empty_result() {
     assert_eq!(result, Value::List(vec![]));
 }
 
-// ─── step-39: .filter Undef propagation ───
+// ─── step-39: .filter conservative undef retention ───
 
 #[test]
 fn eval_method_filter_undef_propagation() {
-    // [1, undef, 3].filter(|x| x > 0) -> Undef
-    // When x is Undef, Gt(Undef, 0) returns Undef, and filter propagates Undef.
+    // [1, undef, 3].filter(|x| x > 0) -> [1, undef, 3]
+    // When x is Undef, Gt(Undef, 0) returns Undef, and filter conservatively retains the element.
     let x_id = ValueCellId::new("$lambda_filter_u.S", "x");
     let body = CompiledExpr::binop(
         BinOp::Gt,
@@ -642,7 +642,11 @@ fn eval_method_filter_undef_propagation() {
     );
     let values = ValueMap::new();
     let result = eval_expr(&expr, &EvalContext::simple(&values));
-    assert!(result.is_undef(), "[1, undef, 3].filter(|x| x > 0) should be Undef");
+    assert_eq!(
+        result,
+        Value::List(vec![Value::Int(1), Value::Undef, Value::Int(3)]),
+        "[1, undef, 3].filter(|x| x > 0) should conservatively retain undef elements"
+    );
 }
 
 // ─── step-17/18: MethodCall .fold ───
