@@ -175,6 +175,9 @@ pub struct TopologyTemplate {
     pub structure_controlling: HashSet<ValueCellId>,
     pub objective: Option<OptimizationObjective>,
     pub content_hash: ContentHash,
+    /// True if this template participates in a recursive sub-component cycle.
+    /// Set by the post-compilation recursive structure detection pass.
+    pub is_recursive: bool,
 }
 
 /// A compiled connection between ports — compiled from a ConnectDecl or desugared from a ChainDecl.
@@ -1941,6 +1944,11 @@ pub fn compile(
         }
     }
 
+    // Post-compilation pass: detect recursive sub-component cycles.
+    // Build a directed reference graph from sub_components and run DFS to find cycles.
+    // Tag participating templates with is_recursive=true and emit a warning diagnostic.
+    detect_recursive_structures(&mut templates, &mut diagnostics);
+
     // Check for duplicate function signatures: same name + same param types
     {
         let mut seen: HashMap<(String, Vec<Type>), usize> = HashMap::new();
@@ -2066,6 +2074,128 @@ pub fn compile(
         diagnostics,
         content_hash,
     }
+}
+
+/// Detect recursive sub-component cycles among compiled templates.
+///
+/// Builds a directed reference graph where each edge T -> S means "template T has a sub
+/// whose structure_name is S". Runs DFS with path tracking to find back-edges (cycles).
+/// When a cycle is detected:
+/// - All templates in the cycle are tagged with `is_recursive = true`.
+/// - A warning diagnostic is emitted with the cycle path (e.g., "A -> B -> C -> A").
+///
+/// Only edges to structures that exist in the template set are considered; unknown/external
+/// structure references are silently skipped to avoid false positives.
+fn detect_recursive_structures(
+    templates: &mut Vec<TopologyTemplate>,
+    diagnostics: &mut Vec<reify_types::Diagnostic>,
+) {
+    // Build an index: name -> index in templates
+    let name_to_idx: HashMap<&str, usize> = templates
+        .iter()
+        .enumerate()
+        .map(|(i, t)| (t.name.as_str(), i))
+        .collect();
+
+    // Build adjacency list: for each template index, collect the indices of templates it
+    // references via sub_components (only those that exist in the template set).
+    let adjacency: Vec<Vec<usize>> = templates
+        .iter()
+        .map(|t| {
+            t.sub_components
+                .iter()
+                .filter_map(|sub| name_to_idx.get(sub.structure_name.as_str()).copied())
+                .collect()
+        })
+        .collect();
+
+    let n = templates.len();
+    // DFS state: None = unvisited, Some(true) = in-progress (gray), Some(false) = done (black)
+    let mut state: Vec<Option<bool>> = vec![None; n];
+    // Stack tracking the current DFS path (indices)
+    let mut path: Vec<usize> = Vec::new();
+
+    // Track which template indices are part of any cycle
+    let mut in_cycle: Vec<bool> = vec![false; n];
+
+    for start in 0..n {
+        if state[start].is_none() {
+            dfs_detect_cycle(
+                start,
+                &adjacency,
+                &mut state,
+                &mut path,
+                &mut in_cycle,
+                templates,
+                diagnostics,
+            );
+        }
+    }
+
+    // Tag all templates that participated in any cycle
+    for (i, template) in templates.iter_mut().enumerate() {
+        if in_cycle[i] {
+            template.is_recursive = true;
+        }
+    }
+}
+
+/// DFS helper for recursive structure detection.
+/// Uses gray/black coloring: gray (in-progress) = on current path, black = fully explored.
+fn dfs_detect_cycle(
+    node: usize,
+    adjacency: &[Vec<usize>],
+    state: &mut Vec<Option<bool>>,
+    path: &mut Vec<usize>,
+    in_cycle: &mut Vec<bool>,
+    templates: &[TopologyTemplate],
+    diagnostics: &mut Vec<reify_types::Diagnostic>,
+) {
+    // Mark node as in-progress (gray)
+    state[node] = Some(true);
+    path.push(node);
+
+    for &neighbor in &adjacency[node] {
+        match state[neighbor] {
+            None => {
+                // Unvisited: recurse
+                dfs_detect_cycle(
+                    neighbor, adjacency, state, path, in_cycle, templates, diagnostics,
+                );
+            }
+            Some(true) => {
+                // Back edge found: neighbor is on the current path — we have a cycle.
+                // Extract the cycle from path starting at the position of `neighbor`.
+                let cycle_start = path.iter().position(|&x| x == neighbor).unwrap();
+                let cycle_nodes: Vec<usize> = path[cycle_start..].to_vec();
+
+                // Mark all nodes in the cycle
+                for &idx in &cycle_nodes {
+                    in_cycle[idx] = true;
+                }
+
+                // Build the cycle path string: "A -> B -> C -> A"
+                let mut cycle_names: Vec<&str> =
+                    cycle_nodes.iter().map(|&i| templates[i].name.as_str()).collect();
+                cycle_names.push(templates[neighbor].name.as_str()); // close the cycle
+                let cycle_path = cycle_names.join(" -> ");
+
+                diagnostics.push(
+                    reify_types::Diagnostic::warning(format!(
+                        "recursive structure cycle detected: {}",
+                        cycle_path
+                    )),
+                );
+            }
+            Some(false) => {
+                // Already fully explored: no action needed
+            }
+        }
+    }
+
+    path.pop();
+    // Mark node as done (black)
+    state[node] = Some(false);
 }
 
 /// Shared reference to entity definition fields (used by both StructureDef and OccurrenceDef).
@@ -3064,6 +3194,7 @@ fn compile_entity(
         structure_controlling,
         objective,
         content_hash,
+        is_recursive: false,
     }
 }
 

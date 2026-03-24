@@ -585,6 +585,7 @@ impl TopologyTemplateBuilder {
             structure_controlling: self.structure_controlling,
             objective: self.objective,
             content_hash,
+            is_recursive: false,
         }
     }
 }
