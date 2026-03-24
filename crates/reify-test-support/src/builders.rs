@@ -1025,3 +1025,66 @@ impl CompiledFieldBuilder {
         }
     }
 }
+
+// --- Tests for CompiledPurposeBuilder (step-15) ---
+
+#[cfg(test)]
+mod purpose_builder_tests {
+    use super::*;
+    use reify_types::OptimizationObjective;
+
+    #[test]
+    fn purpose_builder_basic_param_and_constraint() {
+        use reify_compiler::CompiledPurpose;
+        let constraint_expr = literal(Value::Bool(true));
+        let purpose: CompiledPurpose = CompiledPurposeBuilder::new("mfg_ready")
+            .param("subject", "Structure")
+            .constraint("subject", 0, Some("thick_enough"), constraint_expr)
+            .build();
+        assert_eq!(purpose.name, "mfg_ready");
+        assert!(!purpose.is_pub);
+        assert_eq!(purpose.params.len(), 1);
+        assert_eq!(purpose.params[0].name, "subject");
+        assert_eq!(purpose.params[0].entity_kind, "Structure");
+        assert_eq!(purpose.constraints.len(), 1);
+        assert_eq!(purpose.constraints[0].label.as_deref(), Some("thick_enough"));
+        assert_ne!(purpose.content_hash, ContentHash(0));
+    }
+
+    #[test]
+    fn purpose_builder_public() {
+        use reify_compiler::CompiledPurpose;
+        let purpose: CompiledPurpose = CompiledPurposeBuilder::new("opt_ready")
+            .public()
+            .build();
+        assert!(purpose.is_pub);
+    }
+
+    #[test]
+    fn purpose_builder_with_objective() {
+        use reify_compiler::CompiledPurpose;
+        let obj_expr = literal(Value::Real(1.0));
+        let purpose: CompiledPurpose = CompiledPurposeBuilder::new("minimize_mass")
+            .param("subject", "Structure")
+            .objective(OptimizationObjective::Minimize(obj_expr))
+            .build();
+        assert!(purpose.objective.is_some());
+        assert_eq!(purpose.resolved_queries.len(), 0);
+        assert_ne!(purpose.content_hash, ContentHash(0));
+    }
+
+    #[test]
+    fn purpose_builder_with_schema_query() {
+        use reify_compiler::CompiledPurpose;
+        let vcid = ValueCellId::new("subject", "thickness");
+        let purpose: CompiledPurpose = CompiledPurposeBuilder::new("mfg_ready")
+            .param("subject", "Structure")
+            .schema_query("subject", "params", vec![vcid.clone()])
+            .build();
+        assert_eq!(purpose.resolved_queries.len(), 1);
+        assert_eq!(purpose.resolved_queries[0].param_name, "subject");
+        assert_eq!(purpose.resolved_queries[0].query_kind, "params");
+        assert_eq!(purpose.resolved_queries[0].resolved_ids.len(), 1);
+        assert_eq!(purpose.resolved_queries[0].resolved_ids[0], vcid);
+    }
+}
