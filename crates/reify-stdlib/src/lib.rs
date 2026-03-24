@@ -122,6 +122,26 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
             }
         }),
 
+        "remap" => {
+            // remap(x, from_lo, from_hi, to_lo, to_hi)
+            if args.len() != 5 {
+                return Value::Undef;
+            }
+            match (
+                args[0].as_f64(),
+                args[1].as_f64(),
+                args[2].as_f64(),
+                args[3].as_f64(),
+                args[4].as_f64(),
+            ) {
+                (Some(x), Some(from_lo), Some(from_hi), Some(to_lo), Some(to_hi)) => {
+                    let result = to_lo + (x - from_lo) * (to_hi - to_lo) / (from_hi - from_lo);
+                    sanitize_value(Value::Real(result))
+                }
+                _ => Value::Undef,
+            }
+        }
+
         // --- Trig functions: accept Angle Scalar or bare Real (radians) ---
         "sin" => unary(args, |v| trig_input(v).map_or(Value::Undef, |r| Value::Real(r.sin()))),
         "cos" => unary(args, |v| trig_input(v).map_or(Value::Undef, |r| Value::Real(r.cos()))),
