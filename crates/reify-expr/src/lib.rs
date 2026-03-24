@@ -341,8 +341,12 @@ pub fn apply_lambda(lambda: &Value, args: &[Value], ctx: &EvalContext) -> Value 
 fn eval_method_call(obj: &Value, method: &str, args: &[Value], result_type: &Type, ctx: &EvalContext) -> Value {
     match method {
         "count" => match obj {
-            Value::List(items) => Value::Int(items.len() as i64),
-            Value::Set(items) => Value::Int(items.len() as i64),
+            Value::List(items) => {
+                if items.iter().any(|v| v.is_undef()) { Value::Undef } else { Value::Int(items.len() as i64) }
+            },
+            Value::Set(items) => {
+                if items.iter().any(|v| v.is_undef()) { Value::Undef } else { Value::Int(items.len() as i64) }
+            },
             Value::Map(entries) => Value::Int(entries.len() as i64),
             _ => Value::Undef,
         },
