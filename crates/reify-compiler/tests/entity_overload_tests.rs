@@ -273,3 +273,43 @@ structure Shape {
         module.templates.len()
     );
 }
+
+// ── step-11: type parameters do NOT distinguish entity names ──────────────
+
+/// Two structures with the same name but different type parameters still
+/// produce a 'duplicate entity definition' error. Spec §4.2.1: entity overloading
+/// is forbidden regardless of type parameters (name-only comparison).
+#[test]
+fn duplicate_structure_names_with_different_type_params_produce_error() {
+    let source = r#"
+structure Box<T> {
+    param value : Real = 0.0
+}
+
+structure Box<T, U> {
+    param width : Real = 1.0
+    param height : Real = 2.0
+}
+"#;
+    let module = compile_module(source);
+    let errors = errors_only(&module);
+
+    let dup_errors: Vec<_> = errors
+        .iter()
+        .filter(|d| d.message.contains("duplicate entity definition") && d.message.contains("Box"))
+        .collect();
+    assert_eq!(
+        dup_errors.len(),
+        1,
+        "expected exactly 1 duplicate-entity error for 'Box', got errors: {:?}",
+        errors
+    );
+
+    // Only 1 template compiled (first definition wins regardless of type params)
+    assert_eq!(
+        module.templates.len(),
+        1,
+        "expected only 1 compiled template, got {}",
+        module.templates.len()
+    );
+}
