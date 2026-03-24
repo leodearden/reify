@@ -101,7 +101,45 @@ pub fn check_trait_conformance(
     structure_members: &HashMap<String, Type>,
     trait_def: &CompiledTrait,
 ) -> Vec<ConformanceError> {
-    vec![]
+    let mut errors = Vec::new();
+    for req in &trait_def.required_members {
+        match &req.kind {
+            RequirementKind::Param(expected_type) => {
+                match structure_members.get(&req.name) {
+                    None => errors.push(ConformanceError::MissingParam {
+                        name: req.name.clone(),
+                        expected_type: expected_type.clone(),
+                    }),
+                    Some(actual_type) if actual_type != expected_type => {
+                        errors.push(ConformanceError::TypeMismatch {
+                            name: req.name.clone(),
+                            expected_type: expected_type.clone(),
+                            actual_type: actual_type.clone(),
+                        });
+                    }
+                    Some(_) => {} // satisfied
+                }
+            }
+            RequirementKind::Let(expected_type) => {
+                match structure_members.get(&req.name) {
+                    None => errors.push(ConformanceError::MissingLet {
+                        name: req.name.clone(),
+                        expected_type: expected_type.clone(),
+                    }),
+                    Some(actual_type) if actual_type != expected_type => {
+                        errors.push(ConformanceError::LetTypeMismatch {
+                            name: req.name.clone(),
+                            expected_type: expected_type.clone(),
+                            actual_type: actual_type.clone(),
+                        });
+                    }
+                    Some(_) => {} // satisfied
+                }
+            }
+            RequirementKind::Sub(_) => {} // Sub checking not in scope for this function
+        }
+    }
+    errors
 }
 
 /// The compiled source of a field.
