@@ -343,3 +343,37 @@ structure S {
         other => panic!("expected BinOp(And), got {:?}", other),
     }
 }
+
+/// step-17: chained comparison in a let binding.
+/// `let in_range = 0 < x < 100` — the let cell's initializer is desugared to
+/// an And-chain with type Bool.
+#[test]
+fn let_binding_chain_desugars_to_and() {
+    let source = r#"
+structure S {
+    param x : Int = 50
+    let in_range = 0 < x < 100
+}
+"#;
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    // Find the `in_range` value cell
+    let in_range_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "in_range")
+        .expect("should have 'in_range' value cell");
+
+    // Its default_expr should be desugared to And-chain
+    let init = in_range_cell.default_expr.as_ref().expect("in_range should have default_expr");
+    assert_eq!(init.result_type, reify_types::Type::Bool, "in_range should have type Bool");
+    match &init.kind {
+        CompiledExprKind::BinOp { op, .. } => {
+            assert_eq!(op, &BinOp::And, "in_range default_expr should be And-chain");
+        }
+        other => panic!("expected BinOp(And) for in_range default_expr, got {:?}", other),
+    }
+}
