@@ -1276,4 +1276,22 @@ mod tests {
         );
         assert!(result.is_undef(), "lerp with NaN b should be Undef, got {:?}", result);
     }
+
+    // --- lerp Int/edge tests (step-13) ---
+
+    #[test]
+    fn lerp_int_inputs_coerce_to_real() {
+        // lerp(Int(0), Int(10), Real(0.5)) -> Real(5.0)
+        // The Int fast path extracts as f64, computes, returns Real
+        assert_real_approx!(
+            eval_builtin("lerp", &[Value::Int(0), Value::Int(10), Value::Real(0.5)]),
+            5.0
+        );
+    }
+
+    #[test]
+    fn lerp_wrong_arg_count_returns_undef() {
+        let result = eval_builtin("lerp", &[Value::Real(0.0), Value::Real(10.0)]);
+        assert!(result.is_undef(), "lerp with 2 args should be Undef, got {:?}", result);
+    }
 }
