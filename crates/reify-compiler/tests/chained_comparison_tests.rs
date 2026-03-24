@@ -158,3 +158,43 @@ structure S {
         other => panic!("expected BinOp(And) at outer level, got {:?}", other),
     }
 }
+
+/// step-7: `constraint a == b == c` desugars to `And(Eq(a,b), Eq(b,c))`.
+/// Equality operators participate in chaining.
+#[test]
+fn equality_chain_desugars_to_and() {
+    let source = r#"
+structure S {
+    param a : Int = 1
+    param b : Int = 1
+    param c : Int = 1
+    constraint a == b == c
+}
+"#;
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    assert!(!template.constraints.is_empty(), "should have at least one constraint");
+
+    let expr = &template.constraints[0].expr;
+    match &expr.kind {
+        CompiledExprKind::BinOp { op, left, right } => {
+            assert_eq!(*op, BinOp::And, "top-level op should be And");
+            match &left.kind {
+                CompiledExprKind::BinOp { op: lop, .. } => {
+                    assert_eq!(*lop, BinOp::Eq, "left pairwise op should be Eq");
+                }
+                other => panic!("expected BinOp(Eq) for left, got {:?}", other),
+            }
+            match &right.kind {
+                CompiledExprKind::BinOp { op: rop, .. } => {
+                    assert_eq!(*rop, BinOp::Eq, "right pairwise op should be Eq");
+                }
+                other => panic!("expected BinOp(Eq) for right, got {:?}", other),
+            }
+        }
+        other => panic!("expected BinOp(And) at top level, got {:?}", other),
+    }
+}
