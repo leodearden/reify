@@ -202,6 +202,18 @@ mod tests {
     }
 
     #[test]
+    fn type_vec_factory_methods() {
+        assert_eq!(
+            Type::vec2(Type::length()),
+            Type::Vector { n: 2, quantity: Box::new(Type::length()) }
+        );
+        assert_eq!(
+            Type::vec3(Type::Real),
+            Type::Vector { n: 3, quantity: Box::new(Type::Real) }
+        );
+    }
+
+    #[test]
     fn type_point_factory_methods() {
         assert_eq!(
             Type::point2(Type::length()),
