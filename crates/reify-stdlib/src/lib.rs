@@ -620,11 +620,10 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
         }
 
         // --- Point/Vector constructors ---
-        // These produce Value::Tensor since Value::Point/Vector are not runtime variants.
-        "point2" => construct_point_or_vector(args, 2),
-        "point3" => construct_point_or_vector(args, 3),
-        "vec2"   => construct_point_or_vector(args, 2),
-        "vec3"   => construct_point_or_vector(args, 3),
+        "point2" => construct_point_or_vector(args, 2, true),
+        "point3" => construct_point_or_vector(args, 3, true),
+        "vec2"   => construct_point_or_vector(args, 2, false),
+        "vec3"   => construct_point_or_vector(args, 3, false),
 
         // --- Field operations (stubs) ---
         // These are handled by reify-expr's eval_expr FunctionCall interceptor
@@ -639,7 +638,7 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
     }
 }
 
-/// Validate args for a point/vector constructor and return `Value::Tensor` on success.
+/// Validate args for a point/vector constructor and return `Value::Point` or `Value::Vector`.
 ///
 /// Validates:
 /// 1. `args.len() == expected_n`
@@ -647,7 +646,8 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
 /// 3. All args share the same physical dimension
 ///
 /// Returns `Value::Undef` on any validation failure.
-fn construct_point_or_vector(args: &[Value], expected_n: usize) -> Value {
+/// When `is_point` is `true`, returns `Value::Point`; otherwise returns `Value::Vector`.
+fn construct_point_or_vector(args: &[Value], expected_n: usize, is_point: bool) -> Value {
     if args.len() != expected_n {
         return Value::Undef;
     }
@@ -660,7 +660,11 @@ fn construct_point_or_vector(args: &[Value], expected_n: usize) -> Value {
     if !args.iter().all(|a| a.dimension() == first_dim) {
         return Value::Undef;
     }
-    Value::Tensor(args.to_vec())
+    if is_point {
+        Value::Point(args.to_vec())
+    } else {
+        Value::Vector(args.to_vec())
+    }
 }
 
 /// Apply a function to a single argument (by reference, for pattern matching).
@@ -825,11 +829,12 @@ fn lerp_f64(a: f64, b: f64, t: f64) -> f64 {
 /// - All components support `as_f64()`.
 /// - All components share the same dimension (or all are dimensionless).
 ///
-/// Returns `None` for non-Tensor values, empty Tensors, non-numeric components,
-/// or Tensors with mixed dimensions.
+/// Returns `None` for non-Tensor/Point/Vector values, empty containers, non-numeric
+/// components, or containers with mixed dimensions.
 fn tensor_components_f64(v: &Value) -> Option<(Vec<f64>, DimensionVector)> {
     let items = match v {
-        Value::Tensor(items) if !items.is_empty() => items,
+        Value::Tensor(items) | Value::Point(items) | Value::Vector(items)
+            if !items.is_empty() => items,
         _ => return None,
     };
     let first_dim = items[0].dimension();
@@ -3544,17 +3549,17 @@ mod tests {
 
     #[test]
     fn point3_dimensionless() {
-        // point3(Real(1.0), Real(2.0), Real(3.0)) → Tensor with Real components preserved
+        // point3(Real(1.0), Real(2.0), Real(3.0)) → Value::Point with Real components preserved
         let args = vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)];
         let result = eval_builtin("point3", &args);
         match result {
-            Value::Tensor(ref items) => {
+            Value::Point(ref items) => {
                 assert_eq!(items.len(), 3);
                 assert!(matches!(&items[0], Value::Real(v) if (*v - 1.0).abs() < 1e-12));
                 assert!(matches!(&items[1], Value::Real(v) if (*v - 2.0).abs() < 1e-12));
                 assert!(matches!(&items[2], Value::Real(v) if (*v - 3.0).abs() < 1e-12));
             }
-            other => panic!("expected Tensor with Real components, got {:?}", other),
+            other => panic!("expected Point with Real components, got {:?}", other),
         }
     }
 
@@ -3562,16 +3567,16 @@ mod tests {
 
     #[test]
     fn vec2_basic() {
-        // vec2(9.0, 10.0) → Value::Tensor([Real(9.0), Real(10.0)])
+        // vec2(9.0, 10.0) → Value::Vector([Real(9.0), Real(10.0)])
         let args = vec![Value::Real(9.0), Value::Real(10.0)];
         let result = eval_builtin("vec2", &args);
         match result {
-            Value::Tensor(ref items) => {
+            Value::Vector(ref items) => {
                 assert_eq!(items.len(), 2);
                 assert!(matches!(&items[0], Value::Real(v) if (*v - 9.0).abs() < 1e-12));
                 assert!(matches!(&items[1], Value::Real(v) if (*v - 10.0).abs() < 1e-12));
             }
-            other => panic!("expected Tensor, got {:?}", other),
+            other => panic!("expected Vector, got {:?}", other),
         }
     }
 
@@ -3579,19 +3584,19 @@ mod tests {
 
     #[test]
     fn point2_basic() {
-        // point2(7m, 8m) → Value::Tensor([Scalar(7,L), Scalar(8,L)])
+        // point2(7m, 8m) → Value::Point([Scalar(7,L), Scalar(8,L)])
         let args = vec![
             Value::Scalar { si_value: 7.0, dimension: DimensionVector::LENGTH },
             Value::Scalar { si_value: 8.0, dimension: DimensionVector::LENGTH },
         ];
         let result = eval_builtin("point2", &args);
         match result {
-            Value::Tensor(ref items) => {
+            Value::Point(ref items) => {
                 assert_eq!(items.len(), 2);
                 assert_scalar_approx!(items[0].clone(), 7.0, DimensionVector::LENGTH);
                 assert_scalar_approx!(items[1].clone(), 8.0, DimensionVector::LENGTH);
             }
-            other => panic!("expected Tensor, got {:?}", other),
+            other => panic!("expected Point, got {:?}", other),
         }
     }
 
@@ -3599,7 +3604,7 @@ mod tests {
 
     #[test]
     fn vec3_basic() {
-        // vec3(4m, 5m, 6m) → Value::Tensor([Scalar(4,L), Scalar(5,L), Scalar(6,L)])
+        // vec3(4m, 5m, 6m) → Value::Vector([Scalar(4,L), Scalar(5,L), Scalar(6,L)])
         let args = vec![
             Value::Scalar { si_value: 4.0, dimension: DimensionVector::LENGTH },
             Value::Scalar { si_value: 5.0, dimension: DimensionVector::LENGTH },
@@ -3607,13 +3612,13 @@ mod tests {
         ];
         let result = eval_builtin("vec3", &args);
         match result {
-            Value::Tensor(ref items) => {
+            Value::Vector(ref items) => {
                 assert_eq!(items.len(), 3);
                 assert_scalar_approx!(items[0].clone(), 4.0, DimensionVector::LENGTH);
                 assert_scalar_approx!(items[1].clone(), 5.0, DimensionVector::LENGTH);
                 assert_scalar_approx!(items[2].clone(), 6.0, DimensionVector::LENGTH);
             }
-            other => panic!("expected Tensor, got {:?}", other),
+            other => panic!("expected Vector, got {:?}", other),
         }
     }
 
@@ -3621,7 +3626,7 @@ mod tests {
 
     #[test]
     fn point3_basic() {
-        // point3(1m, 2m, 3m) → Value::Tensor([Scalar(1,L), Scalar(2,L), Scalar(3,L)])
+        // point3(1m, 2m, 3m) → Value::Point([Scalar(1,L), Scalar(2,L), Scalar(3,L)])
         let args = vec![
             Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
             Value::Scalar { si_value: 2.0, dimension: DimensionVector::LENGTH },
@@ -3629,13 +3634,13 @@ mod tests {
         ];
         let result = eval_builtin("point3", &args);
         match result {
-            Value::Tensor(ref items) => {
+            Value::Point(ref items) => {
                 assert_eq!(items.len(), 3);
                 assert_scalar_approx!(items[0].clone(), 1.0, DimensionVector::LENGTH);
                 assert_scalar_approx!(items[1].clone(), 2.0, DimensionVector::LENGTH);
                 assert_scalar_approx!(items[2].clone(), 3.0, DimensionVector::LENGTH);
             }
-            other => panic!("expected Tensor, got {:?}", other),
+            other => panic!("expected Point, got {:?}", other),
         }
     }
 
