@@ -4983,6 +4983,59 @@ mod tests {
         );
     }
 
+    // --- union_all / intersection_all fold compilation tests (step-7) ---
+
+    #[test]
+    fn compile_union_all_three_args_produces_five_ops() {
+        // union_all(a, b, c) → left-fold: Union(Union(a,b), c)
+        // ops: Box_a, Box_b, Boolean{Union,Step(0),Step(1)}, Box_c, Boolean{Union,Step(2),Step(3)}
+        let source = r#"structure S {
+    let r = union_all(box(10mm, 10mm, 10mm), box(10mm, 10mm, 10mm), box(10mm, 10mm, 10mm))
+}"#;
+        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_union_all"));
+        assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+        let compiled = compile(&parsed);
+        let template = &compiled.templates[0];
+        assert_eq!(template.realizations.len(), 1, "expected 1 realization");
+        let ops = &template.realizations[0].operations;
+        assert_eq!(
+            ops.len(), 5,
+            "expected 5 ops for union_all(3 args), got {}: {:?}",
+            ops.len(), ops
+        );
+        // ops[0]: Box
+        assert!(
+            matches!(ops[0], CompiledGeometryOp::Primitive { kind: PrimitiveKind::Box, .. }),
+            "expected Box at ops[0]"
+        );
+        // ops[1]: Box
+        assert!(
+            matches!(ops[1], CompiledGeometryOp::Primitive { kind: PrimitiveKind::Box, .. }),
+            "expected Box at ops[1]"
+        );
+        // ops[2]: Union(Step(0), Step(1))
+        assert!(
+            matches!(
+                ops[2],
+                CompiledGeometryOp::Boolean { op: BooleanOp::Union, left: GeomRef::Step(0), right: GeomRef::Step(1) }
+            ),
+            "expected Boolean{{Union,Step(0),Step(1)}} at ops[2], got {:?}", ops[2]
+        );
+        // ops[3]: Box
+        assert!(
+            matches!(ops[3], CompiledGeometryOp::Primitive { kind: PrimitiveKind::Box, .. }),
+            "expected Box at ops[3]"
+        );
+        // ops[4]: Union(Step(2), Step(3))
+        assert!(
+            matches!(
+                ops[4],
+                CompiledGeometryOp::Boolean { op: BooleanOp::Union, left: GeomRef::Step(2), right: GeomRef::Step(3) }
+            ),
+            "expected Boolean{{Union,Step(2),Step(3)}} at ops[4], got {:?}", ops[4]
+        );
+    }
+
     // --- difference and intersection compilation tests (step-5, step-6) ---
 
     #[test]
