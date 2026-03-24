@@ -2245,4 +2245,61 @@ mod tests {
             _ => panic!("expected Range"),
         }
     }
+
+    // ── Range equality/hash equivalence with differing flags (task-364 step-3) ─
+
+    #[test]
+    fn value_range_eq_none_lower_ignores_inclusive() {
+        let r1 = Value::range(None, Some(Value::Int(10)), true, true);
+        let r2 = Value::range(None, Some(Value::Int(10)), false, true);
+        assert_eq!(r1, r2);
+    }
+
+    #[test]
+    fn value_range_eq_none_upper_ignores_inclusive() {
+        let r1 = Value::range(Some(Value::Int(0)), None, true, true);
+        let r2 = Value::range(Some(Value::Int(0)), None, true, false);
+        assert_eq!(r1, r2);
+    }
+
+    #[test]
+    fn value_range_eq_both_none_ignores_inclusive() {
+        let r1 = Value::range(None, None, true, true);
+        let r2 = Value::range(None, None, false, false);
+        assert_eq!(r1, r2);
+    }
+
+    #[test]
+    fn value_range_hash_none_lower_ignores_inclusive() {
+        let r1 = Value::range(None, Some(Value::Int(10)), true, true);
+        let r2 = Value::range(None, Some(Value::Int(10)), false, true);
+        assert_eq!(r1.content_hash(), r2.content_hash());
+    }
+
+    #[test]
+    fn value_range_hash_none_upper_ignores_inclusive() {
+        let r1 = Value::range(Some(Value::Int(0)), None, true, true);
+        let r2 = Value::range(Some(Value::Int(0)), None, true, false);
+        assert_eq!(r1.content_hash(), r2.content_hash());
+    }
+
+    // ── Range Display with inclusive+None edge cases (task-364 step-4) ─────────
+
+    #[test]
+    fn value_range_display_none_lower_with_inclusive_true() {
+        let r = Value::range(None, Some(Value::Int(10)), true, true);
+        assert_eq!(format!("{}", r), "(-inf..10]");
+    }
+
+    #[test]
+    fn value_range_display_none_upper_with_inclusive_true() {
+        let r = Value::range(Some(Value::Int(0)), None, true, true);
+        assert_eq!(format!("{}", r), "[0..inf)");
+    }
+
+    #[test]
+    fn value_range_display_both_none_with_inclusive_true() {
+        let r = Value::range(None, None, true, true);
+        assert_eq!(format!("{}", r), "(-inf..inf)");
+    }
 }
