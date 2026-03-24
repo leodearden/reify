@@ -1,275 +1,211 @@
 {
-  "task_id": "218",
-  "title": "M9 test support: builder extensions",
+  "task_id": "157",
+  "title": "Chained comparisons: desugaring",
   "files": [
-    "crates/reify-test-support/src/builders.rs",
-    "crates/reify-test-support/src/fixtures.rs",
-    "crates/reify-test-support/src/values.rs",
-    "crates/reify-test-support/src/lib.rs"
+    "crates/reify-compiler/src/lib.rs",
+    "crates/reify-compiler/tests/chained_comparison_tests.rs"
   ],
   "modules": [
-    "crates/reify-test-support"
+    "crates/reify-compiler"
   ],
-  "analysis": "The reify-test-support crate currently has expression builders (literal, binop, comparisons, etc.), a TopologyTemplateBuilder, a CompiledModuleBuilder, fixture functions (bracket, parent_child), mock implementations (MockConstraintChecker, MockConstraintSolver, MockGeometryKernel, etc.), and value/ID constructors. Task 218 requires four categories of extensions:\n\n1. **Trait conformance test helpers**: The TopologyTemplate has `trait_bounds: Vec<String>` and `type_params: Vec<TypeParam>` fields but the builder always sets them to empty vecs. CompiledModule has `trait_defs: Vec<CompiledTrait>` but CompiledModuleBuilder always sets it to empty. We need a TraitDefBuilder for CompiledTrait, extensions to TopologyTemplateBuilder for trait_bounds/type_params, a trait_def() method on CompiledModuleBuilder, and fixture functions that combine traits + structures for conformance testing.\n\n2. **Constraint def fixtures**: Pre-built constraint expression patterns and fixture modules with various constraint configurations (dimensional, logical, multi-constraint) that tests across the codebase can reuse instead of manually constructing constraint expressions.\n\n3. **Determinacy state injection helpers**: The evaluation engine uses PersistentMap<ValueCellId, (Value, DeterminacyState)> for snapshot values. Tests currently construct these manually. A SnapshotValuesBuilder and convenience helpers (determined(), undetermined(), provisional(), auto()) will simplify setting up determinacy states for predicate testing.\n\n4. **Recursive structure fixtures**: Compiled modules with structures that have sub-components referencing the same structure type (tree nodes) or mutual recursion (A\u2192B\u2192A chains), used for testing cycle detection and recursive evaluation.\n\n**Review fix addendum**: Two blocking issues found \u2014 (a) bare `matches!` on line 543 silently discards its bool result instead of asserting, (b) CompiledModuleBuilder::build() omits trait_defs from content_hash, causing hash collisions between modules differing only in trait definitions.",
+  "analysis": "The Reify grammar already parses chained comparisons as left-nested BinOp nodes due to left-associative precedence: `a < b < c` becomes `BinOp(\"<\", BinOp(\"<\", a, b), c)`. Currently the compiler compiles this as-is, which would attempt to compare a Bool result (from `a < b`) with `c` — producing a type-nonsensical expression. The fix is to detect this pattern in `compile_expr_guarded()` and desugar it into an And-chain of pairwise comparisons. No grammar, parser, or evaluator changes are needed — the grammar already produces the detectable left-nested structure, and the evaluator already handles `BinOp::And` with short-circuit Kleene logic.\n\nThe algorithm works by flattening the left-nested comparison chain from the parsed AST into a flat list of operands and operators, compiling each operand exactly once, then building the And-chain from compiled pairwise comparisons. Middle operands are cloned at the `CompiledExpr` level (safe because Reify expressions are pure/side-effect-free and the evaluator uses content-hash-based caching for dedup).\n\nKey code locations:\n- `compile_expr_guarded()` at lib.rs:769 — expression compilation dispatch\n- `ExprKind::BinOp` handling at lib.rs:838 — where chain detection will be inserted\n- `resolve_binop()` at lib.rs:629 — operator string-to-enum mapping\n- `infer_binop_type()` at lib.rs:661 — type inference (comparisons produce Bool, already handled)\n- `CompiledExpr::binop()` in reify-types/expr.rs:177 — constructor with content hashing",
   "prerequisites": [],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing test for TraitDefBuilder: trait_def_builder_minimal builds a CompiledTrait with name, empty requirements/defaults/refinements, and valid content_hash",
+      "description": "Write failing test: simple two-element chain `a < b < c` desugars to `And(Lt(a,b), Lt(b,c))`. Create new test file `chained_comparison_tests.rs` with `compile_first_template()` helper. Parse+compile a structure with `constraint a < b < c` and assert the constraint expression is `BinOp(And, BinOp(Lt, a, b), BinOp(Lt, b, c))` by pattern-matching on CompiledExprKind.",
       "status": "done",
-      "commit": "e6ae70d"
+      "commit": "b94f8a4"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Implement TraitDefBuilder struct with new(name), is_pub(), build() methods. Builder follows the same fluent pattern as TopologyTemplateBuilder. Build computes content_hash from name + members.",
+      "description": "Implement chain detection and desugaring in `compile_expr_guarded()`. Add helper `is_comparison_op(op: &str) -> bool` that returns true for <, <=, >, >=, ==, !=. Add `flatten_comparison_chain(expr: &Expr) -> Option<(Vec<&Expr>, Vec<&str>)>` that walks leftward through nested BinOps with comparison operators, collecting operands and operators into flat vectors. In the `ExprKind::BinOp` match arm, before existing logic, call `flatten_comparison_chain` — if it returns Some with >2 operands, compile each operand once, clone middle CompiledExprs, and build the left-folded And-chain of pairwise comparisons. Otherwise fall through to existing BinOp logic.",
       "status": "done",
-      "commit": "e6ae70d"
+      "commit": "d42cd38"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing tests for TraitDefBuilder members: trait_def_builder_with_requirement (adds RequirementKind::Param), trait_def_builder_with_default (adds DefaultKind::Constraint), trait_def_builder_with_refinement, trait_def_builder_with_type_param (adds TypeParam with bounds)",
+      "description": "Write failing test: mixed comparison operators `a < b <= c` desugars to `And(Lt(a,b), Le(b,c))`. Verify both operator variants are preserved correctly in the desugared output.",
       "status": "done",
-      "commit": "5bbea3d"
+      "commit": "357590b"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Implement TraitDefBuilder methods: requirement(name, kind), default(name, kind), refinement(name), type_param(param). Each returns Self for chaining.",
+      "description": "Verify step-3 test passes with existing implementation (should pass already since flatten handles all comparison ops). If not, fix the operator handling in the flatten/desugar logic.",
       "status": "done",
-      "commit": "5bbea3d"
+      "commit": "357590b"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing tests for TopologyTemplateBuilder trait extensions: topology_with_trait_bound verifies template.trait_bounds contains the bound name, topology_with_type_param verifies template.type_params contains the TypeParam",
+      "description": "Write failing test: three-operator chain `a < b < c < d` desugars to `And(And(Lt(a,b), Lt(b,c)), Lt(c,d))`. Verify the recursive left-folded And structure with 3 pairwise comparisons sharing middle operands.",
       "status": "done",
-      "commit": "2ddb636"
+      "commit": "9181fbd"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Add trait_bound(name: impl Into<String>) and type_param(param: TypeParam) methods to TopologyTemplateBuilder. Modify build() to use self.type_params and self.trait_bounds instead of empty vecs.",
+      "description": "Verify step-5 test passes with existing implementation (should pass since flatten handles arbitrary depth). If not, fix the And-chain construction to left-fold correctly.",
       "status": "done",
-      "commit": "2ddb636"
+      "commit": "9181fbd"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing test for CompiledModuleBuilder trait_def method: module_builder_with_trait_def verifies module.trait_defs is populated after calling .trait_def(compiled_trait)",
+      "description": "Write failing test: equality chain `a == b == c` desugars to `And(Eq(a,b), Eq(b,c))`. Confirms that equality operators participate in chaining per the spec.",
       "status": "done",
-      "commit": "80f73f4"
+      "commit": "0e6c7b2"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Add trait_defs field to CompiledModuleBuilder, add trait_def(t: CompiledTrait) method, update build() to use self.trait_defs instead of Vec::new()",
+      "description": "Verify step-7 test passes. If not, ensure == and != are included in is_comparison_op().",
       "status": "done",
-      "commit": "80f73f4"
+      "commit": "0e6c7b2"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write failing tests for trait conformance fixtures: rigid_trait_module_structure verifies the fixture has 1 trait (Rigid with param mass: Mass, constraint mass > 0kg) and 1 template (Bolt: Rigid with param mass)",
+      "description": "Write test: middle expression compiled once — verify that a chain like `a < b + c < d` compiles correctly with the complex middle expression `b + c` appearing as a BinOp(Add) in both the right side of the first comparison and the left side of the second. Assert both sub-expressions have the same content_hash, confirming they are cloned from a single compilation rather than compiled independently.",
       "status": "done",
-      "commit": "6abf4cf"
+      "commit": "b3a5c4e"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Implement rigid_trait_module() fixture in fixtures.rs using TraitDefBuilder and TopologyTemplateBuilder. Creates a module with trait Rigid { param mass: Mass; constraint mass > 0kg } and structure Bolt: Rigid { param mass: Mass = 1kg }.",
+      "description": "Verify step-9 test passes. The flatten-then-compile-once approach should naturally ensure middle operands are compiled once and cloned. If the content_hash assertion fails, fix the clone logic.",
       "status": "done",
-      "commit": "6abf4cf"
+      "commit": "b3a5c4e"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write failing test for generic_container_module fixture: verifies module has 2 traits (Rigid, Container<T: Rigid>), 2 templates (Bolt: Rigid, Crate: Container<Bolt>), Container trait has type_param T with Rigid bound",
+      "description": "Write test: non-comparison binary op on left does NOT trigger chaining. E.g., `(a + b) < c` should compile as a normal `Lt(Add(a,b), c)` without any And-wrapping. Verifies that only comparison operators in the left operand trigger the chain detection.",
       "status": "done",
-      "commit": "4169619"
+      "commit": "c1bde9d"
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "Implement generic_container_module() fixture in fixtures.rs: trait Container<T: Rigid> { param count: Int } with structures Bolt: Rigid and Crate: Container<Bolt>.",
+      "description": "Verify step-11 passes. The is_comparison_op() check should naturally exclude arithmetic ops. If not, fix the predicate.",
       "status": "done",
-      "commit": "4169619"
+      "commit": "c1bde9d"
     },
     {
       "id": "step-13",
       "type": "test",
-      "description": "Write failing tests for constraint expression helpers: range_constraint(entity, member, min_val, max_val) returns a Vec of two CompiledConstraints (member > min AND member < max), equality_constraint returns one constraint (member == value)",
+      "description": "Write test: single comparison (no chain) `a < b` still compiles as plain `Lt(a,b)`. Regression test ensuring the desugaring only activates for actual chains (>2 operands), not single comparisons.",
       "status": "done",
-      "commit": "84f022f"
+      "commit": "983c376"
     },
     {
       "id": "step-14",
       "type": "impl",
-      "description": "Implement constraint expression helper functions in builders.rs: range_constraint(entity, member, cell_type, min_expr, max_expr) -> Vec<(u32, CompiledExpr)>, equality_constraint(entity, member, cell_type, target_expr) -> CompiledExpr. These compose existing expression builders.",
+      "description": "Verify step-13 passes. The flatten function should return None for single comparisons (only 2 operands). If not, adjust the threshold check.",
       "status": "done",
-      "commit": "84f022f"
+      "commit": "983c376"
     },
     {
       "id": "step-15",
       "type": "test",
-      "description": "Write failing test for constrained_structure_module fixture: multi_constraint_fixture_structure verifies a module with structure having dimensional constraints (range), logical constraints (boolean condition), and labeled constraints",
+      "description": "Write integration test: chained comparison in a constraint with Scalar quantities — `constraint 2mm < thickness < 10mm`. Compile the structure and verify: (1) no error diagnostics, (2) the constraint is an And of two comparisons, (3) result_type is Bool. This tests the real-world use case of range constraints in engineering.",
       "status": "done",
-      "commit": "80142e4"
+      "commit": "c51caf9"
     },
     {
       "id": "step-16",
       "type": "impl",
-      "description": "Implement constrained_structure_module() fixture in fixtures.rs: a Beam structure with width/height params, range constraints on both, a ratio constraint (height > 2*width), and a labeled constraint. Uses constraint expression helpers from step-14.",
+      "description": "Verify step-15 passes. May require no changes if types flow correctly through the desugared form. If dimension checking triggers false errors on the desugared form, investigate and fix.",
       "status": "done",
-      "commit": "80142e4"
+      "commit": "c51caf9"
     },
     {
       "id": "step-17",
       "type": "test",
-      "description": "Write failing tests for determinacy state helpers in values.rs: determined(vcid, value) returns (Value, DeterminacyState::Determined), undetermined(vcid) returns (Value::Undef, DeterminacyState::Undetermined), provisional(vcid, value) and auto_state(vcid) return the corresponding states",
+      "description": "Write test: chained comparison in a let binding — `let in_range = 0 < x < 100`. Verify the let cell's initializer expression is desugared to an And-chain and has type Bool.",
       "status": "done",
-      "commit": "6661e02"
+      "commit": "56f53b9"
     },
     {
       "id": "step-18",
       "type": "impl",
-      "description": "Implement determinacy helper functions in values.rs: determined(value) -> (Value, DeterminacyState), undetermined() -> (Value, DeterminacyState), provisional(value) -> (Value, DeterminacyState), auto_state() -> (Value, DeterminacyState). Returns tuples matching the PersistentMap value type used in snapshot_values.",
+      "description": "Verify step-17 passes. Let-binding compilation uses the same compile_expr_guarded() path, so desugaring should apply automatically.",
       "status": "done",
-      "commit": "6661e02"
+      "commit": "56f53b9"
     },
     {
       "id": "step-19",
       "type": "test",
-      "description": "Write failing tests for SnapshotValuesBuilder: builds a HashMap<ValueCellId, (Value, DeterminacyState)> using fluent API \u2014 .determined(id, value).undetermined(id).provisional(id, value).auto_val(id).build(). Verify correct values and states.",
+      "description": "Write test: cross-precedence chain `a < b == c` (< at grammar prec 4, == at prec 3). Due to grammar precedence, this parses as `(a < b) == c`, which the compiler should desugar to `And(Lt(a,b), Eq(b,c))`. Verify correct desugaring across precedence boundaries.",
       "status": "done",
-      "commit": "ff23d06"
+      "commit": "56f53b9"
     },
     {
       "id": "step-20",
       "type": "impl",
-      "description": "Implement SnapshotValuesBuilder in values.rs with new(), determined(id, value), undetermined(id), provisional(id, value), auto_val(id), and build() -> HashMap<ValueCellId, (Value, DeterminacyState)>. Uses the tuple helpers from step-18 internally.",
+      "description": "Verify step-19 passes. The left-flattening approach handles this since (a < b) is a comparison in the left position of == c. If not, fix.",
       "status": "done",
-      "commit": "ff23d06"
-    },
-    {
-      "id": "step-21",
-      "type": "test",
-      "description": "Write failing test for recursive_tree_module fixture: verifies a module with TreeNode structure that has param value: Int, optional sub left = TreeNode, optional sub right = TreeNode. Verify sub_components reference same structure_name.",
-      "status": "done",
-      "commit": "6ac1b28"
-    },
-    {
-      "id": "step-22",
-      "type": "impl",
-      "description": "Implement recursive_tree_module() fixture in fixtures.rs: structure TreeNode with param value: Int = 0, sub left = TreeNode, sub right = TreeNode. Both sub-components reference 'TreeNode' as structure_name, creating a self-referencing topology.",
-      "status": "done",
-      "commit": "6ac1b28"
-    },
-    {
-      "id": "step-23",
-      "type": "test",
-      "description": "Write failing test for mutual_recursion_module fixture: verifies a module with two structures (NodeA with sub child = NodeB, NodeB with sub parent_ref = NodeA) forming a mutual recursion cycle.",
-      "status": "done",
-      "commit": "6ac1b28"
-    },
-    {
-      "id": "step-24",
-      "type": "impl",
-      "description": "Implement mutual_recursion_module() fixture in fixtures.rs: structures NodeA (param a_val: Int, sub child = NodeB) and NodeB (param b_val: Int, sub ref_back = NodeA), creating mutual recursion.",
-      "status": "done",
-      "commit": "6ac1b28"
-    },
-    {
-      "id": "step-25",
-      "type": "test",
-      "description": "Fix silent assertion in trait_def_builder_with_requirement test (line 543): change bare `matches!(&ct.required_members[0].kind, RequirementKind::Param(_));` to `assert!(matches!(...));` so the RequirementKind check actually asserts instead of silently discarding a bool. This is a test-only fix \u2014 no implementation code changes needed.",
-      "status": "done",
-      "commit": "5231eaf"
-    },
-    {
-      "id": "step-26",
-      "type": "test",
-      "description": "Write failing test module_builder_trait_defs_affect_content_hash: build two CompiledModules via CompiledModuleBuilder that are identical except one has a trait_def added. Assert their content_hashes differ. This test will fail because build() currently excludes trait_defs from the hash computation.",
-      "status": "done",
-      "commit": "9b5fe46"
-    },
-    {
-      "id": "step-27",
-      "type": "impl",
-      "description": "Fix CompiledModuleBuilder::build() content_hash computation (lines 786-803): add `let trait_def_hashes = self.trait_defs.iter().map(|t| t.content_hash);` and chain it into all_hashes alongside template_hashes, import_hashes, and function_hashes. This ensures modules differing only in trait_defs produce distinct hashes.",
-      "status": "done",
-      "commit": "733d5ec"
+      "commit": "56f53b9"
     }
   ],
   "design_decisions": [
     {
-      "decision": "TraitDefBuilder follows the same fluent builder pattern as TopologyTemplateBuilder and CompiledModuleBuilder",
-      "rationale": "Consistency with existing patterns in the crate reduces cognitive load. All three builders use method chaining with terminal .build()."
+      "decision": "Compiler-only desugaring — no grammar or parser changes",
+      "rationale": "The Tree-sitter grammar already parses chained comparisons as left-nested BinOp nodes due to prec.left(4) for ordering ops and prec.left(3) for equality ops. The compiler can detect this pattern (comparison op with comparison on left side) and desugar without any new AST variants or grammar rules. This minimizes the change surface and avoids touching the parser crate."
     },
     {
-      "decision": "Determinacy helpers return (Value, DeterminacyState) tuples rather than wrapping in a custom struct",
-      "rationale": "The evaluation engine uses PersistentMap<ValueCellId, (Value, DeterminacyState)> directly. Matching this exact type avoids conversion boilerplate in tests. A SnapshotValuesBuilder provides the ergonomic layer."
+      "decision": "Left-only chain flattening",
+      "rationale": "Only detect chains by walking leftward through nested BinOps. This handles all cases the grammar produces for same-precedence chains (a < b < c) and higher-to-lower precedence chains (a < b == c). The right-nested case (a == (b < c)) is NOT treated as a chain because it arises from different precedence levels and the user likely intends to compare a value with a boolean result. This matches Python's chaining semantics and natural mathematical reading."
     },
     {
-      "decision": "Constraint expression helpers are free functions in builders.rs rather than methods on TopologyTemplateBuilder",
-      "rationale": "Constraint expressions are reusable across different builders and fixtures. Free functions like range_constraint() compose with the existing expression builders (gt, lt, eq, etc.) and can be used standalone for constraint checker tests."
+      "decision": "Clone middle CompiledExprs instead of adding synthetic let bindings",
+      "rationale": "Reify expressions are pure (no side effects), so cloning middle operands at the CompiledExpr level is semantically equivalent to single-evaluation. The evaluator's content-hash-based caching ensures that identical sub-expressions (same content_hash) are efficiently deduplicated at evaluation time. Adding a Let variant to CompiledExprKind would require changes to the evaluator (reify-expr) and constraint solver (reify-constraints), which is disproportionate for this feature. The compile-once-then-clone approach naturally avoids re-compilation of middle expressions while keeping the compiled representation flat."
     },
     {
-      "decision": "Recursive structure fixtures use sub_component with same structure_name rather than requiring actual type resolution",
-      "rationale": "TopologyTemplate stores structure_name as a String \u2014 it doesn't resolve references at compile time. Recursive references are detected at evaluation/instantiation time, not at template construction. The fixture correctly mirrors how the compiler produces recursive templates."
+      "decision": "All six comparison operators participate in chaining",
+      "rationale": "Per the task spec ('All comparison operators may chain'), the operators <, <=, >, >=, ==, != all participate in is_comparison_op(). This enables useful patterns like `a == b == c` (all pairwise equal), `a < b == c` (a less than b, and b equals c), and mixed ordering/equality chains."
     },
     {
-      "decision": "Trait conformance fixtures model real Reify patterns (Rigid, Container<T>) rather than abstract test names",
-      "rationale": "Using domain-meaningful names makes tests self-documenting and validates that the builders can represent real-world scenarios from the Reify language spec."
-    },
-    {
-      "decision": "SnapshotValuesBuilder produces HashMap rather than PersistentMap",
-      "rationale": "PersistentMap (from im crate) is an implementation detail of the evaluation engine. Test setup typically builds a HashMap which can be converted to PersistentMap at the call site. This avoids adding im as a dependency to reify-test-support."
-    },
-    {
-      "decision": "Include trait_defs in CompiledModuleBuilder content_hash computation",
-      "rationale": "The existing hash intentionally covers all module content (path, templates, imports, functions). Excluding trait_defs was an omission from step-8. Modules differing only in trait definitions must produce distinct hashes for correct change detection and caching."
+      "decision": "And-chain is left-folded",
+      "rationale": "For a chain `a op1 b op2 c op3 d`, the result is `And(And(op1(a,b), op2(b,c)), op3(c,d))`. Left-folding matches the natural left-to-right evaluation order and is consistent with how the evaluator's short-circuit And works — earlier comparisons are evaluated first, and if any fails, later ones are skipped via Kleene logic."
     }
   ],
   "reuse": [
     {
-      "what": "TopologyTemplateBuilder fluent API pattern",
-      "where": "crates/reify-test-support/src/builders.rs",
-      "how": "TraitDefBuilder follows the same new() \u2192 method chaining \u2192 build() pattern with content hash computation."
+      "what": "resolve_binop() function",
+      "where": "crates/reify-compiler/src/lib.rs:629",
+      "how": "Used to convert string operators to BinOp enum when building the desugared comparison pairs. Already handles all six comparison operators plus logical ops."
     },
     {
-      "what": "Expression builder functions (gt, lt, eq, literal, value_ref, binop, etc.)",
-      "where": "crates/reify-test-support/src/builders.rs",
-      "how": "Constraint expression helpers compose these existing builders to create common constraint patterns (range, equality, ratio)."
+      "what": "CompiledExpr::binop() constructor",
+      "where": "crates/reify-types/src/expr.rs:177",
+      "how": "Used to build both the pairwise comparison nodes (Lt, Le, etc.) and the And-chain nodes. Automatically computes content hashing for deduplication."
     },
     {
-      "what": "Value constructors (mm, deg, newton, etc.) and ID constructors (vcid, cnid)",
-      "where": "crates/reify-test-support/src/values.rs",
-      "how": "All new fixtures use these existing helpers for creating values and identifiers rather than constructing Value/ValueCellId directly."
+      "what": "infer_binop_type() function",
+      "where": "crates/reify-compiler/src/lib.rs:661",
+      "how": "Already returns Type::Bool for all comparison and logical operators. Used for each desugared BinOp node to produce correct result types."
     },
     {
-      "what": "CompiledModuleBuilder",
-      "where": "crates/reify-test-support/src/builders.rs",
-      "how": "New fixtures use the existing module builder extended with trait_def() method, following the same template+build pattern as bracket_compiled_module()."
+      "what": "compile_first_template() test helper pattern",
+      "where": "crates/reify-compiler/tests/guard_compilation.rs:10",
+      "how": "Reuse this parse-compile-extract-template pattern in the new test file. Standard pattern across 6+ existing test files."
     },
     {
-      "what": "DeterminacyState and Satisfaction enums from reify-types",
-      "where": "crates/reify-types/src/value.rs",
-      "how": "Determinacy helpers wrap these existing types into convenient tuple constructors matching the snapshot_values map type."
+      "what": "CompiledExprKind pattern matching in tests",
+      "where": "crates/reify-compiler/tests/quantifier_compile_tests.rs:30-50",
+      "how": "Reuse the nested match + assert pattern for inspecting compiled expression trees. Standard assertion pattern for verifying compiled expression structure."
     },
     {
-      "what": "CompiledTrait, TraitRequirement, RequirementKind, TraitDefault, DefaultKind from reify-compiler",
-      "where": "crates/reify-compiler/src/lib.rs",
-      "how": "TraitDefBuilder constructs these existing types. No new types needed \u2014 only ergonomic builder wrapping."
-    },
-    {
-      "what": "TypeParam, TraitBound, TraitRef from reify-types",
-      "where": "crates/reify-types/src/traits.rs",
-      "how": "TopologyTemplateBuilder type_param() and TraitDefBuilder type_param() use these existing types directly."
+      "what": "ExprKind::BinOp string-based operator representation",
+      "where": "crates/reify-syntax/src/lib.rs:413",
+      "how": "The parsed AST stores operators as strings, which is what is_comparison_op() will match against. No new enum needed — just string matching on the existing op field."
     }
   ],
-  "_session_id": "218-d71e1d27",
-  "_created_at": "2026-03-24T07:27:06.006592+00:00"
+  "_session_id": "157-a541e41b",
+  "_created_at": "2026-03-24T10:09:56.082670+00:00"
 }

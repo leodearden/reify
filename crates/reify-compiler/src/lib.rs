@@ -874,42 +874,41 @@ fn compile_expr_guarded(
         reify_syntax::ExprKind::BinOp { op, left, right } => {
             // Chained comparison desugaring: `a < b < c` → `And(Lt(a,b), Lt(b,c))`.
             // Detect when the outer op is a comparison and the left operand is also a comparison BinOp.
-            if is_comparison_op(op) {
-                if let reify_syntax::ExprKind::BinOp { op: inner_op, .. } = &left.kind {
-                    if is_comparison_op(inner_op) {
-                        let (operands, ops) = flatten_comparison_chain(op, left, right);
-                        // Compile each operand exactly once
-                        let compiled_operands: Vec<CompiledExpr> = operands
-                            .iter()
-                            .map(|e| compile_expr_guarded(e, scope, enum_defs, functions, diagnostics, current_guard, lambda_counter))
-                            .collect();
-                        // Build pairwise comparison nodes
-                        let mut pairs: Vec<CompiledExpr> = Vec::new();
-                        for (i, op_str) in ops.iter().enumerate() {
-                            match resolve_binop(op_str) {
-                                Some(bin_op) => {
-                                    let lhs = compiled_operands[i].clone();
-                                    let rhs = compiled_operands[i + 1].clone();
-                                    let result_type = infer_binop_type(bin_op, &lhs.result_type, &rhs.result_type);
-                                    pairs.push(CompiledExpr::binop(bin_op, lhs, rhs, result_type));
-                                }
-                                None => {
-                                    diagnostics.push(
-                                        Diagnostic::error(format!("unknown operator: {}", op_str))
-                                            .with_label(DiagnosticLabel::new(expr.span, "unrecognized operator")),
-                                    );
-                                    return CompiledExpr::literal(Value::Undef, Type::Real);
-                                }
-                            }
+            if is_comparison_op(op)
+                && let reify_syntax::ExprKind::BinOp { op: inner_op, .. } = &left.kind
+                && is_comparison_op(inner_op)
+            {
+                let (operands, ops) = flatten_comparison_chain(op, left, right);
+                // Compile each operand exactly once
+                let compiled_operands: Vec<CompiledExpr> = operands
+                    .iter()
+                    .map(|e| compile_expr_guarded(e, scope, enum_defs, functions, diagnostics, current_guard, lambda_counter))
+                    .collect();
+                // Build pairwise comparison nodes
+                let mut pairs: Vec<CompiledExpr> = Vec::new();
+                for (i, op_str) in ops.iter().enumerate() {
+                    match resolve_binop(op_str) {
+                        Some(bin_op) => {
+                            let lhs = compiled_operands[i].clone();
+                            let rhs = compiled_operands[i + 1].clone();
+                            let result_type = infer_binop_type(bin_op, &lhs.result_type, &rhs.result_type);
+                            pairs.push(CompiledExpr::binop(bin_op, lhs, rhs, result_type));
                         }
-                        // Left-fold pairs into And-chain
-                        let mut acc = pairs.remove(0);
-                        for pair in pairs {
-                            acc = CompiledExpr::binop(BinOp::And, acc, pair, Type::Bool);
+                        None => {
+                            diagnostics.push(
+                                Diagnostic::error(format!("unknown operator: {}", op_str))
+                                    .with_label(DiagnosticLabel::new(expr.span, "unrecognized operator")),
+                            );
+                            return CompiledExpr::literal(Value::Undef, Type::Real);
                         }
-                        return acc;
                     }
                 }
+                // Left-fold pairs into And-chain
+                let mut acc = pairs.remove(0);
+                for pair in pairs {
+                    acc = CompiledExpr::binop(BinOp::And, acc, pair, Type::Bool);
+                }
+                return acc;
             }
 
             let compiled_left = compile_expr_guarded(left, scope, enum_defs, functions, diagnostics, current_guard, lambda_counter);
