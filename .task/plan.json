@@ -98,8 +98,8 @@
       "id": "step-10",
       "type": "impl",
       "description": "Add Value::Matrix(rows) arm to eval_unop Neg case in lib.rs. Map over each row, then each element, negating Int/Real/Scalar values. Return Undef if any element cannot be negated. Wrap result in Value::Matrix.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "8d0c947c"
     },
     {
       "id": "step-11",
@@ -112,8 +112,8 @@
       "id": "step-12",
       "type": "impl",
       "description": "Add (Value::Matrix(rows), Value::Tensor(vec)) arm to eval_mul. Check inner dimension: rows[0].len()==vec.len(). For each row, compute dot product: sum of eval_mul(row[j], vec[j]) for j=0..K, accumulating via eval_add. Collect M results into Value::Tensor (vector output). Return Undef on dimension mismatch or any undef intermediate.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "a9b12e00"
     },
     {
       "id": "step-13",
@@ -126,8 +126,8 @@
       "id": "step-14",
       "type": "impl",
       "description": "Add (Value::Matrix(a_rows), Value::Matrix(b_rows)) arm to eval_mul. Check inner dimension: a_rows[0].len()==b_rows.len(). Compute C[i][j] = sum(eval_mul(a[i][k], b[k][j]) for k=0..K) using eval_add for accumulation. Build result as Vec<Vec<Value>> and wrap in Value::Matrix. Return Undef on dimension mismatch, empty matrices, or any undef intermediate.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "a9b12e00"
     },
     {
       "id": "step-15",
@@ -140,8 +140,8 @@
       "id": "step-16",
       "type": "impl",
       "description": "Handle any edge cases not covered: add empty-matrix guards (return Undef for 0-row or 0-col matrices in all eval_* functions), verify nested tensor addition works without changes. Fix any failing edge-case tests.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "ecd2537c"
     }
   ],
   "design_decisions": [
