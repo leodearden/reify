@@ -289,10 +289,15 @@ impl SidecarHandle {
         &self.state
     }
 
-    /// Get a reference to the ready notify so callers can await it without
-    /// holding the outer sidecar lock.
-    pub fn ready_notify(&self) -> &Arc<Notify> {
-        &self.ready_notify
+    /// Subscribe to the ready notification.
+    ///
+    /// Returns an owned `'static` future that resolves when the sidecar sends
+    /// the "ready" message (i.e. when [`Notify::notify_waiters`] is called).
+    /// The future clones the `Arc<Notify>` internally, so it is safe to hold
+    /// across lock boundaries without keeping a reference to the handle.
+    pub fn subscribe_ready(&self) -> impl std::future::Future<Output = ()> + Send + 'static {
+        let notify = Arc::clone(&self.ready_notify);
+        async move { notify.notified().await }
     }
 
     /// Wait until the sidecar transitions to the Ready state or the timeout expires.

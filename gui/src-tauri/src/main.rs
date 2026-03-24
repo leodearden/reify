@@ -302,7 +302,7 @@ async fn claude_send_message(
     context: Option<reify_gui::claude_bridge::MessageContext>,
 ) -> Result<String, String> {
     // Lazy-spawn the sidecar if it isn't running yet, then wait for ready.
-    let ready_notify = {
+    let ready_future_opt = {
         let mut sidecar_guard = state.sidecar.lock().await;
         if sidecar_guard.is_none() {
             use std::sync::Arc;
@@ -339,10 +339,9 @@ async fn claude_send_message(
             // Subscribe to the ready notification BEFORE storing the handle and
             // releasing the lock. This ensures we don't miss a notify_waiters()
             // call that fires between the lock drop and the await.
-            let notify = std::sync::Arc::clone(handle.ready_notify());
-            let notified = notify.notified();
+            let ready_future = handle.subscribe_ready();
             *sidecar_guard = Some(handle);
-            Some(notified)
+            Some(ready_future)
         } else {
             // Sidecar already running — no need to wait for ready again.
             None
@@ -355,10 +354,10 @@ async fn claude_send_message(
     // so other commands (abort, clear_session) remain responsive during startup.
     // The Notified future was created before the lock was released, so we won't
     // miss a notification that fires between the lock drop and the await.
-    if let Some(notified) = ready_notify {
+    if let Some(ready_future) = ready_future_opt {
         tokio::time::timeout(
             std::time::Duration::from_secs(10),
-            notified,
+            ready_future,
         )
         .await
         .map_err(|_| "Sidecar did not become ready within 10 seconds".to_string())?;
