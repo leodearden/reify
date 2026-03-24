@@ -1,7 +1,7 @@
 //! Point/Vector component access and arithmetic evaluation tests.
 
 use reify_expr::{eval_expr, EvalContext};
-use reify_types::{BinOp, CompiledExpr, Type, UnOp, Value, ValueCellId, ValueMap};
+use reify_types::{BinOp, CompiledExpr, DimensionVector, Type, UnOp, Value, ValueCellId, ValueMap};
 
 // --- Construction ---
 
@@ -417,4 +417,67 @@ fn point3_add_point3_returns_undef() {
     let values = ValueMap::new();
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert_eq!(result, Value::Undef);
+}
+
+// --- Scalar-vector multiplication and division ---
+
+/// Scalar<Length> * Vector3<Length> scales each component; dimensions combine to Area.
+#[test]
+fn scalar_mul_vector3_scales_components() {
+    let left = CompiledExpr::literal(Value::length(2.0), Type::length());
+    let right = CompiledExpr::literal(
+        Value::Tensor(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]),
+        Type::vec3(Type::length()),
+    );
+    let expr = CompiledExpr::binop(BinOp::Mul, left, right, Type::Real);
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    let area = DimensionVector::AREA;
+    assert_eq!(
+        result,
+        Value::Tensor(vec![
+            Value::Scalar { si_value: 2.0, dimension: area },
+            Value::Scalar { si_value: 4.0, dimension: area },
+            Value::Scalar { si_value: 6.0, dimension: area },
+        ])
+    );
+}
+
+/// Vector3<Length> * Scalar<Length> is commutative — same result as scalar_mul_vector3.
+#[test]
+fn vector3_mul_scalar_commutative() {
+    let left = CompiledExpr::literal(
+        Value::Tensor(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]),
+        Type::vec3(Type::length()),
+    );
+    let right = CompiledExpr::literal(Value::length(2.0), Type::length());
+    let expr = CompiledExpr::binop(BinOp::Mul, left, right, Type::Real);
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    let area = DimensionVector::AREA;
+    assert_eq!(
+        result,
+        Value::Tensor(vec![
+            Value::Scalar { si_value: 2.0, dimension: area },
+            Value::Scalar { si_value: 4.0, dimension: area },
+            Value::Scalar { si_value: 6.0, dimension: area },
+        ])
+    );
+}
+
+/// Vector3<Length> / Scalar<dimensionless> divides each component; dimension preserved.
+#[test]
+fn vector3_div_scalar_divides_components() {
+    let left = CompiledExpr::literal(
+        Value::Tensor(vec![Value::length(10.0), Value::length(20.0), Value::length(30.0)]),
+        Type::vec3(Type::length()),
+    );
+    let right = CompiledExpr::literal(Value::Real(2.0), Type::Real);
+    let expr = CompiledExpr::binop(BinOp::Div, left, right, Type::vec3(Type::length()));
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Tensor(vec![Value::length(5.0), Value::length(10.0), Value::length(15.0)])
+    );
 }
