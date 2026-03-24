@@ -251,3 +251,35 @@ structure S {
         other => panic!("expected BinOp(And) at step-9 top level, got {:?}", other),
     }
 }
+
+/// step-11: non-comparison binary op on left does NOT trigger chaining.
+/// `(a + b) < c` should compile as plain `Lt(Add(a,b), c)` — no And-wrapping.
+#[test]
+fn arithmetic_on_left_does_not_chain() {
+    let source = r#"
+structure S {
+    param a : Int = 1
+    param b : Int = 2
+    param c : Int = 10
+    constraint (a + b) < c
+}
+"#;
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    assert!(!template.constraints.is_empty(), "should have at least one constraint");
+
+    let expr = &template.constraints[0].expr;
+    match &expr.kind {
+        CompiledExprKind::BinOp { op, left, right } => {
+            assert_eq!(*op, BinOp::Lt, "should be plain Lt, not And");
+            assert!(matches!(&left.kind, CompiledExprKind::BinOp { op: addop, .. } if *addop == BinOp::Add),
+                "left should be Add(a,b), not an And-chain");
+            assert!(matches!(&right.kind, CompiledExprKind::ValueRef(_)),
+                "right should be value ref c");
+        }
+        other => panic!("expected plain BinOp(Lt), got {:?}", other),
+    }
+}
