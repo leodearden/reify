@@ -127,6 +127,13 @@ pub fn format_value(v: &Value) -> (String, String) {
         Value::Orientation { w, x, y, z } => {
             (format!("[{}, {}, {}, {}]q", w, x, y, z), String::new())
         }
+        Value::Range { lower, upper, lower_inclusive, upper_inclusive } => {
+            let lower_bracket = if *lower_inclusive { "[" } else { "(" };
+            let upper_bracket = if *upper_inclusive { "]" } else { ")" };
+            let lower_str = lower.as_ref().map(|v| format_value(v).0).unwrap_or_else(|| "-∞".to_string());
+            let upper_str = upper.as_ref().map(|v| format_value(v).0).unwrap_or_else(|| "+∞".to_string());
+            (format!("{}{}..{}{}", lower_bracket, lower_str, upper_str, upper_bracket), String::new())
+        }
         Value::Undef => ("undefined".to_string(), String::new()),
     }
 }
