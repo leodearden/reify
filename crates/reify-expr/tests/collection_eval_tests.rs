@@ -2067,6 +2067,29 @@ fn eval_method_concat_two_args() {
 // ─── task-168: generate as FunctionCall ───
 
 #[test]
+fn eval_method_generate_identity() {
+    // [].generate(4, |i| i) -> [0, 1, 2, 3]
+    let i_id = ValueCellId::new("$lambda_id_gen.S", "i");
+    let body = CompiledExpr::value_ref(i_id.clone(), Type::Int);
+    let lambda_arg = lambda_literal(vec![("i", i_id)], body, ValueMap::new());
+
+    let list = CompiledExpr::list_literal(vec![], Type::List(Box::new(Type::Int)));
+    let count_arg = CompiledExpr::literal(Value::Int(4), Type::Int);
+    let expr = CompiledExpr::method_call(
+        list,
+        "generate".to_string(),
+        vec![count_arg, lambda_arg],
+        Type::List(Box::new(Type::Int)),
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::List(vec![Value::Int(0), Value::Int(1), Value::Int(2), Value::Int(3)])
+    );
+}
+
+#[test]
 fn eval_method_generate_real_count() {
     // [].generate(3.0, |i| i) -> Undef (Real count not supported, only Int)
     let i_id = ValueCellId::new("$lambda_real_gen.S", "i");
