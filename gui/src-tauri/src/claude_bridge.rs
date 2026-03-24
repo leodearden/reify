@@ -4,13 +4,14 @@
 // Claude Code SDK, handles JSON-line IPC, and bridges sidecar events to
 // Tauri frontend events.
 
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::sync::{Mutex, Notify};
 use tokio::task::JoinHandle;
 
@@ -437,6 +438,62 @@ pub async fn claude_clear_session_impl(
         None => Err("sidecar not started".to_string()),
         Some(handle) => handle.clear_session().await,
     }
+}
+
+/// Spawn the Claude sidecar process and return a ready-to-use [`SidecarHandle`].
+///
+/// Extracts stdin/stdout from the child, wraps stdout in a [`BufReader`], and
+/// wires up event emission and MCP interception via [`SidecarHandle::from_parts_with_mcp`].
+/// The caller is responsible for calling [`SidecarHandle::wait_ready`] and storing
+/// the returned handle in the shared sidecar slot.
+///
+/// Returns `Err` if the process cannot be spawned or if stdin/stdout are unavailable.
+pub async fn spawn_sidecar_impl<F>(
+    path: &Path,
+    engine: Arc<std::sync::Mutex<crate::engine::EngineSession>>,
+    event_sink: F,
+) -> Result<SidecarHandle, String>
+where
+    F: Fn(String, Value) + Send + Sync + 'static,
+{
+    let mut proc = tokio::process::Command::new(path)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::inherit())
+        .spawn()
+        .map_err(|e| format!("Failed to spawn sidecar {:?}: {}", path, e))?;
+
+    let stdin = match proc.stdin.take() {
+        Some(s) => s,
+        None => {
+            proc.kill().await.ok();
+            return Err("sidecar has no stdin".to_string());
+        }
+    };
+    let stdout = match proc.stdout.take() {
+        Some(s) => s,
+        None => {
+            proc.kill().await.ok();
+            return Err("sidecar has no stdout".to_string());
+        }
+    };
+
+    let reader = BufReader::new(stdout);
+    let sidecar_state = Arc::new(Mutex::new(SidecarState::Starting));
+    let mut handle = SidecarHandle::from_parts_with_mcp(stdin, reader, sidecar_state, engine, event_sink);
+    handle.set_child(proc);
+    Ok(handle)
+}
+
+/// Shut down the sidecar: kill it if running and clear the slot.
+///
+/// Locks the mutex, kills the handle if `Some`, then sets the slot to `None`.
+pub async fn shutdown_sidecar(sidecar: &Mutex<Option<SidecarHandle>>) {
+    let mut guard = sidecar.lock().await;
+    if let Some(handle) = guard.as_mut() {
+        handle.kill().await;
+    }
+    *guard = None;
 }
 
 /// Map an OutboundMessage to a Tauri event name and JSON payload.
