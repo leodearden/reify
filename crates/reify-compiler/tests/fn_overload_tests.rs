@@ -128,6 +128,45 @@ structure S { let v = f(1, 2) }
     );
 }
 
+/// step-7: No user function named 'sqrt', call sqrt(4.14) in a structure let binding.
+/// Assert compiles to FunctionCall (stdlib) with qualified_name 'std::sqrt', NOT an error.
+/// Verifies stdlib fallback is preserved when no user functions have the name.
+#[test]
+fn stdlib_fallback_when_no_user_function_with_name() {
+    let source = r#"
+structure S { let v = sqrt(4.14) }
+"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_stdlib_fallback"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = reify_compiler::compile(&parsed);
+
+    // Should compile without errors
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_types::Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+
+    let template = &compiled.templates[0];
+    let v_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "v")
+        .expect("should have 'v' value cell");
+    let v_expr = v_cell.default_expr.as_ref().expect("let should have expr");
+
+    // Should be stdlib FunctionCall, not UserFunctionCall
+    match &v_expr.kind {
+        reify_types::CompiledExprKind::FunctionCall { function, .. } => {
+            assert_eq!(function.qualified_name, "std::sqrt");
+            assert_eq!(function.name, "sqrt");
+        }
+        other => panic!("expected stdlib FunctionCall, got {:?}", other),
+    }
+}
+
 /// step-1: Define fn f(x: Int)->Int and fn f(x: Real)->Real, call f(3)
 /// where 3 is Int. Assert resolves to UserFunctionCall with return type Int.
 ///
