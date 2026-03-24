@@ -570,6 +570,45 @@ mod tests {
         );
         assert!(matches!(expr.kind, CompiledExprKind::MapLiteral(_)));
     }
+
+    // --- conditional_expr, fn_call, user_fn_call tests (step-7) ---
+
+    #[test]
+    fn conditional_expr_uses_then_branch_type() {
+        let cond = literal(Value::Bool(true));
+        let then_b = literal(Value::Int(1));
+        let else_b = literal(Value::Int(2));
+        let expr = conditional_expr(cond, then_b, else_b);
+        assert_eq!(expr.result_type, Type::Int);
+        assert!(matches!(expr.kind, CompiledExprKind::Conditional { .. }));
+    }
+
+    #[test]
+    fn fn_call_produces_function_call_with_resolved_function() {
+        let arg = literal(Value::Real(1.0));
+        let expr = fn_call("sin", "std::math::sin", vec![arg], Type::Real);
+        assert_eq!(expr.result_type, Type::Real);
+        if let CompiledExprKind::FunctionCall { function, args } = &expr.kind {
+            assert_eq!(function.name, "sin");
+            assert_eq!(function.qualified_name, "std::math::sin");
+            assert_eq!(args.len(), 1);
+        } else {
+            panic!("expected FunctionCall kind");
+        }
+    }
+
+    #[test]
+    fn user_fn_call_produces_user_function_call() {
+        let arg = literal(Value::Int(1));
+        let expr = user_fn_call("my_func", vec![arg], Type::Int);
+        assert_eq!(expr.result_type, Type::Int);
+        if let CompiledExprKind::UserFunctionCall { function_name, args } = &expr.kind {
+            assert_eq!(function_name, "my_func");
+            assert_eq!(args.len(), 1);
+        } else {
+            panic!("expected UserFunctionCall kind");
+        }
+    }
 }
 
 /// Builder for `CompiledModule`.
