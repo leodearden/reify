@@ -2297,4 +2297,83 @@ mod tests {
         let r = Value::range(None, None, true, true);
         assert_eq!(format!("{}", r), "(-inf..inf)");
     }
+
+    // ── Range invariant enforcement tests (step-9) ───────────────────────────
+    // These tests bypass Value::range() factory and directly construct Value::Range
+    // with an invariant violation (lower/upper_inclusive=true when bound is None).
+    // Each impl (content_hash, PartialEq, Ord, Display) must panic via debug_assert!.
+
+    #[test]
+    #[should_panic(expected = "Range invariant violated")]
+    fn value_range_invariant_bypass_lower_none_inclusive_content_hash() {
+        let r = Value::Range {
+            lower: None,
+            lower_inclusive: true,
+            upper: Some(Box::new(Value::Int(10))),
+            upper_inclusive: false,
+        };
+        let _ = r.content_hash();
+    }
+
+    #[test]
+    #[should_panic(expected = "Range invariant violated")]
+    fn value_range_invariant_bypass_lower_none_inclusive_eq() {
+        let bad = Value::Range {
+            lower: None,
+            lower_inclusive: true,
+            upper: Some(Box::new(Value::Int(10))),
+            upper_inclusive: false,
+        };
+        let good = Value::range(None, Some(Value::Int(10)), false, false);
+        let _ = bad == good;
+    }
+
+    #[test]
+    #[should_panic(expected = "Range invariant violated")]
+    fn value_range_invariant_bypass_lower_none_inclusive_cmp() {
+        let bad = Value::Range {
+            lower: None,
+            lower_inclusive: true,
+            upper: Some(Box::new(Value::Int(10))),
+            upper_inclusive: false,
+        };
+        let good = Value::range(None, Some(Value::Int(10)), false, false);
+        let _ = bad.cmp(&good);
+    }
+
+    #[test]
+    #[should_panic(expected = "Range invariant violated")]
+    fn value_range_invariant_bypass_lower_none_inclusive_display() {
+        let r = Value::Range {
+            lower: None,
+            lower_inclusive: true,
+            upper: Some(Box::new(Value::Int(10))),
+            upper_inclusive: false,
+        };
+        let _ = format!("{}", r);
+    }
+
+    #[test]
+    #[should_panic(expected = "Range invariant violated")]
+    fn value_range_invariant_bypass_upper_none_inclusive_content_hash() {
+        let r = Value::Range {
+            lower: Some(Box::new(Value::Int(0))),
+            lower_inclusive: true,
+            upper: None,
+            upper_inclusive: true,
+        };
+        let _ = r.content_hash();
+    }
+
+    #[test]
+    #[should_panic(expected = "Range invariant violated")]
+    fn value_range_invariant_bypass_upper_none_inclusive_display() {
+        let r = Value::Range {
+            lower: Some(Box::new(Value::Int(0))),
+            lower_inclusive: true,
+            upper: None,
+            upper_inclusive: true,
+        };
+        let _ = format!("{}", r);
+    }
 }
