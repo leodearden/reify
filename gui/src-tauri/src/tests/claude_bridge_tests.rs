@@ -1178,3 +1178,37 @@ async fn claude_send_message_impl_errors_when_sidecar_crashed() {
         msg
     );
 }
+
+#[tokio::test]
+async fn wait_ready_handles_notify_registration_race() {
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::io::{AsyncWriteExt, BufReader};
+    use tokio::sync::Mutex;
+
+    let state = Arc::new(Mutex::new(SidecarState::Starting));
+    let (mut data_writer, data_reader) = tokio::io::duplex(1024);
+    let reader = BufReader::new(data_reader);
+    let (writer, _writer_end) = tokio::io::duplex(1024);
+
+    let handle = SidecarHandle::from_parts(writer, reader, state.clone());
+
+    // Write the ready message BEFORE calling wait_ready — the message is buffered
+    // in the duplex but its processing by the reader task is nondeterministic.
+    // The reader task may process it:
+    //   (a) during wait_ready's fast-path state check
+    //   (b) between fast-path and Notify subscription (the classic race window)
+    //   (c) after Notify subscription
+    // wait_ready uses the subscribe-before-recheck pattern to handle all three.
+    data_writer.write_all(b"{\"type\":\"ready\"}\n").await.unwrap();
+
+    // wait_ready must return Ok regardless of which scheduling order occurs.
+    let result = handle.wait_ready(Duration::from_secs(5)).await;
+    assert!(
+        result.is_ok(),
+        "wait_ready should handle notify registration race correctly: {:?}",
+        result
+    );
+    assert!(matches!(*handle.state().lock().await, SidecarState::Ready));
+    drop(data_writer);
+}
