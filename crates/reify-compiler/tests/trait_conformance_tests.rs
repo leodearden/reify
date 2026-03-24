@@ -68,6 +68,42 @@ fn conformance_missing_param_error() {
     }
 }
 
+/// step-5: param with wrong type → TypeMismatch error.
+#[test]
+fn conformance_type_mismatch_error() {
+    let trait_def = CompiledTrait {
+        name: "Weighted".to_string(),
+        is_pub: true,
+        type_params: vec![],
+        refinements: vec![],
+        required_members: vec![TraitRequirement {
+            name: "mass".to_string(),
+            kind: RequirementKind::Param(Type::Scalar {
+                dimension: DimensionVector::MASS,
+            }),
+            span: test_span(),
+        }],
+        defaults: vec![],
+        content_hash: ContentHash::of_str("Weighted"),
+    };
+    // Provide 'mass' but with Length instead of Mass.
+    let mut structure_members = std::collections::HashMap::new();
+    structure_members.insert(
+        "mass".to_string(),
+        Type::Scalar { dimension: DimensionVector::LENGTH },
+    );
+    let errors = check_trait_conformance(&structure_members, &trait_def);
+    assert_eq!(errors.len(), 1, "expected 1 error, got: {:?}", errors);
+    match &errors[0] {
+        ConformanceError::TypeMismatch { name, expected_type, actual_type } => {
+            assert_eq!(name, "mass");
+            assert_eq!(*expected_type, Type::Scalar { dimension: DimensionVector::MASS });
+            assert_eq!(*actual_type, Type::Scalar { dimension: DimensionVector::LENGTH });
+        }
+        other => panic!("expected TypeMismatch, got: {:?}", other),
+    }
+}
+
 /// Helper: parse source and compile, returning the CompiledModule.
 fn compile_module(source: &str) -> CompiledModule {
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
