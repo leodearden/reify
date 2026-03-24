@@ -408,6 +408,66 @@ pub fn bracket_compiled_module() -> CompiledModule {
         .build()
 }
 
+/// Create a `CompiledModule` with `Rigid` and `Container<T: Rigid>` traits and conforming structures.
+///
+/// Traits:
+///   - `Rigid`: requires `param mass: Mass`
+///   - `Container<T: Rigid>`: requires `param count: Int`
+///
+/// Structures:
+///   - `Bolt: Rigid` with `param mass: Mass = 1kg`
+///   - `Crate: Container` with `param count: Int = 1`
+///
+/// Used to test generic trait conformance checking.
+pub fn generic_container_module() -> CompiledModule {
+    use reify_types::{DimensionVector, TraitBound, TraitRef, TypeParam};
+
+    let mass_type = Type::Scalar { dimension: DimensionVector::MASS };
+
+    // Rigid trait: requires param mass: Mass
+    let rigid_trait = TraitDefBuilder::new("Rigid")
+        .requirement("mass", RequirementKind::Param(mass_type.clone()))
+        .build();
+
+    // Container<T: Rigid> trait: requires param count: Int
+    let t_param = TypeParam {
+        name: "T".to_string(),
+        bounds: vec![TraitBound {
+            trait_ref: TraitRef {
+                name: "Rigid".to_string(),
+                type_args: vec![],
+            },
+        }],
+        default: None,
+    };
+    let container_trait = TraitDefBuilder::new("Container")
+        .type_param(t_param)
+        .requirement("count", RequirementKind::Param(Type::Int))
+        .build();
+
+    // Bolt: Rigid with param mass = 1kg
+    let bolt_template = TopologyTemplateBuilder::new("Bolt")
+        .trait_bound("Rigid")
+        .param("Bolt", "mass", mass_type, Some(crate::builders::literal(Value::Scalar {
+            si_value: 1.0,
+            dimension: DimensionVector::MASS,
+        })))
+        .build();
+
+    // Crate: Container with param count = 1
+    let crate_template = TopologyTemplateBuilder::new("Crate")
+        .trait_bound("Container")
+        .param("Crate", "count", Type::Int, Some(crate::builders::literal(Value::Int(1))))
+        .build();
+
+    CompiledModuleBuilder::new(ModulePath::single("generic_container"))
+        .trait_def(rigid_trait)
+        .trait_def(container_trait)
+        .template(bolt_template)
+        .template(crate_template)
+        .build()
+}
+
 /// Create a `CompiledModule` with the `Rigid` trait and a `Bolt` structure that conforms to it.
 ///
 /// Trait `Rigid`:
@@ -532,6 +592,33 @@ mod tests {
         assert!(source.contains("param width"));
         assert!(source.contains("constraint thickness > 2mm"));
         assert!(source.contains("let body = box("));
+    }
+
+    // step-11: failing test for generic_container_module fixture
+    #[test]
+    fn generic_container_module_structure() {
+        let module = generic_container_module();
+        // 2 traits: Rigid and Container
+        assert_eq!(module.trait_defs.len(), 2);
+        let rigid = module.trait_defs.iter().find(|t| t.name == "Rigid");
+        let container = module.trait_defs.iter().find(|t| t.name == "Container");
+        assert!(rigid.is_some(), "should have Rigid trait");
+        let container = container.expect("should have Container trait");
+        // Container has type_param T with Rigid bound
+        assert_eq!(container.type_params.len(), 1);
+        assert_eq!(container.type_params[0].name, "T");
+        assert_eq!(container.type_params[0].bounds[0].trait_ref.name, "Rigid");
+        // Container requires param count: Int
+        assert_eq!(container.required_members.len(), 1);
+        assert_eq!(container.required_members[0].name, "count");
+        // 2 templates: Bolt and Crate
+        assert_eq!(module.templates.len(), 2);
+        let bolt = module.templates.iter().find(|t| t.name == "Bolt");
+        let crate_t = module.templates.iter().find(|t| t.name == "Crate");
+        assert!(bolt.is_some(), "should have Bolt template");
+        let crate_t = crate_t.expect("should have Crate template");
+        // Crate conforms to Container
+        assert!(crate_t.trait_bounds.contains(&"Container".to_string()));
     }
 
     // step-9: failing test for rigid_trait_module fixture
