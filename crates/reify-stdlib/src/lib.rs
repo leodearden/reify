@@ -380,8 +380,8 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
             Value::Complex { re, im, dimension: dim_re }
         }
 
-        // re(z): extract real part. Returns Real if DIMENSIONLESS, Scalar otherwise.
-        "re" => unary(args, |v| match v {
+        // re(z) / real(z): extract real part. Returns Real if DIMENSIONLESS, Scalar otherwise.
+        "re" | "real" => unary(args, |v| match v {
             Value::Complex { re, dimension, .. } => {
                 if *dimension == DimensionVector::DIMENSIONLESS {
                     Value::Real(*re)
@@ -392,8 +392,8 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
             _ => Value::Undef,
         }),
 
-        // im(z): extract imaginary part. Returns Real if DIMENSIONLESS, Scalar otherwise.
-        "im" => unary(args, |v| match v {
+        // im(z) / imag(z): extract imaginary part. Returns Real if DIMENSIONLESS, Scalar otherwise.
+        "im" | "imag" => unary(args, |v| match v {
             Value::Complex { im, dimension, .. } => {
                 if *dimension == DimensionVector::DIMENSIONLESS {
                     Value::Real(*im)
@@ -417,6 +417,21 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
             Value::Complex { re, im, .. } => {
                 let angle = im.atan2(*re);
                 sanitize_value(Value::Scalar { si_value: angle, dimension: DimensionVector::ANGLE })
+            }
+            _ => Value::Undef,
+        }),
+
+        // complex_magnitude(z): compute sqrt(re²+im²) for Complex inputs only.
+        // Returns Real if DIMENSIONLESS, Scalar otherwise.
+        // Returns Undef for non-Complex inputs (unlike generic `magnitude` which handles Tensors).
+        "complex_magnitude" => unary(args, |v| match v {
+            Value::Complex { re, im, dimension } => {
+                let mag = (re * re + im * im).sqrt();
+                if *dimension == DimensionVector::DIMENSIONLESS {
+                    sanitize_value(Value::Real(mag))
+                } else {
+                    sanitize_value(Value::Scalar { si_value: mag, dimension: *dimension })
+                }
             }
             _ => Value::Undef,
         }),
