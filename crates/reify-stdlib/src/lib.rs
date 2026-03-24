@@ -183,10 +183,87 @@ fn binary_f64(args: &[Value], f: impl FnOnce(f64, f64) -> Value) -> Value {
     }
 }
 
+/// Apply a function to three arguments (by reference, for pattern matching).
+fn ternary(args: &[Value], f: impl FnOnce(&Value, &Value, &Value) -> Value) -> Value {
+    if args.len() != 3 {
+        return Value::Undef;
+    }
+    f(&args[0], &args[1], &args[2])
+}
+
+/// Returns true iff `lo` and `hi` form a valid (non-NaN, non-inverted) range.
+///
+/// Used by clamp Real/Scalar/fallback arms instead of inline `lo.is_nan() || hi.is_nan() || lo > hi`.
+fn valid_f64_range(lo: f64, hi: f64) -> bool {
+    !lo.is_nan() && !hi.is_nan() && lo <= hi
+}
+
+/// Linear interpolation: `a + t * (b - a)`.
+fn lerp_f64(a: f64, b: f64, t: f64) -> f64 {
+    a + t * (b - a)
+}
+
+/// Apply a function to five f64 arguments (extracted via `as_f64()`).
+///
+/// Returns `Undef` on wrong argument count or extraction failure.
+/// Applies `sanitize_value` to the result.
+fn quinary_f64(args: &[Value], f: impl FnOnce(f64, f64, f64, f64, f64) -> Value) -> Value {
+    if args.len() != 5 {
+        return Value::Undef;
+    }
+    match (
+        args[0].as_f64(),
+        args[1].as_f64(),
+        args[2].as_f64(),
+        args[3].as_f64(),
+        args[4].as_f64(),
+    ) {
+        (Some(a), Some(b), Some(c), Some(d), Some(e)) => sanitize_value(f(a, b, c, d, e)),
+        _ => Value::Undef,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use reify_types::DimensionVector;
+
+    /// Assert that an expression evaluates to `Value::Real(v)` where `|v - expected| < 1e-12`.
+    macro_rules! assert_real_approx {
+        ($expr:expr, $expected:expr) => {
+            match $expr {
+                Value::Real(v) => assert!(
+                    (v - $expected).abs() < 1e-12,
+                    "expected Real({}) got Real({})",
+                    $expected,
+                    v
+                ),
+                other => panic!("expected Real({}), got {:?}", $expected, other),
+            }
+        };
+    }
+
+    /// Assert that an expression evaluates to `Value::Scalar { si_value, dimension }` where
+    /// `|si_value - expected_si| < 1e-12` and `dimension == expected_dim`.
+    macro_rules! assert_scalar_approx {
+        ($expr:expr, $expected_si:expr, $expected_dim:expr) => {
+            match $expr {
+                Value::Scalar { si_value, dimension } => {
+                    assert!(
+                        (si_value - $expected_si).abs() < 1e-12,
+                        "expected si_value={}, got {}",
+                        $expected_si,
+                        si_value
+                    );
+                    assert_eq!(dimension, $expected_dim);
+                }
+                other => panic!(
+                    "expected Scalar{{si={}, dim={:?}}}, got {:?}",
+                    $expected_si, $expected_dim, other
+                ),
+            }
+        };
+    }
 
     #[test]
     fn abs_real_negative() {
