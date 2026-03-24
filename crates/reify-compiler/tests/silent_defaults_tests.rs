@@ -170,7 +170,7 @@ trait Configurable {
                     "DefaultKind::Param should always have Some(name), got None"
                 );
             }
-            reify_compiler::DefaultKind::Let(_) => {
+            reify_compiler::DefaultKind::Let { .. } => {
                 assert!(
                     default.name.is_some(),
                     "DefaultKind::Let should always have Some(name), got None"
