@@ -2079,10 +2079,11 @@ pub fn compile(
 /// Detect recursive sub-component cycles among compiled templates.
 ///
 /// Builds a directed reference graph where each edge T -> S means "template T has a sub
-/// whose structure_name is S". Runs DFS with path tracking to find back-edges (cycles).
-/// When a cycle is detected:
-/// - All templates in the cycle are tagged with `is_recursive = true`.
-/// - A warning diagnostic is emitted with the cycle path (e.g., "A -> B -> C -> A").
+/// whose structure_name is S". Runs Tarjan's SCC algorithm to find all strongly connected
+/// components in O(V+E). Every SCC of size > 1 (or size 1 with a self-edge) is a cycle.
+///
+/// Tags all cycle participants with `is_recursive = true` and emits one warning diagnostic
+/// per SCC with a representative cycle path.
 ///
 /// Only edges to structures that exist in the template set are considered; unknown/external
 /// structure references are silently skipped to avoid false positives.
@@ -2110,25 +2111,43 @@ fn detect_recursive_structures(
         .collect();
 
     let n = templates.len();
-    // DFS state: None = unvisited, Some(true) = in-progress (gray), Some(false) = done (black)
-    let mut state: Vec<Option<bool>> = vec![None; n];
-    // Stack tracking the current DFS path (indices)
-    let mut path: Vec<usize> = Vec::new();
 
-    // Track which template indices are part of any cycle
-    let mut in_cycle: Vec<bool> = vec![false; n];
+    // Tarjan's SCC state
+    let mut st = TarjanState {
+        index: vec![None; n],
+        lowlink: vec![0; n],
+        on_stack: vec![false; n],
+        scc_stack: Vec::new(),
+        index_counter: 0,
+        sccs: Vec::new(),
+    };
 
     for start in 0..n {
-        if state[start].is_none() {
-            dfs_detect_cycle(
-                start,
-                &adjacency,
-                &mut state,
-                &mut path,
-                &mut in_cycle,
-                templates,
-                diagnostics,
-            );
+        if st.index[start].is_none() {
+            tarjan_scc_visit(start, &adjacency, &mut st);
+        }
+    }
+
+    // Tag all members of cyclic SCCs and emit a diagnostic per SCC
+    let mut in_cycle = vec![false; n];
+    for scc in &st.sccs {
+        let is_cycle = if scc.len() > 1 {
+            true
+        } else {
+            // Single-node SCC: cycle only if there is a self-edge
+            let v = scc[0];
+            adjacency[v].contains(&v)
+        };
+
+        if is_cycle {
+            for &v in scc {
+                in_cycle[v] = true;
+            }
+            let cycle_path = reconstruct_scc_cycle(scc, &adjacency, templates);
+            diagnostics.push(reify_types::Diagnostic::warning(format!(
+                "recursive structure cycle detected: {}",
+                cycle_path
+            )));
         }
     }
 
@@ -2140,62 +2159,119 @@ fn detect_recursive_structures(
     }
 }
 
-/// DFS helper for recursive structure detection.
-/// Uses gray/black coloring: gray (in-progress) = on current path, black = fully explored.
-fn dfs_detect_cycle(
-    node: usize,
-    adjacency: &[Vec<usize>],
-    state: &mut Vec<Option<bool>>,
-    path: &mut Vec<usize>,
-    in_cycle: &mut Vec<bool>,
-    templates: &[TopologyTemplate],
-    diagnostics: &mut Vec<reify_types::Diagnostic>,
-) {
-    // Mark node as in-progress (gray)
-    state[node] = Some(true);
-    path.push(node);
+/// Mutable state threaded through Tarjan's SCC traversal.
+struct TarjanState {
+    index: Vec<Option<usize>>,
+    lowlink: Vec<usize>,
+    on_stack: Vec<bool>,
+    scc_stack: Vec<usize>,
+    index_counter: usize,
+    sccs: Vec<Vec<usize>>,
+}
 
-    for &neighbor in &adjacency[node] {
-        match state[neighbor] {
-            None => {
-                // Unvisited: recurse
-                dfs_detect_cycle(
-                    neighbor, adjacency, state, path, in_cycle, templates, diagnostics,
-                );
-            }
-            Some(true) => {
-                // Back edge found: neighbor is on the current path — we have a cycle.
-                // Extract the cycle from path starting at the position of `neighbor`.
-                let cycle_start = path.iter().position(|&x| x == neighbor).unwrap();
-                let cycle_nodes: Vec<usize> = path[cycle_start..].to_vec();
+/// Recursive visit for Tarjan's SCC algorithm.
+///
+/// Assigns `index` and `lowlink` values, pushes onto the SCC stack, and pops SCCs
+/// when a root node (lowlink == index) is found.
+fn tarjan_scc_visit(v: usize, adjacency: &[Vec<usize>], st: &mut TarjanState) {
+    st.index[v] = Some(st.index_counter);
+    st.lowlink[v] = st.index_counter;
+    st.index_counter += 1;
+    st.scc_stack.push(v);
+    st.on_stack[v] = true;
 
-                // Mark all nodes in the cycle
-                for &idx in &cycle_nodes {
-                    in_cycle[idx] = true;
-                }
-
-                // Build the cycle path string: "A -> B -> C -> A"
-                let mut cycle_names: Vec<&str> =
-                    cycle_nodes.iter().map(|&i| templates[i].name.as_str()).collect();
-                cycle_names.push(templates[neighbor].name.as_str()); // close the cycle
-                let cycle_path = cycle_names.join(" -> ");
-
-                diagnostics.push(
-                    reify_types::Diagnostic::warning(format!(
-                        "recursive structure cycle detected: {}",
-                        cycle_path
-                    )),
-                );
-            }
-            Some(false) => {
-                // Already fully explored: no action needed
-            }
+    for &w in &adjacency[v] {
+        if st.index[w].is_none() {
+            // w has not been visited — recurse and propagate lowlink
+            tarjan_scc_visit(w, adjacency, st);
+            st.lowlink[v] = st.lowlink[v].min(st.lowlink[w]);
+        } else if st.on_stack[w] {
+            // w is on the current SCC stack: back edge within the current SCC
+            st.lowlink[v] = st.lowlink[v].min(st.index[w].unwrap());
         }
+        // If w is off the stack (already in a completed SCC), ignore: it's in a different SCC.
     }
 
-    path.pop();
-    // Mark node as done (black)
-    state[node] = Some(false);
+    // If v is a root (lowlink == index), pop the completed SCC from the stack
+    if st.lowlink[v] == st.index[v].unwrap() {
+        let mut scc = Vec::new();
+        loop {
+            let w = st.scc_stack.pop().unwrap();
+            st.on_stack[w] = false;
+            scc.push(w);
+            if w == v {
+                break;
+            }
+        }
+        st.sccs.push(scc);
+    }
+}
+
+/// Reconstruct a representative cycle path string for a non-trivial SCC.
+///
+/// For single-node SCCs with a self-edge returns "X -> X".
+/// For larger SCCs, performs a DFS within the SCC nodes to find a path from the first
+/// member back to itself, then formats it as "A -> B -> ... -> A".
+fn reconstruct_scc_cycle(
+    scc: &[usize],
+    adjacency: &[Vec<usize>],
+    templates: &[TopologyTemplate],
+) -> String {
+    if scc.len() == 1 {
+        let v = scc[0];
+        return format!("{} -> {}", templates[v].name, templates[v].name);
+    }
+
+    // Build a set of SCC members for fast membership test
+    let scc_set: std::collections::HashSet<usize> = scc.iter().copied().collect();
+    let start = scc[0];
+    let mut path = vec![start];
+    let mut visited = std::collections::HashSet::new();
+    visited.insert(start);
+
+    if let Some(cycle) =
+        find_cycle_back_to(start, start, &scc_set, adjacency, &mut path, &mut visited)
+    {
+        cycle.iter().map(|&i| templates[i].name.as_str()).collect::<Vec<_>>().join(" -> ")
+    } else {
+        // Fallback: list all SCC members (should not happen in a valid SCC)
+        let mut names: Vec<&str> = scc.iter().map(|&i| templates[i].name.as_str()).collect();
+        names.push(templates[scc[0]].name.as_str());
+        names.join(" -> ")
+    }
+}
+
+/// DFS within SCC nodes to find a cycle from `current` back to `target`.
+/// Returns the full cycle path (including the closing `target` node) on success.
+fn find_cycle_back_to(
+    current: usize,
+    target: usize,
+    scc_set: &std::collections::HashSet<usize>,
+    adjacency: &[Vec<usize>],
+    path: &mut Vec<usize>,
+    visited: &mut std::collections::HashSet<usize>,
+) -> Option<Vec<usize>> {
+    for &next in &adjacency[current] {
+        if !scc_set.contains(&next) {
+            continue; // Stay within the SCC
+        }
+        if next == target && path.len() > 1 {
+            // Completed the cycle back to the start
+            let mut cycle = path.clone();
+            cycle.push(target);
+            return Some(cycle);
+        }
+        if !visited.contains(&next) {
+            visited.insert(next);
+            path.push(next);
+            if let Some(c) = find_cycle_back_to(next, target, scc_set, adjacency, path, visited) {
+                return Some(c);
+            }
+            path.pop();
+            visited.remove(&next);
+        }
+    }
+    None
 }
 
 /// Shared reference to entity definition fields (used by both StructureDef and OccurrenceDef).
