@@ -155,6 +155,10 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
                         dimension: *da,
                     })
                 }
+                // Int fast path: documents the explicit Int->Real coercion
+                (Value::Int(av), Value::Int(bv)) => {
+                    sanitize_value(Value::Real(lerp_f64(*av as f64, *bv as f64, tv)))
+                }
                 _ => {
                     // Fallback: extract f64 from a and b; check dimension consistency
                     let av = match a.as_f64() {
