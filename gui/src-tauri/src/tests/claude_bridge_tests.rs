@@ -583,6 +583,7 @@ async fn sidecar_handle_state_starts_as_starting() {
 #[tokio::test]
 async fn sidecar_handle_transitions_to_ready_on_ready_message() {
     use std::sync::Arc;
+    use std::time::Duration;
     use tokio::io::{AsyncWriteExt, BufReader};
     use tokio::sync::Mutex;
 
@@ -597,13 +598,10 @@ async fn sidecar_handle_transitions_to_ready_on_ready_message() {
     // Write the ready message (without closing the writer, so no EOF)
     data_writer.write_all(b"{\"type\":\"ready\"}\n").await.unwrap();
 
-    // Yield control multiple times to let the spawned reader task execute
-    for _ in 0..20 {
-        tokio::task::yield_now().await;
-    }
+    // wait_ready uses Notify internally — deterministic, no yield-count guessing.
+    handle.wait_ready(Duration::from_secs(5)).await.unwrap();
 
-    let s = handle.state().lock().await;
-    assert!(matches!(*s, SidecarState::Ready), "Expected Ready, got {:?}", *s);
+    assert!(matches!(*handle.state().lock().await, SidecarState::Ready));
     // Keep data_writer alive so reader task stays open (no EOF/Crashed)
     drop(data_writer);
 }
