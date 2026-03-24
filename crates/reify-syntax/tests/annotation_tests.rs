@@ -352,3 +352,119 @@ fn parse_annotation_on_occurrence() {
     assert_eq!(o.annotations[0].name, "async");
     assert!(o.annotations[0].args.is_empty());
 }
+
+// ── Step 15/16: empty annotation arg list ────────────────────────────────────
+
+#[test]
+fn parse_annotation_with_empty_arg_list() {
+    let source = "@test() structure S {}";
+    let module = parse_module(source);
+    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+
+    let s = match &module.declarations[0] {
+        Declaration::Structure(s) => s,
+        other => panic!("expected Structure, got {:?}", other),
+    };
+
+    assert_eq!(s.annotations.len(), 1, "expected 1 annotation");
+    assert_eq!(s.annotations[0].name, "test");
+    assert!(
+        s.annotations[0].args.is_empty(),
+        "expected empty args for @test(), got {:?}",
+        s.annotations[0].args
+    );
+}
+
+// ── Step 17/18: annotations interspersed with pragmas ────────────────────────
+
+#[test]
+fn parse_pragma_then_annotation_on_structure() {
+    // Pragma is module-level; annotation attaches to following structure.
+    let source = "#optimize\n@test\nstructure S {}";
+    let module = parse_module(source);
+    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+
+    // Module-level pragma
+    assert_eq!(module.pragmas.len(), 1, "expected 1 module pragma");
+    assert_eq!(module.pragmas[0].name, "optimize");
+
+    // Structure has 1 annotation
+    let s = match &module.declarations[0] {
+        Declaration::Structure(s) => s,
+        other => panic!("expected Structure, got {:?}", other),
+    };
+    assert_eq!(s.annotations.len(), 1, "expected 1 annotation on S");
+    assert_eq!(s.annotations[0].name, "test");
+}
+
+#[test]
+fn parse_annotation_then_pragma_then_structure() {
+    // Annotation should still attach to the structure even with a pragma between them.
+    // The pragma goes to module-level; the annotation accumulates and drains into S.
+    let source = "@test\n#optimize\nstructure S {}";
+    let module = parse_module(source);
+    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+
+    // Module-level pragma
+    assert_eq!(module.pragmas.len(), 1, "expected 1 module pragma");
+    assert_eq!(module.pragmas[0].name, "optimize");
+
+    // Structure has 1 annotation
+    let s = match &module.declarations[0] {
+        Declaration::Structure(s) => s,
+        other => panic!("expected Structure, got {:?}", other),
+    };
+    assert_eq!(s.annotations.len(), 1, "expected 1 annotation on S");
+    assert_eq!(s.annotations[0].name, "test");
+}
+
+// ── Step 19/20: trailing annotation (no following declaration) ────────────────
+
+#[test]
+fn parse_trailing_annotation_is_silently_dropped() {
+    let source = "structure S {}\n@orphan";
+    let module = parse_module(source);
+    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+
+    let s = match &module.declarations[0] {
+        Declaration::Structure(s) => s,
+        other => panic!("expected Structure, got {:?}", other),
+    };
+    assert!(
+        s.annotations.is_empty(),
+        "S should have no annotations, got {:?}",
+        s.annotations
+    );
+}
+
+// ── Step 21/22: annotation between two declarations ───────────────────────────
+
+#[test]
+fn parse_annotation_attaches_to_following_declaration() {
+    let source = "structure A {}\n@middle\nstructure B {}";
+    let module = parse_module(source);
+    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+    assert_eq!(module.declarations.len(), 2, "expected 2 declarations");
+
+    let a = match &module.declarations[0] {
+        Declaration::Structure(s) => s,
+        other => panic!("expected Structure A, got {:?}", other),
+    };
+    assert!(
+        a.annotations.is_empty(),
+        "A should have no annotations, got {:?}",
+        a.annotations
+    );
+
+    let b = match &module.declarations[1] {
+        Declaration::Structure(s) => s,
+        other => panic!("expected Structure B, got {:?}", other),
+    };
+    assert_eq!(
+        b.annotations.len(),
+        1,
+        "B should have 1 annotation, got {:?}",
+        b.annotations
+    );
+    assert_eq!(b.annotations[0].name, "middle");
+}

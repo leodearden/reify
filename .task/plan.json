@@ -73,127 +73,127 @@
       "id": "step-5",
       "type": "test",
       "description": "Write test: annotation with identifier arg (`@category(mechanical) structure S {}`). Assert annotation has 1 arg that is ExprKind::Ident(\"mechanical\").",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "cb2c4d25"
     },
     {
       "id": "step-6",
       "type": "impl",
       "description": "Verify identifier args work \u2014 identifiers are expressions, so lower_expr() handles them. If test fails, debug the child iteration to ensure identifier nodes inside annotation parens are reached.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "cb2c4d25"
     },
     {
       "id": "step-7",
       "type": "test",
       "description": "Write test: annotation with complex expression arg (`@tolerance(width * 0.01) structure S { param width: Real }`). Assert annotation arg is ExprKind::BinOp with op='*', left=Ident(\"width\"), right=NumberLiteral(0.01).",
       "status": "done",
-      "commit": "PENDING"
+      "commit": "bebe443f"
     },
     {
       "id": "step-8",
       "type": "impl",
       "description": "Verify complex expression parsing works in annotation context. Should work from step-4 since we use the general `lower_expr()`. Fix if needed.",
       "status": "done",
-      "commit": "PENDING"
+      "commit": "bebe443f"
     },
     {
       "id": "step-9",
       "type": "test",
       "description": "Write test: annotation with multiple args (`@config(\"prod\", 3, true) structure S {}`). Assert annotation has 3 args: StringLiteral(\"prod\"), NumberLiteral(3.0), BoolLiteral(true).",
       "status": "done",
-      "commit": "PENDING"
+      "commit": "bebe443f"
     },
     {
       "id": "step-10",
       "type": "impl",
       "description": "Verify multiple args work \u2014 commaSep in grammar produces multiple expression children. Fix collection logic if it doesn't iterate all expression children correctly.",
       "status": "done",
-      "commit": "PENDING"
+      "commit": "bebe443f"
     },
     {
       "id": "step-11",
       "type": "test",
       "description": "Write test: multiple annotations on one declaration (`@test\\n@deprecated(\"old\")\\nstructure S {}`). Assert declaration has 2 annotations: first with name='test' and no args, second with name='deprecated' and 1 string arg.",
       "status": "done",
-      "commit": "PENDING"
+      "commit": "bebe443f"
     },
     {
       "id": "step-12",
       "type": "impl",
       "description": "Verify multiple pending annotations accumulate and all attach to the next declaration. The `std::mem::take(&mut pending_annotations)` pattern moves all accumulated annotations at once.",
       "status": "done",
-      "commit": "PENDING"
+      "commit": "bebe443f"
     },
     {
       "id": "step-13",
       "type": "test",
       "description": "Write tests: annotation on each remaining declaration type \u2014 fn (`@pure fn area(w: Real, h: Real) -> Real { w * h }`), trait (`@marker trait Rigid { param mass: Real }`), enum (`@flags enum Dir { In, Out }`), import (`@reexport import std.math`), field def (`@cached field def temp : Point3 -> Real { source = analytical { |p| p } }`), purpose (`@strict purpose mfg_ready(s: Structure) { constraint s > 0 }`), constraint def (`@builtin constraint def MinWall { param w: Real  w > 0 }`), unit (`@si unit meter : Length`), occurrence (`@async occurrence Heat {}`).",
       "status": "done",
-      "commit": "PENDING"
+      "commit": "bebe443f"
     },
     {
       "id": "step-14",
       "type": "impl",
       "description": "Ensure all 10 declaration branches in `lower_source_file()` drain pending_annotations into the declaration's annotations field. Add the drain pattern to any branches that were missed in step-2.",
       "status": "done",
-      "commit": "PENDING"
+      "commit": "bebe443f"
     },
     {
       "id": "step-15",
       "type": "test",
       "description": "Write test: empty annotation arg list (`@test() structure S {}`). Assert annotation has name='test' and empty args Vec (0 args, not parse error).",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "bebe443f"
     },
     {
       "id": "step-16",
       "type": "impl",
       "description": "Verify empty arg list works \u2014 commaSep returns optional, so empty parens `()` should produce 0 expression children. Fix if needed.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "bebe443f"
     },
     {
       "id": "step-17",
       "type": "test",
       "description": "Write test: annotations interspersed with pragmas. Case A: `#optimize\\n@test\\nstructure S {}` \u2014 assert 1 module pragma and structure has 1 annotation. Case B: `@test\\n#optimize\\nstructure S {}` \u2014 annotation attaches to structure, pragma goes to module level.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "bebe443f"
     },
     {
       "id": "step-18",
       "type": "impl",
       "description": "Ensure the lowering loop correctly separates pragma and annotation handling: pragma nodes go to module_pragmas (existing behavior), annotation nodes accumulate in pending_annotations, declaration nodes consume pending_annotations. Pragmas between annotations and declarations should not interfere.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "bebe443f"
     },
     {
       "id": "step-19",
       "type": "test",
       "description": "Write edge case test: trailing annotation with no following declaration (`structure S {}\\n@orphan`). Assert S has 0 annotations and no parse errors. The orphan annotation is silently dropped.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "bebe443f"
     },
     {
       "id": "step-20",
       "type": "impl",
       "description": "Verify trailing annotations don't cause panics or spurious errors. The pending_annotations Vec is simply dropped at end of lowering \u2014 no special handling needed.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "bebe443f"
     },
     {
       "id": "step-21",
       "type": "test",
       "description": "Write test: annotation between two declarations (`structure A {}\\n@middle\\nstructure B {}`). Assert A has 0 annotations, B has 1 annotation named 'middle'. Verifies pending_annotations resets after draining.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "bebe443f"
     },
     {
       "id": "step-22",
       "type": "impl",
       "description": "Verify pending_annotations resets correctly after being drained to A. The `std::mem::take` pattern replaces the Vec with an empty Vec, so subsequent annotations accumulate fresh for B.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "bebe443f"
     }
   ],
   "design_decisions": [
