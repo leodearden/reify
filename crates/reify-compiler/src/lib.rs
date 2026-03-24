@@ -1921,7 +1921,29 @@ pub fn compile(
                     seen_entity_names.insert(occurrence.name.clone(), (occurrence.span, "occurrence"));
                 }
             }
-            // Import, Purpose, Constraint handled in pass 2 / purpose pass
+            reify_syntax::Declaration::Constraint(constraint) => {
+                // Constraints reserve names in the entity namespace (spec §4.2.1)
+                // even though constraint compilation is not yet implemented.
+                if let Some((first_span, first_kind)) = seen_entity_names.get(&constraint.name) {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "duplicate entity definition '{}'",
+                            constraint.name
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            constraint.span,
+                            "constraint defined here",
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            *first_span,
+                            format!("first defined as {} here", first_kind),
+                        )),
+                    );
+                } else {
+                    seen_entity_names.insert(constraint.name.clone(), (constraint.span, "constraint"));
+                }
+            }
+            // Import, Purpose handled in pass 2 / purpose pass
             _ => {}
         }
     }
