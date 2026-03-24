@@ -1119,3 +1119,18 @@ async fn claude_abort_impl_errors_when_sidecar_is_none() {
         msg
     );
 }
+
+#[tokio::test]
+async fn claude_clear_session_impl_errors_when_sidecar_is_none() {
+    let sidecar: tokio::sync::Mutex<Option<SidecarHandle>> = tokio::sync::Mutex::new(None);
+
+    let result = claude_clear_session_impl(&sidecar).await;
+
+    assert!(result.is_err(), "Expected error when sidecar is not started");
+    let msg = result.unwrap_err();
+    assert!(
+        msg.contains("not started"),
+        "Error should mention 'not started': {}",
+        msg
+    );
+}
