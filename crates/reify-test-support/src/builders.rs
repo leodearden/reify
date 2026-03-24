@@ -1,5 +1,6 @@
 use reify_types::{
-    BinOp, CompiledExpr, ContentHash, DimensionVector, SourceSpan, Type, UnOp, Value, ValueCellId,
+    BinOp, CompiledExpr, CompiledExprKind, ContentHash, DimensionVector, ResolvedFunction,
+    SourceSpan, Type, UnOp, Value, ValueCellId,
 };
 
 /// Infer the Type of a Value for use in literal() and collection builders.
@@ -157,6 +158,72 @@ pub fn map_expr(entries: Vec<(CompiledExpr, CompiledExpr)>) -> CompiledExpr {
     let val_ty = entries[0].1.result_type.clone();
     let result_type = Type::Map(Box::new(key_ty), Box::new(val_ty));
     CompiledExpr::map_literal(entries, result_type)
+}
+
+/// Create a conditional expression. Result type is taken from `then_branch`.
+pub fn conditional_expr(
+    condition: CompiledExpr,
+    then_branch: CompiledExpr,
+    else_branch: CompiledExpr,
+) -> CompiledExpr {
+    let result_type = then_branch.result_type.clone();
+    let content_hash = ContentHash::of(&[4])
+        .combine(condition.content_hash)
+        .combine(then_branch.content_hash)
+        .combine(else_branch.content_hash);
+    CompiledExpr {
+        kind: CompiledExprKind::Conditional {
+            condition: Box::new(condition),
+            then_branch: Box::new(then_branch),
+            else_branch: Box::new(else_branch),
+        },
+        result_type,
+        content_hash,
+    }
+}
+
+/// Create a standard function call expression with a fully-qualified function name.
+pub fn fn_call(
+    name: &str,
+    qualified_name: &str,
+    args: Vec<CompiledExpr>,
+    result_type: Type,
+) -> CompiledExpr {
+    let mut content_hash = ContentHash::of(&[5]).combine(ContentHash::of_str(name));
+    for arg in &args {
+        content_hash = content_hash.combine(arg.content_hash);
+    }
+    CompiledExpr {
+        kind: CompiledExprKind::FunctionCall {
+            function: ResolvedFunction {
+                name: name.to_string(),
+                qualified_name: qualified_name.to_string(),
+            },
+            args,
+        },
+        result_type,
+        content_hash,
+    }
+}
+
+/// Create a user-defined function call expression.
+pub fn user_fn_call(
+    function_name: &str,
+    args: Vec<CompiledExpr>,
+    result_type: Type,
+) -> CompiledExpr {
+    let mut content_hash = ContentHash::of(&[6]).combine(ContentHash::of_str(function_name));
+    for arg in &args {
+        content_hash = content_hash.combine(arg.content_hash);
+    }
+    CompiledExpr {
+        kind: CompiledExprKind::UserFunctionCall {
+            function_name: function_name.to_string(),
+            args,
+        },
+        result_type,
+        content_hash,
+    }
 }
 
 fn infer_binop_type(op: BinOp, left: &Type, right: &Type) -> Type {
