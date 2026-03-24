@@ -755,3 +755,327 @@ fn neg_matrix_literal() {
         Value::Tensor(vec![Value::Tensor(vec![Value::Int(-1), Value::Int(2)])])
     );
 }
+
+// ── task-230 step-1: Rank-1 Tensor addition ────────────────────────────────
+
+/// (a) Rank-1 Real tensor addition: [1,2,3] + [4,5,6] = [5,7,9].
+#[test]
+fn rank1_tensor_add_real_elements() {
+    let lhs = vec_lit(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
+    let rhs = vec_lit(vec![Value::Real(4.0), Value::Real(5.0), Value::Real(6.0)]);
+    let expr = CompiledExpr::binop(BinOp::Add, lhs, rhs, Type::Real);
+    assert_eq!(
+        eval(&expr),
+        Value::Tensor(vec![Value::Real(5.0), Value::Real(7.0), Value::Real(9.0)])
+    );
+}
+
+/// (b) Rank-1 Length tensor addition: dimension is preserved.
+#[test]
+fn rank1_tensor_add_length_preserves_dimension() {
+    let lhs = vec_lit(vec![Value::length(1.0), Value::length(2.0)]);
+    let rhs = vec_lit(vec![Value::length(3.0), Value::length(4.0)]);
+    let expr = CompiledExpr::binop(BinOp::Add, lhs, rhs, Type::Real);
+    assert_eq!(
+        eval(&expr),
+        Value::Tensor(vec![Value::length(4.0), Value::length(6.0)])
+    );
+}
+
+/// (c) Length mismatch: Tensor([1,2,3]) + Tensor([1,2]) → Undef.
+#[test]
+fn rank1_tensor_add_length_mismatch_returns_undef() {
+    let lhs = vec_lit(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
+    let rhs = vec_lit(vec![Value::Real(1.0), Value::Real(2.0)]);
+    let expr = CompiledExpr::binop(BinOp::Add, lhs, rhs, Type::Real);
+    assert_eq!(eval(&expr), Value::Undef);
+}
+
+/// (d) Dimension mismatch: Tensor([Length(1)]) + Tensor([Angle(1)]) → Undef.
+#[test]
+fn rank1_tensor_add_dimension_mismatch_returns_undef() {
+    let lhs = vec_lit(vec![Value::length(1.0)]);
+    let rhs = vec_lit(vec![Value::angle(1.0)]);
+    let expr = CompiledExpr::binop(BinOp::Add, lhs, rhs, Type::Real);
+    assert_eq!(eval(&expr), Value::Undef);
+}
+
+// ── task-230 step-3: Scalar × Rank-1 Tensor multiplication ────────────────
+
+/// (a) Int(3) * Tensor([Real(1),Real(2)]) = Tensor([Real(3),Real(6)]).
+#[test]
+fn scalar_int_mul_rank1_tensor_scales_elements() {
+    let s = scalar_lit(Value::Int(3));
+    let t = vec_lit(vec![Value::Real(1.0), Value::Real(2.0)]);
+    let expr = CompiledExpr::binop(BinOp::Mul, s, t, Type::Real);
+    assert_eq!(
+        eval(&expr),
+        Value::Tensor(vec![Value::Real(3.0), Value::Real(6.0)])
+    );
+}
+
+/// (b) Length(2) * Tensor([Length(1),Length(3)]) = Tensor([Area(2),Area(6)]) — Q1*Q2.
+#[test]
+fn length_scalar_mul_rank1_length_tensor_gives_area() {
+    let s = scalar_lit(Value::length(2.0));
+    let t = vec_lit(vec![Value::length(1.0), Value::length(3.0)]);
+    let expr = CompiledExpr::binop(BinOp::Mul, s, t, Type::Real);
+    assert_eq!(
+        eval(&expr),
+        Value::Tensor(vec![area(2.0), area(6.0)])
+    );
+}
+
+/// (c) Commutativity: Tensor([Real(1),Real(2)]) * Real(3) = Tensor([Real(3),Real(6)]).
+#[test]
+fn rank1_tensor_mul_scalar_commutativity() {
+    let t = vec_lit(vec![Value::Real(1.0), Value::Real(2.0)]);
+    let s = scalar_lit(Value::Real(3.0));
+    let expr = CompiledExpr::binop(BinOp::Mul, t, s, Type::Real);
+    assert_eq!(
+        eval(&expr),
+        Value::Tensor(vec![Value::Real(3.0), Value::Real(6.0)])
+    );
+}
+
+/// (d) Real(0.5) * Tensor([Length(4),Length(8)]) = Tensor([Length(2),Length(4)]).
+#[test]
+fn real_half_mul_rank1_length_tensor_halves_elements() {
+    let s = scalar_lit(Value::Real(0.5));
+    let t = vec_lit(vec![Value::length(4.0), Value::length(8.0)]);
+    let expr = CompiledExpr::binop(BinOp::Mul, s, t, Type::Real);
+    assert_eq!(
+        eval(&expr),
+        Value::Tensor(vec![Value::length(2.0), Value::length(4.0)])
+    );
+}
+
+// ── task-230 step-5: Rank-1 Tensor subtraction, negation, division ─────────
+
+/// (a) Tensor([Real(5),Real(3)]) - Tensor([Real(1),Real(2)]) = Tensor([Real(4),Real(1)]).
+#[test]
+fn rank1_tensor_sub_real_elements() {
+    let lhs = vec_lit(vec![Value::Real(5.0), Value::Real(3.0)]);
+    let rhs = vec_lit(vec![Value::Real(1.0), Value::Real(2.0)]);
+    let expr = CompiledExpr::binop(BinOp::Sub, lhs, rhs, Type::Real);
+    assert_eq!(
+        eval(&expr),
+        Value::Tensor(vec![Value::Real(4.0), Value::Real(1.0)])
+    );
+}
+
+/// (b) Length tensor subtraction preserves dimension.
+#[test]
+fn rank1_tensor_sub_length_preserves_dimension() {
+    let lhs = vec_lit(vec![Value::length(10.0), Value::length(20.0)]);
+    let rhs = vec_lit(vec![Value::length(3.0), Value::length(7.0)]);
+    let expr = CompiledExpr::binop(BinOp::Sub, lhs, rhs, Type::Real);
+    assert_eq!(
+        eval(&expr),
+        Value::Tensor(vec![Value::length(7.0), Value::length(13.0)])
+    );
+}
+
+/// (c) Negation: -Tensor([Real(1),Real(-2),Real(3)]) = Tensor([Real(-1),Real(2),Real(-3)]).
+#[test]
+fn rank1_tensor_neg_negates_all_elements() {
+    let t = vec_lit(vec![Value::Real(1.0), Value::Real(-2.0), Value::Real(3.0)]);
+    let expr = CompiledExpr::unop(UnOp::Neg, t, Type::Real);
+    assert_eq!(
+        eval(&expr),
+        Value::Tensor(vec![Value::Real(-1.0), Value::Real(2.0), Value::Real(-3.0)])
+    );
+}
+
+/// (d) Area tensor / Length scalar = Length tensor (Q/Q' dimension quotient).
+#[test]
+fn rank1_tensor_div_area_by_length_gives_length() {
+    let t = vec_lit(vec![area(4.0), area(6.0)]);
+    let s = scalar_lit(Value::length(2.0));
+    let expr = CompiledExpr::binop(BinOp::Div, t, s, Type::Real);
+    assert_eq!(
+        eval(&expr),
+        Value::Tensor(vec![Value::length(2.0), Value::length(3.0)])
+    );
+}
+
+// ── task-230 step-7: Rank/shape validation ─────────────────────────────────
+
+/// (a) rank-1 + rank-2 → Undef (different ranks cannot be added).
+#[test]
+fn rank1_plus_rank2_tensor_returns_undef() {
+    let rank1 = vec_lit(vec![Value::Real(1.0), Value::Real(2.0)]);
+    let rank2 = mat(vec![
+        vec![Value::Real(1.0), Value::Real(2.0)],
+        vec![Value::Real(3.0), Value::Real(4.0)],
+    ]);
+    let expr = CompiledExpr::binop(BinOp::Add, rank1, rank2, Type::Real);
+    assert_eq!(eval(&expr), Value::Undef);
+}
+
+/// (b) rank-1 * rank-1 → Undef (no element-wise tensor multiply defined).
+#[test]
+fn rank1_tensor_mul_rank1_tensor_returns_undef() {
+    let lhs = vec_lit(vec![Value::Real(1.0)]);
+    let rhs = vec_lit(vec![Value::Real(2.0)]);
+    let expr = CompiledExpr::binop(BinOp::Mul, lhs, rhs, Type::Real);
+    assert_eq!(eval(&expr), Value::Undef);
+}
+
+/// (c) Empty tensor operations: Tensor([]) + Tensor([]) → Undef.
+#[test]
+fn empty_rank1_tensor_add_returns_undef() {
+    let lhs = vec_lit(vec![]);
+    let rhs = vec_lit(vec![]);
+    let expr = CompiledExpr::binop(BinOp::Add, lhs, rhs, Type::Real);
+    assert_eq!(eval(&expr), Value::Undef);
+}
+
+/// (d) Single-element rank-1 tensor: Tensor([Length(5)]) + Tensor([Length(3)]) = Tensor([Length(8)]).
+#[test]
+fn single_element_rank1_tensor_add() {
+    let lhs = vec_lit(vec![Value::length(5.0)]);
+    let rhs = vec_lit(vec![Value::length(3.0)]);
+    let expr = CompiledExpr::binop(BinOp::Add, lhs, rhs, Type::Real);
+    assert_eq!(
+        eval(&expr),
+        Value::Tensor(vec![Value::length(8.0)])
+    );
+}
+
+// ── task-230 step-9: Rank-3 Tensor addition (recursive generality) ─────────
+
+/// Rank-3 tensor addition via recursive componentwise_op.
+/// Shape: 2×2×2 Real tensors added element-wise.
+#[test]
+fn rank3_tensor_add_verifies_recursive_generality() {
+    // A: 2×2×2 tensor with elements 1..8
+    let a = vec_lit(vec![
+        Value::Tensor(vec![
+            Value::Tensor(vec![Value::Real(1.0), Value::Real(2.0)]),
+            Value::Tensor(vec![Value::Real(3.0), Value::Real(4.0)]),
+        ]),
+        Value::Tensor(vec![
+            Value::Tensor(vec![Value::Real(5.0), Value::Real(6.0)]),
+            Value::Tensor(vec![Value::Real(7.0), Value::Real(8.0)]),
+        ]),
+    ]);
+    // B: same shape with elements 10,20,...,80
+    let b = vec_lit(vec![
+        Value::Tensor(vec![
+            Value::Tensor(vec![Value::Real(10.0), Value::Real(20.0)]),
+            Value::Tensor(vec![Value::Real(30.0), Value::Real(40.0)]),
+        ]),
+        Value::Tensor(vec![
+            Value::Tensor(vec![Value::Real(50.0), Value::Real(60.0)]),
+            Value::Tensor(vec![Value::Real(70.0), Value::Real(80.0)]),
+        ]),
+    ]);
+    let expr = CompiledExpr::binop(BinOp::Add, a, b, Type::Real);
+    assert_eq!(
+        eval(&expr),
+        Value::Tensor(vec![
+            Value::Tensor(vec![
+                Value::Tensor(vec![Value::Real(11.0), Value::Real(22.0)]),
+                Value::Tensor(vec![Value::Real(33.0), Value::Real(44.0)]),
+            ]),
+            Value::Tensor(vec![
+                Value::Tensor(vec![Value::Real(55.0), Value::Real(66.0)]),
+                Value::Tensor(vec![Value::Real(77.0), Value::Real(88.0)]),
+            ]),
+        ])
+    );
+}
+
+// ── task-230 step-11: Mat×Vec and Mat×Mat Q1*Q2 dimension product ──────────
+
+/// Helper: create a Scalar with ANGLE*LENGTH dimension (angle-length product).
+fn angle_length(si_value: f64) -> Value {
+    Value::Scalar {
+        si_value,
+        dimension: DimensionVector::ANGLE.mul(&DimensionVector::LENGTH),
+    }
+}
+
+/// (a) Matrix(Angle) × Vector(Length) → Vector(Angle·Length).
+/// [[Angle(1),Angle(2)],[Angle(3),Angle(4)]] * [Length(1),Length(1)] = [AngleLen(3),AngleLen(7)]
+#[test]
+fn mat_vec_angle_times_length_gives_angle_length_product() {
+    let m = mat(vec![
+        vec![Value::angle(1.0), Value::angle(2.0)],
+        vec![Value::angle(3.0), Value::angle(4.0)],
+    ]);
+    let v = vec_lit(vec![Value::length(1.0), Value::length(1.0)]);
+    let expr = CompiledExpr::binop(BinOp::Mul, m, v, Type::Real);
+    assert_eq!(
+        eval(&expr),
+        Value::Tensor(vec![angle_length(3.0), angle_length(7.0)])
+    );
+}
+
+/// (b) Matrix(Length) × Matrix(Angle) → Matrix(Angle·Length).
+/// [[Length(1),Length(0)],[Length(0),Length(1)]] * [[Angle(2),Angle(0)],[Angle(0),Angle(3)]]
+/// = [[AngleLen(2),AngleLen(0)],[AngleLen(0),AngleLen(3)]]
+#[test]
+fn mat_mat_length_times_angle_gives_angle_length_product() {
+    let a = mat(vec![
+        vec![Value::length(1.0), Value::length(0.0)],
+        vec![Value::length(0.0), Value::length(1.0)],
+    ]);
+    let b = mat(vec![
+        vec![Value::angle(2.0), Value::angle(0.0)],
+        vec![Value::angle(0.0), Value::angle(3.0)],
+    ]);
+    let expr = CompiledExpr::binop(BinOp::Mul, a, b, Type::Real);
+    assert_eq!(
+        eval(&expr),
+        Value::Tensor(vec![
+            Value::Tensor(vec![angle_length(2.0), angle_length(0.0)]),
+            Value::Tensor(vec![angle_length(0.0), angle_length(3.0)]),
+        ])
+    );
+}
+
+/// (c) Mat×Vec inner-dim mismatch with dimensioned values → Undef.
+#[test]
+fn mat_vec_dimensioned_inner_dim_mismatch_returns_undef() {
+    // 2×3 Angle matrix * 2-element Length vector → inner-dim mismatch (3 != 2)
+    let m = mat(vec![
+        vec![Value::angle(1.0), Value::angle(2.0), Value::angle(3.0)],
+        vec![Value::angle(4.0), Value::angle(5.0), Value::angle(6.0)],
+    ]);
+    let v = vec_lit(vec![Value::length(1.0), Value::length(2.0)]);
+    let expr = CompiledExpr::binop(BinOp::Mul, m, v, Type::Real);
+    assert_eq!(eval(&expr), Value::Undef);
+}
+
+// ── task-230 step-13: Integration test ────────────────────────────────────
+
+/// Integration: scalar * (matrix + matrix) * vector with dimension tracking.
+///
+/// Real(2) * ([[Length(1),Length(0)],[Length(0),Length(1)]] + [[Length(1),Length(1)],[Length(1),Length(1)]])
+///         * [Length(1),Length(1)]
+///
+/// Step 1: M1 + M2 = [[Length(2),Length(1)],[Length(1),Length(2)]]
+/// Step 2: Real(2) * that = [[Length(4),Length(2)],[Length(2),Length(4)]]
+/// Step 3: scaled * [Length(1),Length(1)] = [Area(6), Area(6)]
+#[test]
+fn integration_scalar_times_matsum_times_vec_with_dimensions() {
+    let m1 = mat(vec![
+        vec![Value::length(1.0), Value::length(0.0)],
+        vec![Value::length(0.0), Value::length(1.0)],
+    ]);
+    let m2 = mat(vec![
+        vec![Value::length(1.0), Value::length(1.0)],
+        vec![Value::length(1.0), Value::length(1.0)],
+    ]);
+    let mat_sum = CompiledExpr::binop(BinOp::Add, m1, m2, Type::Real);
+    let s = scalar_lit(Value::Real(2.0));
+    let scaled = CompiledExpr::binop(BinOp::Mul, s, mat_sum, Type::Real);
+    let v = vec_lit(vec![Value::length(1.0), Value::length(1.0)]);
+    let expr = CompiledExpr::binop(BinOp::Mul, scaled, v, Type::Real);
+    assert_eq!(
+        eval(&expr),
+        Value::Tensor(vec![area(6.0), area(6.0)])
+    );
+}
