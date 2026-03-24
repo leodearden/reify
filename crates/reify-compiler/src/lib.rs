@@ -2169,41 +2169,63 @@ struct TarjanState {
     sccs: Vec<Vec<usize>>,
 }
 
-/// Recursive visit for Tarjan's SCC algorithm.
+/// Iterative visit for Tarjan's SCC algorithm.
 ///
-/// Assigns `index` and `lowlink` values, pushes onto the SCC stack, and pops SCCs
-/// when a root node (lowlink == index) is found.
+/// Uses an explicit call stack to avoid OS stack overflow on deep/large structure graphs.
+/// Each frame tracks (node, neighbor_index) so the DFS can be resumed without recursion.
 fn tarjan_scc_visit(v: usize, adjacency: &[Vec<usize>], st: &mut TarjanState) {
+    // Each frame: (node, index into adjacency[node] for the next neighbor to process)
+    let mut call_stack: Vec<(usize, usize)> = Vec::new();
+
+    // Initialize the starting node
     st.index[v] = Some(st.index_counter);
     st.lowlink[v] = st.index_counter;
     st.index_counter += 1;
     st.scc_stack.push(v);
     st.on_stack[v] = true;
+    call_stack.push((v, 0));
 
-    for &w in &adjacency[v] {
-        if st.index[w].is_none() {
-            // w has not been visited — recurse and propagate lowlink
-            tarjan_scc_visit(w, adjacency, st);
-            st.lowlink[v] = st.lowlink[v].min(st.lowlink[w]);
-        } else if st.on_stack[w] {
-            // w is on the current SCC stack: back edge within the current SCC
-            st.lowlink[v] = st.lowlink[v].min(st.index[w].unwrap());
-        }
-        // If w is off the stack (already in a completed SCC), ignore: it's in a different SCC.
-    }
+    while let Some(&mut (node, ref mut neighbor_idx)) = call_stack.last_mut() {
+        if *neighbor_idx < adjacency[node].len() {
+            let w = adjacency[node][*neighbor_idx];
+            *neighbor_idx += 1;
 
-    // If v is a root (lowlink == index), pop the completed SCC from the stack
-    if st.lowlink[v] == st.index[v].unwrap() {
-        let mut scc = Vec::new();
-        loop {
-            let w = st.scc_stack.pop().unwrap();
-            st.on_stack[w] = false;
-            scc.push(w);
-            if w == v {
-                break;
+            if st.index[w].is_none() {
+                // w has not been visited — "recurse" by pushing a new frame
+                st.index[w] = Some(st.index_counter);
+                st.lowlink[w] = st.index_counter;
+                st.index_counter += 1;
+                st.scc_stack.push(w);
+                st.on_stack[w] = true;
+                call_stack.push((w, 0));
+            } else if st.on_stack[w] {
+                // w is on the current SCC stack: back edge within the current SCC
+                st.lowlink[node] = st.lowlink[node].min(st.index[w].unwrap());
+            }
+            // If w is off the stack (already in a completed SCC), ignore.
+        } else {
+            // All neighbors of `node` have been processed — equivalent to returning
+            // from the recursive call. Pop this frame and propagate lowlink to parent.
+            let (finished_node, _) = call_stack.pop().unwrap();
+
+            if let Some(&(parent, _)) = call_stack.last() {
+                st.lowlink[parent] = st.lowlink[parent].min(st.lowlink[finished_node]);
+            }
+
+            // If finished_node is a root (lowlink == index), pop the completed SCC
+            if st.lowlink[finished_node] == st.index[finished_node].unwrap() {
+                let mut scc = Vec::new();
+                loop {
+                    let w = st.scc_stack.pop().unwrap();
+                    st.on_stack[w] = false;
+                    scc.push(w);
+                    if w == finished_node {
+                        break;
+                    }
+                }
+                st.sccs.push(scc);
             }
         }
-        st.sccs.push(scc);
     }
 }
 
@@ -2223,15 +2245,10 @@ fn reconstruct_scc_cycle(
     }
 
     // Build a set of SCC members for fast membership test
-    let scc_set: std::collections::HashSet<usize> = scc.iter().copied().collect();
+    let scc_set: HashSet<usize> = scc.iter().copied().collect();
     let start = scc[0];
-    let mut path = vec![start];
-    let mut visited = std::collections::HashSet::new();
-    visited.insert(start);
 
-    if let Some(cycle) =
-        find_cycle_back_to(start, start, &scc_set, adjacency, &mut path, &mut visited)
-    {
+    if let Some(cycle) = find_cycle_back_to(start, &scc_set, adjacency) {
         cycle.iter().map(|&i| templates[i].name.as_str()).collect::<Vec<_>>().join(" -> ")
     } else {
         // Fallback: list all SCC members (should not happen in a valid SCC)
@@ -2241,34 +2258,50 @@ fn reconstruct_scc_cycle(
     }
 }
 
-/// DFS within SCC nodes to find a cycle from `current` back to `target`.
-/// Returns the full cycle path (including the closing `target` node) on success.
+/// Iterative DFS within SCC nodes to find a cycle from `start` back to itself.
+/// Returns the full cycle path (including the closing `start` node) on success.
+///
+/// Uses an explicit stack to avoid OS stack overflow for large SCCs.
 fn find_cycle_back_to(
-    current: usize,
-    target: usize,
-    scc_set: &std::collections::HashSet<usize>,
+    start: usize,
+    scc_set: &HashSet<usize>,
     adjacency: &[Vec<usize>],
-    path: &mut Vec<usize>,
-    visited: &mut std::collections::HashSet<usize>,
 ) -> Option<Vec<usize>> {
-    for &next in &adjacency[current] {
+    let mut path = vec![start];
+    let mut visited = HashSet::new();
+    visited.insert(start);
+    // Each frame: index into adjacency[path.last()] for the next neighbor to try
+    let mut neighbor_idx_stack: Vec<usize> = vec![0];
+
+    while let Some(ni) = neighbor_idx_stack.last_mut() {
+        let current = *path.last().unwrap();
+        if *ni >= adjacency[current].len() {
+            // Backtrack: all neighbors of `current` exhausted
+            path.pop();
+            neighbor_idx_stack.pop();
+            if let Some(&backtracked) = path.last() {
+                // Only remove from visited when we're not the start node
+                // (we keep start in visited to avoid revisiting it as non-target)
+                let _ = backtracked; // backtracked node stays — current gets removed
+                visited.remove(&current);
+            }
+            continue;
+        }
+        let next = adjacency[current][*ni];
+        *ni += 1;
+
         if !scc_set.contains(&next) {
             continue; // Stay within the SCC
         }
-        if next == target && path.len() > 1 {
+        if next == start && path.len() > 1 {
             // Completed the cycle back to the start
-            let mut cycle = path.clone();
-            cycle.push(target);
-            return Some(cycle);
+            path.push(start);
+            return Some(path);
         }
         if !visited.contains(&next) {
             visited.insert(next);
             path.push(next);
-            if let Some(c) = find_cycle_back_to(next, target, scc_set, adjacency, path, visited) {
-                return Some(c);
-            }
-            path.pop();
-            visited.remove(&next);
+            neighbor_idx_stack.push(0);
         }
     }
     None
