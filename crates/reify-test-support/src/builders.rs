@@ -138,9 +138,10 @@ use std::collections::HashSet;
 
 use reify_compiler::{
     CompiledConstraint, CompiledGeometryOp, CompiledGuardedGroup, CompiledImport, CompiledModule,
-    EntityKind, RealizationDecl, SubComponentDecl, TopologyTemplate, ValueCellDecl, ValueCellKind,
+    CompiledTrait, DefaultKind, EntityKind, RealizationDecl, RequirementKind, SubComponentDecl,
+    TopologyTemplate, TraitDefault, TraitRequirement, ValueCellDecl, ValueCellKind,
 };
-use reify_types::{ConstraintNodeId, RealizationNodeId};
+use reify_types::{ConstraintNodeId, RealizationNodeId, TypeParam};
 
 /// Builder for `TopologyTemplate`.
 pub struct TopologyTemplateBuilder {
@@ -452,6 +453,106 @@ mod tests {
         assert_eq!(cell.kind, ValueCellKind::Auto);
         assert!(cell.default_expr.is_none());
         assert_eq!(cell.cell_type, Type::length());
+    }
+
+    // step-1: failing test for TraitDefBuilder minimal
+    #[test]
+    fn trait_def_builder_minimal() {
+        let ct = TraitDefBuilder::new("Rigid").build();
+        assert_eq!(ct.name, "Rigid");
+        assert!(!ct.is_pub);
+        assert!(ct.required_members.is_empty());
+        assert!(ct.defaults.is_empty());
+        assert!(ct.refinements.is_empty());
+        assert!(ct.type_params.is_empty());
+        // content_hash should be non-zero (derived from name)
+        assert_ne!(ct.content_hash, reify_types::ContentHash(0));
+    }
+}
+
+/// Builder for `CompiledTrait`.
+///
+/// Follows the same fluent pattern as `TopologyTemplateBuilder`.
+pub struct TraitDefBuilder {
+    name: String,
+    is_pub: bool,
+    type_params: Vec<TypeParam>,
+    refinements: Vec<String>,
+    required_members: Vec<TraitRequirement>,
+    defaults: Vec<TraitDefault>,
+}
+
+impl TraitDefBuilder {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            is_pub: false,
+            type_params: Vec::new(),
+            refinements: Vec::new(),
+            required_members: Vec::new(),
+            defaults: Vec::new(),
+        }
+    }
+
+    pub fn is_pub(mut self) -> Self {
+        self.is_pub = true;
+        self
+    }
+
+    pub fn refinement(mut self, trait_name: impl Into<String>) -> Self {
+        self.refinements.push(trait_name.into());
+        self
+    }
+
+    pub fn type_param(mut self, param: TypeParam) -> Self {
+        self.type_params.push(param);
+        self
+    }
+
+    pub fn requirement(mut self, name: impl Into<String>, kind: RequirementKind) -> Self {
+        self.required_members.push(TraitRequirement {
+            name: name.into(),
+            kind,
+            span: reify_types::SourceSpan::new(0, 0),
+        });
+        self
+    }
+
+    pub fn default(mut self, name: Option<impl Into<String>>, kind: DefaultKind) -> Self {
+        self.defaults.push(TraitDefault {
+            name: name.map(|n| n.into()),
+            kind,
+            span: reify_types::SourceSpan::new(0, 0),
+        });
+        self
+    }
+
+    pub fn build(self) -> CompiledTrait {
+        let content_hash = {
+            let name_hash = ContentHash::of_str(&self.name);
+            let req_hashes = self
+                .required_members
+                .iter()
+                .map(|r| ContentHash::of_str(&r.name));
+            let ref_hashes = self
+                .refinements
+                .iter()
+                .map(|r| ContentHash::of_str(r));
+            let all_hashes = std::iter::once(name_hash)
+                .chain(req_hashes)
+                .chain(ref_hashes);
+            ContentHash::combine_all(all_hashes)
+        };
+
+        CompiledTrait {
+            name: self.name,
+            is_pub: self.is_pub,
+            type_params: self.type_params,
+            refinements: self.refinements,
+            required_members: self.required_members,
+            defaults: self.defaults,
+            content_hash,
+        }
     }
 }
 
