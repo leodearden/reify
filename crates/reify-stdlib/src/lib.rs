@@ -1789,6 +1789,54 @@ mod tests {
         }
     }
 
+    // --- normalize() sanitization tests (step-13) ---
+
+    #[test]
+    fn normalize_nan_component_returns_undef() {
+        // A NaN component makes sum_sq NaN → mag NaN → mag==0.0 is false →
+        // without an up-front guard we'd produce a Tensor with NaN Real values.
+        let v = Value::Tensor(vec![
+            Value::Real(f64::NAN),
+            Value::Real(1.0),
+            Value::Real(0.0),
+        ]);
+        assert!(
+            eval_builtin("normalize", &[v]).is_undef(),
+            "normalize of a Tensor containing NaN should return Undef"
+        );
+    }
+
+    #[test]
+    fn normalize_inf_component_returns_undef() {
+        // An Inf component makes sum_sq Inf → mag Inf → Inf/Inf = NaN for the
+        // Inf component, other components become 0.0 (finite/Inf).  Without a
+        // guard we'd produce a mixed Tensor instead of Undef.
+        let v = Value::Tensor(vec![
+            Value::Real(f64::INFINITY),
+            Value::Real(1.0),
+            Value::Real(0.0),
+        ]);
+        assert!(
+            eval_builtin("normalize", &[v]).is_undef(),
+            "normalize of a Tensor containing Inf should return Undef"
+        );
+    }
+
+    #[test]
+    fn normalize_overflow_returns_undef() {
+        // Squaring f64::MAX overflows to Inf → sum_sq = Inf → mag = Inf →
+        // x / mag produces NaN or 0.0 — the result is not a valid unit vector.
+        let v = Value::Tensor(vec![
+            Value::Real(f64::MAX),
+            Value::Real(f64::MAX),
+            Value::Real(0.0),
+        ]);
+        assert!(
+            eval_builtin("normalize", &[v]).is_undef(),
+            "normalize of a Tensor whose magnitude overflows to Inf should return Undef"
+        );
+    }
+
     // --- magnitude() tests (step-7) ---
 
     #[test]

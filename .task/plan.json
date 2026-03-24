@@ -1,151 +1,175 @@
 {
-  "task_id": "227",
-  "title": "Point/Vector: unit tests",
+  "task_id": "301",
+  "title": "Stdlib: dot, cross, normalize, magnitude linalg builtins",
   "files": [
-    "crates/reify-expr/tests/point_vector_eval_tests.rs",
-    "crates/reify-expr/src/lib.rs"
+    "crates/reify-stdlib/src/lib.rs",
+    "crates/reify-lsp/src/completion.rs"
   ],
   "modules": [
-    "crates/reify-expr",
-    "crates/reify-types"
+    "crates/reify-stdlib",
+    "crates/reify-lsp"
   ],
-  "analysis": "Task 227 requires >=22 tests covering Point/Vector construction, all arithmetic rules from spec section 3.3.1, component access, dimensional checking, scalar-vector multiplication, P+P error, different-N error, undef propagation, and the specific Point3<Length>-Point3<Length>->Vector3<Length> case.\n\nThe existing point_vector_eval_tests.rs has 12 component-access tests from task 226. Task 225 ('affine arithmetic') is marked done but the eval_add/eval_sub/eval_mul/eval_div/eval_unop functions in lib.rs do NOT currently handle Value::Tensor \u2014 they fall through to `_ => Value::Undef`. This means the Tensor arithmetic implementation is missing and must be added alongside the tests (true TDD: write failing test, then implement).\n\nAt runtime, both Point and Vector are represented as Value::Tensor(Vec<Value>). The type distinction exists only in the Type enum (Type::Point vs Type::Vector). The evaluator's arithmetic functions (eval_add, eval_sub, etc.) operate on Values without type info, so component-wise Tensor operations are type-agnostic. The Point+Point error guard requires checking CompiledExpr.result_type in eval_binop before dispatching.\n\nThe implementation adds: (1) Tensor component-wise add/sub with length checking, (2) Scalar*Tensor and Tensor*Scalar in eval_mul, (3) Tensor/Scalar in eval_div, (4) Tensor negation in eval_unop, (5) Point+Point type guard in eval_binop. All follow strict Undef propagation: if any component op yields Undef, the entire Tensor result is Undef.",
+  "analysis": "The task adds four linear-algebra builtins to eval_builtin() in reify-stdlib: dot, cross, normalize, magnitude. All operate on Value::Tensor(Vec<Value>) which is the runtime representation of vectors. Each component is either Value::Real, Value::Int, or Value::Scalar{si_value, dimension}. Dimensional tracking uses DimensionVector with mul/div/root operations. The existing pattern uses match arms in eval_builtin() with helper functions (unary, binary, etc.). These four builtins need custom argument validation since they operate on Tensor values (not scalar), so they won't use the existing unary_f64/binary_f64 helpers but will use the unary/binary wrappers for arity checking. The LSP completion list in completion.rs needs the four new function names added to the BUILTIN_FUNCTIONS const array. Key design points: (1) dot requires both args be Tensor of same length, returns scalar with dimension=a.dim*b.dim; (2) cross requires both be Tensor of length 3, returns Tensor(3) with dimension=a.dim*b.dim; (3) normalize computes magnitude then divides each component, returns dimensionless Tensor, zero vector\u2192Undef; (4) magnitude returns sqrt(sum of squares) as Scalar with original dimension. Components may be mixed Int/Real/Scalar \u2014 we extract f64 via as_f64() and track dimensions from Scalar variants. For dimensionless (Int/Real) components, dimension is DIMENSIONLESS throughout. All implementations go in eval_builtin match arms, following the established pattern. Tests follow the existing pattern: call eval_builtin() directly, match on expected Value variant, assert f64 within 1e-12 epsilon.",
   "prerequisites": [],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write 4 construction tests verifying Value::Tensor creation for Point3<Length>, Vector3<Length>, Point2<Length>, Vector2<Dimensionless>. These pass immediately since Value::Tensor already exists. Tests verify component count and values match. Add to point_vector_eval_tests.rs in a new '// --- Construction ---' section.",
+      "description": "Write failing tests for dot() with dimensionless vectors: dot(vec3(1,0,0), vec3(0,1,0))==0 (orthogonal), dot(vec3(1,2,3), vec3(4,5,6))==32 (parallel-ish), dot with mismatched lengths returns Undef, dot of non-Tensor args returns Undef",
       "status": "done",
-      "commit": "PLACEHOLDER"
+      "commit": "f490356"
     },
     {
       "id": "step-2",
       "type": "test",
-      "description": "Write 7 failing tests for Tensor add/sub arithmetic: (1) vector3_add_vector3_componentwise, (2) vector3_sub_vector3_componentwise, (3) point3_add_vector3_returns_point, (4) vector3_add_point3_returns_point, (5) point3_sub_point3_returns_vector, (6) point3_length_sub_point3_length_gives_vector3_length (the specific spec case), (7) vector3_add_vector2_n_mismatch_returns_undef. All use CompiledExpr::binop with BinOp::Add/Sub on Tensor literals. Tests 1-6 fail because eval_add/eval_sub don't handle Tensor. Test 7 passes by accident (Undef fallthrough).",
-      "status": "pending",
-      "commit": null
+      "description": "Write failing tests for dot() with dimensions: dot(vec3(1m,0,0), vec3(1N,0,0)) returns Scalar with si_value=1.0 and dimension=Length*Force, dot of vectors with mismatched component dimensions returns Undef",
+      "status": "done",
+      "commit": "2e4eee4"
     },
     {
       "id": "step-3",
       "type": "impl",
-      "description": "Add Tensor component-wise add/sub to eval_add and eval_sub in lib.rs. Pattern: match (Value::Tensor(a), Value::Tensor(b)) => check a.len()==b.len() (else Undef), zip and apply eval_add/eval_sub per component, if any component is Undef return Undef, else return Value::Tensor(results). This makes step-2 tests 1-6 pass. Test 7 (N mismatch) passes via the length check.",
-      "status": "pending",
-      "commit": null
+      "description": "Implement dot() in eval_builtin: add 'dot' match arm using binary() helper, validate both args are Tensor of same length, extract f64 via as_f64() and dimension via dimension() from each component, check all components within a vector share the same dimension (else Undef), sum products of corresponding components, return Value::Real if both dims are DIMENSIONLESS or Value::Scalar with dim=a_dim.mul(&b_dim) otherwise. Apply sanitize_value to result.",
+      "status": "done",
+      "commit": "8ea70e6"
     },
     {
       "id": "step-4",
       "type": "test",
-      "description": "Write 1 failing test: point3_add_point3_returns_undef \u2014 create two Point3<Length> Tensor literals, add via BinOp::Add with result_type Type::point3(Type::length()). After step-3, Tensor+Tensor works, so P+P now returns a Tensor instead of Undef. This test fails, proving the guard is needed.",
-      "status": "pending",
-      "commit": null
+      "description": "Write failing tests for cross(): cross(x_hat, y_hat)==z_hat using Real components, anti-commutativity cross(a,b)==-cross(b,a), orthogonality dot(a,cross(a,b))==0, cross on 2-element Tensor returns Undef, cross on non-Tensor returns Undef, cross on length-4 Tensor returns Undef",
+      "status": "done",
+      "commit": "3f03742"
     },
     {
       "id": "step-5",
-      "type": "impl",
-      "description": "Add Point+Point type guard in eval_binop in lib.rs. Before dispatching BinOp::Add to eval_add, check if both left.result_type and right.result_type match Type::Point{..}. If so, return Value::Undef immediately. This makes step-4 test pass while preserving all other Tensor add behavior.",
-      "status": "pending",
-      "commit": null
+      "type": "test",
+      "description": "Write failing tests for cross() with dimensions: cross of Length vector and Force vector produces Tensor(3) with each component having Length*Force dimension",
+      "status": "done",
+      "commit": "b2c3df2"
     },
     {
       "id": "step-6",
-      "type": "test",
-      "description": "Write 3 failing tests for scalar-vector multiplication and division: (1) scalar_mul_vector3_scales_components \u2014 Scalar(2.0,LENGTH) * Vector3<Length>(1,2,3) -> Tensor([2,4,6] with AREA dimension), (2) vector3_mul_scalar_commutative \u2014 same but reversed operand order, (3) vector3_div_scalar_divides_components \u2014 Vector3<Length>(10,20,30) / Scalar(2.0,DIMENSIONLESS) -> Tensor([5,10,15]). All fail because eval_mul/eval_div don't handle Tensor.",
-      "status": "pending",
-      "commit": null
+      "type": "impl",
+      "description": "Implement cross() in eval_builtin: add 'cross' match arm using binary() helper, validate both args are Tensor of length exactly 3 (else Undef), extract 6 component f64 values and validate dimensions are consistent within each vector, compute cross product (a1*b2-a2*b1, a2*b0-a0*b2, a0*b1-a1*b0), return Tensor(3) with components as Real (dimensionless) or Scalar (with a_dim.mul(&b_dim)). Apply sanitize_value to each component.",
+      "status": "done",
+      "commit": "4fffbc2"
     },
     {
       "id": "step-7",
-      "type": "impl",
-      "description": "Add Scalar*Tensor, Tensor*Scalar to eval_mul and Tensor/Scalar to eval_div in lib.rs. For mul: match (Value::Tensor(components), scalar) or (scalar, Value::Tensor(components)) where scalar is Scalar/Int/Real, map each component through eval_mul(component, scalar). For div: match (Value::Tensor(components), scalar), map each component through eval_div(component, scalar). Apply strict Undef propagation. Makes step-6 tests pass.",
-      "status": "pending",
-      "commit": null
+      "type": "test",
+      "description": "Write failing tests for magnitude(): magnitude(vec3(3,4,0))==5.0 as Real, magnitude(vec3(3mm,4mm,0mm))==0.005 (5mm in SI) as Scalar with LENGTH dimension, magnitude of zero vector returns Real(0.0) or Scalar{0.0}, magnitude of 2D vector works, magnitude of non-Tensor returns Undef, magnitude of empty Tensor returns Undef",
+      "status": "done",
+      "commit": "f546ac4"
     },
     {
       "id": "step-8",
-      "type": "test",
-      "description": "Write 1 failing test: negate_vector3_negates_all_components \u2014 CompiledExpr::unop(UnOp::Neg, Vector3<Length>(1,2,3), Type::vec3(Type::length())). Expected: Tensor([-1,-2,-3]) with LENGTH dimension. Fails because eval_unop Neg doesn't handle Tensor.",
-      "status": "pending",
-      "commit": null
+      "type": "impl",
+      "description": "Implement magnitude() in eval_builtin: add 'magnitude' match arm using unary() helper, validate arg is Tensor with len>=1, extract f64 via as_f64() from each component, validate consistent dimension across components, compute sqrt(sum of squares), return Value::Real if dimensionless or Value::Scalar with the component dimension. Apply sanitize_value.",
+      "status": "done",
+      "commit": "186ebdd"
     },
     {
       "id": "step-9",
-      "type": "impl",
-      "description": "Add Tensor negation to eval_unop in lib.rs. In the UnOp::Neg match arm, add: Value::Tensor(components) => map each component through negation (call eval_unop-style negation per component or inline match), strict Undef propagation. Makes step-8 test pass.",
-      "status": "pending",
-      "commit": null
+      "type": "test",
+      "description": "Write failing tests for normalize(): normalize(vec3(3,4,0)) approx equals Tensor([0.6, 0.8, 0.0]) as Real components, normalize(zero_vector) returns Undef, normalize of dimensioned vector (e.g. vec3(3m,4m,0m)) returns dimensionless Real components, normalize of non-Tensor returns Undef, normalize of single-element Tensor returns Tensor([1.0]) or Undef-for-zero",
+      "status": "done",
+      "commit": "13abea6"
     },
     {
       "id": "step-10",
+      "type": "impl",
+      "description": "Implement normalize() in eval_builtin: add 'normalize' match arm using unary() helper, validate arg is Tensor with len>=1, compute magnitude (reuse internal logic from magnitude impl or factor out a helper), if magnitude is 0.0 return Undef, divide each component's f64 by magnitude, return Tensor of Value::Real components (always dimensionless).",
+      "status": "done",
+      "commit": "10d8e7a"
+    },
+    {
+      "id": "step-11",
       "type": "test",
-      "description": "Write 4 tests for dimension checking and Undef propagation: (1) vector3_add_different_dimension_returns_undef \u2014 Vector3<Length> + Vector3<Angle> -> Undef (component-wise Scalar add checks dimension, strict propagation makes whole Tensor Undef), (2) scalar_times_vector_combines_dimensions \u2014 Scalar(2.0,MASS) * Vector3<Length>(1,2,3) -> Tensor with MASS*LENGTH dimension on each component, (3) undef_operand_in_tensor_binop_propagates \u2014 Undef + Vector3 -> Undef (handled by existing strict propagation in eval_binop), (4) tensor_with_undef_component_in_add_propagates \u2014 Vector3 with one Undef component + Vector3 -> Undef (strict propagation in Tensor add). All should pass with existing implementation from prior steps.",
-      "status": "pending",
-      "commit": null
+      "description": "Write failing test for LSP completions: verify 'dot', 'cross', 'normalize', 'magnitude' are returned by compute_completions as CompletionItemKind::FUNCTION items",
+      "status": "done",
+      "commit": "a97fbd6"
+    },
+    {
+      "id": "step-12",
+      "type": "impl",
+      "description": "Add 'dot', 'cross', 'normalize', 'magnitude' to the BUILTIN_FUNCTIONS const array in crates/reify-lsp/src/completion.rs (line 84-86)",
+      "status": "done",
+      "commit": "597ce0a"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Tensor arithmetic is value-level, not type-level",
-      "rationale": "eval_add/sub/mul/div operate on Values without type information. At runtime, both Point and Vector are Value::Tensor(Vec<Value>). Component-wise operations are type-agnostic. This keeps the evaluator simple and aligns with the existing scalar arithmetic pattern."
+      "decision": "All components within a single vector must share the same dimension; mixed dimensions return Undef",
+      "rationale": "A physically meaningful vector like Vector3<Length> has all components in the same dimension. Tensor([Scalar{LENGTH}, Scalar{MASS}, Scalar{TIME}]) is not a valid physical vector. Enforcing this at runtime catches type errors that slipped past the compiler."
     },
     {
-      "decision": "Point+Point guard uses CompiledExpr.result_type in eval_binop",
-      "rationale": "The only place where Point vs Vector distinction matters at eval time is the P+P prohibition. Since eval_binop receives full CompiledExpr (which has result_type: Type), we check types there before dispatching to eval_add. This is a surgical check that doesn't complicate the arithmetic functions."
+      "decision": "dot() returns Value::Real for dimensionless inputs, Value::Scalar for dimensioned inputs",
+      "rationale": "Follows the existing pattern where dimensionless results use Real (e.g., trig functions return Real) and dimensioned results use Scalar. dot(vec3(1,0,0), vec3(0,1,0)) returns Real(0.0), while dot(vec3(1m,0,0), vec3(1N,0,0)) returns Scalar{si_value:1.0, dimension:Length*Force}."
     },
     {
-      "decision": "Strict Undef propagation for Tensor operations",
-      "rationale": "If any component operation returns Undef, the entire Tensor result is Undef. This follows the existing strict propagation pattern (eval_binop returns Undef if either operand is Undef, eval_sum returns Undef if any item is Undef). Dimension mismatch within components naturally produces Undef through the existing Scalar dimension check."
+      "decision": "normalize() always returns dimensionless Real components, not Scalar{DIMENSIONLESS}",
+      "rationale": "A normalized vector is a pure direction \u2014 dimensionless by definition. Returning Real values rather than Scalar{DIMENSIONLESS} is cleaner and consistent with how trig functions return Real for dimensionless results."
     },
     {
-      "decision": "Scalar*Tensor detects scalar-like values by matching Value variants",
-      "rationale": "Rather than introducing a helper method, eval_mul matches (Value::Tensor, Value::Scalar/Int/Real) and the reverse. This is consistent with how eval_mul already handles Scalar*Int and Scalar*Real cases. The per-component mul reuses the existing eval_mul function recursively."
+      "decision": "magnitude() preserves the input vector's component dimension directly",
+      "rationale": "sqrt(sum(x_i^2)) has dimension sqrt(D^2) = D. Rather than computing dimension.pow(2) then root(2) through the DimensionVector arithmetic, we preserve the original component dimension since the math is equivalent. This avoids unnecessary rational arithmetic and potential precision issues."
     },
     {
-      "decision": "N-mismatch check uses Vec length comparison",
-      "rationale": "Different-N Tensors have different Vec lengths at runtime. Checking a.len() != b.len() in the Tensor add/sub match arm is simple, correct, and produces Undef consistently with other error cases."
+      "decision": "Cross product is restricted to exactly 3-element Tensors",
+      "rationale": "The task specifies 3D only and error for 2D. The standard cross product is only defined in 3D. Any non-3 length returns Undef."
     },
     {
-      "decision": "Tests extend existing point_vector_eval_tests.rs rather than creating a new file",
-      "rationale": "The existing file has 12 component-access tests and established patterns (imports, helpers). Adding arithmetic tests in clearly labeled sections keeps related tests together and avoids import duplication."
+      "decision": "Factor out a tensor_components_f64 helper to extract (Vec<f64>, DimensionVector) from a Tensor",
+      "rationale": "All four builtins need the same extraction logic: validate Tensor, extract f64 from each component, verify dimension consistency. A shared helper avoids code duplication and ensures consistent error handling across dot/cross/magnitude/normalize."
     }
   ],
   "reuse": [
     {
-      "what": "Value::length(f64) and Value::angle(f64) constructors",
-      "where": "crates/reify-types/src/value.rs",
-      "how": "Use these helpers to construct dimensioned Scalar values for Tensor components in test literals, avoiding manual DimensionVector construction."
+      "what": "unary() helper function",
+      "where": "crates/reify-stdlib/src/lib.rs line 285",
+      "how": "Use for magnitude() and normalize() which take a single Tensor argument \u2014 validates args.len()==1 and passes by reference"
     },
     {
-      "what": "Type::point3(), Type::vec3(), Type::point2(), Type::vec2() constructors",
-      "where": "crates/reify-types/src/ty.rs",
-      "how": "Use these shorthands for result_type annotations in CompiledExpr::binop and literal construction."
+      "what": "binary() helper function",
+      "where": "crates/reify-stdlib/src/lib.rs line 320",
+      "how": "Use for dot() and cross() which take two Tensor arguments \u2014 validates args.len()==2 and passes both by reference"
     },
     {
-      "what": "CompiledExpr::literal(), CompiledExpr::binop(), CompiledExpr::unop()",
-      "where": "crates/reify-types/src/expr.rs",
-      "how": "Use the existing expression builders to construct test expressions. binop takes (BinOp, left, right, result_type) and unop takes (UnOp, operand, result_type)."
+      "what": "sanitize_value() function",
+      "where": "crates/reify-stdlib/src/lib.rs line 298",
+      "how": "Apply to magnitude/dot results to convert NaN/Inf to Undef (e.g., if component values overflow during squaring)"
     },
     {
-      "what": "EvalContext::simple(&ValueMap) pattern",
-      "where": "crates/reify-expr/src/lib.rs",
-      "how": "All tests use this pattern for evaluation context with no user-defined functions, matching the existing 12 component-access tests."
+      "what": "Value::as_f64() method",
+      "where": "crates/reify-types/src/value.rs line 81",
+      "how": "Extract numeric value from Int/Real/Scalar components for arithmetic in all four builtins"
     },
     {
-      "what": "Existing eval_add Scalar dimension checking",
-      "where": "crates/reify-expr/src/lib.rs lines 702-720",
-      "how": "Component-wise Tensor add/sub reuses eval_add/eval_sub per component. Dimension mismatches between Vector<Length> and Vector<Angle> are caught by the existing Scalar(ad != bd) check, returning Undef per component, which triggers strict Tensor-level Undef propagation."
+      "what": "Value::dimension() method",
+      "where": "crates/reify-types/src/value.rs line 91",
+      "how": "Get dimension of each tensor component \u2014 returns DIMENSIONLESS for Int/Real, actual dimension for Scalar"
     },
     {
-      "what": "Existing Undef propagation in eval_binop",
-      "where": "crates/reify-expr/src/lib.rs lines 625-628",
-      "how": "The existing 'if lv.is_undef() || rv.is_undef() { return Value::Undef }' guard handles Undef operand propagation for Tensor binops without any new code."
+      "what": "DimensionVector::mul() method",
+      "where": "crates/reify-types/src/dimension.rs line 147",
+      "how": "Combine dimensions in dot() and cross(): result_dim = a_dim.mul(&b_dim)"
     },
     {
-      "what": "DimensionVector::mul() and DimensionVector::div()",
-      "where": "crates/reify-types/src/dimension.rs",
-      "how": "Scalar*Tensor dimension combination is handled automatically: eval_mul on (Scalar{dim_a}, Scalar{dim_b}) uses dim_a.mul(dim_b) to combine exponents. No new dimension logic needed."
+      "what": "DimensionVector::DIMENSIONLESS constant",
+      "where": "crates/reify-types/src/dimension.rs line 118",
+      "how": "Check if vectors are dimensionless and as the comparison target for normalize output"
+    },
+    {
+      "what": "FORCE dimension constant",
+      "where": "crates/reify-types/src/dimension.rs line 204",
+      "how": "Use in tests for dot/cross(Length_vector, Force_vector) to verify result dimension is Length*Force"
+    },
+    {
+      "what": "Existing test patterns (match result, assert f64 within epsilon)",
+      "where": "crates/reify-stdlib/src/lib.rs tests module (line 396+)",
+      "how": "Follow the same pattern: call eval_builtin(), match on expected variant, assert with (v - expected).abs() < 1e-12"
     }
   ],
-  "_session_id": "227-cadb625d",
-  "_created_at": "2026-03-24T10:24:31.825500+00:00"
+  "_session_id": "301-4bedc068",
+  "_created_at": "2026-03-24T10:47:05.948193+00:00"
 }
