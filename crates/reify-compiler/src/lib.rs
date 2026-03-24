@@ -2658,7 +2658,7 @@ fn compile_entity(
     for member in structure.members {
         if let reify_syntax::MemberDecl::Let(let_decl) = member
             && is_geometry_let(&let_decl.value)
-            && let Some(ops) = compile_geometry_call(&let_decl.value, &scope, enum_defs, functions, diagnostics)
+            && let Some(ops) = compile_geometry_call(&let_decl.value, &scope, enum_defs, functions, diagnostics, 0)
         {
             realizations.push(RealizationDecl {
                 id: RealizationNodeId::new(entity_name, realization_index),
@@ -4351,17 +4351,88 @@ fn is_geometry_let(expr: &reify_syntax::Expr) -> bool {
 /// - `box(width, height, depth)`
 /// - `cylinder(radius, height)`
 /// - `sphere(radius)`
+///
+/// Boolean operations (union, intersection, difference) take nested geometry
+/// call expressions as arguments. Each arg is recursively compiled into ops,
+/// and GeomRef::Step indices are assigned globally using `step_offset` (the
+/// index of the first op this call will emit in the flat step_handles array).
 fn compile_geometry_call(
     expr: &reify_syntax::Expr,
     scope: &CompilationScope,
     enum_defs: &[reify_types::EnumDef],
     functions: &[CompiledFunction],
     diagnostics: &mut Vec<Diagnostic>,
+    step_offset: usize,
 ) -> Option<Vec<CompiledGeometryOp>> {
     let (name, args) = match &expr.kind {
         reify_syntax::ExprKind::FunctionCall { name, args } => (name.as_str(), args),
         _ => return None,
     };
+
+    // Boolean ops: args are nested geometry calls, NOT scalars.
+    // Handle before scalar arg compilation below.
+    match name {
+        "union" | "intersection" | "difference" => {
+            if args.len() != 2 {
+                diagnostics.push(Diagnostic::error(format!(
+                    "{}() expects 2 arguments, got {}",
+                    name,
+                    args.len()
+                )));
+                return None;
+            }
+            let bool_op = match name {
+                "union" => BooleanOp::Union,
+                "intersection" => BooleanOp::Intersection,
+                "difference" => BooleanOp::Difference,
+                _ => unreachable!(),
+            };
+            // Compile left arg recursively.
+            let left_ops = match compile_geometry_call(
+                &args[0], scope, enum_defs, functions, diagnostics, step_offset,
+            ) {
+                Some(ops) => ops,
+                None => {
+                    // Only emit extra diagnostic if no FunctionCall was detected
+                    // (i.e., arg is a literal or ident — not a geometry expression).
+                    if !matches!(args[0].kind, reify_syntax::ExprKind::FunctionCall { .. }) {
+                        diagnostics.push(Diagnostic::error(format!(
+                            "{}() argument 1 must be a geometry expression",
+                            name
+                        )));
+                    }
+                    return None;
+                }
+            };
+            let left_result_step = step_offset + left_ops.len() - 1;
+            let right_offset = step_offset + left_ops.len();
+            // Compile right arg recursively.
+            let right_ops = match compile_geometry_call(
+                &args[1], scope, enum_defs, functions, diagnostics, right_offset,
+            ) {
+                Some(ops) => ops,
+                None => {
+                    if !matches!(args[1].kind, reify_syntax::ExprKind::FunctionCall { .. }) {
+                        diagnostics.push(Diagnostic::error(format!(
+                            "{}() argument 2 must be a geometry expression",
+                            name
+                        )));
+                    }
+                    return None;
+                }
+            };
+            let right_result_step = right_offset + right_ops.len() - 1;
+            let mut all_ops = left_ops;
+            all_ops.extend(right_ops);
+            all_ops.push(CompiledGeometryOp::Boolean {
+                op: bool_op,
+                left: GeomRef::Step(left_result_step),
+                right: GeomRef::Step(right_result_step),
+            });
+            return Some(all_ops);
+        }
+        _ => {}
+    }
 
     let compiled_args: Vec<CompiledExpr> = args
         .iter()
@@ -4934,7 +5005,7 @@ mod tests {
         let functions: Vec<CompiledFunction> = vec![];
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
-        let result = compile_geometry_call(&expr, &scope, &enum_defs, &functions, &mut diagnostics);
+        let result = compile_geometry_call(&expr, &scope, &enum_defs, &functions, &mut diagnostics, 0);
 
         assert!(result.is_none(), "unrecognized geometry fn should return None");
         assert!(
