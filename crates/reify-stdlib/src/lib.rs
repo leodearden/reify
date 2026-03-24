@@ -838,6 +838,108 @@ mod tests {
         assert!(result.is_undef(), "clamp with wrong arg count should be Undef, got {:?}", result);
     }
 
+    // --- lerp tests (step-3) ---
+
+    #[test]
+    fn lerp_midpoint() {
+        let result = eval_builtin("lerp", &[Value::Real(0.0), Value::Real(10.0), Value::Real(0.5)]);
+        match result {
+            Value::Real(v) => assert!((v - 5.0).abs() < 1e-12),
+            other => panic!("expected Real(5.0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn lerp_t_zero() {
+        let result = eval_builtin("lerp", &[Value::Real(0.0), Value::Real(10.0), Value::Real(0.0)]);
+        match result {
+            Value::Real(v) => assert!((v - 0.0).abs() < 1e-12),
+            other => panic!("expected Real(0.0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn lerp_t_one() {
+        let result = eval_builtin("lerp", &[Value::Real(0.0), Value::Real(10.0), Value::Real(1.0)]);
+        match result {
+            Value::Real(v) => assert!((v - 10.0).abs() < 1e-12),
+            other => panic!("expected Real(10.0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn lerp_negative_t_extrapolation() {
+        // lerp with t=-0.5 extrapolates below a
+        let result = eval_builtin("lerp", &[Value::Real(0.0), Value::Real(10.0), Value::Real(-0.5)]);
+        match result {
+            Value::Real(v) => assert!((v - (-5.0)).abs() < 1e-12),
+            other => panic!("expected Real(-5.0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn lerp_scalar_preserves_dimension() {
+        // lerp(2mm, 8mm, 0.5) → 5mm  (SI: 0.002, 0.008, 0.005)
+        let result = eval_builtin(
+            "lerp",
+            &[
+                Value::Scalar { si_value: 0.002, dimension: DimensionVector::LENGTH },
+                Value::Scalar { si_value: 0.008, dimension: DimensionVector::LENGTH },
+                Value::Real(0.5),
+            ],
+        );
+        match result {
+            Value::Scalar { si_value, dimension } => {
+                assert!((si_value - 0.005).abs() < 1e-12);
+                assert_eq!(dimension, DimensionVector::LENGTH);
+            }
+            other => panic!("expected Scalar{{LENGTH}}, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn lerp_dimension_mismatch_a_b_returns_undef() {
+        // a=2mm, b=8s, t=0.5 — mismatched dimensions
+        let result = eval_builtin(
+            "lerp",
+            &[
+                Value::Scalar { si_value: 0.002, dimension: DimensionVector::LENGTH },
+                Value::Scalar { si_value: 8.0,   dimension: DimensionVector::TIME },
+                Value::Real(0.5),
+            ],
+        );
+        assert!(result.is_undef(), "lerp with mismatched a/b dimensions should be Undef, got {:?}", result);
+    }
+
+    #[test]
+    fn lerp_t_dimensioned_returns_undef() {
+        // t must be dimensionless; lerp(0.0, 10.0, 5mm) is semantically wrong
+        let result = eval_builtin(
+            "lerp",
+            &[
+                Value::Real(0.0),
+                Value::Real(10.0),
+                Value::Scalar { si_value: 0.005, dimension: DimensionVector::LENGTH },
+            ],
+        );
+        assert!(result.is_undef(), "lerp with dimensioned t should be Undef, got {:?}", result);
+    }
+
+    #[test]
+    fn lerp_nan_returns_undef() {
+        let result = eval_builtin(
+            "lerp",
+            &[Value::Real(0.0), Value::Real(10.0), Value::Real(f64::NAN)],
+        );
+        assert!(result.is_undef(), "lerp with NaN t should be Undef, got {:?}", result);
+    }
+
+    #[test]
+    fn lerp_wrong_arg_count_returns_undef() {
+        let result = eval_builtin("lerp", &[Value::Real(0.0), Value::Real(10.0)]);
+        assert!(result.is_undef(), "lerp with wrong arg count should be Undef, got {:?}", result);
+    }
+
     #[test]
     fn sample_in_stdlib_returns_undef() {
         // sample() in stdlib returns Undef because lambda application
