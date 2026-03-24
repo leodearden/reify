@@ -15,7 +15,7 @@
     "tree-sitter-reify",
     "crates/reify-syntax"
   ],
-  "analysis": "This task adds pragma parsing (`#ident(args)`) at module level and block level to the Reify language.\n\n**Current state:** No pragma/annotation support exists. The `#` character currently produces a parse error (verified by `test_hash_not_parsed_as_comment` in tree-sitter-reify). The parser uses tree-sitter CST-to-AST lowering via grammar.js -> parser.c -> ts_parser.rs.\n\n**Architecture \u2014 three layers must change:**\n1. **Grammar (tree-sitter-reify/grammar.js):** Add `pragma` rule with `#identifier(comma_sep_args)` syntax. Args are `key=value` pairs or bare values. Pragmas appear at module level (in `source_file` via `_declaration`) and block level (in `_member`, `trait_member`, `purpose_member`).\n2. **AST types (reify-syntax/lib.rs):** Add `Pragma`, `PragmaArg`, `PragmaValue` types. Add `pragmas: Vec<Pragma>` to `ParsedModule` (module-level) and to block-scoped types (`StructureDef`, `OccurrenceDef`, `TraitDecl`, `PurposeDef`, `ConstraintDef`).\n3. **Lowering (reify-syntax/ts_parser.rs):** Add `lower_pragma()` method. Update `lower_source_file()` to collect module-level pragmas. Update block lowering methods to collect block-level pragmas into each definition's pragmas vec.\n\n**Backward compatibility:** Adding `pragmas` fields to existing structs is fully backward-compatible in Rust since struct fields are accessed by name, not by position. The `Declaration` enum is NOT changed \u2014 pragmas are metadata, not declarations. Downstream exhaustive matches on `Declaration` in reify-compiler (12 arms) and reify-lsp won't break. All existing struct construction sites in ts_parser.rs just need `pragmas: Vec::new()` added.\n\n**Grammar design:** Pragmas use `#` prefix (like Rust attributes, but without brackets). The tree-sitter grammar requires `#` to be immediately followed by an identifier. Pragma values support identifiers, numbers, strings, and booleans \u2014 the same literal types already in the grammar. The existing `test_hash_not_parsed_as_comment` test remains valid because `# not` (hash-space-word) is still a parse error.\n\n**Key risk:** The grammar change + `tree-sitter generate` is a prerequisite for all tests. The test `test_hash_not_parsed_as_comment` must be checked after grammar changes (it should still pass since `# ` with space is invalid).",
+  "analysis": "This task adds pragma parsing (`#ident(args)`) at module level and block level to the Reify language.\n\n**Current state:** No pragma/annotation support exists. The `#` character currently produces a parse error (verified by `test_hash_not_parsed_as_comment` in tree-sitter-reify). The parser uses tree-sitter CST-to-AST lowering via grammar.js -> parser.c -> ts_parser.rs.\n\n**Architecture \u2014 three layers must change:**\n1. **Grammar (tree-sitter-reify/grammar.js):** Add `pragma` rule with `#identifier(comma_sep_args)` syntax. Args are `key=value` pairs or bare values. Pragmas appear at module level (in `source_file` via `_declaration`) and block level (in `_member`, `trait_member`, `purpose_member`).\n2. **AST types (reify-syntax/lib.rs):** Add `Pragma`, `PragmaArg`, `PragmaValue` types. Add `pragmas: Vec<Pragma>` to `ParsedModule` (module-level) and to block-scoped types (`StructureDef`, `OccurrenceDef`, `TraitDecl`, `PurposeDef`, `ConstraintDef`).\n3. **Lowering (reify-syntax/ts_parser.rs):** Add `lower_pragma()` method. Update `lower_source_file()` to collect module-level pragmas. Update block lowering methods to collect block-level pragmas into each definition's pragmas vec.\n\n**Backward compatibility:** Adding `pragmas` fields to existing structs is fully backward-compatible in Rust since struct fields are accessed by name, not by position. The `Declaration` enum is NOT changed \u2014 pragmas are metadata, not declarations. Downstream exhaustive matches on `Declaration` in reify-compiler (12 arms) and reify-lsp won't break. All existing struct construction sites in ts_parser.rs just need `pragmas: Vec::new()` added.\n\n**Grammar design:** Pragmas use `#` prefix (like Rust attributes, but without brackets). The tree-sitter grammar requires `#` to be immediately followed by an identifier. Pragma values support identifiers, numbers, strings, and booleans \u2014 the same literal types already in the grammar. The existing `test_hash_not_parsed_as_comment` test remains valid because `# not` (hash-space-word) is still a parse error.\n\n**Key risk:** The grammar change + `tree-sitter generate` is a prerequisite for all tests. The test `test_hash_not_parsed_as_comment` must be checked after grammar changes (it should still pass since `# ` with space is invalid).\n\n**Review fix (steps 23-28):** Code review identified that `lower_purpose_members()` and `lower_constraint_def()` both hardcode `pragmas: Vec::new()`, silently discarding any pragma nodes inside purpose and constraint blocks. The grammar already has `$.pragma` in `purpose_member`, so purpose only needs a lowering fix. For constraint, `_constraint_def_body_item` does NOT include `$.pragma`, so both grammar and lowering need updating.",
   "prerequisites": [
     {
       "id": "pre-1",
@@ -193,6 +193,48 @@
       "description": "Fix any compilation or test failures. All existing struct constructions must include `pragmas: Vec::new()` (from pre-3). Verify tree-sitter-reify tests also pass.",
       "status": "done",
       "commit": "448992f"
+    },
+    {
+      "id": "step-23",
+      "type": "test",
+      "description": "Write failing test `parse_block_pragma_in_purpose`: parse source `purpose Optimize(s: Sphere) { #solver\\nminimize area(s) }` (with a structure Sphere defined above so parsing succeeds). Assert PurposeDef.pragmas.len()==1, pragmas[0].name==\"solver\", pragmas[0].args is empty. This test will fail because lower_purpose_members() currently returns Vec<MemberDecl> and discards pragma nodes \u2014 pragmas will be empty.",
+      "status": "done",
+      "commit": "7cc2fc4"
+    },
+    {
+      "id": "step-24",
+      "type": "impl",
+      "description": "Refactor lower_purpose_members() to return (Vec<MemberDecl>, Vec<Pragma>) by adding a pragmas vec alongside members. Inside the purpose_member iteration, check if the inner named child has kind()==\"pragma\" and route to lower_pragma(), mirroring the lower_trait_members() pattern exactly. Update lower_purpose() to unpack the tuple: `let (members, pragmas) = self.lower_purpose_members(node);` and pass pragmas into PurposeDef { pragmas, .. } instead of Vec::new().",
+      "status": "done",
+      "commit": "a626a30"
+    },
+    {
+      "id": "step-25",
+      "type": "test",
+      "description": "Write failing test `parse_block_pragma_in_constraint`: parse source `constraint def Positive { #validate\\nparam x: Real\\nx > 0 }`. Assert ConstraintDef.pragmas.len()==1, pragmas[0].name==\"validate\", pragmas[0].args is empty. This test will fail for two reasons: (1) the grammar's _constraint_def_body_item does not include $.pragma so the pragma won't parse, and (2) lower_constraint_def() has no pragma arm.",
+      "status": "done",
+      "commit": "7cc2fc4"
+    },
+    {
+      "id": "step-26",
+      "type": "impl",
+      "description": "Fix constraint pragma support at both layers: (1) In tree-sitter-reify/grammar.js, add $.pragma to the _constraint_def_body_item choice rule (alongside $.param_declaration, $.let_declaration, $.constraint_def_predicate). (2) Regenerate the tree-sitter parser via `npx tree-sitter generate`. (3) In ts_parser.rs lower_constraint_def(), add a \"pragma\" arm to the match block that calls self.lower_pragma(child) and pushes to a new pragmas vec. (4) Replace `pragmas: Vec::new()` with the collected pragmas vec in the ConstraintDef construction.",
+      "status": "done",
+      "commit": "a626a30"
+    },
+    {
+      "id": "step-27",
+      "type": "test",
+      "description": "Run full test suite (`cargo test -p reify-syntax` and `cargo test -p tree-sitter-reify`) to verify all existing tests still pass after the purpose and constraint pragma fixes. Confirm all pragma tests pass including the two new ones from steps 23 and 25.",
+      "status": "done",
+      "commit": "a626a30"
+    },
+    {
+      "id": "step-28",
+      "type": "impl",
+      "description": "Fix any compilation or test failures from the constraint grammar change or purpose/constraint lowering refactors. Verify that the generated parser.c, grammar.json, and node-types.json are consistent with the grammar.js changes.",
+      "status": "done",
+      "commit": "a626a30"
     }
   ],
   "design_decisions": [
@@ -219,6 +261,14 @@
     {
       "decision": "Refactor lower_members() to return (Vec<MemberDecl>, Vec<Pragma>) rather than adding pragma as a MemberDecl variant.",
       "rationale": "Keeping pragmas out of MemberDecl maintains the clean separation between metadata and declarations. The refactored return type explicitly represents that block children are either members or pragmas. This avoids downstream code needing to filter pragmas out of member lists."
+    },
+    {
+      "decision": "lower_purpose_members() uses the same inner-node dispatch pattern as lower_trait_members() rather than the direct-child pattern of lower_members().",
+      "rationale": "purpose_member and trait_member are both choice wrapper nodes in the grammar \u2014 the actual member/pragma is a named child of the wrapper. lower_members() works on _member nodes which are direct children. The wrapper pattern requires checking inner.kind()==\"pragma\" on the named_child(0), not on the outer child itself."
+    },
+    {
+      "decision": "ConstraintDef pragma collection is done inline in lower_constraint_def() via a new match arm, not via a shared helper.",
+      "rationale": "lower_constraint_def() already has its own bespoke child iteration loop (matching param_declaration, let_declaration, constraint_def_predicate, ERROR) unlike the other block types that use lower_members()/lower_trait_members(). Adding a \"pragma\" arm to the existing match is the minimal, consistent change. Extracting a shared helper would require unifying very different child-kind sets."
     }
   ],
   "reuse": [
@@ -251,8 +301,18 @@
       "what": "lower_members() pattern for collecting block children",
       "where": "crates/reify-syntax/src/ts_parser.rs lines 862-871",
       "how": "Extend lower_members() to also return collected pragmas alongside members. The iteration pattern (walk cursor, match child kind) stays the same with a new 'pragma' arm."
+    },
+    {
+      "what": "lower_trait_members() inner-node dispatch pattern for purpose pragma fix",
+      "where": "crates/reify-syntax/src/ts_parser.rs lines 881-900",
+      "how": "lower_purpose_members() refactor mirrors lower_trait_members() exactly: both iterate wrapper nodes (trait_member/purpose_member), extract named_child(0), check inner.kind()==\"pragma\" to route to lower_pragma(), else route to lower_member(). Return (Vec<MemberDecl>, Vec<Pragma>) tuple."
+    },
+    {
+      "what": "lower_constraint_def() inline match pattern for constraint pragma fix",
+      "where": "crates/reify-syntax/src/ts_parser.rs lines 630-658",
+      "how": "Add a \"pragma\" arm to the existing match block in lower_constraint_def(), calling self.lower_pragma(child) and pushing to a pragmas vec, following the same pattern as the existing \"param_declaration\" and \"constraint_def_predicate\" arms."
     }
   ],
   "_session_id": "278-f0780968",
-  "_created_at": "2026-03-24T16:51:18.569664+00:00"
+  "_created_at": "2026-03-24T17:19:34.033276+00:00"
 }
