@@ -3837,6 +3837,34 @@ fn compile_connection(
             })
             .collect();
 
+        // Validate connector params against the connector template (best-effort: only
+        // when the connector structure has already been compiled and is in compiled_templates).
+        if let Some(conn_template) = ctx.compiled_templates.iter().find(|t| t.name == conn_type) {
+            let declared_params: std::collections::HashSet<&str> = conn_template
+                .value_cells
+                .iter()
+                .filter(|vc| matches!(vc.kind, ValueCellKind::Param | ValueCellKind::Auto))
+                .map(|vc| vc.id.member.as_str())
+                .collect();
+            for (param_name, _) in &compiled_args {
+                if !declared_params.contains(param_name.as_str()) {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "unknown connector param '{}' for '{}'; declared params: [{}]",
+                            param_name,
+                            conn_type,
+                            declared_params
+                                .iter()
+                                .copied()
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ))
+                        .with_label(DiagnosticLabel::new(span, "unknown param")),
+                    );
+                }
+            }
+        }
+
         let mut conn_hash = ContentHash::of_str(conn_type)
             .combine(ContentHash::of(&[operator.as_u8()]))
             .combine(ContentHash::of_str(&left_port))
