@@ -98,6 +98,44 @@ structure def U : A + B {
     );
 }
 
+/// Step 4: Trait A has `let x : Real = width + 1`, trait B has `let x : Real = width * 2`.
+/// Same name, same type, different expressions — expect 'conflicting' error.
+/// NOTE: This test is EXPECTED TO FAIL until step-5 adds expression comparison.
+#[test]
+fn let_defaults_same_name_same_type_different_expr_error() {
+    let source = r#"
+trait A {
+    let x : Real = width + 1.0
+}
+
+trait B {
+    let x : Real = width * 2.0
+}
+
+structure def V : A + B {
+    param width : Real = 5.0
+}
+"#;
+
+    let (_, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "expected conflict diagnostic for same-name same-type different-expression let defaults"
+    );
+
+    let error_msg = format!("{:?}", errors);
+    assert!(
+        error_msg.contains("conflicting"),
+        "error should mention 'conflicting', got: {}",
+        error_msg
+    );
+}
+
 /// Step 1b: Two traits each requiring `param x : Length`.
 /// Structure provides `param x : Length = 5mm` — requirement dedup baseline.
 /// Expect 0 errors (existing behavior).
