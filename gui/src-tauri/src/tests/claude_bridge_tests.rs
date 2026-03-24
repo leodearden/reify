@@ -342,8 +342,8 @@ async fn from_parts_with_mcp_intercepts_reify_tool_calls() {
         reader,
         state,
         engine,
-        move |name: String, payload: serde_json::Value| {
-            events_clone.lock().unwrap().push((name, payload));
+        move |name: &str, payload: serde_json::Value| {
+            events_clone.lock().unwrap().push((name.to_string(), payload));
         },
     );
 
@@ -931,7 +931,7 @@ async fn spawn_sidecar_impl_returns_error_for_missing_binary() {
     let result = spawn_sidecar_impl(
         Path::new("/tmp/no-such-sidecar-binary"),
         engine,
-        |_name: String, _payload: serde_json::Value| {},
+        |_name: &str, _payload: serde_json::Value| {},
     )
     .await;
 
@@ -961,7 +961,7 @@ async fn spawn_sidecar_impl_returns_handle_for_valid_binary() {
     let result = spawn_sidecar_impl(
         Path::new("/bin/cat"),
         engine,
-        |_name: String, _payload: serde_json::Value| {},
+        |_name: &str, _payload: serde_json::Value| {},
     )
     .await;
 
@@ -1211,4 +1211,41 @@ async fn wait_ready_handles_notify_registration_race() {
     );
     assert!(matches!(*handle.state().lock().await, SidecarState::Ready));
     drop(data_writer);
+}
+
+// --- S4: outbound_to_event &'static str return type tests (step-2/step-3) ---
+
+#[test]
+fn outbound_to_event_returns_static_str() {
+    let msg = OutboundMessage::Ready;
+    // Type annotation requires &str — fails to compile with (String, Value) return
+    let (name, _payload): (&str, Value) = outbound_to_event(&msg);
+    assert_eq!(name, "claude-ready");
+}
+
+#[tokio::test]
+async fn event_sink_accepts_str_ref() {
+    use std::sync::Arc;
+    use tokio::io::BufReader;
+    use reify_constraints::SimpleConstraintChecker;
+    use reify_test_support::MockGeometryKernel;
+    use crate::engine::EngineSession;
+
+    let state = Arc::new(tokio::sync::Mutex::new(SidecarState::Ready));
+    let (writer, _reader_end) = tokio::io::duplex(1024);
+    let empty_reader = BufReader::new(&b""[..]);
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let engine = Arc::new(std::sync::Mutex::new(session));
+
+    // event_sink typed as Fn(&str, Value) — fails because current bound is Fn(String, Value)
+    let _handle = SidecarHandle::from_parts_with_mcp(
+        writer,
+        empty_reader,
+        state,
+        engine,
+        |_name: &str, _payload: Value| {},
+    );
 }

@@ -320,8 +320,8 @@ async fn claude_send_message(
             let handle = reify_gui::claude_bridge::spawn_sidecar_impl(
                 &sidecar_path,
                 engine,
-                move |name, payload| {
-                    app_for_events.emit(&name, payload).ok();
+                move |name: &str, payload| {
+                    app_for_events.emit(name, payload).ok();
                 },
             )
             .await?;

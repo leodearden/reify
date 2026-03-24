@@ -174,7 +174,7 @@ impl SidecarHandle {
         R: AsyncBufRead + Unpin + Send + 'static,
     {
         let stdin: SharedStdin = Arc::new(Mutex::new(Box::new(writer)));
-        Self::new_inner::<R, fn(String, Value)>(stdin, reader, state, None)
+        Self::new_inner::<R, fn(&str, Value)>(stdin, reader, state, None)
     }
 
     /// Construct a SidecarHandle with full event and MCP wiring.
@@ -194,7 +194,7 @@ impl SidecarHandle {
     where
         W: AsyncWrite + Unpin + Send + 'static,
         R: AsyncBufRead + Unpin + Send + 'static,
-        F: Fn(String, Value) + Send + Sync + 'static,
+        F: Fn(&str, Value) + Send + Sync + 'static,
     {
         let stdin: SharedStdin = Arc::new(Mutex::new(Box::new(writer)));
         Self::new_inner(stdin, reader, state, Some((engine, event_sink)))
@@ -209,7 +209,7 @@ impl SidecarHandle {
     ) -> Self
     where
         R: AsyncBufRead + Unpin + Send + 'static,
-        F: Fn(String, Value) + Send + Sync + 'static,
+        F: Fn(&str, Value) + Send + Sync + 'static,
     {
         let ready_notify = Arc::new(Notify::new());
         let state_for_ready = Arc::clone(&state);
@@ -454,7 +454,7 @@ pub async fn spawn_sidecar_impl<F>(
     event_sink: F,
 ) -> Result<SidecarHandle, String>
 where
-    F: Fn(String, Value) + Send + Sync + 'static,
+    F: Fn(&str, Value) + Send + Sync + 'static,
 {
     let mut proc = tokio::process::Command::new(path)
         .stdin(std::process::Stdio::piped())
@@ -497,34 +497,34 @@ pub async fn shutdown_sidecar(sidecar: &Mutex<Option<SidecarHandle>>) {
 }
 
 /// Map an OutboundMessage to a Tauri event name and JSON payload.
-pub fn outbound_to_event(msg: &OutboundMessage) -> (String, Value) {
+pub fn outbound_to_event(msg: &OutboundMessage) -> (&'static str, Value) {
     match msg {
         OutboundMessage::TextDelta { id, content } => (
-            "claude-text-delta".to_string(),
+            "claude-text-delta",
             serde_json::json!({ "id": id, "content": content }),
         ),
         OutboundMessage::ThinkingDelta { id, content } => (
-            "claude-thinking-delta".to_string(),
+            "claude-thinking-delta",
             serde_json::json!({ "id": id, "content": content }),
         ),
         OutboundMessage::ToolCall { id, tool_name, tool_input } => (
-            "claude-tool-call".to_string(),
+            "claude-tool-call",
             serde_json::json!({ "id": id, "tool_name": tool_name, "tool_input": tool_input }),
         ),
         OutboundMessage::ToolResult { id, tool_name, result } => (
-            "claude-tool-result".to_string(),
+            "claude-tool-result",
             serde_json::json!({ "id": id, "tool_name": tool_name, "result": result }),
         ),
         OutboundMessage::Done { id } => (
-            "claude-done".to_string(),
+            "claude-done",
             serde_json::json!({ "id": id }),
         ),
         OutboundMessage::ErrorMessage { id, message } => (
-            "claude-error".to_string(),
+            "claude-error",
             serde_json::json!({ "id": id, "message": message }),
         ),
         OutboundMessage::Ready => (
-            "claude-ready".to_string(),
+            "claude-ready",
             serde_json::json!({}),
         ),
     }
