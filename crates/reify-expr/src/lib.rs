@@ -719,6 +719,18 @@ fn eval_add(lv: &Value, rv: &Value) -> Value {
             }
         }
         (Value::String(a), Value::String(b)) => Value::String(format!("{}{}", a, b)),
+        // Component-wise Tensor addition
+        (Value::Tensor(a), Value::Tensor(b)) => {
+            if a.len() != b.len() {
+                return Value::Undef;
+            }
+            let results: Vec<Value> = a.iter().zip(b.iter()).map(|(x, y)| eval_add(x, y)).collect();
+            if results.iter().any(|v| v.is_undef()) {
+                Value::Undef
+            } else {
+                Value::Tensor(results)
+            }
+        }
         _ => Value::Undef,
     }
 }
@@ -746,6 +758,18 @@ fn eval_sub(lv: &Value, rv: &Value) -> Value {
                     si_value: a - b,
                     dimension: *ad,
                 }
+            }
+        }
+        // Component-wise Tensor subtraction
+        (Value::Tensor(a), Value::Tensor(b)) => {
+            if a.len() != b.len() {
+                return Value::Undef;
+            }
+            let results: Vec<Value> = a.iter().zip(b.iter()).map(|(x, y)| eval_sub(x, y)).collect();
+            if results.iter().any(|v| v.is_undef()) {
+                Value::Undef
+            } else {
+                Value::Tensor(results)
             }
         }
         _ => Value::Undef,
