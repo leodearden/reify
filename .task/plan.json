@@ -8,11 +8,11 @@
   "modules": [
     "crates/reify-compiler"
   ],
-  "analysis": "The task requires adding a new pure, public `check_trait_conformance(structure_members, trait_def) -> Vec<ConformanceError>` function and a new `ConformanceError` enum to the reify-compiler crate.\n\nCurrently, trait conformance checking exists as a private `check_trait_conformance` function (line 4399) with a heavy signature — it takes an EntityDefRef, trait_registry, CompilationScope, mutable value_cells/constraints vecs, and diagnostics. It both validates conformance AND injects trait defaults (value cells, constraints). It emits errors as `Diagnostic` values pushed into a mutable vec.\n\nThe task asks for a new, focused public function with a clean API:\n- Input: `structure_members: &HashMap<String, Type>` (member name -> type) and `trait_def: &CompiledTrait`\n- Output: `Vec<ConformanceError>` — structured error types, not Diagnostics\n- Scope: For each `RequirementKind::Param` in `trait_def.required_members`, verify the structure has a param with matching name and exact type (using Type PartialEq).\n\nThis is infrastructure for a larger trait system — the pure function checks one trait's requirements against a flat member map, while callers handle refinement hierarchy walking and default injection.\n\nThe existing private function must be renamed to avoid collision (it's called once at line 2685). Renaming to `check_and_apply_trait_conformance` captures its dual role (check + inject defaults).",
+  "analysis": "The task requires adding a new pure, public `check_trait_conformance(structure_members, trait_def) -> Vec<ConformanceError>` function and a new `ConformanceError` enum to the reify-compiler crate.\n\nCurrently, trait conformance checking exists as a private `check_trait_conformance` function (line 4399) with a heavy signature \u2014 it takes an EntityDefRef, trait_registry, CompilationScope, mutable value_cells/constraints vecs, and diagnostics. It both validates conformance AND injects trait defaults (value cells, constraints). It emits errors as `Diagnostic` values pushed into a mutable vec.\n\nThe task asks for a new, focused public function with a clean API:\n- Input: `structure_members: &HashMap<String, Type>` (member name -> type) and `trait_def: &CompiledTrait`\n- Output: `Vec<ConformanceError>` \u2014 structured error types, not Diagnostics\n- Scope: For each `RequirementKind::Param` in `trait_def.required_members`, verify the structure has a param with matching name and exact type (using Type PartialEq).\n\nThis is infrastructure for a larger trait system \u2014 the pure function checks one trait's requirements against a flat member map, while callers handle refinement hierarchy walking and default injection.\n\nThe existing private function must be renamed to avoid collision (it's called once at line 2685). Renaming to `check_and_apply_trait_conformance` captures its dual role (check + inject defaults).",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "Rename existing private `check_trait_conformance` (line 4399) to `check_and_apply_trait_conformance` and update the single call site at line 2685. This avoids name collision with the new public function. No behavior change — purely mechanical rename.",
+      "description": "Rename existing private `check_trait_conformance` (line 4399) to `check_and_apply_trait_conformance` and update the single call site at line 2685. This avoids name collision with the new public function. No behavior change \u2014 purely mechanical rename.",
       "status": "done",
       "commit": "c5b025ff",
       "tests": [
@@ -25,84 +25,84 @@
       "id": "step-1",
       "type": "test",
       "description": "Write failing test `conformance_empty_trait_no_errors`: construct a CompiledTrait with empty required_members and an arbitrary structure_members HashMap. Call `check_trait_conformance` and assert it returns an empty Vec. This test fails because the function and ConformanceError type don't exist yet.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "3e77f297"
     },
     {
       "id": "step-2",
       "type": "impl",
       "description": "Add `ConformanceError` enum with two variants: `MissingParam { name: String, expected_type: Type }` and `TypeMismatch { name: String, expected_type: Type, actual_type: Type }`. Derive Debug, Clone, PartialEq. Add `pub fn check_trait_conformance(structure_members: &HashMap<String, Type>, trait_def: &CompiledTrait) -> Vec<ConformanceError>` that returns an empty Vec. Place the type near the other trait-related types (after line ~80) and the function after `collect_all_requirements`.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "8b94c077"
     },
     {
       "id": "step-3",
       "type": "test",
       "description": "Write failing test `conformance_missing_param_error`: construct a CompiledTrait with one `RequirementKind::Param(Type::Scalar { dimension: DimensionVector::LENGTH })` named 'width', and an empty structure_members. Assert the result contains exactly one `ConformanceError::MissingParam { name: \"width\", expected_type: LENGTH }`. Fails because function returns empty vec.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "e5549f0f"
     },
     {
       "id": "step-4",
       "type": "impl",
       "description": "Implement missing-param detection in `check_trait_conformance`: iterate `trait_def.required_members`, for each `RequirementKind::Param(expected_type)`, if `structure_members` does not contain the requirement name, push `ConformanceError::MissingParam { name, expected_type }`.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "336dd402"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing test `conformance_type_mismatch_error`: construct a CompiledTrait requiring param 'mass' of type Mass, and structure_members containing 'mass' mapped to Length. Assert result contains exactly one `ConformanceError::TypeMismatch { name: \"mass\", expected_type: MASS, actual_type: LENGTH }`. Fails because the function doesn't check types yet — it sees the key exists and skips.",
-      "status": "pending",
-      "commit": null
+      "description": "Write failing test `conformance_type_mismatch_error`: construct a CompiledTrait requiring param 'mass' of type Mass, and structure_members containing 'mass' mapped to Length. Assert result contains exactly one `ConformanceError::TypeMismatch { name: \"mass\", expected_type: MASS, actual_type: LENGTH }`. Fails because the function doesn't check types yet \u2014 it sees the key exists and skips.",
+      "status": "done",
+      "commit": "fd03adbb"
     },
     {
       "id": "step-6",
       "type": "impl",
       "description": "Add type-mismatch detection: when `structure_members` contains the requirement name but `actual_type != expected_type`, push `ConformanceError::TypeMismatch { name, expected_type, actual_type }`. The full Param branch now: lookup name -> missing -> MissingParam, found + wrong type -> TypeMismatch, found + correct type -> no error.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "fd03adbb"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write test `conformance_satisfied_param_no_errors`: construct a CompiledTrait requiring param 'width' of type Length, and structure_members containing 'width' mapped to Length. Assert result is empty. This should pass immediately (green) — validates the happy path.",
-      "status": "pending",
-      "commit": null
+      "description": "Write test `conformance_satisfied_param_no_errors`: construct a CompiledTrait requiring param 'width' of type Length, and structure_members containing 'width' mapped to Length. Assert result is empty. This should pass immediately (green) \u2014 validates the happy path.",
+      "status": "done",
+      "commit": "3801c680"
     },
     {
       "id": "step-8",
       "type": "test",
-      "description": "Write test `conformance_multiple_requirements_mixed`: construct a CompiledTrait with three Param requirements: 'width' (Length), 'mass' (Mass), 'name' (String). Provide structure_members with 'width' mapped to Length (correct), 'mass' mapped to Length (wrong type), and no 'name'. Assert result has exactly 2 errors: one TypeMismatch for 'mass' and one MissingParam for 'name'. Should pass immediately — validates multi-requirement handling.",
-      "status": "pending",
-      "commit": null
+      "description": "Write test `conformance_multiple_requirements_mixed`: construct a CompiledTrait with three Param requirements: 'width' (Length), 'mass' (Mass), 'name' (String). Provide structure_members with 'width' mapped to Length (correct), 'mass' mapped to Length (wrong type), and no 'name'. Assert result has exactly 2 errors: one TypeMismatch for 'mass' and one MissingParam for 'name'. Should pass immediately \u2014 validates multi-requirement handling.",
+      "status": "done",
+      "commit": "3801c680"
     },
     {
       "id": "step-9",
       "type": "test",
       "description": "Write test `conformance_let_requirement_checked`: construct a CompiledTrait with a `RequirementKind::Let(Type::Real)` named 'area'. Provide structure_members without 'area'. Assert result contains a MissingLet error. This tests that Let requirements are also validated.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "1ae7ac54"
     },
     {
       "id": "step-10",
       "type": "impl",
       "description": "Extend `check_trait_conformance` to also handle `RequirementKind::Let` with the same missing/mismatch logic as Param. Add `MissingLet { name: String, expected_type: Type }` variant to ConformanceError for precision. Update the function to match on both Param and Let requirement kinds.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "1ae7ac54"
     },
     {
       "id": "step-11",
       "type": "test",
       "description": "Write test `conformance_exact_type_equality_dimensions`: construct a trait requiring 'length' with Scalar{LENGTH} dimension, provide structure_members with 'length' mapped to Scalar{MASS}. Assert TypeMismatch. Then test with Scalar{LENGTH} mapped to Scalar{LENGTH} produces no error. Validates that dimensional types use exact equality (no widening).",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "1ae7ac54"
     },
     {
       "id": "step-12",
       "type": "test",
       "description": "Run full existing test suite (`cargo test --package reify-compiler`) to verify the rename in pre-1 and all new code don't break any existing tests. This is a regression check.",
-      "status": "pending",
+      "status": "done",
       "commit": null
     }
   ],
@@ -113,7 +113,7 @@
     },
     {
       "decision": "Rename existing private function to `check_and_apply_trait_conformance`",
-      "rationale": "Rust doesn't support function overloading, so we can't have two functions with the same name. The existing function both checks conformance AND applies/injects defaults — the new name accurately describes its dual role. Only one call site needs updating."
+      "rationale": "Rust doesn't support function overloading, so we can't have two functions with the same name. The existing function both checks conformance AND applies/injects defaults \u2014 the new name accurately describes its dual role. Only one call site needs updating."
     },
     {
       "decision": "ConformanceError uses separate MissingParam/MissingLet variants (not a generic Missing variant)",
@@ -121,7 +121,7 @@
     },
     {
       "decision": "Function checks a single CompiledTrait, not the full refinement chain",
-      "rationale": "The function signature takes `trait_def: &CompiledTrait`, not a trait registry. Hierarchy walking (refinement chains, diamond dedup) remains the caller's responsibility via `collect_all_requirements`. This keeps the function pure and composable — it's infrastructure that higher-level code combines."
+      "rationale": "The function signature takes `trait_def: &CompiledTrait`, not a trait registry. Hierarchy walking (refinement chains, diamond dedup) remains the caller's responsibility via `collect_all_requirements`. This keeps the function pure and composable \u2014 it's infrastructure that higher-level code combines."
     },
     {
       "decision": "Use exact Type equality (PartialEq) for type matching, no widening",
@@ -141,7 +141,7 @@
     {
       "what": "Type enum with PartialEq derive",
       "where": "crates/reify-types/src/ty.rs",
-      "how": "Type comparison uses the derived PartialEq — `actual_type != expected_type` for mismatch detection. Covers all Type variants including Scalar with DimensionVector."
+      "how": "Type comparison uses the derived PartialEq \u2014 `actual_type != expected_type` for mismatch detection. Covers all Type variants including Scalar with DimensionVector."
     },
     {
       "what": "Existing test patterns (compile_module, compile_first_template, error filtering)",
@@ -159,6 +159,6 @@
       "how": "Tests use DimensionVector::LENGTH, DimensionVector::MASS etc. to construct Type::Scalar values for test fixtures."
     }
   ],
-  "_session_id": "182-e1360ce8",
-  "_created_at": "2026-03-24T22:17:01.861443+00:00"
+  "_session_id": "188-ac57a907",
+  "_created_at": "2026-03-24T22:39:37.115263+00:00"
 }
