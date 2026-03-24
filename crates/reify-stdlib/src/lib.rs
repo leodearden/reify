@@ -260,6 +260,34 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
 
         // --- Linear algebra: dot, cross, magnitude, normalize ---
 
+        "cross" => binary(args, |a, b| {
+            let (a_vals, a_dim) = match tensor_components_f64(a) {
+                Some(v) => v,
+                None => return Value::Undef,
+            };
+            let (b_vals, b_dim) = match tensor_components_f64(b) {
+                Some(v) => v,
+                None => return Value::Undef,
+            };
+            if a_vals.len() != 3 || b_vals.len() != 3 {
+                return Value::Undef;
+            }
+            let (a0, a1, a2) = (a_vals[0], a_vals[1], a_vals[2]);
+            let (b0, b1, b2) = (b_vals[0], b_vals[1], b_vals[2]);
+            let cx = a1 * b2 - a2 * b1;
+            let cy = a2 * b0 - a0 * b2;
+            let cz = a0 * b1 - a1 * b0;
+            let result_dim = a_dim.mul(&b_dim);
+            let make_component = |v: f64| -> Value {
+                if result_dim == DimensionVector::DIMENSIONLESS {
+                    sanitize_value(Value::Real(v))
+                } else {
+                    sanitize_value(Value::Scalar { si_value: v, dimension: result_dim })
+                }
+            };
+            Value::Tensor(vec![make_component(cx), make_component(cy), make_component(cz)])
+        }),
+
         "dot" => binary(args, |a, b| {
             let (a_vals, a_dim) = match tensor_components_f64(a) {
                 Some(v) => v,
