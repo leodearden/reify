@@ -1,169 +1,174 @@
 {
-  "task_id": "191",
-  "title": "Qualified trait access: parser",
+  "task_id": "168",
+  "title": "Collection generate: implementation",
   "files": [
-    "tree-sitter-reify/grammar.js",
-    "tree-sitter-reify/src/parser.c",
-    "crates/reify-syntax/src/lib.rs",
-    "crates/reify-syntax/src/ts_parser.rs",
-    "crates/reify-syntax/tests/qualified_access_tests.rs"
+    "crates/reify-expr/src/lib.rs",
+    "crates/reify-expr/tests/collection_eval_tests.rs"
   ],
   "modules": [
-    "tree-sitter-reify",
-    "crates/reify-syntax"
+    "crates/reify-expr"
   ],
-  "analysis": "This task adds two new expression forms to the parser: (1) `TypeName::ident` as QualifiedAccess (precedence 2, left-associative) and (2) `expr.(TypeName::ident)` as InstanceQualifiedAccess (precedence 8, left-associative postfix). The implementation spans three layers: grammar rules in tree-sitter-reify/grammar.js, AST node variants in reify-syntax/src/lib.rs (ExprKind enum), and CST→AST lowering functions in reify-syntax/src/ts_parser.rs. Both forms already exist in the current branch — grammar rules (qualified_access at prec.left(2), instance_qualified_access at prec.left(8)), AST variants (QualifiedAccess, InstanceQualifiedAccess), lowering functions (lower_qualified_access, lower_instance_qualified_access), and 7 integration tests all pass. The compiler crate already has a placeholder match arm for both variants that emits a diagnostic (resolution is out of scope for this parser task). Verification should confirm all 7 tests pass and no regressions exist.",
-  "prerequisites": [
-    {
-      "id": "pre-1",
-      "description": "Ensure tree-sitter-reify grammar includes qualified_access rule: `prec.left(2, seq(field('qualifier', $._expression), '::', field('member', $.identifier)))` and instance_qualified_access rule: `prec.left(8, seq(field('object', $._expression), '.', '(', field('qualified', $.qualified_access), ')'))`. Both must be listed in the _expression choice. Regenerate parser.c if grammar.js was modified.",
-      "status": "done",
-      "commit": "31ae3f7a",
-      "tests": []
-    }
-  ],
+  "analysis": "The evaluator already handles `generate` as a MethodCall on List values (crates/reify-expr/src/lib.rs lines 562-580), invoked as `[].generate(n, |i| expr)`. There is one existing test (eval_method_generate_list) covering the basic happy path `[].generate(3, |i| i*2) -> [0, 2, 4]`. However, the task requires `List.generate(n, |i| expr)` as a 'static method / stdlib function', meaning it should be callable WITHOUT a List receiver. The approach: add `generate` as a FunctionCall handler in eval_expr (alongside `sample`, which similarly needs EvalContext for lambda application), and add comprehensive edge-case tests for both the new FunctionCall path and the existing MethodCall path. Note: `generate` CANNOT live in reify-stdlib/eval_builtin because it requires EvalContext for apply_lambda (same reason `sample` is in reify-expr). The compiler (not in scope) will fall through to FunctionCall for unknown function names, so `generate(n, fn)` will compile correctly. The result_type metadata may be wrong (defaults to first arg's type), but evaluation is correct regardless.",
+  "prerequisites": [],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write test `parse_basic_qualified_access`: parse `structure S { let x = Rigid::mass }`, assert no errors, assert the let value is ExprKind::QualifiedAccess with qualifier=Ident(\"Rigid\") and member=\"mass\".",
+      "description": "Write failing test: `generate` as FunctionCall basic case. Construct CompiledExprKind::FunctionCall with ResolvedFunction{name:'generate'}, two args: Int(3) literal and lambda |i| i*2. Verify result is Value::List([Int(0), Int(2), Int(4)]). Test name: eval_fn_generate_basic.",
       "status": "done",
-      "commit": "31ae3f7a"
+      "commit": "c1087b69"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Add ExprKind::QualifiedAccess { qualifier: Box<Expr>, member: String } variant to lib.rs. Add `lower_qualified_access` function in ts_parser.rs that reads 'qualifier' and 'member' fields from the tree-sitter node. Add dispatch case `\"qualified_access\" => self.lower_qualified_access(node)` in lower_expr. Verify step-1 test passes.",
+      "description": "Add 'generate' match arm to the FunctionCall dispatch in eval_expr (crates/reify-expr/src/lib.rs ~line 86, after the gradient/divergence/curl arm). Pattern: `\"generate\" if evaluated_args.len() == 2 => { match &evaluated_args[0] { Value::Int(n) => { let results: Vec<Value> = (0..*n).map(|i| apply_lambda(&evaluated_args[1], &[Value::Int(i)], ctx)).collect(); Value::List(results) }, _ => Value::Undef } }`.",
       "status": "done",
-      "commit": "31ae3f7a"
+      "commit": "439c49b3"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write test `parse_chained_qualified_access`: parse `structure S { let x = A::B::c }`, assert nested QualifiedAccess { qualifier: QualifiedAccess { qualifier: Ident(\"A\"), member: \"B\" }, member: \"c\" } — verifying left-associative chaining.",
+      "description": "Write test: FunctionCall generate(0, |i| i) -> empty list []. Construct FunctionCall with Int(0) count and identity lambda. Verify result is Value::List(vec![]). Test name: eval_fn_generate_zero_count.",
       "status": "done",
-      "commit": "31ae3f7a"
+      "commit": "e2a11d2a"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Verify left-associativity — the `prec.left(2, ...)` grammar rule handles chaining automatically. The recursive `lower_expr` call on the qualifier field naturally produces nested QualifiedAccess nodes. Step-3 test should pass without code changes.",
+      "description": "Verify zero-count works (Rust 0..0 range is empty, produces empty Vec). Should pass without changes.",
       "status": "done",
-      "commit": "31ae3f7a"
+      "commit": "e2a11d2a"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write test `parse_qualified_access_in_binary_expr`: parse `structure S { let x = Rigid::mass + 1 }`, assert BinOp { op: \"+\", left: QualifiedAccess(Rigid, mass), right: NumberLiteral(1.0) } — verifying precedence 2 binds tighter than precedence 5 additive but can participate in larger expressions.",
+      "description": "Write test: MethodCall [].generate(Undef, |i| i) -> Undef. Use CompiledExpr::method_call with first arg being a ValueRef to an unresolved cell (producing Undef at eval time). Verify result is Value::Undef. Test name: eval_method_generate_undef_count.",
       "status": "done",
-      "commit": "31ae3f7a"
+      "commit": "1dcdd546"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Verify precedence interaction — QualifiedAccess at prec 2 is lower than additive prec 5, so `Rigid::mass + 1` parses as `(Rigid::mass) + 1` because `::` binds its operands before `+` claims the left side. Step-5 test should pass without code changes.",
+      "description": "Verify Undef count handling in MethodCall path. The match &args[0] { Value::Int(n) => ..., _ => return Value::Undef } already covers this. Should pass without changes.",
       "status": "done",
-      "commit": "31ae3f7a"
+      "commit": "1dcdd546"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write test `parse_basic_instance_qualified_access`: parse `structure S { let x = motor.(Driveable::torque) }`, assert InstanceQualifiedAccess { object: Ident(\"motor\"), qualified: QualifiedAccess(Ident(\"Driveable\"), \"torque\") }.",
+      "description": "Write test: MethodCall [].generate(-3, |i| i) -> empty list []. Negative count should produce an empty list via Rust range semantics (0i64..-3i64 is empty). Test name: eval_method_generate_negative_count.",
       "status": "done",
-      "commit": "31ae3f7a"
+      "commit": "2e8260d2"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Add ExprKind::InstanceQualifiedAccess { object: Box<Expr>, qualified: Box<Expr> } variant to lib.rs. Add `lower_instance_qualified_access` function in ts_parser.rs that reads 'object' and 'qualified' fields. Add dispatch case `\"instance_qualified_access\" => self.lower_instance_qualified_access(node)` in lower_expr. Verify step-7 test passes.",
+      "description": "Verify negative count produces empty list. Rust Range 0..-3 iterates zero times. Should pass without changes.",
       "status": "done",
-      "commit": "31ae3f7a"
+      "commit": "2e8260d2"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write test `parse_instance_qualified_with_member_chain`: parse `structure S { let x = self.motor.(Driveable::torque) }`, assert InstanceQualifiedAccess { object: MemberAccess(Ident(\"self\"), \"motor\"), qualified: QualifiedAccess(Ident(\"Driveable\"), \"torque\") } — verifying that the object field can be a chained member access expression.",
+      "description": "Write test: MethodCall [].generate(3.0, |i| i) -> Undef. Real (non-Int) count should return Undef since match on Value::Int excludes Value::Real. Test name: eval_method_generate_real_count.",
       "status": "done",
-      "commit": "31ae3f7a"
+      "commit": "71d70e3b"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Verify member chain interaction — both instance_qualified_access and member_access are at prec.left(8), so `self.motor.(...)` parses left-to-right: first `self.motor` as MemberAccess, then `(MemberAccess).(...)` as InstanceQualifiedAccess. Step-9 test should pass without code changes.",
+      "description": "Verify Real count returns Undef. The match on Value::Int in the generate handler falls through to _ => Value::Undef for Real values. Should pass without changes.",
       "status": "done",
-      "commit": "31ae3f7a"
+      "commit": "71d70e3b"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write test `parse_instance_qualified_with_chained_path`: parse `structure S { let x = obj.(A::B::c) }`, assert InstanceQualifiedAccess { object: Ident(\"obj\"), qualified: QualifiedAccess { qualifier: QualifiedAccess(Ident(\"A\"), \"B\"), member: \"c\" } } — verifying the qualified field supports chained qualified paths.",
+      "description": "Write test: MethodCall [].generate(4, |i| i) identity lambda -> [0, 1, 2, 3]. Tests that indices 0..n-1 are correctly passed to the lambda. Test name: eval_method_generate_identity.",
       "status": "done",
-      "commit": "31ae3f7a"
+      "commit": "2afa517b"
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "Verify chained path inside instance qualified — the grammar constrains `field('qualified', $.qualified_access)` which is itself left-recursive. Step-11 test should pass without code changes.",
+      "description": "Verify identity lambda works. apply_lambda with identity body (just ValueRef to param) returns the Int index directly. Should pass without changes.",
       "status": "done",
-      "commit": "31ae3f7a"
+      "commit": "2afa517b"
     },
     {
       "id": "step-13",
       "type": "test",
-      "description": "Write test `parse_distinct_ast_nodes`: parse `structure S { let a = Rigid::mass  let b = obj.(Rigid::mass) }`, assert first member is QualifiedAccess and second is InstanceQualifiedAccess — verifying both forms produce distinct AST node variants as required by the task.",
+      "description": "Write test: MethodCall generate with wrong arity (1 arg only - count but no lambda) -> Undef. Tests the args.len() != 2 guard. Test name: eval_method_generate_wrong_arity.",
       "status": "done",
-      "commit": "31ae3f7a"
+      "commit": "434cd38d"
+    },
+    {
+      "id": "step-14",
+      "type": "impl",
+      "description": "Verify wrong-arity guard works. The if args.len() != 2 { return Value::Undef } check at line 563 already handles this. Should pass without changes.",
+      "status": "done",
+      "commit": "434cd38d"
+    },
+    {
+      "id": "step-15",
+      "type": "test",
+      "description": "Write test: FunctionCall generate with Undef n -> Undef. The FunctionCall dispatch has automatic Undef short-circuit (lines 72-73), so Undef count never reaches the handler. Construct FunctionCall where first arg evaluates to Undef (ValueRef to missing cell). Test name: eval_fn_generate_undef_count.",
+      "status": "done",
+      "commit": "d3e0c548"
+    },
+    {
+      "id": "step-16",
+      "type": "impl",
+      "description": "Verify FunctionCall Undef propagation works. The automatic short-circuit `if evaluated_args.iter().any(|v| v.is_undef()) { return Value::Undef; }` fires before reaching the generate handler. Should pass without changes.",
+      "status": "done",
+      "commit": "d3e0c548"
     }
   ],
   "design_decisions": [
     {
-      "decision": "QualifiedAccess qualifier is Box<Expr> (not String) to support chaining",
-      "rationale": "Chained qualified access like `A::B::c` requires the qualifier to be an expression that can itself be a QualifiedAccess. Using Box<Expr> enables left-recursive chaining: `(A::B)::c` where `A::B` is a QualifiedAccess and the outer `(A::B)::c` is also a QualifiedAccess. A String qualifier would only allow single-level `TypeName::ident`."
+      "decision": "Add generate as a FunctionCall handler in eval_expr rather than in reify-stdlib/eval_builtin",
+      "rationale": "generate requires EvalContext for apply_lambda, which eval_builtin does not receive. The precedent is 'sample', which is similarly handled in eval_expr's FunctionCall match (lines 78-92) because it needs EvalContext for field lambda application."
     },
     {
-      "decision": "Qualified access at precedence 2 (same level as &&)",
-      "rationale": "Precedence 2 means `::` binds tighter than logical operators (&&, ||) but looser than comparison, arithmetic, and postfix operators. This allows `Rigid::mass + 1` to parse as `(Rigid::mass) + 1` naturally, and `A::b && C::d` to parse as `(A::b) && (C::d)`. This matches the intuition that `::` is a tight access operator, though not as tight as `.` (prec 8)."
+      "decision": "Keep existing MethodCall handler unchanged; add FunctionCall path alongside it",
+      "rationale": "The MethodCall path ([].generate(n, fn)) already works and has a test. The FunctionCall path (generate(n, fn)) provides the 'static method / stdlib function' semantics the task requires, without needing a List receiver. Both paths coexist for maximum flexibility."
     },
     {
-      "decision": "Instance qualified access constrains inner field to $.qualified_access (not $._expression)",
-      "rationale": "The grammar rule `field('qualified', $.qualified_access)` prevents nonsensical forms like `expr.(42)` or `expr.(x + y)`. Only `TypeName::ident` chains are allowed inside the parenthesized part. This is enforced at the grammar level for free."
+      "decision": "Negative count produces empty list rather than Undef",
+      "rationale": "Rust range 0..n where n<0 produces an empty iterator, giving Value::List(vec![]). This is consistent with generate(0, fn) -> [] and is the least-surprise behavior. The task does not specify negative-count semantics, and empty-list is a safe, non-error default."
     },
     {
-      "decision": "Instance qualified access at precedence 8 (postfix level)",
-      "rationale": "Instance qualified access `expr.(T::m)` is syntactically a postfix operator on the object expression, like member access `expr.member`. Putting it at prec 8 (same as member_access, function_call, index_access) allows natural left-to-right chaining: `self.motor.(Driveable::torque)` parses as `(self.motor).(Driveable::torque)`."
-    },
-    {
-      "decision": "No separate TypeName AST node — qualifier uses Ident",
-      "rationale": "At the parser level, `Rigid` in `Rigid::mass` is just an identifier. Semantic analysis (trait resolution in the compiler) will distinguish type names from variable names. Keeping the qualifier as a plain Expr avoids premature semantic coupling in the parser."
+      "decision": "No changes to reify-stdlib despite it being listed in task modules",
+      "rationale": "The stdlib crate's eval_builtin function does not receive EvalContext, which is required for lambda application via apply_lambda. All lambda-aware functions (map, filter, generate, fold, sample) are handled in reify-expr's eval_expr dispatch. Adding generate to stdlib would require an architectural change (passing EvalContext to eval_builtin) which is out of scope."
     }
   ],
   "reuse": [
     {
-      "what": "Existing lower_expr dispatch pattern",
-      "where": "crates/reify-syntax/src/ts_parser.rs (lower_expr match)",
-      "how": "Add two new match arms (`\"qualified_access\"` and `\"instance_qualified_access\"`) following the same pattern as other expression kinds like `\"member_access\"` and `\"binary_expression\"`."
+      "what": "FunctionCall lambda-dispatch pattern (sample handler)",
+      "where": "crates/reify-expr/src/lib.rs lines 78-92",
+      "how": "Copy the same pattern: add a match arm in the FunctionCall dispatch that checks function name and arity, then uses apply_lambda with EvalContext. The generate handler mirrors the sample handler structure."
     },
     {
-      "what": "lower_member_access structure as template for lower_qualified_access",
-      "where": "crates/reify-syntax/src/ts_parser.rs (lines 1863-1893)",
-      "how": "Both functions read a node and two named fields, lower one as expression and one as text, then construct an ExprKind variant. The qualified_access lowering mirrors this pattern exactly."
+      "what": "Existing generate MethodCall implementation",
+      "where": "crates/reify-expr/src/lib.rs lines 562-580",
+      "how": "The FunctionCall handler replicates the same core logic but without the obj/receiver check. Core logic: match Int count from first arg, iterate 0..count, apply_lambda for each index, collect into List."
     },
     {
-      "what": "ExprKind enum extension pattern",
-      "where": "crates/reify-syntax/src/lib.rs (ExprKind enum)",
-      "how": "Add two new variants following the established pattern of doc comments + field types. QualifiedAccess mirrors MemberAccess structure; InstanceQualifiedAccess is similar but with two Box<Expr> fields."
+      "what": "Test helpers: make_value_lambda and lambda_literal",
+      "where": "crates/reify-expr/tests/collection_eval_tests.rs lines 486-513",
+      "how": "Reuse these existing helpers to construct lambda CompiledExpr values for all generate tests. lambda_literal wraps make_value_lambda into a CompiledExpr::Literal."
     },
     {
-      "what": "Test helper parse_decls",
-      "where": "crates/reify-syntax/tests/qualified_access_tests.rs",
-      "how": "Reuse the standard test pattern: `parse_decls(source) -> (Vec<Declaration>, Vec<ParseError>)` calling `reify_syntax::parse()` with a test ModulePath. This pattern is used across all 20 test files."
+      "what": "CompiledExpr::method_call constructor",
+      "where": "crates/reify-types/src/expr.rs lines 640-660",
+      "how": "Reuse for constructing MethodCall test expressions, following the pattern established in eval_method_generate_list and other collection tests."
     },
     {
-      "what": "Tree-sitter prec.left grammar pattern",
-      "where": "tree-sitter-reify/grammar.js",
-      "how": "The qualified_access rule uses `prec.left(N, seq(field(...), token, field(...)))` identical to how binary_expression and member_access define left-associative rules."
+      "what": "ResolvedFunction struct for FunctionCall construction",
+      "where": "crates/reify-types/src/expr.rs lines 135-139",
+      "how": "Construct ResolvedFunction { name: 'generate', qualified_name: 'std::generate' } for FunctionCall test expressions, following the pattern from make_function_call (line 691)."
     }
   ],
-  "_session_id": "191-5658d92e",
-  "_created_at": "2026-03-24T21:25:30.140132+00:00"
+  "_session_id": "168-3c2dc753",
+  "_created_at": "2026-03-24T21:32:53.914563+00:00"
 }

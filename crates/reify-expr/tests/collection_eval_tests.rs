@@ -3,7 +3,24 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use reify_expr::{eval_expr, EvalContext};
-use reify_types::{BinOp, CompiledExpr, Type, Value, ValueCellId, ValueMap};
+use reify_types::{BinOp, CompiledExpr, CompiledExprKind, ContentHash, ResolvedFunction, Type, Value, ValueCellId, ValueMap};
+
+// ─── Helper: construct a FunctionCall CompiledExpr ───
+
+fn make_fn_call(name: &str, args: Vec<CompiledExpr>, result_type: Type) -> CompiledExpr {
+    let hash = ContentHash::of(name.as_bytes());
+    CompiledExpr {
+        kind: CompiledExprKind::FunctionCall {
+            function: ResolvedFunction {
+                name: name.to_string(),
+                qualified_name: format!("std::{}", name),
+            },
+            args,
+        },
+        result_type,
+        content_hash: hash,
+    }
+}
 
 // ─── step-1: List literal evaluation ───
 
@@ -2045,4 +2062,171 @@ fn eval_method_concat_two_args() {
     let values = ValueMap::new();
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert!(result.is_undef(), "concat with 2 args should be Undef");
+}
+
+// ─── task-168: generate as FunctionCall ───
+
+#[test]
+fn eval_fn_generate_undef_count() {
+    // generate(Undef, |i| i) -> Undef (FunctionCall Undef short-circuit fires before handler)
+    let i_id = ValueCellId::new("$lambda_fgen_undef.S", "i");
+    let body = CompiledExpr::value_ref(i_id.clone(), Type::Int);
+    let lambda_arg = lambda_literal(vec![("i", i_id)], body, ValueMap::new());
+
+    // Use a ValueRef to a missing cell — evaluates to Undef
+    let undef_count_id = ValueCellId::new("$missing2.S", "count");
+    let count_arg = CompiledExpr::value_ref(undef_count_id, Type::Int);
+
+    let expr = make_fn_call(
+        "generate",
+        vec![count_arg, lambda_arg],
+        Type::List(Box::new(Type::Int)),
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert!(result.is_undef(), "FunctionCall generate with Undef count should return Undef");
+}
+
+#[test]
+fn eval_method_generate_wrong_arity() {
+    // [].generate(3) -> Undef (missing lambda arg, only 1 arg passed)
+    let list = CompiledExpr::list_literal(vec![], Type::List(Box::new(Type::Int)));
+    let count_arg = CompiledExpr::literal(Value::Int(3), Type::Int);
+    let expr = CompiledExpr::method_call(
+        list,
+        "generate".to_string(),
+        vec![count_arg], // only 1 arg, not 2
+        Type::List(Box::new(Type::Int)),
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert!(result.is_undef(), "generate with only 1 arg should return Undef");
+}
+
+#[test]
+fn eval_method_generate_identity() {
+    // [].generate(4, |i| i) -> [0, 1, 2, 3]
+    let i_id = ValueCellId::new("$lambda_id_gen.S", "i");
+    let body = CompiledExpr::value_ref(i_id.clone(), Type::Int);
+    let lambda_arg = lambda_literal(vec![("i", i_id)], body, ValueMap::new());
+
+    let list = CompiledExpr::list_literal(vec![], Type::List(Box::new(Type::Int)));
+    let count_arg = CompiledExpr::literal(Value::Int(4), Type::Int);
+    let expr = CompiledExpr::method_call(
+        list,
+        "generate".to_string(),
+        vec![count_arg, lambda_arg],
+        Type::List(Box::new(Type::Int)),
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::List(vec![Value::Int(0), Value::Int(1), Value::Int(2), Value::Int(3)])
+    );
+}
+
+#[test]
+fn eval_method_generate_real_count() {
+    // [].generate(3.0, |i| i) -> Undef (Real count not supported, only Int)
+    let i_id = ValueCellId::new("$lambda_real_gen.S", "i");
+    let body = CompiledExpr::value_ref(i_id.clone(), Type::Int);
+    let lambda_arg = lambda_literal(vec![("i", i_id)], body, ValueMap::new());
+
+    let list = CompiledExpr::list_literal(vec![], Type::List(Box::new(Type::Int)));
+    let count_arg = CompiledExpr::literal(Value::Real(3.0), Type::Real);
+    let expr = CompiledExpr::method_call(
+        list,
+        "generate".to_string(),
+        vec![count_arg, lambda_arg],
+        Type::List(Box::new(Type::Int)),
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert!(result.is_undef(), "generate with Real count should return Undef");
+}
+
+#[test]
+fn eval_method_generate_negative_count() {
+    // [].generate(-3, |i| i) -> [] (Rust range 0..-3 is empty)
+    let i_id = ValueCellId::new("$lambda_neg_gen.S", "i");
+    let body = CompiledExpr::value_ref(i_id.clone(), Type::Int);
+    let lambda_arg = lambda_literal(vec![("i", i_id)], body, ValueMap::new());
+
+    let list = CompiledExpr::list_literal(vec![], Type::List(Box::new(Type::Int)));
+    let count_arg = CompiledExpr::literal(Value::Int(-3), Type::Int);
+    let expr = CompiledExpr::method_call(
+        list,
+        "generate".to_string(),
+        vec![count_arg, lambda_arg],
+        Type::List(Box::new(Type::Int)),
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::List(vec![]), "generate with negative count should return empty list");
+}
+
+#[test]
+fn eval_method_generate_undef_count() {
+    // [].generate(Undef, |i| i) -> Undef
+    // The count arg (ValueRef to missing cell) evaluates to Undef; match arm _ => Undef fires.
+    let i_id = ValueCellId::new("$lambda_undef_gen.S", "i");
+    let body = CompiledExpr::value_ref(i_id.clone(), Type::Int);
+    let lambda_arg = lambda_literal(vec![("i", i_id)], body, ValueMap::new());
+
+    let undef_count_id = ValueCellId::new("$missing.S", "count");
+    let count_arg = CompiledExpr::value_ref(undef_count_id, Type::Int); // evaluates to Undef
+
+    let list = CompiledExpr::list_literal(vec![], Type::List(Box::new(Type::Int)));
+    let expr = CompiledExpr::method_call(
+        list,
+        "generate".to_string(),
+        vec![count_arg, lambda_arg],
+        Type::List(Box::new(Type::Int)),
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert!(result.is_undef(), "generate with Undef count should return Undef");
+}
+
+#[test]
+fn eval_fn_generate_zero_count() {
+    // generate(0, |i| i) -> []
+    let i_id = ValueCellId::new("$lambda_fgen0.S", "i");
+    let body = CompiledExpr::value_ref(i_id.clone(), Type::Int);
+    let lambda_arg = lambda_literal(vec![("i", i_id)], body, ValueMap::new());
+    let count_arg = CompiledExpr::literal(Value::Int(0), Type::Int);
+    let expr = make_fn_call(
+        "generate",
+        vec![count_arg, lambda_arg],
+        Type::List(Box::new(Type::Int)),
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::List(vec![]));
+}
+
+#[test]
+fn eval_fn_generate_basic() {
+    // generate(3, |i| i * 2) -> [0, 2, 4]
+    let i_id = ValueCellId::new("$lambda_fgen.S", "i");
+    let body = CompiledExpr::binop(
+        BinOp::Mul,
+        CompiledExpr::value_ref(i_id.clone(), Type::Int),
+        CompiledExpr::literal(Value::Int(2), Type::Int),
+        Type::Int,
+    );
+    let lambda_arg = lambda_literal(vec![("i", i_id)], body, ValueMap::new());
+    let count_arg = CompiledExpr::literal(Value::Int(3), Type::Int);
+    let expr = make_fn_call(
+        "generate",
+        vec![count_arg, lambda_arg],
+        Type::List(Box::new(Type::Int)),
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::List(vec![Value::Int(0), Value::Int(2), Value::Int(4)])
+    );
 }

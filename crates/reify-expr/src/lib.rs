@@ -88,6 +88,19 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                     // They require numeric differentiation infrastructure.
                     Value::Undef
                 }
+                "generate" if evaluated_args.len() == 2 => {
+                    // generate(n, |i| expr) -> List of n elements, indexed 0..n-1.
+                    // Requires EvalContext for apply_lambda so it lives here, not in stdlib.
+                    let count = match &evaluated_args[0] {
+                        Value::Int(n) => *n,
+                        _ => return Value::Undef,
+                    };
+                    let lambda = &evaluated_args[1];
+                    let results: Vec<Value> = (0..count)
+                        .map(|i| apply_lambda(lambda, &[Value::Int(i)], ctx))
+                        .collect();
+                    Value::List(results)
+                }
                 _ => reify_stdlib::eval_builtin(&function.name, &evaluated_args),
             }
         }
