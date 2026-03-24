@@ -481,3 +481,21 @@ fn vector3_div_scalar_divides_components() {
         Value::Tensor(vec![Value::length(5.0), Value::length(10.0), Value::length(15.0)])
     );
 }
+
+// --- Tensor negation ---
+
+/// Negating Vector3<Length> negates all components.
+#[test]
+fn negate_vector3_negates_all_components() {
+    let operand = CompiledExpr::literal(
+        Value::Tensor(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]),
+        Type::vec3(Type::length()),
+    );
+    let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::vec3(Type::length()));
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Tensor(vec![Value::length(-1.0), Value::length(-2.0), Value::length(-3.0)])
+    );
+}
