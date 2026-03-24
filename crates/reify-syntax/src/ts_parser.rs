@@ -745,10 +745,10 @@ impl<'a> Lowering<'a> {
         for child in node.named_children(&mut cursor) {
             // The 'name' field child is the identifier; all other named children
             // are expression args produced by commaSep($._expression).
-            if child.id() != name_node.id() {
-                if let Some(expr) = self.lower_expr(child) {
-                    args.push(expr);
-                }
+            if child.id() != name_node.id()
+                && let Some(expr) = self.lower_expr(child)
+            {
+                args.push(expr);
             }
         }
 
