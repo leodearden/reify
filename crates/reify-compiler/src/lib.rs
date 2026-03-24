@@ -1838,9 +1838,8 @@ pub fn compile(
     let mut fn_refs: Vec<&reify_syntax::FnDef> = Vec::new();
     let mut trait_refs: Vec<&reify_syntax::TraitDecl> = Vec::new();
     let mut field_refs: Vec<&reify_syntax::FieldDef> = Vec::new();
-    let mut seen_field_names: HashMap<String, SourceSpan> = HashMap::new();
     // Unified entity namespace tracker (spec §4.2.1): structures, occurrences,
-    // and constraints share the entity name space. Fields are added in step-8.
+    // constraints, and fields all share the entity name space.
     // Maps name → (first_span, first_kind_label).
     let mut seen_entity_names: HashMap<String, (SourceSpan, &'static str)> = HashMap::new();
 
@@ -1859,24 +1858,24 @@ pub fn compile(
                 trait_refs.push(trait_decl);
             }
             reify_syntax::Declaration::Field(field_def) => {
-                if let Some(first_span) = seen_field_names.get(&field_def.name) {
-                    // Duplicate field name — emit error and skip
+                if let Some((first_span, first_kind)) = seen_entity_names.get(&field_def.name) {
+                    // Duplicate entity name — emit error and skip
                     diagnostics.push(
                         Diagnostic::error(format!(
-                            "duplicate field name '{}'",
+                            "duplicate entity definition '{}'",
                             field_def.name
                         ))
                         .with_label(DiagnosticLabel::new(
                             field_def.span,
-                            "duplicate defined here",
+                            "field defined here",
                         ))
                         .with_label(DiagnosticLabel::new(
                             *first_span,
-                            "first defined here",
+                            format!("first defined as {} here", first_kind),
                         )),
                     );
                 } else {
-                    seen_field_names.insert(field_def.name.clone(), field_def.span);
+                    seen_entity_names.insert(field_def.name.clone(), (field_def.span, "field"));
                     field_refs.push(field_def);
                 }
             }
