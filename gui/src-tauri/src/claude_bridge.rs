@@ -394,6 +394,30 @@ impl SidecarHandle {
 
 // --- High-level command implementations ---
 
+/// Lock the sidecar mutex, check that a handle is present, and run `f` on it.
+///
+/// Returns `Err("sidecar not started")` if the slot is `None`.
+/// Otherwise awaits `f(handle)` and returns its result.
+///
+/// The closure must return a `Pin<Box<dyn Future + Send + 'a>>` where `'a` is
+/// the lifetime of the `&mut SidecarHandle` borrow. Use `Box::pin(...)` at
+/// the call site:
+/// ```rust,ignore
+/// with_handle(&sidecar, |h| Box::pin(h.abort())).await
+/// ```
+async fn with_handle<T, F>(sidecar: &Mutex<Option<SidecarHandle>>, f: F) -> Result<T, String>
+where
+    F: for<'a> FnOnce(
+        &'a mut SidecarHandle,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<T, String>> + Send + 'a>>,
+{
+    let mut guard = sidecar.lock().await;
+    match guard.as_mut() {
+        None => Err("sidecar not started".to_string()),
+        Some(handle) => f(handle).await,
+    }
+}
+
 /// Send a message to the sidecar. Returns the generated message ID.
 ///
 /// Returns an error if the sidecar is not started or not in the Ready state.
@@ -402,30 +426,26 @@ pub async fn claude_send_message_impl(
     text: &str,
     context: Option<MessageContext>,
 ) -> Result<String, String> {
-    let mut guard = sidecar.lock().await;
-    match guard.as_mut() {
-        None => Err("sidecar not started".to_string()),
-        Some(handle) => {
+    let text = text.to_string();
+    with_handle(sidecar, move |handle| {
+        Box::pin(async move {
             let state = handle.state().lock().unwrap().clone();
             match state {
-                SidecarState::Ready => handle.send_message(text, context).await,
+                SidecarState::Ready => handle.send_message(&text, context).await,
                 SidecarState::Crashed(msg) => Err(format!("sidecar crashed: {}", msg)),
                 SidecarState::NotStarted => Err("sidecar not started".to_string()),
                 SidecarState::Starting => Err("sidecar not ready (still starting)".to_string()),
             }
-        }
-    }
+        })
+    })
+    .await
 }
 
 /// Send an abort signal to the sidecar.
 ///
 /// Returns an error if the sidecar is not started.
 pub async fn claude_abort_impl(sidecar: &Mutex<Option<SidecarHandle>>) -> Result<(), String> {
-    let mut guard = sidecar.lock().await;
-    match guard.as_mut() {
-        None => Err("sidecar not started".to_string()),
-        Some(handle) => handle.abort().await,
-    }
+    with_handle(sidecar, |h| Box::pin(h.abort())).await
 }
 
 /// Clear the conversation session in the sidecar.
@@ -434,11 +454,7 @@ pub async fn claude_abort_impl(sidecar: &Mutex<Option<SidecarHandle>>) -> Result
 pub async fn claude_clear_session_impl(
     sidecar: &Mutex<Option<SidecarHandle>>,
 ) -> Result<(), String> {
-    let mut guard = sidecar.lock().await;
-    match guard.as_mut() {
-        None => Err("sidecar not started".to_string()),
-        Some(handle) => handle.clear_session().await,
-    }
+    with_handle(sidecar, |h| Box::pin(h.clear_session())).await
 }
 
 /// Spawn the Claude sidecar process and return a ready-to-use [`SidecarHandle`].
