@@ -4983,6 +4983,68 @@ mod tests {
         );
     }
 
+    // --- difference and intersection compilation tests (step-5, step-6) ---
+
+    #[test]
+    fn compile_difference_nested_calls_produces_three_ops() {
+        let source = r#"structure S {
+    let r = difference(box(20mm, 20mm, 20mm), box(10mm, 10mm, 10mm))
+}"#;
+        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_diff"));
+        assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+        let compiled = compile(&parsed);
+        let template = &compiled.templates[0];
+        assert_eq!(template.realizations.len(), 1, "expected 1 realization");
+        let ops = &template.realizations[0].operations;
+        assert_eq!(ops.len(), 3, "expected 3 ops (box, box, difference)");
+        assert!(
+            matches!(ops[0], CompiledGeometryOp::Primitive { kind: PrimitiveKind::Box, .. }),
+            "expected Box at ops[0]"
+        );
+        assert!(
+            matches!(ops[1], CompiledGeometryOp::Primitive { kind: PrimitiveKind::Box, .. }),
+            "expected Box at ops[1]"
+        );
+        assert!(
+            matches!(
+                ops[2],
+                CompiledGeometryOp::Boolean {
+                    op: BooleanOp::Difference,
+                    left: GeomRef::Step(0),
+                    right: GeomRef::Step(1)
+                }
+            ),
+            "expected Boolean{{Difference, Step(0), Step(1)}} at ops[2], got {:?}",
+            ops[2]
+        );
+    }
+
+    #[test]
+    fn compile_intersection_nested_calls_produces_three_ops() {
+        let source = r#"structure S {
+    let r = intersection(box(10mm, 10mm, 10mm), box(10mm, 10mm, 10mm))
+}"#;
+        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_isect"));
+        assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+        let compiled = compile(&parsed);
+        let template = &compiled.templates[0];
+        assert_eq!(template.realizations.len(), 1, "expected 1 realization");
+        let ops = &template.realizations[0].operations;
+        assert_eq!(ops.len(), 3, "expected 3 ops (box, box, intersection)");
+        assert!(
+            matches!(
+                ops[2],
+                CompiledGeometryOp::Boolean {
+                    op: BooleanOp::Intersection,
+                    left: GeomRef::Step(0),
+                    right: GeomRef::Step(1)
+                }
+            ),
+            "expected Boolean{{Intersection, Step(0), Step(1)}} at ops[2], got {:?}",
+            ops[2]
+        );
+    }
+
     // --- Step 11: Directly test the catch-all branch in compile_geometry_call ---
 
     #[test]
