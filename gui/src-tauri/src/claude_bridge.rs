@@ -82,6 +82,18 @@ pub fn parse_outbound(line: &str) -> Result<OutboundMessage, String> {
     serde_json::from_str(line.trim()).map_err(|e| format!("parse_outbound: {}", e))
 }
 
+/// Write an InboundMessage as a JSON line to the sidecar stdin.
+pub async fn write_to_sidecar<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    msg: &InboundMessage,
+) -> Result<(), String> {
+    let line = format_inbound(msg);
+    writer
+        .write_all(line.as_bytes())
+        .await
+        .map_err(|e| format!("write_to_sidecar: {}", e))
+}
+
 /// Read lines from sidecar stdout, parse each as OutboundMessage, and call callbacks.
 /// Skips lines that fail to parse. Calls on_exit when the stream ends (EOF).
 pub async fn read_sidecar_output<R: AsyncBufRead + Unpin>(

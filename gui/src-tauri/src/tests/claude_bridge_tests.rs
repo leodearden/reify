@@ -249,6 +249,43 @@ fn parse_outbound_missing_required_field_returns_err() {
     assert!(result.is_err());
 }
 
+// --- write_to_sidecar tests (step-11) ---
+
+#[tokio::test]
+async fn write_to_sidecar_send_message_writes_json_line() {
+    let msg = InboundMessage::SendMessage {
+        id: "msg-1".to_string(),
+        text: "hello".to_string(),
+        context: None,
+    };
+    let mut buf: Vec<u8> = Vec::new();
+    write_to_sidecar(&mut buf, &msg).await.unwrap();
+    let written = std::str::from_utf8(&buf).unwrap();
+    assert!(written.ends_with('\n'));
+    let json_val: serde_json::Value = serde_json::from_str(written.trim_end()).unwrap();
+    assert_eq!(json_val["type"], "send_message");
+    assert_eq!(json_val["id"], "msg-1");
+    assert_eq!(json_val["text"], "hello");
+}
+
+#[tokio::test]
+async fn write_to_sidecar_abort_writes_json_line() {
+    let msg = InboundMessage::Abort;
+    let mut buf: Vec<u8> = Vec::new();
+    write_to_sidecar(&mut buf, &msg).await.unwrap();
+    let written = std::str::from_utf8(&buf).unwrap();
+    assert_eq!(written, "{\"type\":\"abort\"}\n");
+}
+
+#[tokio::test]
+async fn write_to_sidecar_clear_session_writes_json_line() {
+    let msg = InboundMessage::ClearSession;
+    let mut buf: Vec<u8> = Vec::new();
+    write_to_sidecar(&mut buf, &msg).await.unwrap();
+    let written = std::str::from_utf8(&buf).unwrap();
+    assert_eq!(written, "{\"type\":\"clear_session\"}\n");
+}
+
 // --- read_sidecar_output tests (step-9) ---
 
 #[tokio::test]
