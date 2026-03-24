@@ -1,152 +1,108 @@
 {
-  "task_id": "278",
-  "title": "Pragma framework: parser",
+  "task_id": "301",
+  "title": "Stdlib: dot, cross, normalize, magnitude linalg builtins",
   "files": [
-    "tree-sitter-reify/grammar.js",
-    "crates/reify-syntax/src/lib.rs",
-    "crates/reify-syntax/src/ts_parser.rs",
-    "crates/reify-syntax/tests/pragma_tests.rs"
+    "crates/reify-stdlib/src/lib.rs"
   ],
   "modules": [
-    "crates/reify-syntax",
-    "tree-sitter-reify"
+    "crates/reify-stdlib"
   ],
-  "analysis": "The pragma framework parser is ALREADY FULLY IMPLEMENTED on main. All four layers are complete and tested: (1) Grammar: tree-sitter-reify/grammar.js defines `pragma` rule (line 751) with `#immediate_identifier` and optional `(commaSep(pragma_arg))`, `pragma_arg` (line 758) supporting key=value and bare forms, and `_pragma_value` (line 764) restricted to number/string/bool/identifier literals. Pragma appears in `_declaration` (module level, line 47), `_member` (structure/occurrence blocks, line 346), `trait_member` (line 146), `purpose_member` (line 233), and `_constraint_def_body_item` (line 255). (2) AST: lib.rs defines Pragma (line 556), PragmaArg (line 564), PragmaValue (line 572); ParsedModule.pragmas (line 13) for module level; StructureDef.pragmas (line 42), OccurrenceDef.pragmas (line 67), TraitDecl.pragmas (line 293), PurposeDef.pragmas (line 323), ConstraintDef.pragmas (line 351) for block level. (3) Parser: ts_parser.rs implements lower_pragma() (line 781), lower_pragma_arg() (line 806), lower_pragma_value() (line 823); module-level collection in lower_source_file() (line 196); block-level collection in lower_members() (line 1038), lower_trait_members() (line 960), lower_purpose_members() (line 881), and lower_constraint_def() (line 658). (4) Tests: pragma_tests.rs has 12 passing tests covering bare pragmas, key=value args, bare value args, mixed args, multiple module pragmas, block-level pragmas in structure/occurrence/trait/purpose/constraint, scoping isolation, and boolean/number value types. All 12 tests pass. This plan contains verification-only steps confirming the existing implementation satisfies the task requirements. No new code is needed.",
+  "analysis": "All four linalg builtins (dot, cross, normalize, magnitude) are ALREADY fully implemented in eval_builtin() with correct dimensional tracking (lines 263-361 of stdlib/lib.rs). LSP completions already list all four (completion.rs line 86). Comprehensive unit tests exist (35 passing tests covering dimensionless, dimensioned, error cases, NaN/Inf, overflow). However, ALL existing tests use Value::Tensor inputs exclusively. The task specifies vec3(...) which produces Value::Vector. The implementation correctly handles Value::Vector (tensor_components_f64 accepts Vector, and wrapper-preserving logic returns Value::Vector from cross/normalize when inputs are Vector), but this behavior is completely untested. The gap is Value::Vector-specific test coverage: (1) dot with Vector inputs, (2) cross returning Value::Vector wrapper when both inputs are Vector, (3) normalize returning Value::Vector wrapper, (4) magnitude with Vector inputs. Adding these tests verifies the wrapper-preservation logic that distinguishes vectors from tensors at runtime — critical for downstream code (e.g., affine transforms where points get translation and vectors don't).",
   "prerequisites": [],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Verify existing test parse_bare_module_pragma: bare pragma at module level (#optimize parses to Pragma with name='optimize' and empty args on ParsedModule.pragmas). Run `cargo test -p reify-syntax --test pragma_tests parse_bare_module_pragma` and confirm pass.",
+      "description": "Add dot tests with Value::Vector inputs: (1) dot_vector_orthogonal — dot(Vector([1,0,0]), Vector([0,1,0])) == 0.0 as Real, (2) dot_vector_dimensioned — dot(Vector([1m,0,0]), Vector([1N,0,0])) → Scalar{1.0, Length*Force}. These mirror the existing Tensor-based dot tests but use Value::Vector to verify tensor_components_f64 extracts correctly from Vector variant.",
       "status": "done",
-      "commit": "b126fef05323740c65841e48bfc19fa293d5e188"
+      "commit": "9efb0ecb"
     },
     {
       "id": "step-2",
-      "type": "test",
-      "description": "Verify existing test parse_key_value_pragma_args: pragma with key=value args (#config(level=3, name=\"test\") parses to PragmaArg::KeyValue entries with PragmaValue::Number(3.0) and PragmaValue::String(\"test\")). Run `cargo test -p reify-syntax --test pragma_tests parse_key_value_pragma_args` and confirm pass.",
+      "type": "impl",
+      "description": "Verify dot Vector tests pass without implementation changes. tensor_components_f64 already matches Value::Vector, so these should pass. If any fail, fix the extraction logic.",
       "status": "done",
-      "commit": "b126fef05323740c65841e48bfc19fa293d5e188"
+      "commit": "9efb0ecb"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Verify existing test parse_bare_value_pragma_args: pragma with bare value args (#feature(sse2, avx) parses to PragmaArg::Bare(PragmaValue::Ident) entries). Run `cargo test -p reify-syntax --test pragma_tests parse_bare_value_pragma_args` and confirm pass.",
+      "description": "Add cross tests with Value::Vector inputs: (1) cross_vector_returns_vector_wrapper — cross(Vector([1,0,0]), Vector([0,1,0])) returns Value::Vector([0,0,1]), NOT Value::Tensor — verifies wrapper preservation logic at line 312, (2) cross_vector_dimensioned — cross of dimensioned Vectors preserves Length*Force dimension on each component, (3) cross_2d_vector_returns_undef — cross of 2-element Value::Vector returns Undef.",
       "status": "done",
-      "commit": "b126fef05323740c65841e48bfc19fa293d5e188"
+      "commit": "9efb0ecb"
     },
     {
       "id": "step-4",
-      "type": "test",
-      "description": "Verify existing test parse_mixed_pragma_args: mixed pragma args (#config(debug, level=2, name=\"prod\") parses to mix of Bare and KeyValue args with correct types). Run `cargo test -p reify-syntax --test pragma_tests parse_mixed_pragma_args` and confirm pass.",
+      "type": "impl",
+      "description": "Verify cross Vector tests pass. The wrapper logic (line 310-314) already returns Value::Vector when both inputs are Value::Vector. If the wrapper test fails, fix the match arm in the cross implementation.",
       "status": "done",
-      "commit": "b126fef05323740c65841e48bfc19fa293d5e188"
+      "commit": "9efb0ecb"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Verify existing test parse_multiple_module_pragmas: multiple module-level pragmas (#optimize + #config(level=3) both collected in ParsedModule.pragmas with correct order). Run `cargo test -p reify-syntax --test pragma_tests parse_multiple_module_pragmas` and confirm pass.",
+      "description": "Add normalize tests with Value::Vector inputs: (1) normalize_vector_returns_vector_wrapper — normalize(Vector([3,4,0])) returns Value::Vector([0.6,0.8,0.0]) with Real components, NOT Value::Tensor — verifies wrapper preservation at line 266, (2) normalize_zero_vector_input_returns_undef — normalize(Vector([0,0,0])) → Undef, (3) normalize_dimensioned_vector_input — normalize(Vector([3m,4m,0m])) → Value::Vector with dimensionless Real components.",
       "status": "done",
-      "commit": "b126fef05323740c65841e48bfc19fa293d5e188"
+      "commit": "9efb0ecb"
     },
     {
       "id": "step-6",
-      "type": "test",
-      "description": "Verify existing test parse_block_pragma_in_structure: block-level pragma inside structure (structure S { #internal ... } stores pragma on StructureDef.pragmas, not module.pragmas). Run `cargo test -p reify-syntax --test pragma_tests parse_block_pragma_in_structure` and confirm pass.",
+      "type": "impl",
+      "description": "Verify normalize Vector tests pass. The wrap function (line 265-268) already selects Value::Vector when input is Vector. If any wrapper test fails, fix the match arm.",
       "status": "done",
-      "commit": "b126fef05323740c65841e48bfc19fa293d5e188"
+      "commit": "9efb0ecb"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Verify existing test parse_block_pragma_in_occurrence: block-level pragma inside occurrence (occurrence P { #temporal ... } stores pragma on OccurrenceDef.pragmas). Run `cargo test -p reify-syntax --test pragma_tests parse_block_pragma_in_occurrence` and confirm pass.",
+      "description": "Add magnitude tests with Value::Vector inputs: (1) magnitude_vector_3_4_0 — magnitude(Vector([3,4,0])) == Real(5.0), (2) magnitude_vector_dimensioned — magnitude(Vector([3mm,4mm,0])) == Scalar{0.005, LENGTH} — verifies dimension preservation through Vector path.",
       "status": "done",
-      "commit": "b126fef05323740c65841e48bfc19fa293d5e188"
+      "commit": "9efb0ecb"
     },
     {
       "id": "step-8",
-      "type": "test",
-      "description": "Verify existing test parse_block_pragma_in_trait: block-level pragma inside trait (trait R { #required ... } stores pragma on TraitDecl.pragmas). Run `cargo test -p reify-syntax --test pragma_tests parse_block_pragma_in_trait` and confirm pass.",
+      "type": "impl",
+      "description": "Verify magnitude Vector tests pass. tensor_components_f64 extracts from Value::Vector correctly and dimension is derived from first component. If any test fails, fix extraction logic.",
       "status": "done",
-      "commit": "b126fef05323740c65841e48bfc19fa293d5e188"
-    },
-    {
-      "id": "step-9",
-      "type": "test",
-      "description": "Verify existing test parse_pragma_scoping_isolation: pragma scoping isolation (#module_level at top, #block_level inside S — each appears only in its own scope's Vec<Pragma>). Run `cargo test -p reify-syntax --test pragma_tests parse_pragma_scoping_isolation` and confirm pass.",
-      "status": "done",
-      "commit": "b126fef05323740c65841e48bfc19fa293d5e188"
-    },
-    {
-      "id": "step-10",
-      "type": "test",
-      "description": "Verify existing test parse_pragma_bool_and_number_values: boolean and number pragma values (#feature(enabled=true, count=42) parses to PragmaValue::Bool(true) and PragmaValue::Number(42.0)). Run `cargo test -p reify-syntax --test pragma_tests parse_pragma_bool_and_number_values` and confirm pass.",
-      "status": "done",
-      "commit": "b126fef05323740c65841e48bfc19fa293d5e188"
-    },
-    {
-      "id": "step-11",
-      "type": "test",
-      "description": "Verify existing test parse_block_pragma_in_purpose: block-level pragma inside purpose (purpose Optimize(...) { #solver ... } stores pragma on PurposeDef.pragmas). Run `cargo test -p reify-syntax --test pragma_tests parse_block_pragma_in_purpose` and confirm pass.",
-      "status": "done",
-      "commit": "b126fef05323740c65841e48bfc19fa293d5e188"
-    },
-    {
-      "id": "step-12",
-      "type": "test",
-      "description": "Verify existing test parse_block_pragma_in_constraint: block-level pragma inside constraint def (constraint def Positive { #validate ... } stores pragma on ConstraintDef.pragmas). Run `cargo test -p reify-syntax --test pragma_tests parse_block_pragma_in_constraint` and confirm pass.",
-      "status": "done",
-      "commit": "b126fef05323740c65841e48bfc19fa293d5e188"
+      "commit": "9efb0ecb"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Pragmas use restricted compile-time values (Ident, Number, String, Bool) rather than full expressions",
-      "rationale": "Pragmas are compiler directives resolved at compile time, so arbitrary runtime expressions would be meaningless. This contrasts with annotations (@name(expr)) which DO accept full expressions. The PragmaValue enum enforces this restriction at the type level."
+      "decision": "No implementation changes planned — only adding test coverage for Value::Vector inputs",
+      "rationale": "All four builtins are already fully implemented with correct dimensional tracking. The tensor_components_f64 helper already handles Value::Vector extraction, and the wrapper-preservation logic (cross→Vector, normalize→Vector) is already coded. The gap is purely in test coverage: all 35 existing linalg tests use Value::Tensor, none exercise the Value::Vector code path."
     },
     {
-      "decision": "immediate_identifier token (no whitespace between # and name)",
-      "rationale": "Prevents ambiguity — '#optimize' is a pragma, '# optimize' would be a parse error. Implemented via tree-sitter's token.immediate() which disallows whitespace between the '#' and the identifier."
+      "decision": "Tests explicitly assert Value::Vector wrapper type, not just component values",
+      "rationale": "The critical behavioral difference between Tensor and Vector paths is wrapper preservation. cross(Vector, Vector) must return Value::Vector (not Value::Tensor), and normalize(Vector) must return Value::Vector. Tests must assert the outer enum variant, not just the inner f64 values, to catch regressions where someone might simplify the match arms."
     },
     {
-      "decision": "Module-level pragmas stored on ParsedModule.pragmas, block-level pragmas stored on block container types",
-      "rationale": "Scoping by storage location — each pragma lives on its enclosing scope's AST node (StructureDef, TraitDecl, PurposeDef, ConstraintDef, OccurrenceDef). No separate 'Scope' type is needed; the container IS the scope."
-    },
-    {
-      "decision": "Pragmas inside guarded blocks (where ... { ... }) are silently discarded",
-      "rationale": "GuardedGroupDecl has no pragmas field. Guarded blocks are conditional member groups within a structure, not independent compilation scopes. The enclosing structure's pragmas field is the right place for block-level compiler directives."
-    },
-    {
-      "decision": "Pragma args support both key=value and bare value forms in the same argument list",
-      "rationale": "Flexibility — some pragmas need named config (#config(level=3)), others need feature flags (#feature(sse2, avx)), and mixed usage is useful (#config(debug, level=2)). The grammar uses a choice() between the two forms in pragma_arg."
-    },
-    {
-      "decision": "Separate collection paths for structure/occurrence (lower_members), trait (lower_trait_members), purpose (lower_purpose_members), and constraint def (inline in lower_constraint_def)",
-      "rationale": "Each block type has a different grammar wrapper node (trait_member, purpose_member, _constraint_def_body_item, _member). The wrapper nodes require different iteration patterns, so separate collection functions are needed despite the shared lower_pragma() call."
+      "decision": "LSP completions verified as-is — no changes needed",
+      "rationale": "BUILTIN_FUNCTIONS in completion.rs already includes dot, cross, normalize, magnitude at line 86. No modification required."
     }
   ],
   "reuse": [
     {
-      "what": "Pragma AST types (Pragma, PragmaArg, PragmaValue)",
-      "where": "crates/reify-syntax/src/lib.rs lines 551-578",
-      "how": "Already defined and used by all block-scope containers and ParsedModule. Downstream crates (reify-compiler boundary tests) already construct these types with pragmas: vec![]."
+      "what": "tensor_components_f64() helper",
+      "where": "crates/reify-stdlib/src/lib.rs:847",
+      "how": "Already handles Value::Tensor | Value::Point | Value::Vector extraction — no changes needed for Vector support"
     },
     {
-      "what": "lower_pragma/lower_pragma_arg/lower_pragma_value functions",
-      "where": "crates/reify-syntax/src/ts_parser.rs lines 778-847",
-      "how": "Shared lowering functions called from module-level (lower_source_file line 196) and all block-level collection functions. The same lower_pragma() is reused across 5 different collection contexts."
+      "what": "assert_real_approx! and assert_scalar_approx! test macros",
+      "where": "crates/reify-stdlib/src/lib.rs:893-920",
+      "how": "Reuse for asserting scalar results from dot and magnitude"
     },
     {
-      "what": "Tree-sitter grammar pragma rule and subrules",
-      "where": "tree-sitter-reify/grammar.js lines 748-769",
-      "how": "Pragma rule is referenced by 5 parent rules: _declaration (module), _member (structure/occurrence), trait_member, purpose_member, _constraint_def_body_item. The grammar's commaSep() helper handles comma-separated pragma_arg lists."
+      "what": "DimensionVector::LENGTH.mul(&FORCE) pattern for Length*Force",
+      "where": "crates/reify-stdlib/src/lib.rs:2345,2384",
+      "how": "Same pattern used in existing dimensioned Tensor tests — reuse for dimensioned Vector tests"
     },
     {
-      "what": "Existing test helper parse_module() and assertion patterns",
-      "where": "crates/reify-syntax/tests/pragma_tests.rs lines 8-10",
-      "how": "Standard pattern across all 21 test files — wraps reify_syntax::parse() with a test ModulePath. Assertion patterns: errors.is_empty(), pragmas.len(), pattern match on PragmaArg/PragmaValue variants."
+      "what": "Existing test patterns for wrapper assertion (match + panic)",
+      "where": "crates/reify-stdlib/src/lib.rs:2277-2286",
+      "how": "Same match-on-variant pattern but assert Value::Vector instead of Value::Tensor"
     }
   ],
-  "_session_id": "278-8676abb1",
-  "_created_at": "2026-03-24T22:53:27.879328+00:00"
+  "_session_id": "301-ea802569",
+  "_created_at": "2026-03-24T23:07:11.907734+00:00"
 }

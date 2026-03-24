@@ -2395,6 +2395,173 @@ mod tests {
         assert_scalar_approx!(eval_builtin("dot", &[a, b]), 1.0, length_force);
     }
 
+    // ── dot() with Value::Vector inputs (step-1) ────────────────────────────
+
+    #[test]
+    fn dot_vector_orthogonal() {
+        // dot(Vector([1,0,0]), Vector([0,1,0])) == 0.0
+        let a = Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
+        let b = Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
+        assert_real_approx!(eval_builtin("dot", &[a, b]), 0.0);
+    }
+
+    #[test]
+    fn dot_vector_dimensioned() {
+        // dot(Vector([1m,0,0]), Vector([1N,0,0])) -> Scalar{1.0, Length*Force}
+        let length_force = DimensionVector::LENGTH.mul(&reify_types::dimension::FORCE);
+        let a = Value::Vector(vec![
+            Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
+        ]);
+        let b = Value::Vector(vec![
+            Value::Scalar { si_value: 1.0, dimension: reify_types::dimension::FORCE },
+            Value::Scalar { si_value: 0.0, dimension: reify_types::dimension::FORCE },
+            Value::Scalar { si_value: 0.0, dimension: reify_types::dimension::FORCE },
+        ]);
+        assert_scalar_approx!(eval_builtin("dot", &[a, b]), 1.0, length_force);
+    }
+
+    // ── cross() with Value::Vector inputs (step-3) ──────────────────────────
+
+    #[test]
+    fn cross_vector_returns_vector_wrapper() {
+        // cross(Vector([1,0,0]), Vector([0,1,0])) must return Value::Vector([0,0,1])
+        // NOT Value::Tensor — verifies wrapper-preservation at line 312
+        let a = Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
+        let b = Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
+        let result = eval_builtin("cross", &[a, b]);
+        match result {
+            Value::Vector(items) => {
+                assert_eq!(items.len(), 3, "cross product must have 3 components");
+                let v: Vec<f64> = items.iter().map(|x| x.as_f64().unwrap()).collect();
+                assert!((v[0] - 0.0).abs() < 1e-12, "x: expected 0.0, got {}", v[0]);
+                assert!((v[1] - 0.0).abs() < 1e-12, "y: expected 0.0, got {}", v[1]);
+                assert!((v[2] - 1.0).abs() < 1e-12, "z: expected 1.0, got {}", v[2]);
+            }
+            other => panic!("expected Value::Vector([0,0,1]), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn cross_vector_dimensioned_preserves_dimension() {
+        // cross(Vector([1m,0,0]), Vector([0,1N,0])) each component has Length*Force dimension
+        let length_force = DimensionVector::LENGTH.mul(&reify_types::dimension::FORCE);
+        let a = Value::Vector(vec![
+            Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
+        ]);
+        let b = Value::Vector(vec![
+            Value::Scalar { si_value: 0.0, dimension: reify_types::dimension::FORCE },
+            Value::Scalar { si_value: 1.0, dimension: reify_types::dimension::FORCE },
+            Value::Scalar { si_value: 0.0, dimension: reify_types::dimension::FORCE },
+        ]);
+        let result = eval_builtin("cross", &[a, b]);
+        match result {
+            Value::Vector(items) => {
+                assert_eq!(items.len(), 3);
+                // z component should be 1.0 m·N, others 0.0
+                for item in &items {
+                    match item {
+                        Value::Scalar { dimension, .. } => {
+                            assert_eq!(*dimension, length_force, "cross component dimension mismatch");
+                        }
+                        other => panic!("expected Scalar component, got {:?}", other),
+                    }
+                }
+                let vals: Vec<f64> = items.iter().map(|x| x.as_f64().unwrap()).collect();
+                assert!((vals[2] - 1.0).abs() < 1e-12, "z: expected 1.0, got {}", vals[2]);
+            }
+            other => panic!("expected Value::Vector for dimensioned cross, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn cross_2d_vector_returns_undef() {
+        // cross of 2-element Value::Vector returns Undef (cross is only defined for 3-vectors)
+        let a = Value::Vector(vec![Value::Real(1.0), Value::Real(0.0)]);
+        let b = Value::Vector(vec![Value::Real(0.0), Value::Real(1.0)]);
+        assert!(eval_builtin("cross", &[a, b]).is_undef(), "cross of 2-element Vector should be Undef");
+    }
+
+    // ── normalize() with Value::Vector inputs (step-5) ──────────────────────
+
+    #[test]
+    fn normalize_vector_returns_vector_wrapper() {
+        // normalize(Vector([3,4,0])) returns Value::Vector([0.6,0.8,0.0]) with Real components
+        // NOT Value::Tensor — verifies wrapper-preservation at line 266
+        let v = Value::Vector(vec![Value::Real(3.0), Value::Real(4.0), Value::Real(0.0)]);
+        let result = eval_builtin("normalize", &[v]);
+        match result {
+            Value::Vector(items) => {
+                assert_eq!(items.len(), 3, "normalize must return 3 components");
+                let vals: Vec<f64> = items.iter().map(|x| x.as_f64().unwrap()).collect();
+                assert!((vals[0] - 0.6).abs() < 1e-12, "x: expected 0.6, got {}", vals[0]);
+                assert!((vals[1] - 0.8).abs() < 1e-12, "y: expected 0.8, got {}", vals[1]);
+                assert!((vals[2] - 0.0).abs() < 1e-12, "z: expected 0.0, got {}", vals[2]);
+                assert!(
+                    items.iter().all(|x| matches!(x, Value::Real(_))),
+                    "normalize must return Real (dimensionless) components"
+                );
+            }
+            other => panic!("expected Value::Vector, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn normalize_zero_vector_input_returns_undef() {
+        // normalize(Vector([0,0,0])) -> Undef
+        let v = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]);
+        assert!(eval_builtin("normalize", &[v]).is_undef(), "normalize of zero Vector should be Undef");
+    }
+
+    #[test]
+    fn normalize_dimensioned_vector_input() {
+        // normalize(Vector([3m,4m,0m])) -> Value::Vector with dimensionless Real components
+        let v = Value::Vector(vec![
+            Value::Scalar { si_value: 3.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 4.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
+        ]);
+        let result = eval_builtin("normalize", &[v]);
+        match result {
+            Value::Vector(items) => {
+                assert_eq!(items.len(), 3);
+                let vals: Vec<f64> = items.iter().map(|x| x.as_f64().unwrap()).collect();
+                assert!((vals[0] - 0.6).abs() < 1e-12, "x: expected 0.6, got {}", vals[0]);
+                assert!((vals[1] - 0.8).abs() < 1e-12, "y: expected 0.8, got {}", vals[1]);
+                assert!((vals[2] - 0.0).abs() < 1e-12, "z: expected 0.0, got {}", vals[2]);
+                assert!(
+                    items.iter().all(|x| matches!(x, Value::Real(_))),
+                    "normalize of dimensioned Vector must return Real components"
+                );
+            }
+            other => panic!("expected Value::Vector for dimensioned normalize, got {:?}", other),
+        }
+    }
+
+    // ── magnitude() with Value::Vector inputs (step-7) ──────────────────────
+
+    #[test]
+    fn magnitude_vector_3_4_0() {
+        // magnitude(Vector([3,4,0])) == Real(5.0)
+        let v = Value::Vector(vec![Value::Real(3.0), Value::Real(4.0), Value::Real(0.0)]);
+        assert_real_approx!(eval_builtin("magnitude", &[v]), 5.0);
+    }
+
+    #[test]
+    fn magnitude_vector_dimensioned() {
+        // magnitude(Vector([3mm,4mm,0])) == Scalar{0.005, LENGTH}
+        // 3mm=0.003m, 4mm=0.004m -> magnitude=0.005m
+        let v = Value::Vector(vec![
+            Value::Scalar { si_value: 0.003, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 0.004, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
+        ]);
+        assert_scalar_approx!(eval_builtin("magnitude", &[v]), 0.005, DimensionVector::LENGTH);
+    }
+
     /// Assert that an expression evaluates to `Value::Orientation { w, x, y, z }` where each
     /// component is within `1e-12` of the expected value.
     macro_rules! assert_orientation_approx {
