@@ -1,149 +1,193 @@
 {
-  "task_id": "172",
-  "title": "Fn overloading: entity overload ban",
+  "task_id": "301",
+  "title": "Stdlib: dot, cross, normalize, magnitude linalg builtins",
   "files": [
-    "crates/reify-compiler/src/lib.rs",
-    "crates/reify-compiler/tests/entity_overload_tests.rs"
+    "crates/reify-stdlib/src/lib.rs",
+    "crates/reify-lsp/src/completion.rs"
   ],
   "modules": [
-    "crates/reify-compiler"
+    "crates/reify-stdlib",
+    "crates/reify-lsp"
   ],
-  "analysis": "Spec \u00a74.2.1 explicitly forbids entity definition overloading: two entity definitions (structures, occurrences, constraints, fields) sharing the same name are a compile error, regardless of type parameters. Currently, only duplicate field names are detected (pre-pass lines 1858-1877 in lib.rs via seen_field_names HashMap). Structures, occurrences, and constraints have NO duplicate name detection \u2014 duplicates silently overwrite in the template registry (last-definition-wins via HashMap::collect). The fix introduces a unified seen_entity_names tracker in the consolidated pre-pass that checks ALL entity definition types against a single namespace. Duplicates emit a two-label diagnostic (matching the existing field pattern) and are skipped from compilation. The existing seen_field_names HashMap is replaced by the unified tracker. Constraints are tracked even though their compilation is not yet implemented, to reserve names in the entity namespace for future use. The implementation follows the existing duplicate-detection pattern: pre-pass tracking with HashMap<String, (SourceSpan, entity_kind)>, diagnostic with two labels pointing to both definitions, and skip-on-duplicate to prevent cascading errors.",
+  "analysis": "The task adds four linear-algebra builtins to eval_builtin() in reify-stdlib: dot, cross, normalize, magnitude. All operate on Value::Tensor(Vec<Value>) which is the runtime representation of vectors. Each component is either Value::Real, Value::Int, or Value::Scalar{si_value, dimension}. Dimensional tracking uses DimensionVector with mul/div/root operations. The existing pattern uses match arms in eval_builtin() with helper functions (unary, binary, etc.). These four builtins need custom argument validation since they operate on Tensor values (not scalar), so they won't use the existing unary_f64/binary_f64 helpers but will use the unary/binary wrappers for arity checking. The LSP completion list in completion.rs needs the four new function names added to the BUILTIN_FUNCTIONS const array. Key design points: (1) dot requires both args be Tensor of same length, returns scalar with dimension=a.dim*b.dim; (2) cross requires both be Tensor of length 3, returns Tensor(3) with dimension=a.dim*b.dim; (3) normalize computes magnitude then divides each component, returns dimensionless Tensor, zero vector\u2192Undef; (4) magnitude returns sqrt(sum of squares) as Scalar with original dimension. Components may be mixed Int/Real/Scalar \u2014 we extract f64 via as_f64() and track dimensions from Scalar variants. For dimensionless (Int/Real) components, dimension is DIMENSIONLESS throughout. All implementations go in eval_builtin match arms, following the established pattern. Tests follow the existing pattern: call eval_builtin() directly, match on expected Value variant, assert f64 within 1e-12 epsilon.",
   "prerequisites": [],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Create entity_overload_tests.rs with test: two structures with the same name (e.g., `structure Bracket { ... }` twice) produce a 'duplicate entity definition' error diagnostic. Verify the diagnostic contains both labels and only 1 template is compiled.",
+      "description": "Write failing tests for dot() with dimensionless vectors: dot(vec3(1,0,0), vec3(0,1,0))==0 (orthogonal), dot(vec3(1,2,3), vec3(4,5,6))==32 (parallel-ish), dot with mismatched lengths returns Undef, dot of non-Tensor args returns Undef",
       "status": "done",
-      "commit": "958b93f"
+      "commit": "f490356"
     },
     {
       "id": "step-2",
-      "type": "impl",
-      "description": "In compile() pre-pass (~line 1841), add `seen_entity_names: HashMap<String, (SourceSpan, &'static str)>` and `duplicate_entity_names: HashSet<String>`. Add a Structure arm to the pre-pass match that checks against seen_entity_names, emits a two-label diagnostic on collision (with entity kind in labels), and records the name in duplicate_entity_names. In pass 2 (~line 1922), wrap the Structure arm in a `if !duplicate_entity_names.contains(name)` guard to skip duplicate compilation.",
+      "type": "test",
+      "description": "Write failing tests for dot() with dimensions: dot(vec3(1m,0,0), vec3(1N,0,0)) returns Scalar with si_value=1.0 and dimension=Length*Force, dot of vectors with mismatched component dimensions returns Undef",
       "status": "done",
-      "commit": "fe0a6e6"
+      "commit": "2e4eee4"
     },
     {
       "id": "step-3",
-      "type": "test",
-      "description": "Write test: two occurrences with the same name produce a 'duplicate entity definition' error. Verify only 1 template is compiled.",
+      "type": "impl",
+      "description": "Implement dot() in eval_builtin: add 'dot' match arm using binary() helper, validate both args are Tensor of same length, extract f64 via as_f64() and dimension via dimension() from each component, check all components within a vector share the same dimension (else Undef), sum products of corresponding components, return Value::Real if both dims are DIMENSIONLESS or Value::Scalar with dim=a_dim.mul(&b_dim) otherwise. Apply sanitize_value to result.",
       "status": "done",
-      "commit": "9193bb4"
+      "commit": "8ea70e6"
     },
     {
       "id": "step-4",
-      "type": "impl",
-      "description": "Add Occurrence arm to pre-pass entity name tracking (same pattern as Structure). In pass 2 (~line 1951), add duplicate_entity_names guard for occurrence compilation.",
+      "type": "test",
+      "description": "Write failing tests for cross(): cross(x_hat, y_hat)==z_hat using Real components, anti-commutativity cross(a,b)==-cross(b,a), orthogonality dot(a,cross(a,b))==0, cross on 2-element Tensor returns Undef, cross on non-Tensor returns Undef, cross on length-4 Tensor returns Undef",
       "status": "done",
-      "commit": "00e332f"
+      "commit": "3f03742"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write test: a structure and an occurrence with the same name produce a 'duplicate entity definition' error. Diagnostic labels should identify the entity kinds (e.g., 'occurrence defined here' / 'first defined as structure here'). Verify only 1 template is compiled.",
+      "description": "Write failing tests for cross() with dimensions: cross of Length vector and Force vector produces Tensor(3) with each component having Length*Force dimension",
       "status": "done",
-      "commit": "159cf86"
+      "commit": "b2c3df2"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Should already pass with the unified tracker from steps 2+4. If cross-entity collision is not detected, verify the seen_entity_names lookup uses the same key for both entity kinds. This step is a verification/fix gate.",
+      "description": "Implement cross() in eval_builtin: add 'cross' match arm using binary() helper, validate both args are Tensor of length exactly 3 (else Undef), extract 6 component f64 values and validate dimensions are consistent within each vector, compute cross product (a1*b2-a2*b1, a2*b0-a0*b2, a0*b1-a1*b0), return Tensor(3) with components as Real (dimensionless) or Scalar (with a_dim.mul(&b_dim)). Apply sanitize_value to each component.",
       "status": "done",
-      "commit": "159cf86"
+      "commit": "4fffbc2"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write test: a field def and a structure with the same name produce a 'duplicate entity definition' error. The first-declared entity wins regardless of kind.",
+      "description": "Write failing tests for magnitude(): magnitude(vec3(3,4,0))==5.0 as Real, magnitude(vec3(3mm,4mm,0mm))==0.005 (5mm in SI) as Scalar with LENGTH dimension, magnitude of zero vector returns Real(0.0) or Scalar{0.0}, magnitude of 2D vector works, magnitude of non-Tensor returns Undef, magnitude of empty Tensor returns Undef",
       "status": "done",
-      "commit": "37859ba"
+      "commit": "f546ac4"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Refactor the existing field duplicate check (lines 1858-1877) to use the unified seen_entity_names tracker instead of the separate seen_field_names HashMap. Remove seen_field_names. The Field arm now inserts into seen_entity_names with kind='field' and checks against it, emitting 'duplicate entity definition' with entity-kind-aware labels on collision. Existing field-vs-field duplicate test must still pass.",
+      "description": "Implement magnitude() in eval_builtin: add 'magnitude' match arm using unary() helper, validate arg is Tensor with len>=1, extract f64 via as_f64() from each component, validate consistent dimension across components, compute sqrt(sum of squares), return Value::Real if dimensionless or Value::Scalar with the component dimension. Apply sanitize_value.",
       "status": "done",
-      "commit": "3e300d2"
+      "commit": "186ebdd"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write test: a constraint def and a structure with the same name produce a 'duplicate entity definition' error.",
+      "description": "Write failing tests for normalize(): normalize(vec3(3,4,0)) approx equals Tensor([0.6, 0.8, 0.0]) as Real components, normalize(zero_vector) returns Undef, normalize of dimensioned vector (e.g. vec3(3m,4m,0m)) returns dimensionless Real components, normalize of non-Tensor returns Undef, normalize of single-element Tensor returns Tensor([1.0]) or Undef-for-zero",
       "status": "done",
-      "commit": "730c6bf"
+      "commit": "13abea6"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Add Constraint arm to pre-pass entity name tracking. Constraints are not compiled yet (line 1962-1963 is a no-op) but their names are now reserved in the entity namespace to prevent collisions.",
+      "description": "Implement normalize() in eval_builtin: add 'normalize' match arm using unary() helper, validate arg is Tensor with len>=1, compute magnitude (reuse internal logic from magnitude impl or factor out a helper), if magnitude is 0.0 return Undef, divide each component's f64 by magnitude, return Tensor of Value::Real components (always dimensionless).",
       "status": "done",
-      "commit": "48ed621"
+      "commit": "10d8e7a"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write test: two structures with the same name but different type parameters (e.g., `structure Box<T> { ... }` and `structure Box<T, U> { ... }`) still produce a 'duplicate entity definition' error. Confirms name comparison ignores type params per spec \u00a74.2.1.",
+      "description": "Write failing test for LSP completions: verify 'dot', 'cross', 'normalize', 'magnitude' are returned by compute_completions as CompletionItemKind::FUNCTION items",
       "status": "done",
-      "commit": "e2306ac"
+      "commit": "a97fbd6"
     },
     {
       "id": "step-12",
-      "type": "test",
-      "description": "Write regression/sanity test: unique entity names across all types (structure A, occurrence B, field C, constraint D) compile without entity-duplicate errors. Ensures the check does not false-positive on distinct names.",
+      "type": "impl",
+      "description": "Add 'dot', 'cross', 'normalize', 'magnitude' to the BUILTIN_FUNCTIONS const array in crates/reify-lsp/src/completion.rs (line 84-86)",
       "status": "done",
-      "commit": "5fef1f0"
+      "commit": "597ce0a"
+    },
+    {
+      "id": "step-13",
+      "type": "test",
+      "description": "Write failing tests for normalize() sanitization: (1) normalize(Tensor([NaN, 1.0, 0.0])) returns Undef \u2014 a NaN component causes sum_sq to be NaN, mag to be NaN, mag==0.0 is false, and x/mag produces NaN which must be caught by sanitize_value; (2) normalize(Tensor([Inf, 1.0, 0.0])) returns Undef \u2014 Inf component causes Inf magnitude, division produces NaN/Inf components that must be sanitized; (3) normalize(Tensor([f64::MAX, f64::MAX, 0.0])) returns Undef \u2014 squaring overflows to Inf, magnitude is Inf, division produces NaN that must be sanitized. These tests will FAIL against the current normalize implementation because it does not wrap output components with sanitize_value.",
+      "status": "done",
+      "commit": "0d456c8"
+    },
+    {
+      "id": "step-14",
+      "type": "impl",
+      "description": "Fix normalize() sanitization gap: wrap each output component with sanitize_value in the normalize match arm. Change line 273 from `Value::Tensor(vals.iter().map(|x| Value::Real(x / mag)).collect())` to `Value::Tensor(vals.iter().map(|x| sanitize_value(Value::Real(x / mag))).collect())`. This ensures NaN/Inf from non-finite inputs or overflow is converted to Undef, consistent with cross(), magnitude(), and dot() which all sanitize their outputs. Since sanitize_value returns Undef for NaN/Inf Real values, a Tensor containing any Undef components after sanitization indicates the normalize result is invalid \u2014 but the current Tensor representation allows mixed components, so individual NaN components become Undef within the Tensor. Alternative: add an up-front guard `if vals.iter().any(|x| !x.is_finite()) { return Value::Undef; }` to reject non-finite inputs early and return Undef for the whole result, which is cleaner since a partially-Undef Tensor is not meaningful.",
+      "status": "done",
+      "commit": "df8409e"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Unified entity namespace across all four entity types (structure, occurrence, constraint, field)",
-      "rationale": "Spec \u00a74.2.1 explicitly lists all four as sharing the entity namespace: 'Two entity definitions (structures, occurrences, constraints, fields) with the same name... are an error.' A structure named Foo and a field named Foo must collide."
+      "decision": "All components within a single vector must share the same dimension; mixed dimensions return Undef",
+      "rationale": "A physically meaningful vector like Vector3<Length> has all components in the same dimension. Tensor([Scalar{LENGTH}, Scalar{MASS}, Scalar{TIME}]) is not a valid physical vector. Enforcing this at runtime catches type errors that slipped past the compiler."
     },
     {
-      "decision": "Detection in the consolidated pre-pass rather than post-compilation",
-      "rationale": "The pre-pass already detects duplicate field names and is the earliest point where all declarations are visited. Detecting in pre-pass enables skipping compilation of duplicates, avoiding cascading errors from invalid state. Matches existing field duplicate detection pattern."
+      "decision": "dot() returns Value::Real for dimensionless inputs, Value::Scalar for dimensioned inputs",
+      "rationale": "Follows the existing pattern where dimensionless results use Real (e.g., trig functions return Real) and dimensioned results use Scalar. dot(vec3(1,0,0), vec3(0,1,0)) returns Real(0.0), while dot(vec3(1m,0,0), vec3(1N,0,0)) returns Scalar{si_value:1.0, dimension:Length*Force}."
     },
     {
-      "decision": "Replace seen_field_names with unified seen_entity_names tracker",
-      "rationale": "Having two separate trackers (one for fields, one for entities) would miss cross-type collisions (field vs structure). A single HashMap<String, (SourceSpan, &str)> keyed by name, storing the first span and entity kind, handles all cases uniformly."
+      "decision": "normalize() always returns dimensionless Real components, not Scalar{DIMENSIONLESS}",
+      "rationale": "A normalized vector is a pure direction \u2014 dimensionless by definition. Returning Real values rather than Scalar{DIMENSIONLESS} is cleaner and consistent with how trig functions return Real for dimensionless results."
     },
     {
-      "decision": "Error message format: 'duplicate entity definition <name>' with entity-kind-aware labels",
-      "rationale": "The existing field diagnostic says 'duplicate field name'. The unified message uses 'duplicate entity definition' to cover cross-type collisions, with labels like 'occurrence defined here' and 'first defined as structure here' to clarify which entity kinds are involved."
+      "decision": "magnitude() preserves the input vector's component dimension directly",
+      "rationale": "sqrt(sum(x_i^2)) has dimension sqrt(D^2) = D. Rather than computing dimension.pow(2) then root(2) through the DimensionVector arithmetic, we preserve the original component dimension since the math is equivalent. This avoids unnecessary rational arithmetic and potential precision issues."
     },
     {
-      "decision": "Track constraint names even though constraint compilation is not yet implemented",
-      "rationale": "The spec includes constraints in the entity namespace. Reserving names now prevents future breakage when constraint compilation is added. The pre-pass tracking cost is negligible."
+      "decision": "Cross product is restricted to exactly 3-element Tensors",
+      "rationale": "The task specifies 3D only and error for 2D. The standard cross product is only defined in 3D. Any non-3 length returns Undef."
     },
     {
-      "decision": "Name-only comparison (ignore type parameters) for entity duplicate detection",
-      "rationale": "Per spec \u00a74.2.1 and the task description: 'regardless of type parameters'. Entity overloading is forbidden precisely because type-param-based dispatch is ambiguous under partial determinacy. This is simpler than function signature comparison which includes param types."
+      "decision": "Factor out a tensor_components_f64 helper to extract (Vec<f64>, DimensionVector) from a Tensor",
+      "rationale": "All four builtins need the same extraction logic: validate Tensor, extract f64 from each component, verify dimension consistency. A shared helper avoids code duplication and ensures consistent error handling across dot/cross/magnitude/normalize."
+    },
+    {
+      "decision": "normalize() uses up-front non-finite guard rather than per-component sanitize_value",
+      "rationale": "A partially-Undef Tensor (e.g. Tensor([Undef, Real(0.8), Undef])) is not meaningful for normalize \u2014 the whole result is invalid. An up-front check `if vals.iter().any(|x| !x.is_finite()) { return Value::Undef; }` rejects the entire input cleanly, returning a single Undef. This is more correct than per-component sanitization which would produce a mixed Tensor. The guard also catches the case early before any division arithmetic."
     }
   ],
   "reuse": [
     {
-      "what": "Field duplicate detection pattern (two-label diagnostic, skip on duplicate)",
-      "where": "crates/reify-compiler/src/lib.rs lines 1858-1877",
-      "how": "Generalize the existing seen_field_names HashMap to a unified seen_entity_names tracker. Reuse the two-label Diagnostic::error pattern with DiagnosticLabel::new for both 'defined here' and 'first defined here' locations."
+      "what": "unary() helper function",
+      "where": "crates/reify-stdlib/src/lib.rs line 285",
+      "how": "Use for magnitude() and normalize() which take a single Tensor argument \u2014 validates args.len()==1 and passes by reference"
     },
     {
-      "what": "Consolidated pre-pass loop structure",
-      "where": "crates/reify-compiler/src/lib.rs lines 1843-1882",
-      "how": "Add new match arms for Structure, Occurrence, and Constraint in the existing pre-pass match dispatch. The loop already has a wildcard arm for these types (line 1879-1880) that gets replaced with explicit handling."
+      "what": "binary() helper function",
+      "where": "crates/reify-stdlib/src/lib.rs line 320",
+      "how": "Use for dot() and cross() which take two Tensor arguments \u2014 validates args.len()==2 and passes both by reference"
     },
     {
-      "what": "Test infrastructure pattern from fn_overload_tests.rs",
-      "where": "crates/reify-compiler/tests/fn_overload_tests.rs",
-      "how": "Use the same parse \u2192 compile \u2192 filter diagnostics by Severity::Error \u2192 assert pattern. Use reify_syntax::parse() with ModulePath::single() and reify_compiler::compile()."
+      "what": "sanitize_value() function",
+      "where": "crates/reify-stdlib/src/lib.rs line 298",
+      "how": "Apply to magnitude/dot results to convert NaN/Inf to Undef (e.g., if component values overflow during squaring)"
     },
     {
-      "what": "Pass 2 skip logic via HashSet",
-      "where": "Analogous to field skip at line 1874 (field_refs not pushed on duplicate)",
-      "how": "For structures/occurrences, the duplicate skip must happen in pass 2 (lines 1920-1969) since their compilation occurs there rather than in the pre-pass. Use a HashSet<String> populated in pre-pass, checked with .contains() before compile_entity() calls."
+      "what": "Value::as_f64() method",
+      "where": "crates/reify-types/src/value.rs line 81",
+      "how": "Extract numeric value from Int/Real/Scalar components for arithmetic in all four builtins"
+    },
+    {
+      "what": "Value::dimension() method",
+      "where": "crates/reify-types/src/value.rs line 91",
+      "how": "Get dimension of each tensor component \u2014 returns DIMENSIONLESS for Int/Real, actual dimension for Scalar"
+    },
+    {
+      "what": "DimensionVector::mul() method",
+      "where": "crates/reify-types/src/dimension.rs line 147",
+      "how": "Combine dimensions in dot() and cross(): result_dim = a_dim.mul(&b_dim)"
+    },
+    {
+      "what": "DimensionVector::DIMENSIONLESS constant",
+      "where": "crates/reify-types/src/dimension.rs line 118",
+      "how": "Check if vectors are dimensionless and as the comparison target for normalize output"
+    },
+    {
+      "what": "FORCE dimension constant",
+      "where": "crates/reify-types/src/dimension.rs line 204",
+      "how": "Use in tests for dot/cross(Length_vector, Force_vector) to verify result dimension is Length*Force"
+    },
+    {
+      "what": "Existing test patterns (match result, assert f64 within epsilon)",
+      "where": "crates/reify-stdlib/src/lib.rs tests module (line 396+)",
+      "how": "Follow the same pattern: call eval_builtin(), match on expected variant, assert with (v - expected).abs() < 1e-12"
     }
   ],
-  "_session_id": "172-a87b0b5f",
-  "_created_at": "2026-03-24T10:42:07.023852+00:00"
+  "_session_id": "301-4bedc068",
+  "_created_at": "2026-03-24T10:59:50.575498+00:00"
 }

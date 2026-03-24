@@ -258,6 +258,91 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
         "cosh" => unary_f64(args, |x| Value::Real(x.cosh())),
         "tanh" => unary_f64(args, |x| Value::Real(x.tanh())),
 
+        // --- Linear algebra: dot, cross, magnitude, normalize ---
+
+        "normalize" => unary(args, |v| {
+            let (vals, _dim) = match tensor_components_f64(v) {
+                Some(c) => c,
+                None => return Value::Undef,
+            };
+            // Reject non-finite inputs early — a partially-Undef Tensor is not
+            // a meaningful unit vector, so we return a single Undef for the
+            // whole result rather than per-component sanitization.
+            if vals.iter().any(|x| !x.is_finite()) {
+                return Value::Undef;
+            }
+            let sum_sq: f64 = vals.iter().map(|x| x * x).sum();
+            let mag = sum_sq.sqrt();
+            // mag is finite here, but squaring can still overflow to Inf.
+            if !mag.is_finite() || mag == 0.0 {
+                return Value::Undef;
+            }
+            Value::Tensor(vals.iter().map(|x| Value::Real(x / mag)).collect())
+        }),
+
+        "magnitude" => unary(args, |v| {
+            let (vals, dim) = match tensor_components_f64(v) {
+                Some(c) => c,
+                None => return Value::Undef,
+            };
+            let sum_sq: f64 = vals.iter().map(|x| x * x).sum();
+            let mag = sum_sq.sqrt();
+            if dim == DimensionVector::DIMENSIONLESS {
+                sanitize_value(Value::Real(mag))
+            } else {
+                sanitize_value(Value::Scalar { si_value: mag, dimension: dim })
+            }
+        }),
+
+        "cross" => binary(args, |a, b| {
+            let (a_vals, a_dim) = match tensor_components_f64(a) {
+                Some(v) => v,
+                None => return Value::Undef,
+            };
+            let (b_vals, b_dim) = match tensor_components_f64(b) {
+                Some(v) => v,
+                None => return Value::Undef,
+            };
+            if a_vals.len() != 3 || b_vals.len() != 3 {
+                return Value::Undef;
+            }
+            let (a0, a1, a2) = (a_vals[0], a_vals[1], a_vals[2]);
+            let (b0, b1, b2) = (b_vals[0], b_vals[1], b_vals[2]);
+            let cx = a1 * b2 - a2 * b1;
+            let cy = a2 * b0 - a0 * b2;
+            let cz = a0 * b1 - a1 * b0;
+            let result_dim = a_dim.mul(&b_dim);
+            let make_component = |v: f64| -> Value {
+                if result_dim == DimensionVector::DIMENSIONLESS {
+                    sanitize_value(Value::Real(v))
+                } else {
+                    sanitize_value(Value::Scalar { si_value: v, dimension: result_dim })
+                }
+            };
+            Value::Tensor(vec![make_component(cx), make_component(cy), make_component(cz)])
+        }),
+
+        "dot" => binary(args, |a, b| {
+            let (a_vals, a_dim) = match tensor_components_f64(a) {
+                Some(v) => v,
+                None => return Value::Undef,
+            };
+            let (b_vals, b_dim) = match tensor_components_f64(b) {
+                Some(v) => v,
+                None => return Value::Undef,
+            };
+            if a_vals.len() != b_vals.len() {
+                return Value::Undef;
+            }
+            let sum: f64 = a_vals.iter().zip(b_vals.iter()).map(|(x, y)| x * y).sum();
+            let result_dim = a_dim.mul(&b_dim);
+            if result_dim == DimensionVector::DIMENSIONLESS {
+                sanitize_value(Value::Real(sum))
+            } else {
+                sanitize_value(Value::Scalar { si_value: sum, dimension: result_dim })
+            }
+        }),
+
         // --- Determinacy predicates (stubs) ---
         // These predicates inspect DeterminacyState which is tracked in the Engine's
         // snapshot, not in Value itself. Like sample(), the actual behavior is
@@ -371,6 +456,34 @@ fn valid_f64_range(lo: f64, hi: f64) -> bool {
 /// Linear interpolation: `a + t * (b - a)`.
 fn lerp_f64(a: f64, b: f64, t: f64) -> f64 {
     a + t * (b - a)
+}
+
+/// Extract numeric components and consistent dimension from a Tensor value.
+///
+/// Returns `Some((values, dimension))` if:
+/// - `v` is a `Value::Tensor` with at least one element.
+/// - All components support `as_f64()`.
+/// - All components share the same dimension (or all are dimensionless).
+///
+/// Returns `None` for non-Tensor values, empty Tensors, non-numeric components,
+/// or Tensors with mixed dimensions.
+fn tensor_components_f64(v: &Value) -> Option<(Vec<f64>, DimensionVector)> {
+    let items = match v {
+        Value::Tensor(items) if !items.is_empty() => items,
+        _ => return None,
+    };
+    let first_dim = items[0].dimension();
+    let mut vals = Vec::with_capacity(items.len());
+    for item in items {
+        if item.dimension() != first_dim {
+            return None; // mixed dimensions
+        }
+        match item.as_f64() {
+            Some(x) => vals.push(x),
+            None => return None, // non-numeric component
+        }
+    }
+    Some((vals, first_dim))
 }
 
 /// Apply a function to five f64 arguments (extracted via `as_f64()`).
@@ -1570,5 +1683,354 @@ mod tests {
             ],
         );
         assert!(result.is_undef(), "remap with to_lo/to_hi dim mismatch should be Undef, got {:?}", result);
+    }
+
+    // --- dot() tests: dimensionless vectors (step-1) ---
+
+    #[test]
+    fn dot_orthogonal_dimensionless() {
+        // dot([1,0,0], [0,1,0]) == 0.0
+        let a = Value::Tensor(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
+        let b = Value::Tensor(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
+        assert_real_approx!(eval_builtin("dot", &[a, b]), 0.0);
+    }
+
+    #[test]
+    fn dot_dimensionless_vec3() {
+        // dot([1,2,3], [4,5,6]) == 4+10+18 == 32
+        let a = Value::Tensor(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
+        let b = Value::Tensor(vec![Value::Real(4.0), Value::Real(5.0), Value::Real(6.0)]);
+        assert_real_approx!(eval_builtin("dot", &[a, b]), 32.0);
+    }
+
+    #[test]
+    fn dot_mismatched_lengths_returns_undef() {
+        let a = Value::Tensor(vec![Value::Real(1.0), Value::Real(0.0)]);
+        let b = Value::Tensor(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
+        assert!(eval_builtin("dot", &[a, b]).is_undef(), "mismatched lengths should be Undef");
+    }
+
+    #[test]
+    fn dot_non_tensor_arg_returns_undef() {
+        assert!(
+            eval_builtin("dot", &[Value::Real(1.0), Value::Real(2.0)]).is_undef(),
+            "dot of non-Tensor args should be Undef"
+        );
+    }
+
+    // --- normalize() tests (step-9) ---
+
+    #[test]
+    fn normalize_3_4_0() {
+        // normalize([3,4,0]) ≈ [0.6, 0.8, 0.0]
+        let v = Value::Tensor(vec![Value::Real(3.0), Value::Real(4.0), Value::Real(0.0)]);
+        let result = eval_builtin("normalize", &[v]);
+        match result {
+            Value::Tensor(items) => {
+                assert_eq!(items.len(), 3, "normalize must return 3 components");
+                let vals: Vec<f64> = items.iter().map(|x| x.as_f64().unwrap()).collect();
+                assert!((vals[0] - 0.6).abs() < 1e-12, "x: expected 0.6, got {}", vals[0]);
+                assert!((vals[1] - 0.8).abs() < 1e-12, "y: expected 0.8, got {}", vals[1]);
+                assert!((vals[2] - 0.0).abs() < 1e-12, "z: expected 0.0, got {}", vals[2]);
+                // Components must be Real (dimensionless)
+                assert!(
+                    items.iter().all(|x| matches!(x, Value::Real(_))),
+                    "normalize must return Real components"
+                );
+            }
+            other => panic!("expected Tensor, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn normalize_zero_vector_returns_undef() {
+        let v = Value::Tensor(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]);
+        assert!(eval_builtin("normalize", &[v]).is_undef(), "normalize of zero vector should be Undef");
+    }
+
+    #[test]
+    fn normalize_dimensioned_vector_returns_real_components() {
+        // normalize([3m,4m,0m]) should return Real components (dimensionless direction)
+        let v = Value::Tensor(vec![
+            Value::Scalar { si_value: 3.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 4.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
+        ]);
+        let result = eval_builtin("normalize", &[v]);
+        match result {
+            Value::Tensor(items) => {
+                assert_eq!(items.len(), 3);
+                let vals: Vec<f64> = items.iter().map(|x| x.as_f64().unwrap()).collect();
+                assert!((vals[0] - 0.6).abs() < 1e-12, "x: expected 0.6, got {}", vals[0]);
+                assert!((vals[1] - 0.8).abs() < 1e-12, "y: expected 0.8, got {}", vals[1]);
+                assert!((vals[2] - 0.0).abs() < 1e-12, "z: expected 0.0, got {}", vals[2]);
+                assert!(
+                    items.iter().all(|x| matches!(x, Value::Real(_))),
+                    "normalize must return Real (dimensionless) components"
+                );
+            }
+            other => panic!("expected Tensor, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn normalize_non_tensor_returns_undef() {
+        assert!(
+            eval_builtin("normalize", &[Value::Real(5.0)]).is_undef(),
+            "normalize of non-Tensor should be Undef"
+        );
+    }
+
+    #[test]
+    fn normalize_single_element_tensor() {
+        // normalize([5.0]) == [1.0]
+        let v = Value::Tensor(vec![Value::Real(5.0)]);
+        let result = eval_builtin("normalize", &[v]);
+        match result {
+            Value::Tensor(items) => {
+                assert_eq!(items.len(), 1);
+                let val = items[0].as_f64().unwrap();
+                assert!((val - 1.0).abs() < 1e-12, "expected 1.0, got {}", val);
+            }
+            other => panic!("expected Tensor([1.0]), got {:?}", other),
+        }
+    }
+
+    // --- normalize() sanitization tests (step-13) ---
+
+    #[test]
+    fn normalize_nan_component_returns_undef() {
+        // A NaN component makes sum_sq NaN → mag NaN → mag==0.0 is false →
+        // without an up-front guard we'd produce a Tensor with NaN Real values.
+        let v = Value::Tensor(vec![
+            Value::Real(f64::NAN),
+            Value::Real(1.0),
+            Value::Real(0.0),
+        ]);
+        assert!(
+            eval_builtin("normalize", &[v]).is_undef(),
+            "normalize of a Tensor containing NaN should return Undef"
+        );
+    }
+
+    #[test]
+    fn normalize_inf_component_returns_undef() {
+        // An Inf component makes sum_sq Inf → mag Inf → Inf/Inf = NaN for the
+        // Inf component, other components become 0.0 (finite/Inf).  Without a
+        // guard we'd produce a mixed Tensor instead of Undef.
+        let v = Value::Tensor(vec![
+            Value::Real(f64::INFINITY),
+            Value::Real(1.0),
+            Value::Real(0.0),
+        ]);
+        assert!(
+            eval_builtin("normalize", &[v]).is_undef(),
+            "normalize of a Tensor containing Inf should return Undef"
+        );
+    }
+
+    #[test]
+    fn normalize_overflow_returns_undef() {
+        // Squaring f64::MAX overflows to Inf → sum_sq = Inf → mag = Inf →
+        // x / mag produces NaN or 0.0 — the result is not a valid unit vector.
+        let v = Value::Tensor(vec![
+            Value::Real(f64::MAX),
+            Value::Real(f64::MAX),
+            Value::Real(0.0),
+        ]);
+        assert!(
+            eval_builtin("normalize", &[v]).is_undef(),
+            "normalize of a Tensor whose magnitude overflows to Inf should return Undef"
+        );
+    }
+
+    // --- magnitude() tests (step-7) ---
+
+    #[test]
+    fn magnitude_3_4_0_equals_5() {
+        // magnitude([3,4,0]) == 5.0
+        let v = Value::Tensor(vec![Value::Real(3.0), Value::Real(4.0), Value::Real(0.0)]);
+        assert_real_approx!(eval_builtin("magnitude", &[v]), 5.0);
+    }
+
+    #[test]
+    fn magnitude_dimensioned_vector() {
+        // magnitude([3mm,4mm,0mm]) == 5mm = 0.005m as Scalar{LENGTH}
+        let v = Value::Tensor(vec![
+            Value::Scalar { si_value: 0.003, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 0.004, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 0.000, dimension: DimensionVector::LENGTH },
+        ]);
+        assert_scalar_approx!(eval_builtin("magnitude", &[v]), 0.005, DimensionVector::LENGTH);
+    }
+
+    #[test]
+    fn magnitude_zero_vector_returns_zero() {
+        let v = Value::Tensor(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]);
+        assert_real_approx!(eval_builtin("magnitude", &[v]), 0.0);
+    }
+
+    #[test]
+    fn magnitude_2d_vector() {
+        // magnitude([3,4]) == 5.0
+        let v = Value::Tensor(vec![Value::Real(3.0), Value::Real(4.0)]);
+        assert_real_approx!(eval_builtin("magnitude", &[v]), 5.0);
+    }
+
+    #[test]
+    fn magnitude_non_tensor_returns_undef() {
+        assert!(eval_builtin("magnitude", &[Value::Real(5.0)]).is_undef(), "magnitude of non-Tensor should be Undef");
+    }
+
+    #[test]
+    fn magnitude_empty_tensor_returns_undef() {
+        let v = Value::Tensor(vec![]);
+        assert!(eval_builtin("magnitude", &[v]).is_undef(), "magnitude of empty Tensor should be Undef");
+    }
+
+    // --- cross() tests: dimensionless vectors (step-4) ---
+
+    #[test]
+    fn cross_x_hat_y_hat_equals_z_hat() {
+        // cross([1,0,0], [0,1,0]) == [0,0,1]
+        let a = Value::Tensor(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
+        let b = Value::Tensor(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
+        let result = eval_builtin("cross", &[a, b]);
+        match result {
+            Value::Tensor(items) => {
+                assert_eq!(items.len(), 3, "cross product must have 3 components");
+                let v: Vec<f64> = items.iter().map(|x| x.as_f64().unwrap()).collect();
+                assert!((v[0] - 0.0).abs() < 1e-12, "x component: expected 0.0, got {}", v[0]);
+                assert!((v[1] - 0.0).abs() < 1e-12, "y component: expected 0.0, got {}", v[1]);
+                assert!((v[2] - 1.0).abs() < 1e-12, "z component: expected 1.0, got {}", v[2]);
+            }
+            other => panic!("expected Tensor([0,0,1]), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn cross_anti_commutativity() {
+        // cross(a,b) == -cross(b,a)
+        let a = Value::Tensor(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
+        let b = Value::Tensor(vec![Value::Real(4.0), Value::Real(5.0), Value::Real(6.0)]);
+        let ab = eval_builtin("cross", &[a.clone(), b.clone()]);
+        let ba = eval_builtin("cross", &[b, a]);
+        match (ab, ba) {
+            (Value::Tensor(ab_items), Value::Tensor(ba_items)) => {
+                for (ai, bi) in ab_items.iter().zip(ba_items.iter()) {
+                    let av = ai.as_f64().unwrap();
+                    let bv = bi.as_f64().unwrap();
+                    assert!((av + bv).abs() < 1e-12, "anti-commutativity failed: {} + {} != 0", av, bv);
+                }
+            }
+            other => panic!("expected two Tensors, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn cross_orthogonality() {
+        // dot(a, cross(a, b)) == 0
+        let a = Value::Tensor(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
+        let b = Value::Tensor(vec![Value::Real(4.0), Value::Real(5.0), Value::Real(6.0)]);
+        let c = eval_builtin("cross", &[a.clone(), b]);
+        let dot_result = eval_builtin("dot", &[a, c]);
+        assert_real_approx!(dot_result, 0.0);
+    }
+
+    #[test]
+    fn cross_length_2_tensor_returns_undef() {
+        let a = Value::Tensor(vec![Value::Real(1.0), Value::Real(0.0)]);
+        let b = Value::Tensor(vec![Value::Real(0.0), Value::Real(1.0)]);
+        assert!(eval_builtin("cross", &[a, b]).is_undef(), "cross on 2-element Tensor should be Undef");
+    }
+
+    #[test]
+    fn cross_length_4_tensor_returns_undef() {
+        let a = Value::Tensor(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]);
+        let b = Value::Tensor(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
+        assert!(eval_builtin("cross", &[a, b]).is_undef(), "cross on 4-element Tensor should be Undef");
+    }
+
+    #[test]
+    fn cross_non_tensor_returns_undef() {
+        assert!(
+            eval_builtin("cross", &[Value::Real(1.0), Value::Real(2.0)]).is_undef(),
+            "cross of non-Tensor args should be Undef"
+        );
+    }
+
+    // --- cross() tests: dimensioned vectors (step-5) ---
+
+    #[test]
+    fn cross_length_force_vectors() {
+        // cross([1m,0,0], [0,1N,0]) == [0,0,1 m·N] each component has Length*Force dimension
+        let length_force = DimensionVector::LENGTH.mul(&reify_types::dimension::FORCE);
+        let a = Value::Tensor(vec![
+            Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
+        ]);
+        let b = Value::Tensor(vec![
+            Value::Scalar { si_value: 0.0, dimension: reify_types::dimension::FORCE },
+            Value::Scalar { si_value: 1.0, dimension: reify_types::dimension::FORCE },
+            Value::Scalar { si_value: 0.0, dimension: reify_types::dimension::FORCE },
+        ]);
+        let result = eval_builtin("cross", &[a, b]);
+        match result {
+            Value::Tensor(items) => {
+                assert_eq!(items.len(), 3, "cross product must have 3 components");
+                // [1,0,0] x [0,1,0] = [0*0-0*1, 0*0-1*0, 1*1-0*0] = [0, 0, 1]
+                for (i, item) in items.iter().enumerate() {
+                    match item {
+                        Value::Scalar { si_value, dimension } => {
+                            assert_eq!(*dimension, length_force, "component {} dimension mismatch", i);
+                            let expected = if i == 2 { 1.0 } else { 0.0 };
+                            assert!(
+                                (si_value - expected).abs() < 1e-12,
+                                "component {}: expected {}, got {}", i, expected, si_value
+                            );
+                        }
+                        other => panic!("expected Scalar at component {}, got {:?}", i, other),
+                    }
+                }
+            }
+            other => panic!("expected Tensor, got {:?}", other),
+        }
+    }
+
+    // --- dot() tests: dimensioned vectors (step-2) ---
+
+    #[test]
+    fn dot_length_force_vectors() {
+        // dot([1m, 0, 0], [1N, 0, 0]) -> Scalar { si_value: 1.0, dimension: Length*Force }
+        let length_force = DimensionVector::LENGTH.mul(&reify_types::dimension::FORCE);
+        let a = Value::Tensor(vec![
+            Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
+        ]);
+        let b = Value::Tensor(vec![
+            Value::Scalar { si_value: 1.0, dimension: reify_types::dimension::FORCE },
+            Value::Scalar { si_value: 0.0, dimension: reify_types::dimension::FORCE },
+            Value::Scalar { si_value: 0.0, dimension: reify_types::dimension::FORCE },
+        ]);
+        assert_scalar_approx!(eval_builtin("dot", &[a, b]), 1.0, length_force);
+    }
+
+    #[test]
+    fn dot_mixed_component_dimensions_returns_undef() {
+        // A Tensor with mixed dimensions is not a valid physical vector
+        let a = Value::Tensor(vec![
+            Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 0.0, dimension: DimensionVector::MASS },
+        ]);
+        let b = Value::Tensor(vec![
+            Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
+        ]);
+        assert!(
+            eval_builtin("dot", &[a, b]).is_undef(),
+            "dot of vector with mixed component dimensions should be Undef"
+        );
     }
 }
