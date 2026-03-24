@@ -82,6 +82,28 @@ impl Value {
         }
     }
 
+    /// Create a Range value with normalized inclusivity flags.
+    ///
+    /// When a bound is `None` (unbounded), the corresponding inclusive flag is forced to
+    /// `false` — infinity is never "included". This ensures that two logically identical
+    /// ranges compare as equal and produce the same content hash regardless of which
+    /// inclusive flag the caller passed.
+    pub fn range(
+        lower: Option<Value>,
+        upper: Option<Value>,
+        lower_inclusive: bool,
+        upper_inclusive: bool,
+    ) -> Value {
+        let lower_inclusive = lower_inclusive && lower.is_some();
+        let upper_inclusive = upper_inclusive && upper.is_some();
+        Value::Range {
+            lower: lower.map(Box::new),
+            upper: upper.map(Box::new),
+            lower_inclusive,
+            upper_inclusive,
+        }
+    }
+
     pub fn is_undef(&self) -> bool {
         matches!(self, Value::Undef)
     }
@@ -2108,12 +2130,7 @@ mod tests {
         lower_inclusive: bool,
         upper_inclusive: bool,
     ) -> Value {
-        Value::Range {
-            lower: lower.map(Box::new),
-            upper: upper.map(Box::new),
-            lower_inclusive,
-            upper_inclusive,
-        }
+        Value::range(lower, upper, lower_inclusive, upper_inclusive)
     }
 
     #[test]
@@ -2178,5 +2195,106 @@ mod tests {
         assert_ne!(r, Value::Int(0));
         assert_ne!(r, Value::Undef);
         assert_ne!(r, Value::Bool(true));
+    }
+
+    // ── Range inclusivity normalization tests (task-364) ─────────────────────
+
+    #[test]
+    fn value_range_normalize_lower_inclusive_when_none() {
+        let r = Value::range(None, Some(Value::Int(10)), true, true);
+        match r {
+            Value::Range { lower_inclusive, .. } => assert!(!lower_inclusive),
+            _ => panic!("expected Range"),
+        }
+    }
+
+    #[test]
+    fn value_range_normalize_upper_inclusive_when_none() {
+        let r = Value::range(Some(Value::Int(0)), None, true, true);
+        match r {
+            Value::Range { upper_inclusive, .. } => assert!(!upper_inclusive),
+            _ => panic!("expected Range"),
+        }
+    }
+
+    #[test]
+    fn value_range_normalize_both_when_none() {
+        let r = Value::range(None, None, true, true);
+        match r {
+            Value::Range { lower_inclusive, upper_inclusive, .. } => {
+                assert!(!lower_inclusive);
+                assert!(!upper_inclusive);
+            }
+            _ => panic!("expected Range"),
+        }
+    }
+
+    #[test]
+    fn value_range_no_normalize_when_some() {
+        let r = Value::range(Some(Value::Int(0)), Some(Value::Int(10)), true, true);
+        match r {
+            Value::Range { lower_inclusive, upper_inclusive, .. } => {
+                assert!(lower_inclusive);
+                assert!(upper_inclusive);
+            }
+            _ => panic!("expected Range"),
+        }
+    }
+
+    // ── Range equality/hash equivalence with differing flags (task-364 step-3) ─
+
+    #[test]
+    fn value_range_eq_none_lower_ignores_inclusive() {
+        let r1 = Value::range(None, Some(Value::Int(10)), true, true);
+        let r2 = Value::range(None, Some(Value::Int(10)), false, true);
+        assert_eq!(r1, r2);
+    }
+
+    #[test]
+    fn value_range_eq_none_upper_ignores_inclusive() {
+        let r1 = Value::range(Some(Value::Int(0)), None, true, true);
+        let r2 = Value::range(Some(Value::Int(0)), None, true, false);
+        assert_eq!(r1, r2);
+    }
+
+    #[test]
+    fn value_range_eq_both_none_ignores_inclusive() {
+        let r1 = Value::range(None, None, true, true);
+        let r2 = Value::range(None, None, false, false);
+        assert_eq!(r1, r2);
+    }
+
+    #[test]
+    fn value_range_hash_none_lower_ignores_inclusive() {
+        let r1 = Value::range(None, Some(Value::Int(10)), true, true);
+        let r2 = Value::range(None, Some(Value::Int(10)), false, true);
+        assert_eq!(r1.content_hash(), r2.content_hash());
+    }
+
+    #[test]
+    fn value_range_hash_none_upper_ignores_inclusive() {
+        let r1 = Value::range(Some(Value::Int(0)), None, true, true);
+        let r2 = Value::range(Some(Value::Int(0)), None, true, false);
+        assert_eq!(r1.content_hash(), r2.content_hash());
+    }
+
+    // ── Range Display with inclusive+None edge cases (task-364 step-4) ─────────
+
+    #[test]
+    fn value_range_display_none_lower_with_inclusive_true() {
+        let r = Value::range(None, Some(Value::Int(10)), true, true);
+        assert_eq!(format!("{}", r), "(-inf..10]");
+    }
+
+    #[test]
+    fn value_range_display_none_upper_with_inclusive_true() {
+        let r = Value::range(Some(Value::Int(0)), None, true, true);
+        assert_eq!(format!("{}", r), "[0..inf)");
+    }
+
+    #[test]
+    fn value_range_display_both_none_with_inclusive_true() {
+        let r = Value::range(None, None, true, true);
+        assert_eq!(format!("{}", r), "(-inf..inf)");
     }
 }

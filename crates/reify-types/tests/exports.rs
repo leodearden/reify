@@ -203,18 +203,13 @@ fn all_m5_types_exported() {
     let _tr_factory = reify_types::Type::range(reify_types::Type::Real);
 
     // Value::Range construction (closed interval [0, 10])
-    let _vr_closed = reify_types::Value::Range {
-        lower: Some(Box::new(reify_types::Value::Int(0))),
-        upper: Some(Box::new(reify_types::Value::Int(10))),
-        lower_inclusive: true,
-        upper_inclusive: true,
-    };
+    let _vr_closed = reify_types::Value::range(
+        Some(reify_types::Value::Int(0)),
+        Some(reify_types::Value::Int(10)),
+        true,
+        true,
+    );
 
     // Value::Range with unbounded ends
-    let _vr_unbounded = reify_types::Value::Range {
-        lower: None,
-        upper: None,
-        lower_inclusive: false,
-        upper_inclusive: false,
-    };
+    let _vr_unbounded = reify_types::Value::range(None, None, false, false);
 }
