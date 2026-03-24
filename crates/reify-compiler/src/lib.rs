@@ -4431,6 +4431,76 @@ fn compile_geometry_call(
             });
             return Some(all_ops);
         }
+        "union_all" | "intersection_all" => {
+            if args.len() < 2 {
+                diagnostics.push(Diagnostic::error(format!(
+                    "{}() expects at least 2 arguments, got {}",
+                    name,
+                    args.len()
+                )));
+                return None;
+            }
+            let bool_op = match name {
+                "union_all" => BooleanOp::Union,
+                "intersection_all" => BooleanOp::Intersection,
+                _ => unreachable!(),
+            };
+            // Left-fold: compile all args, interleaving binary Boolean ops.
+            // After each pair (accumulator, next_arg), emit a Boolean op whose
+            // result becomes the next accumulator.
+            let mut all_ops: Vec<CompiledGeometryOp> = Vec::new();
+            let mut current_offset = step_offset;
+
+            // Compile first arg.
+            let first_ops = match compile_geometry_call(
+                &args[0], scope, enum_defs, functions, diagnostics, current_offset,
+            ) {
+                Some(ops) => ops,
+                None => {
+                    if !matches!(args[0].kind, reify_syntax::ExprKind::FunctionCall { .. }) {
+                        diagnostics.push(Diagnostic::error(format!(
+                            "{}() argument 1 must be a geometry expression",
+                            name
+                        )));
+                    }
+                    return None;
+                }
+            };
+            let mut accumulator_step = current_offset + first_ops.len() - 1;
+            current_offset += first_ops.len();
+            all_ops.extend(first_ops);
+
+            // Fold remaining args left-to-right.
+            for (i, arg) in args.iter().enumerate().skip(1) {
+                let arg_ops = match compile_geometry_call(
+                    arg, scope, enum_defs, functions, diagnostics, current_offset,
+                ) {
+                    Some(ops) => ops,
+                    None => {
+                        if !matches!(arg.kind, reify_syntax::ExprKind::FunctionCall { .. }) {
+                            diagnostics.push(Diagnostic::error(format!(
+                                "{}() argument {} must be a geometry expression",
+                                name,
+                                i + 1
+                            )));
+                        }
+                        return None;
+                    }
+                };
+                let arg_result_step = current_offset + arg_ops.len() - 1;
+                current_offset += arg_ops.len();
+                all_ops.extend(arg_ops);
+                // Emit binary op: (accumulator, arg) → new accumulator at current_offset.
+                all_ops.push(CompiledGeometryOp::Boolean {
+                    op: bool_op,
+                    left: GeomRef::Step(accumulator_step),
+                    right: GeomRef::Step(arg_result_step),
+                });
+                accumulator_step = current_offset;
+                current_offset += 1;
+            }
+            return Some(all_ops);
+        }
         _ => {}
     }
 
