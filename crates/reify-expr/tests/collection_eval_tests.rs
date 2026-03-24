@@ -767,6 +767,37 @@ fn eval_method_filter_non_bool_predicate() {
     );
 }
 
+// ─── task-166 step-6: .filter empty list ───
+
+#[test]
+fn eval_method_filter_empty_list() {
+    // [].filter(|x| x > 0) -> []
+    // The degenerate case: loop body never executes, result is always an empty list.
+    let x_id = ValueCellId::new("$lambda_filter_emp.S", "x");
+    let body = CompiledExpr::binop(
+        BinOp::Gt,
+        CompiledExpr::value_ref(x_id.clone(), Type::Int),
+        CompiledExpr::literal(Value::Int(0), Type::Int),
+        Type::Bool,
+    );
+    let lambda_arg = lambda_literal(vec![("x", x_id)], body, ValueMap::new());
+
+    let list = CompiledExpr::list_literal(vec![], Type::List(Box::new(Type::Int)));
+    let expr = CompiledExpr::method_call(
+        list,
+        "filter".to_string(),
+        vec![lambda_arg],
+        Type::List(Box::new(Type::Int)),
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::List(vec![]),
+        "[].filter(|x| x > 0) should return []"
+    );
+}
+
 // ─── step-17/18: MethodCall .fold ───
 
 #[test]
