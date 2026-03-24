@@ -3437,6 +3437,24 @@ mod tests {
         );
     }
 
+    // --- dimensionless components ---
+
+    #[test]
+    fn point3_dimensionless() {
+        // point3(Real(1.0), Real(2.0), Real(3.0)) → Tensor with Real components preserved
+        let args = vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)];
+        let result = eval_builtin("point3", &args);
+        match result {
+            Value::Tensor(ref items) => {
+                assert_eq!(items.len(), 3);
+                assert!(matches!(&items[0], Value::Real(v) if (*v - 1.0).abs() < 1e-12));
+                assert!(matches!(&items[1], Value::Real(v) if (*v - 2.0).abs() < 1e-12));
+                assert!(matches!(&items[2], Value::Real(v) if (*v - 3.0).abs() < 1e-12));
+            }
+            other => panic!("expected Tensor with Real components, got {:?}", other),
+        }
+    }
+
     // --- vec2 ---
 
     #[test]
