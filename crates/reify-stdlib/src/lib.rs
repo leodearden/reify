@@ -3437,6 +3437,48 @@ mod tests {
         );
     }
 
+    // --- wrong arg count → Undef ---
+
+    #[test]
+    fn point3_wrong_arg_count_undef() {
+        // point3 with 2 args → Undef
+        let args2 = vec![
+            Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 2.0, dimension: DimensionVector::LENGTH },
+        ];
+        assert!(eval_builtin("point3", &args2).is_undef(), "point3 with 2 args must be Undef");
+        // point3 with 0 args → Undef
+        assert!(eval_builtin("point3", &[]).is_undef(), "point3 with 0 args must be Undef");
+        // point3 with 4 args → Undef
+        let args4 = vec![
+            Value::Real(1.0), Value::Real(2.0), Value::Real(3.0), Value::Real(4.0),
+        ];
+        assert!(eval_builtin("point3", &args4).is_undef(), "point3 with 4 args must be Undef");
+    }
+
+    #[test]
+    fn point2_wrong_arg_count_undef() {
+        // point2 with 3 args → Undef
+        let args3 = vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)];
+        assert!(eval_builtin("point2", &args3).is_undef(), "point2 with 3 args must be Undef");
+        // point2 with 1 arg → Undef
+        assert!(eval_builtin("point2", &[Value::Real(1.0)]).is_undef(), "point2 with 1 arg must be Undef");
+    }
+
+    #[test]
+    fn vec3_wrong_arg_count_undef() {
+        assert!(eval_builtin("vec3", &[]).is_undef(), "vec3 with 0 args must be Undef");
+        let args2 = vec![Value::Real(1.0), Value::Real(2.0)];
+        assert!(eval_builtin("vec3", &args2).is_undef(), "vec3 with 2 args must be Undef");
+    }
+
+    #[test]
+    fn vec2_wrong_arg_count_undef() {
+        assert!(eval_builtin("vec2", &[]).is_undef(), "vec2 with 0 args must be Undef");
+        let args3 = vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)];
+        assert!(eval_builtin("vec2", &args3).is_undef(), "vec2 with 3 args must be Undef");
+    }
+
     // --- dimension mismatch → Undef ---
 
     #[test]
