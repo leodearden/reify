@@ -1,200 +1,175 @@
 {
-  "task_id": "229",
-  "title": "Matrix: Type and Value",
+  "task_id": "230",
+  "title": "Tensor/Matrix: arithmetic",
   "files": [
-    "crates/reify-types/src/ty.rs",
-    "crates/reify-types/src/value.rs",
-    "crates/reify-types/tests/exports.rs",
-    "crates/reify-expr/src/lib.rs",
-    "crates/reify-expr/tests/tensor_matrix_arithmetic_tests.rs"
+    "crates/reify-expr/tests/tensor_matrix_arithmetic_tests.rs",
+    "crates/reify-expr/src/lib.rs"
   ],
   "modules": [
-    "crates/reify-types",
     "crates/reify-expr"
   ],
-  "analysis": "Task 229 adds a Matrix type and value to the reify type system. The Matrix type is structurally similar to the existing Tensor variant: `Matrix { m: usize, n: usize, quantity: Box<Type> }` where m=rows, n=cols. Matrix values use `Vec<Vec<Value>>` (m rows of n elements each), unlike Tensor's flat `Vec<Value>` with recursive nesting. The implementation touches three files: ty.rs (Type enum variant + factory + Display), value.rs (Value enum variant + PartialEq + Ord + Display + content_hash), and tests/exports.rs (integration test). The Type enum derives Eq/Hash so no manual impl needed there. The Value enum has custom PartialEq, Ord, Display, and content_hash that all require explicit new arms. Content hash will use tag 18 (next after Range=17). Ord type_tag will use 17 (next after Range=16). The existing Tensor implementation serves as the closest pattern to follow. is_numeric already returns false via wildcard miss, and as_name returns None via wildcard catch-all — no changes needed for those methods, just test coverage.\n\n**Review fix (dual_representation_conflict):** The codebase already represents matrices as rank-2 nested `Value::Tensor` (Tensor of Tensor rows) — all 28 tests in `tensor_matrix_arithmetic_tests.rs` and all arithmetic functions in `reify-expr` (`eval_add`, `eval_sub`, `eval_mul`, `eval_div`, `neg_value`) pattern-match exclusively on `Value::Tensor`. The new `Value::Matrix` is a user-facing literal/display form. To prevent silent `Undef` production when `Value::Matrix` enters the arithmetic engine, we add: (1) doc comments on `Value::Matrix` and `Type::Matrix` clarifying the relationship, (2) `Value::canonicalize_matrix(self) -> Self` conversion method (Matrix→nested Tensor, no-op for others), (3) `Value::try_into_matrix(self) -> Option<Self>` reverse conversion, (4) canonicalization calls in `eval_binop` and `neg_value` in `reify-expr/src/lib.rs` so Matrix operands are converted to nested Tensor before arithmetic dispatch.",
+  "analysis": "Task 230 requires tensor addition (same rank/N/Q), scalar-tensor multiplication, matrix-vector multiplication (M(M,K,Q1)*V(K,Q2)->V(M,Q1*Q2)), and matrix-matrix multiplication (M(M,K,Q1)*M(K,N,Q2)->M(M,N,Q1*Q2)) with dimensional checking on all operations.\n\nThe core implementation already exists in crates/reify-expr/src/lib.rs from dependency tasks 228/229:\n- eval_add: componentwise Tensor+Tensor via componentwise_op (recursive, any rank)\n- eval_sub: componentwise Tensor-Tensor via componentwise_op\n- eval_mul: Scalar*Tensor scaling, Mat*Vec (dot product per row, try_fold), Mat*Mat (O(m*n*k) with eval_dot)\n- eval_div: Tensor/Scalar component-wise division\n- neg_value: recursive Tensor negation with Matrix canonicalization\n- eval_dot: single-pass short-circuiting dot product helper\n- componentwise_op: length-matched zip with Undef propagation\n- eval_binop: canonicalizes Value::Matrix to nested Value::Tensor before dispatch\n\nAll 34 existing tests in tensor_matrix_arithmetic_tests.rs pass, covering rank-2 (matrix) operations. However, there are test coverage gaps for the operations task 230 specifically describes:\n\n1. Rank-1 Tensor arithmetic (add/sub/neg/scale/div) — tests exist for Value::Vector in point_vector_eval_tests.rs, but Value::Tensor rank-1 is a different variant with different semantics\n2. Rank-3+ Tensor arithmetic — no tests verify recursive generality beyond rank-2\n3. Dimension product Q1*Q2 tracking — tested for Length*Length=Area in mat*vec/mat*mat, but needs explicit verification for other dimension combinations\n4. Rank/shape mismatch Undef checking for rank-1 tensors\n5. Mixed-rank tensor operations (rank-1 + rank-2 → Undef)\n\nThe TDD plan adds these missing tests. Since the implementation handles all ranks generically via recursion, all new tests should pass without implementation changes. If any test reveals a gap, the corresponding impl step addresses it.",
   "prerequisites": [],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing tests in ty.rs for Type::Matrix: (a) direct construction and equality — Matrix{3,2,Real} == Matrix{3,2,Real}, != Matrix{2,3,Real}, != Matrix{3,2,Int}, != Tensor{2,3,Real}; (b) factory method — Type::matrix(3,2,Real) == Type::Matrix{m:3,n:2,quantity:Real}; (c) hash consistency via HashMap insert+lookup; (d) Display — Matrix3x2<Real>, Matrix4x4<Scalar[m]>; (e) is_numeric returns false; (f) as_name returns None",
+      "description": "Write failing tests for rank-1 tensor addition: (a) Tensor([Real(1),Real(2),Real(3)]) + Tensor([Real(4),Real(5),Real(6)]) = Tensor([Real(5),Real(7),Real(9)]); (b) Tensor([Length(1),Length(2)]) + Tensor([Length(3),Length(4)]) = Tensor([Length(4),Length(6)]) — dimension preserved; (c) length mismatch Tensor([1,2,3]) + Tensor([1,2]) → Undef; (d) dimension mismatch Tensor([Length(1)]) + Tensor([Angle(1)]) → Undef",
       "status": "done",
-      "commit": "c5a7ba2c"
+      "commit": "99e719c24b54c2501a47dc7029b22f47b1c45ec7"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Add `Matrix { m: usize, n: usize, quantity: Box<Type> }` variant to Type enum after Range. Add `Type::matrix(m, n, q)` factory method after range(). Add Display arm: `write!(f, \"Matrix{}x{}<{}>\", m, n, quantity)`. No changes needed for is_numeric or as_name (wildcard patterns).",
+      "description": "Verify rank-1 tensor addition tests pass — eval_add already handles Tensor+Tensor via componentwise_op with recursive dimension checking. No implementation changes expected.",
       "status": "done",
-      "commit": "a748e95b"
+      "commit": "99e719c24b54c2501a47dc7029b22f47b1c45ec7"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing tests in value.rs for Value::Matrix: (a) construction with Vec<Vec<Value>> and PartialEq — same rows equal, different rows not equal, cross-variant with List/Tensor returns false; (b) Display format — `[[1, 2, 3], [4, 5, 6]]` for 2x3 matrix, `[[1]]` for 1x1",
+      "description": "Write failing tests for scalar-tensor multiplication with rank-1 tensors and dimension tracking: (a) Int(3) * Tensor([Real(1),Real(2)]) = Tensor([Real(3),Real(6)]); (b) Length(2) * Tensor([Length(1),Length(3)]) = Tensor([Area(2),Area(6)]) — Q1*Q2 dimension product; (c) Tensor * Scalar commutativity: Tensor([Real(1),Real(2)]) * Real(3) = Tensor([Real(3),Real(6)]); (d) Real(0.5) * Tensor([Length(4),Length(8)]) = Tensor([Length(2),Length(4)])",
       "status": "done",
-      "commit": "ccc8c1fc"
+      "commit": "99e719c24b54c2501a47dc7029b22f47b1c45ec7"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Add `Matrix(Vec<Vec<Value>>)` variant to Value enum after Range. Add PartialEq arm: `(Value::Matrix(a), Value::Matrix(b)) => a == b`. Add Display arm: outer `[` then comma-separated rows each formatted as `[v1, v2, ...]`, closing `]`.",
+      "description": "Verify scalar-tensor multiplication tests pass — eval_mul scalar*tensor arm handles Int/Real/Scalar * Tensor with recursive scaling. The guard '!matches!(scalar, Value::Tensor(_))' ensures proper dispatch. No implementation changes expected.",
       "status": "done",
-      "commit": "3eb2307e"
+      "commit": "99e719c24b54c2501a47dc7029b22f47b1c45ec7"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing tests in value.rs for Value::Matrix content_hash: (a) determinism — same matrix produces same hash; (b) different values — [[1,2],[3,4]] != [[1,3],[2,4]] (transposed); (c) distinct from Tensor — Matrix([[1,2]]) hash != Tensor([1,2]) hash due to different tag",
+      "description": "Write failing tests for rank-1 tensor subtraction, negation, and division: (a) Tensor([Real(5),Real(3)]) - Tensor([Real(1),Real(2)]) = Tensor([Real(4),Real(1)]); (b) Tensor([Length(10),Length(20)]) - Tensor([Length(3),Length(7)]) = Tensor([Length(7),Length(13)]); (c) -Tensor([Real(1),Real(-2),Real(3)]) = Tensor([Real(-1),Real(2),Real(-3)]); (d) Tensor([Area(4),Area(6)]) / Length(2) = Tensor([Length(2),Length(3)]) — Q/Q' dimension quotient",
       "status": "done",
-      "commit": "f7f3495e"
+      "commit": "99e719c24b54c2501a47dc7029b22f47b1c45ec7"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Add content_hash arm for Value::Matrix with tag=18: `let mut h = ContentHash::of(&[18]); h = h.combine(rows.len()); for each row: h = h.combine(row.len()); for each elem: h = h.combine(elem.content_hash())`",
+      "description": "Verify rank-1 tensor sub/neg/div tests pass — eval_sub uses componentwise_op, neg_value recurses into Tensor components, eval_div handles Tensor/Scalar with component-wise division. No implementation changes expected.",
       "status": "done",
-      "commit": "048e2ffa"
+      "commit": "99e719c24b54c2501a47dc7029b22f47b1c45ec7"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing tests in value.rs for Value::Matrix Ord: (a) cross-type ordering — Matrix (tag 17) > Range (tag 16), Matrix < Undef would be wrong since Undef=0; (b) within-type lexicographic ordering on rows — [[1,2],[3,4]] < [[1,2],[3,5]]",
+      "description": "Write failing tests for rank/shape validation across operations: (a) rank-1 + rank-2 → Undef: Tensor([Real(1),Real(2)]) + Tensor([Tensor([1,2]),Tensor([3,4])]) → Undef; (b) rank-1 * rank-1 → Undef: Tensor([Real(1)]) * Tensor([Real(2)]) → Undef (no element-wise tensor multiply); (c) empty rank-1 tensor operations: Tensor([]) + Tensor([]) → Undef; (d) single-element rank-1 tensor: Tensor([Length(5)]) + Tensor([Length(3)]) = Tensor([Length(8)])",
       "status": "done",
-      "commit": "d2a7d90e"
+      "commit": "99e719c24b54c2501a47dc7029b22f47b1c45ec7"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Add `Value::Matrix(_) => 17` to type_tag fn in Ord impl. Add within-type arm: `(Value::Matrix(a), Value::Matrix(b)) => a.cmp(b)` leveraging Vec<Vec<Value>>'s derived lexicographic Ord.",
+      "description": "Verify rank/shape validation tests pass — componentwise_op rejects empty/mismatched lengths, eval_mul guards prevent rank-1*rank-1 (falls to _ => Undef), recursive dispatch produces Undef for rank mismatches at leaf level. No implementation changes expected.",
       "status": "done",
-      "commit": "6b75cd12"
+      "commit": "99e719c24b54c2501a47dc7029b22f47b1c45ec7"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Add Matrix entries to tests/exports.rs all_m5_types_exported: Type::Matrix direct construction, Type::matrix() factory method, Value::Matrix construction with Vec<Vec<Value>>",
+      "description": "Write failing test for rank-3 tensor addition to verify recursive generality: Tensor([Tensor([Tensor([Real(1),Real(2)]),Tensor([Real(3),Real(4)])]),Tensor([Tensor([Real(5),Real(6)]),Tensor([Real(7),Real(8)])])]) + same-shape tensor = element-wise sum. This confirms componentwise_op recurses correctly through arbitrary nesting depth.",
       "status": "done",
-      "commit": "22687aac"
+      "commit": "99e719c24b54c2501a47dc7029b22f47b1c45ec7"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "The export test entries are written in step-9 (test IS the impl for integration tests). Verify `cargo test -p reify-types` passes all tests including new Matrix tests.",
+      "description": "Verify rank-3 tensor addition test passes — componentwise_op calls eval_add recursively, which calls componentwise_op again for nested Tensor layers. This recursive structure handles any rank. No implementation changes expected.",
       "status": "done",
-      "commit": "22687aac"
+      "commit": "99e719c24b54c2501a47dc7029b22f47b1c45ec7"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write failing tests in value.rs for Matrix↔Tensor conversion methods: (a) `canonicalize_matrix` converts Matrix([[1,2],[3,4]]) to Tensor([Tensor([1,2]), Tensor([3,4])]); (b) `canonicalize_matrix` is identity for non-Matrix variants (Int, Tensor, Undef); (c) `canonicalize_matrix` on empty Matrix([[],[]]) produces Tensor([Tensor([]), Tensor([])]); (d) `try_into_matrix` converts rank-2 nested Tensor([Tensor([1,2]), Tensor([3,4])]) to Some(Matrix([[1,2],[3,4]])); (e) `try_into_matrix` returns None for rank-1 Tensor([1,2,3]); (f) `try_into_matrix` returns None for non-Tensor values (Int, Matrix); (g) round-trip: matrix.clone().canonicalize_matrix().try_into_matrix() == Some(matrix)",
+      "description": "Write failing tests for mat*vec and mat*mat dimension product Q1*Q2 with non-trivial dimensions: (a) mat*vec: Matrix(Angle) * Vector(Length) → Vector(Angle·Length dimension product): [[Angle(1),Angle(2)],[Angle(3),Angle(4)]] * [Length(1),Length(1)] = [AngleLength(3),AngleLength(7)]; (b) mat*mat: 2x2(Length) * 2x2(Time⁻¹ via velocity/length) → 2x2(dimensionless or appropriate product); (c) mat*vec inner-dim mismatch with dimensioned values → Undef",
       "status": "done",
-      "commit": "9ed04a74"
+      "commit": "99e719c24b54c2501a47dc7029b22f47b1c45ec7"
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "In value.rs: (1) Update doc comment on `Value::Matrix` to: 'User-facing matrix literal (m rows × n cols). Before arithmetic evaluation, canonicalized to nested Value::Tensor (rank-2 Tensor where each element is a Tensor row) via canonicalize_matrix(). The evaluator in reify-expr operates exclusively on the nested-Tensor representation for matrix arithmetic.' (2) Add `pub fn canonicalize_matrix(self) -> Self` method: match self { Value::Matrix(rows) => Value::Tensor(rows.into_iter().map(Value::Tensor).collect()), other => other }. (3) Add `pub fn try_into_matrix(self) -> Option<Self>` method: match self { Value::Tensor(rows) if !rows.is_empty() && rows.iter().all(|r| matches!(r, Value::Tensor(_))) => convert inner Tensors to Vec<Vec<Value>> and return Some(Matrix(...)), _ => None }. (4) Update doc comment on Type::Matrix in ty.rs to: 'User-facing m×n matrix type. Semantically, evaluation treats matrices as rank-2 tensors; Type::Matrix preserves distinct row (m) and column (n) dimensions while Type::Tensor uses a single n for all dimensions.'",
+      "description": "Verify dimension product tests pass — eval_mul delegates to DimensionVector::mul for dimension products in both scalar*scalar (leaf) and dot product (eval_dot via eval_add). Dimension tracking is automatic through recursive evaluation. No implementation changes expected.",
       "status": "done",
-      "commit": "daad7fc2"
+      "commit": "99e719c24b54c2501a47dc7029b22f47b1c45ec7"
     },
     {
       "id": "step-13",
       "type": "test",
-      "description": "Write failing tests in crates/reify-expr/tests/tensor_matrix_arithmetic_tests.rs (new section at end of file) for Value::Matrix canonicalization through the evaluator: (a) Matrix + Matrix: Matrix([[Int(1),Int(2)],[Int(3),Int(4)]]) + Matrix([[Int(10),Int(20)],[Int(30),Int(40)]]) == Tensor([Tensor([Int(11),Int(22)]),Tensor([Int(33),Int(44)])]); (b) Scalar * Matrix: Real(2.0) * Matrix([[Int(1),Int(2)]]) == Tensor([Tensor([...scaled...])]); (c) -Matrix: negation of Matrix([[Int(1),Int(-2)]]) == Tensor([Tensor([Int(-1),Int(2)])]); (d) Matrix * Vector: 2x2 Matrix * 2-elem Tensor vector produces correct dot-product Tensor result. All tests construct BinOp/UnOp CompiledExpr with Matrix literals and verify eval_expr produces the correct nested-Tensor result (not Undef).",
+      "description": "Write a comprehensive integration test combining multiple operations: scalar * (matrix + matrix) * vector with dimensional tracking — e.g., Real(2) * ([[Length(1),Length(0)],[Length(0),Length(1)]] + [[Length(1),Length(1)],[Length(1),Length(1)]]) * [Length(1),Length(1)] — verifying correct dimension product chain through add then scale then mat*vec.",
       "status": "done",
-      "commit": "8e4589fe"
+      "commit": "99e719c24b54c2501a47dc7029b22f47b1c45ec7"
     },
     {
       "id": "step-14",
       "type": "impl",
-      "description": "In crates/reify-expr/src/lib.rs: (1) In `eval_binop` (line ~642-643), after `let lv = eval_expr(left, ctx);` and `let rv = eval_expr(right, ctx);`, add canonicalization: `let lv = lv.canonicalize_matrix();` and `let rv = rv.canonicalize_matrix();`. This ensures Matrix operands become nested Tensor before any arithmetic dispatch. (2) In `neg_value` (line ~1180), add a `Value::Matrix(_)` arm before the wildcard that calls `neg_value(v.canonicalize_matrix())` to convert then negate. Alternatively, canonicalize at the top: `let v = v.canonicalize_matrix();` before the match. Verify all existing tensor_matrix_arithmetic_tests still pass plus new Matrix canonicalization tests.",
+      "description": "Verify integration test passes. Run full test suite: cargo test -p reify-expr to confirm no regressions across all 34+ existing tests plus all new tests. No implementation changes expected.",
       "status": "done",
-      "commit": "e231c8c4"
+      "commit": "99e719c24b54c2501a47dc7029b22f47b1c45ec7"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Matrix value stored as Vec<Vec<Value>> (not flat Vec<Value>)",
-      "rationale": "Task specifies 'm rows x n cols' as Vec<Vec<Value>>. This differs from Tensor's flat Vec<Value> with recursive nesting. The 2D structure makes row/column access O(1) and matrix operations natural. Each inner Vec is one row of n elements."
+      "decision": "Leverage existing recursive tensor arithmetic — no new code paths needed",
+      "rationale": "The eval_add/eval_sub/eval_mul/eval_div/neg_value functions already handle Value::Tensor recursively via componentwise_op. Adding rank-specific code would duplicate logic. The recursive structure naturally handles rank-1, rank-2 (matrix), and rank-N tensors identically. Task 230's scope is covered by existing generic implementations from dependencies 228/229."
     },
     {
-      "decision": "Display format: Type as `Matrix{m}x{n}<{quantity}>`, Value as `[[r1c1, r1c2], [r2c1, r2c2]]`",
-      "rationale": "Type Display follows the Tensor pattern (`Tensor{rank}x{n}<{quantity}>`). Value Display uses nested bracket notation matching the Vec<Vec<Value>> structure, which is the standard mathematical notation for matrix literals."
+      "decision": "Test-first verification strategy: all tests should pass without implementation changes",
+      "rationale": "Dependencies 228 and 229 already implemented the complete arithmetic engine (eval_add, eval_sub, eval_mul with mat*vec and mat*mat arms, eval_div, neg_value, eval_dot, componentwise_op). Task 230 adds test coverage for the specific operations mentioned in its description (rank-1 tensors, Q1*Q2 dimension products, rank-3 generality) to confirm and document the existing behavior."
     },
     {
-      "decision": "Content hash tag = 18, Ord type_tag = 17",
-      "rationale": "Sequential allocation after the last used tags: content_hash tags go 0-17 (Range=17), so Matrix=18. Ord type_tags go 0-16 (Range=16), so Matrix=17. Both follow the established pattern of sequential tag assignment."
+      "decision": "Rank-1 Tensor × Rank-1 Tensor → Undef (no element-wise multiply)",
+      "rationale": "Element-wise tensor multiplication (Hadamard product) is not a standard mathematical operation in engineering CAD contexts. eval_mul only defines Scalar*Tensor (scaling), Matrix*Vector (linear transform), and Matrix*Matrix (composition). Rank-1 × rank-1 falls through to _ => Undef, which is correct by design."
     },
     {
-      "decision": "Content hash includes both row count and per-row column count",
-      "rationale": "Hashing both dimensions ensures that a 2x3 matrix and a 3x2 matrix with the same elements in different arrangement produce different hashes. Per-row col count (rather than a single n) handles the Vec<Vec> structure faithfully even if rows could theoretically vary in length."
-    },
-    {
-      "decision": "Ord within-type comparison delegates to Vec<Vec<Value>>::cmp",
-      "rationale": "Since Value implements Ord, Vec<Value> and Vec<Vec<Value>> automatically get lexicographic Ord. This is consistent with how List and Tensor delegate to Vec<Value>::cmp."
-    },
-    {
-      "decision": "Value::Matrix is a user-facing literal form, canonicalized to nested Tensor for evaluation (Option 2 from review)",
-      "rationale": "The codebase has 28 existing tests and 5 arithmetic functions (eval_add, eval_sub, eval_mul, eval_div, neg_value) that exclusively pattern-match on nested Value::Tensor for matrix operations. Rewriting all of these to also handle Value::Matrix would be high-cost and create maintenance burden (every new arithmetic feature must handle both representations). Instead, a single canonicalization step at the eval_binop/neg_value entry points converts Matrix→nested Tensor, reusing the entire existing arithmetic engine. The O(m×n) copy cost is negligible compared to the actual arithmetic operations."
-    },
-    {
-      "decision": "Canonicalization placed in eval_binop and neg_value, not in eval_expr",
-      "rationale": "Placing canonicalization in eval_binop (which dispatches all binary arithmetic and comparisons) and neg_value (unary negation) covers all arithmetic paths. Placing it in eval_expr would be too broad — it would canonicalize Matrix literals on read even when no arithmetic is performed, and would affect FunctionCall, MethodCall, and other paths that may want the original Matrix form. The targeted placement is minimal and precise."
-    },
-    {
-      "decision": "try_into_matrix requires non-empty rows and all-Tensor elements",
-      "rationale": "An empty Tensor([]) is ambiguous — it could be an empty vector or an empty matrix. Requiring at least one row and all elements to be Tensor(_) ensures the conversion is unambiguous. This matches the detection heuristic used in eval_mul (lines 858-862) which checks matches!(rows[0], Value::Tensor(_))."
+      "decision": "Dimension products (Q1*Q2) verified through DimensionVector::mul at Scalar leaf level",
+      "rationale": "The dimension product Q1*Q2 in mat*vec/mat*mat is an emergent property: eval_mul on Scalar elements calls DimensionVector::mul (adds exponents), and eval_add in eval_dot verifies summands have matching dimensions. No special dimension logic exists at the matrix level — it's all handled by the leaf operations. Tests should verify this end-to-end."
     }
   ],
   "reuse": [
     {
-      "what": "Tensor Type variant pattern",
-      "where": "crates/reify-types/src/ty.rs lines 42-43",
-      "how": "Matrix { m, n, quantity } mirrors Tensor { rank, n, quantity } — same Box<Type> wrapping for quantity, same struct-variant style"
+      "what": "componentwise_op helper for rank-matched binary operations",
+      "where": "crates/reify-expr/src/lib.rs:730-745",
+      "how": "Already used by eval_add and eval_sub for Tensor+Tensor and Tensor-Tensor. Handles length checking, zip, Undef propagation. Recursion through eval_add/eval_sub enables arbitrary rank support."
     },
     {
-      "what": "Type::tensor() factory method pattern",
-      "where": "crates/reify-types/src/ty.rs lines 94-97",
-      "how": "Type::matrix(m, n, q) follows exact same pattern as Type::tensor(rank, n, q) — construct variant with Box::new(quantity)"
+      "what": "eval_mul scalar*tensor arm with guard",
+      "where": "crates/reify-expr/src/lib.rs:894-904",
+      "how": "Already handles Int/Real/Scalar * Tensor and Tensor * Scalar with !matches!(scalar, Tensor|Point|Vector) guard. Recursively scales each component, propagates Undef."
     },
     {
-      "what": "Tensor Display format pattern",
-      "where": "crates/reify-types/src/ty.rs line 641",
-      "how": "Matrix Display `Matrix{m}x{n}<{quantity}>` follows Tensor's `Tensor{rank}x{n}<{quantity}>` format string pattern"
+      "what": "eval_mul mat*vec arm with try_fold and eval_dot",
+      "where": "crates/reify-expr/src/lib.rs:927-961",
+      "how": "Detects rank-2 * rank-1 via rows[0] is Tensor and vec_elems[0] is not Tensor. Computes dot product per row with dimension tracking via eval_mul on elements and eval_dot for summation."
     },
     {
-      "what": "Tensor/List content_hash iteration pattern",
-      "where": "crates/reify-types/src/value.rs lines 221-228",
-      "how": "Matrix content_hash uses the same tag + length + item-hashes pattern, extended to two nesting levels for Vec<Vec<Value>>"
+      "what": "eval_mul mat*mat arm with nested try_fold",
+      "where": "crates/reify-expr/src/lib.rs:962-1031",
+      "how": "Detects rank-2 * rank-2 via a_rows[0] and b_rows[0] both Tensor. O(m*n*k) with eval_dot per cell, safe indexing via .get().unwrap_or(Undef), double try_fold for short-circuit."
     },
     {
-      "what": "Tensor test structure in ty.rs",
-      "where": "crates/reify-types/src/ty.rs lines 314-382",
-      "how": "Matrix tests follow the same pattern: display tests, factory tests, eq_and_hash tests, not_numeric test — mirroring the Tensor test block"
+      "what": "eval_dot short-circuiting dot product",
+      "where": "crates/reify-expr/src/lib.rs:798-821",
+      "how": "Single-pass fold over products with early Undef exit via try_fold. Used by both mat*vec and mat*mat. Handles dimension checking implicitly through eval_add."
     },
     {
-      "what": "List/Tensor Value Display pattern",
-      "where": "crates/reify-types/src/value.rs lines 508-527",
-      "how": "Matrix Value Display reuses the bracket-delimited comma-separated format, nested one level deeper for the row structure"
+      "what": "DimensionVector::mul for Q1*Q2 dimension products",
+      "where": "crates/reify-types/src/dimension.rs",
+      "how": "Adds rational exponent vectors element-wise. Called by eval_mul at Scalar*Scalar leaf, producing correct composite dimension (e.g., Length*Length=Area, Length*Angle=AngleLength)."
     },
     {
-      "what": "exports.rs Tensor test pattern",
-      "where": "crates/reify-types/tests/exports.rs lines 163-179",
-      "how": "Matrix export test follows same structure: direct Type construction, factory method, Value construction"
+      "what": "Test helpers: mat(), vec_lit(), scalar_lit(), area(), eval()",
+      "where": "crates/reify-expr/tests/tensor_matrix_arithmetic_tests.rs:18-44",
+      "how": "Existing helpers for constructing CompiledExpr literals and evaluating them. New tests reuse these plus add a rank3_tensor() helper for rank-3 construction."
     },
     {
-      "what": "Existing nested-Tensor arithmetic engine",
-      "where": "crates/reify-expr/src/lib.rs lines 723-1195 (eval_add, eval_sub, eval_mul, eval_div, neg_value)",
-      "how": "By canonicalizing Value::Matrix to nested Value::Tensor, all 5 arithmetic functions and their 28 existing tests are reused without modification. The canonicalization step transforms Matrix([[a,b],[c,d]]) into Tensor([Tensor([a,b]),Tensor([c,d])]) which the arithmetic engine already understands."
-    },
-    {
-      "what": "tensor_matrix_arithmetic_tests.rs test patterns",
-      "where": "crates/reify-expr/tests/tensor_matrix_arithmetic_tests.rs lines 1-614",
-      "how": "New Matrix canonicalization tests follow the same helper functions (lit, eval_simple, etc.) and assertion patterns as the existing 28 tensor-as-matrix tests. The new tests verify that Matrix literal inputs produce the same results as equivalent nested Tensor inputs."
+      "what": "Matrix canonicalization in eval_binop",
+      "where": "crates/reify-expr/src/lib.rs:645-646",
+      "how": "Value::Matrix is canonicalized to nested Value::Tensor before arithmetic dispatch. All arithmetic functions pattern-match exclusively on Tensor. Tests using Value::Matrix inputs benefit from this transparent conversion."
     }
   ],
-  "_session_id": "229-5956ad39",
-  "_created_at": "2026-03-24T23:03:03.900214+00:00"
+  "_session_id": "230-316ac9ab",
+  "_created_at": "2026-03-24T23:32:55.170890+00:00"
 }
