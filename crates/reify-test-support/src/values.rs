@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use reify_types::{
     dimension::{DimensionVector, FORCE},
-    ConstraintNodeId, DeterminacyState, Value, ValueCellId,
+    ConstraintNodeId, DeterminacyState, Type, Value, ValueCellId,
 };
 
 // --- Range value constructors ---
@@ -258,10 +258,70 @@ pub fn undef() -> Value {
     Value::Undef
 }
 
+// --- TypeAliasMap builder ---
+
+/// Fluent builder for `HashMap<String, Type>`, used to describe type alias mappings
+/// in tests without a full compiler IR type alias implementation.
+///
+/// # Example
+/// ```ignore
+/// let aliases = TypeAliasMap::new()
+///     .alias("Pressure", pressure_type)
+///     .alias("Velocity", velocity_type)
+///     .build();
+/// ```
+pub struct TypeAliasMap {
+    entries: HashMap<String, Type>,
+}
+
+impl TypeAliasMap {
+    /// Create an empty TypeAliasMap builder.
+    pub fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+        }
+    }
+
+    /// Add a type alias entry.
+    pub fn alias(mut self, name: impl Into<String>, ty: Type) -> Self {
+        self.entries.insert(name.into(), ty);
+        self
+    }
+
+    /// Consume the builder and return the completed alias map.
+    pub fn build(self) -> HashMap<String, Type> {
+        self.entries
+    }
+}
+
+impl Default for TypeAliasMap {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Return a map of common engineering type aliases with correct dimension vectors.
+///
+/// Includes:
+/// - `Pressure`: FORCE / AREA (Pa = kg·m⁻¹·s⁻²)
+/// - `Velocity`: LENGTH / TIME (m/s)
+/// - `Acceleration`: LENGTH / TIME² (m/s²)
+pub fn common_type_aliases() -> HashMap<String, Type> {
+    let pressure_dim = FORCE.div(&DimensionVector::AREA);
+    let velocity_dim = DimensionVector::LENGTH.div(&DimensionVector::TIME);
+    let acceleration_dim = DimensionVector::LENGTH.div(&DimensionVector::TIME.mul(&DimensionVector::TIME));
+
+    TypeAliasMap::new()
+        .alias("Pressure", Type::Scalar { dimension: pressure_dim })
+        .alias("Velocity", Type::Scalar { dimension: velocity_dim })
+        .alias("Acceleration", Type::Scalar { dimension: acceleration_dim })
+        .build()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::{BTreeMap, BTreeSet, HashMap};
+    use std::collections::HashMap;
     use reify_types::{DeterminacyState, Value};
 
     // step-1: failing tests for range value constructors
@@ -575,5 +635,40 @@ mod tests {
     fn undef_produces_undef() {
         let v = undef();
         assert!(matches!(v, Value::Undef));
+    }
+
+    // step-9: failing tests for TypeAliasMap builder
+    #[test]
+    fn type_alias_map_builder_stores_entries() {
+        use reify_types::{DimensionVector, Type};
+        use reify_types::dimension::FORCE;
+        let pressure_type = Type::Scalar {
+            dimension: FORCE.div(&DimensionVector::AREA),
+        };
+        let velocity_type = Type::Scalar {
+            dimension: DimensionVector::LENGTH.div(&DimensionVector::TIME),
+        };
+        let map = TypeAliasMap::new()
+            .alias("Pressure", pressure_type.clone())
+            .alias("Velocity", velocity_type.clone())
+            .build();
+        assert_eq!(map.len(), 2);
+        assert_eq!(map.get("Pressure"), Some(&pressure_type));
+        assert_eq!(map.get("Velocity"), Some(&velocity_type));
+    }
+
+    #[test]
+    fn common_type_aliases_has_standard_engineering_types() {
+        let aliases = common_type_aliases();
+        assert!(aliases.contains_key("Pressure"), "should have Pressure");
+        assert!(aliases.contains_key("Velocity"), "should have Velocity");
+        assert!(aliases.contains_key("Acceleration"), "should have Acceleration");
+        // Pressure should be a Scalar with FORCE/AREA dimension
+        match aliases["Pressure"] {
+            reify_types::Type::Scalar { dimension } => {
+                assert_ne!(dimension, reify_types::DimensionVector::DIMENSIONLESS);
+            }
+            _ => panic!("Pressure should be a Scalar type"),
+        }
     }
 }

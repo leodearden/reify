@@ -1848,6 +1848,9 @@ mod constraint_helper_tests {
 #[cfg(test)]
 mod module_builder_extension_tests {
     use super::*;
+    use crate::celsius;
+    use crate::kelvin;
+    use crate::type_alias_module;
     use reify_types::{EnumDef, ModulePath};
 
     fn module_path() -> ModulePath {
@@ -1881,7 +1884,6 @@ mod module_builder_extension_tests {
 
     #[test]
     fn module_builder_with_field() {
-        use reify_compiler::CompiledFieldSource;
         let body = literal(Value::Real(1.0));
         let f = CompiledFieldBuilder::new("temp", Type::Geometry, Type::Real)
             .analytical(body)
@@ -1962,7 +1964,6 @@ mod module_builder_extension_tests {
 
     #[test]
     fn free_param_is_equivalent_to_auto_param() {
-        use reify_compiler::ValueCellKind;
         let ty = Type::Scalar { dimension: DimensionVector::LENGTH };
         let via_free = TopologyTemplateBuilder::new("S")
             .free_param("S", "x", ty.clone())
@@ -1987,5 +1988,70 @@ mod module_builder_extension_tests {
         assert_eq!(cell.kind, ValueCellKind::Param);
         assert!(cell.default_expr.is_none());
         assert_eq!(cell.visibility, reify_compiler::Visibility::Public);
+    }
+
+    // step-9: failing test for type_alias_module fixture
+    #[test]
+    fn type_alias_module_fixture_returns_compiled_module() {
+        let module = type_alias_module();
+        // Should have at least one template
+        assert!(!module.templates.is_empty(), "should have at least one topology template");
+        // Module should have a valid content_hash (non-zero)
+        assert_ne!(module.content_hash, reify_types::ContentHash::of(&[]));
+        // The template should have temperature-dimensioned params
+        let template = &module.templates[0];
+        let has_temperature_param = template.value_cells.iter().any(|c| {
+            matches!(
+                c.cell_type,
+                Type::Scalar { dimension } if dimension == DimensionVector::TEMPERATURE
+            )
+        });
+        assert!(has_temperature_param, "HeatExchanger should have a TEMPERATURE param");
+    }
+
+    // step-11: integration test composing all new helpers
+    #[test]
+    fn integration_reactor_module_with_all_new_helpers() {
+        // Compose a Reactor module using free_param, celsius() default, range constraint,
+        // option_some_expr/option_none_expr, param_no_default
+        let e = "Reactor";
+        let temp_type = Type::Scalar { dimension: DimensionVector::TEMPERATURE };
+
+        // param with celsius(25.0) as default
+        let temp_default = literal(celsius(25.0));
+
+        // Range constraint: temperature in [kelvin(273.15), kelvin(773.15)]
+        let temp_ref = value_ref_typed(e, "max_temp", temp_type.clone());
+        let lower_bound = literal(kelvin(273.15));
+        let upper_bound = literal(kelvin(773.15));
+        let range_constraint_expr = and(
+            ge(temp_ref.clone(), lower_bound),
+            le(temp_ref.clone(), upper_bound),
+        );
+
+        // option_some_expr and option_none_expr usage in a conditional
+        let opt_temp = option_some_expr(temp_ref.clone());
+        let opt_none = option_none_expr(temp_type.clone());
+        let cond = conditional_expr(literal(Value::Bool(true)), opt_temp, opt_none);
+        assert_eq!(cond.result_type, Type::Option(Box::new(temp_type.clone())));
+
+        let template = TopologyTemplateBuilder::new(e)
+            .free_param(e, "operating_temp", temp_type.clone())
+            .param(e, "max_temp", temp_type.clone(), Some(temp_default))
+            .param_no_default(e, "set_point", temp_type.clone())
+            .constraint(e, 0, Some("temp_range"), range_constraint_expr)
+            .build();
+
+        let module = CompiledModuleBuilder::new(module_path())
+            .template(template)
+            .build();
+
+        assert_eq!(module.templates.len(), 1);
+        let tmpl = &module.templates[0];
+        // free_param + param + param_no_default = 3 cells
+        assert_eq!(tmpl.value_cells.len(), 3);
+        // 1 constraint
+        assert_eq!(tmpl.constraints.len(), 1);
+        assert_ne!(module.content_hash, reify_types::ContentHash::of(&[]));
     }
 }
