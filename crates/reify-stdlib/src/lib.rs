@@ -1571,4 +1571,37 @@ mod tests {
         );
         assert!(result.is_undef(), "remap with to_lo/to_hi dim mismatch should be Undef, got {:?}", result);
     }
+
+    // --- dot() tests: dimensionless vectors (step-1) ---
+
+    #[test]
+    fn dot_orthogonal_dimensionless() {
+        // dot([1,0,0], [0,1,0]) == 0.0
+        let a = Value::Tensor(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
+        let b = Value::Tensor(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
+        assert_real_approx!(eval_builtin("dot", &[a, b]), 0.0);
+    }
+
+    #[test]
+    fn dot_dimensionless_vec3() {
+        // dot([1,2,3], [4,5,6]) == 4+10+18 == 32
+        let a = Value::Tensor(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
+        let b = Value::Tensor(vec![Value::Real(4.0), Value::Real(5.0), Value::Real(6.0)]);
+        assert_real_approx!(eval_builtin("dot", &[a, b]), 32.0);
+    }
+
+    #[test]
+    fn dot_mismatched_lengths_returns_undef() {
+        let a = Value::Tensor(vec![Value::Real(1.0), Value::Real(0.0)]);
+        let b = Value::Tensor(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
+        assert!(eval_builtin("dot", &[a, b]).is_undef(), "mismatched lengths should be Undef");
+    }
+
+    #[test]
+    fn dot_non_tensor_arg_returns_undef() {
+        assert!(
+            eval_builtin("dot", &[Value::Real(1.0), Value::Real(2.0)]).is_undef(),
+            "dot of non-Tensor args should be Undef"
+        );
+    }
 }
