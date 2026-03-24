@@ -43,7 +43,7 @@ pub fn parse(source: &str, module_path: ModulePath) -> ParsedModule {
         declarations: lowering.declarations,
         errors: lowering.errors,
         content_hash,
-        pragmas: Vec::new(),
+        pragmas: lowering.module_pragmas,
     }
 }
 
@@ -54,6 +54,8 @@ struct Lowering<'a> {
     errors: Vec<ParseError>,
     /// Enum names collected in the first pass for disambiguation.
     known_enums: HashSet<String>,
+    /// Module-level pragmas collected during lower_source_file.
+    module_pragmas: Vec<Pragma>,
 }
 
 impl<'a> Lowering<'a> {
@@ -63,6 +65,7 @@ impl<'a> Lowering<'a> {
             declarations: Vec::new(),
             errors: Vec::new(),
             known_enums: HashSet::new(),
+            module_pragmas: Vec::new(),
         }
     }
 
@@ -159,6 +162,11 @@ impl<'a> Lowering<'a> {
                 "unit_declaration" => {
                     if let Some(decl) = self.lower_unit(child) {
                         self.declarations.push(Declaration::Unit(decl));
+                    }
+                }
+                "pragma" => {
+                    if let Some(pragma) = self.lower_pragma(child) {
+                        self.module_pragmas.push(pragma);
                     }
                 }
                 "ERROR" => {
@@ -688,6 +696,79 @@ impl<'a> Lowering<'a> {
             span: self.span(node),
             content_hash: self.content_hash(node),
         })
+    }
+
+    // ── Pragma lowering ───────────────────────────────────────
+
+    /// Lower a `pragma` CST node to a `Pragma` AST node.
+    ///
+    /// Grammar: `'#' name:immediate_identifier ('(' commaSep(pragma_arg) ')')?`
+    fn lower_pragma(&self, node: tree_sitter::Node) -> Option<Pragma> {
+        let name_node = node.child_by_field_name("name")?;
+        let name = self.node_text(name_node).to_string();
+
+        // Collect args from pragma_arg children (if any).
+        let mut args = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if child.kind() == "pragma_arg" {
+                if let Some(arg) = self.lower_pragma_arg(child) {
+                    args.push(arg);
+                }
+            }
+        }
+
+        Some(Pragma {
+            name,
+            args,
+            span: self.span(node),
+        })
+    }
+
+    /// Lower a `pragma_arg` CST node.
+    ///
+    /// Grammar: `(key:identifier '=' value:_pragma_value) | value:_pragma_value`
+    fn lower_pragma_arg(&self, node: tree_sitter::Node) -> Option<PragmaArg> {
+        if let Some(key_node) = node.child_by_field_name("key") {
+            // KeyValue form: `key = value`
+            let key = self.node_text(key_node).to_string();
+            let value_node = node.child_by_field_name("value")?;
+            let value = self.lower_pragma_value(value_node)?;
+            Some(PragmaArg::KeyValue { key, value })
+        } else if let Some(value_node) = node.child_by_field_name("value") {
+            // Bare form: just a value
+            let value = self.lower_pragma_value(value_node)?;
+            Some(PragmaArg::Bare(value))
+        } else {
+            None
+        }
+    }
+
+    /// Lower a `_pragma_value` CST node to a `PragmaValue`.
+    fn lower_pragma_value(&self, node: tree_sitter::Node) -> Option<PragmaValue> {
+        match node.kind() {
+            "identifier" => Some(PragmaValue::Ident(self.node_text(node).to_string())),
+            "number_literal" => {
+                let text = self.node_text(node);
+                text.parse::<f64>().ok().map(PragmaValue::Number)
+            }
+            "string_literal" => {
+                let raw = self.node_text(node);
+                // Strip the surrounding quotes.
+                let s = raw
+                    .strip_prefix('"')
+                    .and_then(|s| s.strip_suffix('"'))
+                    .unwrap_or(raw)
+                    .to_string();
+                Some(PragmaValue::String(s))
+            }
+            "bool_literal" => match self.node_text(node) {
+                "true" => Some(PragmaValue::Bool(true)),
+                "false" => Some(PragmaValue::Bool(false)),
+                _ => None,
+            },
+            _ => None,
+        }
     }
 
     fn lower_purpose_params(&self, node: tree_sitter::Node) -> Vec<PurposeParam> {
