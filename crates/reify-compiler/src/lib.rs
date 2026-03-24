@@ -1800,6 +1800,9 @@ pub fn compile(
             reify_syntax::Declaration::Constraint(_) => {
                 // Constraint definitions: lowering/compilation not yet implemented.
             }
+            reify_syntax::Declaration::Unit(_) => {
+                // Unit declarations: compilation not yet implemented (task 208).
+            }
         }
     }
 

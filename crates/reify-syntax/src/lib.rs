@@ -23,6 +23,7 @@ pub enum Declaration {
     Field(FieldDef),
     Purpose(PurposeDef),
     Constraint(ConstraintDef),
+    Unit(UnitDecl),
 }
 
 /// A structure definition (the primary entity type in Reify).
@@ -318,6 +319,23 @@ pub struct ConstraintDef {
     pub type_params: Vec<TypeParamDecl>,
     pub params: Vec<ParamDecl>,
     pub predicates: Vec<Expr>,
+    pub span: SourceSpan,
+    pub content_hash: ContentHash,
+}
+
+/// A unit declaration: `unit meter : Length` or `unit degC : Temperature = 1 offset 273.15`
+///
+/// Declares a named measurement unit with an optional conversion factor and offset.
+/// The `dimension_type` identifies the physical dimension (e.g., `Length`, `Temperature`).
+/// The `conversion` expression gives the SI multiplier (e.g., `0.001` for mm→m).
+/// The `offset` expression gives an additive offset for affine units (e.g., 273.15 for °C→K).
+#[derive(Debug, Clone)]
+pub struct UnitDecl {
+    pub name: String,
+    pub is_pub: bool,
+    pub dimension_type: TypeExpr,
+    pub conversion: Option<Expr>,
+    pub offset: Option<Expr>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
 }
