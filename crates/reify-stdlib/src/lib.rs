@@ -1298,4 +1298,93 @@ mod tests {
         let result = eval_builtin("lerp", &[Value::Real(0.0), Value::Real(10.0)]);
         assert!(result.is_undef(), "lerp with 2 args should be Undef, got {:?}", result);
     }
+
+    // --- remap Real tests (step-15) ---
+    // remap(x, from_lo, from_hi, to_lo, to_hi)
+    // formula: to_lo + (x - from_lo) * (to_hi - to_lo) / (from_hi - from_lo)
+
+    #[test]
+    fn remap_midpoint() {
+        // remap(5, 0, 10, 0, 100) = 50
+        assert_real_approx!(
+            eval_builtin(
+                "remap",
+                &[Value::Real(5.0), Value::Real(0.0), Value::Real(10.0), Value::Real(0.0), Value::Real(100.0)]
+            ),
+            50.0
+        );
+    }
+
+    #[test]
+    fn remap_at_from_lo() {
+        // remap(from_lo, from_lo, from_hi, to_lo, to_hi) = to_lo
+        assert_real_approx!(
+            eval_builtin(
+                "remap",
+                &[Value::Real(0.0), Value::Real(0.0), Value::Real(10.0), Value::Real(20.0), Value::Real(30.0)]
+            ),
+            20.0
+        );
+    }
+
+    #[test]
+    fn remap_at_from_hi() {
+        // remap(from_hi, from_lo, from_hi, to_lo, to_hi) = to_hi
+        assert_real_approx!(
+            eval_builtin(
+                "remap",
+                &[Value::Real(10.0), Value::Real(0.0), Value::Real(10.0), Value::Real(20.0), Value::Real(30.0)]
+            ),
+            30.0
+        );
+    }
+
+    #[test]
+    fn remap_extrapolation() {
+        // x outside [from_lo, from_hi] extrapolates
+        assert_real_approx!(
+            eval_builtin(
+                "remap",
+                &[Value::Real(15.0), Value::Real(0.0), Value::Real(10.0), Value::Real(0.0), Value::Real(100.0)]
+            ),
+            150.0
+        );
+    }
+
+    #[test]
+    fn remap_inverse() {
+        // remap from [0,100] to [0,10] — inverse of remap_midpoint
+        assert_real_approx!(
+            eval_builtin(
+                "remap",
+                &[Value::Real(50.0), Value::Real(0.0), Value::Real(100.0), Value::Real(0.0), Value::Real(10.0)]
+            ),
+            5.0
+        );
+    }
+
+    #[test]
+    fn remap_division_by_zero_returns_undef() {
+        // from_lo == from_hi -> division by zero -> Undef (early-exit)
+        let result = eval_builtin(
+            "remap",
+            &[Value::Real(5.0), Value::Real(3.0), Value::Real(3.0), Value::Real(0.0), Value::Real(10.0)],
+        );
+        assert!(result.is_undef(), "remap with from_lo==from_hi should be Undef, got {:?}", result);
+    }
+
+    #[test]
+    fn remap_nan_returns_undef() {
+        let result = eval_builtin(
+            "remap",
+            &[Value::Real(f64::NAN), Value::Real(0.0), Value::Real(10.0), Value::Real(0.0), Value::Real(100.0)],
+        );
+        assert!(result.is_undef(), "remap with NaN x should be Undef, got {:?}", result);
+    }
+
+    #[test]
+    fn remap_wrong_arg_count_returns_undef() {
+        let result = eval_builtin("remap", &[Value::Real(5.0), Value::Real(0.0), Value::Real(10.0)]);
+        assert!(result.is_undef(), "remap with 3 args should be Undef, got {:?}", result);
+    }
 }
