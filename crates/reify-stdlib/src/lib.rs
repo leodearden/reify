@@ -1188,22 +1188,32 @@ mod tests {
     }
 
     #[test]
-    fn clamp_fallback_scalar_reconstruction() {
-        // Mixed types: x is Int, lo/hi are Scalar LENGTH -> fallback extracts as_f64 but
-        // since all args share a non-DIMENSIONLESS dimension, result should be Scalar LENGTH
+    fn clamp_fallback_dimension_mismatch_returns_undef() {
+        // Fallback arm: x is Real (DIMENSIONLESS) but lo/hi are Scalar LENGTH.
+        // The fallback cannot silently drop LENGTH → must return Undef.
         let result = eval_builtin(
             "clamp",
             &[
-                Value::Scalar { si_value: 0.005, dimension: DimensionVector::LENGTH },
+                Value::Real(5.0),
                 Value::Scalar { si_value: 0.001, dimension: DimensionVector::LENGTH },
                 Value::Scalar { si_value: 0.010, dimension: DimensionVector::LENGTH },
             ],
         );
-        // The Scalar arm should handle this; checking it preserves dimension
-        match result {
-            Value::Scalar { dimension, .. } => assert_eq!(dimension, DimensionVector::LENGTH),
-            other => panic!("expected Scalar with LENGTH dimension, got {:?}", other),
-        }
+        assert!(
+            result.is_undef(),
+            "clamp with mismatched dimensions should be Undef, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn clamp_fallback_all_dimensionless_returns_real() {
+        // Fallback arm: x is Int, lo/hi are Real → all DIMENSIONLESS → clamp coerces to Real.
+        let result = eval_builtin(
+            "clamp",
+            &[Value::Int(5), Value::Real(0.0), Value::Real(10.0)],
+        );
+        assert_real_approx!(result, 5.0);
     }
 
     // --- lerp Real tests (step-9) ---
