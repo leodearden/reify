@@ -321,8 +321,8 @@ use std::collections::HashSet;
 use reify_compiler::{
     CompiledConstraint, CompiledField, CompiledFieldSource, CompiledGeometryOp,
     CompiledGuardedGroup, CompiledImport, CompiledModule, CompiledPurpose, CompiledPurposeParam,
-    EntityKind, RealizationDecl, ResolvedSchemaQuery, SubComponentDecl, TopologyTemplate,
-    ValueCellDecl, ValueCellKind,
+    CompiledTrait, EntityKind, RealizationDecl, RequirementKind, ResolvedSchemaQuery,
+    SubComponentDecl, TopologyTemplate, TraitRequirement, ValueCellDecl, ValueCellKind,
 };
 use reify_types::{ConstraintNodeId, RealizationNodeId};
 
@@ -1119,6 +1119,86 @@ impl CompiledPurposeBuilder {
             constraints: self.constraints,
             objective: self.objective,
             resolved_queries: self.resolved_queries,
+            content_hash,
+        }
+    }
+}
+
+// --- CompiledTraitBuilder (step-18) ---
+
+/// Builder for `CompiledTrait`.
+pub struct CompiledTraitBuilder {
+    name: String,
+    is_pub: bool,
+    type_params: Vec<reify_types::TypeParam>,
+    refinements: Vec<String>,
+    required_members: Vec<TraitRequirement>,
+    defaults: Vec<reify_compiler::TraitDefault>,
+}
+
+impl CompiledTraitBuilder {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            is_pub: false,
+            type_params: Vec::new(),
+            refinements: Vec::new(),
+            required_members: Vec::new(),
+            defaults: Vec::new(),
+        }
+    }
+
+    pub fn public(mut self) -> Self {
+        self.is_pub = true;
+        self
+    }
+
+    pub fn refinement(mut self, name: impl Into<String>) -> Self {
+        self.refinements.push(name.into());
+        self
+    }
+
+    pub fn require_param(mut self, name: impl Into<String>, ty: Type) -> Self {
+        self.required_members.push(TraitRequirement {
+            name: name.into(),
+            kind: RequirementKind::Param(ty),
+            span: SourceSpan::new(0, 0),
+        });
+        self
+    }
+
+    pub fn require_let(mut self, name: impl Into<String>, ty: Type) -> Self {
+        self.required_members.push(TraitRequirement {
+            name: name.into(),
+            kind: RequirementKind::Let(ty),
+            span: SourceSpan::new(0, 0),
+        });
+        self
+    }
+
+    pub fn require_sub(mut self, name: impl Into<String>, structure: impl Into<String>) -> Self {
+        self.required_members.push(TraitRequirement {
+            name: name.into(),
+            kind: RequirementKind::Sub(structure.into()),
+            span: SourceSpan::new(0, 0),
+        });
+        self
+    }
+
+    pub fn build(self) -> CompiledTrait {
+        let name_hash = ContentHash::of_str(&self.name);
+        let member_hashes = self.required_members.iter().map(|m| ContentHash::of_str(&m.name));
+        let content_hash = std::iter::once(name_hash)
+            .chain(member_hashes)
+            .fold(ContentHash::of(&[0x54]), |acc, h| acc.combine(h));
+
+        CompiledTrait {
+            name: self.name,
+            is_pub: self.is_pub,
+            type_params: self.type_params,
+            refinements: self.refinements,
+            required_members: self.required_members,
+            defaults: self.defaults,
             content_hash,
         }
     }

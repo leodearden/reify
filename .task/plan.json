@@ -130,15 +130,15 @@
       "id": "step-17",
       "type": "test",
       "description": "Write tests for CompiledTraitBuilder: CompiledTraitBuilder::new(\"Rigid\").require_param(\"thickness\",Type::length()).build() produces CompiledTrait with 1 required_member (TraitRequirement{name:\"thickness\",kind:RequirementKind::Param(Type::length())}). .public().refinement(\"Bounded\").require_let(\"vol\",Type::Real).require_sub(\"mount\",\"MountPoint\").build() populates all fields. Assert content_hash non-zero.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "5548c2a"
     },
     {
       "id": "step-18",
       "type": "impl",
       "description": "Implement CompiledTraitBuilder struct{name, is_pub, type_params: Vec<TypeParam>, refinements: Vec<String>, required_members: Vec<TraitRequirement>, defaults: Vec<TraitDefault>}. Methods: new(name)->Self, public()->Self, type_param(name,bounds:Vec<TraitBound>)->Self (adds TypeParam{name,bounds,default:None}), refinement(name)->Self, require_param(name,ty)->Self (adds TraitRequirement with RequirementKind::Param(ty)), require_let(name,ty)->Self, require_sub(name,structure)->Self, build()->CompiledTrait with content_hash from name+members.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "pending"
     },
     {
       "id": "step-19",
