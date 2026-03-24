@@ -35,6 +35,8 @@ pub enum Type {
     Field { domain: Box<Type>, codomain: Box<Type> },
     /// Geometry handle (a reference to a realization, not a scalar value).
     Geometry,
+    /// N-dimensional point with a quantity type (e.g., Point3<Scalar[m]>).
+    Point { n: usize, quantity: Box<Type> },
 }
 
 impl Type {
@@ -236,6 +238,7 @@ impl std::fmt::Display for Type {
             Type::StructureRef(name) => write!(f, "{}", name),
             Type::Field { domain, codomain } => write!(f, "Field<{}, {}>", domain, codomain),
             Type::Geometry => write!(f, "Geometry"),
+            Type::Point { n, quantity } => write!(f, "Point{}<{}>", n, quantity),
         }
     }
 }
