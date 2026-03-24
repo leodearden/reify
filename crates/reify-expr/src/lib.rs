@@ -628,7 +628,15 @@ fn eval_binop(op: BinOp, left: &CompiledExpr, right: &CompiledExpr, ctx: &EvalCo
     }
 
     match op {
-        BinOp::Add => eval_add(&lv, &rv),
+        BinOp::Add => {
+            // Point + Point is undefined: spec 3.3.1 prohibits adding two points
+            if matches!(&left.result_type, Type::Point { .. })
+                && matches!(&right.result_type, Type::Point { .. })
+            {
+                return Value::Undef;
+            }
+            eval_add(&lv, &rv)
+        }
         BinOp::Sub => eval_sub(&lv, &rv),
         BinOp::Mul => eval_mul(&lv, &rv),
         BinOp::Div => eval_div(&lv, &rv),
@@ -719,6 +727,18 @@ fn eval_add(lv: &Value, rv: &Value) -> Value {
             }
         }
         (Value::String(a), Value::String(b)) => Value::String(format!("{}{}", a, b)),
+        // Component-wise Tensor addition
+        (Value::Tensor(a), Value::Tensor(b)) => {
+            if a.len() != b.len() {
+                return Value::Undef;
+            }
+            let results: Vec<Value> = a.iter().zip(b.iter()).map(|(x, y)| eval_add(x, y)).collect();
+            if results.iter().any(|v| v.is_undef()) {
+                Value::Undef
+            } else {
+                Value::Tensor(results)
+            }
+        }
         _ => Value::Undef,
     }
 }
@@ -746,6 +766,18 @@ fn eval_sub(lv: &Value, rv: &Value) -> Value {
                     si_value: a - b,
                     dimension: *ad,
                 }
+            }
+        }
+        // Component-wise Tensor subtraction
+        (Value::Tensor(a), Value::Tensor(b)) => {
+            if a.len() != b.len() {
+                return Value::Undef;
+            }
+            let results: Vec<Value> = a.iter().zip(b.iter()).map(|(x, y)| eval_sub(x, y)).collect();
+            if results.iter().any(|v| v.is_undef()) {
+                Value::Undef
+            } else {
+                Value::Tensor(results)
             }
         }
         _ => Value::Undef,
@@ -784,6 +816,17 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
             si_value: si_value * r,
             dimension: *dimension,
         },
+        // Scalar * Tensor or Tensor * Scalar: scale each component
+        (Value::Tensor(components), scalar) | (scalar, Value::Tensor(components))
+            if !matches!(scalar, Value::Tensor(_)) =>
+        {
+            let results: Vec<Value> = components.iter().map(|c| eval_mul(c, scalar)).collect();
+            if results.iter().any(|v| v.is_undef()) {
+                Value::Undef
+            } else {
+                Value::Tensor(results)
+            }
+        }
         _ => Value::Undef,
     }
 }
@@ -839,6 +882,15 @@ fn eval_div(lv: &Value, rv: &Value) -> Value {
             si_value: si_value / r,
             dimension: *dimension,
         },
+        // Tensor / Scalar: divide each component by the scalar
+        (Value::Tensor(components), scalar) if !matches!(scalar, Value::Tensor(_)) => {
+            let results: Vec<Value> = components.iter().map(|c| eval_div(c, scalar)).collect();
+            if results.iter().any(|v| v.is_undef()) {
+                Value::Undef
+            } else {
+                Value::Tensor(results)
+            }
+        }
         _ => Value::Undef,
     }
 }
@@ -996,6 +1048,25 @@ fn eval_unop(op: UnOp, operand: &CompiledExpr, ctx: &EvalContext) -> Value {
                 si_value: -si_value,
                 dimension,
             },
+            // Negate all components of a Tensor
+            Value::Tensor(components) => {
+                let results: Vec<Value> = components
+                    .into_iter()
+                    .map(|c| match c {
+                        Value::Int(i) => Value::Int(-i),
+                        Value::Real(r) => Value::Real(-r),
+                        Value::Scalar { si_value, dimension } => {
+                            Value::Scalar { si_value: -si_value, dimension }
+                        }
+                        _ => Value::Undef,
+                    })
+                    .collect();
+                if results.iter().any(|x| x.is_undef()) {
+                    Value::Undef
+                } else {
+                    Value::Tensor(results)
+                }
+            }
             _ => Value::Undef,
         },
         UnOp::Not => match v {

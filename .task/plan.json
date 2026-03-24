@@ -1,211 +1,151 @@
 {
-  "task_id": "157",
-  "title": "Chained comparisons: desugaring",
+  "task_id": "227",
+  "title": "Point/Vector: unit tests",
   "files": [
-    "crates/reify-compiler/src/lib.rs",
-    "crates/reify-compiler/tests/chained_comparison_tests.rs"
+    "crates/reify-expr/tests/point_vector_eval_tests.rs",
+    "crates/reify-expr/src/lib.rs"
   ],
   "modules": [
-    "crates/reify-compiler"
+    "crates/reify-expr",
+    "crates/reify-types"
   ],
-  "analysis": "The Reify grammar already parses chained comparisons as left-nested BinOp nodes due to left-associative precedence: `a < b < c` becomes `BinOp(\"<\", BinOp(\"<\", a, b), c)`. Currently the compiler compiles this as-is, which would attempt to compare a Bool result (from `a < b`) with `c` — producing a type-nonsensical expression. The fix is to detect this pattern in `compile_expr_guarded()` and desugar it into an And-chain of pairwise comparisons. No grammar, parser, or evaluator changes are needed — the grammar already produces the detectable left-nested structure, and the evaluator already handles `BinOp::And` with short-circuit Kleene logic.\n\nThe algorithm works by flattening the left-nested comparison chain from the parsed AST into a flat list of operands and operators, compiling each operand exactly once, then building the And-chain from compiled pairwise comparisons. Middle operands are cloned at the `CompiledExpr` level (safe because Reify expressions are pure/side-effect-free and the evaluator uses content-hash-based caching for dedup).\n\nKey code locations:\n- `compile_expr_guarded()` at lib.rs:769 — expression compilation dispatch\n- `ExprKind::BinOp` handling at lib.rs:838 — where chain detection will be inserted\n- `resolve_binop()` at lib.rs:629 — operator string-to-enum mapping\n- `infer_binop_type()` at lib.rs:661 — type inference (comparisons produce Bool, already handled)\n- `CompiledExpr::binop()` in reify-types/expr.rs:177 — constructor with content hashing",
+  "analysis": "Task 227 requires >=22 tests covering Point/Vector construction, all arithmetic rules from spec section 3.3.1, component access, dimensional checking, scalar-vector multiplication, P+P error, different-N error, undef propagation, and the specific Point3<Length>-Point3<Length>->Vector3<Length> case.\n\nThe existing point_vector_eval_tests.rs has 12 component-access tests from task 226. Task 225 ('affine arithmetic') is marked done but the eval_add/eval_sub/eval_mul/eval_div/eval_unop functions in lib.rs do NOT currently handle Value::Tensor \u2014 they fall through to `_ => Value::Undef`. This means the Tensor arithmetic implementation is missing and must be added alongside the tests (true TDD: write failing test, then implement).\n\nAt runtime, both Point and Vector are represented as Value::Tensor(Vec<Value>). The type distinction exists only in the Type enum (Type::Point vs Type::Vector). The evaluator's arithmetic functions (eval_add, eval_sub, etc.) operate on Values without type info, so component-wise Tensor operations are type-agnostic. The Point+Point error guard requires checking CompiledExpr.result_type in eval_binop before dispatching.\n\nThe implementation adds: (1) Tensor component-wise add/sub with length checking, (2) Scalar*Tensor and Tensor*Scalar in eval_mul, (3) Tensor/Scalar in eval_div, (4) Tensor negation in eval_unop, (5) Point+Point type guard in eval_binop. All follow strict Undef propagation: if any component op yields Undef, the entire Tensor result is Undef.",
   "prerequisites": [],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing test: simple two-element chain `a < b < c` desugars to `And(Lt(a,b), Lt(b,c))`. Create new test file `chained_comparison_tests.rs` with `compile_first_template()` helper. Parse+compile a structure with `constraint a < b < c` and assert the constraint expression is `BinOp(And, BinOp(Lt, a, b), BinOp(Lt, b, c))` by pattern-matching on CompiledExprKind.",
+      "description": "Write 4 construction tests verifying Value::Tensor creation for Point3<Length>, Vector3<Length>, Point2<Length>, Vector2<Dimensionless>. These pass immediately since Value::Tensor already exists. Tests verify component count and values match. Add to point_vector_eval_tests.rs in a new '// --- Construction ---' section.",
       "status": "done",
-      "commit": "b94f8a4"
+      "commit": "PLACEHOLDER"
     },
     {
       "id": "step-2",
-      "type": "impl",
-      "description": "Implement chain detection and desugaring in `compile_expr_guarded()`. Add helper `is_comparison_op(op: &str) -> bool` that returns true for <, <=, >, >=, ==, !=. Add `flatten_comparison_chain(expr: &Expr) -> Option<(Vec<&Expr>, Vec<&str>)>` that walks leftward through nested BinOps with comparison operators, collecting operands and operators into flat vectors. In the `ExprKind::BinOp` match arm, before existing logic, call `flatten_comparison_chain` — if it returns Some with >2 operands, compile each operand once, clone middle CompiledExprs, and build the left-folded And-chain of pairwise comparisons. Otherwise fall through to existing BinOp logic.",
-      "status": "done",
-      "commit": "d42cd38"
+      "type": "test",
+      "description": "Write 7 failing tests for Tensor add/sub arithmetic: (1) vector3_add_vector3_componentwise, (2) vector3_sub_vector3_componentwise, (3) point3_add_vector3_returns_point, (4) vector3_add_point3_returns_point, (5) point3_sub_point3_returns_vector, (6) point3_length_sub_point3_length_gives_vector3_length (the specific spec case), (7) vector3_add_vector2_n_mismatch_returns_undef. All use CompiledExpr::binop with BinOp::Add/Sub on Tensor literals. Tests 1-6 fail because eval_add/eval_sub don't handle Tensor. Test 7 passes by accident (Undef fallthrough).",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-3",
-      "type": "test",
-      "description": "Write failing test: mixed comparison operators `a < b <= c` desugars to `And(Lt(a,b), Le(b,c))`. Verify both operator variants are preserved correctly in the desugared output.",
-      "status": "done",
-      "commit": "357590b"
+      "type": "impl",
+      "description": "Add Tensor component-wise add/sub to eval_add and eval_sub in lib.rs. Pattern: match (Value::Tensor(a), Value::Tensor(b)) => check a.len()==b.len() (else Undef), zip and apply eval_add/eval_sub per component, if any component is Undef return Undef, else return Value::Tensor(results). This makes step-2 tests 1-6 pass. Test 7 (N mismatch) passes via the length check.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-4",
-      "type": "impl",
-      "description": "Verify step-3 test passes with existing implementation (should pass already since flatten handles all comparison ops). If not, fix the operator handling in the flatten/desugar logic.",
-      "status": "done",
-      "commit": "357590b"
+      "type": "test",
+      "description": "Write 1 failing test: point3_add_point3_returns_undef \u2014 create two Point3<Length> Tensor literals, add via BinOp::Add with result_type Type::point3(Type::length()). After step-3, Tensor+Tensor works, so P+P now returns a Tensor instead of Undef. This test fails, proving the guard is needed.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-5",
-      "type": "test",
-      "description": "Write failing test: three-operator chain `a < b < c < d` desugars to `And(And(Lt(a,b), Lt(b,c)), Lt(c,d))`. Verify the recursive left-folded And structure with 3 pairwise comparisons sharing middle operands.",
-      "status": "done",
-      "commit": "9181fbd"
+      "type": "impl",
+      "description": "Add Point+Point type guard in eval_binop in lib.rs. Before dispatching BinOp::Add to eval_add, check if both left.result_type and right.result_type match Type::Point{..}. If so, return Value::Undef immediately. This makes step-4 test pass while preserving all other Tensor add behavior.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-6",
-      "type": "impl",
-      "description": "Verify step-5 test passes with existing implementation (should pass since flatten handles arbitrary depth). If not, fix the And-chain construction to left-fold correctly.",
-      "status": "done",
-      "commit": "9181fbd"
+      "type": "test",
+      "description": "Write 3 failing tests for scalar-vector multiplication and division: (1) scalar_mul_vector3_scales_components \u2014 Scalar(2.0,LENGTH) * Vector3<Length>(1,2,3) -> Tensor([2,4,6] with AREA dimension), (2) vector3_mul_scalar_commutative \u2014 same but reversed operand order, (3) vector3_div_scalar_divides_components \u2014 Vector3<Length>(10,20,30) / Scalar(2.0,DIMENSIONLESS) -> Tensor([5,10,15]). All fail because eval_mul/eval_div don't handle Tensor.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-7",
-      "type": "test",
-      "description": "Write failing test: equality chain `a == b == c` desugars to `And(Eq(a,b), Eq(b,c))`. Confirms that equality operators participate in chaining per the spec.",
-      "status": "done",
-      "commit": "0e6c7b2"
+      "type": "impl",
+      "description": "Add Scalar*Tensor, Tensor*Scalar to eval_mul and Tensor/Scalar to eval_div in lib.rs. For mul: match (Value::Tensor(components), scalar) or (scalar, Value::Tensor(components)) where scalar is Scalar/Int/Real, map each component through eval_mul(component, scalar). For div: match (Value::Tensor(components), scalar), map each component through eval_div(component, scalar). Apply strict Undef propagation. Makes step-6 tests pass.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-8",
-      "type": "impl",
-      "description": "Verify step-7 test passes. If not, ensure == and != are included in is_comparison_op().",
-      "status": "done",
-      "commit": "0e6c7b2"
+      "type": "test",
+      "description": "Write 1 failing test: negate_vector3_negates_all_components \u2014 CompiledExpr::unop(UnOp::Neg, Vector3<Length>(1,2,3), Type::vec3(Type::length())). Expected: Tensor([-1,-2,-3]) with LENGTH dimension. Fails because eval_unop Neg doesn't handle Tensor.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-9",
-      "type": "test",
-      "description": "Write test: middle expression compiled once — verify that a chain like `a < b + c < d` compiles correctly with the complex middle expression `b + c` appearing as a BinOp(Add) in both the right side of the first comparison and the left side of the second. Assert both sub-expressions have the same content_hash, confirming they are cloned from a single compilation rather than compiled independently.",
-      "status": "done",
-      "commit": "b3a5c4e"
+      "type": "impl",
+      "description": "Add Tensor negation to eval_unop in lib.rs. In the UnOp::Neg match arm, add: Value::Tensor(components) => map each component through negation (call eval_unop-style negation per component or inline match), strict Undef propagation. Makes step-8 test pass.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-10",
-      "type": "impl",
-      "description": "Verify step-9 test passes. The flatten-then-compile-once approach should naturally ensure middle operands are compiled once and cloned. If the content_hash assertion fails, fix the clone logic.",
-      "status": "done",
-      "commit": "b3a5c4e"
-    },
-    {
-      "id": "step-11",
       "type": "test",
-      "description": "Write test: non-comparison binary op on left does NOT trigger chaining. E.g., `(a + b) < c` should compile as a normal `Lt(Add(a,b), c)` without any And-wrapping. Verifies that only comparison operators in the left operand trigger the chain detection.",
-      "status": "done",
-      "commit": "c1bde9d"
-    },
-    {
-      "id": "step-12",
-      "type": "impl",
-      "description": "Verify step-11 passes. The is_comparison_op() check should naturally exclude arithmetic ops. If not, fix the predicate.",
-      "status": "done",
-      "commit": "c1bde9d"
-    },
-    {
-      "id": "step-13",
-      "type": "test",
-      "description": "Write test: single comparison (no chain) `a < b` still compiles as plain `Lt(a,b)`. Regression test ensuring the desugaring only activates for actual chains (>2 operands), not single comparisons.",
-      "status": "done",
-      "commit": "983c376"
-    },
-    {
-      "id": "step-14",
-      "type": "impl",
-      "description": "Verify step-13 passes. The flatten function should return None for single comparisons (only 2 operands). If not, adjust the threshold check.",
-      "status": "done",
-      "commit": "983c376"
-    },
-    {
-      "id": "step-15",
-      "type": "test",
-      "description": "Write integration test: chained comparison in a constraint with Scalar quantities — `constraint 2mm < thickness < 10mm`. Compile the structure and verify: (1) no error diagnostics, (2) the constraint is an And of two comparisons, (3) result_type is Bool. This tests the real-world use case of range constraints in engineering.",
-      "status": "done",
-      "commit": "c51caf9"
-    },
-    {
-      "id": "step-16",
-      "type": "impl",
-      "description": "Verify step-15 passes. May require no changes if types flow correctly through the desugared form. If dimension checking triggers false errors on the desugared form, investigate and fix.",
-      "status": "done",
-      "commit": "c51caf9"
-    },
-    {
-      "id": "step-17",
-      "type": "test",
-      "description": "Write test: chained comparison in a let binding — `let in_range = 0 < x < 100`. Verify the let cell's initializer expression is desugared to an And-chain and has type Bool.",
-      "status": "done",
-      "commit": "56f53b9"
-    },
-    {
-      "id": "step-18",
-      "type": "impl",
-      "description": "Verify step-17 passes. Let-binding compilation uses the same compile_expr_guarded() path, so desugaring should apply automatically.",
-      "status": "done",
-      "commit": "56f53b9"
-    },
-    {
-      "id": "step-19",
-      "type": "test",
-      "description": "Write test: cross-precedence chain `a < b == c` (< at grammar prec 4, == at prec 3). Due to grammar precedence, this parses as `(a < b) == c`, which the compiler should desugar to `And(Lt(a,b), Eq(b,c))`. Verify correct desugaring across precedence boundaries.",
-      "status": "done",
-      "commit": "56f53b9"
-    },
-    {
-      "id": "step-20",
-      "type": "impl",
-      "description": "Verify step-19 passes. The left-flattening approach handles this since (a < b) is a comparison in the left position of == c. If not, fix.",
-      "status": "done",
-      "commit": "56f53b9"
+      "description": "Write 4 tests for dimension checking and Undef propagation: (1) vector3_add_different_dimension_returns_undef \u2014 Vector3<Length> + Vector3<Angle> -> Undef (component-wise Scalar add checks dimension, strict propagation makes whole Tensor Undef), (2) scalar_times_vector_combines_dimensions \u2014 Scalar(2.0,MASS) * Vector3<Length>(1,2,3) -> Tensor with MASS*LENGTH dimension on each component, (3) undef_operand_in_tensor_binop_propagates \u2014 Undef + Vector3 -> Undef (handled by existing strict propagation in eval_binop), (4) tensor_with_undef_component_in_add_propagates \u2014 Vector3 with one Undef component + Vector3 -> Undef (strict propagation in Tensor add). All should pass with existing implementation from prior steps.",
+      "status": "pending",
+      "commit": null
     }
   ],
   "design_decisions": [
     {
-      "decision": "Compiler-only desugaring — no grammar or parser changes",
-      "rationale": "The Tree-sitter grammar already parses chained comparisons as left-nested BinOp nodes due to prec.left(4) for ordering ops and prec.left(3) for equality ops. The compiler can detect this pattern (comparison op with comparison on left side) and desugar without any new AST variants or grammar rules. This minimizes the change surface and avoids touching the parser crate."
+      "decision": "Tensor arithmetic is value-level, not type-level",
+      "rationale": "eval_add/sub/mul/div operate on Values without type information. At runtime, both Point and Vector are Value::Tensor(Vec<Value>). Component-wise operations are type-agnostic. This keeps the evaluator simple and aligns with the existing scalar arithmetic pattern."
     },
     {
-      "decision": "Left-only chain flattening",
-      "rationale": "Only detect chains by walking leftward through nested BinOps. This handles all cases the grammar produces for same-precedence chains (a < b < c) and higher-to-lower precedence chains (a < b == c). The right-nested case (a == (b < c)) is NOT treated as a chain because it arises from different precedence levels and the user likely intends to compare a value with a boolean result. This matches Python's chaining semantics and natural mathematical reading."
+      "decision": "Point+Point guard uses CompiledExpr.result_type in eval_binop",
+      "rationale": "The only place where Point vs Vector distinction matters at eval time is the P+P prohibition. Since eval_binop receives full CompiledExpr (which has result_type: Type), we check types there before dispatching to eval_add. This is a surgical check that doesn't complicate the arithmetic functions."
     },
     {
-      "decision": "Clone middle CompiledExprs instead of adding synthetic let bindings",
-      "rationale": "Reify expressions are pure (no side effects), so cloning middle operands at the CompiledExpr level is semantically equivalent to single-evaluation. The evaluator's content-hash-based caching ensures that identical sub-expressions (same content_hash) are efficiently deduplicated at evaluation time. Adding a Let variant to CompiledExprKind would require changes to the evaluator (reify-expr) and constraint solver (reify-constraints), which is disproportionate for this feature. The compile-once-then-clone approach naturally avoids re-compilation of middle expressions while keeping the compiled representation flat."
+      "decision": "Strict Undef propagation for Tensor operations",
+      "rationale": "If any component operation returns Undef, the entire Tensor result is Undef. This follows the existing strict propagation pattern (eval_binop returns Undef if either operand is Undef, eval_sum returns Undef if any item is Undef). Dimension mismatch within components naturally produces Undef through the existing Scalar dimension check."
     },
     {
-      "decision": "All six comparison operators participate in chaining",
-      "rationale": "Per the task spec ('All comparison operators may chain'), the operators <, <=, >, >=, ==, != all participate in is_comparison_op(). This enables useful patterns like `a == b == c` (all pairwise equal), `a < b == c` (a less than b, and b equals c), and mixed ordering/equality chains."
+      "decision": "Scalar*Tensor detects scalar-like values by matching Value variants",
+      "rationale": "Rather than introducing a helper method, eval_mul matches (Value::Tensor, Value::Scalar/Int/Real) and the reverse. This is consistent with how eval_mul already handles Scalar*Int and Scalar*Real cases. The per-component mul reuses the existing eval_mul function recursively."
     },
     {
-      "decision": "And-chain is left-folded",
-      "rationale": "For a chain `a op1 b op2 c op3 d`, the result is `And(And(op1(a,b), op2(b,c)), op3(c,d))`. Left-folding matches the natural left-to-right evaluation order and is consistent with how the evaluator's short-circuit And works — earlier comparisons are evaluated first, and if any fails, later ones are skipped via Kleene logic."
+      "decision": "N-mismatch check uses Vec length comparison",
+      "rationale": "Different-N Tensors have different Vec lengths at runtime. Checking a.len() != b.len() in the Tensor add/sub match arm is simple, correct, and produces Undef consistently with other error cases."
+    },
+    {
+      "decision": "Tests extend existing point_vector_eval_tests.rs rather than creating a new file",
+      "rationale": "The existing file has 12 component-access tests and established patterns (imports, helpers). Adding arithmetic tests in clearly labeled sections keeps related tests together and avoids import duplication."
     }
   ],
   "reuse": [
     {
-      "what": "resolve_binop() function",
-      "where": "crates/reify-compiler/src/lib.rs:629",
-      "how": "Used to convert string operators to BinOp enum when building the desugared comparison pairs. Already handles all six comparison operators plus logical ops."
+      "what": "Value::length(f64) and Value::angle(f64) constructors",
+      "where": "crates/reify-types/src/value.rs",
+      "how": "Use these helpers to construct dimensioned Scalar values for Tensor components in test literals, avoiding manual DimensionVector construction."
     },
     {
-      "what": "CompiledExpr::binop() constructor",
-      "where": "crates/reify-types/src/expr.rs:177",
-      "how": "Used to build both the pairwise comparison nodes (Lt, Le, etc.) and the And-chain nodes. Automatically computes content hashing for deduplication."
+      "what": "Type::point3(), Type::vec3(), Type::point2(), Type::vec2() constructors",
+      "where": "crates/reify-types/src/ty.rs",
+      "how": "Use these shorthands for result_type annotations in CompiledExpr::binop and literal construction."
     },
     {
-      "what": "infer_binop_type() function",
-      "where": "crates/reify-compiler/src/lib.rs:661",
-      "how": "Already returns Type::Bool for all comparison and logical operators. Used for each desugared BinOp node to produce correct result types."
+      "what": "CompiledExpr::literal(), CompiledExpr::binop(), CompiledExpr::unop()",
+      "where": "crates/reify-types/src/expr.rs",
+      "how": "Use the existing expression builders to construct test expressions. binop takes (BinOp, left, right, result_type) and unop takes (UnOp, operand, result_type)."
     },
     {
-      "what": "compile_first_template() test helper pattern",
-      "where": "crates/reify-compiler/tests/guard_compilation.rs:10",
-      "how": "Reuse this parse-compile-extract-template pattern in the new test file. Standard pattern across 6+ existing test files."
+      "what": "EvalContext::simple(&ValueMap) pattern",
+      "where": "crates/reify-expr/src/lib.rs",
+      "how": "All tests use this pattern for evaluation context with no user-defined functions, matching the existing 12 component-access tests."
     },
     {
-      "what": "CompiledExprKind pattern matching in tests",
-      "where": "crates/reify-compiler/tests/quantifier_compile_tests.rs:30-50",
-      "how": "Reuse the nested match + assert pattern for inspecting compiled expression trees. Standard assertion pattern for verifying compiled expression structure."
+      "what": "Existing eval_add Scalar dimension checking",
+      "where": "crates/reify-expr/src/lib.rs lines 702-720",
+      "how": "Component-wise Tensor add/sub reuses eval_add/eval_sub per component. Dimension mismatches between Vector<Length> and Vector<Angle> are caught by the existing Scalar(ad != bd) check, returning Undef per component, which triggers strict Tensor-level Undef propagation."
     },
     {
-      "what": "ExprKind::BinOp string-based operator representation",
-      "where": "crates/reify-syntax/src/lib.rs:413",
-      "how": "The parsed AST stores operators as strings, which is what is_comparison_op() will match against. No new enum needed — just string matching on the existing op field."
+      "what": "Existing Undef propagation in eval_binop",
+      "where": "crates/reify-expr/src/lib.rs lines 625-628",
+      "how": "The existing 'if lv.is_undef() || rv.is_undef() { return Value::Undef }' guard handles Undef operand propagation for Tensor binops without any new code."
+    },
+    {
+      "what": "DimensionVector::mul() and DimensionVector::div()",
+      "where": "crates/reify-types/src/dimension.rs",
+      "how": "Scalar*Tensor dimension combination is handled automatically: eval_mul on (Scalar{dim_a}, Scalar{dim_b}) uses dim_a.mul(dim_b) to combine exponents. No new dimension logic needed."
     }
   ],
-  "_session_id": "157-a541e41b",
-  "_created_at": "2026-03-24T10:09:56.082670+00:00"
+  "_session_id": "227-cadb625d",
+  "_created_at": "2026-03-24T10:24:31.825500+00:00"
 }
