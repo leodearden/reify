@@ -14,7 +14,7 @@
     "tree-sitter-reify",
     "crates/reify-syntax"
   ],
-  "analysis": "The task requires adding support for top-level `constraint def Name { params, predicate_lines }` parsing. Currently, `ConstraintDecl` exists only as a member-level declaration (inside structures, traits, purposes) using the syntax `constraint <expr>`. The task needs a NEW top-level `ConstraintDef` that is a named, parameterized constraint definition with bare expression predicates in the body.\n\nThe language spec (Section 4.1.3, 10.1, 12.1) defines constraint def syntax with examples like:\n```\nconstraint def MinWallThickness {\n    param wall : Length\n    param process : ManufacturingProcess\n    wall >= process.min_wall_thickness\n}\n```\n\nThe implementation requires three layers:\n1. **Grammar**: Add `constraint_definition` rule to tree-sitter grammar with body items being either `param_declaration`, `let_declaration`, or bare expression predicates (`constraint_def_predicate`)\n2. **AST**: Add `ConstraintDef` struct and `Constraint(ConstraintDef)` variant to `Declaration` enum\n3. **Lowering**: Add `lower_constraint_def` function and dispatch in `lower_source_file`\n\nKey insight: `constraint_definition` (top-level, starts with `constraint def`) operates in `_declaration` context, while `constraint_declaration` (member-level, starts with `constraint <expr>`) operates in `_member` context. No grammar conflict between them.\n\nThe body uses `_constraint_def_body_item` choice: param_declaration, let_declaration, or constraint_def_predicate (bare _expression). Bare expressions are predicate assertions; multiple predicates form a conjunction. Keywords like `param`/`let` disambiguate member declarations from bare expressions.",
+  "analysis": "The task requires adding support for top-level `constraint def Name { params, predicate_lines }` parsing. Currently, `ConstraintDecl` exists only as a member-level declaration (inside structures, traits, purposes) using the syntax `constraint <expr>`. The task needs a NEW top-level `ConstraintDef` that is a named, parameterized constraint definition with bare expression predicates in the body.\n\nThe language spec (Section 4.1.3, 10.1, 12.1) defines constraint def syntax with examples like:\n```\nconstraint def MinWallThickness {\n    param wall : Length\n    param process : ManufacturingProcess\n    wall >= process.min_wall_thickness\n}\n```\n\nThe implementation requires three layers:\n1. **Grammar**: Add `constraint_definition` rule to tree-sitter grammar with body items being either `param_declaration`, `let_declaration`, or bare expression predicates (`constraint_def_predicate`)\n2. **AST**: Add `ConstraintDef` struct and `Constraint(ConstraintDef)` variant to `Declaration` enum\n3. **Lowering**: Add `lower_constraint_def` function and dispatch in `lower_source_file`\n\nKey insight: `constraint_definition` (top-level, starts with `constraint def`) operates in `_declaration` context, while `constraint_declaration` (member-level, starts with `constraint <expr>`) operates in `_member` context. No grammar conflict between them.\n\nThe body uses `_constraint_def_body_item` choice: param_declaration, let_declaration, or constraint_def_predicate (bare _expression). Bare expressions are predicate assertions; multiple predicates form a conjunction. Keywords like `param`/`let` disambiguate member declarations from bare expressions.\n\n**Review fix (2026-03-24):** Two robustness issues in `lower_constraint_def` body iteration loop: (1) the `_ => {}` catch-all silently swallows ERROR tree-sitter nodes \u2014 must add explicit \"ERROR\" arm matching `lower_member` and `lower_source_file` patterns; (2) `param_declaration` arm uses bare `self.lower_param(child)` without `check_and_lower!` guard \u2014 must wrap with `check_and_lower!` for consistency with `lower_member`.",
   "prerequisites": [
     {
       "id": "pre-1",
@@ -136,6 +136,34 @@
       "description": "Should already pass as an integration verification. Fix any edge cases discovered.",
       "status": "done",
       "commit": "0d4776e"
+    },
+    {
+      "id": "step-15",
+      "type": "test",
+      "description": "Write test `parse_constraint_def_body_syntax_error` in constraint_def_tests.rs: parse a constraint def with a syntax error inside the body (e.g. `constraint def Bad { x >< 0 }` or similar invalid syntax that produces an ERROR tree-sitter node inside the body). Assert that errors is non-empty and contains a ParseError with message matching 'syntax error in constraint body'. This tests the [reviewer_robustness] silent_error_suppression fix \u2014 currently the `_ => {}` catch-all silently swallows ERROR nodes.",
+      "status": "done",
+      "commit": "PLACEHOLDER"
+    },
+    {
+      "id": "step-16",
+      "type": "impl",
+      "description": "Add explicit `\"ERROR\"` arm to the body iteration match in `lower_constraint_def` (ts_parser.rs line ~633), replacing the silent `_ => {}` catch-all for ERROR nodes. Push a ParseError with message `format!(\"syntax error in constraint body: {}\", self.node_text(child))` and span `self.span(child)`, matching the pattern used in `lower_member` (line 809) and `lower_source_file` (line 158). The `_ => {}` arm remains for non-ERROR unknown node kinds (e.g. punctuation like `{`, `}`).",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-17",
+      "type": "test",
+      "description": "Write test `parse_constraint_def_error_param` in constraint_def_tests.rs: parse a constraint def with a malformed param_declaration inside the body (e.g. `constraint def Bad { param : Length  x > 0 }` \u2014 param missing its name, which gives a param_declaration node with `has_error() == true`). Assert that errors is non-empty and contains a ParseError with message matching 'invalid constraint param'. Assert that the constraint is still constructed (with 0 params) and the valid predicate is still collected. This tests the [reviewer_robustness] missing_error_guard fix \u2014 currently the bare `self.lower_param(child)` silently drops error params without diagnostics.",
+      "status": "done",
+      "commit": "PLACEHOLDER"
+    },
+    {
+      "id": "step-18",
+      "type": "impl",
+      "description": "Guard the `\"param_declaration\"` arm in `lower_constraint_def` body iteration (ts_parser.rs line ~617-620) with `check_and_lower!` macro, matching the pattern used in `lower_member` (line 786). Replace the bare `if let Some(p) = self.lower_param(child) { params.push(p); }` with: `check_and_lower!(self, child, \"constraint param\", self.lower_param(child).map(|p| { params.push(p); Some(()) }));` \u2014 this checks `child.is_error() || child.has_error()` and emits a diagnostic before skipping the node.",
+      "status": "pending",
+      "commit": null
     }
   ],
   "design_decisions": [
@@ -158,6 +186,14 @@
     {
       "decision": "No semicolons or explicit statement terminators for predicates in the body",
       "rationale": "Consistent with the rest of the Reify grammar where members (param, let, constraint, etc.) don't use terminators. Tree-sitter's GLR parser resolves expression boundaries by operator precedence \u2014 a new predicate begins when no binary operator connects adjacent expressions."
+    },
+    {
+      "decision": "ERROR nodes in constraint def body get 'syntax error in constraint body' message prefix (not generic 'syntax error')",
+      "rationale": "Using a context-specific message ('in constraint body') helps users locate errors when multiple parse errors are reported. Matches the contextual messaging pattern \u2014 lower_member uses generic 'syntax error' because it's already scoped to a member context, but constraint def body errors benefit from the extra disambiguation."
+    },
+    {
+      "decision": "param_declaration arm uses check_and_lower! macro with label 'constraint param' rather than just 'param'",
+      "rationale": "The label 'constraint param' disambiguates from regular member params in error messages. When a user sees 'invalid constraint param: ...', they know the error is inside a constraint def body, not inside a structure or trait body where 'invalid param: ...' would appear from lower_member."
     }
   ],
   "reuse": [
@@ -195,8 +231,13 @@
       "what": "span() and content_hash() helpers",
       "where": "ts_parser.rs Lowering impl",
       "how": "Reuse for SourceSpan and ContentHash on the ConstraintDef node."
+    },
+    {
+      "what": "ERROR handling pattern from lower_member (line 809) and lower_source_file (line 158)",
+      "where": "ts_parser.rs",
+      "how": "Reuse the exact same push-ParseError-with-span pattern for the new \"ERROR\" arm in lower_constraint_def's body iteration loop."
     }
   ],
   "_session_id": "195-84380801",
-  "_created_at": "2026-03-24T07:11:13.513372+00:00"
+  "_created_at": "2026-03-24T07:22:34.651702+00:00"
 }
