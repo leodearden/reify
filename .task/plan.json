@@ -1,159 +1,169 @@
 {
-  "task_id": "352",
-  "title": "Claude bridge: architectural cleanup (claude_bridge.rs)",
+  "task_id": "191",
+  "title": "Qualified trait access: parser",
   "files": [
-    "gui/src-tauri/src/claude_bridge.rs",
-    "gui/src-tauri/src/main.rs",
-    "gui/src-tauri/src/tests/claude_bridge_tests.rs"
+    "tree-sitter-reify/grammar.js",
+    "tree-sitter-reify/src/parser.c",
+    "crates/reify-syntax/src/lib.rs",
+    "crates/reify-syntax/src/ts_parser.rs",
+    "crates/reify-syntax/tests/qualified_access_tests.rs"
   ],
   "modules": [
-    "gui/src-tauri/src"
+    "tree-sitter-reify",
+    "crates/reify-syntax"
   ],
-  "analysis": "Task 352 addresses 6 review suggestions from task 139 in the claude_bridge module. The changes are ordered to minimize churn: S5 (trivial ordering fix) \u2192 S4 (outbound_to_event return type) \u2192 S2 (state mutex type) \u2192 S1 (module boundary decoupling) \u2192 S3 (ready_notify restriction) \u2192 S8 (boilerplate extraction). Key interactions: S1 and S4 both change from_parts_with_mcp's generic bounds; S2 changes the state Mutex type used pervasively in tests and production code; S3 depends on having an alternative to the raw ready_notify accessor; S8 depends on S2 (uses lock().unwrap() in the extracted helper). The existing test file has ~60 tests covering IPC types, parse/format, read_sidecar_output, outbound_to_event, SidecarHandle lifecycle, wait_ready, send/abort/clear, from_parts_with_mcp MCP interception, spawn_sidecar_impl, and shutdown_sidecar. Many tests construct state with tokio::sync::Mutex and will need updating for S2. The from_parts_with_mcp test creates an EngineSession and will need updating for S1.\n\nPost-review fix (steps 11-12): subscribe_ready() defers the notified() call inside an async move block, meaning the Notified future's waiter registration only happens on first poll, not at call time. notify_waiters() only wakes currently-registered waiters and stores no permit. If notify_waiters() fires between subscribe_ready() returning and the returned future being first polled, the notification is permanently lost and the caller hangs until timeout. The fix is to switch notify_waiters() to notify_one() at both call sites (Ready on line 235, Crash on line 278). notify_one() stores a permit if no waiter is registered, so a later notified() call sees it immediately. Since at most one ready/crash notification is ever sent per sidecar lifetime, and there is at most one subscriber (the main.rs caller), notify_one semantics are correct. wait_ready() is unaffected \u2014 it calls notified() eagerly before checking state, so there is no race window there.",
-  "prerequisites": [],
+  "analysis": "This task adds two new expression forms to the parser: (1) `TypeName::ident` as QualifiedAccess (precedence 2, left-associative) and (2) `expr.(TypeName::ident)` as InstanceQualifiedAccess (precedence 8, left-associative postfix). The implementation spans three layers: grammar rules in tree-sitter-reify/grammar.js, AST node variants in reify-syntax/src/lib.rs (ExprKind enum), and CST→AST lowering functions in reify-syntax/src/ts_parser.rs. Both forms already exist in the current branch — grammar rules (qualified_access at prec.left(2), instance_qualified_access at prec.left(8)), AST variants (QualifiedAccess, InstanceQualifiedAccess), lowering functions (lower_qualified_access, lower_instance_qualified_access), and 7 integration tests all pass. The compiler crate already has a placeholder match arm for both variants that emits a diagnostic (resolution is out of scope for this parser task). Verification should confirm all 7 tests pass and no regressions exist.",
+  "prerequisites": [
+    {
+      "id": "pre-1",
+      "description": "Ensure tree-sitter-reify grammar includes qualified_access rule: `prec.left(2, seq(field('qualifier', $._expression), '::', field('member', $.identifier)))` and instance_qualified_access rule: `prec.left(8, seq(field('object', $._expression), '.', '(', field('qualified', $.qualified_access), ')'))`. Both must be listed in the _expression choice. Regenerate parser.c if grammar.js was modified.",
+      "status": "done",
+      "commit": "31ae3f7a",
+      "tests": []
+    }
+  ],
   "steps": [
     {
       "id": "step-1",
-      "type": "impl",
-      "description": "S5: Change MSG_COUNTER fetch_add from Ordering::SeqCst to Ordering::Relaxed in send_message (line 381 of claude_bridge.rs). No behavior change \u2014 existing send_message_ids_are_unique_across_calls test covers correctness. SeqCst is unnecessarily strong for a monotonic counter with no cross-variable ordering requirements.",
+      "type": "test",
+      "description": "Write test `parse_basic_qualified_access`: parse `structure S { let x = Rigid::mass }`, assert no errors, assert the let value is ExprKind::QualifiedAccess with qualifier=Ident(\"Rigid\") and member=\"mass\".",
       "status": "done",
-      "commit": "44a292b"
+      "commit": "31ae3f7a"
     },
     {
       "id": "step-2",
-      "type": "test",
-      "description": "S4: Write test outbound_to_event_returns_static_str that explicitly type-annotates the return as (&str, Value). This fails to compile with the current (String, Value) return type because String cannot coerce to &str in destructuring. Also write test event_sink_accepts_str_ref that creates a from_parts_with_mcp handle with event_sink typed as Fn(&str, Value) \u2014 fails because current bound is Fn(String, Value).",
+      "type": "impl",
+      "description": "Add ExprKind::QualifiedAccess { qualifier: Box<Expr>, member: String } variant to lib.rs. Add `lower_qualified_access` function in ts_parser.rs that reads 'qualifier' and 'member' fields from the tree-sitter node. Add dispatch case `\"qualified_access\" => self.lower_qualified_access(node)` in lower_expr. Verify step-1 test passes.",
       "status": "done",
-      "commit": "032381a"
+      "commit": "31ae3f7a"
     },
     {
       "id": "step-3",
-      "type": "impl",
-      "description": "S4: Change outbound_to_event return type from (String, Value) to (&'static str, Value) \u2014 all 7 match arms already use string literals which are &'static str. Update event_sink generic bound F from Fn(String, Value) to Fn(&str, Value) in from_parts_with_mcp, new_inner, and spawn_sidecar_impl. Update main.rs closure in claude_send_message (line 323: emit(&name, ...) works unchanged since &str satisfies Tauri's emit). Update test from_parts_with_mcp_intercepts_reify_tool_calls closure signature (name: String \u2192 name: &str). Update spawn_sidecar_impl test closures (_name: String \u2192 _name: &str).",
+      "type": "test",
+      "description": "Write test `parse_chained_qualified_access`: parse `structure S { let x = A::B::c }`, assert nested QualifiedAccess { qualifier: QualifiedAccess { qualifier: Ident(\"A\"), member: \"B\" }, member: \"c\" } — verifying left-associative chaining.",
       "status": "done",
-      "commit": "032381a"
+      "commit": "31ae3f7a"
     },
     {
       "id": "step-4",
-      "type": "test",
-      "description": "S2: Write test from_parts_accepts_std_sync_mutex that constructs state as Arc<std::sync::Mutex<SidecarState>> and passes it to SidecarHandle::from_parts. Also write test state_accessor_returns_std_sync_mutex that calls handle.state().lock().unwrap() (synchronous). Both fail to compile because from_parts currently expects Arc<tokio::sync::Mutex<SidecarState>> and state() returns &Arc<tokio::sync::Mutex<...>>.",
+      "type": "impl",
+      "description": "Verify left-associativity — the `prec.left(2, ...)` grammar rule handles chaining automatically. The recursive `lower_expr` call on the qualifier field naturally produces nested QualifiedAccess nodes. Step-3 test should pass without code changes.",
       "status": "done",
-      "commit": "423e6412"
+      "commit": "31ae3f7a"
     },
     {
       "id": "step-5",
-      "type": "impl",
-      "description": "S2: Switch SidecarHandle.state from Arc<tokio::sync::Mutex<SidecarState>> to Arc<std::sync::Mutex<SidecarState>>. (1) Update the SidecarHandle struct field type. (2) Update state() accessor return type. (3) In new_inner on_message callback: replace tokio::spawn(async { state.lock().await = Ready; notify }) with direct state.lock().unwrap() = Ready + notify_waiters(). (4) In on_exit callback: same pattern \u2014 direct lock().unwrap() instead of tokio::spawn. (5) In wait_ready: change 3 occurrences of self.state.lock().await to self.state.lock().unwrap(). (6) In kill: change self.state.lock().await to self.state.lock().unwrap(). (7) In claude_send_message_impl: change handle.state().lock().await to handle.state().lock().unwrap(). (8) In spawn_sidecar_impl: change Arc::new(Mutex::new(...)) to Arc::new(std::sync::Mutex::new(...)). (9) Remove tokio::sync::Mutex from imports (keep tokio::sync::Notify). (10) Update ~15 tests that create state with tokio::sync::Mutex to use std::sync::Mutex, and change .lock().await to .lock().unwrap().",
+      "type": "test",
+      "description": "Write test `parse_qualified_access_in_binary_expr`: parse `structure S { let x = Rigid::mass + 1 }`, assert BinOp { op: \"+\", left: QualifiedAccess(Rigid, mass), right: NumberLiteral(1.0) } — verifying precedence 2 binds tighter than precedence 5 additive but can participate in larger expressions.",
       "status": "done",
-      "commit": "423e6412"
+      "commit": "31ae3f7a"
     },
     {
       "id": "step-6",
-      "type": "test",
-      "description": "S1: Write test from_parts_with_tool_dispatch_intercepts_reify_calls that creates a SidecarHandle using from_parts_with_mcp with a tool_dispatch closure (|tool_name: String, input: Value| -> Result<Value, String>) instead of an Arc<Mutex<EngineSession>>. The closure returns Ok(json!({\"dispatched\": true})). Simulates a reify_ tool_call from stdout, verifies the tool_result written back to stdin contains the dispatched result. This fails because current from_parts_with_mcp requires engine: Arc<std::sync::Mutex<EngineSession>>.",
+      "type": "impl",
+      "description": "Verify precedence interaction — QualifiedAccess at prec 2 is lower than additive prec 5, so `Rigid::mass + 1` parses as `(Rigid::mass) + 1` because `::` binds its operands before `+` claims the left side. Step-5 test should pass without code changes.",
       "status": "done",
-      "commit": "fa776af5"
+      "commit": "31ae3f7a"
     },
     {
       "id": "step-7",
-      "type": "impl",
-      "description": "S1: Replace engine parameter with generic tool_dispatch callback. (1) In from_parts_with_mcp: replace engine: Arc<std::sync::Mutex<crate::engine::EngineSession>> with tool_dispatch: D where D: Fn(String, Value) -> Result<Value, String> + Send + Sync + 'static. (2) In new_inner: replace mcp_config tuple type from (Arc<...EngineSession>, F) to (D, F). (3) In the MCP interception branch: replace TauriToolContext::new + mcp_tool_call_impl with direct tool_dispatch(tool_name, tool_input) call. Remove crate::mcp_context and crate::engine imports from claude_bridge.rs. (4) In spawn_sidecar_impl: replace engine param with tool_dispatch, forward to from_parts_with_mcp. (5) In main.rs claude_send_message: construct TauriToolContext in the tool_dispatch closure passed to spawn_sidecar_impl, moving the engine dependency to the call site. (6) Update existing from_parts_with_mcp_intercepts_reify_tool_calls test to pass a tool_dispatch closure instead of engine. (7) Update spawn_sidecar_impl tests to pass tool_dispatch instead of engine.",
+      "type": "test",
+      "description": "Write test `parse_basic_instance_qualified_access`: parse `structure S { let x = motor.(Driveable::torque) }`, assert InstanceQualifiedAccess { object: Ident(\"motor\"), qualified: QualifiedAccess(Ident(\"Driveable\"), \"torque\") }.",
       "status": "done",
-      "commit": "fa776af5"
+      "commit": "31ae3f7a"
     },
     {
       "id": "step-8",
-      "type": "test",
-      "description": "S3: Write test subscribe_ready_returns_awaitable_future that calls handle.subscribe_ready(), stores the returned future, moves the handle into an Option slot, drops the reference, then awaits the future with a ready message. This verifies subscribe_ready produces an owned 'static future safe to hold across lock boundaries. Fails because subscribe_ready() does not exist yet.",
+      "type": "impl",
+      "description": "Add ExprKind::InstanceQualifiedAccess { object: Box<Expr>, qualified: Box<Expr> } variant to lib.rs. Add `lower_instance_qualified_access` function in ts_parser.rs that reads 'object' and 'qualified' fields. Add dispatch case `\"instance_qualified_access\" => self.lower_instance_qualified_access(node)` in lower_expr. Verify step-7 test passes.",
       "status": "done",
-      "commit": "6f3c8658"
+      "commit": "31ae3f7a"
     },
     {
       "id": "step-9",
-      "type": "impl",
-      "description": "S3: Add pub fn subscribe_ready(&self) -> impl Future<Output = ()> + Send + 'static that clones Arc<Notify> internally and returns async move { notify.notified().await }. Remove pub fn ready_notify() accessor entirely (it was only used in main.rs and internally). Internal uses in wait_ready already access self.ready_notify directly. Update main.rs claude_send_message to use handle.subscribe_ready() instead of Arc::clone(handle.ready_notify()).notified(). Verify test that used ready_notify() is updated or removed.",
+      "type": "test",
+      "description": "Write test `parse_instance_qualified_with_member_chain`: parse `structure S { let x = self.motor.(Driveable::torque) }`, assert InstanceQualifiedAccess { object: MemberAccess(Ident(\"self\"), \"motor\"), qualified: QualifiedAccess(Ident(\"Driveable\"), \"torque\") } — verifying that the object field can be a chained member access expression.",
       "status": "done",
-      "commit": "7e867c80"
+      "commit": "31ae3f7a"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "S8: Extract private async fn with_handle<T>(sidecar, f) helper using for<'a> FnOnce(&'a mut SidecarHandle) -> Pin<Box<dyn Future<Output = Result<T, String>> + Send + 'a>> for the closure type. The helper locks the outer sidecar Mutex, checks for None (returns Err 'sidecar not started'), and calls f(handle).await for the Some case. Refactor claude_abort_impl to with_handle(sidecar, |h| Box::pin(h.abort())). Refactor claude_clear_session_impl similarly. Refactor claude_send_message_impl: own text via to_string(), use with_handle with move closure that checks state (lock().unwrap()) and calls send_message. Existing tests for all three _impl functions validate behavior is preserved.",
+      "description": "Verify member chain interaction — both instance_qualified_access and member_access are at prec.left(8), so `self.motor.(...)` parses left-to-right: first `self.motor` as MemberAccess, then `(MemberAccess).(...)` as InstanceQualifiedAccess. Step-9 test should pass without code changes.",
       "status": "done",
-      "commit": "d9336cd5"
+      "commit": "31ae3f7a"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Fix subscribe_ready race condition (review blocker: race_condition). Write test subscribe_ready_does_not_miss_notification_fired_before_poll that exercises the race window: (1) Create a SidecarHandle via from_parts with duplex I/O. (2) Call handle.subscribe_ready() to obtain the future (notified() is NOT called yet \u2014 only deferred inside the async block). (3) Write {\"type\":\"ready\"} to the stdout data_writer. (4) Call tokio::task::yield_now().await to yield control to the reader task, allowing it to process the ready message and call notify on the Notify. (5) Await the subscribe_ready future with a short timeout (500ms). Assert it completes successfully \u2014 if the notification was lost, this would timeout. This test exposes the bug: with notify_waiters(), the notification fires while no waiter is registered (notified() hasn't been called yet), so the permit is lost and the future hangs. With notify_one(), the permit is stored and the future completes immediately when polled.",
+      "description": "Write test `parse_instance_qualified_with_chained_path`: parse `structure S { let x = obj.(A::B::c) }`, assert InstanceQualifiedAccess { object: Ident(\"obj\"), qualified: QualifiedAccess { qualifier: QualifiedAccess(Ident(\"A\"), \"B\"), member: \"c\" } } — verifying the qualified field supports chained qualified paths.",
       "status": "done",
-      "commit": "8862a79c"
+      "commit": "31ae3f7a"
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "Fix subscribe_ready race condition: change notify_waiters() to notify_one() at both call sites in new_inner. (1) In the on_message callback (line 235): change notify_for_reader.notify_waiters() to notify_for_reader.notify_one(). (2) In the on_exit callback (line 278): change notify_for_crash.notify_waiters() to notify_for_crash.notify_one(). (3) Update the subscribe_ready() doc comment to reference notify_one instead of notify_waiters. (4) Update the wait_ready() internal comment (line 313-314) if it references notify_waiters. This is safe because: (a) at most one ready/crash notification is ever sent per sidecar lifetime, (b) there is at most one subscriber at any time (either subscribe_ready from main.rs OR wait_ready from tests, never both concurrently), and (c) notify_one stores a permit if no waiter is registered, eliminating the race window where the notification fires between subscribe_ready() returning and the future being first polled.",
+      "description": "Verify chained path inside instance qualified — the grammar constrains `field('qualified', $.qualified_access)` which is itself left-recursive. Step-11 test should pass without code changes.",
       "status": "done",
-      "commit": "0f635b7a"
+      "commit": "31ae3f7a"
+    },
+    {
+      "id": "step-13",
+      "type": "test",
+      "description": "Write test `parse_distinct_ast_nodes`: parse `structure S { let a = Rigid::mass  let b = obj.(Rigid::mass) }`, assert first member is QualifiedAccess and second is InstanceQualifiedAccess — verifying both forms produce distinct AST node variants as required by the task.",
+      "status": "done",
+      "commit": "31ae3f7a"
     }
   ],
   "design_decisions": [
     {
-      "decision": "tool_dispatch callback is synchronous: Fn(String, Value) -> Result<Value, String>",
-      "rationale": "mcp_tool_call_impl is synchronous (locks engine mutex, runs tool, returns). The tokio::spawn in the MCP interception branch is needed for the async stdin write, not for tool dispatch itself. Keeping tool_dispatch sync avoids the complexity of async closures while matching the actual calling pattern."
+      "decision": "QualifiedAccess qualifier is Box<Expr> (not String) to support chaining",
+      "rationale": "Chained qualified access like `A::B::c` requires the qualifier to be an expression that can itself be a QualifiedAccess. Using Box<Expr> enables left-recursive chaining: `(A::B)::c` where `A::B` is a QualifiedAccess and the outer `(A::B)::c` is also a QualifiedAccess. A String qualifier would only allow single-level `TypeName::ident`."
     },
     {
-      "decision": "subscribe_ready() returns impl Future + 'static instead of exposing Arc<Notify>",
-      "rationale": "Hides the Notify implementation detail while providing the same capability: an owned future that can be held across lock boundaries. main.rs needs this pattern to avoid holding the outer sidecar lock during the 10s ready timeout. The returned future clones the Arc internally so it's self-contained."
+      "decision": "Qualified access at precedence 2 (same level as &&)",
+      "rationale": "Precedence 2 means `::` binds tighter than logical operators (&&, ||) but looser than comparison, arithmetic, and postfix operators. This allows `Rigid::mass + 1` to parse as `(Rigid::mass) + 1` naturally, and `A::b && C::d` to parse as `(A::b) && (C::d)`. This matches the intuition that `::` is a tight access operator, though not as tight as `.` (prec 8)."
     },
     {
-      "decision": "with_handle uses Pin<Box<dyn Future + 'a>> for the closure return type",
-      "rationale": "Rust's type system requires explicit lifetime propagation for async closures that borrow from their arguments. The for<'a> FnOnce(&'a mut SidecarHandle) -> Pin<Box<dyn Future + Send + 'a>> pattern is the standard workaround. The Box allocation is negligible compared to the outer async Mutex lock + sidecar IPC overhead."
+      "decision": "Instance qualified access constrains inner field to $.qualified_access (not $._expression)",
+      "rationale": "The grammar rule `field('qualified', $.qualified_access)` prevents nonsensical forms like `expr.(42)` or `expr.(x + y)`. Only `TypeName::ident` chains are allowed inside the parenthesized part. This is enforced at the grammar level for free."
     },
     {
-      "decision": "claude_send_message_impl owns text via to_string() when using with_handle",
-      "rationale": "The for<'a> bound on with_handle's closure means captured references can't have a specific lifetime. Owning text (one small allocation per user message) avoids lifetime gymnastics. This is not a hot path \u2014 it runs once per user message."
+      "decision": "Instance qualified access at precedence 8 (postfix level)",
+      "rationale": "Instance qualified access `expr.(T::m)` is syntactically a postfix operator on the object expression, like member access `expr.member`. Putting it at prec 8 (same as member_access, function_call, index_access) allows natural left-to-right chaining: `self.motor.(Driveable::torque)` parses as `(self.motor).(Driveable::torque)`."
     },
     {
-      "decision": "Step ordering: S5 \u2192 S4 \u2192 S2 \u2192 S1 \u2192 S3 \u2192 S8",
-      "rationale": "S5 is independent (1 line). S4 changes event_sink type before S1 changes the same signature. S2 changes state mutex type before S1 uses it in closures. S3 depends on subscribe_ready alternative before removing ready_notify. S8 depends on S2 (uses lock().unwrap() in extracted helper). Each step touches an overlapping but distinct concern, so this ordering minimizes re-editing."
-    },
-    {
-      "decision": "on_message Ready transition uses direct lock().unwrap() instead of tokio::spawn",
-      "rationale": "The on_message callback runs inside read_sidecar_output's tokio task. The std::sync::Mutex state lock is held for only a single assignment \u2014 no risk of blocking the async runtime. The tokio::spawn was unnecessary overhead that also introduced a race window where state might not be updated when expected."
-    },
-    {
-      "decision": "Use notify_one() instead of notify_waiters() to fix subscribe_ready race condition",
-      "rationale": "subscribe_ready() defers the notified() call inside an async move block, so the Notified future's waiter is only registered on first poll. notify_waiters() only wakes currently-registered waiters and stores no permit \u2014 if it fires before the future is polled, the notification is permanently lost. notify_one() stores a permit when no waiter is registered, so a later notified() call sees it immediately. This is the lowest-change fix. Alternatives considered: (a) tokio::sync::watch channel \u2014 correct but higher churn, replaces the Notify entirely; (b) eagerly calling notified() in subscribe_ready \u2014 hits lifetime issues since Notified borrows Notify and we need a 'static future. notify_one is semantically correct because there is at most one subscriber at any time."
+      "decision": "No separate TypeName AST node — qualifier uses Ident",
+      "rationale": "At the parser level, `Rigid` in `Rigid::mass` is just an identifier. Semantic analysis (trait resolution in the compiler) will distinguish type names from variable names. Keeping the qualifier as a plain Expr avoids premature semantic coupling in the parser."
     }
   ],
   "reuse": [
     {
-      "what": "Existing from_parts constructor (unchanged)",
-      "where": "claude_bridge.rs SidecarHandle::from_parts",
-      "how": "from_parts is the test-friendly constructor that creates handles without MCP wiring. All test helpers that don't need MCP continue using it. Its generic type params for new_inner's None case need updating for the new D type parameter."
+      "what": "Existing lower_expr dispatch pattern",
+      "where": "crates/reify-syntax/src/ts_parser.rs (lower_expr match)",
+      "how": "Add two new match arms (`\"qualified_access\"` and `\"instance_qualified_access\"`) following the same pattern as other expression kinds like `\"member_access\"` and `\"binary_expression\"`."
     },
     {
-      "what": "Existing test patterns (duplex I/O, BufReader)",
-      "where": "tests/claude_bridge_tests.rs",
-      "how": "All existing tests use tokio::io::duplex for stdin/stdout simulation and BufReader for the reader. New tests follow the same pattern. The MCP interception test pattern (write tool_call to stdout_writer, read tool_result from stdin_reader) is reused for the S1 test."
+      "what": "lower_member_access structure as template for lower_qualified_access",
+      "where": "crates/reify-syntax/src/ts_parser.rs (lines 1863-1893)",
+      "how": "Both functions read a node and two named fields, lower one as expression and one as text, then construct an ExprKind variant. The qualified_access lowering mirrors this pattern exactly."
     },
     {
-      "what": "TauriToolContext::new and mcp_tool_call_impl",
-      "where": "mcp_context.rs",
-      "how": "After S1, these are called from main.rs inside the tool_dispatch closure rather than from claude_bridge.rs. The API is unchanged \u2014 only the call site moves."
+      "what": "ExprKind enum extension pattern",
+      "where": "crates/reify-syntax/src/lib.rs (ExprKind enum)",
+      "how": "Add two new variants following the established pattern of doc comments + field types. QualifiedAccess mirrors MemberAccess structure; InstanceQualifiedAccess is similar but with two Box<Expr> fields."
     },
     {
-      "what": "Arc<Notify> pattern for async readiness signaling",
-      "where": "claude_bridge.rs wait_ready / subscribe_ready",
-      "how": "The Notify + notified() pattern is preserved internally. subscribe_ready wraps it in a cleaner public API that returns an owned future. notify_one() replaces notify_waiters() to store a permit for deferred subscribers."
+      "what": "Test helper parse_decls",
+      "where": "crates/reify-syntax/tests/qualified_access_tests.rs",
+      "how": "Reuse the standard test pattern: `parse_decls(source) -> (Vec<Declaration>, Vec<ParseError>)` calling `reify_syntax::parse()` with a test ModulePath. This pattern is used across all 20 test files."
     },
     {
-      "what": "subscribe_ready_returns_awaitable_future test pattern",
-      "where": "tests/claude_bridge_tests.rs (step-8)",
-      "how": "The new race-condition test (step-11) reuses the same duplex I/O + from_parts + subscribe_ready pattern but adds an explicit yield point between writing the ready message and polling the future to deterministically trigger the race window."
+      "what": "Tree-sitter prec.left grammar pattern",
+      "where": "tree-sitter-reify/grammar.js",
+      "how": "The qualified_access rule uses `prec.left(N, seq(field(...), token, field(...)))` identical to how binary_expression and member_access define left-associative rules."
     }
   ],
-  "_session_id": "352-13c73c6d",
-  "_created_at": "2026-03-24T21:18:49.389360+00:00"
+  "_session_id": "191-5658d92e",
+  "_created_at": "2026-03-24T21:25:30.140132+00:00"
 }
