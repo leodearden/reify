@@ -3434,6 +3434,28 @@ mod tests {
         );
     }
 
+    // --- vec3 ---
+
+    #[test]
+    fn vec3_basic() {
+        // vec3(4m, 5m, 6m) → Value::Tensor([Scalar(4,L), Scalar(5,L), Scalar(6,L)])
+        let args = vec![
+            Value::Scalar { si_value: 4.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 5.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 6.0, dimension: DimensionVector::LENGTH },
+        ];
+        let result = eval_builtin("vec3", &args);
+        match result {
+            Value::Tensor(ref items) => {
+                assert_eq!(items.len(), 3);
+                assert_scalar_approx!(items[0].clone(), 4.0, DimensionVector::LENGTH);
+                assert_scalar_approx!(items[1].clone(), 5.0, DimensionVector::LENGTH);
+                assert_scalar_approx!(items[2].clone(), 6.0, DimensionVector::LENGTH);
+            }
+            other => panic!("expected Tensor, got {:?}", other),
+        }
+    }
+
     // --- point3 ---
 
     #[test]
