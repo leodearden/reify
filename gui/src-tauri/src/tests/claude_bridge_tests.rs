@@ -1153,3 +1153,28 @@ fn inbound_tool_result_serialization_round_trip() {
     let deserialized: InboundMessage = serde_json::from_value(json_val).unwrap();
     assert_eq!(deserialized, msg);
 }
+
+#[tokio::test]
+async fn claude_send_message_impl_errors_when_sidecar_crashed() {
+    use std::sync::Arc;
+    use tokio::io::BufReader;
+
+    let state = Arc::new(tokio::sync::Mutex::new(
+        SidecarState::Crashed("segfault".to_string()),
+    ));
+    let (writer, _reader_end) = tokio::io::duplex(1024);
+    let empty_reader = BufReader::new(&b""[..]);
+    let handle = SidecarHandle::from_parts(writer, empty_reader, state);
+
+    let sidecar = tokio::sync::Mutex::new(Some(handle));
+
+    let result = claude_send_message_impl(&sidecar, "hello", None).await;
+
+    assert!(result.is_err(), "Expected error when sidecar is crashed");
+    let msg = result.unwrap_err();
+    assert!(
+        msg.contains("crashed"),
+        "Error should propagate crash reason: {}",
+        msg
+    );
+}
