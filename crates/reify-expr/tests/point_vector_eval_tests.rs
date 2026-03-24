@@ -398,3 +398,23 @@ fn vector3_add_vector2_n_mismatch_returns_undef() {
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert_eq!(result, Value::Undef);
 }
+
+// --- Point+Point guard ---
+
+/// Point3<Length> + Point3<Length> must return Undef — point addition is undefined.
+/// After step-3 Tensor add works, so without a guard P+P returns a Tensor.
+#[test]
+fn point3_add_point3_returns_undef() {
+    let left = CompiledExpr::literal(
+        Value::Tensor(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]),
+        Type::point3(Type::length()),
+    );
+    let right = CompiledExpr::literal(
+        Value::Tensor(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]),
+        Type::point3(Type::length()),
+    );
+    let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::point3(Type::length()));
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::Undef);
+}
