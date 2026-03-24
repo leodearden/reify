@@ -1491,6 +1491,16 @@ fn compile_expr_guarded(
                 compiled_predicate,
             )
         }
+        reify_syntax::ExprKind::QualifiedAccess { .. }
+        | reify_syntax::ExprKind::InstanceQualifiedAccess { .. } => {
+            // Qualified trait access is a parser-level feature resolved during
+            // trait dispatch; the compiler emits an error diagnostic for now.
+            diagnostics.push(
+                Diagnostic::error("qualified trait access is not yet supported in the compiler")
+                    .with_label(DiagnosticLabel::new(expr.span, "not yet supported")),
+            );
+            CompiledExpr::literal(reify_types::Value::Undef, reify_types::Type::Real)
+        }
     }
 }
 

@@ -1,124 +1,217 @@
 {
-  "task_id": "354",
-  "title": "Claude bridge: test quality improvements",
+  "task_id": "191",
+  "title": "Qualified trait access: parser",
   "files": [
-    "gui/src-tauri/src/tests/claude_bridge_tests.rs"
+    "tree-sitter-reify/grammar.js",
+    "tree-sitter-reify/src/parser.c",
+    "tree-sitter-reify/src/grammar.json",
+    "tree-sitter-reify/src/node-types.json",
+    "crates/reify-syntax/src/lib.rs",
+    "crates/reify-syntax/src/ts_parser.rs",
+    "crates/reify-syntax/tests/qualified_access_tests.rs"
   ],
   "modules": [
-    "gui/src-tauri/src/tests"
+    "tree-sitter-reify",
+    "crates/reify-syntax"
   ],
-  "analysis": "Task 139's test analyst review identified 5 quality issues in claude_bridge_tests.rs:\n\n1. **Vacuous assertion** (line 564-582): `sidecar_handle_state_starts_as_starting` creates a handle with `SidecarState::Starting` but uses `b\"\"` as reader (immediate EOF). The reader task's on_exit fires and transitions to `Crashed` since state != NotStarted. The assertion `Starting | NotStarted | Crashed(_)` matches everything except Ready — it's vacuous, can never fail. Fix: use `tokio::io::duplex()` for the reader (no immediate EOF) and assert exactly `SidecarState::Starting`.\n\n2. **Flaky yield-loop synchronization** (3 tests): Fixed-count `yield_now()` loops are timing-dependent. The codebase already has `wait_ready()` which uses `Notify` internally and handles both Ready and Crashed state transitions. For MCP interception tests, `tokio::time::timeout` with an async read provides deterministic synchronization.\n   - `crash_detection_sets_state_to_crashed_on_eof` (50 yields → `wait_ready` returns Err on crash)\n   - `sidecar_handle_transitions_to_ready_on_ready_message` (20 yields → `wait_ready` returns Ok)\n   - `from_parts_with_mcp_intercepts_reify_tool_calls` (100 yields → timeout-wrapped `stdin_reader.read()`)\n\n3. **Missing test coverage**: 5 untested code paths identified:\n   - `claude_abort_impl(sidecar=None)` — returns \"sidecar not started\" error\n   - `claude_clear_session_impl(sidecar=None)` — returns \"sidecar not started\" error\n   - `InboundMessage::ToolResult` serialization — only variant without a round-trip test\n   - `claude_send_message_impl` with `SidecarState::Crashed` — should propagate crash message\n   - `wait_ready` Notify registration race — the subscribe-before-recheck pattern needs a test proving the race window is handled\n\nAll changes are test-only. No production code modifications needed — the existing implementation already correctly handles all these cases.",
-  "prerequisites": [],
+  "analysis": "The task adds two new expression forms to the Reify parser: (1) `TypeName::ident` \u2014 qualified trait access, and (2) `expr.(TypeName::ident)` \u2014 instance-level qualified trait access. The parser is tree-sitter based: grammar.js defines the syntax, tree-sitter generates parser.c, and ts_parser.rs lowers the CST to AST. Currently `::` is not tokenized or used anywhere in the grammar. The `ExprKind` enum in lib.rs has 21 variants; we add 2 more. The lowering code in ts_parser.rs dispatches on tree-sitter node kind strings; we add two new match arms and lowering functions following the established pattern (e.g., `lower_member_access`). Precedence 2 (matching `&&` level) means `::` binds loosely among binary-like operators, but since the right-hand side of `::` is restricted to a bare identifier (not an arbitrary expression), the main effect of precedence 2 is on chaining: `A::B::c` left-associates as `(A::B)::c`, and expressions like `Foo::bar + 1` parse correctly as `(Foo::bar) + 1` because `bar` is consumed as identifier before `+` is considered. Instance qualified access `expr.(Qualified)` uses dot-paren syntax at postfix precedence 8 (same as member_access), with the inner part constrained to be a qualified_access node.",
+  "prerequisites": [
+    {
+      "id": "pre-1",
+      "description": "Add `qualified_access` grammar rule to grammar.js: `prec.left(2, seq(field('qualifier', $._expression), '::', field('member', $.identifier)))`. Add `$.qualified_access` to `_expression` choice list.",
+      "status": "done",
+      "commit": "a2e4f3b",
+      "tests": []
+    },
+    {
+      "id": "pre-2",
+      "description": "Add `instance_qualified_access` grammar rule to grammar.js: `prec.left(8, seq(field('object', $._expression), '.', '(', field('qualified', $.qualified_access), ')'))`. Add `$.instance_qualified_access` to `_expression` choice list. Update precedence comment block to document `::` at level 2.",
+      "status": "done",
+      "commit": "a2e4f3b",
+      "tests": []
+    },
+    {
+      "id": "pre-3",
+      "description": "Regenerate tree-sitter parser: run `npx tree-sitter generate` in tree-sitter-reify/ to produce updated parser.c, grammar.json, and node-types.json.",
+      "status": "done",
+      "commit": "a2e4f3b",
+      "tests": []
+    },
+    {
+      "id": "pre-4",
+      "description": "Add `QualifiedAccess { qualifier: Box<Expr>, member: String }` variant to ExprKind in lib.rs. Represents `TypeName::ident` (and chained `A::B::c`).",
+      "status": "done",
+      "commit": "88ab3f5",
+      "tests": []
+    },
+    {
+      "id": "pre-5",
+      "description": "Add `InstanceQualifiedAccess { object: Box<Expr>, qualified: Box<Expr> }` variant to ExprKind in lib.rs. Represents `expr.(TypeName::ident)`. The `qualified` field holds a QualifiedAccess expr.",
+      "status": "done",
+      "commit": "88ab3f5",
+      "tests": []
+    },
+    {
+      "id": "pre-6",
+      "description": "Create test file crates/reify-syntax/tests/qualified_access_tests.rs with `use reify_syntax::*;` import and `parse_decls` helper following the trait_tests.rs pattern.",
+      "status": "done",
+      "commit": "23678ff",
+      "tests": []
+    }
+  ],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Fix vacuous assertion: rewrite `sidecar_handle_state_starts_as_starting` to use duplex reader (no immediate EOF) and assert exactly `SidecarState::Starting` instead of 3-way disjunction",
+      "description": "Write failing test `parse_basic_qualified_access`: parse `structure S { let x = Rigid::mass }` and assert the let value is `ExprKind::QualifiedAccess { qualifier: Ident(\"Rigid\"), member: \"mass\" }`.",
       "status": "done",
-      "commit": "e290629"
+      "commit": "501ce34"
     },
     {
       "id": "step-2",
-      "type": "test",
-      "description": "Fix flaky yield-loop in `sidecar_handle_transitions_to_ready_on_ready_message`: replace `for _ in 0..20 { yield_now().await }` with `handle.wait_ready(Duration::from_secs(5)).await.unwrap()`",
+      "type": "impl",
+      "description": "Add `lower_qualified_access` method to ts_parser.rs: extract `qualifier` field (lower as expr) and `member` field (as string), produce QualifiedAccess ExprKind. Add `\"qualified_access\" => self.lower_qualified_access(node)` case to `lower_expr` match.",
       "status": "done",
-      "commit": "c6906ca"
+      "commit": "403abea"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Fix flaky yield-loop in `crash_detection_sets_state_to_crashed_on_eof`: replace `for _ in 0..50 { yield_now().await }` with `handle.wait_ready(Duration::from_secs(5)).await` (returns Err on crash), then assert Crashed state",
+      "description": "Write failing test `parse_chained_qualified_access`: parse `structure S { let x = A::B::c }` and assert left-associative nesting: QualifiedAccess { qualifier: QualifiedAccess { qualifier: Ident(\"A\"), member: \"B\" }, member: \"c\" }.",
       "status": "done",
-      "commit": "35f875e"
+      "commit": "c58ef30"
     },
     {
       "id": "step-4",
-      "type": "test",
-      "description": "Fix flaky yield-loop in `from_parts_with_mcp_intercepts_reify_tool_calls`: replace 100 yields with `tokio::time::timeout(Duration::from_secs(5), stdin_reader.read(&mut buf))` — the tool_result write is the natural synchronization point since events are emitted before it",
+      "type": "impl",
+      "description": "Verify chained qualified access works with the prec.left(2) grammar rule. Should pass without changes since the qualifier field accepts any _expression, including another qualified_access.",
       "status": "done",
-      "commit": "a12e86b"
+      "commit": "c58ef30"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Add test `claude_abort_impl_errors_when_sidecar_is_none`: create `Mutex<Option<SidecarHandle>>` with None, call `claude_abort_impl`, assert Err containing \"not started\"",
+      "description": "Write test `parse_qualified_access_in_binary_expr`: parse `structure S { let x = Rigid::mass + 1 }` and assert the let value is BinOp { op: \"+\", left: QualifiedAccess(Ident(\"Rigid\"), \"mass\"), right: NumberLiteral(1.0) }. Validates that `::` with identifier RHS doesn't interfere with arithmetic.",
       "status": "done",
-      "commit": "12c8401"
+      "commit": "a0f28bf"
     },
     {
       "id": "step-6",
-      "type": "test",
-      "description": "Add test `claude_clear_session_impl_errors_when_sidecar_is_none`: create `Mutex<Option<SidecarHandle>>` with None, call `claude_clear_session_impl`, assert Err containing \"not started\"",
+      "type": "impl",
+      "description": "Verify precedence interaction passes. Since the right side of `::` is an identifier (not _expression), `Rigid::mass` is always a complete unit, and `+ 1` applies to the whole qualified_access.",
       "status": "done",
-      "commit": "7d49da5"
+      "commit": "a0f28bf"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Add test `inbound_tool_result_serialization_round_trip`: serialize `InboundMessage::ToolResult { id, tool_name, result }` to JSON, verify tagged fields (type=tool_result, id, tool_name, result), then deserialize back and assert equality",
+      "description": "Write failing test `parse_basic_instance_qualified_access`: parse `structure S { let x = motor.(Driveable::torque) }` and assert the let value is `ExprKind::InstanceQualifiedAccess { object: Ident(\"motor\"), qualified: QualifiedAccess(Ident(\"Driveable\"), \"torque\") }`.",
       "status": "done",
-      "commit": "96af873"
+      "commit": "6a4e507"
     },
     {
       "id": "step-8",
-      "type": "test",
-      "description": "Add test `claude_send_message_impl_errors_when_sidecar_crashed`: create handle with `SidecarState::Crashed(\"segfault\")`, call `claude_send_message_impl`, assert Err containing \"crashed\"",
+      "type": "impl",
+      "description": "Add `lower_instance_qualified_access` method to ts_parser.rs: extract `object` field (lower as expr) and `qualified` field (lower as expr \u2014 will be a QualifiedAccess), produce InstanceQualifiedAccess ExprKind. Add `\"instance_qualified_access\" => self.lower_instance_qualified_access(node)` to `lower_expr`.",
       "status": "done",
-      "commit": "3528218"
+      "commit": "403abea"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Add test `wait_ready_handles_notify_registration_race`: create handle in Starting state with duplex, write ready message to duplex (buffered but not yet processed), immediately call `wait_ready(Duration::from_secs(5))` — exercises the subscribe-before-recheck race window — assert returns Ok regardless of scheduling order",
+      "description": "Write test `parse_instance_qualified_with_member_chain`: parse `structure S { let x = self.motor.(Driveable::torque) }` and assert InstanceQualifiedAccess { object: MemberAccess { object: Ident(\"self\"), member: \"motor\" }, qualified: QualifiedAccess(Ident(\"Driveable\"), \"torque\") }.",
       "status": "done",
-      "commit": "93356a7"
+      "commit": "6a4e507"
+    },
+    {
+      "id": "step-10",
+      "type": "impl",
+      "description": "Verify chained member access before instance qualified access works. Should pass since `self.motor` is parsed as member_access (prec 8) and `.(...)` is instance_qualified_access (prec 8, left-associative).",
+      "status": "done",
+      "commit": "6a4e507"
+    },
+    {
+      "id": "step-11",
+      "type": "test",
+      "description": "Write test `parse_instance_qualified_with_chained_path`: parse `structure S { let x = obj.(A::B::c) }` and assert InstanceQualifiedAccess { object: Ident(\"obj\"), qualified: QualifiedAccess { qualifier: QualifiedAccess { qualifier: Ident(\"A\"), member: \"B\" }, member: \"c\" } }.",
+      "status": "done",
+      "commit": "6a4e507"
+    },
+    {
+      "id": "step-12",
+      "type": "impl",
+      "description": "Verify nested qualified access inside instance qualified access. Should pass since the inner qualified field lowers recursively.",
+      "status": "done",
+      "commit": "6a4e507"
+    },
+    {
+      "id": "step-13",
+      "type": "test",
+      "description": "Write test `parse_distinct_ast_nodes`: parse `structure S { let a = Rigid::mass  let b = obj.(Rigid::mass) }` and assert `a` produces QualifiedAccess while `b` produces InstanceQualifiedAccess \u2014 distinct ExprKind discriminants.",
+      "status": "done",
+      "commit": "6a4e507"
+    },
+    {
+      "id": "step-14",
+      "type": "impl",
+      "description": "Verify distinct node test passes \u2014 inherent from using separate ExprKind variants. Final cleanup: ensure all existing tests still pass with `cargo test -p reify-syntax`.",
+      "status": "done",
+      "commit": "6a4e507"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Use wait_ready() as synchronization primitive for yield-loop replacements",
-      "rationale": "wait_ready() already uses Notify internally and handles both Ready and Crashed transitions. It wakes on the exact state change we're testing, making it deterministic. For crash detection tests, wait_ready returns Err('crashed') which serves as both synchronization and partial assertion."
+      "decision": "QualifiedAccess uses `qualifier: Box<Expr>` rather than `qualifier: String`",
+      "rationale": "The task specifies left-associative chaining (`A::B::c`), so the qualifier must accept another QualifiedAccess, not just a bare identifier. Box<Expr> supports this naturally: QualifiedAccess(QualifiedAccess(Ident(A), B), c)."
     },
     {
-      "decision": "Use timeout-wrapped async read for MCP interception test synchronization",
-      "rationale": "The from_parts_with_mcp test needs to wait for the spawned MCP handler to write tool_result back to stdin. Since events are emitted synchronously before the MCP handler spawns, waiting for the stdin read (tool_result) guarantees events have also been emitted. tokio::time::timeout provides a clean failure mode instead of hanging."
+      "decision": "InstanceQualifiedAccess stores `qualified: Box<Expr>` rather than decomposed type_name/member strings",
+      "rationale": "The inner part of `expr.(TypeName::ident)` is itself a qualified_access that can be chained (`expr.(A::B::c)`). Storing it as Box<Expr> avoids duplicating the QualifiedAccess structure and handles nesting naturally."
     },
     {
-      "decision": "Test the Notify registration race via buffered-but-unprocessed ready message",
-      "rationale": "The race in wait_ready is between the fast-path state check and the Notify subscription. By writing the ready message to the duplex before calling wait_ready, the message is buffered but its processing timing is nondeterministic — it may be processed during the fast path, between fast path and subscribe, or after subscribe. The test verifies wait_ready handles all three orderings correctly."
+      "decision": "Grammar restricts right side of `::` to `$.identifier`, not `$._expression`",
+      "rationale": "The task syntax `TypeName::ident` implies the member is always a bare identifier. This also avoids ambiguity: `Foo::bar + 1` unambiguously parses as `(Foo::bar) + 1` since `bar` is consumed as identifier, then `+ 1` is a separate binary expression."
     },
     {
-      "decision": "Keep all changes in the test file only — no production code modifications",
-      "rationale": "The production code (claude_bridge.rs) already correctly handles all the code paths being tested. The issues are purely test quality: vacuous assertions, flaky synchronization, and missing coverage."
+      "decision": "Instance qualified access grammar constrains inner part to `$.qualified_access`",
+      "rationale": "The syntax `expr.(TypeName::ident)` specifically requires a qualified access inside the parentheses. Using `$.qualified_access` instead of `$._expression` prevents nonsensical forms like `expr.(42)` at the grammar level."
+    },
+    {
+      "decision": "Instance qualified access at precedence 8 (postfix level)",
+      "rationale": "The `expr.(...)` syntax is a postfix operation analogous to member access `expr.member` and index access `expr[i]`. All postfix operations share precedence 8, ensuring consistent left-to-right evaluation: `a.b.(Foo::c)` parses as `(a.b).(Foo::c)`."
+    },
+    {
+      "decision": "Qualified access at precedence 2 as specified by task",
+      "rationale": "Task explicitly states precedence 2. Since the right side of `::` is restricted to an identifier (not an expression), precedence primarily affects the qualifier side. This is safe for the common use case where qualifiers are identifiers (`Foo::bar`). The compiler can reject non-type qualifiers if arithmetic expressions appear on the left."
     }
   ],
   "reuse": [
     {
-      "what": "SidecarHandle::wait_ready()",
-      "where": "claude_bridge.rs:306-332",
-      "how": "Replaces yield-loop synchronization in 2 tests (crash detection and ready transition). Uses internal Notify + state re-check, handles both Ready and Crashed transitions."
+      "what": "member_access grammar rule pattern",
+      "where": "tree-sitter-reify/grammar.js line 675",
+      "how": "Both qualified_access and instance_qualified_access follow the same `prec.left(N, seq(field(...), token, field(...)))` pattern as member_access."
     },
     {
-      "what": "SidecarHandle::from_parts()",
-      "where": "claude_bridge.rs:171-178",
-      "how": "Used in all new tests to construct handles with controlled I/O and initial state. Takes writer, reader, and state Arc."
+      "what": "lower_member_access implementation pattern",
+      "where": "crates/reify-syntax/src/ts_parser.rs lines 1743-1773",
+      "how": "lower_qualified_access follows the same pattern: extract named fields via child_by_field_name, lower sub-expressions, construct ExprKind."
     },
     {
-      "what": "tokio::io::duplex()",
-      "where": "tokio crate",
-      "how": "Already used extensively in existing tests. Used for the vacuous assertion fix (prevents immediate EOF) and in new tests for controlled I/O."
+      "what": "Test helper parse_decls pattern",
+      "where": "crates/reify-syntax/tests/trait_tests.rs lines 9-12",
+      "how": "New test file uses identical parse_decls helper: parse source with ModulePath::single, return (declarations, errors)."
     },
     {
-      "what": "Existing test pattern for sidecar=None tests",
-      "where": "claude_bridge_tests.rs:254-267 (claude_send_message_impl_errors_when_sidecar_is_none)",
-      "how": "Same pattern reused for claude_abort_impl and claude_clear_session_impl None tests: create Mutex<Option<SidecarHandle>> with None, call impl fn, assert Err."
+      "what": "Expression assertion via nested match on let decl",
+      "where": "crates/reify-syntax/tests/trait_tests.rs, lambda_tests.rs",
+      "how": "Tests extract expressions by pattern-matching Declaration::Structure \u2192 members[N] as MemberDecl::Let \u2192 let_decl.value.kind, then assert on ExprKind variant fields."
     },
     {
-      "what": "Existing IPC serialization test pattern",
-      "where": "claude_bridge_tests.rs:9-53",
-      "how": "Same serde_json::to_value + field assertion pattern reused for InboundMessage::ToolResult serialization test."
+      "what": "Lowering utilities: span() and node_text()",
+      "where": "crates/reify-syntax/src/ts_parser.rs Lowering impl",
+      "how": "All lowering functions use self.span(node) for SourceSpan and self.node_text(node) for extracting text. The new lowering functions reuse these same utilities."
     }
   ],
-  "_session_id": "354-0cc2bc95",
-  "_created_at": "2026-03-24T16:03:28.310400+00:00"
+  "_session_id": "191-e0bf1176",
+  "_created_at": "2026-03-24T16:06:05.537937+00:00"
 }

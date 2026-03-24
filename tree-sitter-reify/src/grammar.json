@@ -2695,6 +2695,14 @@
         },
         {
           "type": "SYMBOL",
+          "name": "qualified_access"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "instance_qualified_access"
+        },
+        {
+          "type": "SYMBOL",
           "name": "index_access"
         },
         {
@@ -3676,6 +3684,72 @@
               "type": "SYMBOL",
               "name": "identifier"
             }
+          }
+        ]
+      }
+    },
+    "qualified_access": {
+      "type": "PREC_LEFT",
+      "value": 2,
+      "content": {
+        "type": "SEQ",
+        "members": [
+          {
+            "type": "FIELD",
+            "name": "qualifier",
+            "content": {
+              "type": "SYMBOL",
+              "name": "_expression"
+            }
+          },
+          {
+            "type": "STRING",
+            "value": "::"
+          },
+          {
+            "type": "FIELD",
+            "name": "member",
+            "content": {
+              "type": "SYMBOL",
+              "name": "identifier"
+            }
+          }
+        ]
+      }
+    },
+    "instance_qualified_access": {
+      "type": "PREC_LEFT",
+      "value": 8,
+      "content": {
+        "type": "SEQ",
+        "members": [
+          {
+            "type": "FIELD",
+            "name": "object",
+            "content": {
+              "type": "SYMBOL",
+              "name": "_expression"
+            }
+          },
+          {
+            "type": "STRING",
+            "value": "."
+          },
+          {
+            "type": "STRING",
+            "value": "("
+          },
+          {
+            "type": "FIELD",
+            "name": "qualified",
+            "content": {
+              "type": "SYMBOL",
+              "name": "qualified_access"
+            }
+          },
+          {
+            "type": "STRING",
+            "value": ")"
           }
         ]
       }

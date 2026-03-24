@@ -1388,6 +1388,8 @@ impl<'a> Lowering<'a> {
             "map_literal" => self.lower_map_literal(node),
             "index_access" => self.lower_index_access(node),
             "member_access" => self.lower_member_access(node),
+            "qualified_access" => self.lower_qualified_access(node),
+            "instance_qualified_access" => self.lower_instance_qualified_access(node),
             "parenthesized_expression" => {
                 // Unwrap parenthesized expression — find the inner expression
                 let mut cursor = node.walk();
@@ -1767,6 +1769,38 @@ impl<'a> Lowering<'a> {
             kind: ExprKind::MemberAccess {
                 object: Box::new(object),
                 member,
+            },
+            span: self.span(node),
+        })
+    }
+
+    fn lower_qualified_access(&self, node: tree_sitter::Node) -> Option<Expr> {
+        let qualifier_node = node.child_by_field_name("qualifier")?;
+        let member_node = node.child_by_field_name("member")?;
+
+        let qualifier = self.lower_expr(qualifier_node)?;
+        let member = self.node_text(member_node).to_string();
+
+        Some(Expr {
+            kind: ExprKind::QualifiedAccess {
+                qualifier: Box::new(qualifier),
+                member,
+            },
+            span: self.span(node),
+        })
+    }
+
+    fn lower_instance_qualified_access(&self, node: tree_sitter::Node) -> Option<Expr> {
+        let object_node = node.child_by_field_name("object")?;
+        let qualified_node = node.child_by_field_name("qualified")?;
+
+        let object = self.lower_expr(object_node)?;
+        let qualified = self.lower_expr(qualified_node)?;
+
+        Some(Expr {
+            kind: ExprKind::InstanceQualifiedAccess {
+                object: Box::new(object),
+                qualified: Box::new(qualified),
             },
             span: self.span(node),
         })

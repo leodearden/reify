@@ -471,6 +471,18 @@ pub enum ExprKind {
         collection: Box<Expr>,
         predicate: Box<Expr>,
     },
+    /// Qualified trait access: `TypeName::ident` (or chained `A::B::c`).
+    /// The qualifier is an expression (supporting chaining); the member is a bare identifier.
+    QualifiedAccess {
+        qualifier: Box<Expr>,
+        member: String,
+    },
+    /// Instance-level qualified trait access: `expr.(TypeName::ident)`.
+    /// The qualified field holds a QualifiedAccess expression (possibly chained).
+    InstanceQualifiedAccess {
+        object: Box<Expr>,
+        qualified: Box<Expr>,
+    },
 }
 
 /// A match arm: `Pattern1 | Pattern2 => body`

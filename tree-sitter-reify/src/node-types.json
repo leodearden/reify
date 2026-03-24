@@ -32,6 +32,10 @@
           "named": true
         },
         {
+          "type": "instance_qualified_access",
+          "named": true
+        },
+        {
           "type": "lambda_expression",
           "named": true
         },
@@ -57,6 +61,10 @@
         },
         {
           "type": "parenthesized_expression",
+          "named": true
+        },
+        {
+          "type": "qualified_access",
           "named": true
         },
         {
@@ -141,6 +149,10 @@
             "named": true
           },
           {
+            "type": "instance_qualified_access",
+            "named": true
+          },
+          {
             "type": "lambda_expression",
             "named": true
           },
@@ -166,6 +178,10 @@
           },
           {
             "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "qualified_access",
             "named": true
           },
           {
@@ -273,6 +289,10 @@
             "named": true
           },
           {
+            "type": "instance_qualified_access",
+            "named": true
+          },
+          {
             "type": "lambda_expression",
             "named": true
           },
@@ -298,6 +318,10 @@
           },
           {
             "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "qualified_access",
             "named": true
           },
           {
@@ -362,6 +386,10 @@
             "named": true
           },
           {
+            "type": "instance_qualified_access",
+            "named": true
+          },
+          {
             "type": "lambda_expression",
             "named": true
           },
@@ -387,6 +415,10 @@
           },
           {
             "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "qualified_access",
             "named": true
           },
           {
@@ -441,6 +473,10 @@
           "named": true
         },
         {
+          "type": "instance_qualified_access",
+          "named": true
+        },
+        {
           "type": "lambda_expression",
           "named": true
         },
@@ -466,6 +502,10 @@
         },
         {
           "type": "parenthesized_expression",
+          "named": true
+        },
+        {
+          "type": "qualified_access",
           "named": true
         },
         {
@@ -524,6 +564,10 @@
             "named": true
           },
           {
+            "type": "instance_qualified_access",
+            "named": true
+          },
+          {
             "type": "lambda_expression",
             "named": true
           },
@@ -549,6 +593,10 @@
           },
           {
             "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "qualified_access",
             "named": true
           },
           {
@@ -602,6 +650,10 @@
             "named": true
           },
           {
+            "type": "instance_qualified_access",
+            "named": true
+          },
+          {
             "type": "lambda_expression",
             "named": true
           },
@@ -627,6 +679,10 @@
           },
           {
             "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "qualified_access",
             "named": true
           },
           {
@@ -680,6 +736,10 @@
             "named": true
           },
           {
+            "type": "instance_qualified_access",
+            "named": true
+          },
+          {
             "type": "lambda_expression",
             "named": true
           },
@@ -705,6 +765,10 @@
           },
           {
             "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "qualified_access",
             "named": true
           },
           {
@@ -798,6 +862,10 @@
             "named": true
           },
           {
+            "type": "instance_qualified_access",
+            "named": true
+          },
+          {
             "type": "lambda_expression",
             "named": true
           },
@@ -823,6 +891,10 @@
           },
           {
             "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "qualified_access",
             "named": true
           },
           {
@@ -938,6 +1010,10 @@
             "named": true
           },
           {
+            "type": "instance_qualified_access",
+            "named": true
+          },
+          {
             "type": "lambda_expression",
             "named": true
           },
@@ -963,6 +1039,10 @@
           },
           {
             "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "qualified_access",
             "named": true
           },
           {
@@ -1032,6 +1112,10 @@
             "named": true
           },
           {
+            "type": "instance_qualified_access",
+            "named": true
+          },
+          {
             "type": "lambda_expression",
             "named": true
           },
@@ -1057,6 +1141,10 @@
           },
           {
             "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "qualified_access",
             "named": true
           },
           {
@@ -1190,6 +1278,10 @@
             "named": true
           },
           {
+            "type": "instance_qualified_access",
+            "named": true
+          },
+          {
             "type": "lambda_expression",
             "named": true
           },
@@ -1215,6 +1307,10 @@
           },
           {
             "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "qualified_access",
             "named": true
           },
           {
@@ -1347,6 +1443,10 @@
             "named": true
           },
           {
+            "type": "instance_qualified_access",
+            "named": true
+          },
+          {
             "type": "lambda_expression",
             "named": true
           },
@@ -1372,6 +1472,10 @@
           },
           {
             "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "qualified_access",
             "named": true
           },
           {
@@ -1431,6 +1535,10 @@
             "named": true
           },
           {
+            "type": "instance_qualified_access",
+            "named": true
+          },
+          {
             "type": "lambda_expression",
             "named": true
           },
@@ -1456,6 +1564,10 @@
           },
           {
             "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "qualified_access",
             "named": true
           },
           {
@@ -1546,6 +1658,10 @@
             "named": true
           },
           {
+            "type": "instance_qualified_access",
+            "named": true
+          },
+          {
             "type": "lambda_expression",
             "named": true
           },
@@ -1571,6 +1687,10 @@
           },
           {
             "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "qualified_access",
             "named": true
           },
           {
@@ -1660,6 +1780,10 @@
             "named": true
           },
           {
+            "type": "instance_qualified_access",
+            "named": true
+          },
+          {
             "type": "lambda_expression",
             "named": true
           },
@@ -1685,6 +1809,10 @@
           },
           {
             "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "qualified_access",
             "named": true
           },
           {
@@ -1855,6 +1983,10 @@
             "named": true
           },
           {
+            "type": "instance_qualified_access",
+            "named": true
+          },
+          {
             "type": "lambda_expression",
             "named": true
           },
@@ -1880,6 +2012,10 @@
           },
           {
             "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "qualified_access",
             "named": true
           },
           {
@@ -2051,6 +2187,10 @@
             "named": true
           },
           {
+            "type": "instance_qualified_access",
+            "named": true
+          },
+          {
             "type": "lambda_expression",
             "named": true
           },
@@ -2076,6 +2216,10 @@
           },
           {
             "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "qualified_access",
             "named": true
           },
           {
@@ -2129,6 +2273,10 @@
             "named": true
           },
           {
+            "type": "instance_qualified_access",
+            "named": true
+          },
+          {
             "type": "lambda_expression",
             "named": true
           },
@@ -2157,6 +2305,10 @@
             "named": true
           },
           {
+            "type": "qualified_access",
+            "named": true
+          },
+          {
             "type": "quantifier_expression",
             "named": true
           },
@@ -2174,6 +2326,108 @@
           },
           {
             "type": "unary_expression",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "instance_qualified_access",
+    "named": true,
+    "fields": {
+      "object": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "binary_expression",
+            "named": true
+          },
+          {
+            "type": "bool_literal",
+            "named": true
+          },
+          {
+            "type": "conditional_expression",
+            "named": true
+          },
+          {
+            "type": "function_call",
+            "named": true
+          },
+          {
+            "type": "identifier",
+            "named": true
+          },
+          {
+            "type": "index_access",
+            "named": true
+          },
+          {
+            "type": "instance_qualified_access",
+            "named": true
+          },
+          {
+            "type": "lambda_expression",
+            "named": true
+          },
+          {
+            "type": "list_literal",
+            "named": true
+          },
+          {
+            "type": "map_literal",
+            "named": true
+          },
+          {
+            "type": "match_expression",
+            "named": true
+          },
+          {
+            "type": "member_access",
+            "named": true
+          },
+          {
+            "type": "number_literal",
+            "named": true
+          },
+          {
+            "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "qualified_access",
+            "named": true
+          },
+          {
+            "type": "quantifier_expression",
+            "named": true
+          },
+          {
+            "type": "quantity_literal",
+            "named": true
+          },
+          {
+            "type": "set_literal",
+            "named": true
+          },
+          {
+            "type": "string_literal",
+            "named": true
+          },
+          {
+            "type": "unary_expression",
+            "named": true
+          }
+        ]
+      },
+      "qualified": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "qualified_access",
             "named": true
           }
         ]
@@ -2213,6 +2467,10 @@
             "named": true
           },
           {
+            "type": "instance_qualified_access",
+            "named": true
+          },
+          {
             "type": "lambda_expression",
             "named": true
           },
@@ -2238,6 +2496,10 @@
           },
           {
             "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "qualified_access",
             "named": true
           },
           {
@@ -2363,6 +2625,10 @@
             "named": true
           },
           {
+            "type": "instance_qualified_access",
+            "named": true
+          },
+          {
             "type": "lambda_expression",
             "named": true
           },
@@ -2388,6 +2654,10 @@
           },
           {
             "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "qualified_access",
             "named": true
           },
           {
@@ -2447,6 +2717,10 @@
           "named": true
         },
         {
+          "type": "instance_qualified_access",
+          "named": true
+        },
+        {
           "type": "lambda_expression",
           "named": true
         },
@@ -2472,6 +2746,10 @@
         },
         {
           "type": "parenthesized_expression",
+          "named": true
+        },
+        {
+          "type": "qualified_access",
           "named": true
         },
         {
@@ -2530,6 +2808,10 @@
             "named": true
           },
           {
+            "type": "instance_qualified_access",
+            "named": true
+          },
+          {
             "type": "lambda_expression",
             "named": true
           },
@@ -2555,6 +2837,10 @@
           },
           {
             "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "qualified_access",
             "named": true
           },
           {
@@ -2608,6 +2894,10 @@
             "named": true
           },
           {
+            "type": "instance_qualified_access",
+            "named": true
+          },
+          {
             "type": "lambda_expression",
             "named": true
           },
@@ -2633,6 +2923,10 @@
           },
           {
             "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "qualified_access",
             "named": true
           },
           {
@@ -2707,6 +3001,10 @@
             "named": true
           },
           {
+            "type": "instance_qualified_access",
+            "named": true
+          },
+          {
             "type": "lambda_expression",
             "named": true
           },
@@ -2732,6 +3030,10 @@
           },
           {
             "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "qualified_access",
             "named": true
           },
           {
@@ -2801,6 +3103,10 @@
             "named": true
           },
           {
+            "type": "instance_qualified_access",
+            "named": true
+          },
+          {
             "type": "lambda_expression",
             "named": true
           },
@@ -2826,6 +3132,10 @@
           },
           {
             "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "qualified_access",
             "named": true
           },
           {
@@ -2910,6 +3220,10 @@
             "named": true
           },
           {
+            "type": "instance_qualified_access",
+            "named": true
+          },
+          {
             "type": "lambda_expression",
             "named": true
           },
@@ -2935,6 +3249,10 @@
           },
           {
             "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "qualified_access",
             "named": true
           },
           {
@@ -3014,6 +3332,10 @@
             "named": true
           },
           {
+            "type": "instance_qualified_access",
+            "named": true
+          },
+          {
             "type": "lambda_expression",
             "named": true
           },
@@ -3039,6 +3361,10 @@
           },
           {
             "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "qualified_access",
             "named": true
           },
           {
@@ -3098,6 +3424,10 @@
             "named": true
           },
           {
+            "type": "instance_qualified_access",
+            "named": true
+          },
+          {
             "type": "lambda_expression",
             "named": true
           },
@@ -3123,6 +3453,10 @@
           },
           {
             "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "qualified_access",
             "named": true
           },
           {
@@ -3202,6 +3536,10 @@
             "named": true
           },
           {
+            "type": "instance_qualified_access",
+            "named": true
+          },
+          {
             "type": "lambda_expression",
             "named": true
           },
@@ -3227,6 +3565,10 @@
           },
           {
             "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "qualified_access",
             "named": true
           },
           {
@@ -3375,6 +3717,10 @@
             "named": true
           },
           {
+            "type": "instance_qualified_access",
+            "named": true
+          },
+          {
             "type": "lambda_expression",
             "named": true
           },
@@ -3400,6 +3746,10 @@
           },
           {
             "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "qualified_access",
             "named": true
           },
           {
@@ -3515,6 +3865,10 @@
           "named": true
         },
         {
+          "type": "instance_qualified_access",
+          "named": true
+        },
+        {
           "type": "lambda_expression",
           "named": true
         },
@@ -3540,6 +3894,10 @@
         },
         {
           "type": "parenthesized_expression",
+          "named": true
+        },
+        {
+          "type": "qualified_access",
           "named": true
         },
         {
@@ -3706,6 +4064,10 @@
             "named": true
           },
           {
+            "type": "instance_qualified_access",
+            "named": true
+          },
+          {
             "type": "lambda_expression",
             "named": true
           },
@@ -3731,6 +4093,10 @@
           },
           {
             "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "qualified_access",
             "named": true
           },
           {
@@ -3816,6 +4182,10 @@
           "named": true
         },
         {
+          "type": "instance_qualified_access",
+          "named": true
+        },
+        {
           "type": "lambda_expression",
           "named": true
         },
@@ -3841,6 +4211,10 @@
         },
         {
           "type": "parenthesized_expression",
+          "named": true
+        },
+        {
+          "type": "qualified_access",
           "named": true
         },
         {
@@ -3958,6 +4332,108 @@
     }
   },
   {
+    "type": "qualified_access",
+    "named": true,
+    "fields": {
+      "member": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "qualifier": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "binary_expression",
+            "named": true
+          },
+          {
+            "type": "bool_literal",
+            "named": true
+          },
+          {
+            "type": "conditional_expression",
+            "named": true
+          },
+          {
+            "type": "function_call",
+            "named": true
+          },
+          {
+            "type": "identifier",
+            "named": true
+          },
+          {
+            "type": "index_access",
+            "named": true
+          },
+          {
+            "type": "instance_qualified_access",
+            "named": true
+          },
+          {
+            "type": "lambda_expression",
+            "named": true
+          },
+          {
+            "type": "list_literal",
+            "named": true
+          },
+          {
+            "type": "map_literal",
+            "named": true
+          },
+          {
+            "type": "match_expression",
+            "named": true
+          },
+          {
+            "type": "member_access",
+            "named": true
+          },
+          {
+            "type": "number_literal",
+            "named": true
+          },
+          {
+            "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "qualified_access",
+            "named": true
+          },
+          {
+            "type": "quantifier_expression",
+            "named": true
+          },
+          {
+            "type": "quantity_literal",
+            "named": true
+          },
+          {
+            "type": "set_literal",
+            "named": true
+          },
+          {
+            "type": "string_literal",
+            "named": true
+          },
+          {
+            "type": "unary_expression",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "quantifier_expression",
     "named": true,
     "fields": {
@@ -3990,6 +4466,10 @@
             "named": true
           },
           {
+            "type": "instance_qualified_access",
+            "named": true
+          },
+          {
             "type": "lambda_expression",
             "named": true
           },
@@ -4015,6 +4495,10 @@
           },
           {
             "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "qualified_access",
             "named": true
           },
           {
@@ -4068,6 +4552,10 @@
             "named": true
           },
           {
+            "type": "instance_qualified_access",
+            "named": true
+          },
+          {
             "type": "lambda_expression",
             "named": true
           },
@@ -4093,6 +4581,10 @@
           },
           {
             "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "qualified_access",
             "named": true
           },
           {
@@ -4202,6 +4694,10 @@
           "named": true
         },
         {
+          "type": "instance_qualified_access",
+          "named": true
+        },
+        {
           "type": "lambda_expression",
           "named": true
         },
@@ -4227,6 +4723,10 @@
         },
         {
           "type": "parenthesized_expression",
+          "named": true
+        },
+        {
+          "type": "qualified_access",
           "named": true
         },
         {
@@ -4684,6 +5184,10 @@
             "named": true
           },
           {
+            "type": "instance_qualified_access",
+            "named": true
+          },
+          {
             "type": "lambda_expression",
             "named": true
           },
@@ -4709,6 +5213,10 @@
           },
           {
             "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "qualified_access",
             "named": true
           },
           {
@@ -4768,6 +5276,10 @@
             "named": true
           },
           {
+            "type": "instance_qualified_access",
+            "named": true
+          },
+          {
             "type": "lambda_expression",
             "named": true
           },
@@ -4793,6 +5305,10 @@
           },
           {
             "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "qualified_access",
             "named": true
           },
           {
@@ -4856,6 +5372,10 @@
             "named": true
           },
           {
+            "type": "instance_qualified_access",
+            "named": true
+          },
+          {
             "type": "lambda_expression",
             "named": true
           },
@@ -4881,6 +5401,10 @@
           },
           {
             "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "qualified_access",
             "named": true
           },
           {
@@ -4950,6 +5474,10 @@
             "named": true
           },
           {
+            "type": "instance_qualified_access",
+            "named": true
+          },
+          {
             "type": "lambda_expression",
             "named": true
           },
@@ -4975,6 +5503,10 @@
           },
           {
             "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "qualified_access",
             "named": true
           },
           {
@@ -5051,6 +5583,10 @@
   },
   {
     "type": ":",
+    "named": false
+  },
+  {
+    "type": "::",
     "named": false
   },
   {
