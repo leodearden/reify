@@ -2590,4 +2590,81 @@ mod tests {
         let m = Value::Matrix(vec![vec![Value::Int(1)]]);
         assert_eq!(format!("{}", m), "[[1]]");
     }
+
+    // ── Value::Matrix canonicalize_matrix / try_into_matrix tests (step-11) ─
+
+    #[test]
+    fn canonicalize_matrix_converts_to_nested_tensor() {
+        // (a) Matrix([[1,2],[3,4]]) → Tensor([Tensor([1,2]), Tensor([3,4])])
+        let matrix = Value::Matrix(vec![
+            vec![Value::Int(1), Value::Int(2)],
+            vec![Value::Int(3), Value::Int(4)],
+        ]);
+        let expected = Value::Tensor(vec![
+            Value::Tensor(vec![Value::Int(1), Value::Int(2)]),
+            Value::Tensor(vec![Value::Int(3), Value::Int(4)]),
+        ]);
+        assert_eq!(matrix.canonicalize_matrix(), expected);
+    }
+
+    #[test]
+    fn canonicalize_matrix_is_identity_for_non_matrix() {
+        // (b) non-Matrix values pass through unchanged
+        assert_eq!(Value::Int(42).canonicalize_matrix(), Value::Int(42));
+        assert_eq!(
+            Value::Tensor(vec![Value::Int(1), Value::Int(2)]).canonicalize_matrix(),
+            Value::Tensor(vec![Value::Int(1), Value::Int(2)])
+        );
+        assert_eq!(Value::Undef.canonicalize_matrix(), Value::Undef);
+    }
+
+    #[test]
+    fn canonicalize_matrix_empty_rows() {
+        // (c) Matrix([[],[]])  → Tensor([Tensor([]), Tensor([])])
+        let matrix = Value::Matrix(vec![vec![], vec![]]);
+        let expected = Value::Tensor(vec![Value::Tensor(vec![]), Value::Tensor(vec![])]);
+        assert_eq!(matrix.canonicalize_matrix(), expected);
+    }
+
+    #[test]
+    fn try_into_matrix_rank2_tensor_converts() {
+        // (d) rank-2 Tensor([Tensor([1,2]), Tensor([3,4])]) → Some(Matrix([[1,2],[3,4]]))
+        let tensor = Value::Tensor(vec![
+            Value::Tensor(vec![Value::Int(1), Value::Int(2)]),
+            Value::Tensor(vec![Value::Int(3), Value::Int(4)]),
+        ]);
+        let expected = Some(Value::Matrix(vec![
+            vec![Value::Int(1), Value::Int(2)],
+            vec![Value::Int(3), Value::Int(4)],
+        ]));
+        assert_eq!(tensor.try_into_matrix(), expected);
+    }
+
+    #[test]
+    fn try_into_matrix_rank1_tensor_returns_none() {
+        // (e) rank-1 Tensor([1,2,3]) → None (not all-Tensor elements)
+        let tensor = Value::Tensor(vec![Value::Int(1), Value::Int(2), Value::Int(3)]);
+        assert_eq!(tensor.try_into_matrix(), None);
+    }
+
+    #[test]
+    fn try_into_matrix_non_tensor_returns_none() {
+        // (f) non-Tensor values return None
+        assert_eq!(Value::Int(42).try_into_matrix(), None);
+        assert_eq!(
+            Value::Matrix(vec![vec![Value::Int(1)]]).try_into_matrix(),
+            None
+        );
+    }
+
+    #[test]
+    fn canonicalize_matrix_round_trip() {
+        // (g) round-trip: matrix.clone().canonicalize_matrix().try_into_matrix() == Some(matrix)
+        let matrix = Value::Matrix(vec![
+            vec![Value::Int(1), Value::Int(2)],
+            vec![Value::Int(3), Value::Int(4)],
+        ]);
+        let round_tripped = matrix.clone().canonicalize_matrix().try_into_matrix();
+        assert_eq!(round_tripped, Some(matrix));
+    }
 }
