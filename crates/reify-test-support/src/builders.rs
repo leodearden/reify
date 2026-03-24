@@ -873,6 +873,10 @@ pub struct CompiledModuleBuilder {
     functions: Vec<reify_types::CompiledFunction>,
     templates: Vec<TopologyTemplate>,
     diagnostics: Vec<reify_types::Diagnostic>,
+    trait_defs: Vec<CompiledTrait>,
+    fields: Vec<CompiledField>,
+    enum_defs: Vec<reify_types::EnumDef>,
+    compiled_purposes: Vec<CompiledPurpose>,
 }
 
 impl CompiledModuleBuilder {
@@ -883,6 +887,10 @@ impl CompiledModuleBuilder {
             functions: Vec::new(),
             templates: Vec::new(),
             diagnostics: Vec::new(),
+            trait_defs: Vec::new(),
+            fields: Vec::new(),
+            enum_defs: Vec::new(),
+            compiled_purposes: Vec::new(),
         }
     }
 
@@ -926,6 +934,26 @@ impl CompiledModuleBuilder {
         self
     }
 
+    pub fn trait_def(mut self, t: CompiledTrait) -> Self {
+        self.trait_defs.push(t);
+        self
+    }
+
+    pub fn field(mut self, f: CompiledField) -> Self {
+        self.fields.push(f);
+        self
+    }
+
+    pub fn enum_def(mut self, e: reify_types::EnumDef) -> Self {
+        self.enum_defs.push(e);
+        self
+    }
+
+    pub fn compiled_purpose(mut self, p: CompiledPurpose) -> Self {
+        self.compiled_purposes.push(p);
+        self
+    }
+
     pub fn build(self) -> CompiledModule {
         // Build a content-sensitive hash matching compile() logic.
         let content_hash = {
@@ -937,10 +965,23 @@ impl CompiledModuleBuilder {
 
             let function_hashes = self.functions.iter().map(|f| f.content_hash);
 
+            let trait_hashes = self.trait_defs.iter().map(|t| t.content_hash);
+
+            let field_hashes = self.fields.iter().map(|f| f.content_hash);
+
+            let purpose_hashes = self.compiled_purposes.iter().map(|p| p.content_hash);
+
+            let enum_hashes =
+                self.enum_defs.iter().map(|e| ContentHash::of_str(&e.name));
+
             let all_hashes = std::iter::once(path_hash)
                 .chain(template_hashes)
                 .chain(import_hashes)
-                .chain(function_hashes);
+                .chain(function_hashes)
+                .chain(trait_hashes)
+                .chain(field_hashes)
+                .chain(purpose_hashes)
+                .chain(enum_hashes);
 
             ContentHash::combine_all(all_hashes)
         };
@@ -948,11 +989,11 @@ impl CompiledModuleBuilder {
         CompiledModule {
             path: self.path,
             imports: self.imports,
-            enum_defs: Vec::new(),
+            enum_defs: self.enum_defs,
             functions: self.functions,
-            trait_defs: Vec::new(),
-            fields: Vec::new(),
-            compiled_purposes: Vec::new(),
+            trait_defs: self.trait_defs,
+            fields: self.fields,
+            compiled_purposes: self.compiled_purposes,
             templates: self.templates,
             diagnostics: self.diagnostics,
             content_hash,
