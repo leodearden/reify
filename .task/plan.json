@@ -9,20 +9,20 @@
   "modules": [
     "crates/reify-types"
   ],
-  "analysis": "This task is ALREADY FULLY IMPLEMENTED in the current worktree. Both Range variants exist with comprehensive trait implementations and 52 Range-specific tests (all passing, 289 total in reify-types).\n\n**Type::Range(Box<Type>)** at ty.rs line 49:\n- Derives Debug, Clone, PartialEq, Eq, Hash automatically via derive macros\n- Display impl: 'Range<{inner}>' at line 644\n- Factory method: Type::range(inner) at lines 109-112\n- 8 unit tests (lines 522-588): construction, display (int/scalar/real), factory, eq+hash, not_numeric, as_name_none\n\n**Value::Range { lower, upper, lower_inclusive, upper_inclusive }** at value.rs lines 58-63:\n- PartialEq: field-by-field comparison (lines 318-321)\n- Eq: marker trait (line 328)\n- Ord: type_tag=16, compares lower_inclusive -> lower -> upper_inclusive -> upper (lines 432-440)\n- Display: interval notation [0..10] or (-inf..inf) (lines 551-563)\n- content_hash: tag=17, flags then optional bounds (lines 252-264)\n- Factory: Value::range() with normalization — forces inclusive=false when bound is None (lines 91-105)\n- 44 unit tests covering display (8), content_hash (6), ord (7), equality (10), normalization (7), cross-variant (3), hash consistency (3)\n\n**Dimension checking**: Type::Range(Box<Type>) structurally guarantees both bounds share the same element type (and thus dimension for Scalar). Runtime dimension checking is the type-checker's responsibility (in reify-compiler, not reify-types).\n\n**Exports**: tests/exports.rs lines 197-214 verify Range is accessible via public API for both Type and Value.\n\nSince everything is fully implemented and tested, the steps below are verification-only — each confirms existing code and tests are correct.",
+  "analysis": "This task is ALREADY FULLY IMPLEMENTED in the current worktree. Both Range variants exist with comprehensive trait implementations and 52 Range-specific tests (all passing, 289 total in reify-types).\n\n**Type::Range(Box<Type>)** at ty.rs line 49:\n- Derives Debug, Clone, PartialEq, Eq, Hash automatically via derive macros\n- Display impl: 'Range<{inner}>' at line 644\n- Factory method: Type::range(inner) at lines 109-112\n- 8 unit tests (lines 522-588): construction, display (int/scalar/real), factory, eq+hash, not_numeric, as_name_none\n\n**Value::Range { lower, upper, lower_inclusive, upper_inclusive }** at value.rs lines 58-63:\n- PartialEq: field-by-field comparison (lines 318-321)\n- Eq: marker trait (line 328)\n- Ord: type_tag=16, compares lower_inclusive -> lower -> upper_inclusive -> upper (lines 432-440)\n- Display: interval notation [0..10] or (-inf..inf) (lines 551-563)\n- content_hash: tag=17, flags then optional bounds (lines 252-264)\n- Factory: Value::range() with normalization \u2014 forces inclusive=false when bound is None (lines 91-105)\n- 44 unit tests covering display (8), content_hash (6), ord (7), equality (10), normalization (7), cross-variant (3), hash consistency (3)\n\n**Dimension checking**: Type::Range(Box<Type>) structurally guarantees both bounds share the same element type (and thus dimension for Scalar). Runtime dimension checking is the type-checker's responsibility (in reify-compiler, not reify-types).\n\n**Exports**: tests/exports.rs lines 197-214 verify Range is accessible via public API for both Type and Value.\n\nSince everything is fully implemented and tested, the steps below are verification-only \u2014 each confirms existing code and tests are correct.\n\n**Review fix (steps 9-10):** The reviewer identified that Value::Range is a public enum variant with named fields, so callers can bypass Value::range() and directly construct Value::Range { lower: None, lower_inclusive: true, ... }. This violates the normalization invariant (inclusive flags must be false when bounds are None), which corrupts cache equality. The fix adds debug_assert! guards in all four trait impls (content_hash, PartialEq, Ord, Display) to catch invariant violations at runtime in debug builds. A compile-time fix via #[non_exhaustive] was considered but deferred because it would break pattern matching and construction in dependent crates (reify-test-support, reify-lsp, gui/src-tauri) which are outside this task's scope.",
   "prerequisites": [],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Verify Type::Range(Box<Type>) variant exists with derived Eq/Hash, Display as 'Range<{inner}>', and factory method Type::range(). Run existing 8 tests in ty.rs (type_range_construction through type_range_as_name_none). All should pass — no new test code needed.",
+      "description": "Verify Type::Range(Box<Type>) variant exists with derived Eq/Hash, Display as 'Range<{inner}>', and factory method Type::range(). Run existing 8 tests in ty.rs (type_range_construction through type_range_as_name_none). All should pass \u2014 no new test code needed.",
       "status": "done",
       "commit": "6f1eba2531d1c137305cb0882a844d5e01329e12"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Type::Range(Box<Type>) already at ty.rs:49 with derive(Debug, Clone, PartialEq, Eq, Hash), Display at line 644, factory at lines 109-112. No code changes needed — mark as done after step-1 verification.",
+      "description": "Type::Range(Box<Type>) already at ty.rs:49 with derive(Debug, Clone, PartialEq, Eq, Hash), Display at line 644, factory at lines 109-112. No code changes needed \u2014 mark as done after step-1 verification.",
       "status": "done",
       "commit": "6f1eba2531d1c137305cb0882a844d5e01329e12"
     },
@@ -64,15 +64,29 @@
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Value::range() factory at value.rs:91-105 normalizes inclusive flags. exports.rs lines 197-214 test public API. No code changes needed — full implementation is complete.",
+      "description": "Value::range() factory at value.rs:91-105 normalizes inclusive flags. exports.rs lines 197-214 test public API. No code changes needed \u2014 full implementation is complete.",
       "status": "done",
       "commit": "6f1eba2531d1c137305cb0882a844d5e01329e12"
+    },
+    {
+      "id": "step-9",
+      "type": "test",
+      "description": "Write 4 failing tests for Range invariant enforcement (review fix: invariant_bypass). Tests directly construct Value::Range { lower: None, lower_inclusive: true, ... } bypassing the factory, then call content_hash(), eq(), cmp(), and format!() respectively. Each test should panic in debug mode with the message 'Range invariant violated: lower_inclusive must be false when lower is None'. Also write 2 tests for upper bound: directly construct with upper: None, upper_inclusive: true and verify content_hash() and format!() panic. All 6 tests use #[should_panic(expected = \"Range invariant violated\")]. Tests go in value.rs after the existing normalization tests (~line 2300).",
+      "status": "done",
+      "commit": "a86fc299"
+    },
+    {
+      "id": "step-10",
+      "type": "impl",
+      "description": "Add debug_assert! guards in all 4 trait impls for Value::Range to enforce the normalization invariant. In each impl's Range match arm, add two assertions before the existing logic: debug_assert!(lower.is_some() || !lower_inclusive, \"Range invariant violated: lower_inclusive must be false when lower is None\") and debug_assert!(upper.is_some() || !upper_inclusive, \"Range invariant violated: upper_inclusive must be false when upper is None\"). Locations: (1) content_hash at value.rs:252-264, add after the pattern match and before tag=17 hashing; (2) PartialEq at value.rs:318-321, add assertions for both self and other Range values; (3) Ord at value.rs:432-440, add assertions for both Range values; (4) Display at value.rs:551-563, add after the pattern match and before bracket formatting. This catches any direct construction that bypasses Value::range() at runtime in debug builds.",
+      "status": "done",
+      "commit": "755ab264"
     }
   ],
   "design_decisions": [
     {
       "decision": "Type::Range wraps a single Box<Type> rather than two separate bound types",
-      "rationale": "Structurally enforces that both bounds share the same element type (and thus the same dimension for Scalar types). No runtime validation needed in reify-types — the type checker in reify-compiler handles dimension checking at the type level."
+      "rationale": "Structurally enforces that both bounds share the same element type (and thus the same dimension for Scalar types). No runtime validation needed in reify-types \u2014 the type checker in reify-compiler handles dimension checking at the type level."
     },
     {
       "decision": "Value::range() factory normalizes inclusive flags to false when bound is None",
@@ -89,13 +103,17 @@
     {
       "decision": "Display uses mathematical interval notation: [0..10], (0..10), (-inf..inf)",
       "rationale": "Standard interval notation is universally understood: [ for inclusive, ( for exclusive, -inf/inf for unbounded. Uses '..' as Rust-idiomatic range separator."
+    },
+    {
+      "decision": "Use debug_assert! guards rather than #[non_exhaustive] to enforce Range normalization invariant",
+      "rationale": "The reviewer identified that Value::Range can be directly constructed bypassing the Value::range() factory, violating the normalization invariant. debug_assert! catches violations at runtime in debug builds with clear error messages. #[non_exhaustive] was considered for compile-time prevention but would break pattern matching and construction in dependent crates (reify-test-support, reify-lsp, gui/src-tauri) which are outside this task's scope. The debug_assert approach is defense-in-depth: the factory is the intended API, and assertions catch misuse during development."
     }
   ],
   "reuse": [
     {
       "what": "Derive macros on Type enum for automatic Eq/Hash",
       "where": "crates/reify-types/src/ty.rs line 4",
-      "how": "Type derives Debug, Clone, PartialEq, Eq, Hash — Range(Box<Type>) gets all traits for free via the derive, no manual implementation needed."
+      "how": "Type derives Debug, Clone, PartialEq, Eq, Hash \u2014 Range(Box<Type>) gets all traits for free via the derive, no manual implementation needed."
     },
     {
       "what": "ContentHash::of and ContentHash::combine for tagged hashing",
@@ -105,7 +123,7 @@
     {
       "what": "f64 to_bits() pattern for total ordering in Value",
       "where": "crates/reify-types/src/value.rs PartialEq and Ord impls",
-      "how": "Range bounds containing Real/Scalar values inherit the to_bits() total ordering through recursive Value comparison — no special f64 handling needed in Range-specific code."
+      "how": "Range bounds containing Real/Scalar values inherit the to_bits() total ordering through recursive Value comparison \u2014 no special f64 handling needed in Range-specific code."
     },
     {
       "what": "Box<Type> / Option<Box<Value>> boxing pattern for recursive types",
@@ -116,8 +134,13 @@
       "what": "Factory method convention with normalization",
       "where": "Type::complex(), Type::vec3(), Value::length() factory methods",
       "how": "Type::range() and Value::range() follow the same convenience-constructor convention. Value::range() adds normalization logic specific to Range semantics."
+    },
+    {
+      "what": "Existing debug_assert! pattern in reify-types",
+      "where": "crates/reify-types/src/diagnostics.rs:14",
+      "how": "The crate already uses debug_assert! for invariant checking (e.g., start <= end in diagnostics). Range invariant guards follow this same pattern."
     }
   ],
   "_session_id": "149-f4f12efa",
-  "_created_at": "2026-03-24T21:35:56.031556+00:00"
+  "_created_at": "2026-03-24T21:44:29.287931+00:00"
 }
