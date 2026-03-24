@@ -884,6 +884,32 @@ async fn kill_with_child_terminates_process_and_clears_child() {
     assert!(matches!(*handle.state().lock().await, SidecarState::NotStarted));
 }
 
+// --- shutdown_sidecar tests (step-5) ---
+
+#[tokio::test]
+async fn shutdown_sidecar_kills_and_clears_handle() {
+    use std::sync::Arc;
+    use tokio::io::BufReader;
+    use tokio::sync::Mutex;
+
+    // Build a live handle in Ready state using from_parts (duplex I/O)
+    let state = Arc::new(Mutex::new(SidecarState::Ready));
+    let (writer, _reader_end) = tokio::io::duplex(1024);
+    let data: &[u8] = b"";
+    let empty_reader = BufReader::new(data);
+    let handle = SidecarHandle::from_parts(writer, empty_reader, state);
+
+    let sidecar: tokio::sync::Mutex<Option<SidecarHandle>> = Mutex::new(Some(handle));
+
+    // Before: slot is Some
+    assert!(sidecar.lock().await.is_some(), "Expected Some before shutdown");
+
+    shutdown_sidecar(&sidecar).await;
+
+    // After: slot should be None
+    assert!(sidecar.lock().await.is_none(), "Expected None after shutdown_sidecar");
+}
+
 // --- spawn_sidecar_impl tests (step-1, step-3) ---
 
 #[tokio::test]
