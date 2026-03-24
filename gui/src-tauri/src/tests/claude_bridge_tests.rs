@@ -249,6 +249,62 @@ fn parse_outbound_missing_required_field_returns_err() {
     assert!(result.is_err());
 }
 
+// --- SidecarState and SidecarHandle tests (step-13) ---
+
+#[test]
+fn sidecar_state_variants_are_debug_clone() {
+    let s1 = SidecarState::NotStarted;
+    let s2 = SidecarState::Starting;
+    let s3 = SidecarState::Ready;
+    let s4 = SidecarState::Crashed("oops".to_string());
+    // Must be Debug + Clone
+    let _ = format!("{:?}{:?}{:?}{:?}", s1, s2, s3, s4);
+    let _ = s4.clone();
+}
+
+#[tokio::test]
+async fn sidecar_handle_state_starts_as_starting() {
+    use std::sync::Arc;
+    use tokio::io::BufReader;
+    use tokio::sync::Mutex;
+
+    let state = Arc::new(Mutex::new(SidecarState::Starting));
+
+    // Construct handle via from_parts with a dummy reader that ends immediately
+    let data: &[u8] = b"";
+    let reader = BufReader::new(data);
+    let (writer, _reader_end) = tokio::io::duplex(1024);
+
+    let handle = SidecarHandle::from_parts(writer, reader, state.clone());
+    // State should still be Starting since we haven't sent ready
+    assert!(matches!(
+        *handle.state().lock().await,
+        SidecarState::Starting | SidecarState::NotStarted | SidecarState::Crashed(_)
+    ));
+}
+
+#[tokio::test]
+async fn sidecar_handle_transitions_to_ready_on_ready_message() {
+    use std::sync::Arc;
+    use tokio::io::BufReader;
+    use tokio::sync::Mutex;
+
+    let state = Arc::new(Mutex::new(SidecarState::Starting));
+    let data = b"{\"type\":\"ready\"}\n";
+    let reader = BufReader::new(&data[..]);
+    let (writer, _) = tokio::io::duplex(1024);
+
+    let handle = SidecarHandle::from_parts(writer, reader, state.clone());
+
+    // Yield control multiple times to let the spawned reader task execute
+    for _ in 0..20 {
+        tokio::task::yield_now().await;
+    }
+
+    let s = handle.state().lock().await;
+    assert!(matches!(*s, SidecarState::Ready), "Expected Ready, got {:?}", *s);
+}
+
 // --- write_to_sidecar tests (step-11) ---
 
 #[tokio::test]

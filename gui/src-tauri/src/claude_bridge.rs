@@ -4,9 +4,13 @@
 // Claude Code SDK, handles JSON-line IPC, and bridges sidecar events to
 // Tauri frontend events.
 
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::sync::Mutex;
+use tokio::task::JoinHandle;
 
 // --- IPC types mirroring gui/sidecar/src/types.ts ---
 
@@ -114,6 +118,76 @@ pub async fn read_sidecar_output<R: AsyncBufRead + Unpin>(
         }
     }
     on_exit();
+}
+
+// --- Sidecar lifecycle management ---
+
+/// State of the sidecar subprocess.
+#[derive(Debug, Clone)]
+pub enum SidecarState {
+    /// Not yet started.
+    NotStarted,
+    /// Process started, waiting for the "ready" message.
+    Starting,
+    /// Ready to accept messages.
+    Ready,
+    /// Process crashed or exited unexpectedly.
+    Crashed(String),
+}
+
+/// Handle to a running sidecar process.
+///
+/// Uses `tokio::sync::Mutex` because operations (send, abort) are async
+/// and the lock must be held across await points.
+pub struct SidecarHandle {
+    stdin: Box<dyn AsyncWrite + Unpin + Send>,
+    reader_handle: JoinHandle<()>,
+    state: Arc<Mutex<SidecarState>>,
+}
+
+impl SidecarHandle {
+    /// Construct a SidecarHandle from pre-existing I/O parts.
+    /// The reader task is spawned immediately; it processes outbound messages
+    /// and transitions state to Ready when it receives the "ready" message.
+    pub fn from_parts<W, R>(
+        writer: W,
+        reader: R,
+        state: Arc<Mutex<SidecarState>>,
+    ) -> Self
+    where
+        W: AsyncWrite + Unpin + Send + 'static,
+        R: AsyncBufRead + Unpin + Send + 'static,
+    {
+        let state_for_reader = Arc::clone(&state);
+        let reader_handle = tokio::spawn(async move {
+            read_sidecar_output(
+                reader,
+                move |msg| {
+                    if let OutboundMessage::Ready = &msg {
+                        let state_inner = Arc::clone(&state_for_reader);
+                        tokio::spawn(async move {
+                            *state_inner.lock().await = SidecarState::Ready;
+                        });
+                    }
+                },
+                || {
+                    // on_exit: reader task ends
+                },
+            )
+            .await;
+        });
+
+        SidecarHandle {
+            stdin: Box::new(writer),
+            reader_handle,
+            state,
+        }
+    }
+
+    /// Get a reference to the state mutex.
+    pub fn state(&self) -> &Arc<Mutex<SidecarState>> {
+        &self.state
+    }
 }
 
 /// Map an OutboundMessage to a Tauri event name and JSON payload.
