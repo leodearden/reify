@@ -611,3 +611,65 @@ fn matrix_mat_mul_jagged_a_returns_undef_not_panic() {
     // Must return Undef rather than panicking with index out of bounds.
     assert_eq!(eval(&expr), Value::Undef);
 }
+
+// ── step-13 Matrix canonicalization tests ─────────────────────────────────
+//
+// These tests verify that Value::Matrix literals are canonicalized to nested
+// Value::Tensor before arithmetic dispatch, so they produce the same results
+// as equivalent nested-Tensor inputs.
+
+/// (a) Matrix + Matrix: element-wise addition of two 2×2 Int matrices.
+#[test]
+fn matrix_literal_add_matrix_literal() {
+    let lhs = CompiledExpr::literal(
+        Value::Matrix(vec![
+            vec![Value::Int(1), Value::Int(2)],
+            vec![Value::Int(3), Value::Int(4)],
+        ]),
+        Type::Real,
+    );
+    let rhs = CompiledExpr::literal(
+        Value::Matrix(vec![
+            vec![Value::Int(10), Value::Int(20)],
+            vec![Value::Int(30), Value::Int(40)],
+        ]),
+        Type::Real,
+    );
+    let expr = CompiledExpr::binop(BinOp::Add, lhs, rhs, Type::Real);
+    assert_eq!(
+        eval(&expr),
+        Value::Tensor(vec![
+            Value::Tensor(vec![Value::Int(11), Value::Int(22)]),
+            Value::Tensor(vec![Value::Int(33), Value::Int(44)]),
+        ])
+    );
+}
+
+/// (b) Scalar * Matrix: scales each element of a 1×2 Int matrix by Real(2.0).
+#[test]
+fn scalar_times_matrix_literal() {
+    let scalar = scalar_lit(Value::Real(2.0));
+    let matrix = CompiledExpr::literal(
+        Value::Matrix(vec![vec![Value::Real(1.0), Value::Real(2.0)]]),
+        Type::Real,
+    );
+    let expr = CompiledExpr::binop(BinOp::Mul, scalar, matrix, Type::Real);
+    assert_eq!(
+        eval(&expr),
+        Value::Tensor(vec![Value::Tensor(vec![Value::Real(2.0), Value::Real(4.0)])])
+    );
+}
+
+/// (c) -Matrix: negation of a 1×2 Int matrix.
+#[test]
+fn neg_matrix_literal() {
+    let matrix = CompiledExpr::literal(
+        Value::Matrix(vec![vec![Value::Int(1), Value::Int(-2)]]),
+        Type::Real,
+    );
+    let expr = CompiledExpr::unop(UnOp::Neg, matrix, Type::Real);
+    assert_eq!(
+        eval(&expr),
+        Value::Tensor(vec![Value::Tensor(vec![Value::Int(-1), Value::Int(2)])])
+    );
+}
