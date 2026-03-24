@@ -38,7 +38,7 @@
     "gui/src/__tests__",
     "gui/sidecar/src"
   ],
-  "analysis": "Task 142 adds rich streaming display components to the ChatPanel. The codebase already has substantial implementation on main: claudeStore.ts provides rAF-based delta batching (60fps), FIFO tool-result matching, session status management, and abort/clear. The ChatPanel.tsx orchestrates message display with MessageGroup rendering ThinkingBlock + ToolCallCards + StreamingText in correct DOM order. ThinkingBlock shows animated pulsing dots during streaming and a collapsible section after completion. StreamingText renders markdown via renderMarkdown() with a blinking cursor. ToolCallCard has read/write icon coloring, status indicators (spinner/checkmark/X), expandable details with JSON or DiffView for source updates. AbortButton replaces SendButton when sessionStatus !== 'idle'. Tests exist across 6 test files: claudeStore.test.ts (579 lines, 50+ cases covering rAF batching, FIFO matching, status transitions, error classification), ChatPanel.test.tsx (305 lines covering MessageGroup composition, context integration, abort visibility), ToolCallCard.test.tsx (140 lines covering status states, expand/collapse, diff view), plus dedicated ThinkingBlock, StreamingText, and AbortButton tests. Gaps identified: (1) resultSummary() only handles reify_get_parameters but not reify_get_constraints \u2014 task spec says 'e.g., 2 violated constraints', (2) ChatPanel abort button tests cover 'responding'/'idle' but not 'thinking'/'tool-calling' explicitly, (3) no high-volume streaming performance test (current rAF test uses 10 deltas; task says 'rendering doesn't block at high token rates'). Plan structures TDD steps for the full feature set; steps where both test and impl exist will be verified-and-passed quickly by the executor.",
+  "analysis": "Task 142 adds rich streaming display components to the ChatPanel. The codebase already has substantial implementation on main: claudeStore.ts provides rAF-based delta batching (60fps), FIFO tool-result matching, session status management, and abort/clear. The ChatPanel.tsx orchestrates message display with MessageGroup rendering ThinkingBlock + ToolCallCards + StreamingText in correct DOM order. ThinkingBlock shows animated pulsing dots during streaming and a collapsible section after completion. StreamingText renders markdown via renderMarkdown() with a blinking cursor. ToolCallCard has read/write icon coloring, status indicators (spinner/checkmark/X), expandable details with JSON or DiffView for source updates. AbortButton replaces SendButton when sessionStatus !== 'idle'. Tests exist across 6 test files: claudeStore.test.ts (579 lines, 50+ cases covering rAF batching, FIFO matching, status transitions, error classification), ChatPanel.test.tsx (305 lines covering MessageGroup composition, context integration, abort visibility), ToolCallCard.test.tsx (140 lines covering status states, expand/collapse, diff view), plus dedicated ThinkingBlock, StreamingText, and AbortButton tests. Gaps identified: (1) resultSummary() only handles reify_get_parameters but not reify_get_constraints — task spec says 'e.g., 2 violated constraints', (2) ChatPanel abort button tests cover 'responding'/'idle' but not 'thinking'/'tool-calling' explicitly, (3) no high-volume streaming performance test (current rAF test uses 10 deltas; task says 'rendering doesn't block at high token rates'). Plan structures TDD steps for the full feature set; steps where both test and impl exist will be verified-and-passed quickly by the executor.",
   "prerequisites": [
     {
       "id": "pre-1",
@@ -59,105 +59,105 @@
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing tests for claudeStore delta batching: (a) buffers multiple text_delta events and flushes on rAF, (b) buffers thinking_delta events, (c) done event flushes immediately without waiting for rAF, (d) abort clears pending buffer. File: gui/src/__tests__/claudeStore.test.ts \u2014 verify 'rAF delta batching' describe block exists with these 3 cases.",
-      "status": "pending",
-      "commit": null
+      "description": "Write failing tests for claudeStore delta batching: (a) buffers multiple text_delta events and flushes on rAF, (b) buffers thinking_delta events, (c) done event flushes immediately without waiting for rAF, (d) abort clears pending buffer. File: gui/src/__tests__/claudeStore.test.ts — verify 'rAF delta batching' describe block exists with these 3 cases.",
+      "status": "done",
+      "commit": "1fee2eeba3a18ccb34e74a7d96572affe4838fb6"
     },
     {
       "id": "step-2",
       "type": "impl",
       "description": "Implement rAF delta batching in claudeStore.ts: textBuffer/thinkingBuffer arrays, scheduleFlush() with requestAnimationFrame, cancelAndFlush() for terminal events, cancelAndClear() for abort. Verify step-1 tests pass.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "1fee2eeba3a18ccb34e74a7d96572affe4838fb6"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing tests for claudeStore session status transitions: text_delta sets 'responding', thinking_delta sets 'thinking', tool_call sets 'tool-calling', done/error/abort reset to 'idle'. File: gui/src/__tests__/claudeStore.test.ts \u2014 verify handleOutboundMessage tests exist.",
-      "status": "pending",
-      "commit": null
+      "description": "Write failing tests for claudeStore session status transitions: text_delta sets 'responding', thinking_delta sets 'thinking', tool_call sets 'tool-calling', done/error/abort reset to 'idle'. File: gui/src/__tests__/claudeStore.test.ts — verify handleOutboundMessage tests exist.",
+      "status": "done",
+      "commit": "1fee2eeba3a18ccb34e74a7d96572affe4838fb6"
     },
     {
       "id": "step-4",
       "type": "impl",
       "description": "Implement session status transitions in claudeStore handleOutboundMessage: set sessionStatus on each event type. Verify step-3 tests pass.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "1fee2eeba3a18ccb34e74a7d96572affe4838fb6"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing tests for claudeStore tool call FIFO matching: (a) tool_call adds ToolCallInfo with status='pending', (b) tool_result marks first pending tool with matching name as 'complete', (c) sequential same-tool calls resolve in order, (d) mixed tool names match correctly, (e) locally-unique IDs. File: gui/src/__tests__/claudeStore.test.ts \u2014 verify 'tool_result FIFO matching' describe block.",
-      "status": "pending",
-      "commit": null
+      "description": "Write failing tests for claudeStore tool call FIFO matching: (a) tool_call adds ToolCallInfo with status='pending', (b) tool_result marks first pending tool with matching name as 'complete', (c) sequential same-tool calls resolve in order, (d) mixed tool names match correctly, (e) locally-unique IDs. File: gui/src/__tests__/claudeStore.test.ts — verify 'tool_result FIFO matching' describe block.",
+      "status": "done",
+      "commit": "1fee2eeba3a18ccb34e74a7d96572affe4838fb6"
     },
     {
       "id": "step-6",
       "type": "impl",
       "description": "Implement FIFO tool-result matching in claudeStore: tool_call pushes to toolCalls array with generated ID, tool_result finds first pending call with matching toolName. Verify step-5 tests pass.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "1fee2eeba3a18ccb34e74a7d96572affe4838fb6"
     },
     {
       "id": "step-7",
       "type": "test",
       "description": "Write failing tests for StreamingText component: (a) renders text content, (b) shows blinking cursor when streaming=true, (c) hides cursor when streaming=false, (d) bold markdown renders as <strong>, (e) code block renders as <pre><code>, (f) inline code renders as <code>, (g) empty text renders without errors. File: gui/src/__tests__/StreamingText.test.tsx.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "1fee2eeba3a18ccb34e74a7d96572affe4838fb6"
     },
     {
       "id": "step-8",
       "type": "impl",
       "description": "Implement StreamingText component: createMemo for renderMarkdown(text), div with innerHTML for prose, Show for cursor span with blink animation. Plus StreamingText.module.css with prose styles, cursor animation. Verify step-7 tests pass.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "1fee2eeba3a18ccb34e74a7d96572affe4838fb6"
     },
     {
       "id": "step-9",
       "type": "test",
       "description": "Write failing tests for ThinkingBlock component: (a) complete=false shows thinking-indicator with animated dots, (b) complete=false does NOT show text content, (c) complete=true shows thinking-block section, (d) complete=true text is collapsed by default, (e) clicking header expands to show text, (f) clicking again collapses. File: gui/src/__tests__/ThinkingBlock.test.tsx.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "1fee2eeba3a18ccb34e74a7d96572affe4838fb6"
     },
     {
       "id": "step-10",
       "type": "impl",
       "description": "Implement ThinkingBlock component: Show when=complete with fallback indicator (pulsing dots), collapsed section with createSignal(false) for expanded, click handler toggles. Plus ThinkingBlock.module.css with pulse animation, muted styling. Verify step-9 tests pass.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "1fee2eeba3a18ccb34e74a7d96572affe4838fb6"
     },
     {
       "id": "step-11",
       "type": "test",
       "description": "Write failing tests for ToolCallCard component: (a) renders with data-testid, (b) displays tool name, (c) spinner when pending, (d) checkmark when complete, (e) X when error, (f) click expands to show input JSON, (g) read tools have blue icon, (h) write tools have orange icon. File: gui/src/__tests__/ToolCallCard.test.tsx.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "1fee2eeba3a18ccb34e74a7d96572affe4838fb6"
     },
     {
       "id": "step-12",
       "type": "impl",
       "description": "Implement ToolCallCard: header with icon (data-tool-type), toolName, paramSummary, status indicator (spinner/char), expandable details with JSON. Plus ToolCallCard.module.css with icon colors, spinner animation. Verify step-11 tests pass.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "1fee2eeba3a18ccb34e74a7d96572affe4838fb6"
     },
     {
       "id": "step-13",
       "type": "test",
-      "description": "Write failing tests for ToolCallCard DiffView integration: (a) reify_update_source when complete shows DiffView on expand, (b) DiffView receives before from toolInput and after from result, (c) non-update tools show JSON details not DiffView, (d) 'View diff' summary text visible for update_source. File: gui/src/__tests__/ToolCallCard.test.tsx \u2014 verify 'diff view for source updates' describe block.",
-      "status": "pending",
-      "commit": null
+      "description": "Write failing tests for ToolCallCard DiffView integration: (a) reify_update_source when complete shows DiffView on expand, (b) DiffView receives before from toolInput and after from result, (c) non-update tools show JSON details not DiffView, (d) 'View diff' summary text visible for update_source. File: gui/src/__tests__/ToolCallCard.test.tsx — verify 'diff view for source updates' describe block.",
+      "status": "done",
+      "commit": "1fee2eeba3a18ccb34e74a7d96572affe4838fb6"
     },
     {
       "id": "step-14",
       "type": "impl",
       "description": "Implement DiffView rendering in ToolCallCard: isSourceUpdateDiff() check, extractDiffBefore/extractDiffAfter helpers, conditional DiffView vs JSON details. resultSummary returns 'View diff' for update_source. Verify step-13 tests pass.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "1fee2eeba3a18ccb34e74a7d96572affe4838fb6"
     },
     {
       "id": "step-15",
       "type": "test",
-      "description": "Write failing tests for ToolCallCard result summaries: (a) reify_get_parameters with array result shows 'N parameters', (b) reify_get_constraints with array result shows 'N constraints' count. File: gui/src/__tests__/ToolCallCard.test.tsx \u2014 add test case for constraint summary.",
+      "description": "Write failing tests for ToolCallCard result summaries: (a) reify_get_parameters with array result shows 'N parameters', (b) reify_get_constraints with array result shows 'N constraints' count. File: gui/src/__tests__/ToolCallCard.test.tsx — add test case for constraint summary.",
       "status": "pending",
       "commit": null
     },
@@ -185,7 +185,7 @@
     {
       "id": "step-19",
       "type": "test",
-      "description": "Write failing tests for abort button visibility in ChatPanel across all session states: (a) visible when 'thinking', (b) visible when 'responding', (c) visible when 'tool-calling', (d) NOT visible when 'idle', (e) send button visible when 'idle'. File: gui/src/__tests__/ChatPanel.test.tsx \u2014 add test cases for 'thinking' and 'tool-calling' states.",
+      "description": "Write failing tests for abort button visibility in ChatPanel across all session states: (a) visible when 'thinking', (b) visible when 'responding', (c) visible when 'tool-calling', (d) NOT visible when 'idle', (e) send button visible when 'idle'. File: gui/src/__tests__/ChatPanel.test.tsx — add test cases for 'thinking' and 'tool-calling' states.",
       "status": "pending",
       "commit": null
     },
@@ -199,7 +199,7 @@
     {
       "id": "step-21",
       "type": "test",
-      "description": "Write failing tests for MessageGroup composition and ordering: (a) ThinkingBlock renders when thinkingText non-empty, (b) no ThinkingBlock when thinkingText empty, (c) ToolCallCard renders for each tool call, (d) StreamingText renders response, (e) DOM order: thinking before tool calls before streaming text. File: gui/src/__tests__/ChatPanel.test.tsx \u2014 verify MessageGroup describe block.",
+      "description": "Write failing tests for MessageGroup composition and ordering: (a) ThinkingBlock renders when thinkingText non-empty, (b) no ThinkingBlock when thinkingText empty, (c) ToolCallCard renders for each tool call, (d) StreamingText renders response, (e) DOM order: thinking before tool calls before streaming text. File: gui/src/__tests__/ChatPanel.test.tsx — verify MessageGroup describe block.",
       "status": "pending",
       "commit": null
     },
@@ -213,7 +213,7 @@
     {
       "id": "step-23",
       "type": "test",
-      "description": "Write failing test for full ChatPanel event sequence integration: sendMessage, thinking_delta, text_delta(s), done \u2014 verify user message rendered, response text combined, thinking block appears as collapsed, session returns to idle. File: gui/src/__tests__/ChatPanel.test.tsx \u2014 verify 'full event sequence' test.",
+      "description": "Write failing test for full ChatPanel event sequence integration: sendMessage, thinking_delta, text_delta(s), done — verify user message rendered, response text combined, thinking block appears as collapsed, session returns to idle. File: gui/src/__tests__/ChatPanel.test.tsx — verify 'full event sequence' test.",
       "status": "pending",
       "commit": null
     },
@@ -227,14 +227,14 @@
     {
       "id": "step-25",
       "type": "test",
-      "description": "Write failing performance test: send 200 text_delta events in rapid succession, then fire rAF \u2014 verify all content is concatenated in a single flush, test completes within 500ms timeout. File: gui/src/__tests__/claudeStore.test.ts \u2014 add to 'rAF delta batching' describe block.",
+      "description": "Write failing performance test: send 200 text_delta events in rapid succession, then fire rAF — verify all content is concatenated in a single flush, test completes within 500ms timeout. File: gui/src/__tests__/claudeStore.test.ts — add to 'rAF delta batching' describe block.",
       "status": "pending",
       "commit": null
     },
     {
       "id": "step-26",
       "type": "impl",
-      "description": "Verify rAF batching handles high token volume: buffer accumulates unbounded, single flush concatenates all. No implementation change expected \u2014 the existing rAF batching already handles this. Verify step-25 test passes.",
+      "description": "Verify rAF batching handles high token volume: buffer accumulates unbounded, single flush concatenates all. No implementation change expected — the existing rAF batching already handles this. Verify step-25 test passes.",
       "status": "pending",
       "commit": null
     }
@@ -246,7 +246,7 @@
     },
     {
       "decision": "FIFO tool-result matching by tool name instead of by explicit tool call ID",
-      "rationale": "The sidecar protocol's tool_result only carries tool_name, not a unique call ID. FIFO matching (first pending call with matching name) correctly handles interleaved same-name calls (A, B, A \u2192 results match in order). Locally-generated IDs (msg-{ts}-tc-{idx}) provide uniqueness for React keys."
+      "rationale": "The sidecar protocol's tool_result only carries tool_name, not a unique call ID. FIFO matching (first pending call with matching name) correctly handles interleaved same-name calls (A, B, A → results match in order). Locally-generated IDs (msg-{ts}-tc-{idx}) provide uniqueness for React keys."
     },
     {
       "decision": "HTML-escape before markdown transforms in StreamingText",
@@ -254,7 +254,7 @@
     },
     {
       "decision": "ThinkingBlock collapsed by default after completion",
-      "rationale": "Thinking text is internal reasoning \u2014 typically long and less important to the user than the final response. Collapsed-by-default reduces visual noise while keeping content accessible via click."
+      "rationale": "Thinking text is internal reasoning — typically long and less important to the user than the final response. Collapsed-by-default reduces visual noise while keeping content accessible via click."
     },
     {
       "decision": "Abort button replaces send button position rather than appearing alongside",
@@ -294,7 +294,7 @@
     {
       "what": "Collapsible section pattern (chevron + click toggle)",
       "where": "gui/src/panels/chat/ThinkingBlock.tsx, ToolCallCard.tsx, DiffView.tsx",
-      "how": "Consistent UX pattern: role='button' div with tabindex=0, onClick/onKeyDown handlers toggling a createSignal(false), chevron character (\u25b6/\u25bc) indicating state, Show when=expanded for content."
+      "how": "Consistent UX pattern: role='button' div with tabindex=0, onClick/onKeyDown handlers toggling a createSignal(false), chevron character (▶/▼) indicating state, Show when=expanded for content."
     },
     {
       "what": "Sidecar message protocol types",
