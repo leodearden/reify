@@ -508,6 +508,37 @@ mod tests {
         assert!(cell.default_expr.is_none());
         assert_eq!(cell.cell_type, Type::length());
     }
+
+    // --- Collection expression builder tests (step-5) ---
+
+    #[test]
+    fn list_expr_produces_list_literal_with_correct_type() {
+        let e1 = literal(Value::Int(1));
+        let e2 = literal(Value::Int(2));
+        let expr = list_expr(vec![e1, e2]);
+        assert_eq!(expr.result_type, Type::List(Box::new(Type::Int)));
+        assert!(matches!(expr.kind, CompiledExprKind::ListLiteral(_)));
+    }
+
+    #[test]
+    fn set_expr_produces_set_literal_with_correct_type() {
+        let e1 = literal(Value::Int(1));
+        let expr = set_expr(vec![e1]);
+        assert_eq!(expr.result_type, Type::Set(Box::new(Type::Int)));
+        assert!(matches!(expr.kind, CompiledExprKind::SetLiteral(_)));
+    }
+
+    #[test]
+    fn map_expr_produces_map_literal_with_correct_type() {
+        let k = literal(Value::String("key".into()));
+        let v = literal(Value::Int(99));
+        let expr = map_expr(vec![(k, v)]);
+        assert_eq!(
+            expr.result_type,
+            Type::Map(Box::new(Type::String), Box::new(Type::Int))
+        );
+        assert!(matches!(expr.kind, CompiledExprKind::MapLiteral(_)));
+    }
 }
 
 /// Builder for `CompiledModule`.
