@@ -3124,8 +3124,28 @@ fn compile_geometry_op(
                         angle_rad: eval_arg_f64("angle"),
                     })
                 }
-                // NOTE: Scale and RotateAround variants not yet in compiler's TransformKind enum.
-                // Uncomment when reify_compiler::TransformKind gains these variants.
+                reify_compiler::TransformKind::Scale => {
+                    Some(reify_types::GeometryOp::Scale {
+                        target: target_id,
+                        factor: eval_arg_f64("factor"),
+                    })
+                }
+                reify_compiler::TransformKind::RotateAround => {
+                    Some(reify_types::GeometryOp::RotateAround {
+                        target: target_id,
+                        point: [
+                            eval_arg_f64("px"),
+                            eval_arg_f64("py"),
+                            eval_arg_f64("pz"),
+                        ],
+                        axis: [
+                            eval_arg_f64("axis_x"),
+                            eval_arg_f64("axis_y"),
+                            eval_arg_f64("axis_z"),
+                        ],
+                        angle_rad: eval_arg_f64("angle"),
+                    })
+                }
             }
         }
         CompiledGeometryOp::Pattern { kind, target, args } => {
@@ -3193,7 +3213,7 @@ fn compile_geometry_op(
                 }
             }
         }
-        CompiledGeometryOp::Sweep { kind, profiles, args: _ } => {
+        CompiledGeometryOp::Sweep { kind, profiles, args } => {
             match kind {
                 reify_compiler::SweepKind::Loft => {
                     // Resolve each profile GeomRef to a handle via step_handles
@@ -3208,8 +3228,48 @@ fn compile_geometry_op(
                         profiles: resolved?,
                     })
                 }
-                // NOTE: Extrude and Revolve variants not yet in compiler's SweepKind enum.
-                // Uncomment when reify_compiler::SweepKind gains these variants.
+                reify_compiler::SweepKind::Extrude => {
+                    let profile_handle = match profiles.first()? {
+                        GeomRef::Step(idx) => step_handles.get(*idx).copied()?,
+                        GeomRef::Sub(_) => step_handles.last().copied()?,
+                    };
+                    let eval_arg_f64 = |name: &str| -> f64 {
+                        args.iter()
+                            .find(|(n, _)| n == name)
+                            .and_then(|(_, expr)| reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions).with_meta(meta_map)).as_f64())
+                            .unwrap_or(0.0)
+                    };
+                    Some(reify_types::GeometryOp::Extrude {
+                        profile: profile_handle,
+                        distance: reify_types::Value::Real(eval_arg_f64("distance")),
+                    })
+                }
+                reify_compiler::SweepKind::Revolve => {
+                    let profile_handle = match profiles.first()? {
+                        GeomRef::Step(idx) => step_handles.get(*idx).copied()?,
+                        GeomRef::Sub(_) => step_handles.last().copied()?,
+                    };
+                    let eval_arg_f64 = |name: &str| -> f64 {
+                        args.iter()
+                            .find(|(n, _)| n == name)
+                            .and_then(|(_, expr)| reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions).with_meta(meta_map)).as_f64())
+                            .unwrap_or(0.0)
+                    };
+                    Some(reify_types::GeometryOp::Revolve {
+                        profile: profile_handle,
+                        axis_origin: [
+                            eval_arg_f64("ox"),
+                            eval_arg_f64("oy"),
+                            eval_arg_f64("oz"),
+                        ],
+                        axis_dir: [
+                            eval_arg_f64("ax"),
+                            eval_arg_f64("ay"),
+                            eval_arg_f64("az"),
+                        ],
+                        angle_rad: eval_arg_f64("angle"),
+                    })
+                }
                 reify_compiler::SweepKind::Sweep => {
                     // Resolve profile GeomRef (first entry in profiles) to a handle
                     let profile_handle = match profiles.first()? {
