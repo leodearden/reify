@@ -38,11 +38,13 @@ fn extrude_compiler_rejects_one_arg() {
             )
         })
     });
-    // Before step-4: extrude not recognized → no realization, so has_extrude_op is false
-    // After step-4 + step-3 test expected behavior: wrong arg count → diagnostic emitted, no valid op
     assert!(
-        !has_extrude_op || !compiled.diagnostics.is_empty(),
-        "extrude(profile) with 1 arg should either produce no op or produce diagnostics"
+        !compiled.diagnostics.is_empty(),
+        "expected error diagnostic for wrong arg count (1 arg)"
+    );
+    assert!(
+        !has_extrude_op,
+        "should not produce Sweep(Extrude) op with wrong arg count (1 arg)"
     );
 }
 
@@ -70,8 +72,12 @@ fn extrude_compiler_rejects_three_args() {
         })
     });
     assert!(
-        !has_extrude_op || !compiled.diagnostics.is_empty(),
-        "extrude(profile, dist, extra) with 3 args should either produce no op or diagnostics"
+        !compiled.diagnostics.is_empty(),
+        "expected error diagnostic for wrong arg count (3 args)"
+    );
+    assert!(
+        !has_extrude_op,
+        "should not produce Sweep(Extrude) op with wrong arg count (3 args)"
     );
 }
 
