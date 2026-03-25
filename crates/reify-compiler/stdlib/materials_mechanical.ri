@@ -1,0 +1,11 @@
+// Stdlib: Mechanical Material Traits
+// Provides core trait definitions for engineering material characterization.
+// All dimensioned quantities use Real (dimensionless) pending Pressure/Density
+// type system extensions in a future task.
+
+// ── Base material trait ──────────────────────────────────────────────────────
+
+trait Material {
+    param density : Real
+    param name : String
+}
