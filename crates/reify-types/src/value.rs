@@ -2606,18 +2606,18 @@ mod tests {
         assert_eq!(bypassed, correct);
     }
 
-    #[cfg(debug_assertions)]
     #[test]
-    #[should_panic(expected = "Range invariant violated")]
-    fn value_range_invariant_bypass_lower_none_inclusive_cmp() {
-        let bad = Value::Range {
+    fn value_range_bypass_cmp_renormalizes() {
+        // Two Range values with lower=None and different lower_inclusive flags:
+        // after normalization both should have lower_inclusive=false → Equal.
+        let bypassed = Value::Range {
             lower: None,
             lower_inclusive: true,
             upper: Some(Box::new(Value::Int(10))),
             upper_inclusive: false,
         };
-        let good = Value::range(None, Some(Value::Int(10)), false, false);
-        let _ = bad.cmp(&good);
+        let correct = Value::range(None, Some(Value::Int(10)), false, false);
+        assert_eq!(bypassed.cmp(&correct), std::cmp::Ordering::Equal);
     }
 
     // ── Bypass normalization-verifying tests (task-364) ─────────────────────
