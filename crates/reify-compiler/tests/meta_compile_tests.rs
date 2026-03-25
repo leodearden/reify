@@ -121,3 +121,29 @@ fn meta_access_nonexistent_key_error() {
         errors
     );
 }
+
+// ---------------------------------------------------------------------------
+// step-7: accessing meta without a meta block produces error
+// ---------------------------------------------------------------------------
+
+#[test]
+fn meta_access_no_meta_block_error() {
+    let source = r#"
+        structure def Bracket {
+            param width : Length = 10mm
+            let x : String = meta.foo
+        }
+    "#;
+    let (_, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(!errors.is_empty(), "expected at least one error");
+    assert!(
+        errors.iter().any(|d| d.message.contains("no meta block")),
+        "expected 'no meta block' error, got: {:?}",
+        errors
+    );
+}
