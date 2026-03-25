@@ -29,10 +29,14 @@ pub fn compute_hover(source: &str, uri: &Url, position: Position) -> Option<Hove
             .and_then(|t| ctx.get_value(&t.name, word))
             .map(|v| format!(" = {}", format_value(v)));
 
-        let md = format!(
+        let mut md = format!(
             "```reify\n{kind_str} {word}: {type_str}{}\n```",
             value_str.unwrap_or_default()
         );
+        if let Some(doc) = info.doc {
+            md.push_str("\n\n");
+            md.push_str(doc);
+        }
 
         return Some(make_hover_markdown(md));
     }
