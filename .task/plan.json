@@ -1,0 +1,167 @@
+{
+  "task_id": "203",
+  "title": "Recursive structures: detection",
+  "files": [
+    "crates/reify-compiler/tests/recursive_detection_tests.rs",
+    "crates/reify-compiler/src/lib.rs"
+  ],
+  "modules": [
+    "crates/reify-compiler"
+  ],
+  "analysis": "Task 203 requires detecting self-referential structure definitions during compilation: building a reference graph among structure defs, identifying direct and indirect cycles, and tagging recursive structures for special handling.\n\nThe core implementation already exists in lib.rs (lines 2404-2639):\n- `detect_recursive_structures()` builds an adjacency list from sub_components, runs iterative Tarjan's SCC algorithm, identifies cyclic SCCs, tags templates with `is_recursive = true`, and emits warning diagnostics with reconstructed cycle paths.\n- `tarjan_scc_visit()` is an iterative (non-recursive) Tarjan implementation using an explicit call stack.\n- `reconstruct_scc_cycle()` and `find_cycle_back_to()` produce human-readable cycle path strings.\n- `TopologyTemplate.is_recursive: bool` is the tag field (line 182), initialized to `false` in `compile_entity()` (line 3782) and set to `true` in the post-pass.\n\nThe adjacency building (lines 2417-2425) handles both instantiation form (`sub x = A()`) and collection form (`sub items : List<A>`) since both populate `SubComponentDecl.structure_name`.\n\nExisting test coverage is in `termination_check_tests.rs` (Task 204) which tests detection indirectly through termination error scenarios. There are NO dedicated tests for the detection behavior itself \u2014 specifically:\n- No tests verify `is_recursive` is correctly set/unset for various graph topologies\n- No tests verify the warning diagnostic is emitted with correct cycle path format\n- No tests for complex graph patterns (diamonds, multiple independent cycles, long chains)\n- No tests for collection sub form creating reference edges\n- No tests isolating detection from termination checking\n\nThis plan creates a dedicated test file for recursive detection with comprehensive coverage of all graph topologies and edge cases.",
+  "prerequisites": [],
+  "steps": [
+    {
+      "id": "step-1",
+      "type": "test",
+      "description": "Create recursive_detection_tests.rs with helpers (compile_all, find_template) and write test `direct_self_reference_sets_is_recursive`: structure S with `sub child = S(n: n - 1) where n > 0` should have `is_recursive == true`. Also write test `no_subs_not_recursive`: structure with only params/lets should have `is_recursive == false`.",
+      "status": "done",
+      "commit": "b49135a4"
+    },
+    {
+      "id": "step-2",
+      "type": "impl",
+      "description": "Verify step-1 tests pass against existing detect_recursive_structures() implementation. No code changes expected \u2014 implementation exists at lib.rs lines 2404-2491.",
+      "status": "done",
+      "commit": "b49135a4"
+    },
+    {
+      "id": "step-3",
+      "type": "test",
+      "description": "Write test `indirect_two_node_cycle_both_recursive`: structures A (sub b = B()) and B (sub a = A()) with where-clause guards \u2014 both should have `is_recursive == true`. Write test `indirect_three_node_cycle_all_recursive`: A\u2192B\u2192C\u2192A chain \u2014 all three should be tagged recursive.",
+      "status": "done",
+      "commit": "fa1ee848"
+    },
+    {
+      "id": "step-4",
+      "type": "impl",
+      "description": "Verify step-3 tests pass. Multi-node SCC detection is handled by Tarjan's algorithm which finds all strongly-connected components regardless of cycle length.",
+      "status": "done",
+      "commit": "fa1ee848"
+    },
+    {
+      "id": "step-5",
+      "type": "test",
+      "description": "Write test `linear_chain_no_cycle`: A\u2192B\u2192C with no back-edges \u2014 none should be recursive. Write test `diamond_no_cycle`: A\u2192B, A\u2192C, B\u2192D, C\u2192D (shared leaf, no back-edge) \u2014 none should be recursive. These verify non-cyclic graph patterns are correctly excluded.",
+      "status": "done",
+      "commit": "fa1ee848"
+    },
+    {
+      "id": "step-6",
+      "type": "impl",
+      "description": "Verify step-5 tests pass. Non-cyclic SCCs (single-node without self-edge) are correctly excluded by the `is_cycle` check at lines 2448-2454.",
+      "status": "done",
+      "commit": "fa1ee848"
+    },
+    {
+      "id": "step-7",
+      "type": "test",
+      "description": "Write test `multiple_independent_cycles`: two separate cycles ({A\u2194B} and {C\u2194D}) in the same module \u2014 all four should be `is_recursive == true` and two separate warning diagnostics should be emitted. Write test `mixed_recursive_and_non_recursive`: cycle A\u2194B plus non-cycling structure C that references A \u2014 A and B should be recursive, C should not.",
+      "status": "done",
+      "commit": "fa1ee848"
+    },
+    {
+      "id": "step-8",
+      "type": "impl",
+      "description": "Verify step-7 tests pass. Tarjan processes all SCCs independently, so multiple disjoint cycles and mixed topologies are handled correctly.",
+      "status": "done",
+      "commit": "fa1ee848"
+    },
+    {
+      "id": "step-9",
+      "type": "test",
+      "description": "Write test `warning_diagnostic_emitted_for_cycle`: verify that a cycle produces exactly one warning-level diagnostic containing 'recursive structure cycle detected' and the cycle path string (e.g., 'S -> S' for self-ref, or 'A -> B -> A' for mutual). Write test `warning_diagnostic_count_matches_scc_count`: two independent cycles should produce exactly two warning diagnostics.",
+      "status": "done",
+      "commit": "fa1ee848"
+    },
+    {
+      "id": "step-10",
+      "type": "impl",
+      "description": "Verify step-9 tests pass. Warning emission happens at lines 2461-2464 with `reconstruct_scc_cycle()` providing the path string.",
+      "status": "done",
+      "commit": "fa1ee848"
+    },
+    {
+      "id": "step-11",
+      "type": "test",
+      "description": "Write test `collection_sub_creates_reference_edge`: structure S with `sub items : List<S>` (collection form) should have `is_recursive == true`, verifying that collection subs are included in the reference graph. Write test `sub_referencing_unknown_structure_not_recursive`: structure S with `sub x = Unknown()` where Unknown is not defined in the module \u2014 should not crash and S should not be recursive (the reference is filtered out by name_to_idx lookup).",
+      "status": "done",
+      "commit": "fa1ee848"
+    },
+    {
+      "id": "step-12",
+      "type": "impl",
+      "description": "Verify step-11 tests pass. Collection subs use the same `structure_name` field (line 2422). Unknown structure references are filtered by the `filter_map` on name_to_idx (line 2422), producing no edge.",
+      "status": "done",
+      "commit": "fa1ee848"
+    },
+    {
+      "id": "step-13",
+      "type": "impl",
+      "description": "Rebase task branch onto latest main to resolve merge_ff_failed. Main advanced with task-status auto-commits (.taskmaster/tasks/tasks.json, .task/*, orchestrator DB files, .gitignore, orchestrator.yaml). No code-file conflicts expected \u2014 main did NOT change mocks.rs, values.rs, or lib.rs since the branch point. For auto-generated file conflicts: accept main's version of .taskmaster/tasks/tasks.json and orchestrator files, keep task branch's .task/iterations.jsonl content.",
+      "status": "done",
+      "commit": "e6c5f493"
+    },
+    {
+      "id": "step-14",
+      "type": "impl",
+      "description": "Verify all tests pass after rebase: run `cargo test` for reify-compiler crate (recursive_detection_tests and termination_check_tests) to confirm detection behavior is intact on the rebased branch. Also run `cargo clippy` to ensure no new warnings.",
+      "status": "done",
+      "commit": "e6c5f493"
+    },
+    {
+      "id": "step-15",
+      "type": "impl",
+      "description": "Retry fast-forward merge to main. If FF merge still fails (main advanced again during rebase), repeat rebase cycle from step-13.",
+      "status": "done",
+      "commit": "e6c5f493"
+    }
+  ],
+  "design_decisions": [
+    {
+      "decision": "Create a dedicated test file (recursive_detection_tests.rs) separate from termination_check_tests.rs",
+      "rationale": "Task 203 (detection) and Task 204 (termination verification) are distinct concerns. The termination tests already exist and test detection only indirectly through error scenarios. Detection tests need to verify the is_recursive flag, warning diagnostics, and graph topology handling independent of termination checking behavior."
+    },
+    {
+      "decision": "Tests verify existing implementation rather than driving new code",
+      "rationale": "The detect_recursive_structures() implementation (Tarjan SCC, cycle reconstruction, is_recursive tagging) was implemented as part of the compiler post-pass infrastructure. This task's value is in providing comprehensive, dedicated test coverage and regression protection for the detection behavior across diverse graph topologies."
+    },
+    {
+      "decision": "Use where-clause guards on recursive subs in test sources to avoid termination check errors polluting detection tests",
+      "rationale": "Without guards, the termination check (Task 204) emits errors that could obscure detection test assertions. Adding `where n > 0` guards with `n: n - 1` args produces clean compilation where only detection warnings appear, isolating the behavior under test."
+    },
+    {
+      "decision": "Test graph topologies comprehensively: self-loop, 2-node, 3-node cycles, linear chains, diamonds, multiple independent cycles, mixed",
+      "rationale": "Tarjan's SCC algorithm has distinct code paths for single-node SCCs with self-edges vs multi-node SCCs. Diamond patterns test that convergent (but non-cyclic) references are correctly excluded. Multiple independent cycles test that the algorithm processes all SCCs. Mixed topologies test that non-participating structures are not falsely tagged."
+    },
+    {
+      "decision": "Rebase onto main rather than merge to maintain linear history",
+      "rationale": "The merge_ff_failed issue is caused by task-status auto-commits on main diverging from the branch point. Main did NOT change any of the code files this task touches (mocks.rs, values.rs, lib.rs), so the rebase will be conflict-free on code. Only auto-generated files (.taskmaster/tasks/tasks.json, orchestrator DBs) need resolution, where main's version is authoritative."
+    }
+  ],
+  "reuse": [
+    {
+      "what": "Test helper pattern (compile_all, compile_first_template)",
+      "where": "crates/reify-compiler/tests/termination_check_tests.rs",
+      "how": "Copy the same helper functions into the new test file \u2014 parse source, assert no parse errors, compile, return templates + diagnostics. This is the standard pattern across all compiler test files."
+    },
+    {
+      "what": "detect_recursive_structures() implementation",
+      "where": "crates/reify-compiler/src/lib.rs lines 2404-2491",
+      "how": "Existing implementation handles all detection scenarios: adjacency building, Tarjan SCC, cycle identification, is_recursive tagging, and warning diagnostic emission. No new implementation code needed."
+    },
+    {
+      "what": "Tarjan SCC + cycle reconstruction helpers",
+      "where": "crates/reify-compiler/src/lib.rs lines 2493-2639",
+      "how": "TarjanState, tarjan_scc_visit(), reconstruct_scc_cycle(), find_cycle_back_to() \u2014 all internal helpers used by detect_recursive_structures(). Tested indirectly through the public compile() entry point."
+    },
+    {
+      "what": "Reify source language syntax for structures and subs",
+      "where": "crates/reify-syntax/src/lib.rs (SubDecl, MemberDecl::Sub)",
+      "how": "Test sources use the Reify language syntax: `structure S { param n : Int = 5; sub child = S(n: n - 1) where n > 0 }` for instantiation form, `sub items : List<S>` for collection form."
+    }
+  ],
+  "_session_id": "351-fef2cc1d",
+  "_created_at": "2026-03-25T22:09:21.059217+00:00",
+  "_schema_version": 1
+}
