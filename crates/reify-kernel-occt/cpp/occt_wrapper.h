@@ -84,11 +84,23 @@ std::unique_ptr<OcctShape> loft_two_profiles(const OcctShape& wire1, const OcctS
 /// Loft through three wire profiles to create a solid.
 std::unique_ptr<OcctShape> loft_three_profiles(const OcctShape& wire1, const OcctShape& wire2, const OcctShape& wire3);
 
-// --- Sweep / Extrude ---
+// --- Sweep / Extrude / Revolve ---
 
 /// Extrude a profile shape by a direction vector (dx, dy, dz).
 /// The direction vector must have non-zero magnitude.
 std::unique_ptr<OcctShape> make_prism(const OcctShape& profile, double dx, double dy, double dz);
+
+/// Revolve a profile shape around an axis by angle_rad radians.
+/// Axis defined by origin point (ox,oy,oz) and direction (ax,ay,az).
+std::unique_ptr<OcctShape> make_revolve(const OcctShape& profile,
+    double ox, double oy, double oz,
+    double ax, double ay, double az,
+    double angle_rad);
+
+/// Create a rectangular face (planar) centered at (cx, cy, cz) with
+/// given width (X direction) and height (Y direction) in the XY plane.
+std::unique_ptr<OcctShape> make_rect_face(double width, double height,
+    double cx, double cy, double cz);
 
 // --- Queries ---
 

@@ -2710,15 +2710,23 @@ mod tests {
 
     #[test]
     fn revolve_ffi_circle_face_full_rotation() {
-        // make_circle_face(r=5, z=0), translate 20 on X,
-        // then make_revolve around Z axis (origin 0,0,0 dir 0,0,1) by 2π.
-        // Should produce a torus with volume > 0.
+        // Create a circle face in XY plane, rotate 90° around X to put it in XZ plane,
+        // translate to offset 20 on X, then revolve around Z axis by 2π → torus.
+        // Profile must be in a plane CONTAINING the revolution axis for a solid torus.
         if !crate::OCCT_AVAILABLE {
             return;
         }
         let face = ffi::ffi::make_circle_face(5.0, 0.0)
             .expect("make_circle_face should succeed");
-        let translated = ffi::ffi::translate_shape(&face, 20.0, 0.0, 0.0)
+        // Rotate 90° around X axis: XY plane → XZ plane
+        let rotated = ffi::ffi::rotate_shape(
+            &face,
+            1.0, 0.0, 0.0,  // X axis
+            std::f64::consts::FRAC_PI_2,
+        )
+        .expect("rotate_shape should succeed");
+        // Translate 20 along X so centroid is offset from Z axis
+        let translated = ffi::ffi::translate_shape(&rotated, 20.0, 0.0, 0.0)
             .expect("translate_shape should succeed");
         let revolved = ffi::ffi::make_revolve(
             &translated,
