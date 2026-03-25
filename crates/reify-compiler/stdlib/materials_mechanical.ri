@@ -41,3 +41,42 @@ trait Hard {
     param hardness_value : Real
     param hardness_scale : HardnessScale
 }
+
+// ── Fatigue ───────────────────────────────────────────────────────────────────
+
+// Stress amplitude below which the material can sustain unlimited cycles (Pa, using Real).
+trait FatigueRated {
+    param endurance_limit : Real
+}
+
+// ── Fracture toughness ────────────────────────────────────────────────────────
+
+// Critical stress intensity factor K_Ic (Pa·√m, using Real).
+trait FractureTough {
+    param fracture_toughness : Real
+}
+
+// ── Ductility ─────────────────────────────────────────────────────────────────
+
+// elongation: % elongation at break; reduction_of_area: % cross-section reduction.
+// Both dimensionless fractions — use Real.
+trait Ductile {
+    param elongation : Real
+    param reduction_of_area : Real
+}
+
+// ── Impact resistance ─────────────────────────────────────────────────────────
+
+// Energy absorbed in a Charpy or Izod impact test (J, using Real).
+trait ImpactResistant {
+    param impact_energy : Real
+}
+
+// ── Damping ───────────────────────────────────────────────────────────────────
+
+// damping_ratio: fraction of critical damping (dimensionless).
+// loss_factor: ratio of dissipated to stored energy per cycle (dimensionless).
+trait Damping {
+    param damping_ratio : Real
+    param loss_factor : Real
+}
