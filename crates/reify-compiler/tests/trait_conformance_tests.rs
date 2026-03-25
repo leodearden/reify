@@ -1310,3 +1310,443 @@ trait HasBolt {
         other => panic!("expected SubStructureMismatch, got: {:?}", other),
     }
 }
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Task 186 — Trait conformance: refinement chains
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// step-1 (task-186): chain with no refinements, structure missing param → MissingParam.
+#[test]
+fn chain_single_trait_no_refinement() {
+    let trait_def = CompiledTrait {
+        name: "HasWidth".to_string(),
+        is_pub: true,
+        type_params: vec![],
+        refinements: vec![],
+        required_members: vec![TraitRequirement {
+            name: "width".to_string(),
+            kind: RequirementKind::Param(Type::Scalar { dimension: DimensionVector::LENGTH }),
+            span: test_span(),
+        }],
+        defaults: vec![],
+        content_hash: ContentHash::of_str("HasWidthChain"),
+    };
+    let mut registry = std::collections::HashMap::new();
+    registry.insert("HasWidth".to_string(), &trait_def);
+    let structure_members: std::collections::HashMap<String, Type> =
+        std::collections::HashMap::new();
+    let errors =
+        check_trait_conformance_chain(&structure_members, "HasWidth", &registry, &[], &[]);
+    assert_eq!(errors.len(), 1, "expected 1 error, got: {:?}", errors);
+    match &errors[0] {
+        ConformanceError::MissingParam { name, .. } => assert_eq!(name, "width"),
+        other => panic!("expected MissingParam, got: {:?}", other),
+    }
+}
+
+/// step-3 (task-186): two-level chain — trait A refines B; B requires `width`, A requires `height`.
+/// Structure provides `height` but not `width` → MissingParam for `width`.
+/// Verifies the chain walker visits parent traits' requirements.
+#[test]
+fn chain_two_level_walks_parent() {
+    // Trait B: requires `width : Length`.
+    let trait_b = CompiledTrait {
+        name: "B".to_string(),
+        is_pub: true,
+        type_params: vec![],
+        refinements: vec![],
+        required_members: vec![TraitRequirement {
+            name: "width".to_string(),
+            kind: RequirementKind::Param(Type::Scalar { dimension: DimensionVector::LENGTH }),
+            span: test_span(),
+        }],
+        defaults: vec![],
+        content_hash: ContentHash::of_str("B"),
+    };
+    // Trait A: refines B, requires `height : Length`.
+    let trait_a = CompiledTrait {
+        name: "A".to_string(),
+        is_pub: true,
+        type_params: vec![],
+        refinements: vec!["B".to_string()],
+        required_members: vec![TraitRequirement {
+            name: "height".to_string(),
+            kind: RequirementKind::Param(Type::Scalar { dimension: DimensionVector::LENGTH }),
+            span: test_span(),
+        }],
+        defaults: vec![],
+        content_hash: ContentHash::of_str("A"),
+    };
+    let mut registry = std::collections::HashMap::new();
+    registry.insert("A".to_string(), &trait_a);
+    registry.insert("B".to_string(), &trait_b);
+    // Structure has `height` but not `width`.
+    let mut members = std::collections::HashMap::new();
+    members.insert("height".to_string(), Type::Scalar { dimension: DimensionVector::LENGTH });
+    let errors = check_trait_conformance_chain(&members, "A", &registry, &[], &[]);
+    assert_eq!(errors.len(), 1, "expected 1 error (missing 'width'), got: {:?}", errors);
+    match &errors[0] {
+        ConformanceError::MissingParam { name, .. } => assert_eq!(name, "width"),
+        other => panic!("expected MissingParam for 'width', got: {:?}", other),
+    }
+}
+
+/// step-5 (task-186): three-level chain C→B→A all satisfied.
+/// C requires `x`, B:C requires `y`, A:B requires `z`.
+/// Structure provides all three → no errors.
+#[test]
+fn chain_three_level_all_satisfied() {
+    let length = || Type::Scalar { dimension: DimensionVector::LENGTH };
+    let trait_c = CompiledTrait {
+        name: "C".to_string(),
+        is_pub: true,
+        type_params: vec![],
+        refinements: vec![],
+        required_members: vec![TraitRequirement {
+            name: "x".to_string(),
+            kind: RequirementKind::Param(length()),
+            span: test_span(),
+        }],
+        defaults: vec![],
+        content_hash: ContentHash::of_str("C"),
+    };
+    let trait_b = CompiledTrait {
+        name: "B".to_string(),
+        is_pub: true,
+        type_params: vec![],
+        refinements: vec!["C".to_string()],
+        required_members: vec![TraitRequirement {
+            name: "y".to_string(),
+            kind: RequirementKind::Param(length()),
+            span: test_span(),
+        }],
+        defaults: vec![],
+        content_hash: ContentHash::of_str("B"),
+    };
+    let trait_a = CompiledTrait {
+        name: "A".to_string(),
+        is_pub: true,
+        type_params: vec![],
+        refinements: vec!["B".to_string()],
+        required_members: vec![TraitRequirement {
+            name: "z".to_string(),
+            kind: RequirementKind::Param(length()),
+            span: test_span(),
+        }],
+        defaults: vec![],
+        content_hash: ContentHash::of_str("A"),
+    };
+    let mut registry = std::collections::HashMap::new();
+    registry.insert("A".to_string(), &trait_a);
+    registry.insert("B".to_string(), &trait_b);
+    registry.insert("C".to_string(), &trait_c);
+    let mut members = std::collections::HashMap::new();
+    members.insert("x".to_string(), length());
+    members.insert("y".to_string(), length());
+    members.insert("z".to_string(), length());
+    let errors = check_trait_conformance_chain(&members, "A", &registry, &[], &[]);
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+}
+
+/// step-7 (task-186): deep ancestor missing — A:B:C, C requires `base : Length`.
+/// Structure provides A's and B's members but not `base` → exactly 1 MissingParam.
+#[test]
+fn chain_missing_deep_ancestor_member() {
+    let length = || Type::Scalar { dimension: DimensionVector::LENGTH };
+    let trait_c = CompiledTrait {
+        name: "C".to_string(),
+        is_pub: true,
+        type_params: vec![],
+        refinements: vec![],
+        required_members: vec![TraitRequirement {
+            name: "base".to_string(),
+            kind: RequirementKind::Param(length()),
+            span: test_span(),
+        }],
+        defaults: vec![],
+        content_hash: ContentHash::of_str("C2"),
+    };
+    let trait_b = CompiledTrait {
+        name: "B".to_string(),
+        is_pub: true,
+        type_params: vec![],
+        refinements: vec!["C".to_string()],
+        required_members: vec![TraitRequirement {
+            name: "b_param".to_string(),
+            kind: RequirementKind::Param(length()),
+            span: test_span(),
+        }],
+        defaults: vec![],
+        content_hash: ContentHash::of_str("B2"),
+    };
+    let trait_a = CompiledTrait {
+        name: "A".to_string(),
+        is_pub: true,
+        type_params: vec![],
+        refinements: vec!["B".to_string()],
+        required_members: vec![TraitRequirement {
+            name: "a_param".to_string(),
+            kind: RequirementKind::Param(length()),
+            span: test_span(),
+        }],
+        defaults: vec![],
+        content_hash: ContentHash::of_str("A2"),
+    };
+    let mut registry = std::collections::HashMap::new();
+    registry.insert("A".to_string(), &trait_a);
+    registry.insert("B".to_string(), &trait_b);
+    registry.insert("C".to_string(), &trait_c);
+    // Provide A and B's members but NOT `base` from C.
+    let mut members = std::collections::HashMap::new();
+    members.insert("a_param".to_string(), length());
+    members.insert("b_param".to_string(), length());
+    let errors = check_trait_conformance_chain(&members, "A", &registry, &[], &[]);
+    assert_eq!(errors.len(), 1, "expected exactly 1 error for 'base', got: {:?}", errors);
+    match &errors[0] {
+        ConformanceError::MissingParam { name, .. } => assert_eq!(name, "base"),
+        other => panic!("expected MissingParam for 'base', got: {:?}", other),
+    }
+}
+
+/// step-9 (task-186): diamond dedup with check_trait_conformance_multi — C requires `x`.
+/// A:C, B:C. Call multi fn with [A, B]; structure has `x` → no errors, C not walked twice.
+#[test]
+fn chain_diamond_dedup_satisfied() {
+    let length = || Type::Scalar { dimension: DimensionVector::LENGTH };
+    let trait_c = CompiledTrait {
+        name: "C".to_string(),
+        is_pub: true,
+        type_params: vec![],
+        refinements: vec![],
+        required_members: vec![TraitRequirement {
+            name: "x".to_string(),
+            kind: RequirementKind::Param(length()),
+            span: test_span(),
+        }],
+        defaults: vec![],
+        content_hash: ContentHash::of_str("C_diamond"),
+    };
+    let trait_a = CompiledTrait {
+        name: "A".to_string(),
+        is_pub: true,
+        type_params: vec![],
+        refinements: vec!["C".to_string()],
+        required_members: vec![],
+        defaults: vec![],
+        content_hash: ContentHash::of_str("A_diamond"),
+    };
+    let trait_b = CompiledTrait {
+        name: "B".to_string(),
+        is_pub: true,
+        type_params: vec![],
+        refinements: vec!["C".to_string()],
+        required_members: vec![],
+        defaults: vec![],
+        content_hash: ContentHash::of_str("B_diamond"),
+    };
+    let mut registry = std::collections::HashMap::new();
+    registry.insert("A".to_string(), &trait_a);
+    registry.insert("B".to_string(), &trait_b);
+    registry.insert("C".to_string(), &trait_c);
+    let mut members = std::collections::HashMap::new();
+    members.insert("x".to_string(), length());
+    let errors = check_trait_conformance_multi(&members, &["A", "B"], &registry, &[], &[]);
+    assert!(errors.is_empty(), "expected no errors (diamond dedup satisfied), got: {:?}", errors);
+}
+
+/// step-11 (task-186): diamond missing exactly one error.
+/// Same diamond (A:C, B:C, C requires `x`), structure lacks `x` → exactly 1 MissingParam.
+/// Dedup ensures C is only walked once, so only 1 error (not 2).
+#[test]
+fn chain_diamond_missing_exactly_one_error() {
+    let length = || Type::Scalar { dimension: DimensionVector::LENGTH };
+    let trait_c = CompiledTrait {
+        name: "C".to_string(),
+        is_pub: true,
+        type_params: vec![],
+        refinements: vec![],
+        required_members: vec![TraitRequirement {
+            name: "x".to_string(),
+            kind: RequirementKind::Param(length()),
+            span: test_span(),
+        }],
+        defaults: vec![],
+        content_hash: ContentHash::of_str("C_diamond2"),
+    };
+    let trait_a = CompiledTrait {
+        name: "A".to_string(),
+        is_pub: true,
+        type_params: vec![],
+        refinements: vec!["C".to_string()],
+        required_members: vec![],
+        defaults: vec![],
+        content_hash: ContentHash::of_str("A_diamond2"),
+    };
+    let trait_b = CompiledTrait {
+        name: "B".to_string(),
+        is_pub: true,
+        type_params: vec![],
+        refinements: vec!["C".to_string()],
+        required_members: vec![],
+        defaults: vec![],
+        content_hash: ContentHash::of_str("B_diamond2"),
+    };
+    let mut registry = std::collections::HashMap::new();
+    registry.insert("A".to_string(), &trait_a);
+    registry.insert("B".to_string(), &trait_b);
+    registry.insert("C".to_string(), &trait_c);
+    // Structure does NOT provide `x`.
+    let members: std::collections::HashMap<String, Type> = std::collections::HashMap::new();
+    let errors = check_trait_conformance_multi(&members, &["A", "B"], &registry, &[], &[]);
+    assert_eq!(errors.len(), 1, "expected exactly 1 MissingParam (not 2), got: {:?}", errors);
+    match &errors[0] {
+        ConformanceError::MissingParam { name, .. } => assert_eq!(name, "x"),
+        other => panic!("expected MissingParam for 'x', got: {:?}", other),
+    }
+}
+
+/// step-13 (task-186): conflicting requirements — C requires `x : Length`, D requires `x : Mass`.
+/// Trait A refines both C and D → expect ConflictingRequirement { name: "x", .. }.
+/// Fails until ConflictingRequirement variant is added.
+#[test]
+fn chain_conflicting_requirements() {
+    let length = || Type::Scalar { dimension: DimensionVector::LENGTH };
+    let mass = || Type::Scalar { dimension: DimensionVector::MASS };
+    let trait_c = CompiledTrait {
+        name: "C".to_string(),
+        is_pub: true,
+        type_params: vec![],
+        refinements: vec![],
+        required_members: vec![TraitRequirement {
+            name: "x".to_string(),
+            kind: RequirementKind::Param(length()),
+            span: test_span(),
+        }],
+        defaults: vec![],
+        content_hash: ContentHash::of_str("C_conflict"),
+    };
+    let trait_d = CompiledTrait {
+        name: "D".to_string(),
+        is_pub: true,
+        type_params: vec![],
+        refinements: vec![],
+        required_members: vec![TraitRequirement {
+            name: "x".to_string(),
+            kind: RequirementKind::Param(mass()),
+            span: test_span(),
+        }],
+        defaults: vec![],
+        content_hash: ContentHash::of_str("D_conflict"),
+    };
+    // Trait A refines both C and D (conflicting on `x`).
+    let trait_a = CompiledTrait {
+        name: "A".to_string(),
+        is_pub: true,
+        type_params: vec![],
+        refinements: vec!["C".to_string(), "D".to_string()],
+        required_members: vec![],
+        defaults: vec![],
+        content_hash: ContentHash::of_str("A_conflict"),
+    };
+    let mut registry = std::collections::HashMap::new();
+    registry.insert("A".to_string(), &trait_a);
+    registry.insert("C".to_string(), &trait_c);
+    registry.insert("D".to_string(), &trait_d);
+    // Structure provides `x` as Length (matches C, not D).
+    let mut members = std::collections::HashMap::new();
+    members.insert("x".to_string(), length());
+    let errors = check_trait_conformance_chain(&members, "A", &registry, &[], &[]);
+    // Should have at least 1 ConflictingRequirement error.
+    let conflict = errors.iter().find(|e| matches!(e, ConformanceError::ConflictingRequirement { name, .. } if name == "x"));
+    assert!(conflict.is_some(), "expected ConflictingRequirement for 'x', got: {:?}", errors);
+    match conflict.unwrap() {
+        ConformanceError::ConflictingRequirement { name, type_a, type_b } => {
+            assert_eq!(name, "x");
+            // type_a is from the first parent (C: Length), type_b from the conflicting (D: Mass).
+            let types = [type_a.clone(), type_b.clone()];
+            assert!(
+                types.contains(&length()) && types.contains(&mass()),
+                "expected one Length and one Mass, got: {:?} and {:?}",
+                type_a,
+                type_b
+            );
+        }
+        other => panic!("expected ConflictingRequirement, got: {:?}", other),
+    }
+}
+
+/// step-15 (task-186): unresolved trait reference.
+/// Trait A has refinement 'Nonexistent' (not in registry) → UnresolvedTrait { name: "Nonexistent" }.
+/// Fails until UnresolvedTrait variant is added.
+#[test]
+fn chain_unresolved_trait() {
+    let length = || Type::Scalar { dimension: DimensionVector::LENGTH };
+    let trait_a = CompiledTrait {
+        name: "A".to_string(),
+        is_pub: true,
+        type_params: vec![],
+        refinements: vec!["Nonexistent".to_string()],
+        required_members: vec![TraitRequirement {
+            name: "x".to_string(),
+            kind: RequirementKind::Param(length()),
+            span: test_span(),
+        }],
+        defaults: vec![],
+        content_hash: ContentHash::of_str("A_unresolved"),
+    };
+    let mut registry = std::collections::HashMap::new();
+    registry.insert("A".to_string(), &trait_a);
+    // Registry does NOT contain "Nonexistent".
+    let mut members = std::collections::HashMap::new();
+    members.insert("x".to_string(), length());
+    let errors = check_trait_conformance_chain(&members, "A", &registry, &[], &[]);
+    let unresolved = errors
+        .iter()
+        .find(|e| matches!(e, ConformanceError::UnresolvedTrait { name } if name == "Nonexistent"));
+    assert!(
+        unresolved.is_some(),
+        "expected UnresolvedTrait for 'Nonexistent', got: {:?}",
+        errors
+    );
+}
+
+/// step-17 (task-186): integration — diamond default no duplicate injection.
+/// C has default `param size : Length = 10mm`. A : C, B : C.
+/// `structure def X : A + B {}` → compile_first_template.
+/// Expect exactly 1 'size' value cell (not 2 from walking C via both A and B).
+#[test]
+fn integration_deep_chain_defaults_no_duplicate_injection() {
+    let source = r#"
+trait C {
+    param size : Length = 10mm
+}
+
+trait A : C {
+}
+
+trait B : C {
+}
+
+structure def X : A + B {
+}
+"#;
+    let (template, diagnostics) = compile_first_template(source);
+
+    // No error-severity diagnostics expected.
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    // Exactly one 'size' value cell should exist (diamond dedup prevents two injections).
+    let size_cells: Vec<_> =
+        template.value_cells.iter().filter(|vc| vc.id.member == "size").collect();
+    assert_eq!(
+        size_cells.len(),
+        1,
+        "expected exactly 1 'size' value cell (diamond dedup), got {}; cells: {:?}",
+        size_cells.len(),
+        size_cells
+    );
+}
