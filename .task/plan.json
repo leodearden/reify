@@ -32,29 +32,29 @@
       "id": "step-1",
       "type": "test",
       "description": "Write test `two_trait_merge_distinct_params`: trait A{param a:Length}, trait B{param b:Length}, structure S:A+B provides both. Assert: no errors, template has value cells for both 'a' and 'b'.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "b18ce120"
     },
     {
       "id": "step-2",
       "type": "test",
       "description": "Write test `two_trait_merge_shared_param_deduped`: trait A{param x:Length}, trait B{param x:Length}, structure S:A+B provides x once. Assert: no errors, exactly 1 'x' value cell (requirement deduped, not duplicated).",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "496f6922"
     },
     {
       "id": "step-3",
       "type": "test",
       "description": "Write test `diamond_hierarchy_params_deduped`: traits D->B+C->A with D{param x:Length}, structure S:A provides x. Assert: no errors, exactly 1 'x' value cell (diamond dedup via visited set).",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "57a3bc57"
     },
     {
       "id": "step-4",
       "type": "test",
       "description": "Write test `diamond_hierarchy_default_deduped`: traits D->B+C->A with D{param x:Length=10mm}, structure S:A (no override). Assert: no errors, exactly 1 injected 'x' value cell with default expression.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "e93958d3"
     },
     {
       "id": "step-5",

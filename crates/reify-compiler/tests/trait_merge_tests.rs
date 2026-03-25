@@ -210,3 +210,41 @@ structure def S : A + B {
         msg
     );
 }
+
+// ── step-6 ───────────────────────────────────────────────────────────────────
+
+/// Two traits with distinct constraints on a shared param are both injected
+/// (constraint conjunction).
+/// trait A{param x:Length, constraint x > 0mm}
+/// trait B{param x:Length, constraint x < 100mm}
+/// structure S:A+B{param x:Length=5mm}
+/// Assert: no errors, at least 2 constraints in template.
+#[test]
+fn constraint_conjunction_from_two_traits() {
+    let source = r#"
+trait A {
+    param x : Length
+    constraint x > 0mm
+}
+
+trait B {
+    param x : Length
+    constraint x < 100mm
+}
+
+structure def S : A + B {
+    param x : Length = 5mm
+}
+"#;
+
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    assert!(
+        template.constraints.len() >= 2,
+        "expected at least 2 constraints (one from each trait), got {}",
+        template.constraints.len()
+    );
+}
