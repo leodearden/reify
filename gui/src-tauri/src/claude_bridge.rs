@@ -547,9 +547,11 @@ where
                 // Already ready — nothing to do.
                 return Ok(());
             }
-            // Not ready (Crashed, Starting, …) — clear the stale handle and
-            // fall through to re-spawn.
-            *guard = None;
+            // Not ready (Crashed, Starting, …) — kill the stale handle to release
+            // OS resources and abort the reader task, then fall through to re-spawn.
+            if let Some(mut h) = guard.take() {
+                h.kill().await;
+            }
         }
 
         // Spawn the sidecar process via the caller-supplied closure.
