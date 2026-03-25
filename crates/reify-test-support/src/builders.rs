@@ -53,6 +53,7 @@ fn infer_value_type(v: &Value) -> Type {
         Value::Complex { dimension, .. } => Type::complex(Type::Scalar { dimension: *dimension }),
         Value::Orientation { .. } => Type::Orientation(3),
         Value::Frame { .. } => Type::Frame(3),
+        Value::Transform { .. } => Type::Transform(3),
         Value::Range { lower, upper, .. } => {
             let elem_ty = lower
                 .as_ref()
