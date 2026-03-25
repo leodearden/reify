@@ -449,6 +449,32 @@ fn connect_body_error_node_emits_diagnostic() {
     );
 }
 
+// ── task-396 step-8: malformed outer connect_statement emits diagnostic ─
+
+#[test]
+fn connect_statement_malformed_outer_emits_diagnostic() {
+    // `connect a ->` is missing the right endpoint; tree-sitter produces a
+    // connect_statement node with has_error() == true (MISSING "right" field).
+    // Without check_and_lower!, lower_member calls lower_connect which silently
+    // returns None via `?` on the missing right field — no diagnostic is emitted.
+    let (_decls, errors) = parse_decls(
+        "structure S { port a : out T  connect a -> }",
+    );
+    assert!(
+        !errors.is_empty(),
+        "expected at least one parse error for malformed connect statement (missing right endpoint), got none"
+    );
+    assert!(
+        errors.iter().any(|e| {
+            e.message.contains("invalid connect")
+                || e.message.contains("syntax error")
+                || e.message.contains("connect")
+        }),
+        "expected an error mentioning 'invalid connect' or 'syntax error', got: {:?}",
+        errors
+    );
+}
+
 // ── parse_connect_reverse ─────────────────────────────────────────
 
 #[test]
@@ -479,3 +505,4 @@ fn parse_connect_reverse() {
         other => panic!("expected Ident('b'), got {:?}", other),
     }
 }
+
