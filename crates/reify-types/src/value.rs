@@ -209,8 +209,19 @@ impl Value {
                 buf[9..17].copy_from_slice(&im_bits.to_le_bytes());
                 ContentHash::of(&buf).combine(dimension.content_hash())
             }
-            Value::Matrix(_rows) => {
-                todo!("Matrix content_hash — implemented in step-4")
+            Value::Matrix(rows) => {
+                // Hash structure: tag(18) + row_count + for each row: col_count + element hashes.
+                // This two-level encoding intentionally differs from Tensor's flat tag(14)+count+elements
+                // to distinguish Matrix from nested-Tensor at the hash level.
+                let mut h = ContentHash::of(&[18]);
+                h = h.combine(ContentHash::of(&(rows.len() as u64).to_le_bytes()));
+                for row in rows {
+                    h = h.combine(ContentHash::of(&(row.len() as u64).to_le_bytes()));
+                    for elem in row {
+                        h = h.combine(elem.content_hash());
+                    }
+                }
+                h
             }
             Value::Undef => ContentHash::of(&[5]),
         }
