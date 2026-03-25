@@ -1129,11 +1129,14 @@ async fn wait_ready_returns_err_on_crash_during_wait() {
     use tokio::sync::Mutex;
 
     let state = Arc::new(Mutex::new(SidecarState::Starting));
-    let data: &[u8] = b"";
-    let empty_reader = BufReader::new(data);
+    // Use duplex instead of b"" to prevent the reader task from seeing
+    // immediate EOF and firing on_exit with "sidecar exited unexpectedly".
+    // Keeping _data_writer alive means the reader blocks on read, not EOF.
+    let (_data_writer, data_reader) = tokio::io::duplex(1024);
+    let reader = BufReader::new(data_reader);
     let (writer, _writer_end) = tokio::io::duplex(1024);
 
-    let handle = SidecarHandle::from_parts(writer, empty_reader, state.clone());
+    let handle = SidecarHandle::from_parts(writer, reader, state.clone());
 
     // Clone notify and state so a spawned task can trigger a crash.
     let notify = Arc::clone(handle.ready_notify());
