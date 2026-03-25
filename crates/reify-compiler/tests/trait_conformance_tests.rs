@@ -1058,3 +1058,57 @@ fn conformance_multiple_port_requirements_one_missing() {
         errors
     );
 }
+
+// ── compile_trait Port handling (step-13) ───────────────────────────────────
+
+/// step-13: compile_trait handles MemberDecl::Port — parse a trait with
+/// 'port input : in Signal', verify compiled trait has RequirementKind::Port
+/// with correct type_name="Signal" and direction=In.
+#[test]
+fn compile_trait_handles_port_member() {
+    let source = r#"
+trait HasInput {
+    port input : in Signal
+}
+"#;
+    let module = compile_module(source);
+    assert_eq!(module.trait_defs.len(), 1, "expected 1 trait def");
+    let trait_def = &module.trait_defs[0];
+    assert_eq!(trait_def.name, "HasInput");
+    assert_eq!(
+        trait_def.required_members.len(),
+        1,
+        "expected 1 required member (port), got: {:?}",
+        trait_def.required_members
+    );
+    let req = &trait_def.required_members[0];
+    assert_eq!(req.name, "input");
+    match &req.kind {
+        RequirementKind::Port { type_name, direction } => {
+            assert_eq!(type_name, "Signal");
+            assert_eq!(*direction, reify_types::PortDirection::In);
+        }
+        other => panic!("expected RequirementKind::Port, got: {:?}", other),
+    }
+}
+
+/// step-13b: compile_trait handles port with direction Out.
+#[test]
+fn compile_trait_handles_port_member_out() {
+    let source = r#"
+trait HasOutput {
+    port output : out Data
+}
+"#;
+    let module = compile_module(source);
+    let trait_def = &module.trait_defs[0];
+    let req = &trait_def.required_members[0];
+    assert_eq!(req.name, "output");
+    match &req.kind {
+        RequirementKind::Port { type_name, direction } => {
+            assert_eq!(type_name, "Data");
+            assert_eq!(*direction, reify_types::PortDirection::Out);
+        }
+        other => panic!("expected RequirementKind::Port, got: {:?}", other),
+    }
+}

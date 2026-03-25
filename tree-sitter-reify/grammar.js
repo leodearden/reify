@@ -142,6 +142,7 @@ module.exports = grammar({
       $.let_declaration,
       $.constraint_declaration,
       $.sub_declaration,
+      $.port_declaration,
       $.associated_type,
       $.pragma,
     ),
