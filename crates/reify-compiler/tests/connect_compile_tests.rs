@@ -416,3 +416,28 @@ structure def S2 {
         "same connector type with different param values must produce different hashes"
     );
 }
+
+// ── step-1: auto_match_ports_same_trait_same_members ─────────────────
+
+#[test]
+fn auto_match_ports_same_trait_same_members() {
+    // Two ports of same trait T with identical param name `d`, no explicit mapping.
+    // After auto-matching, port_mappings should contain [("d", "d")].
+    let source = r#"
+trait T { param d : Length }
+structure def S {
+    port a : out T { param d : Length = 5mm }
+    port b : in T { param d : Length = 5mm }
+    connect a -> b
+}
+"#;
+    let (template, diagnostics) = compile_first_template(source);
+    let errors: Vec<_> = diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    assert_eq!(template.connections.len(), 1);
+    assert_eq!(
+        template.connections[0].port_mappings,
+        vec![("d".to_string(), "d".to_string())],
+        "expected auto-generated identity mapping for param 'd'"
+    );
+}
