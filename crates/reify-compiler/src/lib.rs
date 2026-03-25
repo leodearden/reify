@@ -4308,8 +4308,8 @@ fn check_trait_conformance(
     let mut visited_traits: HashSet<String> = HashSet::new();
     let mut seen_requirement_names: HashMap<String, Type> = HashMap::new();
     let mut seen_default_names: HashMap<String, Type> = HashMap::new();
-    // Tracks (sub_name, structure_name) pairs for Sub requirement deduplication.
-    let mut seen_sub_names: HashSet<(String, String)> = HashSet::new();
+    // Tracks sub_name -> structure_name for Sub requirement dedup and conflict detection.
+    let mut seen_sub_names: HashMap<String, String> = HashMap::new();
 
     for trait_bound in structure.trait_bounds {
         collect_all_requirements(
@@ -4492,7 +4492,7 @@ fn collect_all_requirements(
     visited: &mut HashSet<String>,
     seen_names: &mut HashMap<String, Type>,
     seen_defaults: &mut HashMap<String, Type>,
-    seen_sub_names: &mut HashSet<(String, String)>,
+    seen_sub_names: &mut HashMap<String, String>,
     structure_members: &HashMap<String, Type>,
     span: SourceSpan,
     diagnostics: &mut Vec<Diagnostic>,
@@ -4552,14 +4552,25 @@ fn collect_all_requirements(
             seen_names.insert(req.name.clone(), expected_type.clone());
         }
 
-        // Deduplicate Sub requirements by (name, structure_name).
-        // Two traits requiring the same sub-component are satisfied by one matching sub.
+        // Deduplicate Sub requirements by name; detect conflicting Sub requirements
+        // (same name, different structure types from different traits).
         if let RequirementKind::Sub(structure_name) = &req.kind {
-            let key = (req.name.clone(), structure_name.clone());
-            if seen_sub_names.contains(&key) {
-                continue; // Duplicate sub requirement — already collected
+            if let Some(existing_structure) = seen_sub_names.get(&req.name) {
+                if existing_structure == structure_name {
+                    continue; // Exact duplicate — already collected
+                } else {
+                    // Conflict: same sub-component name required as two different types.
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "conflicting sub-component requirements for '{}': {} vs {}",
+                            req.name, existing_structure, structure_name
+                        ))
+                        .with_label(DiagnosticLabel::new(span, "conflicting traits")),
+                    );
+                    continue; // Can't satisfy both; skip this requirement
+                }
             }
-            seen_sub_names.insert(key);
+            seen_sub_names.insert(req.name.clone(), structure_name.clone());
         }
 
         requirements.push(req.clone());
