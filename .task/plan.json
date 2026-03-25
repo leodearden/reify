@@ -134,8 +134,8 @@
       "id": "step-18",
       "type": "impl",
       "description": "Retry fast-forward merge to main. Run `git checkout main && git merge --ff-only task/351`. If FF merge fails again (main advanced during rebase), repeat rebase from step-16.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "118bc901"
     }
   ],
   "design_decisions": [
