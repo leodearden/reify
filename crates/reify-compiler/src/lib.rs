@@ -707,18 +707,12 @@ fn compile_unit(
 ) -> Option<UnitEntry> {
     let dimension = resolve_dimension_type(&decl.dimension_type, diagnostics)?;
     let factor = if let Some(expr) = &decl.conversion {
-        match evaluate_const_expr(expr, registry, diagnostics) {
-            Some(v) => v,
-            None => return None, // evaluation failed; diagnostic already emitted
-        }
+        evaluate_const_expr(expr, registry, diagnostics)? // eval failed; diagnostic already emitted
     } else {
         1.0 // base unit with no conversion expression
     };
     let offset = if let Some(expr) = &decl.offset {
-        match evaluate_const_expr(expr, registry, diagnostics) {
-            Some(v) => Some(v),
-            None => return None, // evaluation failed; diagnostic already emitted
-        }
+        Some(evaluate_const_expr(expr, registry, diagnostics)?) // eval failed; diagnostic already emitted
     } else {
         None // non-affine unit with no offset
     };
