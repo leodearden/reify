@@ -1,20 +1,37 @@
 {
-  "task_id": "327",
-  "title": "Stdlib: Material, Elastic, Strong, Hard + mechanical material traits",
+  "task_id": "205",
+  "title": "Recursive structures: unfolding",
   "files": [
-    "crates/reify-compiler/stdlib/materials_mechanical.ri",
-    "crates/reify-compiler/tests/materials_mechanical_tests.rs"
+    "crates/reify-eval/src/lib.rs",
+    "crates/reify-eval/src/graph.rs",
+    "crates/reify-eval/tests/recursive_unfold.rs",
+    "crates/reify-test-support/src/builders.rs"
   ],
   "modules": [
-    "crates/reify-compiler"
+    "crates/reify-eval",
+    "crates/reify-test-support"
   ],
-  "analysis": "Task 327 creates stdlib .ri definitions for mechanical material traits: Material, Elastic, Strong, Hard (with HardnessScale enum), FatigueRated, FractureTough, Ductile, ImpactResistant, and Damping.\n\nDependency task 326 (stdlib prelude loader with include_str!/OnceLock caching) is marked done but not yet merged to main. This task creates the .ri file in crates/reify-compiler/stdlib/ where task 326 expects it, and writes tests that directly read and compile the file (independent of the loader).\n\nExisting infrastructure:\n- reify_syntax::parse() handles trait declarations with params, constraints, and trait refinements\n- reify_compiler::compile() compiles traits into CompiledTrait with required_members and defaults\n- Trait conformance checking works for `structure def X : A + B { ... }` syntax\n- Constraints inside traits (e.g., `constraint x > 0mm`) are injected into conforming structures as defaults\n- Enums are parsed and compiled into EnumDef with named variants\n- resolve_type_name() supports: Bool, Int, Real, String, Scalar (=Length), Length, Mass\n- unit_to_scalar() supports: mm, cm, m, in, deg, rad, kg, g, s\n\nType constraints: The compiler currently lacks Pressure and Density as recognized type names. Since adding these requires changes to reify-types dimension constants and the compiler's resolve_type_name(), and no Pa/MPa/GPa unit literals exist either, the pragmatic approach is to use `Real` for dimensionless quantities (poissons_ratio, damping_ratio, elongation, etc.) and `Real` as a stand-in for pressure/density-dimensioned quantities. This avoids blocking on type system extensions while still providing correct trait structure, constraint validation, and enum definitions. A follow-up task can upgrade Real\u2192Pressure/Density once those types and units are added.\n\nTest strategy: Tests use a helper that reads the .ri file from stdlib/materials_mechanical.ri (relative to crate root), parses and compiles it, then inspects CompiledModule fields (trait_defs, enum_defs). For conformance tests, inline source combines the trait definitions with user structures. This approach mirrors trait_conformance_tests.rs patterns (compile_module/compile_first_template helpers).",
+  "analysis": "Task 205 implements eager structural unfolding of recursive structures in the evaluator. Dependencies 203 and 204 already provide: (1) `TopologyTemplate.is_recursive: bool` flag set by Tarjan SCC detection, and (2) `SubComponentDecl.guard_expr: Option<CompiledExpr>` for termination guards.\n\nThe current sub-component elaboration flow (lib.rs:1063-1159) iterates over each template's sub_components, finds the child template, and calls `elaborate_child_instance()` for each. For non-recursive subs this is a single-level expansion. For recursive subs (where `template.is_recursive == true` and `sub.guard_expr.is_some()`), the evaluator must now: (a) evaluate the sub's `guard_expr` in the current value context, (b) if true, create a child instance with the provided args (which decrement the recursion param), (c) recursively unfold the child, repeating until the guard evaluates to false or depth limit is hit.\n\nKey architectural decisions:\n- The unfolding happens during eval() in the sub-component elaboration phase, AFTER params and lets are evaluated (so recursion-controlling params have values).\n- A new function `unfold_recursive_sub()` handles the recursive unfolding loop.\n- Each level gets a scoped entity name like `Parent.child.child.child...` (nested dot-separated).\n- The depth limit is configurable on Engine (default 64), stored as a field.\n- If the recursion param is Undef, the sub remains as a placeholder (no unfolding).\n- Resolution order is leaves-first: we recurse to the bottom first, then elaborate back up. This means we unfold eagerly to find the bottom, then call elaborate_child_instance from the deepest level upward.\n- The graph.rs `from_templates()` method does NOT need recursive unfolding \u2014 it only creates static graph structure. The dynamic unfolding happens in eval() where values are known.\n- TopologyTemplateBuilder needs `is_recursive(bool)` and `sub_component_with_guard()` builder methods for test construction.",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "Create crates/reify-compiler/stdlib/ directory for .ri stdlib source files (task 326 infrastructure). This is the directory where the prelude loader will look for embedded .ri files.",
+      "description": "Add `is_recursive(bool)` setter to TopologyTemplateBuilder in test-support builders.rs, so tests can mark templates as recursive.",
       "status": "done",
-      "commit": "107ee2d2",
+      "commit": "08a30759",
+      "tests": []
+    },
+    {
+      "id": "pre-2",
+      "description": "Add `sub_component_with_guard(name, structure_name, args, guard_expr)` builder method to TopologyTemplateBuilder, creating SubComponentDecl with guard_expr set. This enables constructing recursive sub-component test fixtures.",
+      "status": "done",
+      "commit": "08a30759",
+      "tests": []
+    },
+    {
+      "id": "pre-3",
+      "description": "Add `max_unfold_depth: usize` field to Engine (default 64) with a `set_max_unfold_depth(&mut self, depth: usize)` setter. This is the configurable depth limit for recursive unfolding.",
+      "status": "done",
+      "commit": "08a30759",
       "tests": []
     }
   ],
@@ -22,183 +39,230 @@
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing test: materials_mechanical.ri file exists at stdlib/materials_mechanical.ri, parses without errors, and compiles without error-severity diagnostics. Helper function `load_stdlib_module(filename)` reads from `stdlib/<filename>`, parses with reify_syntax::parse(), compiles with reify_compiler::compile(), returns CompiledModule. Assert trait_defs is non-empty.",
+      "description": "Write failing test `unfold_recursive_depth_zero_no_children`: Create a recursive structure S with param `n: Int = 0` and sub `child = S(n: n-1) where n > 0`. Template is_recursive=true. After eval(), guard should be false (0 > 0 is false), so no child instances should be created \u2014 no scoped values for `S.child.*` should exist.",
       "status": "done",
-      "commit": "dc5d8915"
+      "commit": "5d0718f8"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Create crates/reify-compiler/stdlib/materials_mechanical.ri with the Material trait: `trait Material { param density : Real  param name : String }`. This is the base material trait that all materials should implement. Uses Real for density (Density type not yet in compiler). File should parse and compile cleanly.",
+      "description": "Implement the core recursive unfolding logic in lib.rs. Add function `unfold_recursive_sub()` that: (1) evaluates the sub's guard_expr in the current values context, (2) if guard is Bool(true) and depth < max_depth, creates a child instance via `elaborate_child_instance()`, then recursively processes that child's own recursive subs, (3) if guard is Bool(false) or Undef, stops. Modify the sub-component elaboration loop in eval() to detect recursive subs (template.is_recursive && sub.guard_expr.is_some()) and call unfold_recursive_sub() instead of the direct elaborate_child_instance() path. Pass step-1 test.",
       "status": "done",
-      "commit": "107ee2d2"
+      "commit": "5d0718f8"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing test: Elastic trait exists in compiled module with 3 required members (youngs_modulus, poissons_ratio, shear_modulus). Find the trait by name in module.trait_defs, assert required_members contains all three names with RequirementKind::Param(Type::Real) for each.",
+      "description": "Write failing test `unfold_recursive_depth_one_creates_child`: S(n=1) with sub child = S(n: n-1) where n > 0. After eval(): S.child.n should be 0, S.child.child.* should NOT exist (guard false at depth 1). Verify scoped entity naming.",
       "status": "done",
-      "commit": "dc5d8915"
+      "commit": "PENDING_COMMIT"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Add Elastic trait to materials_mechanical.ri: `trait Elastic { param youngs_modulus : Real  param poissons_ratio : Real  param shear_modulus : Real }`. All three are required (no defaults), representing Young's modulus (Pa), Poisson's ratio (dimensionless), and shear modulus (Pa).",
+      "description": "Fix any issues to pass the depth-1 test. Ensure scoped entity naming uses dot-separated nesting: S.child, S.child.child, etc. Ensure child params are evaluated with decremented args.",
       "status": "done",
-      "commit": "9a970a7e"
+      "commit": "5d0718f8"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing test: Strong trait exists with 3 required members (yield_strength, uts, compressive_strength) and has at least 1 default (the constraint). Verify the trait's defaults vector contains a DefaultKind::Constraint entry. This tests that the `constraint uts >= yield_strength` declaration in the trait is parsed and compiled.",
+      "description": "Write failing test `unfold_recursive_depth_three_creates_tree`: S(n=3) with sub child = S(n: n-1) where n > 0. After eval(): S.child.n=2, S.child.child.n=1, S.child.child.child.n=0, S.child.child.child.child.* should NOT exist. Verify all 4 levels exist with correct decremented params.",
       "status": "done",
-      "commit": "dc5d8915"
+      "commit": "PENDING_COMMIT"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Add Strong trait to materials_mechanical.ri: `trait Strong { param yield_strength : Real  param uts : Real  param compressive_strength : Real  constraint uts >= yield_strength }`. The constraint ensures ultimate tensile strength is at least as large as yield strength.",
+      "description": "Fix any issues to pass the depth-3 test. Ensure the recursive loop correctly chains scoped entities and decrements params at each level.",
       "status": "done",
-      "commit": "a9c784dc"
+      "commit": "5d0718f8"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing test: HardnessScale enum exists in compiled module with exactly 7 variants: Rockwell_A, Rockwell_B, Rockwell_C, Brinell, Vickers, Shore_A, Shore_D. Find enum by name in module.enum_defs, assert variants list matches. Also verify Hard trait exists with 2 required members (hardness_value : Real, hardness_scale with Enum type).",
+      "description": "Write failing test `unfold_recursive_undef_param_no_unfold`: S with param n: Int (no default, so Undef), sub child = S(n: n-1) where n > 0. After eval(): guard evaluates with Undef input, should NOT unfold. S.child.* should not exist (sub remains placeholder).",
       "status": "done",
-      "commit": "dc5d8915"
+      "commit": "PENDING_COMMIT"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Add HardnessScale enum and Hard trait to materials_mechanical.ri: `enum HardnessScale { Rockwell_A, Rockwell_B, Rockwell_C, Brinell, Vickers, Shore_A, Shore_D }` and `trait Hard { param hardness_value : Real  param hardness_scale : HardnessScale }`. Also modified compile_trait() to accept enum_defs and resolve enum type names as Type::Enum.",
+      "description": "Ensure the unfolding logic checks that guard_expr evaluates to Bool(true) specifically \u2014 Undef, Int, or any non-Bool result skips unfolding. Pass the undef-param test.",
       "status": "done",
-      "commit": "10cd2910"
+      "commit": "5d0718f8"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write failing test: user-defined `structure def Steel : Elastic + Strong { ... }` type-checks without errors. Inline source combines the Elastic and Strong trait definitions with a Steel structure providing all required params with Real defaults. Compile and assert zero error-severity diagnostics. Also assert the template has trait_bounds containing both 'Elastic' and 'Strong'.",
+      "description": "Write failing test `unfold_recursive_depth_limit_stops_unfolding`: S(n=100) with sub child = S(n: n-1) where n > 0, engine max_unfold_depth=5. After eval(): only 5 levels of children should be created (S.child through S.child.child.child.child.child). The 6th level should NOT exist even though guard would be true.",
       "status": "done",
-      "commit": "dc5d8915"
+      "commit": "PENDING_COMMIT"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Verify Steel conformance test passes. The existing trait conformance infrastructure (trait_conformance_tests.rs patterns) already handles multi-trait bounds via `A + B` syntax. The test should pass with the inline trait definitions and Steel structure. If any issue arises, adjust the inline source.",
+      "description": "Ensure unfold_recursive_sub() tracks current depth and stops at max_unfold_depth. Pass the depth-limit test.",
       "status": "done",
-      "commit": "dc5d8915"
+      "commit": "5d0718f8"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write failing test: constraint from Strong trait is injected into conforming Steel structure. Compile the inline source (Strong trait + Steel structure) and assert template.constraints is non-empty, confirming the `uts >= yield_strength` constraint was injected as a default.",
+      "description": "Write failing test `unfold_recursive_leaves_first_order`: S(n=2) with param n and let sum (default: n + child.sum or n when n=0). Verify that leaf values are evaluated before parent values \u2014 the child at depth 2 (n=0) should be evaluated first, then depth 1, then depth 0. Verify by checking that let bindings referencing child values produce correct results.",
       "status": "done",
-      "commit": "dc5d8915"
+      "commit": "PENDING_COMMIT"
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "Verify constraint injection test passes. The existing DefaultKind::Constraint mechanism in compile_entity already handles trait constraint injection. The test should pass since Strong's constraint is a default that gets merged into conforming structures.",
+      "description": "Implement leaves-first resolution order: unfold_recursive_sub() first recurses to find the deepest level (where guard is false), then elaborates instances bottom-up. This ensures child values are in the values map before parent let-bindings that reference them are evaluated. Pass the leaves-first test.",
       "status": "done",
-      "commit": "dc5d8915"
+      "commit": "5d0718f8"
     },
     {
       "id": "step-13",
       "type": "test",
-      "description": "Write failing test: HardnessScale.Vickers is accessible in a structure let-binding. Inline source: HardnessScale enum + `structure def S { let scale = HardnessScale.Vickers }`. Compile and assert no errors, verify value cell 'scale' exists with Enum type.",
+      "description": "Write failing test `unfold_recursive_with_let_bindings`: S with param n: Int = 3, let doubled: Int = n * 2, sub child = S(n: n-1) where n > 0. After eval(): S.child.doubled should be 4 (2*2), S.child.child.doubled should be 2 (1*2), S.child.child.child.doubled should be 0 (0*2). Verifies that let bindings in child instances are correctly evaluated.",
       "status": "done",
-      "commit": "dc5d8915"
+      "commit": "PENDING_COMMIT"
     },
     {
       "id": "step-14",
       "type": "impl",
-      "description": "Verify HardnessScale.Vickers access test passes. The existing enum access syntax (`EnumName.Variant`) is already supported by the parser and compiler. The test should pass with the inline HardnessScale enum definition.",
+      "description": "Ensure elaborate_child_instance() correctly evaluates let bindings for each unfolded level. The child_values context must use the scoped values, not the parent's. Pass the let-bindings test.",
       "status": "done",
-      "commit": "dc5d8915"
+      "commit": "5d0718f8"
     },
     {
       "id": "step-15",
       "type": "test",
-      "description": "Write failing test: remaining 5 traits (FatigueRated, FractureTough, Ductile, ImpactResistant, Damping) exist in compiled module. Load the .ri file, compile, and for each trait name assert it appears in module.trait_defs. Verify required member counts: FatigueRated(1: endurance_limit), FractureTough(1: fracture_toughness), Ductile(2: elongation, reduction_of_area), ImpactResistant(1: impact_energy), Damping(2: damping_ratio, loss_factor).",
+      "description": "Write failing test `unfold_recursive_non_recursive_sub_unchanged`: Template A (non-recursive) with sub b = B(). Template B (non-recursive) with param x: Int = 5. After eval(): A.b.x should be 5. Verify that the existing non-recursive sub elaboration path is not broken by the new recursive unfolding logic.",
       "status": "done",
-      "commit": "dc5d8915"
+      "commit": "PENDING_COMMIT"
     },
     {
       "id": "step-16",
       "type": "impl",
-      "description": "Add remaining 5 traits to materials_mechanical.ri: `trait FatigueRated { param endurance_limit : Real }`, `trait FractureTough { param fracture_toughness : Real }`, `trait Ductile { param elongation : Real  param reduction_of_area : Real }`, `trait ImpactResistant { param impact_energy : Real }`, `trait Damping { param damping_ratio : Real  param loss_factor : Real }`.",
+      "description": "Verify the non-recursive path remains unchanged. The check for is_recursive && guard_expr.is_some() should cleanly separate recursive from non-recursive subs. Pass the regression test.",
       "status": "done",
-      "commit": "992d06cc"
+      "commit": "5d0718f8"
     },
     {
       "id": "step-17",
       "type": "test",
-      "description": "Write integration test: full .ri file compiles to exactly 9 traits (Material, Elastic, Strong, Hard, FatigueRated, FractureTough, Ductile, ImpactResistant, Damping) and 1 enum (HardnessScale). Load the file, compile, assert trait_defs.len() == 9 and enum_defs.len() == 1. Assert zero error-severity diagnostics.",
+      "description": "Write failing test `unfold_recursive_multiple_params`: S with param n: Int = 2 and param width: Real = 10.0, sub child = S(n: n-1, width: width * 0.5) where n > 0. After eval(): S.child.width=5.0, S.child.child.width=2.5. Verifies that non-recursion-controlling params are correctly propagated through unfolding.",
       "status": "done",
-      "commit": "dc5d8915"
+      "commit": "PENDING_COMMIT"
     },
     {
       "id": "step-18",
       "type": "impl",
-      "description": "Verify full integration test passes. All 9 traits and 1 enum should already be defined from previous steps. Final verification that the complete .ri file compiles cleanly end-to-end.",
+      "description": "Ensure all args from SubComponentDecl.args are passed through to each child instance during unfolding. The args are evaluated in the parent's value context (which includes the current level's param values). Pass the multiple-params test.",
       "status": "done",
-      "commit": "992d06cc"
+      "commit": "5d0718f8"
+    },
+    {
+      "id": "step-19",
+      "type": "test",
+      "description": "Write failing test `unfold_recursive_bool_guard`: S with param active: Bool = true, sub child = S(active: !active) where active == true (equivalently: active). After eval(): S.child should exist with active=false, S.child.child should NOT exist (guard false). Tests boolean-type recursion control.",
+      "status": "done",
+      "commit": "PENDING_COMMIT"
+    },
+    {
+      "id": "step-20",
+      "type": "impl",
+      "description": "Ensure boolean guard expressions work correctly. The guard evaluation should handle Bool(true)/Bool(false) for any expression shape. Pass the bool-guard test.",
+      "status": "done",
+      "commit": "5d0718f8"
+    },
+    {
+      "id": "step-21",
+      "type": "test",
+      "description": "Write failing test `unfold_recursive_default_depth_limit_64`: S(n=200) with sub child = S(n: n-1) where n > 0, using default Engine (no set_max_unfold_depth). Verify that exactly 64 levels are created (default limit). Check that S.child^64 exists but S.child^65 does not.",
+      "status": "done",
+      "commit": "PENDING_COMMIT"
+    },
+    {
+      "id": "step-22",
+      "type": "impl",
+      "description": "Verify default depth limit of 64 works correctly. Pass the default-depth-limit test.",
+      "status": "done",
+      "commit": "5d0718f8"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Use Real type for all mechanical properties (density, pressure-like quantities) instead of adding Pressure/Density dimension types",
-      "rationale": "The compiler's resolve_type_name() only supports Length and Mass as dimension-specific types. Adding Pressure (mass*length^-1*time^-2) and Density (mass*length^-3) would require changes to reify-types dimension constants, resolve_type_name in reify-compiler, and unit_to_scalar for Pa/MPa/GPa/kg_m3 units. This is a type-system extension beyond the scope of 'write stdlib .ri definitions'. Using Real preserves correct trait structure, conformance checking, and constraint validation. A follow-up task can upgrade Real\u2192Pressure/Density when those types and units are implemented."
+      "decision": "Unfolding happens in eval() sub-component elaboration phase, not in from_templates()",
+      "rationale": "from_templates() builds static graph structure from template declarations \u2014 it doesn't have runtime values. Recursive unfolding requires evaluating guard expressions against actual param values, which are only available during eval(). The graph is extended dynamically as instances are created."
     },
     {
-      "decision": "Place .ri file in crates/reify-compiler/stdlib/ even though the loader (task 326) isn't merged yet",
-      "rationale": "Task 326 specifies crates/reify-compiler/stdlib/ as the directory for stdlib .ri files loaded via include_str!(). Placing files there now means they'll be ready for the loader once it merges. Tests read the file directly via fs::read_to_string() with a relative path, making them independent of the loader."
+      "decision": "Scoped entity names use nested dot notation: S.child.child.child",
+      "rationale": "Consistent with existing sub-component naming (Parent.sub_name). Each level appends .sub_name, giving unique identifiers at each recursion depth. This also makes depth visible in the entity name."
     },
     {
-      "decision": "Tests read .ri file from disk rather than using include_str!() or inlining the full .ri content",
-      "rationale": "Reading from disk (like task 313's eval_ri_file pattern) validates the actual file content, catches file-not-found issues, and avoids duplicating .ri content in test strings. For conformance tests that combine traits + user structures, we inline just the relevant trait definitions to keep tests self-contained and fast."
+      "decision": "Depth limit is on Engine, not per-template",
+      "rationale": "A global engine-level limit is simpler, safer (prevents runaway in any template), and configurable without modifying the language or compiler. Per-template limits could be added later as an enhancement."
     },
     {
-      "decision": "HardnessScale enum uses underscore-separated variant names (Rockwell_A not RockwellA)",
-      "rationale": "Task description specifies: 'Rockwell_A/B/C, Brinell, Vickers, Shore_A/D'. The existing enum parser supports identifiers with underscores. This matches the task spec exactly."
+      "decision": "Leaves-first resolution order via recurse-then-elaborate",
+      "rationale": "The task specifies 'resolution order: leaves first'. We achieve this by first recursing to find the bottom of the tree (where guard is false), then elaborating instances on the way back up. This ensures child values are available when parent let-bindings that reference them are evaluated."
     },
     {
-      "decision": "Strong trait constraint uses `uts >= yield_strength` (not a labeled constraint)",
-      "rationale": "The existing trait constraint mechanism uses unlabeled constraints as defaults (DefaultKind::Constraint). The grammar doesn't support labeled constraints yet (label is always None per trait_conformance_tests.rs step 27a comment). Using an unlabeled constraint matches existing infrastructure."
+      "decision": "Non-Bool guard results treated as 'do not unfold' (same as Undef)",
+      "rationale": "Consistent with existing guard evaluation semantics where only Bool(true) activates members. If guard_expr evaluates to Undef (param undetermined) or any non-Bool, the sub stays as a placeholder \u2014 no partial unfolding."
     },
     {
-      "decision": "Hard trait uses param hardness_scale typed as enum rather than a let-bound enum",
-      "rationale": "Making hardness_scale a required param forces conforming structures to explicitly specify the hardness measurement scale, preventing ambiguity. The Type::Enum('HardnessScale') is resolved when the enum is defined in the same module."
+      "decision": "Recursive detection uses template.is_recursive && sub.guard_expr.is_some()",
+      "rationale": "A sub is only recursively unfolded if (a) the parent template is marked recursive by the compiler's SCC pass, and (b) the sub has a guard expression. This cleanly separates recursive from non-recursive code paths and relies on the compiler's validation (task 204) that all recursive subs have guards."
+    },
+    {
+      "decision": "Builder methods added to TopologyTemplateBuilder for is_recursive and guarded subs",
+      "rationale": "Test-support builders must be extended to construct recursive template fixtures. is_recursive(bool) setter and sub_component_with_guard() method are needed since the current builder always sets is_recursive=false and guard_expr=None."
     }
   ],
   "reuse": [
     {
-      "what": "compile_module() test helper pattern",
-      "where": "crates/reify-compiler/tests/trait_conformance_tests.rs",
-      "how": "Reuse the same pattern: parse source with reify_syntax::parse(), compile with reify_compiler::compile(), return CompiledModule. Adapt with a file-reading variant for .ri file tests."
+      "what": "elaborate_child_instance() function",
+      "where": "crates/reify-eval/src/lib.rs:3134",
+      "how": "Reuse directly for each unfolded level \u2014 it already handles param evaluation, let-binding topological sort, caching, and journaling for a single child instance."
     },
     {
-      "what": "compile_first_template() test helper pattern",
-      "where": "crates/reify-compiler/tests/trait_conformance_tests.rs",
-      "how": "Reuse for Steel conformance tests: compile inline source, extract first template, check diagnostics for errors."
+      "what": "reify_expr::eval_expr() for guard evaluation",
+      "where": "crates/reify-expr/src/lib.rs:69",
+      "how": "Use to evaluate SubComponentDecl.guard_expr against the current values map to determine whether to continue unfolding."
     },
     {
-      "what": "Trait conformance infrastructure",
-      "where": "crates/reify-compiler/src/lib.rs (compile_entity, collect_all_requirements)",
-      "how": "Existing multi-trait conformance via `A + B` syntax, requirement checking, default merging, and constraint injection. No changes needed \u2014 the .ri files just exercise this existing infrastructure."
+      "what": "TopologyTemplateBuilder and CompiledModuleBuilder",
+      "where": "crates/reify-test-support/src/builders.rs",
+      "how": "Extend with is_recursive() and sub_component_with_guard() for test fixture construction. Existing param/let_binding/sub_component methods reused as-is."
     },
     {
-      "what": "Enum compilation and access pattern",
-      "where": "crates/reify-compiler/src/lib.rs (enum_defs compilation), examples/m5_guarded_enum.ri",
-      "how": "Existing enum parsing (Declaration::Enum \u2192 EnumDef) and `EnumName.Variant` access syntax. HardnessScale follows the exact same pattern as Shape { Round, Square, Hex }."
+      "what": "Existing sub-component elaboration loop pattern",
+      "where": "crates/reify-eval/src/lib.rs:1065-1150",
+      "how": "The new recursive path branches off from the same loop. Non-recursive subs continue through the existing code unchanged."
     },
     {
-      "what": "eval_ri_file() file-loading pattern",
-      "where": "crates/reify-eval/tests/m8_stdlib_integration.rs (task 313)",
-      "how": "Adapt the fs::read_to_string + parse + compile pattern for loading stdlib .ri files in tests. Use relative path stdlib/materials_mechanical.ri from crate root."
+      "what": "reify_expr::EvalContext for expression evaluation context",
+      "where": "crates/reify-expr/src/lib.rs",
+      "how": "Create EvalContext with current values and functions for guard expression evaluation, same pattern as used throughout eval()."
+    },
+    {
+      "what": "ValueCellId::new() for scoped entity naming",
+      "where": "crates/reify-types/src/identity.rs",
+      "how": "Construct scoped IDs for each recursion level: ValueCellId::new(&scoped_entity, &member)."
+    },
+    {
+      "what": "Guard evaluation test patterns from guard_eval.rs",
+      "where": "crates/reify-eval/tests/guard_eval.rs",
+      "how": "Follow the same test structure: build template with builder, create module, eval with Engine, assert on values map."
+    },
+    {
+      "what": "Collection sub elaboration test pattern from collection_sub_eval.rs",
+      "where": "crates/reify-eval/tests/collection_sub_eval.rs",
+      "how": "Similar pattern of verifying scoped entity existence and values after elaboration \u2014 adapt for recursive depth verification."
     }
   ],
-  "_session_id": "327-e946111e",
-  "_created_at": "2026-03-25T18:43:01.499904+00:00"
+  "_session_id": "205-8b74fe70",
+  "_created_at": "2026-03-25T18:36:29.854504+00:00"
 }

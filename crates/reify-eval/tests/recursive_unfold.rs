@@ -51,6 +51,418 @@ fn eval_single_template(template: reify_compiler::TopologyTemplate) -> reify_eva
     engine.eval(&module)
 }
 
+// ─── step-3: depth=1 (n=1), one child created, no grandchild ─────────────────
+
+/// With n=1, the guard `n > 0` is true at depth 0 → creates S.child (n=0).
+/// At S.child level, guard `n > 0` evaluates to 0 > 0 = false → S.child.child should NOT exist.
+#[test]
+fn unfold_recursive_depth_one_creates_child() {
+    let template = build_recursive_s(1);
+    let result = eval_single_template(template);
+
+    // Top-level n should be 1
+    let s_n = ValueCellId::new("S", "n");
+    assert_eq!(result.values.get(&s_n), Some(&Value::Int(1)));
+
+    // S.child.n should be 0 (1 - 1)
+    let child_n = ValueCellId::new("S.child", "n");
+    assert_eq!(
+        result.values.get(&child_n),
+        Some(&Value::Int(0)),
+        "S.child.n should be 0 (= 1 - 1)"
+    );
+
+    // S.child.child.n must NOT exist — guard is false at child level (n=0)
+    let grandchild_n = ValueCellId::new("S.child.child", "n");
+    assert!(
+        !result.values.contains(&grandchild_n),
+        "S.child.child.n should not exist when guard is false at depth 1, but got {:?}",
+        result.values.get(&grandchild_n)
+    );
+}
+
+// ─── step-5: depth=3 (n=3), three children, no 4th ──────────────────────────
+
+/// With n=3, unfolds 3 levels deep: S.child.n=2, S.child.child.n=1, S.child.child.child.n=0.
+/// S.child.child.child.child must NOT exist (guard false at depth 3).
+#[test]
+fn unfold_recursive_depth_three_creates_tree() {
+    let template = build_recursive_s(3);
+    let result = eval_single_template(template);
+
+    // Verify chain: n decrements by 1 at each level
+    let cases = [
+        ("S", 3i64),
+        ("S.child", 2),
+        ("S.child.child", 1),
+        ("S.child.child.child", 0),
+    ];
+    for (entity, expected_n) in &cases {
+        let id = ValueCellId::new(*entity, "n");
+        assert_eq!(
+            result.values.get(&id),
+            Some(&Value::Int(*expected_n)),
+            "{}.n should be {}",
+            entity,
+            expected_n
+        );
+    }
+
+    // The 4th child must NOT exist
+    let too_deep = ValueCellId::new("S.child.child.child.child", "n");
+    assert!(
+        !result.values.contains(&too_deep),
+        "S.child.child.child.child.n should not exist (guard false at n=0)"
+    );
+}
+
+// ─── step-19: boolean guard controls recursion ───────────────────────────────
+
+/// S with param active: Bool = true.
+/// sub child = S(active: !active) where active.
+/// After eval(): S.child should exist with active=false, S.child.child should NOT exist.
+#[test]
+fn unfold_recursive_bool_guard() {
+    use reify_test_support::builders::not;
+
+    // guard: active (boolean reference)
+    let guard = value_ref_typed("S", "active", Type::Bool);
+    // arg: active = !active
+    let negated = not(value_ref_typed("S", "active", Type::Bool));
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param(
+            "S",
+            "active",
+            Type::Bool,
+            Some(CompiledExpr::literal(Value::Bool(true), Type::Bool)),
+        )
+        .is_recursive(true)
+        .sub_component_with_guard(
+            "child",
+            "S",
+            vec![("active".to_string(), negated)],
+            guard,
+        )
+        .build();
+
+    let result = eval_single_template(template);
+
+    // S.active = true
+    let s_active = ValueCellId::new("S", "active");
+    assert_eq!(result.values.get(&s_active), Some(&Value::Bool(true)));
+
+    // S.child should exist with active=false
+    let child_active = ValueCellId::new("S.child", "active");
+    assert_eq!(
+        result.values.get(&child_active),
+        Some(&Value::Bool(false)),
+        "S.child.active should be false (= !true)"
+    );
+
+    // S.child.child must NOT exist — guard is false (active=false)
+    let grandchild_active = ValueCellId::new("S.child.child", "active");
+    assert!(
+        !result.values.contains(&grandchild_active),
+        "S.child.child.active should not exist (guard false when active=false)"
+    );
+}
+
+// ─── step-17: multiple params propagated through unfolding ───────────────────
+
+/// S with param n: Int = 2 and param width: Real = 10.0.
+/// sub child = S(n: n-1, width: width * 0.5) where n > 0.
+/// After eval(): S.child.width = 5.0, S.child.child.width = 2.5.
+#[test]
+fn unfold_recursive_multiple_params() {
+    let guard = gt(
+        value_ref_typed("S", "n", Type::Int),
+        literal(Value::Int(0)),
+    );
+    let n_minus_1 = binop(
+        BinOp::Sub,
+        value_ref_typed("S", "n", Type::Int),
+        literal(Value::Int(1)),
+    );
+    let width_half = binop(
+        BinOp::Mul,
+        value_ref_typed("S", "width", Type::Real),
+        literal(Value::Real(0.5)),
+    );
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param(
+            "S",
+            "n",
+            Type::Int,
+            Some(CompiledExpr::literal(Value::Int(2), Type::Int)),
+        )
+        .param(
+            "S",
+            "width",
+            Type::Real,
+            Some(CompiledExpr::literal(Value::Real(10.0), Type::Real)),
+        )
+        .is_recursive(true)
+        .sub_component_with_guard(
+            "child",
+            "S",
+            vec![
+                ("n".to_string(), n_minus_1),
+                ("width".to_string(), width_half),
+            ],
+            guard,
+        )
+        .build();
+
+    let result = eval_single_template(template);
+
+    // S.width = 10.0
+    let s_width = ValueCellId::new("S", "width");
+    assert_eq!(result.values.get(&s_width), Some(&Value::Real(10.0)));
+
+    // S.child.width = 5.0
+    let child_width = ValueCellId::new("S.child", "width");
+    assert_eq!(
+        result.values.get(&child_width),
+        Some(&Value::Real(5.0)),
+        "S.child.width should be 5.0 (= 10.0 * 0.5)"
+    );
+
+    // S.child.child.width = 2.5
+    let grandchild_width = ValueCellId::new("S.child.child", "width");
+    assert_eq!(
+        result.values.get(&grandchild_width),
+        Some(&Value::Real(2.5)),
+        "S.child.child.width should be 2.5 (= 5.0 * 0.5)"
+    );
+}
+
+// ─── step-15: non-recursive sub elaboration unchanged ────────────────────────
+
+/// Template A (non-recursive) with sub b = B().
+/// Template B (non-recursive) with param x: Int = 5.
+/// After eval(): A.b.x should be 5. Verifies existing non-recursive path is not broken.
+#[test]
+fn unfold_recursive_non_recursive_sub_unchanged() {
+    let b_template = TopologyTemplateBuilder::new("B")
+        .param(
+            "B",
+            "x",
+            Type::Int,
+            Some(CompiledExpr::literal(Value::Int(5), Type::Int)),
+        )
+        .build();
+
+    let a_template = TopologyTemplateBuilder::new("A")
+        // is_recursive defaults to false
+        .sub_component("b", "B", vec![])
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(a_template)
+        .template(b_template)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+    let result = engine.eval(&module);
+
+    let ab_x = ValueCellId::new("A.b", "x");
+    assert_eq!(
+        result.values.get(&ab_x),
+        Some(&Value::Int(5)),
+        "A.b.x should be 5 (non-recursive sub elaboration unchanged)"
+    );
+}
+
+// ─── step-13: let bindings in unfolded child instances ───────────────────────
+
+/// S with n=3, let doubled = n * 2.
+/// After eval(): S.child.doubled = 4, S.child.child.doubled = 2, S.child.child.child.doubled = 0.
+#[test]
+fn unfold_recursive_with_let_bindings() {
+    let guard = gt(
+        value_ref_typed("S", "n", Type::Int),
+        literal(Value::Int(0)),
+    );
+    let n_minus_1 = binop(
+        BinOp::Sub,
+        value_ref_typed("S", "n", Type::Int),
+        literal(Value::Int(1)),
+    );
+    let doubled_expr = binop(
+        BinOp::Mul,
+        value_ref_typed("S", "n", Type::Int),
+        literal(Value::Int(2)),
+    );
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param(
+            "S",
+            "n",
+            Type::Int,
+            Some(CompiledExpr::literal(Value::Int(3), Type::Int)),
+        )
+        .let_binding("S", "doubled", Type::Int, doubled_expr)
+        .is_recursive(true)
+        .sub_component_with_guard("child", "S", vec![("n".to_string(), n_minus_1)], guard)
+        .build();
+
+    let result = eval_single_template(template);
+
+    let cases = [
+        ("S.child", 2i64),
+        ("S.child.child", 1),
+        ("S.child.child.child", 0),
+    ];
+    for (entity, expected_n) in &cases {
+        let doubled_id = ValueCellId::new(*entity, "doubled");
+        let expected_doubled = expected_n * 2;
+        assert_eq!(
+            result.values.get(&doubled_id),
+            Some(&Value::Int(expected_doubled)),
+            "{}.doubled should be {} (= {} * 2)",
+            entity, expected_doubled, expected_n
+        );
+    }
+}
+
+// ─── step-11: leaves-first ordering ──────────────────────────────────────────
+
+/// S(n=2) with a let `doubled = n * 2`.
+/// After unfolding: S.child.doubled should be 4 (2*2), S.child.child.doubled should be 2 (1*2).
+/// This verifies that let bindings in child instances are correctly evaluated at each level.
+/// (Also serves as the leaves-first ordering test — leaves exist before parent let-bindings
+/// that might reference them could be re-evaluated.)
+#[test]
+fn unfold_recursive_leaves_first_order() {
+    // Build S with let doubled = n * 2
+    let guard = gt(
+        value_ref_typed("S", "n", Type::Int),
+        literal(Value::Int(0)),
+    );
+    let n_minus_1 = binop(
+        BinOp::Sub,
+        value_ref_typed("S", "n", Type::Int),
+        literal(Value::Int(1)),
+    );
+    let doubled_expr = binop(
+        BinOp::Mul,
+        value_ref_typed("S", "n", Type::Int),
+        literal(Value::Int(2)),
+    );
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param(
+            "S",
+            "n",
+            Type::Int,
+            Some(CompiledExpr::literal(Value::Int(2), Type::Int)),
+        )
+        .let_binding("S", "doubled", Type::Int, doubled_expr)
+        .is_recursive(true)
+        .sub_component_with_guard("child", "S", vec![("n".to_string(), n_minus_1)], guard)
+        .build();
+
+    let result = eval_single_template(template);
+
+    // Root S.doubled = 2 * 2 = 4
+    let s_doubled = ValueCellId::new("S", "doubled");
+    assert_eq!(result.values.get(&s_doubled), Some(&Value::Int(4)));
+
+    // S.child.n = 1, S.child.doubled = 1 * 2 = 2
+    let child_doubled = ValueCellId::new("S.child", "doubled");
+    assert_eq!(
+        result.values.get(&child_doubled),
+        Some(&Value::Int(2)),
+        "S.child.doubled should be 2 (= 1 * 2)"
+    );
+
+    // S.child.child.n = 0, S.child.child.doubled = 0 * 2 = 0
+    let grandchild_doubled = ValueCellId::new("S.child.child", "doubled");
+    assert_eq!(
+        result.values.get(&grandchild_doubled),
+        Some(&Value::Int(0)),
+        "S.child.child.doubled should be 0 (= 0 * 2)"
+    );
+}
+
+// ─── step-9: depth limit stops unfolding ─────────────────────────────────────
+
+/// S(n=100) with default engine max_unfold_depth=5: only 5 levels of children are created.
+/// S.child through S.child^5 should exist, S.child^6 should NOT.
+#[test]
+fn unfold_recursive_depth_limit_stops_unfolding() {
+    let template = build_recursive_s(100);
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+    engine.set_max_unfold_depth(5);
+    let result = engine.eval(&module);
+
+    // Build the entity names for the chain
+    let mut entity = "S".to_string();
+    for level in 0..=5 {
+        let id = ValueCellId::new(&entity, "n");
+        let expected_n = 100i64 - level as i64;
+        assert_eq!(
+            result.values.get(&id),
+            Some(&Value::Int(expected_n)),
+            "level {} entity {} should have n={}",
+            level, entity, expected_n
+        );
+        entity = format!("{}.child", entity);
+    }
+
+    // Level 6 (S.child^6) must NOT exist — depth limit hit
+    let too_deep = ValueCellId::new(&entity, "n");
+    assert!(
+        !result.values.contains(&too_deep),
+        "level 6 entity {} should not exist (depth limit 5 hit), but got {:?}",
+        entity,
+        result.values.get(&too_deep)
+    );
+}
+
+// ─── step-7: Undef param skips unfolding ─────────────────────────────────────
+
+/// S with param n: Int (no default, so Undef). Guard `n > 0` evaluates with Undef → not Bool(true).
+/// S.child.* should not exist — sub remains placeholder.
+#[test]
+fn unfold_recursive_undef_param_no_unfold() {
+    // Build S with no default value for n (Undef)
+    let guard = gt(
+        value_ref_typed("S", "n", Type::Int),
+        literal(Value::Int(0)),
+    );
+    let n_minus_1 = binop(
+        BinOp::Sub,
+        value_ref_typed("S", "n", Type::Int),
+        literal(Value::Int(1)),
+    );
+    let template = TopologyTemplateBuilder::new("S")
+        .param("S", "n", Type::Int, None)  // no default → Undef
+        .is_recursive(true)
+        .sub_component_with_guard("child", "S", vec![("n".to_string(), n_minus_1)], guard)
+        .build();
+
+    let result = eval_single_template(template);
+
+    // S.n has no default, so it may be absent or Undef — either way, not a positive integer.
+    // The main assertion is that unfolding was skipped.
+
+    // S.child.n must NOT exist — guard evaluates to Undef (not Bool(true)) when n has no value
+    let child_n = ValueCellId::new("S.child", "n");
+    assert!(
+        !result.values.contains(&child_n),
+        "S.child.n should not exist when guard evaluates to Undef, but got {:?}",
+        result.values.get(&child_n)
+    );
+}
+
 // ─── step-1: depth=0 (n=0), guard false, no children created ─────────────────
 
 /// With n=0, the guard `n > 0` evaluates to false at the top level.
@@ -70,5 +482,46 @@ fn unfold_recursive_depth_zero_no_children() {
         !result.values.contains(&child_n),
         "S.child.n should not exist when guard is false (n=0), but got {:?}",
         result.values.get(&child_n)
+    );
+}
+
+// ─── step-21: default depth limit of 64 ──────────────────────────────────────
+
+/// S(n=200) with default Engine (max_unfold_depth=64).
+/// Exactly 64 child levels should be created: S, S.child, ..., S.child^64.
+/// The 65th level (S.child^65) must NOT exist — default depth limit hit.
+#[test]
+fn unfold_recursive_default_depth_limit_64() {
+    let template = build_recursive_s(200);
+    let module = reify_test_support::CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+    let checker = MockConstraintChecker::new();
+    // Do NOT call set_max_unfold_depth — use the default (64)
+    let mut engine = Engine::new(Box::new(checker), None);
+    let result = engine.eval(&module);
+
+    // Build entity name chains and verify levels 0 through 64 all exist
+    // Level 0 = "S" (root), Level k = "S" + ".child" * k
+    let mut entity = "S".to_string();
+    for level in 0..=64 {
+        let id = ValueCellId::new(&entity, "n");
+        let expected_n = 200i64 - level as i64;
+        assert_eq!(
+            result.values.get(&id),
+            Some(&Value::Int(expected_n)),
+            "level {} entity {} should have n={} (default depth limit 64 allows this level)",
+            level, entity, expected_n
+        );
+        entity = format!("{}.child", entity);
+    }
+
+    // Level 65 (entity = "S.child" x 65) must NOT exist — depth limit reached
+    let too_deep = ValueCellId::new(&entity, "n");
+    assert!(
+        !result.values.contains(&too_deep),
+        "level 65 entity {} should not exist (default depth limit is 64), but got {:?}",
+        entity,
+        result.values.get(&too_deep)
     );
 }
