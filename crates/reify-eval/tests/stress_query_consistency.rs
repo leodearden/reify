@@ -302,11 +302,15 @@ fn box_volume_multiple_sizes() {
     match kernel.query(&GeometryQuery::Volume(cube.id)).unwrap() {
         Value::Real(v) => {
             let expected = 0.005_f64.powi(3);
+            // Use relative tolerance to handle OCCT BRep pipeline + mm→m unit conversion rounding.
+            // Absolute tolerance 1e-15 demands relative error <8e-9 for V≈1.25e-7 m³, which is
+            // below the precision floor of double-precision FP after accumulated ULP errors.
             assert!(
-                (v - expected).abs() < 1e-15,
-                "5mm cube volume should be ≈{} m³, got {}",
+                (v - expected).abs() / expected < 1e-10,
+                "5mm cube volume should be ≈{} m³, got {} (relative error {})",
                 expected,
-                v
+                v,
+                (v - expected).abs() / expected
             );
         }
         other => panic!("expected Real volume, got {:?}", other),
@@ -323,11 +327,14 @@ fn box_volume_multiple_sizes() {
     match kernel.query(&GeometryQuery::Volume(slab.id)).unwrap() {
         Value::Real(v) => {
             let expected = 0.1_f64 * 0.001 * 0.001;
+            // Use relative tolerance for the same reason as above (accumulated rounding errors
+            // from BRep operations and mm→m unit conversions in the OCCT kernel).
             assert!(
-                (v - expected).abs() < 1e-15,
-                "100×1×1mm slab volume should be ≈{} m³, got {}",
+                (v - expected).abs() / expected < 1e-10,
+                "100×1×1mm slab volume should be ≈{} m³, got {} (relative error {})",
                 expected,
-                v
+                v,
+                (v - expected).abs() / expected
             );
         }
         other => panic!("expected Real volume, got {:?}", other),
