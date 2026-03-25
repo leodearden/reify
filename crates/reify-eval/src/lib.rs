@@ -3132,7 +3132,7 @@ fn compile_geometry_op(
                                 &reify_expr::EvalContext::new(values, functions),
                             )
                         })
-                        .unwrap_or(reify_types::Value::Undef);
+                        .expect("Extrude Sweep args must contain 'distance' key — compiler bug");
                     Some(reify_types::GeometryOp::Extrude {
                         profile: profile_handle,
                         distance,
