@@ -30,7 +30,7 @@ fn conformance_empty_trait_no_errors() {
     let trait_def = empty_trait("Empty");
     let structure_members: std::collections::HashMap<String, Type> =
         std::collections::HashMap::new();
-    let errors = check_trait_conformance(&structure_members, &trait_def);
+    let errors = check_trait_conformance(&structure_members, &trait_def, &[], &[]);
     assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
 }
 
@@ -54,7 +54,7 @@ fn conformance_missing_param_error() {
     };
     let structure_members: std::collections::HashMap<String, Type> =
         std::collections::HashMap::new();
-    let errors = check_trait_conformance(&structure_members, &trait_def);
+    let errors = check_trait_conformance(&structure_members, &trait_def, &[], &[]);
     assert_eq!(errors.len(), 1, "expected 1 error, got: {:?}", errors);
     match &errors[0] {
         ConformanceError::MissingParam { name, expected_type } => {
@@ -92,7 +92,7 @@ fn conformance_type_mismatch_error() {
         "mass".to_string(),
         Type::Scalar { dimension: DimensionVector::LENGTH },
     );
-    let errors = check_trait_conformance(&structure_members, &trait_def);
+    let errors = check_trait_conformance(&structure_members, &trait_def, &[], &[]);
     assert_eq!(errors.len(), 1, "expected 1 error, got: {:?}", errors);
     match &errors[0] {
         ConformanceError::TypeMismatch { name, expected_type, actual_type } => {
@@ -127,7 +127,7 @@ fn conformance_satisfied_param_no_errors() {
         "width".to_string(),
         Type::Scalar { dimension: DimensionVector::LENGTH },
     );
-    let errors = check_trait_conformance(&structure_members, &trait_def);
+    let errors = check_trait_conformance(&structure_members, &trait_def, &[], &[]);
     assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
 }
 
@@ -173,7 +173,7 @@ fn conformance_multiple_requirements_mixed() {
         "mass".to_string(),
         Type::Scalar { dimension: DimensionVector::LENGTH },
     );
-    let errors = check_trait_conformance(&structure_members, &trait_def);
+    let errors = check_trait_conformance(&structure_members, &trait_def, &[], &[]);
     assert_eq!(errors.len(), 2, "expected 2 errors, got: {:?}", errors);
 
     let has_type_mismatch = errors.iter().any(|e| matches!(
@@ -206,7 +206,7 @@ fn conformance_let_requirement_checked() {
     };
     let structure_members: std::collections::HashMap<String, Type> =
         std::collections::HashMap::new();
-    let errors = check_trait_conformance(&structure_members, &trait_def);
+    let errors = check_trait_conformance(&structure_members, &trait_def, &[], &[]);
     assert_eq!(errors.len(), 1, "expected 1 error, got: {:?}", errors);
     match &errors[0] {
         ConformanceError::MissingLet { name, expected_type } => {
@@ -243,7 +243,7 @@ fn conformance_exact_type_equality_dimensions() {
             "length".to_string(),
             Type::Scalar { dimension: DimensionVector::MASS },
         );
-        let errors = check_trait_conformance(&structure_members, &trait_def);
+        let errors = check_trait_conformance(&structure_members, &trait_def, &[], &[]);
         assert_eq!(errors.len(), 1, "expected 1 error for wrong dimension, got: {:?}", errors);
         assert!(
             matches!(&errors[0], ConformanceError::TypeMismatch { name, .. } if name == "length"),
@@ -259,7 +259,7 @@ fn conformance_exact_type_equality_dimensions() {
             "length".to_string(),
             Type::Scalar { dimension: DimensionVector::LENGTH },
         );
-        let errors = check_trait_conformance(&structure_members, &trait_def);
+        let errors = check_trait_conformance(&structure_members, &trait_def, &[], &[]);
         assert!(errors.is_empty(), "expected no errors for correct dimension, got: {:?}", errors);
     }
 }
