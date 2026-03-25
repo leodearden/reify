@@ -146,6 +146,20 @@
       "description": "Implement mock-based contains/distance consistency tests. Configure mock geometry kernel with appropriate query results and verify correct dispatch",
       "status": "done",
       "commit": "6908fcd6"
+    },
+    {
+      "id": "step-19",
+      "type": "test",
+      "description": "Fix review finding [precision_tolerance]: In box_volume_multiple_sizes (lines 305-312, 323-330), replace absolute tolerance 1e-15 with relative tolerance assertion: assert!((v - expected).abs() / expected < 1e-10). The 1e-15 absolute tolerance demands relative error <8e-9 for a 5mm cube (V=1.25e-7 m³), which is below the precision floor of double-precision floating-point operations accumulated through OCCT's BRep geometry pipeline and mm→m unit conversions. Relative tolerance 1e-10 is robust across all volume magnitudes and consistent with the project's tolerance conventions (1e-9 to 1e-12 used elsewhere in the file).",
+      "status": "done",
+      "commit": "58c43d91"
+    },
+    {
+      "id": "step-20",
+      "type": "impl",
+      "description": "Verify the updated box_volume_multiple_sizes test compiles and passes with the new relative tolerance assertions. Run the full stress_query_consistency test suite to confirm no regressions.",
+      "status": "done",
+      "commit": "58c43d91"
     }
   ],
   "design_decisions": [
@@ -168,6 +182,10 @@
     {
       "decision": "10-step chain uses a single structure with progressive let-bindings",
       "rationale": "Each chain step builds on the previous via let-bindings, creating a dependency chain that exercises both the dimensional type system and the eval engine's topological ordering. This is a more realistic stress test than isolated expressions."
+    },
+    {
+      "decision": "Use relative tolerance for OCCT volume assertions on small geometries",
+      "rationale": "Absolute tolerance 1e-15 for volumes ~1e-7 m³ demands relative error <8e-9, below the precision floor of double-precision floats after BRep pipeline and mm→m conversions. Relative tolerance (v - expected).abs() / expected < 1e-10 scales correctly across all volume magnitudes and avoids false failures from accumulated ULP rounding errors."
     }
   ],
   "reuse": [
@@ -208,5 +226,5 @@
     }
   ],
   "_session_id": "346-f611453b",
-  "_created_at": "2026-03-25T03:01:07.332538+00:00"
+  "_created_at": "2026-03-25T03:17:51.583308+00:00"
 }
