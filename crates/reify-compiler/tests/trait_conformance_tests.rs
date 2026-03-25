@@ -955,3 +955,34 @@ fn deep_chain_recursion_depth_limit() {
         module.diagnostics
     );
 }
+
+/// A trait declares `sub hole = Hole`, and the structure provides exactly one
+/// matching sub-component. Assert no errors.
+///
+/// This is the baseline test for the O(n) linear-search sub-component lookup
+/// that will be replaced by an O(1) HashMap lookup in the next step. (S7)
+#[test]
+fn sub_conformance_basic() {
+    let source = r#"
+trait HasHole {
+    sub hole = Hole()
+}
+structure def Hole {}
+structure def Widget : HasHole {
+    sub hole = Hole()
+}
+"#;
+
+    let module = compile_module(source);
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    assert!(
+        errors.is_empty(),
+        "expected no errors when sub-component is satisfied, got: {:?}",
+        errors
+    );
+}
