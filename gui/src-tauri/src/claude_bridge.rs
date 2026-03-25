@@ -610,10 +610,9 @@ where
         if guard
             .as_ref()
             .is_some_and(|h| Arc::ptr_eq(h.ready_notify(), &notify_arc))
+            && let Some(mut h) = guard.take()
         {
-            if let Some(mut h) = guard.take() {
-                h.kill().await;
-            }
+            h.kill().await;
         }
         return Err(e);
     }
@@ -630,10 +629,9 @@ where
             if guard
                 .as_ref()
                 .is_some_and(|h| Arc::ptr_eq(h.ready_notify(), &notify_arc))
+                && let Some(mut h) = guard.take()
             {
-                if let Some(mut h) = guard.take() {
-                    h.kill().await;
-                }
+                h.kill().await;
             }
             Err(format!("sidecar crashed: {}", msg))
         }
@@ -643,10 +641,9 @@ where
             if guard
                 .as_ref()
                 .is_some_and(|h| Arc::ptr_eq(h.ready_notify(), &notify_arc))
+                && let Some(mut h) = guard.take()
             {
-                if let Some(mut h) = guard.take() {
-                    h.kill().await;
-                }
+                h.kill().await;
             }
             Err(format!("sidecar not ready after notification: {:?}", other))
         }
