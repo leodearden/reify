@@ -2861,6 +2861,7 @@ struct EntityDefRef<'a> {
     type_params: &'a [reify_syntax::TypeParamDecl],
     trait_bounds: &'a [reify_syntax::TraitBoundRef],
     members: &'a [reify_syntax::MemberDecl],
+    annotations: &'a [reify_syntax::Annotation],
     span: SourceSpan,
     #[allow(dead_code)]
     content_hash: ContentHash,
@@ -2874,6 +2875,7 @@ impl<'a> From<&'a reify_syntax::StructureDef> for EntityDefRef<'a> {
             type_params: &s.type_params,
             trait_bounds: &s.trait_bounds,
             members: &s.members,
+            annotations: &s.annotations,
             span: s.span,
             content_hash: s.content_hash,
         }
@@ -2888,10 +2890,68 @@ impl<'a> From<&'a reify_syntax::OccurrenceDef> for EntityDefRef<'a> {
             type_params: &o.type_params,
             trait_bounds: &o.trait_bounds,
             members: &o.members,
+            annotations: &o.annotations,
             span: o.span,
             content_hash: o.content_hash,
         }
     }
+}
+
+/// Lower parsed syntax annotations to compiled annotation types.
+///
+/// Converts `Expr` args to `AnnotationArg` values:
+/// - NumberLiteral with integer value → Int(i64)
+/// - NumberLiteral otherwise → Real(f64)
+/// - StringLiteral → String
+/// - BoolLiteral → Bool
+/// - Ident → Ident
+/// - Other expressions → warning diagnostic, arg skipped
+fn lower_annotations(
+    parsed: &[reify_syntax::Annotation],
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Vec<reify_types::Annotation> {
+    parsed
+        .iter()
+        .map(|ann| {
+            let args = ann
+                .args
+                .iter()
+                .filter_map(|expr| {
+                    use reify_syntax::ExprKind;
+                    match &expr.kind {
+                        ExprKind::NumberLiteral(value) => {
+                            if *value == value.floor() && value.abs() < i64::MAX as f64 {
+                                Some(reify_types::AnnotationArg::Int(*value as i64))
+                            } else {
+                                Some(reify_types::AnnotationArg::Real(*value))
+                            }
+                        }
+                        ExprKind::StringLiteral(s) => {
+                            Some(reify_types::AnnotationArg::String(s.clone()))
+                        }
+                        ExprKind::BoolLiteral(b) => Some(reify_types::AnnotationArg::Bool(*b)),
+                        ExprKind::Ident(name) => {
+                            Some(reify_types::AnnotationArg::Ident(name.clone()))
+                        }
+                        _ => {
+                            diagnostics.push(Diagnostic::warning(
+                                format!(
+                                    "unsupported expression in annotation @{} argument; only literals and identifiers are allowed",
+                                    ann.name
+                                ),
+                            ).with_label(DiagnosticLabel::new(expr.span, "complex expression")));
+                            None
+                        }
+                    }
+                })
+                .collect();
+            reify_types::Annotation {
+                name: ann.name.clone(),
+                args,
+                span: ann.span,
+            }
+        })
+        .collect()
 }
 
 /// Compile a single entity definition (structure or occurrence) into a topology template.
@@ -3872,7 +3932,7 @@ fn compile_entity(
         objective,
         content_hash,
         is_recursive: false,
-        annotations: vec![],
+        annotations: lower_annotations(structure.annotations, diagnostics),
     }
 }
 
