@@ -7475,11 +7475,11 @@
         "description": "Three correctness issues in crates/reify-expr/src/lib.rs:\n\n1. eval_div returns Value::Real for dimensionless Scalar/Scalar division (line 1036-1037), but gradient codomain declares Scalar[dimensionless]. Type contract violation.\n2. No depth limit for nested gradient field sampling. compute_numerical_gradient -> apply_lambda -> eval_expr -> compute_numerical_gradient recursion has no counter. Cyclic or deeply nested fields will stack overflow.\n3. NumericalGradient with non-Field lambda slot silently returns Undef with no diagnostic. Violates project convention against silent wrong results.\n\nSource: review suggestions from esc-281-11 (task 281).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-03-25T21:26:13.714Z"
+        "updatedAt": "2026-03-25T22:14:40.029Z"
       },
       {
         "id": "416",
@@ -7770,7 +7770,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-25T22:14:39.918Z",
+      "lastModified": "2026-03-25T22:14:40.029Z",
       "taskCount": 437,
       "completedCount": 229,
       "tags": [
