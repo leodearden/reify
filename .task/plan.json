@@ -9,13 +9,16 @@
     "tree-sitter-reify/test/corpus/ad_hoc_selector.txt",
     "crates/reify-syntax/src/lib.rs",
     "crates/reify-syntax/src/ts_parser.rs",
-    "crates/reify-syntax/tests/ad_hoc_selector_tests.rs"
+    "crates/reify-syntax/tests/ad_hoc_selector_tests.rs",
+    "crates/reify-compiler/src/lib.rs",
+    "crates/reify-compiler/tests/ad_hoc_selector_compile_tests.rs"
   ],
   "modules": [
     "tree-sitter-reify",
-    "crates/reify-syntax"
+    "crates/reify-syntax",
+    "crates/reify-compiler"
   ],
-  "analysis": "This task adds parsing support for the ad-hoc port selector operator `@`, used as `expr @ ident(args)`. The operator is a postfix expression that takes a base expression, a selector name (identifier), and a parenthesized argument list. It should bind tighter than indexing (`[]`) but looser than member access (`.`).\n\nThe parser is tree-sitter based: grammar.js defines the CST, then ts_parser.rs lowers CST nodes to AST. The AST types live in lib.rs. Expression precedence is defined numerically in grammar.js (1=lowest to 8=highest for postfix). Currently member_access, function_call, and index_access all share precedence 8.\n\nTo implement the relative precedence (member_access > ad_hoc_selector > index_access), we adjust: member_access and function_call to prec 10, ad_hoc_selector to prec 9, index_access stays at 8. This preserves existing parse behavior for `a.b[0]` while correctly parsing `a.b @ face(\"top\")[0]` as `((a.b) @ face(\"top\"))[0]`.\n\nThe ExprKind enum in lib.rs needs a new `AdHocSelector` variant. Adding this variant will break exhaustive matches in downstream crates (notably compile_expr_guarded in reify-compiler). However, this task is scoped to crates/reify-syntax and tree-sitter-reify only. The compiler support is a separate task. The workspace check can be done with `--package reify-syntax` to verify parser correctness independently.",
+  "analysis": "This task adds parsing support for the ad-hoc port selector operator `@`, used as `expr @ ident(args)`. The operator is a postfix expression that takes a base expression, a selector name (identifier), and a parenthesized argument list. It should bind tighter than indexing (`[]`) but looser than member access (`.`).\n\nThe parser is tree-sitter based: grammar.js defines the CST, then ts_parser.rs lowers CST nodes to AST. The AST types live in lib.rs. Expression precedence is defined numerically in grammar.js (1=lowest to 8=highest for postfix). Currently member_access, function_call, and index_access all share precedence 8.\n\nTo implement the relative precedence (member_access > ad_hoc_selector > index_access), we adjust: member_access and function_call to prec 10, ad_hoc_selector to prec 9, index_access stays at 8. This preserves existing parse behavior for `a.b[0]` while correctly parsing `a.b @ face(\"top\")[0]` as `((a.b) @ face(\"top\"))[0]`.\n\nThe ExprKind enum in lib.rs needs a new `AdHocSelector` variant. Adding this variant will break exhaustive matches in downstream crates (notably compile_expr_guarded in reify-compiler). However, this task is scoped to crates/reify-syntax and tree-sitter-reify only. The compiler support is a separate task. The workspace check can be done with `--package reify-syntax` to verify parser correctness independently.\n\nReview feedback identified a blocking issue: the AdHocSelector arm in compile_expr_guarded (lib.rs:1590) uses panic! instead of following the established error-handling pattern (push Diagnostic::error + return CompiledExpr::literal fallback). This must be fixed to prevent compiler crashes when users write @ expressions. Steps 10-11 address this with a TDD test-then-fix cycle.",
   "prerequisites": [
     {
       "id": "pre-1",
@@ -102,6 +105,20 @@
       "description": "Write test `parse_ad_hoc_selector_with_expr_args`: parse `structure S { let x = port @ edge(width * 2) }` and assert the arg is a BinOp expression, verifying complex expressions work in selector args.",
       "status": "done",
       "commit": "eb71e9b2"
+    },
+    {
+      "id": "step-10",
+      "type": "test",
+      "description": "Write test `compile_ad_hoc_selector_emits_diagnostic` in new file crates/reify-compiler/tests/ad_hoc_selector_compile_tests.rs. Use the `compile_module_with_diagnostics` pattern from purpose_compile_tests.rs: parse `structure S { let x = port @ face(\"top\") }`, compile, assert no panic occurs, assert diagnostics contain a Severity::Error with message containing \"ad-hoc selector (@) is not yet supported\". This test will fail because the current code panics instead of emitting a diagnostic.",
+      "status": "done",
+      "commit": "6f3cb66a"
+    },
+    {
+      "id": "step-11",
+      "type": "impl",
+      "description": "Fix the AdHocSelector arm in compile_expr_guarded (crates/reify-compiler/src/lib.rs:1588-1591). Replace `panic!(\"AdHocSelector is not yet supported in the compiler\")` with the established pattern: push `Diagnostic::error(\"ad-hoc selector (@) is not yet supported in the compiler\").with_label(DiagnosticLabel::new(expr.span, \"not yet supported\"))` to diagnostics, and return `CompiledExpr::literal(Value::Undef, Type::Real)`. Test from step-10 should now pass.",
+      "status": "done",
+      "commit": "055a65a3"
     }
   ],
   "design_decisions": [
@@ -120,6 +137,10 @@
     {
       "decision": "Place tests in both ts_parser.rs (unit) and a new integration test file ad_hoc_selector_tests.rs",
       "rationale": "Following the project's test pattern: inline tests in ts_parser.rs for basic parsing validation using the parse_let_expr helper, and a dedicated integration test file for more complex scenarios like connect statements and precedence, matching the pattern of connect_chain_tests.rs, lambda_tests.rs, etc."
+    },
+    {
+      "decision": "Fix compiler panic in this parser task rather than deferring to a separate compiler task",
+      "rationale": "Review identified the panic! in compile_expr_guarded as a blocking issue: it crashes the entire compiler process when any user source uses @ syntax. Since this task introduced the ExprKind::AdHocSelector variant and the panic! arm, the fix belongs here. The fix is minimal \u2014 replacing panic! with the established diagnostic+fallback pattern used by all other error paths in the same function \u2014 and does not implement actual compiler support for the operator."
     }
   ],
   "reuse": [
@@ -147,8 +168,13 @@
       "what": "Tree-sitter corpus test format",
       "where": "tree-sitter-reify/test/corpus/minimize_maximize.txt",
       "how": "Follow the same format for the new corpus test: section headers with ===, source snippet, expected CST structure with ---."
+    },
+    {
+      "what": "compile_module_with_diagnostics helper and diagnostic assertion pattern",
+      "where": "crates/reify-compiler/tests/purpose_compile_tests.rs lines 148-189",
+      "how": "Copy the helper that compiles without asserting no errors, then filter diagnostics by Severity::Error and assert the expected message is present. Same pattern as compile_purpose_rejects_guarded_blocks test."
     }
   ],
   "_session_id": "248-9817d3c8",
-  "_created_at": "2026-03-25T17:26:58.081653+00:00"
+  "_created_at": "2026-03-25T17:40:57.380347+00:00"
 }
