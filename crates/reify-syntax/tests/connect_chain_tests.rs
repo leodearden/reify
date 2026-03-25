@@ -479,6 +479,41 @@ fn connect_statement_malformed_outer_emits_diagnostic() {
     );
 }
 
+// ── task-396 step-10: valid outer connect statement produces no spurious errors ─
+
+#[test]
+fn connect_statement_valid_outer_no_spurious_errors() {
+    // A simple well-formed connect must produce zero parse errors even after
+    // wrapping the connect_statement arm with check_and_lower!. This guards
+    // against check_and_lower! accidentally triggering false positives on
+    // valid connect statements where has_error() is false.
+    let (decls, errors) = parse_decls(
+        "structure S { port a : out T  port b : in T  connect a -> b }",
+    );
+    assert!(
+        errors.is_empty(),
+        "expected no parse errors for valid connect statement, got: {:?}",
+        errors
+    );
+    let structure = match &decls[0] {
+        Declaration::Structure(s) => s,
+        other => panic!("expected Structure, got {:?}", other),
+    };
+    let connect = match &structure.members[2] {
+        MemberDecl::Connect(c) => c,
+        other => panic!("expected Connect member, got {:?}", other),
+    };
+    assert_eq!(connect.operator, ConnectOp::Forward);
+    match &connect.left.expr.kind {
+        ExprKind::Ident(name) => assert_eq!(name, "a"),
+        other => panic!("expected Ident('a'), got {:?}", other),
+    }
+    match &connect.right.expr.kind {
+        ExprKind::Ident(name) => assert_eq!(name, "b"),
+        other => panic!("expected Ident('b'), got {:?}", other),
+    }
+}
+
 // ── parse_connect_reverse ─────────────────────────────────────────
 
 #[test]
