@@ -1703,6 +1703,23 @@ mod tests {
     }
 
     #[test]
+    fn loft_one_profile_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let w1 = ffi::ffi::make_circle_wire(10.0, 0.0).expect("wire1");
+        let id1 = kernel.store_raw(w1);
+
+        let result = kernel.execute(&GeometryOp::Loft {
+            profiles: vec![id1],
+        });
+        assert!(result.is_err(), "loft with 1 profile should fail");
+        let err_msg = format!("{:?}", result.unwrap_err());
+        assert!(
+            err_msg.contains("at least 2"),
+            "error should mention 'at least 2', got: {err_msg}"
+        );
+    }
+
+    #[test]
     fn loft_four_circles_creates_solid() {
         let mut kernel = OcctKernel::new();
         // Create 4 circle wire profiles at different heights with decreasing radii
