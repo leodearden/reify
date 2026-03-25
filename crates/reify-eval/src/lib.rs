@@ -103,6 +103,15 @@ pub struct Engine {
     /// Populated during eval() so that edit_param() can look up the objective
     /// by scope_name without needing access to the original templates.
     objectives: HashMap<String, OptimizationObjective>,
+    /// Maximum depth for recursive sub-component unfolding.
+    /// Prevents runaway recursion when guard expressions don't terminate.
+    /// Default: 64.
+    max_unfold_depth: usize,
+    /// Maximum total nodes created during recursive sub-component unfolding.
+    /// Prevents exponential blowup when a template has multiple recursive subs
+    /// (e.g., binary tree with `left` and `right` produces B^D nodes).
+    /// Default: 10_000.
+    max_unfold_nodes: usize,
 }
 
 /// Statistics about cache behavior during a cached evaluation.
@@ -268,7 +277,32 @@ impl Engine {
             active_objective_map: HashMap::new(),
             objectives: HashMap::new(),
             meta_map: HashMap::new(),
+            max_unfold_depth: 64,
+            max_unfold_nodes: 10_000,
         }
+    }
+
+    /// Set the maximum depth for recursive sub-component unfolding.
+    /// The default is 64. Lower values are useful for tests to keep execution fast.
+    ///
+    /// # Panics
+    /// Panics if `depth == 0`. At depth 0 the guard check fires before any child entity
+    /// is created, so parent let-bindings referencing `child.*` would silently resolve to
+    /// Undef. Only values >= 1 are safe.
+    pub fn set_max_unfold_depth(&mut self, depth: usize) {
+        assert!(depth >= 1, "max_unfold_depth must be >= 1");
+        self.max_unfold_depth = depth;
+    }
+
+    /// Set the maximum total nodes created during recursive sub-component unfolding.
+    /// The default is 10,000. This prevents exponential blowup when templates have
+    /// multiple recursive subs (B subs × D depth = B^D nodes without this limit).
+    ///
+    /// # Panics
+    /// Panics if `limit == 0`.
+    pub fn set_max_unfold_nodes(&mut self, limit: usize) {
+        assert!(limit >= 1, "max_unfold_nodes must be >= 1");
+        self.max_unfold_nodes = limit;
     }
 
     /// Set the constraint solver for resolving auto parameters.
@@ -1063,6 +1097,16 @@ impl Engine {
         // Sub-component elaboration: evaluate child template params/lets
         // for each sub_component in each template.
         for template in &module.templates {
+            // Pre-compute all recursive subs once per template (not per sub) to avoid
+            // O(S²) re-filtering inside the sub iteration loop.
+            let all_recursive_subs: Vec<&reify_compiler::SubComponentDecl> = if template.is_recursive {
+                template.sub_components.iter().filter(|s| s.guard_expr.is_some()).collect()
+            } else {
+                Vec::new()
+            };
+            let all_recursive_sub_names: Vec<&str> =
+                all_recursive_subs.iter().map(|s| s.name.as_str()).collect();
+
             for sub in &template.sub_components {
                 // Find the referenced child template by name
                 let child_template = match module.templates.iter().find(|t| t.name == sub.structure_name) {
@@ -1129,6 +1173,30 @@ impl Engine {
                         }
                     }
                     // If count is None (Undef), no instances are created
+                    continue;
+                }
+
+                // Recursive sub: evaluate guard before elaborating, then unfold recursively.
+                if template.is_recursive && sub.guard_expr.is_some() {
+                    let mut unfold_budget = self.max_unfold_nodes;
+                    unfold_recursive_sub(
+                        &mut values,
+                        &mut snapshot,
+                        functions,
+                        &mut self.journal,
+                        &mut self.cache,
+                        version_id,
+                        child_template,
+                        sub,
+                        &template.name,
+                        0,
+                        self.max_unfold_depth,
+                        &self.meta_map,
+                        &mut diagnostics,
+                        &all_recursive_subs,
+                        &all_recursive_sub_names,
+                        &mut unfold_budget,
+                    );
                     continue;
                 }
 
@@ -3126,10 +3194,183 @@ fn compile_geometry_op(
     }
 }
 
+/// Recursively unfold a recursive sub-component until the guard evaluates to false
+/// or the depth limit is reached.
+///
+/// The guard expression in `sub.guard_expr` uses the template's own entity name (e.g., "S.n").
+/// To correctly evaluate the guard at each recursion level, we build a "local" values context
+/// by remapping the current parent entity's values to the template's namespace before evaluation.
+///
+/// # Parameters
+/// - `parent_entity`: the entity currently being processed (e.g., "S" at depth 0, "S.child" at depth 1)
+/// - `depth`: current recursion depth (0 = processing the top-level template)
+/// - `max_depth`: maximum allowed depth before stopping
+/// - `all_recursive_subs`: ALL recursive subs of the template (those with guard_expr.is_some()).
+///   Used in Phase 2 to unfold all sub chains at each child level, not just the spawning sub.
+/// - `node_budget`: remaining total nodes allowed across all branches. Prevents exponential
+///   blowup when B > 1 recursive subs exist (B^D total without this limit).
+#[allow(clippy::too_many_arguments)]
+fn unfold_recursive_sub<'t>(
+    values: &mut ValueMap,
+    snapshot: &mut Snapshot,
+    functions: &[CompiledFunction],
+    journal: &mut EventJournal,
+    cache: &mut CacheStore,
+    version_id: u64,
+    child_template: &'t reify_compiler::TopologyTemplate,
+    sub: &reify_compiler::SubComponentDecl,
+    parent_entity: &str,
+    depth: usize,
+    max_depth: usize,
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+    all_recursive_subs: &[&'t reify_compiler::SubComponentDecl],
+    all_recursive_sub_names: &[&str],
+    node_budget: &mut usize,
+) {
+    // Check total node budget before doing any work.
+    if *node_budget == 0 {
+        diagnostics.push(Diagnostic::error(format!(
+            "recursive unfolding of '{}' stopped: total node budget exhausted at depth {}",
+            parent_entity, depth,
+        )));
+        return;
+    }
+    *node_budget -= 1;
+
+    let guard_expr = match &sub.guard_expr {
+        Some(g) => g,
+        None => return,
+    };
+
+    // Build a small overlay map with only the template-scoped entries needed for
+    // guard/arg evaluation. This avoids cloning the entire global ValueMap (O(V))
+    // at every recursion depth — only the template's own cells are remapped (O(C)).
+    let mut local_values = ValueMap::new();
+    for cell in &child_template.value_cells {
+        let scoped_id = ValueCellId::new(parent_entity, &cell.id.member);
+        if let Some(v) = values.get(&scoped_id) {
+            local_values.insert(cell.id.clone(), v.clone());
+        }
+    }
+
+    // Evaluate the guard in the local context.
+    let guard_val = reify_expr::eval_expr(
+        guard_expr,
+        &reify_expr::EvalContext::new(&local_values, functions).with_meta(meta_map),
+    );
+
+    // Differentiate guard outcomes: Bool(true) continues, Bool(false)/Undef terminate
+    // normally, any other type is a guard expression bug that deserves a diagnostic.
+    match &guard_val {
+        Value::Bool(true) => {
+            if depth >= max_depth {
+                // Use Error (not Warning) so callers know the result is potentially unsound:
+                // child references beyond the truncated depth resolve to Undef.
+                diagnostics.push(Diagnostic::error(format!(
+                    "recursive unfolding of '{}' truncated at depth limit {} (guard still true)",
+                    parent_entity, max_depth,
+                )));
+                return;
+            }
+        }
+        Value::Bool(false) => return, // Normal termination — guard says stop
+        Value::Undef => return,       // Param not yet determined — do not unfold (per spec)
+        other => {
+            diagnostics.push(Diagnostic::error(format!(
+                "guard for recursive sub '{}' in '{}' evaluated to {:?} (expected Bool), treating as termination",
+                sub.name, parent_entity, other,
+            )));
+            return;
+        }
+    }
+
+    // Pre-evaluate args in the local context (so child uses current level's param values, not top-level).
+    // Use the arg expression's declared result_type for the literal wrapper.
+    let concrete_args: Vec<(String, reify_types::CompiledExpr)> = sub
+        .args
+        .iter()
+        .map(|(name, arg_expr)| {
+            let v = reify_expr::eval_expr(
+                arg_expr,
+                &reify_expr::EvalContext::new(&local_values, functions).with_meta(meta_map),
+            );
+            let ty = arg_expr.result_type.clone();
+            (name.clone(), reify_types::CompiledExpr::literal(v, ty))
+        })
+        .collect();
+
+    // Construct the next child's scoped entity name: parent_entity.sub_name
+    let next_entity = format!("{}.{}", parent_entity, sub.name);
+
+    // Phase 1 (top-down): Set params for next_entity so the next recursion level
+    // can evaluate its guard using the child's param values.
+    let child_values = elaborate_child_params_only(
+        values,
+        snapshot,
+        functions,
+        journal,
+        cache,
+        version_id,
+        child_template,
+        &next_entity,
+        &concrete_args,
+        meta_map,
+    );
+
+    // Phase 2 (recurse): Unfold ALL recursive subs at the next level first (leaves-first
+    // ordering). Iterating over all_recursive_subs (not just `sub`) ensures that for
+    // templates with multiple recursive subs (e.g., `left` and `right`), cross-sub
+    // children like S.left.right and S.right.left are also created.
+    for next_sub in all_recursive_subs {
+        unfold_recursive_sub(
+            values,
+            snapshot,
+            functions,
+            journal,
+            cache,
+            version_id,
+            child_template,
+            next_sub,
+            &next_entity,
+            depth + 1,
+            max_depth,
+            meta_map,
+            diagnostics,
+            all_recursive_subs,
+            all_recursive_sub_names,
+            node_budget,
+        );
+    }
+
+    // Phase 3 (bottom-up): Evaluate let-bindings for next_entity.
+    // child_values is enriched inside elaborate_child_lets_only with sub-component
+    // values projected from the global map — so cross-level references like
+    // `S.child.total` resolve to the already-computed deeper-level value.
+    // Pass all recursive sub names so BFS walks all branches (fixes cross-sub projection).
+    elaborate_child_lets_only(
+        values,
+        snapshot,
+        functions,
+        journal,
+        cache,
+        version_id,
+        child_template,
+        &next_entity,
+        child_values,
+        meta_map,
+        all_recursive_sub_names,
+    );
+}
+
 /// Elaborate a single child instance into the values/snapshot maps.
 ///
 /// This handles both non-collection subs (single instance) and individual
 /// collection sub instances (called in a loop for each index).
+///
+/// For non-recursive subs both phases run atomically (params then lets).
+/// For recursive subs, use `elaborate_child_params_only` + `elaborate_child_lets_only`
+/// to allow leaves-first ordering (recurse between the two phases).
 #[allow(clippy::too_many_arguments)]
 fn elaborate_child_instance(
     values: &mut ValueMap,
@@ -3143,9 +3384,35 @@ fn elaborate_child_instance(
     args: &[(String, reify_types::CompiledExpr)],
     meta_map: &HashMap<String, HashMap<String, String>>,
 ) {
+    let child_values = elaborate_child_params_only(
+        values, snapshot, functions, journal, cache, version_id,
+        child_template, scoped_entity, args, meta_map,
+    );
+    elaborate_child_lets_only(
+        values, snapshot, functions, journal, cache, version_id,
+        child_template, scoped_entity, child_values, meta_map, &[],
+    );
+}
+
+/// Phase 1: Evaluate and store only the param cells for a child instance.
+///
+/// Returns the template-scoped child_values map (params only) for use in phase 2.
+/// All param values are also written to the global `values`, `snapshot`, journal, and cache.
+#[allow(clippy::too_many_arguments)]
+fn elaborate_child_params_only(
+    values: &mut ValueMap,
+    snapshot: &mut Snapshot,
+    functions: &[CompiledFunction],
+    journal: &mut EventJournal,
+    cache: &mut CacheStore,
+    version_id: u64,
+    child_template: &TopologyTemplate,
+    scoped_entity: &str,
+    args: &[(String, reify_types::CompiledExpr)],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+) -> ValueMap {
     let mut child_values = ValueMap::new();
 
-    // First pass: evaluate child params (arg-provided or default)
     for cell in &child_template.value_cells {
         if cell.kind != ValueCellKind::Param {
             continue;
@@ -3198,7 +3465,84 @@ fn elaborate_child_instance(
         });
     }
 
-    // Second pass: evaluate child let-bindings in topological order
+    child_values
+}
+
+/// Phase 2: Evaluate and store the let-binding cells for a child instance.
+///
+/// `child_values` should contain the template-scoped params from phase 1.
+/// Before evaluating lets, this function enriches `child_values` with sub-component
+/// values projected from the global `values` map — this enables cross-level let
+/// expressions like `let total = if n > 0 then n + S.child.total else n` to see
+/// values computed by deeper recursion levels (leaves-first ordering).
+///
+/// Projection rule: for each global entry whose entity starts with
+/// `"{scoped_entity}."`, strip that prefix and add `"{template_name}."` to produce
+/// a template-scoped key. E.g., when evaluating lets for `S.child` (template `S`):
+///   global["S.child.child", "total"] → child_values["S.child", "total"]
+///
+/// For templates with multiple recursive subs, `recursive_sub_names` contains all
+/// sub names. A BFS walks the full entity tree under `scoped_entity` (following all
+/// sub name branches at each level), so cross-sub values are projected correctly.
+/// E.g., for subs [left, right] at `S.left`: both `S.left.left.*` and `S.left.right.*`
+/// are projected, enabling lets like `let sum = S.left.val + S.right.val`.
+#[allow(clippy::too_many_arguments)]
+fn elaborate_child_lets_only(
+    values: &mut ValueMap,
+    snapshot: &mut Snapshot,
+    functions: &[CompiledFunction],
+    journal: &mut EventJournal,
+    cache: &mut CacheStore,
+    version_id: u64,
+    child_template: &TopologyTemplate,
+    scoped_entity: &str,
+    mut child_values: ValueMap,
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    recursive_sub_names: &[&str],
+) {
+    // Enrich child_values with sub-component values projected from the global map.
+    // Only needed for recursive subs where deeper levels have already been elaborated
+    // (leaves-first ordering).
+    //
+    // Uses BFS over the entity tree rooted at scoped_entity: starts with one immediate
+    // child per sub name, then expands branches where values exist. This handles both
+    // single-sub chains (O(D×C)) and multi-sub trees (O(B^D×C) where B=branching, D=depth).
+    // The BFS terminates naturally when no values are found at a given entity.
+    if !recursive_sub_names.is_empty() {
+        let scoped_prefix = format!("{}.", scoped_entity);
+        let template_prefix = format!("{}.", child_template.name);
+
+        // BFS queue: visit all entities in the recursive subtree under scoped_entity.
+        let mut queue: std::collections::VecDeque<String> = recursive_sub_names
+            .iter()
+            .map(|name| format!("{}.{}", scoped_entity, name))
+            .collect();
+
+        while let Some(depth_entity) = queue.pop_front() {
+            let mut found_any = false;
+            for cell in &child_template.value_cells {
+                let id = ValueCellId::new(&depth_entity, &cell.id.member);
+                if let Some(val) = values.get(&id)
+                    && let Some(suffix) = depth_entity.strip_prefix(&scoped_prefix)
+                {
+                    let remapped_entity = format!("{}{}", template_prefix, suffix);
+                    child_values.insert(
+                        ValueCellId::new(remapped_entity, &cell.id.member),
+                        val.clone(),
+                    );
+                    found_any = true;
+                }
+            }
+            if found_any {
+                // Enqueue children of this entity for all sub names (full tree walk).
+                for name in recursive_sub_names {
+                    queue.push_back(format!("{}.{}", depth_entity, name));
+                }
+            }
+        }
+    }
+
+    // Evaluate let-bindings in topological order.
     let child_let_cells: HashMap<NodeId, &reify_types::CompiledExpr> = child_template
         .value_cells
         .iter()

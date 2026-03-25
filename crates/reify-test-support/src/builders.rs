@@ -383,6 +383,7 @@ pub struct TopologyTemplateBuilder {
     structure_controlling: HashSet<ValueCellId>,
     objective: Option<reify_types::OptimizationObjective>,
     meta: std::collections::HashMap<String, String>,
+    is_recursive: bool,
 }
 
 impl TopologyTemplateBuilder {
@@ -401,6 +402,7 @@ impl TopologyTemplateBuilder {
             structure_controlling: HashSet::new(),
             objective: None,
             meta: std::collections::HashMap::new(),
+            is_recursive: false,
         }
     }
 
@@ -539,6 +541,37 @@ impl TopologyTemplateBuilder {
         self
     }
 
+    /// Mark this template as recursive (used by tests to simulate Tarjan SCC detection).
+    pub fn is_recursive(mut self, recursive: bool) -> Self {
+        self.is_recursive = recursive;
+        self
+    }
+
+    /// Add a sub-component with a guard expression (for recursive subs that need termination guards).
+    pub fn sub_component_with_guard(
+        mut self,
+        name: impl Into<String>,
+        structure_name: impl Into<String>,
+        args: Vec<(String, CompiledExpr)>,
+        guard_expr: CompiledExpr,
+    ) -> Self {
+        let name = name.into();
+        let structure_name = structure_name.into();
+        self.sub_components.push(SubComponentDecl {
+            content_hash: ContentHash::of_str(&format!("sub {} = {} where ...", name, structure_name)),
+            name,
+            structure_name,
+            visibility: reify_compiler::Visibility::Public,
+            args,
+            type_args: Vec::new(),
+            is_collection: false,
+            count_cell: None,
+            guard_expr: Some(guard_expr),
+            span: SourceSpan::new(0, 0),
+        });
+        self
+    }
+
     /// Add a collection sub-component (`sub name : List<T>`) with a count cell.
     pub fn collection_sub_component(
         mut self,
@@ -651,7 +684,7 @@ impl TopologyTemplateBuilder {
             objective: self.objective,
             meta: self.meta,
             content_hash,
-            is_recursive: false,
+            is_recursive: self.is_recursive,
         }
     }
 }
