@@ -1156,10 +1156,11 @@ impl Engine {
                 );
             }
 
-            // Re-evaluate let bindings that may depend on __list_* cells
-            // (created during collection sub-component elaboration above)
-            let has_collection_subs = template.sub_components.iter().any(|s| s.is_collection);
-            if has_collection_subs {
+            // Re-evaluate let bindings that may depend on sub-component cells:
+            // - collection subs create __list_* synthetic cells
+            // - regular subs create {parent}.{sub}.{member} cells via elaborate_child_instance
+            // Both become available only after elaboration, so re-evaluate if any subs exist.
+            if !template.sub_components.is_empty() {
                 self.evaluate_let_bindings(template, &mut values, &mut snapshot, version_id, functions);
             }
         }
