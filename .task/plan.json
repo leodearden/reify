@@ -1,170 +1,163 @@
 {
-  "task_id": "313",
-  "title": "Stdlib M8.1 integration: math_linalg.ri + dimensional_consistency.ri",
+  "task_id": "162",
+  "title": "some/none: parser and compiler",
   "files": [
-    "examples/math_linalg.ri",
-    "examples/dimensional_consistency.ri",
-    "crates/reify-eval/tests/m8_stdlib_integration.rs"
+    "crates/reify-compiler/src/lib.rs",
+    "crates/reify-syntax/tests/option_tests.rs",
+    "crates/reify-compiler/tests/option_compile_tests.rs"
   ],
   "modules": [
-    "crates/reify-eval/tests",
-    "examples"
+    "crates/reify-syntax",
+    "crates/reify-compiler"
   ],
-  "analysis": "Task 313 creates two .ri fixture files and a Rust integration test that exercises stdlib math/linalg builtins (from tasks 300+301) through the full parse->compile->eval pipeline. Key constraints discovered during analysis: (1) .ri list literals [a,b,c] produce Value::List, not Value::Tensor/Vector -- must use vec3() stdlib constructor for linalg operations; (2) No Newton unit literal exists -- compound dimensions must be built via arithmetic (e.g., 1kg * 1m / (1s * 1s) for FORCE); (3) No prelude constants (pi, g, e) -- must use numeric literals (9.81 for gravity); (4) tensor_components_f64() requires Value::Tensor|Point|Vector (not List) for dot/cross/normalize/magnitude; (5) vec3() constructor requires all args to share the same physical dimension, so zero-valued dimensioned scalars (0.0 * n_unit) are needed for zero components. The test file follows the established chained_comparison_eval.rs pattern: helper fn loads .ri file, parses, compiles, evaluates; individual #[test] functions assert on specific ValueCellId entries. All stdlib functions (dot, cross, normalize, magnitude, clamp, lerp, acos, mod, vec3) already exist from dependencies 300-301; this task verifies they work correctly end-to-end through the .ri language pipeline.",
-  "prerequisites": [],
+  "analysis": "## Current State\n\nCompiledExprKind::OptionSome(Box<CompiledExpr>) and CompiledExprKind::OptionNone already exist in reify-types/src/expr.rs (lines 86-90), including constructor methods (CompiledExpr::option_some, CompiledExpr::option_none), walk/traversal, collect_value_refs, remap_entity, and content hashing (tags [14]/[15]). Test support builders (option_some_expr, option_none_expr) also exist in reify-test-support.\n\nType::Option(Box<Type>) variant exists in reify-types/src/ty.rs.\n\nHowever, the parser and compiler do NOT yet handle some(expr) or none expressions:\n- some(expr) currently parses as ExprKind::FunctionCall { name: \"some\", args: [expr] } — correct syntax, no grammar changes needed.\n- none currently parses as ExprKind::Ident(\"none\") — correct syntax, no grammar changes needed.\n- The compiler has NO special handling for either — some(expr) falls through to stdlib FunctionCall, none produces 'unresolved name' error.\n- resolve_type_name() does NOT handle Option<T> parameterized types.\n\n## Approach\n\nNo grammar or AST changes needed — some(expr) and none parse correctly via existing function_call and identifier rules.\n\n**Parser work**: Write tests to verify some(expr) parses as FunctionCall and none parses as Ident. These should all pass immediately.\n\n**Compiler work**:\n1. Intercept ExprKind::Ident(\"none\") before scope lookup in compile_expr_guarded → emit CompiledExprKind::OptionNone with default Type::Option(Box::new(Type::Real)).\n2. Intercept ExprKind::FunctionCall { name: \"some\", .. } before function resolution → validate exactly 1 arg, compile it, emit CompiledExprKind::OptionSome(inner) with Type::Option(Box::new(inner.result_type)).\n3. For none type inference from context: At param/let compilation sites, when default_expr is OptionNone and cell_type is Option<T>, override the OptionNone result_type.\n4. Add Option<T> support to type resolution: When type_expr.name == \"Option\" and has 1 type_arg, resolve inner type and return Type::Option(Box::new(inner)).\n\n## Key Code Locations\n- compile_expr_guarded: lib.rs:880 (main expression compiler)\n- Ident handling: lib.rs:920-948 (where none intercept goes)\n- FunctionCall handling: lib.rs:1071-1175 (where some intercept goes)\n- resolve_type_name: lib.rs:560-574 (needs Option<T> handling)\n- Param type resolution: lib.rs:2644 (resolve_type_with_params call site)\n- Param second pass: lib.rs:2795-2849 (type context for none)\n- Let second pass: lib.rs:2850-2870 (type context for none)",
+  "prerequisites": [
+    {
+      "id": "pre-1",
+      "description": "Add Option<T> support to type resolution in reify-compiler. At param/let type resolution call sites (lib.rs ~2644 and similar), add check: if type_expr.name == 'Option' and type_expr.type_args.len() == 1, recursively resolve the inner type arg and return Type::Option(Box::new(inner)). This is a prerequisite because both some and none compilation tests need Option<T> type annotations to verify correct type inference.",
+      "status": "done",
+      "commit": "2924d8dc",
+      "tests": []
+    }
+  ],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Create crates/reify-eval/tests/m8_stdlib_integration.rs with eval_ri_file(path) helper (read_to_string -> parse -> compile -> eval with MockConstraintChecker) and math_linalg_parses_and_compiles test that loads ../../examples/math_linalg.ri and asserts parse+compile have no errors and eval produces non-empty values. Test fails because .ri file does not exist.",
+      "description": "Write parser tests in crates/reify-syntax/tests/option_tests.rs: verify some(42) parses as FunctionCall{name:\"some\", args:[NumberLiteral(42)]}, some(x + 1) parses with BinOp arg, some(some(x)) nests correctly, none as let value parses as Ident(\"none\"), none as param default parses as Ident(\"none\"), some/none in conditional branches parse correctly. All tests should PASS immediately — no parser changes needed.",
       "status": "done",
-      "commit": "fc3fa007"
+      "commit": "511c2a82"
     },
     {
       "id": "step-2",
-      "type": "impl",
-      "description": "Create examples/math_linalg.ri with structure MathLinalg containing: unit helpers (n_unit=1kg*1m/(1s*1s), zero_n=0.0*n_unit, zero_m=0.0*1m, v_unit=1m/1s, zero_v=0.0*v_unit), force=vec3(10.0*n_unit, zero_n, zero_n), displacement=vec3(5.0*1m, zero_m, zero_m), work=dot(force, displacement), r_arm=vec3(zero_m, 2.0*1m, zero_m), f_applied=vec3(3.0*n_unit, zero_n, zero_n), torque=cross(r_arm, f_applied), velocity=vec3(3.0*v_unit, 4.0*v_unit, zero_v), speed=magnitude(velocity), direction=normalize(velocity), unit_x=vec3(1.0, 0.0, 0.0), unit_y=vec3(0.0, 1.0, 0.0), angle_between=acos(dot(normalize(unit_x), normalize(unit_y))), chained=clamp(lerp(1mm, 10mm, 0.3), 2mm, 8mm).",
+      "type": "test",
+      "description": "Write failing compiler test in crates/reify-compiler/tests/option_compile_tests.rs: compile 'structure S { let x = some(42) }' → expect CompiledExprKind::OptionSome with inner Literal(Int(42)) and result_type Type::Option(Box::new(Type::Int)). Currently fails because some(42) compiles as stdlib FunctionCall.",
       "status": "done",
-      "commit": "55fdce76"
+      "commit": "dcb9f229"
     },
     {
       "id": "step-3",
-      "type": "test",
-      "description": "Write math_linalg_dot_product_work test: extract ValueCellId(MathLinalg, work), assert Value::Scalar with si_value approx 50.0 and dimension == FORCE.mul(&DimensionVector::LENGTH) (energy: m^2*kg*s^-2). Write math_linalg_cross_product_torque test: extract torque, assert it is Vector/Tensor with 3 components, z-component is Scalar with si_value approx -6.0 and dimension == DimensionVector::LENGTH.mul(&FORCE), x and y components have si_value approx 0.0.",
+      "type": "impl",
+      "description": "Implement some(expr) compilation in compile_expr_guarded's FunctionCall arm (lib.rs ~1071). Add early check BEFORE resolve_function_overload: if name == \"some\", validate exactly 1 arg (emit diagnostic if 0 or 2+), compile the single arg, return CompiledExpr::option_some(compiled_inner, Type::Option(Box::new(inner.result_type))).",
       "status": "done",
-      "commit": "fc3fa007"
+      "commit": "6d1d2978"
     },
     {
       "id": "step-4",
-      "type": "impl",
-      "description": "Run cargo test -p reify-eval --test m8_stdlib_integration. Verify dot product and cross product tests pass. If vec3 dimension consistency fails (e.g., zero components not matching), fix math_linalg.ri to ensure all vec3 args share dimensions.",
+      "type": "test",
+      "description": "Write failing compiler test: compile 'structure S { let x = none }' → expect CompiledExprKind::OptionNone with result_type Type::Option(_). Currently fails because none produces 'unresolved name' error.",
       "status": "done",
-      "commit": "55fdce76"
+      "commit": "dcb9f229"
     },
     {
       "id": "step-5",
-      "type": "test",
-      "description": "Write math_linalg_normalize_and_magnitude test: assert speed is Scalar with si_value approx 5.0 and dimension == LENGTH.div(&DimensionVector::TIME) (velocity). Assert direction is Vector with 3 Real (dimensionless) components approximately [0.6, 0.8, 0.0]. Write math_linalg_angle_and_chained test: assert angle_between is Scalar with si_value approx PI/2 and dimension == DimensionVector::ANGLE. Assert chained is Scalar with si_value approx 0.0037 (3.7mm in SI metres) and dimension == DimensionVector::LENGTH.",
+      "type": "impl",
+      "description": "Implement none compilation in compile_expr_guarded's Ident arm (lib.rs ~920). Add early check BEFORE scope.resolve: if name == \"none\", return CompiledExpr::option_none(Type::Option(Box::new(Type::Real))). Default inner type is Real; contextual override comes in step-7.",
       "status": "done",
-      "commit": "fc3fa007"
+      "commit": "6d1d2978"
     },
     {
       "id": "step-6",
-      "type": "impl",
-      "description": "Run cargo test -p reify-eval --test m8_stdlib_integration. Verify normalize, magnitude, angle, and clamp+lerp tests pass. Fix math_linalg.ri if any edge cases arise (e.g., acos domain issue, lerp t parameter not recognized as dimensionless).",
+      "type": "test",
+      "description": "Write failing compiler test: compile 'structure S { param x: Option<Int> = none }' → expect OptionNone with result_type Type::Option(Box::new(Type::Int)). Currently fails because resolve_type_with_params doesn't handle Option<T> and none doesn't get type context from param annotation.",
       "status": "done",
-      "commit": "55fdce76"
+      "commit": "dcb9f229"
     },
     {
       "id": "step-7",
-      "type": "test",
-      "description": "Add dimensional_consistency_parses_and_compiles test that loads ../../examples/dimensional_consistency.ri and asserts parse+compile have no errors and eval produces non-empty values. Test fails because .ri file does not exist.",
+      "type": "impl",
+      "description": "Implement Option<T> type resolution and none type context propagation. (a) At param type resolution (lib.rs ~2644), before calling resolve_type_with_params, add check: if type_expr.name == \"Option\" && type_expr.type_args.len() == 1, resolve the inner type arg recursively and return Type::Option(Box::new(inner)). (b) At param compilation (lib.rs ~2818), after compiling default_expr, if it's OptionNone and cell_type is Type::Option(inner), create new CompiledExpr::option_none with the correct Option type. (c) Same for let compilation (lib.rs ~2856): if compiled_expr is OptionNone and let_decl.type_expr resolves to Option<T>, override the result_type.",
       "status": "done",
-      "commit": "fc3fa007"
+      "commit": "6d1d2978"
     },
     {
       "id": "step-8",
-      "type": "impl",
-      "description": "Create examples/dimensional_consistency.ri with structure DimensionalConsistency containing: n_unit=1kg*1m/(1s*1s), lerp_mm=lerp(5mm, 15mm, 0.5), m_vec=vec3(2.0*1m, 1.0*1m, 0.0*1m), n_vec=vec3(3.0*n_unit, 0.0*n_unit, 0.0*n_unit), dot_result=dot(m_vec, n_vec), cross_result=cross(m_vec, n_vec), g_accel=9.81*1m/(1s*1s), weight=g_accel*1kg, mod_result=mod(7, 3), norm_result=normalize(vec3(3.0*1m, 4.0*1m, 0.0*1m)), mag_result=magnitude(vec3(3.0*1m, 4.0*1m, 0.0*1m)), clamped_dim=clamp(3mm, 1mm, 10mm).",
+      "type": "test",
+      "description": "Write compiler tests for edge cases: (a) some() with 0 args → diagnostic error emitted, (b) some(1, 2) with 2 args → diagnostic error emitted, (c) nested some(some(42)) → OptionSome(OptionSome(Literal(42))) with type Option<Option<Int>>, (d) some(x) where x is a param → OptionSome(ValueRef) with Option<param_type>, (e) let with Option<Length> type annotation and none default → correct scalar type propagation.",
       "status": "done",
-      "commit": "8517c47e"
+      "commit": "dcb9f229"
     },
     {
       "id": "step-9",
-      "type": "test",
-      "description": "Write dimension assertion tests: (1) dim_lerp_preserves_length: lerp_mm has si_value approx 0.010 (10mm) and dimension==LENGTH; (2) dim_dot_energy: dot_result has si_value approx 6.0 and dimension==LENGTH.mul(&FORCE); (3) dim_cross_torque: cross_result z-component has si_value approx -3.0 and dimension==LENGTH.mul(&FORCE); (4) dim_gravity_force: weight has si_value approx 9.81 and dimension==FORCE; (5) dim_mod_integer: mod_result is Value::Int(1); (6) dim_normalize_dimensionless: norm_result components are Value::Real (not Scalar); (7) dim_magnitude_preserves: mag_result has si_value approx 5.0 and dimension==LENGTH; (8) dim_clamp_preserves: clamped_dim has si_value approx 0.003 and dimension==LENGTH.",
+      "type": "impl",
+      "description": "Fix any edge case test failures from step-8. Expected: (a) Add arity validation with clear diagnostic messages for some() wrong arg count (e.g., 'some() requires exactly 1 argument, got N'). (b) Verify nested some works via recursive compilation. (c) Verify Option<Length> resolves to Type::Option(Box::new(Type::Scalar{dimension:LENGTH})) through type_args resolution.",
       "status": "done",
-      "commit": "fc3fa007"
+      "commit": "6d1d2978"
     },
     {
       "id": "step-10",
-      "type": "impl",
-      "description": "Run full test suite: cargo test -p reify-eval --test m8_stdlib_integration. Verify all dimensional consistency tests pass. Fix dimensional_consistency.ri if any dimension mismatches or evaluation ordering issues arise.",
+      "type": "test",
+      "description": "Write compiler test for no-context none (none used without type annotation): 'structure S { let x = none }' → OptionNone with Type::Option(Box::new(Type::Real)) default, no error diagnostics. Verifies graceful fallback when type cannot be inferred.",
       "status": "done",
-      "commit": "8517c47e"
+      "commit": "dcb9f229"
     },
     {
       "id": "step-11",
-      "type": "test",
-      "description": "Add eval-time error boundary to eval_ri_file helper: after `let result = engine.eval(&compiled)`, add `let eval_errors: Vec<_> = result.diagnostics.iter().filter(|d| d.severity == Severity::Error).collect(); assert!(eval_errors.is_empty(), \"eval errors in {}: {:?}\", path, eval_errors);` \u2014 mirroring the compile-error check pattern already at lines 30-40. This ensures runtime failures (type mismatches, Undef propagation, dimension errors) surface their actual Diagnostic::error() messages instead of producing misleading 'not found in eval result' panics in downstream per-value tests. Verify all existing tests still pass \u2014 if any eval diagnostics are now caught, those are real runtime regressions that must be investigated.",
-      "status": "done",
-      "commit": "78225d7a"
-    },
-    {
-      "id": "step-12",
       "type": "impl",
-      "description": "Run cargo test -p reify-eval --test m8_stdlib_integration to confirm all tests pass with the new eval-error boundary. If the new assertion catches previously-silent eval diagnostics, investigate and fix the root cause in the .ri fixtures (e.g., type mismatches, missing bindings, dimension errors). The error messages from the diagnostics will now clearly identify the problem.",
+      "description": "Verify step-10 test passes (should work from step-5 implementation). If any adjustment needed for the no-annotation case, fix here.",
       "status": "done",
-      "commit": "78225d7a"
+      "commit": "6d1d2978"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Use vec3() stdlib constructor for vectors instead of list literals [a,b,c]",
-      "rationale": ".ri list literals compile to CompiledExprKind::ListLiteral which evaluates to Value::List. The stdlib linalg functions (dot, cross, normalize, magnitude) use tensor_components_f64() which only accepts Value::Tensor|Point|Vector. The vec3() constructor creates Value::Vector, making it compatible with all linalg operations."
+      "decision": "No grammar or AST changes — handle some/none as semantic keywords recognized in the compiler",
+      "rationale": "some(expr) already parses naturally as FunctionCall and none as Ident via existing grammar rules. Adding grammar-level keywords would require tree-sitter regeneration and is unnecessary since the compiler can intercept these names before normal resolution. The task description says 'verify...parse correctly' confirming no parser changes are expected."
     },
     {
-      "decision": "Build compound dimensions via Scalar arithmetic instead of N/J unit literals",
-      "rationale": "The compiler's unit_to_scalar only supports mm, cm, m, in, deg, rad, kg, g, s. There is no Newton (N) or Joule (J) unit literal. Force dimension is constructed as 1kg * 1m / (1s * 1s), which correctly produces Scalar with FORCE dimension through eval_mul's Scalar*Scalar path (si_value multiplication, dimension exponent addition)."
+      "decision": "Intercept some/none BEFORE normal function/identifier resolution in compile_expr_guarded",
+      "rationale": "Placing the check early (before resolve_function_overload for some, before scope.resolve for none) prevents confusing error messages like 'unresolved name: none' or 'no matching overload for some'. These are language keywords, not user-defined functions or variables."
     },
     {
-      "decision": "Use numeric literal 9.81 for gravitational acceleration instead of a prelude constant",
-      "rationale": "The stdlib.md documents constants (pi, g, e, etc.) but they are not yet implemented as evaluatable prelude values in the compiler or expression evaluator. The 'g' unit suffix in the compiler means grams (mass), not gravitational acceleration. let g_accel = 9.81 * 1m / (1s * 1s) produces Scalar(9.81, FORCE/MASS) = acceleration."
+      "decision": "Default none type is Type::Option(Box::new(Type::Real)), with contextual override at param/let compilation sites",
+      "rationale": "compile_expr_guarded has no 'expected type' parameter, so we can't pass context down. Instead, we emit a default-typed OptionNone and fix it up at the call site where type annotations are available. This is minimally invasive — no signature changes to compile_expr or compile_expr_guarded. Type::Real default matches the project's existing fallback convention for unresolved types."
     },
     {
-      "decision": "Create .ri files as example fixtures loaded by a Rust test harness",
-      "rationale": "Following the established pattern from m5_integration.rs and e2e_bracket.rs: .ri files live in examples/, Rust tests load them via fs::read_to_string('../../examples/...'), then parse->compile->eval->assert. The .ri language has no assertion mechanism, so value and dimension checking must be done in Rust."
+      "decision": "Add Option<T> support via inline checks at type resolution call sites rather than modifying resolve_type_name signature",
+      "rationale": "resolve_type_name takes only a &str name, not the full TypeExpr with type_args. Rather than changing its signature (which affects many call sites), we add checks at the specific param/let compilation points where the TypeExpr struct is available. This keeps changes localized to the task scope."
     },
     {
-      "decision": "Use zero-valued dimension helpers (zero_n, zero_m, zero_v) for vec3 zero components",
-      "rationale": "vec3() (construct_point_or_vector) requires all 3 components to share the same physical dimension. A bare 0.0 is Real (dimensionless) which would fail dimension consistency checks against Scalar components. Using 0.0 * n_unit produces Scalar(0.0, FORCE) matching other FORCE-dimensioned components."
-    },
-    {
-      "decision": "Single Rust test file (m8_stdlib_integration.rs) for both .ri fixtures",
-      "rationale": "Both .ri files test the same stdlib feature set (math + linalg builtins from M8.1). Grouping them in one test module with clear section comments follows the pattern of m5_integration.rs. The eval_ri_file helper is shared across all tests."
-    },
-    {
-      "decision": "Add eval-time diagnostic error boundary in eval_ri_file helper",
-      "rationale": "The eval engine emits Diagnostic::error() for runtime failures (type mismatches, Undef propagation, dimension errors) via EvalResult.diagnostics. Without checking these, eval silently produces partial results and downstream per-value tests panic with misleading 'not found in eval result' messages instead of surfacing the actual root cause. The error boundary mirrors the existing compile-error check pattern and catches an entire class of runtime regressions early."
+      "decision": "Validate some() arity: exactly 1 argument required, emit diagnostic for wrong count",
+      "rationale": "some(expr) semantically wraps exactly one value. Zero args is meaningless (not the same as none), and multiple args are ambiguous. A clear diagnostic helps users understand the API."
     }
   ],
   "reuse": [
     {
-      "what": "eval_source / parse-compile-eval helper pattern",
-      "where": "crates/reify-eval/tests/chained_comparison_eval.rs:13-27, crates/reify-eval/tests/field_eval_tests.rs:10-26",
-      "how": "Reuse the identical pattern: load source, reify_syntax::parse(source, ModulePath::single(name)), reify_compiler::compile(&parsed), Engine::new(MockConstraintChecker, None).eval(&compiled). Adapted to read from file instead of string literal."
+      "what": "CompiledExprKind::OptionSome and OptionNone variants",
+      "where": "crates/reify-types/src/expr.rs lines 86-91",
+      "how": "Already defined with full traversal support (walk, collect_value_refs, remap_entity, content_hash tags [14]/[15]). No changes needed in reify-types."
     },
     {
-      "what": "MockConstraintChecker from reify-test-support",
-      "where": "crates/reify-test-support/src/mocks.rs",
-      "how": "Import reify_test_support::mocks::MockConstraintChecker for Engine construction. No geometry kernel needed (pass None) since tests are pure math/linalg evaluation."
+      "what": "CompiledExpr::option_some() and option_none() constructors",
+      "where": "crates/reify-types/src/expr.rs constructor methods",
+      "how": "Use directly: option_some(inner, result_type) and option_none(result_type) to create compiled expressions."
     },
     {
-      "what": "ValueCellId for value extraction from EvalResult",
-      "where": "crates/reify-types: ValueCellId::new(entity, member)",
-      "how": "Use ValueCellId::new('MathLinalg', 'work') etc. to index into result.values HashMap. Same pattern used in all existing integration tests (m5_integration.rs, boundary5_engine.rs, chained_comparison_eval.rs)."
+      "what": "Type::Option(Box<Type>) variant",
+      "where": "crates/reify-types/src/ty.rs",
+      "how": "Already exists in the type system. Create instances via Type::Option(Box::new(inner_type))."
     },
     {
-      "what": "DimensionVector constants and arithmetic for assertions",
-      "where": "crates/reify-types/src/dimension.rs: DimensionVector::LENGTH, FORCE, ANGLE, TIME, MASS",
-      "how": "Use .mul() and .div() to compute expected compound dimensions: FORCE.mul(&LENGTH) for energy/torque, LENGTH.div(&TIME) for velocity. Use DimensionVector::DIMENSIONLESS for normalize checks."
+      "what": "Test helper builders: option_some_expr() and option_none_expr()",
+      "where": "crates/reify-test-support/src/builders.rs",
+      "how": "Available for constructing expected values in compiler test assertions."
     },
     {
-      "what": "vec3() stdlib constructor for .ri vector creation",
-      "where": "crates/reify-stdlib/src/lib.rs:638 (construct_point_or_vector)",
-      "how": "Call vec3(x, y, z) in .ri source to create Value::Vector. All 3 args must be numeric with matching dimension. Compatible with dot/cross/normalize/magnitude via tensor_components_f64()."
+      "what": "collect_body_refs_inner already handles OptionSome/OptionNone",
+      "where": "crates/reify-compiler/src/lib.rs lines 4118-4121",
+      "how": "No changes needed — body ref collection for purposes already has match arms for these variants."
     },
     {
-      "what": "Example .ri file structure patterns",
-      "where": "examples/bracket.ri, examples/m5_trait_structure.ri, examples/m5_collection_ops.ri",
-      "how": "Follow the structure definition pattern: 'structure Name { let binding = expr ... }'. Use unit literals (mm, m, kg, s) for dimensioned scalar values. Use function call syntax fn_name(args) for stdlib builtins."
+      "what": "Existing parser test pattern (parse_decls/parse_members helpers)",
+      "where": "crates/reify-syntax/tests/*.rs (all test files)",
+      "how": "Replicate the standard helper functions in option_tests.rs for parsing source and extracting declarations/members with error checking."
     },
     {
-      "what": "Compile-error diagnostic check pattern for reuse in eval-error boundary",
-      "where": "crates/reify-eval/tests/m8_stdlib_integration.rs:30-40 (existing compile-error check)",
-      "how": "Mirror the exact pattern: filter diagnostics by Severity::Error, collect into Vec, assert empty with descriptive message including path and diagnostic details. Applied to EvalResult.diagnostics instead of compiled.diagnostics."
+      "what": "Existing compiler test pattern (compile_module/get_cell_expr helpers)",
+      "where": "crates/reify-compiler/tests/*.rs (e.g., lambda_compile_tests.rs, match_compile_tests.rs)",
+      "how": "Replicate the standard helpers in option_compile_tests.rs for compiling source and extracting compiled expressions from value cells."
     }
   ],
-  "_session_id": "313-d283e0dc",
-  "_created_at": "2026-03-25T01:17:45.208132+00:00"
+  "_session_id": "162-2e121aab",
+  "_created_at": "2026-03-25T01:22:12.232530+00:00"
 }
