@@ -160,3 +160,55 @@ fn unknown_annotation_produces_warning() {
         ann_warns[0].message
     );
 }
+
+// ── Step 11: comprehensive edge-case tests ──────────────────────────────
+
+#[test]
+fn multiple_annotations_all_preserved() {
+    let module = compile_module(
+        r#"@test @deprecated("old") structure S { param x : Real }"#,
+    );
+    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
+    let template = &module.templates[0];
+    assert_eq!(template.annotations.len(), 2, "expected 2 annotations, got {:?}", template.annotations);
+    assert_eq!(template.annotations[0].name, "test");
+    assert!(template.annotations[0].args.is_empty());
+    assert_eq!(template.annotations[1].name, "deprecated");
+    assert_eq!(template.annotations[1].args.len(), 1);
+    assert_eq!(
+        template.annotations[1].args[0],
+        reify_types::AnnotationArg::String("old".into())
+    );
+}
+
+#[test]
+fn annotation_arg_types_lowered() {
+    let module = compile_module(
+        r#"@config("name", 42, 3.14, true, mechanical) structure S { param x : Real }"#,
+    );
+    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
+    let template = &module.templates[0];
+    assert_eq!(template.annotations.len(), 1);
+    let args = &template.annotations[0].args;
+    assert_eq!(args.len(), 5, "expected 5 args, got {:?}", args);
+    assert_eq!(args[0], reify_types::AnnotationArg::String("name".into()));
+    assert_eq!(args[1], reify_types::AnnotationArg::Int(42));
+    assert_eq!(args[2], reify_types::AnnotationArg::Real(3.14));
+    assert_eq!(args[3], reify_types::AnnotationArg::Bool(true));
+    assert_eq!(args[4], reify_types::AnnotationArg::Ident("mechanical".into()));
+}
+
+#[test]
+fn annotation_on_occurrence_propagates() {
+    let module = compile_module("@test occurrence Heat { param temp : Real }");
+    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
+    assert_eq!(module.templates.len(), 1, "expected 1 template");
+    let template = &module.templates[0];
+    assert_eq!(
+        template.entity_kind,
+        reify_compiler::EntityKind::Occurrence,
+        "expected Occurrence entity_kind"
+    );
+    assert_eq!(template.annotations.len(), 1, "expected 1 annotation on occurrence");
+    assert_eq!(template.annotations[0].name, "test");
+}
