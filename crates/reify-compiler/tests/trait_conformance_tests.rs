@@ -1112,3 +1112,99 @@ trait HasOutput {
         other => panic!("expected RequirementKind::Port, got: {:?}", other),
     }
 }
+
+// ── Integration tests: port conformance ─────────────────────────────────────
+
+/// step-15: structure with matching port satisfies trait port requirement → no errors.
+#[test]
+fn integration_port_satisfied_no_errors() {
+    let source = r#"
+trait HasInput {
+    port input : in Signal
+}
+
+structure def Receiver : HasInput {
+    port input : in Signal
+}
+"#;
+    let (_, diagnostics) = compile_first_template(source);
+    let errors: Vec<_> =
+        diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+}
+
+/// step-16: structure missing required port → error diagnostic mentioning missing port.
+#[test]
+fn integration_port_missing_error() {
+    let source = r#"
+trait HasInput {
+    port input : in Signal
+}
+
+structure def Transmitter : HasInput {
+    param x : Length = 1mm
+}
+"#;
+    let (_, diagnostics) = compile_first_template(source);
+    let errors: Vec<_> =
+        diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    assert!(!errors.is_empty(), "expected error for missing port");
+    let error_msg = format!("{:?}", errors);
+    assert!(
+        error_msg.contains("input"),
+        "error should mention 'input', got: {}",
+        error_msg
+    );
+}
+
+// ── Integration tests: sub conformance ──────────────────────────────────────
+
+/// step-18: structure with sub satisfying trait sub requirement → no errors.
+#[test]
+fn integration_sub_satisfied_no_errors() {
+    let source = r#"
+trait HasFastener {
+    sub bolt = BoltSet()
+}
+
+structure def BoltSet {
+    param count : Int = 4
+}
+
+structure def Assembly : HasFastener {
+    sub bolt = BoltSet()
+}
+"#;
+    let (_, diagnostics) = compile_first_template(source);
+    let errors: Vec<_> =
+        diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+}
+
+/// step-19: structure missing required sub → error diagnostic mentioning missing sub.
+#[test]
+fn integration_sub_missing_error() {
+    let source = r#"
+trait HasFastener {
+    sub bolt = BoltSet()
+}
+
+structure def BoltSet {
+    param count : Int = 4
+}
+
+structure def BadAssembly : HasFastener {
+    param x : Length = 1mm
+}
+"#;
+    let (_, diagnostics) = compile_first_template(source);
+    let errors: Vec<_> =
+        diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    assert!(!errors.is_empty(), "expected error for missing sub");
+    let error_msg = format!("{:?}", errors);
+    assert!(
+        error_msg.contains("bolt"),
+        "error should mention 'bolt', got: {}",
+        error_msg
+    );
+}
