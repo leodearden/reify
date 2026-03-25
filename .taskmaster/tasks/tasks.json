@@ -3427,7 +3427,7 @@
         "testStrategy": "Compiler tests: determinacy predicate compiles to intrinsic, cell resolved.",
         "priority": "high",
         "dependencies": [],
-        "status": "pending",
+        "status": "in-progress",
         "metadata": {
           "modules": [
             "crates/reify-compiler"
@@ -3435,7 +3435,7 @@
           "milestone": "M9"
         },
         "subtasks": [],
-        "updatedAt": "2026-03-25T20:59:18.530Z"
+        "updatedAt": "2026-03-25T21:33:19.482Z"
       },
       {
         "id": "201",
@@ -7638,7 +7638,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-25T21:33:19.431Z",
+      "lastModified": "2026-03-25T21:33:19.483Z",
       "taskCount": 426,
       "completedCount": 228,
       "tags": [
