@@ -3,10 +3,14 @@
 //! These tests verify that the compiler emits diagnostics instead of silently
 //! swallowing errors or using misleading defaults.
 
-mod common;
-
-use common::compile_module;
 use reify_types::Severity;
+
+/// Helper: parse and compile source, return compiled module.
+fn compile_module(source: &str) -> reify_compiler::CompiledModule {
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("silent_defaults_test"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    reify_compiler::compile(&parsed)
+}
 
 /// Helper: return only error-severity diagnostics.
 fn error_diagnostics(module: &reify_compiler::CompiledModule) -> Vec<&reify_types::Diagnostic> {

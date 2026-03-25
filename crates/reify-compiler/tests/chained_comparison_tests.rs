@@ -3,11 +3,17 @@
 //! Tests that chained comparisons like `a < b < c` are desugared
 //! into And-chains of pairwise comparisons: `And(Lt(a,b), Lt(b,c))`.
 
-mod common;
-
-use common::compile_first_template;
 use reify_compiler::*;
-use reify_types::{BinOp, CompiledExprKind, Diagnostic, Severity};
+use reify_types::{CompiledExprKind, BinOp, Diagnostic, ModulePath, Severity};
+
+/// Helper: parse source and compile, returning first template.
+fn compile_first_template(source: &str) -> (TopologyTemplate, Vec<Diagnostic>) {
+    let parsed = reify_syntax::parse(source, ModulePath::single("test_chain"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    let compiled = reify_compiler::compile(&parsed);
+    let template = compiled.templates.into_iter().next().expect("expected 1 template");
+    (template, compiled.diagnostics)
+}
 
 /// step-1: `constraint a < b < c` desugars to `And(Lt(a,b), Lt(b,c))`.
 #[test]

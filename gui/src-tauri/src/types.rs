@@ -124,16 +124,6 @@ pub fn format_value(v: &Value) -> (String, String) {
             let formatted = format!("{} + {}i", format_number(display_re), format_number(display_im));
             (formatted, unit.to_string())
         }
-        Value::Matrix(rows) => {
-            let row_strs: Vec<String> = rows
-                .iter()
-                .map(|row| {
-                    let cols: Vec<String> = row.iter().map(|v| format_value(v).0).collect();
-                    format!("[{}]", cols.join(", "))
-                })
-                .collect();
-            (format!("[{}]", row_strs.join(", ")), String::new())
-        }
         Value::Undef => ("undefined".to_string(), String::new()),
     }
 }

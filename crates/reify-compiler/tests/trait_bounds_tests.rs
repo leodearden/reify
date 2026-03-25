@@ -3,11 +3,19 @@
 //! Tests for generic type parameters on traits and structures,
 //! bound checking at instantiation, and default type parameter handling.
 
-mod common;
-
-use common::compile_module;
 use reify_compiler::*;
 use reify_types::*;
+
+/// Helper: parse source and compile, returning the CompiledModule.
+fn compile_module(source: &str) -> CompiledModule {
+    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    reify_compiler::compile(&parsed)
+}
 
 // ── Step 1: generic trait stores type params ───────────────────────
 

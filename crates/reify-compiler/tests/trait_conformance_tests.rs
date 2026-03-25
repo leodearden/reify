@@ -3,11 +3,22 @@
 //! Tests for compiling trait declarations, conformance checking,
 //! default merging, and composition conflict detection.
 
-mod common;
-
-use common::{compile_first_template, compile_module};
 use reify_compiler::*;
 use reify_types::*;
+
+/// Helper: parse source and compile, returning the CompiledModule.
+fn compile_module(source: &str) -> CompiledModule {
+    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    reify_compiler::compile(&parsed)
+}
+
+/// Helper: parse source and compile, returning first template + diagnostics.
+fn compile_first_template(source: &str) -> (TopologyTemplate, Vec<Diagnostic>) {
+    let module = compile_module(source);
+    let template = module.templates.into_iter().next().expect("expected 1 template");
+    (template, module.diagnostics)
+}
 
 /// Step 1: Compile a trait declaration produces CompiledTrait in CompiledModule.trait_defs.
 #[test]
@@ -833,189 +844,5 @@ structure def S : Safe {
     assert!(
         !template.constraints.is_empty(),
         "expected constraint from trait default"
-    );
-}
-
-// ── S21: Sub requirement deduplication ───────────────────────────────────
-
-/// Two non-diamond traits A and B both declare `sub hole = Hole`.
-/// A structure missing the sub-component should produce exactly ONE
-/// "missing sub-component" error for "hole", not two.
-///
-/// Without the fix, collect_all_requirements pushes duplicate Sub requirements
-/// (one from each trait), causing check_trait_conformance to emit two identical errors.
-#[test]
-fn diamond_sub_requirement_deduped() {
-    let source = r#"
-trait HasHoleA {
-    sub hole = Hole()
-}
-trait HasHoleB {
-    sub hole = Hole()
-}
-structure def Hole {}
-structure def Widget : HasHoleA + HasHoleB {}
-"#;
-
-    let module = compile_module(source);
-    let sub_errors: Vec<_> = module
-        .diagnostics
-        .iter()
-        .filter(|d| {
-            d.severity == Severity::Error && d.message.contains("hole")
-        })
-        .collect();
-
-    assert_eq!(
-        sub_errors.len(),
-        1,
-        "expected exactly 1 missing-sub error for 'hole', got {}: {:?}",
-        sub_errors.len(),
-        sub_errors
-    );
-}
-
-/// Trait A requires `sub hole = Hole`, trait B requires `sub hole = Plug`.
-/// A structure implementing both should get a conflict diagnostic for "hole"
-/// because the same sub-component name maps to two different structures.
-///
-/// Without the fix, no conflict is detected (the two different Sub requirements
-/// are just added to all_requirements with no cross-check).
-#[test]
-fn conflicting_sub_requirements() {
-    let source = r#"
-trait HasHole {
-    sub hole = Hole()
-}
-trait HasPlug {
-    sub hole = Plug()
-}
-structure def Hole {}
-structure def Plug {}
-structure def Connector : HasHole + HasPlug {
-    sub hole = Hole()
-}
-"#;
-
-    let module = compile_module(source);
-    let conflict_errors: Vec<_> = module
-        .diagnostics
-        .iter()
-        .filter(|d| {
-            d.severity == Severity::Error && d.message.contains("hole")
-        })
-        .collect();
-
-    assert!(
-        !conflict_errors.is_empty(),
-        "expected a conflict diagnostic for sub 'hole' (Hole vs Plug), got none"
-    );
-    assert!(
-        conflict_errors.iter().any(|d| d.message.contains("conflict") || d.message.contains("conflicting")),
-        "expected a 'conflicting' message, got: {:?}",
-        conflict_errors
-    );
-}
-
-/// Pathologically deep (but acyclic) trait refinement chain — 200 levels.
-///
-/// Without a depth limit, `collect_all_requirements` will recurse 200 frames deep,
-/// which on pathological inputs can overflow the stack.  With the fix, compilation
-/// should produce a "trait refinement chain too deep" diagnostic instead of panicking.
-///
-/// This test verifies two things:
-/// 1. The compilation does NOT panic or stack-overflow.
-/// 2. At least one diagnostic mentions "too deep" (or "depth").
-#[test]
-fn deep_chain_recursion_depth_limit() {
-    // Build 200-level chain: Trait0 <- Trait1 <- ... <- Trait199
-    // Each trait refines the previous one.
-    let mut source = String::new();
-    // Trait0 has no refinements
-    source.push_str("trait Trait0 {\n    param x : Length\n}\n");
-    for i in 1..200usize {
-        source.push_str(&format!("trait Trait{} : Trait{} {{}}\n", i, i - 1));
-    }
-    // Structure implements the deepest trait
-    source.push_str("structure def S : Trait199 {\n    param x : Length = 1mm\n}\n");
-
-    // Must not panic — assert we get a diagnostic about depth
-    let module = compile_module(&source);
-    let depth_errors: Vec<_> = module
-        .diagnostics
-        .iter()
-        .filter(|d| {
-            d.message.contains("deep") || d.message.contains("depth") || d.message.contains("too deep")
-        })
-        .collect();
-
-    assert!(
-        !depth_errors.is_empty(),
-        "expected a 'too deep' diagnostic for 200-level trait chain, got: {:?}",
-        module.diagnostics
-    );
-}
-
-/// A trait declares `sub hole = Hole`, and the structure provides exactly one
-/// matching sub-component. Assert no errors.
-///
-/// This is the baseline test for the O(n) linear-search sub-component lookup
-/// that will be replaced by an O(1) HashMap lookup in the next step. (S7)
-#[test]
-fn sub_conformance_basic() {
-    let source = r#"
-trait HasHole {
-    sub hole = Hole()
-}
-structure def Hole {}
-structure def Widget : HasHole {
-    sub hole = Hole()
-}
-"#;
-
-    let module = compile_module(source);
-    let errors: Vec<_> = module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-
-    assert!(
-        errors.is_empty(),
-        "expected no errors when sub-component is satisfied, got: {:?}",
-        errors
-    );
-}
-
-/// A trait requires `param x : Length`, but the structure provides `let x : Length = 5mm`.
-///
-/// This documents that param-vs-let is intentionally fungible in conformance checking.
-/// The trait system checks that the right named member with the right type exists — it
-/// does not enforce the param/let distinction. This aligns with the structural-completeness
-/// goal of traits: ensuring all required names and types are present.
-///
-/// See: design_decisions["Param-vs-let fungibility in conformance checking is intentional"]
-#[test]
-fn param_vs_let_cross_satisfaction() {
-    let source = r#"
-trait HasLength {
-    param x : Length
-}
-structure def Box : HasLength {
-    let x : Length = 5mm
-}
-"#;
-
-    let module = compile_module(source);
-    let errors: Vec<_> = module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-
-    assert!(
-        errors.is_empty(),
-        "expected no errors: let x : Length should satisfy param x : Length requirement, got: {:?}",
-        errors
     );
 }
