@@ -4370,7 +4370,7 @@ fn check_trait_conformance(
             RequirementKind::Sub(structure_name) => {
                 let has_sub = sub_lookup
                     .get(req.name.as_str())
-                    .map_or(false, |actual| *actual == structure_name.as_str());
+                    .is_some_and(|actual| *actual == structure_name.as_str());
                 if !has_sub {
                     diagnostics.push(
                         Diagnostic::error(format!(
