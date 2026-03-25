@@ -256,6 +256,27 @@ mod tests {
         );
     }
 
+    // --- doc comment hover on structures ---
+
+    #[test]
+    fn hover_on_documented_structure_shows_doc() {
+        let source = "/// A mounting bracket.\nstructure Bracket {\n    param width: Scalar = 80mm\n}";
+        let position = Position::new(1, 12); // on 'Bracket'
+        let md = hover_markdown(source, position).expect("hover should return info");
+        assert!(md.contains("structure Bracket"), "should contain structure name, got: {md}");
+        assert!(md.contains("A mounting bracket."), "should contain doc comment, got: {md}");
+    }
+
+    #[test]
+    fn hover_on_undocumented_structure_no_doc_section() {
+        let source = reify_test_support::bracket_source();
+        let position = Position::new(0, 12); // on 'Bracket'
+        let md = hover_markdown(source, position).expect("hover should return info");
+        assert!(md.contains("Bracket"), "should contain structure name, got: {md}");
+        // Should not have extra blank doc section
+        assert!(!md.contains("\n\n\n"), "should not have triple newline (empty doc section), got: {md}");
+    }
+
     #[test]
     fn hover_on_empty_source_returns_none() {
         let result = compute_hover("", &test_uri(), Position::new(0, 0));
