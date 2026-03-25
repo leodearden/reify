@@ -82,6 +82,20 @@
       "description": "Run full test suite: cargo test -p reify-eval --test m8_stdlib_integration. Verify all dimensional consistency tests pass. Fix dimensional_consistency.ri if any dimension mismatches or evaluation ordering issues arise.",
       "status": "done",
       "commit": "8517c47e"
+    },
+    {
+      "id": "step-11",
+      "type": "test",
+      "description": "Add eval-time error boundary to eval_ri_file helper: after `let result = engine.eval(&compiled)`, add `let eval_errors: Vec<_> = result.diagnostics.iter().filter(|d| d.severity == Severity::Error).collect(); assert!(eval_errors.is_empty(), \"eval errors in {}: {:?}\", path, eval_errors);` \u2014 mirroring the compile-error check pattern already at lines 30-40. This ensures runtime failures (type mismatches, Undef propagation, dimension errors) surface their actual Diagnostic::error() messages instead of producing misleading 'not found in eval result' panics in downstream per-value tests. Verify all existing tests still pass \u2014 if any eval diagnostics are now caught, those are real runtime regressions that must be investigated.",
+      "status": "done",
+      "commit": "78225d7a"
+    },
+    {
+      "id": "step-12",
+      "type": "impl",
+      "description": "Run cargo test -p reify-eval --test m8_stdlib_integration to confirm all tests pass with the new eval-error boundary. If the new assertion catches previously-silent eval diagnostics, investigate and fix the root cause in the .ri fixtures (e.g., type mismatches, missing bindings, dimension errors). The error messages from the diagnostics will now clearly identify the problem.",
+      "status": "done",
+      "commit": "78225d7a"
     }
   ],
   "design_decisions": [
@@ -108,6 +122,10 @@
     {
       "decision": "Single Rust test file (m8_stdlib_integration.rs) for both .ri fixtures",
       "rationale": "Both .ri files test the same stdlib feature set (math + linalg builtins from M8.1). Grouping them in one test module with clear section comments follows the pattern of m5_integration.rs. The eval_ri_file helper is shared across all tests."
+    },
+    {
+      "decision": "Add eval-time diagnostic error boundary in eval_ri_file helper",
+      "rationale": "The eval engine emits Diagnostic::error() for runtime failures (type mismatches, Undef propagation, dimension errors) via EvalResult.diagnostics. Without checking these, eval silently produces partial results and downstream per-value tests panic with misleading 'not found in eval result' messages instead of surfacing the actual root cause. The error boundary mirrors the existing compile-error check pattern and catches an entire class of runtime regressions early."
     }
   ],
   "reuse": [
@@ -140,8 +158,13 @@
       "what": "Example .ri file structure patterns",
       "where": "examples/bracket.ri, examples/m5_trait_structure.ri, examples/m5_collection_ops.ri",
       "how": "Follow the structure definition pattern: 'structure Name { let binding = expr ... }'. Use unit literals (mm, m, kg, s) for dimensioned scalar values. Use function call syntax fn_name(args) for stdlib builtins."
+    },
+    {
+      "what": "Compile-error diagnostic check pattern for reuse in eval-error boundary",
+      "where": "crates/reify-eval/tests/m8_stdlib_integration.rs:30-40 (existing compile-error check)",
+      "how": "Mirror the exact pattern: filter diagnostics by Severity::Error, collect into Vec, assert empty with descriptive message including path and diagnostic details. Applied to EvalResult.diagnostics instead of compiled.diagnostics."
     }
   ],
   "_session_id": "313-d283e0dc",
-  "_created_at": "2026-03-24T23:45:02.699537+00:00"
+  "_created_at": "2026-03-25T01:17:45.208132+00:00"
 }
