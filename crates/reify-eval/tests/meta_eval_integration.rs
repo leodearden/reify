@@ -208,6 +208,74 @@ fn eval_meta_access_in_guarded_group() {
     );
 }
 
+/// step-11: Collection sub-component meta access — parent Let binding can read
+/// child template meta via meta_access("Child", key).
+///
+/// Build two templates:
+///   - 'Bolt' with meta {"grade": "A2"} and param 'len'
+///   - 'Plate' with:
+///       - param 'n' = 3 (count)
+///       - let '__count_bolts' = n (count cell)
+///       - collection_sub_component 'bolts' -> 'Bolt' (count cell = __count_bolts)
+///       - let 'grade_label' = meta_access("Bolt", "grade")
+/// After eval(), Plate.grade_label should == Value::String("A2").
+#[test]
+fn eval_meta_access_collection_sub_component() {
+    use reify_test_support::builders::value_ref_typed;
+
+    let grade_label_id = ValueCellId::new("Plate", "grade_label");
+    let meta_expr = CompiledExpr::meta_access("Bolt".to_string(), "grade".to_string());
+
+    // Build 'Bolt' template with meta {"grade": "A2"} and param 'len'
+    let bolt = TopologyTemplateBuilder::new("Bolt")
+        .meta(
+            [("grade".to_string(), "A2".to_string())]
+                .into_iter()
+                .collect(),
+        )
+        .param(
+            "Bolt",
+            "len",
+            Type::length(),
+            Some(CompiledExpr::literal(Value::length(0.05), Type::length())),
+        )
+        .build();
+
+    // Build 'Plate' template with collection sub + meta access let binding
+    let count_expr = value_ref_typed("Plate", "n", Type::Int);
+    let plate = TopologyTemplateBuilder::new("Plate")
+        .param(
+            "Plate",
+            "n",
+            Type::Int,
+            Some(CompiledExpr::literal(Value::Int(3), Type::Int)),
+        )
+        .let_binding("Plate", "__count_bolts", Type::Int, count_expr)
+        .structure_controlling_cell(ValueCellId::new("Plate", "__count_bolts"))
+        .collection_sub_component(
+            "bolts",
+            "Bolt",
+            ValueCellId::new("Plate", "__count_bolts"),
+        )
+        .let_binding("Plate", "grade_label", Type::String, meta_expr)
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(bolt)
+        .template(plate)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+    let result = engine.eval(&module);
+
+    assert_eq!(
+        result.values.get(&grade_label_id),
+        Some(&Value::String("A2".to_string())),
+        "Plate let binding with MetaAccess(Bolt, grade) should resolve to 'A2'"
+    );
+}
+
 /// step-9: eval_cached() resolves MetaAccess expressions correctly.
 ///
 /// Build template 'Widget' with meta {"description": "A widget"} and a
