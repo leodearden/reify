@@ -3713,6 +3713,17 @@ mod tests {
         reify_types::CompiledExpr::literal(reify_types::Value::Real(v), reify_types::Type::Real)
     }
 
+    /// Helper: build a CompiledExpr literal from a Scalar with LENGTH dimension.
+    fn literal_length(meters: f64) -> reify_types::CompiledExpr {
+        reify_types::CompiledExpr::literal(
+            reify_types::Value::Scalar {
+                si_value: meters,
+                dimension: reify_types::DimensionVector::LENGTH,
+            },
+            reify_types::Type::length(),
+        )
+    }
+
     #[test]
     fn compile_geometry_op_scale_produces_scale_variant() {
         let step_handles = vec![GeometryHandleId(42)];
@@ -3803,6 +3814,36 @@ mod tests {
                 );
             }
             other => panic!("expected GeometryOp::Loft, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn compile_geometry_op_extrude_preserves_value_type() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Sweep {
+            kind: SweepKind::Extrude,
+            profiles: vec![GeomRef::Step(0)],
+            args: vec![("distance".into(), literal_length(0.05))],
+        };
+
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = result.expect("compile_geometry_op should return Some for Extrude");
+
+        match result {
+            reify_types::GeometryOp::Extrude { profile, distance } => {
+                assert_eq!(profile, GeometryHandleId(10));
+                // The distance must preserve Scalar type (not be converted to Value::Real)
+                match distance {
+                    reify_types::Value::Scalar { si_value, dimension } => {
+                        assert!((si_value - 0.05).abs() < 1e-12, "SI value should be 0.05m");
+                        assert_eq!(dimension, reify_types::DimensionVector::LENGTH, "dimension should be LENGTH");
+                    }
+                    other => panic!("expected Value::Scalar, got {:?} — Extrude distance must preserve SI unit info", other),
+                }
+            }
+            other => panic!("expected GeometryOp::Extrude, got {:?}", other),
         }
     }
 }
