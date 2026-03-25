@@ -573,8 +573,17 @@ where
     });
 
     if let Err(e) = wait_result {
-        // Timeout: clear the stale handle so the next call can re-spawn.
-        *sidecar.lock().await = None;
+        // Timeout: compare-and-clear — only remove the handle if it is still
+        // the one *this* call placed.  A concurrent call may have already
+        // replaced it with a new, healthy handle; blindly clearing would
+        // destroy that handle and orphan the old process.
+        let mut guard = sidecar.lock().await;
+        if guard
+            .as_ref()
+            .is_some_and(|h| Arc::ptr_eq(h.ready_notify(), &notify_arc))
+        {
+            *guard = None;
+        }
         return Err(e);
     }
 
@@ -584,13 +593,26 @@ where
     match state_val {
         SidecarState::Ready => Ok(()),
         SidecarState::Crashed(msg) => {
-            // Crash: clear stale handle so the next call can re-spawn.
-            *sidecar.lock().await = None;
+            // Crash: compare-and-clear — only remove if our handle is still in
+            // the slot (see timeout branch for rationale).
+            let mut guard = sidecar.lock().await;
+            if guard
+                .as_ref()
+                .is_some_and(|h| Arc::ptr_eq(h.ready_notify(), &notify_arc))
+            {
+                *guard = None;
+            }
             Err(format!("sidecar crashed: {}", msg))
         }
         other => {
-            // Unexpected state: clear stale handle.
-            *sidecar.lock().await = None;
+            // Unexpected state: compare-and-clear.
+            let mut guard = sidecar.lock().await;
+            if guard
+                .as_ref()
+                .is_some_and(|h| Arc::ptr_eq(h.ready_notify(), &notify_arc))
+            {
+                *guard = None;
+            }
             Err(format!("sidecar not ready after notification: {:?}", other))
         }
     }
