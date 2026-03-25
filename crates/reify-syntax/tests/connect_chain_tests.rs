@@ -347,6 +347,32 @@ fn parse_connect_mapping_before_param() {
     assert_eq!(connect.port_mappings[0].1, "input_bore");
 }
 
+// ── task-396 step-3: malformed param in connect body emits diagnostic ─
+
+#[test]
+fn connect_body_malformed_param_emits_diagnostic() {
+    // `{ grade = }` has a name but no value expression; tree-sitter error
+    // recovery may produce a connect_param_assignment with has_error() or
+    // missing fields, which lower_connect_body currently silently skips.
+    let (_decls, errors) = parse_decls(
+        "structure S { port a : out T  port b : in T  connect a -> b : BoltSet { grade = } }",
+    );
+    assert!(
+        !errors.is_empty(),
+        "expected at least one parse error for malformed connect parameter, got none"
+    );
+    assert!(
+        errors.iter().any(|e| {
+            e.message.contains("connect body")
+                || e.message.contains("connect param")
+                || e.message.contains("syntax error")
+                || e.message.contains("invalid connect")
+        }),
+        "expected an error mentioning connect body or param issue, got: {:?}",
+        errors
+    );
+}
+
 // ── task-396 step-1: ERROR node in connect body emits diagnostic ───
 
 #[test]

@@ -23,7 +23,7 @@
       "type": "impl",
       "description": "Add explicit \"ERROR\" arm to the match in lower_connect_body, before the `_ => {}` catch-all: `\"ERROR\" => { self.errors.push(ParseError { message: format!(\"syntax error in connect body: {}\", self.node_text(child)), span: self.span(child) }); }`. This follows the pattern at lines 637-644. Step-1 test should now pass.",
       "status": "done",
-      "commit": null
+      "commit": "a519be49"
     },
     {
       "id": "step-3",
