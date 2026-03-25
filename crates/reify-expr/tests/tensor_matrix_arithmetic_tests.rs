@@ -11,6 +11,30 @@ fn matrix_2x2(a: f64, b: f64, c: f64, d: f64) -> Value {
     ])
 }
 
+// ── step-13: Matrix*Vector canonicalization (DO NOW #9) ─────────────────────
+
+#[test]
+#[ignore] // eval_mul has no Tensor*Tensor path; matrix-vector dot product not yet implemented (esc-404-57)
+fn matrix_literal_times_tensor_vector() {
+    // Matrix(2x2) * Tensor(2) → dot products: [1*1+2*1, 3*1+4*1] = [3, 7]
+    let lhs = CompiledExpr::literal(
+        Value::Matrix(vec![
+            vec![Value::Real(1.0), Value::Real(2.0)],
+            vec![Value::Real(3.0), Value::Real(4.0)],
+        ]),
+        Type::matrix(2, 2, Type::Real),
+    );
+    let rhs = CompiledExpr::literal(
+        Value::Tensor(vec![Value::Real(1.0), Value::Real(1.0)]),
+        Type::tensor(1, 2, Type::Real),
+    );
+    let expr = CompiledExpr::binop(BinOp::Mul, lhs, rhs, Type::tensor(1, 2, Type::Real));
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    let expected = Value::Tensor(vec![Value::Real(3.0), Value::Real(7.0)]);
+    assert_eq!(result, expected);
+}
+
 // ── step-11: Matrix canonicalization through eval_binop and eval_unop ──────
 
 #[test]
