@@ -790,16 +790,12 @@ impl std::fmt::Display for Value {
                 write!(f, "bbox({}, {})", min, max)
             }
             Value::Range { lower, upper, lower_inclusive, upper_inclusive } => {
-                debug_assert!(
-                    lower.is_some() || !lower_inclusive,
-                    "Range invariant violated: lower_inclusive must be false when lower is None"
-                );
-                debug_assert!(
-                    upper.is_some() || !upper_inclusive,
-                    "Range invariant violated: upper_inclusive must be false when upper is None"
-                );
-                let lb = if *lower_inclusive { '[' } else { '(' };
-                let ub = if *upper_inclusive { ']' } else { ')' };
+                // Defensive re-normalization: if someone bypassed Value::range(),
+                // ensure None bounds never appear as inclusive.
+                let lower_inclusive = *lower_inclusive && lower.is_some();
+                let upper_inclusive = *upper_inclusive && upper.is_some();
+                let lb = if lower_inclusive { '[' } else { '(' };
+                let ub = if upper_inclusive { ']' } else { ')' };
                 let lower_str = match lower {
                     None => "-inf".to_string(),
                     Some(v) => format!("{}", v),
