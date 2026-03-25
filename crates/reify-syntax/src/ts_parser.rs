@@ -1288,14 +1288,42 @@ impl<'a> Lowering<'a> {
         for child in node.children(&mut cursor) {
             match child.kind() {
                 "connect_param_assignment" => {
-                    if let Some(name_node) = child.child_by_field_name("name") {
-                        let name = self.node_text(name_node).to_string();
-                        if let Some(value_node) = child.child_by_field_name("value")
-                            && let Some(value) = self.lower_expr(value_node)
-                        {
-                            params.push((name, value));
-                        }
+                    if child.has_error() {
+                        self.errors.push(ParseError {
+                            message: format!(
+                                "invalid connect parameter: {}",
+                                self.node_text(child)
+                            ),
+                            span: self.span(child),
+                        });
+                        continue;
                     }
+                    let Some(name_node) = child.child_by_field_name("name") else {
+                        self.errors.push(ParseError {
+                            message: format!(
+                                "connect parameter missing name: {}",
+                                self.node_text(child)
+                            ),
+                            span: self.span(child),
+                        });
+                        continue;
+                    };
+                    let name = self.node_text(name_node).to_string();
+                    let Some(value_node) = child.child_by_field_name("value") else {
+                        self.errors.push(ParseError {
+                            message: format!("connect parameter '{}' missing value", name),
+                            span: self.span(child),
+                        });
+                        continue;
+                    };
+                    let Some(value) = self.lower_expr(value_node) else {
+                        self.errors.push(ParseError {
+                            message: format!("invalid value in connect parameter '{}'", name),
+                            span: self.span(value_node),
+                        });
+                        continue;
+                    };
+                    params.push((name, value));
                 }
                 "port_mapping" => {
                     if let (Some(from_node), Some(to_node)) = (

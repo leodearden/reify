@@ -29,14 +29,14 @@
       "id": "step-3",
       "type": "test",
       "description": "Write failing test `connect_body_malformed_param_emits_diagnostic`: parse a connect body with a broken parameter assignment (e.g. `{ = 5 }` or other syntax that tree-sitter error recovery produces as a typed node with has_error()). Assert at least one error is emitted. Currently the if-let chains silently skip broken nodes.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "bc0c2d43"
     },
     {
       "id": "step-4",
       "type": "impl",
       "description": "Refactor the connect_param_assignment arm in lower_connect_body: (a) Add a `if child.has_error()` guard at the top that emits `format!(\"invalid connect parameter: {}\", self.node_text(child))` and continues. (b) Convert `if let Some(name_node) = child.child_by_field_name(\"name\")` to `let Some(name_node) = ... else { push error 'connect parameter missing name', continue }`. (c) Convert the value+lower_expr chain: if value_node is None, emit 'connect parameter X missing value'; if lower_expr returns None, emit 'invalid value in connect parameter X'. Step-3 test should now pass.",
-      "status": "pending",
+      "status": "done",
       "commit": null
     },
     {
