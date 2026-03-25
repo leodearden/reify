@@ -586,6 +586,20 @@ fn resolve_type_with_params(name: &str, type_param_names: &HashSet<String>) -> O
     None
 }
 
+/// Resolve a full TypeExpr to a Type, handling generic forms like Option<T>.
+/// Falls back to resolve_type_with_params for non-generic names.
+fn resolve_type_expr(
+    type_expr: &reify_syntax::TypeExpr,
+    type_param_names: &HashSet<String>,
+) -> Option<Type> {
+    if type_expr.name == "Option" && type_expr.type_args.len() == 1 {
+        let inner = resolve_type_expr(&type_expr.type_args[0], type_param_names)?;
+        Some(Type::Option(Box::new(inner)))
+    } else {
+        resolve_type_with_params(&type_expr.name, type_param_names)
+    }
+}
+
 /// Convert parsed TypeParamDecl to compiled TypeParam structs.
 fn convert_type_params(decls: &[reify_syntax::TypeParamDecl]) -> Vec<reify_types::TypeParam> {
     decls
@@ -2642,7 +2656,7 @@ fn compile_entity(
         match member {
             reify_syntax::MemberDecl::Param(param) => {
                 let ty = if let Some(type_expr) = &param.type_expr {
-                    match resolve_type_with_params(&type_expr.name, &type_param_names) {
+                    match resolve_type_expr(type_expr, &type_param_names) {
                         Some(t) => t,
                         None => {
                             diagnostics.push(
