@@ -480,6 +480,12 @@ pub enum ExprKind {
         collection: Box<Expr>,
         predicate: Box<Expr>,
     },
+    /// Ad-hoc port selector: `expr @ ident(args)`
+    AdHocSelector {
+        base: Box<Expr>,
+        selector: String,
+        args: Vec<Expr>,
+    },
 }
 
 /// A match arm: `Pattern1 | Pattern2 => body`
