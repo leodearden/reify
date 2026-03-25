@@ -4242,7 +4242,7 @@ fn check_trait_conformance(
             RequirementKind::Param(expected_type) | RequirementKind::Let(expected_type) => {
                 match structure_members.get(&req.name) {
                     Some(actual_type) => {
-                        if actual_type != expected_type {
+                        if !implicitly_converts_to(actual_type, expected_type) {
                             diagnostics.push(
                                 Diagnostic::error(format!(
                                     "type mismatch for trait member '{}': expected {}, got {}",
