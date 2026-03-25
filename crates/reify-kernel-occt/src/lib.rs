@@ -2684,4 +2684,55 @@ mod tests {
             vol_neg
         );
     }
+
+    // --- Revolve FFI tests (task-309 step-1) ---
+
+    #[test]
+    fn make_rect_face_creates_valid_face() {
+        // make_rect_face(width=10, height=5, cx=20, cy=0, cz=0) → area ≈ 50
+        if !crate::OCCT_AVAILABLE {
+            return;
+        }
+        let face = ffi::ffi::make_rect_face(10.0, 5.0, 20.0, 0.0, 0.0)
+            .expect("make_rect_face should succeed");
+        let area = ffi::ffi::query_area(&face)
+            .expect("query_area should work on rect face");
+        let expected = 50.0;
+        let rel_err = (area - expected).abs() / expected;
+        assert!(
+            rel_err < 0.01,
+            "expected rect face area ≈ {:.2}, got {:.2} (rel_err={:.4})",
+            expected,
+            area,
+            rel_err
+        );
+    }
+
+    #[test]
+    fn revolve_ffi_circle_face_full_rotation() {
+        // make_circle_face(r=5, z=0), translate 20 on X,
+        // then make_revolve around Z axis (origin 0,0,0 dir 0,0,1) by 2π.
+        // Should produce a torus with volume > 0.
+        if !crate::OCCT_AVAILABLE {
+            return;
+        }
+        let face = ffi::ffi::make_circle_face(5.0, 0.0)
+            .expect("make_circle_face should succeed");
+        let translated = ffi::ffi::translate_shape(&face, 20.0, 0.0, 0.0)
+            .expect("translate_shape should succeed");
+        let revolved = ffi::ffi::make_revolve(
+            &translated,
+            0.0, 0.0, 0.0,  // axis origin
+            0.0, 0.0, 1.0,  // axis direction (Z)
+            std::f64::consts::TAU,
+        )
+        .expect("make_revolve should succeed for full rotation");
+        let vol = ffi::ffi::query_volume(&revolved)
+            .expect("query_volume should work for revolved shape");
+        assert!(
+            vol > 0.0,
+            "revolved circle face should have positive volume, got {}",
+            vol
+        );
+    }
 }
