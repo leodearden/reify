@@ -986,3 +986,36 @@ structure def Widget : HasHole {
         errors
     );
 }
+
+/// A trait requires `param x : Length`, but the structure provides `let x : Length = 5mm`.
+///
+/// This documents that param-vs-let is intentionally fungible in conformance checking.
+/// The trait system checks that the right named member with the right type exists — it
+/// does not enforce the param/let distinction. This aligns with the structural-completeness
+/// goal of traits: ensuring all required names and types are present.
+///
+/// See: design_decisions["Param-vs-let fungibility in conformance checking is intentional"]
+#[test]
+fn param_vs_let_cross_satisfaction() {
+    let source = r#"
+trait HasLength {
+    param x : Length
+}
+structure def Box : HasLength {
+    let x : Length = 5mm
+}
+"#;
+
+    let module = compile_module(source);
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    assert!(
+        errors.is_empty(),
+        "expected no errors: let x : Length should satisfy param x : Length requirement, got: {:?}",
+        errors
+    );
+}
