@@ -3101,7 +3101,7 @@ fn compile_geometry_op(
                 }
             }
         }
-        CompiledGeometryOp::Sweep { kind, profiles, .. } => {
+        CompiledGeometryOp::Sweep { kind, profiles, args } => {
             match kind {
                 reify_compiler::SweepKind::Loft => {
                     // Resolve each profile GeomRef to a handle via step_handles
@@ -3114,6 +3114,28 @@ fn compile_geometry_op(
                         .collect();
                     Some(reify_types::GeometryOp::Loft {
                         profiles: resolved?,
+                    })
+                }
+                reify_compiler::SweepKind::Extrude => {
+                    // Resolve profile GeomRef (first entry in profiles) to a handle
+                    let profile_handle = match profiles.first()? {
+                        GeomRef::Step(idx) => step_handles.get(*idx).copied()?,
+                        GeomRef::Sub(_) => step_handles.last().copied()?,
+                    };
+                    // Evaluate the distance argument
+                    let distance = args
+                        .iter()
+                        .find(|(n, _)| n == "distance")
+                        .map(|(_, expr)| {
+                            reify_expr::eval_expr(
+                                expr,
+                                &reify_expr::EvalContext::new(values, functions),
+                            )
+                        })
+                        .unwrap_or(reify_types::Value::Undef);
+                    Some(reify_types::GeometryOp::Extrude {
+                        profile: profile_handle,
+                        distance,
                     })
                 }
             }

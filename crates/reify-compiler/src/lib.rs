@@ -724,6 +724,7 @@ fn is_geometry_function(name: &str) -> bool {
             | "rotate"
             | "rotate_around"
             | "scale"
+            | "extrude"
     )
 }
 
@@ -5915,6 +5916,27 @@ fn compile_geometry_call(
                 kind: SweepKind::Loft,
                 profiles,
                 args,
+            }])
+        }
+        // extrude(profile, distance)
+        "extrude" => {
+            if compiled_args.len() != 2 {
+                diagnostics.push(Diagnostic::error(format!(
+                    "extrude() expects exactly 2 arguments (profile, distance), got {}",
+                    compiled_args.len()
+                )));
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            let profile_expr = it.next().unwrap();
+            let distance_expr = it.next().unwrap();
+            Some(vec![CompiledGeometryOp::Sweep {
+                kind: SweepKind::Extrude,
+                profiles: vec![GeomRef::Step(0)],
+                args: vec![
+                    ("profile".to_string(), profile_expr),
+                    ("distance".to_string(), distance_expr),
+                ],
             }])
         }
         // --- Modify extensions ---
