@@ -6879,11 +6879,11 @@
         "description": "compile_module helper is copy-pasted across 10+ test files in reify-compiler/tests/. parse_decls helper is similarly duplicated across 10+ test files in reify-syntax/tests/. Create shared test helpers — either tests/common.rs modules or add to reify-test-support crate — and update all test files to use the shared versions.\n\nMemory hints: search \"compile_module parse_decls test helper\", entities: reify-test-support, reify-compiler tests",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-03-25T21:48:56.772Z"
+        "updatedAt": "2026-03-25T21:54:53.599Z"
       },
       {
         "id": "372",
@@ -7713,7 +7713,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-25T21:54:29.385Z",
+      "lastModified": "2026-03-25T21:54:53.599Z",
       "taskCount": 432,
       "completedCount": 229,
       "tags": [
