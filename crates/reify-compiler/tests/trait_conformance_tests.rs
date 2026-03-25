@@ -874,3 +874,45 @@ structure def Widget : HasHoleA + HasHoleB {}
         sub_errors
     );
 }
+
+/// Trait A requires `sub hole = Hole`, trait B requires `sub hole = Plug`.
+/// A structure implementing both should get a conflict diagnostic for "hole"
+/// because the same sub-component name maps to two different structures.
+///
+/// Without the fix, no conflict is detected (the two different Sub requirements
+/// are just added to all_requirements with no cross-check).
+#[test]
+fn conflicting_sub_requirements() {
+    let source = r#"
+trait HasHole {
+    sub hole = Hole()
+}
+trait HasPlug {
+    sub hole = Plug()
+}
+structure def Hole {}
+structure def Plug {}
+structure def Connector : HasHole + HasPlug {
+    sub hole = Hole()
+}
+"#;
+
+    let module = compile_module(source);
+    let conflict_errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Error && d.message.contains("hole")
+        })
+        .collect();
+
+    assert!(
+        !conflict_errors.is_empty(),
+        "expected a conflict diagnostic for sub 'hole' (Hole vs Plug), got none"
+    );
+    assert!(
+        conflict_errors.iter().any(|d| d.message.contains("conflict") || d.message.contains("conflicting")),
+        "expected a 'conflicting' message, got: {:?}",
+        conflict_errors
+    );
+}
