@@ -3226,8 +3226,9 @@ fn unfold_recursive_sub(
     // Construct the next child's scoped entity name: parent_entity.sub_name
     let next_entity = format!("{}.{}", parent_entity, sub.name);
 
-    // Elaborate the child instance with the pre-computed args.
-    elaborate_child_instance(
+    // Phase 1 (top-down): Set params for next_entity so the next recursion level
+    // can evaluate its guard using the child's param values.
+    let child_values = elaborate_child_params_only(
         values,
         snapshot,
         functions,
@@ -3240,7 +3241,8 @@ fn unfold_recursive_sub(
         meta_map,
     );
 
-    // Recurse to unfold the next level.
+    // Phase 2 (recurse): Unfold the next level first (leaves-first ordering).
+    // This ensures all deeper levels are elaborated before we evaluate our lets.
     unfold_recursive_sub(
         values,
         snapshot,
@@ -3255,12 +3257,33 @@ fn unfold_recursive_sub(
         max_depth,
         meta_map,
     );
+
+    // Phase 3 (bottom-up): Evaluate let-bindings for next_entity.
+    // child_values is enriched inside elaborate_child_lets_only with sub-component
+    // values projected from the global map — so cross-level references like
+    // `S.child.total` resolve to the already-computed deeper-level value.
+    elaborate_child_lets_only(
+        values,
+        snapshot,
+        functions,
+        journal,
+        cache,
+        version_id,
+        child_template,
+        &next_entity,
+        child_values,
+        meta_map,
+    );
 }
 
 /// Elaborate a single child instance into the values/snapshot maps.
 ///
 /// This handles both non-collection subs (single instance) and individual
 /// collection sub instances (called in a loop for each index).
+///
+/// For non-recursive subs both phases run atomically (params then lets).
+/// For recursive subs, use `elaborate_child_params_only` + `elaborate_child_lets_only`
+/// to allow leaves-first ordering (recurse between the two phases).
 #[allow(clippy::too_many_arguments)]
 fn elaborate_child_instance(
     values: &mut ValueMap,
@@ -3274,9 +3297,35 @@ fn elaborate_child_instance(
     args: &[(String, reify_types::CompiledExpr)],
     meta_map: &HashMap<String, HashMap<String, String>>,
 ) {
+    let child_values = elaborate_child_params_only(
+        values, snapshot, functions, journal, cache, version_id,
+        child_template, scoped_entity, args, meta_map,
+    );
+    elaborate_child_lets_only(
+        values, snapshot, functions, journal, cache, version_id,
+        child_template, scoped_entity, child_values, meta_map,
+    );
+}
+
+/// Phase 1: Evaluate and store only the param cells for a child instance.
+///
+/// Returns the template-scoped child_values map (params only) for use in phase 2.
+/// All param values are also written to the global `values`, `snapshot`, journal, and cache.
+#[allow(clippy::too_many_arguments)]
+fn elaborate_child_params_only(
+    values: &mut ValueMap,
+    snapshot: &mut Snapshot,
+    functions: &[CompiledFunction],
+    journal: &mut EventJournal,
+    cache: &mut CacheStore,
+    version_id: u64,
+    child_template: &TopologyTemplate,
+    scoped_entity: &str,
+    args: &[(String, reify_types::CompiledExpr)],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+) -> ValueMap {
     let mut child_values = ValueMap::new();
 
-    // First pass: evaluate child params (arg-provided or default)
     for cell in &child_template.value_cells {
         if cell.kind != ValueCellKind::Param {
             continue;
@@ -3329,7 +3378,53 @@ fn elaborate_child_instance(
         });
     }
 
-    // Second pass: evaluate child let-bindings in topological order
+    child_values
+}
+
+/// Phase 2: Evaluate and store the let-binding cells for a child instance.
+///
+/// `child_values` should contain the template-scoped params from phase 1.
+/// Before evaluating lets, this function enriches `child_values` with sub-component
+/// values projected from the global `values` map — this enables cross-level let
+/// expressions like `let total = if n > 0 then n + S.child.total else n` to see
+/// values computed by deeper recursion levels (leaves-first ordering).
+///
+/// Projection rule: for each global entry whose entity starts with
+/// `"{scoped_entity}."`, strip that prefix and add `"{template_name}."` to produce
+/// a template-scoped key. E.g., when evaluating lets for `S.child` (template `S`):
+///   global["S.child.child", "total"] → child_values["S.child", "total"]
+#[allow(clippy::too_many_arguments)]
+fn elaborate_child_lets_only(
+    values: &mut ValueMap,
+    snapshot: &mut Snapshot,
+    functions: &[CompiledFunction],
+    journal: &mut EventJournal,
+    cache: &mut CacheStore,
+    version_id: u64,
+    child_template: &TopologyTemplate,
+    scoped_entity: &str,
+    mut child_values: ValueMap,
+    meta_map: &HashMap<String, HashMap<String, String>>,
+) {
+    // Enrich child_values with sub-component values projected from the global map.
+    // This enables cross-level references in let expressions to resolve correctly
+    // when children have already been elaborated (leaves-first ordering).
+    let scoped_prefix = format!("{}.", scoped_entity);
+    let template_prefix = format!("{}.", child_template.name);
+    let enrichment: Vec<(ValueCellId, Value)> = values
+        .iter()
+        .filter_map(|(key, val)| {
+            key.entity.strip_prefix(&scoped_prefix).map(|suffix| {
+                let remapped_entity = format!("{}{}", template_prefix, suffix);
+                (ValueCellId::new(remapped_entity, &key.member), val.clone())
+            })
+        })
+        .collect();
+    for (id, val) in enrichment {
+        child_values.insert(id, val);
+    }
+
+    // Evaluate let-bindings in topological order.
     let child_let_cells: HashMap<NodeId, &reify_types::CompiledExpr> = child_template
         .value_cells
         .iter()
