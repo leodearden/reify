@@ -201,6 +201,9 @@ pub fn format_value(value: &Value) -> String {
                 format!("{re} {sign} {im_abs}i {unit}")
             }
         }
+        Value::Matrix(_rows) => {
+            todo!("Matrix format_value — implemented in step-17")
+        }
         Value::Undef => "(undefined)".to_string(),
     }
 }

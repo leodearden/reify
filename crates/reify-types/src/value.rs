@@ -52,6 +52,10 @@ pub enum Value {
     Tensor(Vec<Value>),
     /// Complex number: re and im share one dimension (e.g., complex impedance in ohms).
     Complex { re: f64, im: f64, dimension: DimensionVector },
+    /// User-facing matrix literal (m rows × n cols). Before arithmetic evaluation,
+    /// canonicalized to nested Value::Tensor (rank-2) via canonicalize_matrix().
+    /// This method exists to support the reify-expr evaluator pipeline.
+    Matrix(Vec<Vec<Value>>),
     /// Undefined — not yet determined or computation failed.
     Undef,
 }
@@ -205,6 +209,9 @@ impl Value {
                 buf[9..17].copy_from_slice(&im_bits.to_le_bytes());
                 ContentHash::of(&buf).combine(dimension.content_hash())
             }
+            Value::Matrix(_rows) => {
+                todo!("Matrix content_hash — implemented in step-4")
+            }
             Value::Undef => ContentHash::of(&[5]),
         }
     }
@@ -249,6 +256,7 @@ impl PartialEq for Value {
                 Value::Complex { re: ar, im: ai, dimension: ad },
                 Value::Complex { re: br, im: bi, dimension: bd },
             ) => ar.to_bits() == br.to_bits() && ai.to_bits() == bi.to_bits() && ad == bd,
+            (Value::Matrix(a), Value::Matrix(b)) => a == b,
             (Value::Undef, Value::Undef) => true,
             _ => false,
         }
@@ -268,7 +276,7 @@ impl Ord for Value {
         use std::cmp::Ordering;
 
         // Type-tag discriminant for cross-type ordering:
-        // Undef=0, Bool=1, Int=2, Real=3, Scalar=4, String=5, Enum=6, List=7, Set=8, Map=9, Option=10, Field=11, Lambda=12, Tensor=13, Complex=14
+        // Undef=0, Bool=1, Int=2, Real=3, Scalar=4, String=5, Enum=6, List=7, Set=8, Map=9, Option=10, Field=11, Lambda=12, Tensor=13, Complex=14, Matrix=15
         fn type_tag(v: &Value) -> u8 {
             match v {
                 Value::Undef => 0,
@@ -286,6 +294,7 @@ impl Ord for Value {
                 Value::Lambda { .. } => 12,
                 Value::Tensor(_) => 13,
                 Value::Complex { .. } => 14,
+                Value::Matrix(_) => 15,
             }
         }
 
@@ -348,6 +357,7 @@ impl Ord for Value {
                     .then_with(|| ar.to_bits().cmp(&br.to_bits()))
                     .then_with(|| ai.to_bits().cmp(&bi.to_bits()))
             }
+            (Value::Matrix(a), Value::Matrix(b)) => a.cmp(b),
             _ => unreachable!("same type tag but different variants"),
         }
     }
@@ -446,6 +456,23 @@ impl std::fmt::Display for Value {
                 } else {
                     write!(f, "({}{}{}i) {}", re_str, sign, im_abs_str, dimension)
                 }
+            }
+            Value::Matrix(rows) => {
+                write!(f, "[")?;
+                for (i, row) in rows.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "[")?;
+                    for (j, elem) in row.iter().enumerate() {
+                        if j > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{}", elem)?;
+                    }
+                    write!(f, "]")?;
+                }
+                write!(f, "]")
             }
             Value::Undef => write!(f, "undef"),
         }
