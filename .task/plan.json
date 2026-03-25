@@ -1,163 +1,96 @@
 {
-  "task_id": "162",
-  "title": "some/none: parser and compiler",
+  "task_id": "163",
+  "title": "some/none: evaluator",
   "files": [
-    "crates/reify-compiler/src/lib.rs",
-    "crates/reify-syntax/tests/option_tests.rs",
-    "crates/reify-compiler/tests/option_compile_tests.rs"
+    "crates/reify-expr/src/lib.rs",
+    "crates/reify-expr/tests/option_eval_tests.rs"
   ],
   "modules": [
-    "crates/reify-syntax",
-    "crates/reify-compiler"
+    "crates/reify-expr"
   ],
-  "analysis": "## Current State\n\nCompiledExprKind::OptionSome(Box<CompiledExpr>) and CompiledExprKind::OptionNone already exist in reify-types/src/expr.rs (lines 86-90), including constructor methods (CompiledExpr::option_some, CompiledExpr::option_none), walk/traversal, collect_value_refs, remap_entity, and content hashing (tags [14]/[15]). Test support builders (option_some_expr, option_none_expr) also exist in reify-test-support.\n\nType::Option(Box<Type>) variant exists in reify-types/src/ty.rs.\n\nHowever, the parser and compiler do NOT yet handle some(expr) or none expressions:\n- some(expr) currently parses as ExprKind::FunctionCall { name: \"some\", args: [expr] } — correct syntax, no grammar changes needed.\n- none currently parses as ExprKind::Ident(\"none\") — correct syntax, no grammar changes needed.\n- The compiler has NO special handling for either — some(expr) falls through to stdlib FunctionCall, none produces 'unresolved name' error.\n- resolve_type_name() does NOT handle Option<T> parameterized types.\n\n## Approach\n\nNo grammar or AST changes needed — some(expr) and none parse correctly via existing function_call and identifier rules.\n\n**Parser work**: Write tests to verify some(expr) parses as FunctionCall and none parses as Ident. These should all pass immediately.\n\n**Compiler work**:\n1. Intercept ExprKind::Ident(\"none\") before scope lookup in compile_expr_guarded → emit CompiledExprKind::OptionNone with default Type::Option(Box::new(Type::Real)).\n2. Intercept ExprKind::FunctionCall { name: \"some\", .. } before function resolution → validate exactly 1 arg, compile it, emit CompiledExprKind::OptionSome(inner) with Type::Option(Box::new(inner.result_type)).\n3. For none type inference from context: At param/let compilation sites, when default_expr is OptionNone and cell_type is Option<T>, override the OptionNone result_type.\n4. Add Option<T> support to type resolution: When type_expr.name == \"Option\" and has 1 type_arg, resolve inner type and return Type::Option(Box::new(inner)).\n\n## Key Code Locations\n- compile_expr_guarded: lib.rs:880 (main expression compiler)\n- Ident handling: lib.rs:920-948 (where none intercept goes)\n- FunctionCall handling: lib.rs:1071-1175 (where some intercept goes)\n- resolve_type_name: lib.rs:560-574 (needs Option<T> handling)\n- Param type resolution: lib.rs:2644 (resolve_type_with_params call site)\n- Param second pass: lib.rs:2795-2849 (type context for none)\n- Let second pass: lib.rs:2850-2870 (type context for none)",
-  "prerequisites": [
-    {
-      "id": "pre-1",
-      "description": "Add Option<T> support to type resolution in reify-compiler. At param/let type resolution call sites (lib.rs ~2644 and similar), add check: if type_expr.name == 'Option' and type_expr.type_args.len() == 1, recursively resolve the inner type arg and return Type::Option(Box::new(inner)). This is a prerequisite because both some and none compilation tests need Option<T> type annotations to verify correct type inference.",
-      "status": "done",
-      "commit": "2924d8dc",
-      "tests": []
-    }
-  ],
+  "analysis": "Task 163 adds evaluation support for some(expr) and none option expressions. The CompiledExprKind::OptionSome(Box<CompiledExpr>) and OptionNone AST nodes were defined in reify-types (task 162 dependency). The evaluator in crates/reify-expr/src/lib.rs needs two match arms in eval_expr: (1) OptionNone maps directly to Value::Option(None), and (2) OptionSome(inner) recursively evaluates the inner expression then wraps in Value::Option(Some(Box::new(val))). Critically, some() must NOT propagate Undef — some(undef) must produce Value::Option(Some(Box::new(Value::Undef))), preserving the three-way distinction between Value::Option(None) (intentional absence), Value::Option(Some(Value::Undef)) (present but undefined), and Value::Undef (evaluation failure). The implementation is minimal (6 lines of evaluator code at lines 222-227) since the AST, type system, compiler, and parser are all handled by task 162. Tests in option_eval_tests.rs cover: none semantics (2 tests), some wrapping literals of int/bool/real types (3 tests), undef non-propagation with three-way inequality checks (3 tests), and nesting/value-ref integration including some(some(x)), some(none), and missing-ref wrapping (4 tests). Both implementation and all 12 tests are already present in this worktree and passing.",
+  "prerequisites": [],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write parser tests in crates/reify-syntax/tests/option_tests.rs: verify some(42) parses as FunctionCall{name:\"some\", args:[NumberLiteral(42)]}, some(x + 1) parses with BinOp arg, some(some(x)) nests correctly, none as let value parses as Ident(\"none\"), none as param default parses as Ident(\"none\"), some/none in conditional branches parse correctly. All tests should PASS immediately — no parser changes needed.",
+      "description": "Write failing tests for OptionNone evaluation in crates/reify-expr/tests/option_eval_tests.rs: (a) eval_none_produces_option_none — construct CompiledExpr::option_none(Type::Option(Box::new(Type::Int))), evaluate with empty ValueMap, assert result equals Value::Option(None). (b) eval_none_is_not_undef — same setup, assert result does NOT equal Value::Undef. These test the simplest evaluator case with no inner expression.",
       "status": "done",
-      "commit": "511c2a82"
+      "commit": "79e6d96c5265180b8a23bb39d8be6a508d03c719"
     },
     {
       "id": "step-2",
-      "type": "test",
-      "description": "Write failing compiler test in crates/reify-compiler/tests/option_compile_tests.rs: compile 'structure S { let x = some(42) }' → expect CompiledExprKind::OptionSome with inner Literal(Int(42)) and result_type Type::Option(Box::new(Type::Int)). Currently fails because some(42) compiles as stdlib FunctionCall.",
+      "type": "impl",
+      "description": "Add match arm in eval_expr (crates/reify-expr/src/lib.rs) for CompiledExprKind::OptionNone => Value::Option(None). Single line addition after the MethodCall arm.",
       "status": "done",
-      "commit": "dcb9f229"
+      "commit": "79e6d96c5265180b8a23bb39d8be6a508d03c719"
     },
     {
       "id": "step-3",
-      "type": "impl",
-      "description": "Implement some(expr) compilation in compile_expr_guarded's FunctionCall arm (lib.rs ~1071). Add early check BEFORE resolve_function_overload: if name == \"some\", validate exactly 1 arg (emit diagnostic if 0 or 2+), compile the single arg, return CompiledExpr::option_some(compiled_inner, Type::Option(Box::new(inner.result_type))).",
+      "type": "test",
+      "description": "Write failing tests for OptionSome wrapping literal values: (a) eval_some_wraps_int — some(5) → Value::Option(Some(Box::new(Value::Int(5)))), (b) eval_some_wraps_bool — some(true) → wrapped Bool, (c) eval_some_wraps_real — some(3.14) → wrapped Real. Each constructs CompiledExpr::option_some(CompiledExpr::literal(val, ty), Option<ty>) and evaluates with empty ValueMap.",
       "status": "done",
-      "commit": "6d1d2978"
+      "commit": "79e6d96c5265180b8a23bb39d8be6a508d03c719"
     },
     {
       "id": "step-4",
-      "type": "test",
-      "description": "Write failing compiler test: compile 'structure S { let x = none }' → expect CompiledExprKind::OptionNone with result_type Type::Option(_). Currently fails because none produces 'unresolved name' error.",
+      "type": "impl",
+      "description": "Add match arm in eval_expr for CompiledExprKind::OptionSome(inner): recursively eval_expr(inner, ctx), wrap result in Value::Option(Some(Box::new(val))). Three lines in crates/reify-expr/src/lib.rs. Importantly, do NOT add any Undef short-circuiting — the inner value must be wrapped unconditionally.",
       "status": "done",
-      "commit": "dcb9f229"
+      "commit": "79e6d96c5265180b8a23bb39d8be6a508d03c719"
     },
     {
       "id": "step-5",
-      "type": "impl",
-      "description": "Implement none compilation in compile_expr_guarded's Ident arm (lib.rs ~920). Add early check BEFORE scope.resolve: if name == \"none\", return CompiledExpr::option_none(Type::Option(Box::new(Type::Real))). Default inner type is Real; contextual override comes in step-7.",
+      "type": "test",
+      "description": "Write tests validating undef non-propagation semantics (should pass immediately given step-4 implementation): (a) eval_some_undef_produces_option_some_undef — some(undef) must equal Value::Option(Some(Box::new(Value::Undef))), (b) eval_some_undef_not_equal_to_none — Some(Undef) ≠ Option(None), (c) eval_some_undef_not_equal_to_bare_undef — Some(Undef) ≠ Value::Undef. These enforce the critical three-way distinction.",
       "status": "done",
-      "commit": "6d1d2978"
+      "commit": "79e6d96c5265180b8a23bb39d8be6a508d03c719"
     },
     {
       "id": "step-6",
       "type": "test",
-      "description": "Write failing compiler test: compile 'structure S { param x: Option<Int> = none }' → expect OptionNone with result_type Type::Option(Box::new(Type::Int)). Currently fails because resolve_type_with_params doesn't handle Option<T> and none doesn't get type context from param annotation.",
+      "description": "Write tests for nesting and value-ref integration (should pass given step-4): (a) eval_some_nested_some — some(some(3)) yields doubly-wrapped Option(Some(Option(Some(Int(3))))), (b) eval_some_wraps_none — some(none) yields Option(Some(Option(None))), (c) eval_some_value_ref — some(value_ref(x)) where x=42 in ValueMap yields Option(Some(Int(42))), (d) eval_some_missing_ref_wraps_undef — some(value_ref(x)) where x absent yields Option(Some(Undef)), NOT bare Undef. These validate composition and recursive evaluation correctness.",
       "status": "done",
-      "commit": "dcb9f229"
-    },
-    {
-      "id": "step-7",
-      "type": "impl",
-      "description": "Implement Option<T> type resolution and none type context propagation. (a) At param type resolution (lib.rs ~2644), before calling resolve_type_with_params, add check: if type_expr.name == \"Option\" && type_expr.type_args.len() == 1, resolve the inner type arg recursively and return Type::Option(Box::new(inner)). (b) At param compilation (lib.rs ~2818), after compiling default_expr, if it's OptionNone and cell_type is Type::Option(inner), create new CompiledExpr::option_none with the correct Option type. (c) Same for let compilation (lib.rs ~2856): if compiled_expr is OptionNone and let_decl.type_expr resolves to Option<T>, override the result_type.",
-      "status": "done",
-      "commit": "6d1d2978"
-    },
-    {
-      "id": "step-8",
-      "type": "test",
-      "description": "Write compiler tests for edge cases: (a) some() with 0 args → diagnostic error emitted, (b) some(1, 2) with 2 args → diagnostic error emitted, (c) nested some(some(42)) → OptionSome(OptionSome(Literal(42))) with type Option<Option<Int>>, (d) some(x) where x is a param → OptionSome(ValueRef) with Option<param_type>, (e) let with Option<Length> type annotation and none default → correct scalar type propagation.",
-      "status": "done",
-      "commit": "dcb9f229"
-    },
-    {
-      "id": "step-9",
-      "type": "impl",
-      "description": "Fix any edge case test failures from step-8. Expected: (a) Add arity validation with clear diagnostic messages for some() wrong arg count (e.g., 'some() requires exactly 1 argument, got N'). (b) Verify nested some works via recursive compilation. (c) Verify Option<Length> resolves to Type::Option(Box::new(Type::Scalar{dimension:LENGTH})) through type_args resolution.",
-      "status": "done",
-      "commit": "6d1d2978"
-    },
-    {
-      "id": "step-10",
-      "type": "test",
-      "description": "Write compiler test for no-context none (none used without type annotation): 'structure S { let x = none }' → OptionNone with Type::Option(Box::new(Type::Real)) default, no error diagnostics. Verifies graceful fallback when type cannot be inferred.",
-      "status": "done",
-      "commit": "dcb9f229"
-    },
-    {
-      "id": "step-11",
-      "type": "impl",
-      "description": "Verify step-10 test passes (should work from step-5 implementation). If any adjustment needed for the no-annotation case, fix here.",
-      "status": "done",
-      "commit": "6d1d2978"
+      "commit": "79e6d96c5265180b8a23bb39d8be6a508d03c719"
     }
   ],
   "design_decisions": [
     {
-      "decision": "No grammar or AST changes — handle some/none as semantic keywords recognized in the compiler",
-      "rationale": "some(expr) already parses naturally as FunctionCall and none as Ident via existing grammar rules. Adding grammar-level keywords would require tree-sitter regeneration and is unnecessary since the compiler can intercept these names before normal resolution. The task description says 'verify...parse correctly' confirming no parser changes are expected."
+      "decision": "No Undef propagation in some() — evaluate inner expression unconditionally and wrap the result",
+      "rationale": "The task explicitly requires some(undef) to produce Value::Option(Some(Value::Undef)), distinct from both Value::Option(None) and Value::Undef. Unlike arithmetic operators which propagate Undef (e.g., undef + 1 → Undef), some() is a wrapper that intentionally preserves whatever the inner expression produces. This maintains the three-way distinction fundamental to option type semantics."
     },
     {
-      "decision": "Intercept some/none BEFORE normal function/identifier resolution in compile_expr_guarded",
-      "rationale": "Placing the check early (before resolve_function_overload for some, before scope.resolve for none) prevents confusing error messages like 'unresolved name: none' or 'no matching overload for some'. These are language keywords, not user-defined functions or variables."
-    },
-    {
-      "decision": "Default none type is Type::Option(Box::new(Type::Real)), with contextual override at param/let compilation sites",
-      "rationale": "compile_expr_guarded has no 'expected type' parameter, so we can't pass context down. Instead, we emit a default-typed OptionNone and fix it up at the call site where type annotations are available. This is minimally invasive — no signature changes to compile_expr or compile_expr_guarded. Type::Real default matches the project's existing fallback convention for unresolved types."
-    },
-    {
-      "decision": "Add Option<T> support via inline checks at type resolution call sites rather than modifying resolve_type_name signature",
-      "rationale": "resolve_type_name takes only a &str name, not the full TypeExpr with type_args. Rather than changing its signature (which affects many call sites), we add checks at the specific param/let compilation points where the TypeExpr struct is available. This keeps changes localized to the task scope."
-    },
-    {
-      "decision": "Validate some() arity: exactly 1 argument required, emit diagnostic for wrong count",
-      "rationale": "some(expr) semantically wraps exactly one value. Zero args is meaningless (not the same as none), and multiple args are ambiguous. A clear diagnostic helps users understand the API."
+      "decision": "Step-5 and step-6 tests are test-only steps with no corresponding impl step",
+      "rationale": "The OptionSome implementation from step-4 is naturally correct for all cases because it unconditionally wraps eval(inner). The undef, nesting, and value-ref tests pass without additional code — they validate emergent correctness from the recursive evaluation design. Separating them as distinct test steps documents the design intent and catches future regressions if someone incorrectly adds Undef short-circuiting."
     }
   ],
   "reuse": [
     {
-      "what": "CompiledExprKind::OptionSome and OptionNone variants",
-      "where": "crates/reify-types/src/expr.rs lines 86-91",
-      "how": "Already defined with full traversal support (walk, collect_value_refs, remap_entity, content_hash tags [14]/[15]). No changes needed in reify-types."
+      "what": "CompiledExpr::option_some() and CompiledExpr::option_none() constructors",
+      "where": "crates/reify-types/src/expr.rs lines 507-526",
+      "how": "Used in tests to construct AST nodes. Defined as part of task 162. option_some(inner, result_type) wraps an inner CompiledExpr; option_none(result_type) creates a bare None."
     },
     {
-      "what": "CompiledExpr::option_some() and option_none() constructors",
-      "where": "crates/reify-types/src/expr.rs constructor methods",
-      "how": "Use directly: option_some(inner, result_type) and option_none(result_type) to create compiled expressions."
+      "what": "CompiledExpr::literal(value, ty) constructor",
+      "where": "crates/reify-types/src/expr.rs",
+      "how": "Used in tests to create inner literal expressions for some() wrapping. Standard pattern across all evaluator tests."
     },
     {
-      "what": "Type::Option(Box<Type>) variant",
-      "where": "crates/reify-types/src/ty.rs",
-      "how": "Already exists in the type system. Create instances via Type::Option(Box::new(inner_type))."
+      "what": "CompiledExpr::value_ref(cell_id, ty) constructor",
+      "where": "crates/reify-types/src/expr.rs",
+      "how": "Used in step-6 tests for value-ref integration — creates a ValueRef expression that looks up a ValueCellId in the ValueMap."
     },
     {
-      "what": "Test helper builders: option_some_expr() and option_none_expr()",
-      "where": "crates/reify-test-support/src/builders.rs",
-      "how": "Available for constructing expected values in compiler test assertions."
+      "what": "EvalContext::simple(&values) and ValueMap::new()",
+      "where": "crates/reify-expr/src/lib.rs and crates/reify-types/src/value.rs",
+      "how": "Standard test harness pattern used by all evaluator tests: create ValueMap, optionally insert values, evaluate with EvalContext::simple(&values)."
     },
     {
-      "what": "collect_body_refs_inner already handles OptionSome/OptionNone",
-      "where": "crates/reify-compiler/src/lib.rs lines 4118-4121",
-      "how": "No changes needed — body ref collection for purposes already has match arms for these variants."
-    },
-    {
-      "what": "Existing parser test pattern (parse_decls/parse_members helpers)",
-      "where": "crates/reify-syntax/tests/*.rs (all test files)",
-      "how": "Replicate the standard helper functions in option_tests.rs for parsing source and extracting declarations/members with error checking."
-    },
-    {
-      "what": "Existing compiler test pattern (compile_module/get_cell_expr helpers)",
-      "where": "crates/reify-compiler/tests/*.rs (e.g., lambda_compile_tests.rs, match_compile_tests.rs)",
-      "how": "Replicate the standard helpers in option_compile_tests.rs for compiling source and extracting compiled expressions from value cells."
+      "what": "Recursive eval_expr(inner, ctx) pattern",
+      "where": "crates/reify-expr/src/lib.rs line 54",
+      "how": "OptionSome arm follows the same recursive eval pattern used by UnaryOp, BinOp, If, and other compound expression kinds."
     }
   ],
-  "_session_id": "162-2e121aab",
-  "_created_at": "2026-03-25T01:22:12.232530+00:00"
+  "_session_id": "163-ac503362",
+  "_created_at": "2026-03-25T01:46:34.736843+00:00"
 }
