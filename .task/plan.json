@@ -1,6 +1,6 @@
 {
-  "task_id": "235",
-  "title": "Transform: Type, Value, constructors",
+  "task_id": "321",
+  "title": "Stdlib: Plane, Axis, BoundingBox structures + constructors",
   "files": [
     "crates/reify-types/src/ty.rs",
     "crates/reify-types/src/value.rs",
@@ -10,133 +10,212 @@
     "crates/reify-types",
     "crates/reify-stdlib"
   ],
-  "analysis": "Add Transform(usize) to the Type enum and a corresponding Value::Transform { rotation, translation } variant. Transform represents a rigid-body transformation: rotation (Orientation<N>) + translation (Vector<N,Length>). This follows the exact same compound-type pattern as Frame { origin: Box<Value>, basis: Box<Value> }, but with different semantics and fields: Transform stores a rotation (Orientation) and a translation (Vector) rather than an origin (Point) and a basis (Orientation). Two constructors go in reify-stdlib: transform3(rotation, translation) and transform3_identity(). The implementation touches 3 files: ty.rs (Type enum + Display + factory + tests), value.rs (Value enum + PartialEq + Ord + content_hash + Display + dimension + tests), and stdlib lib.rs (eval_builtin match arms + tests). All trait impls follow the Frame pattern exactly. Transform gets type_tag=21 (next after Frame=20) and content_hash tag=21 (next available after Frame's tag=20). The Ord comment on line 460 must be extended to include Transform=21.",
-  "prerequisites": [],
+  "analysis": "The task adds three new geometric types (Plane, Axis, BoundingBox) to the Reify type system and stdlib. The codebase has well-established patterns from recently-added composite types Frame(origin+basis) and Transform(rotation+translation). Each new type needs: (1) a Type enum variant in ty.rs with Display and factory method, (2) a Value enum variant in value.rs with PartialEq, Ord, Display, content_hash, and dimension trait impls, and (3) constructor functions in eval_builtin (stdlib/lib.rs). The task specifies 6 convenience constructors (plane_xy/xz/yz with offset, axis_x/y/z with origin point) plus BoundingBox needs a bbox(min,max) constructor with computed size/center accessor functions (bbox_size, bbox_center). The existing type_tag numbering goes up to 21 (Transform); new types get 22-24. Content hash tags similarly extend from 21 to 24. Value::Point/Vector are the established building blocks \u2014 Plane stores origin as Point3 and normal as Vector3<Dimensionless>, Axis stores origin as Point3 and direction as Vector3<Dimensionless>, BoundingBox stores min/max as Point3 pairs. The tensor_components_f64 helper works on Point/Vector values (confirmed by normalize/magnitude usage) and will be reused for BoundingBox computed fields.",
+  "prerequisites": [
+    {
+      "id": "pre-1",
+      "description": "Add Type::Plane, Type::Axis, Type::BoundingBox variants to ty.rs enum. Add Display arms ('Plane', 'Axis', 'BoundingBox'). Add factory methods: Type::plane(), Type::axis(), Type::bounding_box().",
+      "status": "done",
+      "commit": "82b4d672",
+      "tests": []
+    },
+    {
+      "id": "pre-2",
+      "description": "Add Value::Plane { origin: Box<Value>, normal: Box<Value> } variant to value.rs. Implement: PartialEq (delegate to inner eq), Ord (type_tag=22, compare origin then normal), Display ('plane(origin, normal)'), content_hash (tag=22, combine origin+normal hashes), dimension (returns DIMENSIONLESS following Frame/Transform convention). Add tests: construction, equality, display, content_hash determinism, content_hash no-collision with Transform(tag=21), Ord cross-type ordering.",
+      "status": "done",
+      "commit": "82b4d672",
+      "tests": [
+        "value_plane_construction",
+        "value_plane_partial_eq_same",
+        "value_plane_partial_eq_different",
+        "value_plane_display",
+        "value_plane_content_hash_deterministic",
+        "value_plane_content_hash_no_collision_with_transform",
+        "value_plane_ord_cross_type",
+        "value_plane_dimension_dimensionless"
+      ]
+    },
+    {
+      "id": "pre-3",
+      "description": "Add Value::Axis { origin: Box<Value>, direction: Box<Value> } variant to value.rs. Implement: PartialEq (delegate), Ord (type_tag=23, compare origin then direction), Display ('axis(origin, direction)'), content_hash (tag=23), dimension (DIMENSIONLESS). Add tests following same pattern as Plane.",
+      "status": "done",
+      "commit": "82b4d672",
+      "tests": [
+        "value_axis_construction",
+        "value_axis_partial_eq_same",
+        "value_axis_partial_eq_different",
+        "value_axis_display",
+        "value_axis_content_hash_deterministic",
+        "value_axis_content_hash_no_collision_with_plane",
+        "value_axis_ord_cross_type",
+        "value_axis_dimension_dimensionless"
+      ]
+    },
+    {
+      "id": "pre-4",
+      "description": "Add Value::BoundingBox { min: Box<Value>, max: Box<Value> } variant to value.rs. Implement: PartialEq (delegate), Ord (type_tag=24, compare min then max), Display ('bbox(min, max)'), content_hash (tag=24), dimension (DIMENSIONLESS). Add tests following same pattern.",
+      "status": "done",
+      "commit": "82b4d672",
+      "tests": [
+        "value_bbox_construction",
+        "value_bbox_partial_eq_same",
+        "value_bbox_partial_eq_different",
+        "value_bbox_display",
+        "value_bbox_content_hash_deterministic",
+        "value_bbox_content_hash_no_collision_with_axis",
+        "value_bbox_ord_cross_type",
+        "value_bbox_dimension_dimensionless"
+      ]
+    }
+  ],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing tests for Type::Transform(usize) in ty.rs mod tests: construction and equality (Transform(3)==Transform(3), Transform(3)!=Transform(2)), Display ('Transform3', 'Transform2'), factory method Type::transform(n), Eq/Hash consistency via HashMap, is_numeric()=false, as_name()=None, Transform(3)!=Frame(3), Transform(3)!=Orientation(3)",
+      "description": "Write failing tests for plane_xy(offset): (1) plane_xy(5mm) returns Plane with origin=Point(0m,0m,5mm) and normal=Vector(0,0,1), (2) plane_xy() with no args returns Undef, (3) plane_xy(Bool) returns Undef, (4) plane_xy with 2 args returns Undef, (5) plane_xy(NaN) returns Undef, (6) plane_xy(Inf) returns Undef, (7) plane_xy(Real(0.0)) produces dimensionless origin.",
       "status": "done",
-      "commit": "e4899e1c"
+      "commit": "116d148f"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Add Transform(usize) variant to Type enum in ty.rs (after Frame(usize) on line 49). Add Display arm: 'Transform{n}' (after Frame arm on line 810). Add factory method Type::transform(n: usize) -> Self (after frame factory on line 120). is_numeric already returns false via catch-all, as_name already returns None. All step-1 tests pass.",
+      "description": "Implement plane_xy constructor in eval_builtin: validate single numeric arg via as_f64(), reject NaN/Inf, extract dimension, build origin Point3 with (0,0,offset) using matching dimension for zero-components, build normal Vector3(0,0,1) as dimensionless Reals, return Value::Plane{origin, normal}.",
       "status": "done",
-      "commit": "e4899e1c"
+      "commit": "116d148f"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing tests for Value::Transform in value.rs mod tests: construction with Orientation rotation and Vector translation (verify fields via destructure), PartialEq (equal transforms, different rotation, different translation), Display format 'transform([w,x,y,z]q, vec(...))', dimension() returns DIMENSIONLESS, content_hash determinism (same transform same hash), content_hash distinct from Frame and Orientation and Vector, Ord type_tag=21 > Frame=20, same-type Ord compares rotation first then translation, content_hash with neg-zero in translation differs",
+      "description": "Write failing tests for plane_xz(offset) and plane_yz(offset): (1) plane_xz(3mm) produces origin=(0m,3mm,0m) and normal=(0,1,0), (2) plane_yz(7mm) produces origin=(7mm,0m,0m) and normal=(1,0,0), (3) plane_xz/yz with invalid args produce Undef.",
       "status": "done",
-      "commit": "3474704e"
+      "commit": "116d148f"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Add Value::Transform { rotation: Box<Value>, translation: Box<Value> } variant to Value enum (after Frame on line 62). Implement: content_hash arm (tag=21, combine rotation+translation hashes following Frame's tag=20 pattern on line 322-324), PartialEq arm (rotation==rotation && translation==translation following Frame pattern on lines 414-417), Ord type_tag=21 (update comment on line 460, add tag match on ~line 483), same-variant cmp rotation.cmp then translation.cmp (after Frame arm on line 584-586), Display arm 'transform({rotation}, {translation})' (after Frame arm on line 717-719). Dimension returns DIMENSIONLESS via existing catch-all on line 180. All step-3 tests pass.",
+      "description": "Implement plane_xz and plane_yz constructors in eval_builtin. Extract shared helper make_plane(args, offset_index, normal_components) to DRY the three plane constructors. plane_xz: offset at y-position, normal=(0,1,0). plane_yz: offset at x-position, normal=(1,0,0). Refactor plane_xy to use the shared helper.",
       "status": "done",
-      "commit": "3474704e"
+      "commit": "116d148f"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing tests for transform3(rotation, translation) constructor in stdlib lib.rs: valid Orientation + Vector3<Length> args returns Value::Transform with correct rotation and translation fields, verify fields stored exactly, wrong arg count (0, 1, 3 args) returns Undef, non-Orientation first arg (e.g. Real) returns Undef, non-Vector second arg (e.g. Real, Point3, Orientation) returns Undef, Vector2 translation (wrong component count) returns Undef, dimensionless Vector3 (Real components) is accepted",
+      "description": "Write failing tests for axis_z(origin): (1) axis_z(Point3<Length>) returns Axis with passed origin and direction=Vector(0,0,1), (2) axis_z with no args returns Undef, (3) axis_z(Real) returns Undef (not a Point), (4) axis_z(Point2) returns Undef (wrong dimensionality), (5) axis_z(Vector3) returns Undef (must be Point not Vector).",
       "status": "done",
-      "commit": "1ac007a3"
+      "commit": "116d148f"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Add 'transform3' match arm to eval_builtin in stdlib lib.rs (after frame3 block around line 513): validate exactly 2 args, first must be Value::Orientation { .. }, second must be Value::Vector with exactly 3 components. Return Value::Transform { rotation: Box::new(args[0].clone()), translation: Box::new(args[1].clone()) }. Return Value::Undef on any validation failure. All step-5 tests pass.",
+      "description": "Implement axis_z constructor in eval_builtin: validate single arg is Value::Point with 3 components, build direction Vector3(0,0,1) as dimensionless Reals, return Value::Axis{origin, direction}.",
       "status": "done",
-      "commit": "1ac007a3"
+      "commit": "116d148f"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing tests for transform3_identity() constructor in stdlib lib.rs: no-arg call returns Value::Transform, rotation field equals identity Orientation (w:1,x:0,y:0,z:0), translation field equals zero Vector3<Length> vec([0m,0m,0m]), call with any args (1 arg, 2 args) returns Undef",
+      "description": "Write failing tests for axis_x and axis_y: (1) axis_x(origin) returns direction=(1,0,0), (2) axis_y(origin) returns direction=(0,1,0), (3) axis_x/y with invalid args return Undef, (4) axis constructors with dimensionless Point3 origin.",
       "status": "done",
-      "commit": "1ac007a3"
+      "commit": "116d148f"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Add 'transform3_identity' match arm to eval_builtin in stdlib lib.rs (after transform3 block): if args.is_empty(), return Value::Transform { rotation: Box::new(Orientation{w:1,x:0,y:0,z:0}), translation: Box::new(Vector([Value::length(0.0) x3])) }; else return Value::Undef. All step-7 tests pass.",
+      "description": "Implement axis_x and axis_y constructors. Extract shared helper make_axis(args, direction_components) to DRY the three axis constructors. axis_x: direction=(1,0,0). axis_y: direction=(0,1,0). Refactor axis_z to use the shared helper.",
       "status": "done",
-      "commit": "1ac007a3"
+      "commit": "116d148f"
+    },
+    {
+      "id": "step-9",
+      "type": "test",
+      "description": "Write failing tests for bbox(min, max): (1) bbox with two Point3<Length> values returns BoundingBox, (2) bbox with mismatched dimensions returns Undef, (3) bbox with non-Point args returns Undef, (4) bbox with Point2 returns Undef, (5) bbox with wrong arg count returns Undef, (6) bbox with one Point and one Vector returns Undef.",
+      "status": "done",
+      "commit": "116d148f"
+    },
+    {
+      "id": "step-10",
+      "type": "impl",
+      "description": "Implement bbox constructor in eval_builtin: validate exactly 2 args, both Value::Point with 3 components, matching dimensions. Return Value::BoundingBox{min, max}.",
+      "status": "done",
+      "commit": "116d148f"
+    },
+    {
+      "id": "step-11",
+      "type": "test",
+      "description": "Write failing tests for BoundingBox computed fields: (1) bbox_size on BoundingBox with min=(1m,2m,3m) max=(4m,6m,9m) returns Vector(3m,4m,6m), (2) bbox_center on same returns Point(2.5m,4m,6m), (3) bbox_size/bbox_center with non-BoundingBox arg returns Undef, (4) bbox_size/bbox_center with wrong arg count returns Undef, (5) bbox_size on dimensionless BoundingBox returns Vector of Reals.",
+      "status": "done",
+      "commit": "116d148f"
+    },
+    {
+      "id": "step-12",
+      "type": "impl",
+      "description": "Implement bbox_size and bbox_center in eval_builtin. bbox_size: extract min/max via tensor_components_f64, compute component-wise (max-min), return Vector3 with same dimension. bbox_center: compute (min+max)/2.0 component-wise, return Point3 with same dimension. Use dimension-aware make_component helper for Value construction.",
+      "status": "done",
+      "commit": "116d148f"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Transform stores rotation (Orientation) + translation (Vector), NOT origin (Point) + basis (Orientation) like Frame",
-      "rationale": "Transform represents a rigid-body transformation (how to move/rotate something), while Frame represents a coordinate system (where something is positioned and oriented). The task description specifies rotation + translation, matching standard SE(3) representation where T(x) = R*x + t."
+      "decision": "Use Value::Point for origins (Plane, Axis) and Value::Point for BoundingBox min/max, consistent with Frame{origin: Point, ...} convention",
+      "rationale": "The task description says 'origin Vector<Length>' but the established codebase convention (Frame, Transform) uses Point for spatial origins and Vector for displacements. Points and Vectors have distinct semantics (point+vector=point, point-point=vector). Following the existing convention ensures consistency and correct arithmetic behavior downstream."
     },
     {
-      "decision": "Value::Transform uses Box<Value> for both fields, following the Frame pattern",
-      "rationale": "Frame already established the compound-type pattern with Box<Value> fields (line 62 of value.rs). Consistency matters more than marginal optimization. Enables delegation for Display/content_hash/comparison."
+      "decision": "Store BoundingBox as just min+max; compute size and center via bbox_size/bbox_center stdlib functions rather than eager storage or method dispatch",
+      "rationale": "Keeps the Value variant minimal (2 fields vs 4), avoids redundant data, and stays within the task's module scope (reify-stdlib + reify-types). Method dispatch (.size, .center) would require changes to reify-expr which is outside scope. Stdlib accessor functions follow the existing functional pattern."
     },
     {
-      "decision": "type_tag=21 and content_hash tag=21 for Transform",
-      "rationale": "Frame uses type_tag=20 and hash tag=20. Next sequential value ensures no hash or ordering collisions. The Ord comment on line 460 documents the full tag mapping and must be extended."
+      "decision": "Content hash tags: Plane=22, Axis=23, BoundingBox=24. Ord type tags: Plane=22, Axis=23, BoundingBox=24",
+      "rationale": "Extends sequentially from the highest existing tag (Transform=21). Maintains unique tags for each variant to prevent hash collisions and ensure deterministic ordering."
     },
     {
-      "decision": "transform3 takes (rotation, translation) not (translation, rotation)",
-      "rationale": "In rigid-body transforms, the mathematical convention is T(x) = R*x + t, with rotation applied first. The rotation comes first both mathematically and in the constructor signature, matching how frame3 takes (origin, basis) in logical order."
+      "decision": "Plane constructors accept any numeric offset (Int, Real, Scalar) via as_f64(). Zero-components in origin match the offset's dimension.",
+      "rationale": "Follows the existing pattern where construct_point_or_vector accepts Int/Real/Scalar. If offset is Scalar{5mm, LENGTH}, origin zeros are Scalar{0, LENGTH}. If offset is Real(5.0), zeros are Real(0.0). This preserves dimension consistency within the Point."
     },
     {
-      "decision": "transform3_identity uses zero-length Vector3 (0m, 0m, 0m) not dimensionless Vector3",
-      "rationale": "Consistent with frame3_identity which uses Value::length(0.0) for origin components. Translation is inherently a length-dimensioned quantity in the physical world."
+      "decision": "Axis constructors require Point3 origin (not Tensor or Vector), validated via Value::Point match with components.len()==3",
+      "rationale": "Consistent with Frame constructor which requires Point3 for origin. Using a Point (not Vector) communicates the correct geometric semantics. Rejecting Vector/Tensor prevents accidental misuse."
     },
     {
-      "decision": "Display format is 'transform(rot, trans)' following 'frame(origin, basis)' pattern",
-      "rationale": "Existing compound type Frame uses lowercase function-call notation for Display (line 718). Transform follows the same convention for consistency."
+      "decision": "Normal vectors and direction vectors are always dimensionless (Value::Real components), not dependent on origin dimension",
+      "rationale": "Unit direction vectors are inherently dimensionless \u2014 they represent direction, not magnitude. This matches CAD convention (gp_Dir in OCCT is unit-length and dimensionless) and avoids dimension complexity in downstream geometry operations."
     },
     {
-      "decision": "transform3 accepts any Vector3 regardless of inner component dimension",
-      "rationale": "Consistent with frame3 which accepts any Point3 regardless of inner quantity dimension (line 502 just checks component count, not dimension). Users might use dimensionless coordinates for pure geometric operations."
+      "decision": "Extract shared helpers make_plane() and make_axis() to DRY the three plane_xy/xz/yz and axis_x/y/z constructors",
+      "rationale": "The three plane constructors differ only in which component gets the offset and which normal vector is used. Similarly for axes. A shared helper eliminates code duplication and ensures consistent validation across all variants."
     }
   ],
   "reuse": [
     {
-      "what": "Frame(usize) type variant pattern",
-      "where": "crates/reify-types/src/ty.rs:49 (variant), 119 (factory), 810 (Display)",
-      "how": "Transform(usize) follows the identical pattern \u2014 single usize parameter, Display as 'Transform{n}', factory method Type::transform(n), is_numeric returns false via catch-all, as_name returns None via catch-all."
+      "what": "Frame/Transform Value variant pattern",
+      "where": "crates/reify-types/src/value.rs lines 62-64 (Frame, Transform variants) and their trait impls (PartialEq ~420-427, Ord ~593-601, Display ~732-737, content_hash ~324-331)",
+      "how": "Copy the pattern exactly for Plane, Axis, BoundingBox: Box<Value> fields, delegating PartialEq/Ord to inner values, combining content hashes with unique tags, Display as 'name(field1, field2)'"
     },
     {
-      "what": "Value::Frame { origin, basis } compound value pattern",
-      "where": "crates/reify-types/src/value.rs:62 (variant), 322-324 (content_hash), 414-417 (PartialEq), 460+483 (Ord tag), 584-586 (Ord cmp), 717-719 (Display)",
-      "how": "Transform's trait impls follow Frame's structure exactly: content_hash uses unique tag and combines sub-hashes; PartialEq delegates to inner field equality; Ord compares fields in order (rotation then translation); Display uses function-call notation."
+      "what": "construct_point_or_vector() validation pattern",
+      "where": "crates/reify-stdlib/src/lib.rs lines 726-753",
+      "how": "Reference the dimension-matching and numeric-validation pattern when implementing plane offset validation. Don't call directly (planes aren't simple point/vector constructors) but follow the same validation approach."
     },
     {
-      "what": "Frame type tests",
-      "where": "crates/reify-types/src/ty.rs:716-775",
-      "how": "Copy Frame tests, rename Frame\u2192Transform, verify same behavioral properties (construction, Display, factory, Hash, is_numeric, as_name, ne to other types)."
+      "what": "tensor_components_f64() helper",
+      "where": "crates/reify-stdlib/src/lib.rs (used by normalize, magnitude, cross, dot)",
+      "how": "Call directly in bbox_size and bbox_center to extract f64 components and dimension from BoundingBox min/max Points. The helper already handles Point and Vector values."
     },
     {
-      "what": "Frame value tests",
-      "where": "crates/reify-types/src/value.rs:2781-2921",
-      "how": "Copy Frame value tests, adapt to Transform fields (rotation+translation instead of origin+basis), adjust expected Display format, update type_tag comparison (21>20 instead of 20>19)."
+      "what": "Value::length() and dimension-aware component construction",
+      "where": "crates/reify-types/src/value.rs lines 84-90 (Value::length factory)",
+      "how": "Use in plane constructors to create zero-valued Scalar components with matching dimension: Value::Scalar { si_value: 0.0, dimension: offset_dim } when offset is dimensioned, or Value::Real(0.0) when dimensionless."
     },
     {
-      "what": "frame3/frame3_identity constructor pattern",
-      "where": "crates/reify-stdlib/src/lib.rs:480-513",
-      "how": "Copy frame3 constructor, change: first arg validates as Orientation (matches! Orientation { .. }), second validates as Vector with 3 components. Identity returns Orientation{1,0,0,0} + Vector([length(0),length(0),length(0)])."
+      "what": "sanitize_value() for NaN/Inf rejection",
+      "where": "crates/reify-stdlib/src/lib.rs",
+      "how": "Use as_f64() + is_finite() check in plane constructors to reject NaN/Inf offsets early, following the existing convention that non-finite values become Undef."
     },
     {
-      "what": "frame3 stdlib tests",
-      "where": "crates/reify-stdlib/src/lib.rs:3919-4064",
-      "how": "Copy frame3 test suite, adapt to transform3 argument types (Orientation first, Vector second) and expected Value::Transform output variant."
-    },
-    {
-      "what": "make_identity_orientation() test helper",
-      "where": "crates/reify-stdlib/src/lib.rs:3927-3929",
-      "how": "Reuse directly as the rotation argument for transform3 tests."
+      "what": "frame3 constructor validation pattern",
+      "where": "crates/reify-stdlib/src/lib.rs lines 494-513",
+      "how": "Mirror the exact validation structure for axis constructors: check arg count, validate first arg is Value::Point with 3 components, validate/construct second field, return composite Value."
     }
   ],
-  "_session_id": "235-48da0fd9",
-  "_created_at": "2026-03-25T01:57:44.445856+00:00"
+  "_session_id": "321-105752f5",
+  "_created_at": "2026-03-25T02:27:00.051293+00:00"
 }
