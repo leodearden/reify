@@ -30,3 +30,14 @@ trait Strong {
     param compressive_strength : Real
     constraint uts >= yield_strength
 }
+
+// ── Hardness ─────────────────────────────────────────────────────────────────
+
+// Hardness measurement scale selector.
+enum HardnessScale { Rockwell_A, Rockwell_B, Rockwell_C, Brinell, Vickers, Shore_A, Shore_D }
+
+// hardness_value is the numeric reading; hardness_scale specifies the test method.
+trait Hard {
+    param hardness_value : Real
+    param hardness_scale : HardnessScale
+}

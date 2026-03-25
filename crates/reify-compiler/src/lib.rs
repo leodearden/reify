@@ -1604,6 +1604,7 @@ fn compile_expr_guarded(
 /// Compile a single trait declaration into a CompiledTrait.
 fn compile_trait(
     trait_decl: &reify_syntax::TraitDecl,
+    enum_defs: &[reify_types::EnumDef],
     diagnostics: &mut Vec<Diagnostic>,
 ) -> CompiledTrait {
     let mut required_members = Vec::new();
@@ -1613,21 +1614,23 @@ fn compile_trait(
         match member {
             reify_syntax::MemberDecl::Param(param) => {
                 let ty = if let Some(type_expr) = &param.type_expr {
-                    match resolve_type_name(&type_expr.name) {
-                        Some(t) => t,
-                        None => {
-                            diagnostics.push(
-                                Diagnostic::error(format!(
-                                    "unresolved type in trait '{}': {}",
-                                    trait_decl.name, type_expr.name
-                                ))
-                                .with_label(DiagnosticLabel::new(
-                                    type_expr.span,
-                                    "unknown type name",
-                                )),
-                            );
-                            Type::Real // fallback
-                        }
+                    if let Some(t) = resolve_type_name(&type_expr.name) {
+                        t
+                    } else if enum_defs.iter().any(|e| e.name == type_expr.name) {
+                        // Enum type defined in the same module
+                        Type::Enum(type_expr.name.clone())
+                    } else {
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "unresolved type in trait '{}': {}",
+                                trait_decl.name, type_expr.name
+                            ))
+                            .with_label(DiagnosticLabel::new(
+                                type_expr.span,
+                                "unknown type name",
+                            )),
+                        );
+                        Type::Real // fallback
                     }
                 } else {
                     Type::Real
@@ -2076,10 +2079,10 @@ pub fn compile(
         }
     }
 
-    // 2. Traits (independent — no deps on enums/functions)
+    // 2. Traits (depend on enum_defs for enum type resolution in params)
     let mut trait_defs = Vec::new();
     for trait_decl in &trait_refs {
-        let compiled_trait = compile_trait(trait_decl, &mut diagnostics);
+        let compiled_trait = compile_trait(trait_decl, &enum_defs, &mut diagnostics);
         trait_defs.push(compiled_trait);
     }
 
