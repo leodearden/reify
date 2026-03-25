@@ -1470,4 +1470,50 @@ mod tests {
             .unwrap();
         assert_eq!(area, meters(42.0));
     }
+
+    #[test]
+    fn mock_find_ops_does_not_poison_mutex_on_closure_panic() {
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+
+        let mut kernel = MockGeometryKernel::new();
+        kernel
+            .execute(&GeometryOp::Sphere {
+                radius: Value::length(0.01),
+            })
+            .unwrap();
+
+        // Call find_ops with a closure that panics — catch the panic
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            kernel.find_ops(|_op| panic!("deliberate panic inside find_ops closure"));
+        }));
+        assert!(result.is_err(), "closure should have panicked");
+
+        // After the caught panic, the mutex must NOT be poisoned:
+        // op_count() and last_op() should still work.
+        assert_eq!(kernel.op_count(), 1);
+        assert!(kernel.last_op().is_some());
+    }
+
+    #[test]
+    fn mock_has_op_does_not_poison_mutex_on_closure_panic() {
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+
+        let mut kernel = MockGeometryKernel::new();
+        kernel
+            .execute(&GeometryOp::Sphere {
+                radius: Value::length(0.01),
+            })
+            .unwrap();
+
+        // Call has_op with a closure that panics — catch the panic
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            kernel.has_op(|_op| panic!("deliberate panic inside has_op closure"));
+        }));
+        assert!(result.is_err(), "closure should have panicked");
+
+        // After the caught panic, the mutex must NOT be poisoned:
+        // op_count() and last_op() should still work.
+        assert_eq!(kernel.op_count(), 1);
+        assert!(kernel.last_op().is_some());
+    }
 }
