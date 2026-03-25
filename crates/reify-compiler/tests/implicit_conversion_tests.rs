@@ -1,4 +1,4 @@
-//! Tests for the `implicitly_converts_to` function.
+//! Tests for the `implicitly_converts_to` and `type_compatible` functions.
 //!
 //! These tests verify all four implicit conversion rules directionally:
 //!   1. Vector<N,Q> <-> Tensor<1,N,Q>  (bidirectional)
@@ -6,7 +6,7 @@
 //!   3. Tensor<2,N,Q> -> Matrix<N,N,Q>  (one-way: Tensor2 -> square Matrix)
 //!   4. Matrix -> Tensor                (NOT implicit)
 
-use reify_compiler::implicitly_converts_to;
+use reify_compiler::{implicitly_converts_to, type_compatible};
 use reify_types::{DimensionVector, Type};
 
 // ── Helper type constructors ────────────────────────────────────────────────
@@ -225,4 +225,46 @@ fn bool_to_tensor0_real_rejected() {
     let from = Type::Bool;
     let to = Type::Tensor { rank: 0, n: 1, quantity: Box::new(Type::Real) };
     assert!(!implicitly_converts_to(&from, &to), "Bool -> Tensor<0,1,Real> should NOT be allowed (Bool != Real)");
+}
+
+// ── type_compatible() integration tests ────────────────────────────────────
+
+/// (a) type_compatible(Tensor<1,3,Real>, Vector<3,Real>) == true (bidirectional).
+#[test]
+fn type_compatible_tensor1_vector_bidirectional_a() {
+    let t = Type::Tensor { rank: 1, n: 3, quantity: Box::new(Type::Real) };
+    let v = Type::Vector { n: 3, quantity: Box::new(Type::Real) };
+    assert!(type_compatible(&t, &v), "type_compatible(Tensor<1,3,Real>, Vector<3,Real>) should be true");
+}
+
+/// (b) type_compatible(Vector<3,Real>, Tensor<1,3,Real>) == true (other direction).
+#[test]
+fn type_compatible_tensor1_vector_bidirectional_b() {
+    let v = Type::Vector { n: 3, quantity: Box::new(Type::Real) };
+    let t = Type::Tensor { rank: 1, n: 3, quantity: Box::new(Type::Real) };
+    assert!(type_compatible(&v, &t), "type_compatible(Vector<3,Real>, Tensor<1,3,Real>) should be true");
+}
+
+/// (c) type_compatible(Real, Int) == true — existing Int->Real widening preserved.
+#[test]
+fn type_compatible_int_real_widening_preserved() {
+    assert!(type_compatible(&Type::Real, &Type::Int), "type_compatible(Real, Int) should be true (Int->Real widening)");
+}
+
+/// (d) type_compatible(Tensor<2,3,Real>, Matrix<3,3,Real>) == true.
+#[test]
+fn type_compatible_tensor2_matrix() {
+    let t = Type::Tensor { rank: 2, n: 3, quantity: Box::new(Type::Real) };
+    let m = Type::Matrix { m: 3, n: 3, quantity: Box::new(Type::Real) };
+    assert!(type_compatible(&t, &m), "type_compatible(Tensor<2,3,Real>, Matrix<3,3,Real>) should be true");
+}
+
+/// (e) type_compatible(Matrix<3,3,Real>, Tensor<2,3,Real>) == true.
+/// type_compatible is symmetric — checks both directions, so even though
+/// Matrix->Tensor is not a direct implicit conversion, the reverse (Tensor->Matrix) is.
+#[test]
+fn type_compatible_matrix_tensor2_symmetric() {
+    let m = Type::Matrix { m: 3, n: 3, quantity: Box::new(Type::Real) };
+    let t = Type::Tensor { rank: 2, n: 3, quantity: Box::new(Type::Real) };
+    assert!(type_compatible(&m, &t), "type_compatible(Matrix<3,3,Real>, Tensor<2,3,Real>) should be true (symmetric check)");
 }

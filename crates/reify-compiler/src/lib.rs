@@ -602,12 +602,11 @@ pub fn implicitly_converts_to(from: &Type, to: &Type) -> bool {
 
 /// Check if an argument type is compatible with a parameter type.
 /// Exact match always works. Int→Real widening is allowed.
-/// Implicit tensor/vector/matrix conversions are also checked.
+/// Implicit tensor/vector/matrix conversions are also checked (bidirectional).
 ///
 /// Not used in overload resolution (which uses exact matching), but used
 /// in trait conformance and field composition checks.
-#[allow(dead_code)]
-fn type_compatible(param_ty: &Type, arg_ty: &Type) -> bool {
+pub fn type_compatible(param_ty: &Type, arg_ty: &Type) -> bool {
     if param_ty == arg_ty {
         return true;
     }
