@@ -316,6 +316,45 @@ mod tests {
         assert!(!md.contains("\n\n\n"), "should not have triple newline (empty doc section), got: {md}");
     }
 
+    // --- doc comment hover on fn/trait/enum ---
+
+    #[test]
+    fn hover_on_fn_name_shows_signature_and_doc() {
+        let source = "/// Compute area.\nfn area(w: Scalar, h: Scalar) -> Scalar { w * h }";
+        let position = Position::new(1, 4); // on 'area'
+        let md = hover_markdown(source, position).expect("hover should return info");
+        assert!(md.contains("fn area"), "should contain fn signature, got: {md}");
+        assert!(md.contains("Compute area."), "should contain doc comment, got: {md}");
+    }
+
+    #[test]
+    fn hover_on_fn_name_without_doc_shows_signature() {
+        let source = "fn area(w: Scalar, h: Scalar) -> Scalar { w * h }";
+        let position = Position::new(0, 4); // on 'area'
+        let md = hover_markdown(source, position).expect("hover should return info");
+        assert!(md.contains("fn area"), "should contain fn signature, got: {md}");
+        // No doc section
+        assert!(!md.ends_with("\n\n"), "should not end with double newline, got: {md}");
+    }
+
+    #[test]
+    fn hover_on_trait_name_shows_doc() {
+        let source = "/// Rigid body trait.\ntrait Rigid {\n    param mass: Scalar\n}";
+        let position = Position::new(1, 7); // on 'Rigid'
+        let md = hover_markdown(source, position).expect("hover should return info");
+        assert!(md.contains("trait Rigid"), "should contain trait name, got: {md}");
+        assert!(md.contains("Rigid body trait."), "should contain doc comment, got: {md}");
+    }
+
+    #[test]
+    fn hover_on_enum_name_shows_doc() {
+        let source = "/// Flow direction.\nenum Direction { In, Out }";
+        let position = Position::new(1, 6); // on 'Direction'
+        let md = hover_markdown(source, position).expect("hover should return info");
+        assert!(md.contains("enum Direction"), "should contain enum name, got: {md}");
+        assert!(md.contains("Flow direction."), "should contain doc comment, got: {md}");
+    }
+
     #[test]
     fn hover_on_empty_source_returns_none() {
         let result = compute_hover("", &test_uri(), Position::new(0, 0));
