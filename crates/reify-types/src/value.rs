@@ -1762,4 +1762,42 @@ mod tests {
         let v = Value::Complex { re: 1.0, im: 2.0, dimension: DimensionVector::DIMENSIONLESS };
         assert_eq!(v.dimension(), DimensionVector::DIMENSIONLESS);
     }
+
+    // ── Value::Matrix construction, PartialEq, Display tests (step-1) ─────────
+
+    #[test]
+    fn matrix_construction_and_partial_eq() {
+        let m1 = Value::Matrix(vec![
+            vec![Value::Int(1), Value::Int(2)],
+            vec![Value::Int(3), Value::Int(4)],
+        ]);
+        let m2 = Value::Matrix(vec![
+            vec![Value::Int(1), Value::Int(2)],
+            vec![Value::Int(3), Value::Int(4)],
+        ]);
+        assert_eq!(m1, m2, "identical 2x2 matrices should be equal");
+
+        let m3 = Value::Matrix(vec![
+            vec![Value::Int(1), Value::Int(2)],
+            vec![Value::Int(3), Value::Int(99)],
+        ]);
+        assert_ne!(m1, m3, "different 2x2 matrices should not be equal");
+    }
+
+    #[test]
+    fn matrix_display() {
+        let m = Value::Matrix(vec![
+            vec![Value::Int(1), Value::Int(2)],
+            vec![Value::Int(3), Value::Int(4)],
+        ]);
+        assert_eq!(m.to_string(), "[[1, 2], [3, 4]]");
+    }
+
+    #[test]
+    fn matrix_ne_tensor() {
+        // Matrix([[1,2]]) != Tensor([Tensor([Int(1),Int(2)])])
+        let matrix = Value::Matrix(vec![vec![Value::Int(1), Value::Int(2)]]);
+        let tensor = Value::Tensor(vec![Value::Tensor(vec![Value::Int(1), Value::Int(2)])]);
+        assert_ne!(matrix, tensor, "Matrix and nested Tensor should be distinct variants");
+    }
 }
