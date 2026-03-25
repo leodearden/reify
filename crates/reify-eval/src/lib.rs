@@ -3150,11 +3150,11 @@ fn compile_geometry_op(
                             .iter()
                             .find(|(n, _)| n == name)
                             .map(|(_, expr)| reify_expr::eval_expr(expr, &ctx))
-                            .expect(&format!(
+                            .unwrap_or_else(|| panic!(
                                 "Revolve Sweep args must contain '{}' key — compiler bug",
                                 name
                             ));
-                        val.as_f64().expect(&format!(
+                        val.as_f64().unwrap_or_else(|| panic!(
                             "Revolve '{}' arg must evaluate to f64 — compiler bug",
                             name
                         ))
