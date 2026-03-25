@@ -417,6 +417,38 @@ structure def S2 {
     );
 }
 
+// ── step-15: auto_match_chain_desugared ───────────────────────────────
+
+#[test]
+fn auto_match_chain_desugared() {
+    // Chain a -> b -> c where all three ports have same trait T and matching param `d`.
+    // Assert both desugared connections have auto-generated port_mappings [("d", "d")].
+    let source = r#"
+trait T { param d : Length }
+structure def S {
+    port a : out T { param d : Length = 1mm }
+    port b : bidi T { param d : Length = 2mm }
+    port c : in T { param d : Length = 3mm }
+    chain a -> b -> c
+}
+"#;
+    let (template, diagnostics) = compile_first_template(source);
+    let errors: Vec<_> = diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    assert_eq!(template.connections.len(), 2, "expected 2 desugared connections");
+    // Both connections should have auto-generated identity mapping for 'd'
+    assert_eq!(
+        template.connections[0].port_mappings,
+        vec![("d".to_string(), "d".to_string())],
+        "expected auto-mapping for first desugared connection (a->b)"
+    );
+    assert_eq!(
+        template.connections[1].port_mappings,
+        vec![("d".to_string(), "d".to_string())],
+        "expected auto-mapping for second desugared connection (b->c)"
+    );
+}
+
 // ── step-13: auto_match_empty_members ────────────────────────────────
 
 #[test]
