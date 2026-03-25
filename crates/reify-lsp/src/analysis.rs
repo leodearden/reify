@@ -409,6 +409,30 @@ mod tests {
         }
     }
 
+    // --- doc retrieval tests ---
+
+    #[test]
+    fn find_entity_doc_returns_doc_for_documented_structure() {
+        let source = "/// A bracket.\nstructure Bracket {\n    param width: Scalar = 80mm\n}";
+        let ctx = AnalysisContext::new(source, &test_uri());
+        assert_eq!(ctx.find_entity_doc("Bracket"), Some("A bracket."));
+    }
+
+    #[test]
+    fn find_entity_doc_returns_none_for_undocumented() {
+        let source = reify_test_support::bracket_source();
+        let ctx = AnalysisContext::new(source, &test_uri());
+        assert_eq!(ctx.find_entity_doc("Bracket"), None);
+    }
+
+    #[test]
+    fn member_info_includes_doc_for_documented_param() {
+        let source = "structure Bracket {\n    /// The width.\n    param width: Scalar = 80mm\n}";
+        let ctx = AnalysisContext::new(source, &test_uri());
+        let info = ctx.find_member_decl("width").expect("width should exist");
+        assert_eq!(info.doc.as_deref(), Some("The width."));
+    }
+
     // --- format_value tests ---
 
     #[test]
