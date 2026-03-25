@@ -1,0 +1,243 @@
+{
+  "task_id": "353",
+  "title": "Claude bridge: main.rs cleanup (shutdown + testability)",
+  "files": [
+    "gui/src-tauri/src/claude_bridge.rs",
+    "gui/src-tauri/src/main.rs",
+    "gui/src-tauri/src/tests/claude_bridge_tests.rs"
+  ],
+  "modules": [
+    "gui/src-tauri/src"
+  ],
+  "analysis": "Both S6 and S7 review items from task 139 are partially or fully addressed in the current code:\n\n**S6 (CloseRequested):** Already implemented. main.rs line 442 uses `WindowEvent::CloseRequested { .. }` with correct comments explaining why it's preferred over Destroyed. The `shutdown_sidecar` function is already tested. No code changes needed \u2014 just verify.\n\n**S7 (Extract spawn logic):** `spawn_sidecar_impl` already exists in claude_bridge.rs (lines 451-486) and is called from main.rs line 320. However, the Tauri command `claude_send_message` (main.rs lines 298-358) still has ~55 lines that include: path resolution (AppHandle-required), lazy-spawn mutex logic, ready notification subscription, and timeout waiting. The lazy-spawn + ready-wait pattern is untestable because it's embedded in the Tauri command handler.\n\n**Remaining work:** Extract the lazy-spawn + ready-wait pattern into `pub async fn ensure_sidecar_ready<F, Fut>(sidecar, spawn_fn, timeout)` in claude_bridge.rs. This generic async function takes a spawn closure, making the pattern fully testable without Tauri. The Tauri command shrinks from ~55 lines to ~20 lines (just path resolution + two function calls). Also add edge-case tests for shutdown_sidecar on empty slot and wait_ready on crash.\n\n**Post-review fixes (steps 15-24):** Three blocking issues found in review:\n1. **Race condition (line 549):** `notify.notified()` is called AFTER the sidecar mutex guard is dropped. On a multi-threaded executor, the reader task can process the ready message and call `notify_waiters()` before the Notified future is registered, causing a lost wakeup and spurious timeout. Fix: move `let notified = notify.notified()` inside the lock scope.\n2. **Slot cleanup on failure:** When Phase 2 (timeout) or Phase 3 (crash/non-ready) returns Err, the spawned handle remains in the slot. Next call sees `is_some()` and returns Ok immediately, leaving callers with a broken sidecar. Fix: clear the slot on all error paths after the handle has been stored.\n3. **Fast-path readiness check:** The `is_some()` early return doesn't verify the handle is actually Ready. A Crashed handle persists forever. Fix: check `SidecarState::Ready` in the fast path; if not ready, clear the slot and fall through to re-spawn.",
+  "prerequisites": [],
+  "steps": [
+    {
+      "id": "step-1",
+      "type": "test",
+      "description": "Write test `shutdown_sidecar_noop_on_empty_slot`: call shutdown_sidecar when the Mutex<Option<SidecarHandle>> contains None. Verify it returns without error and slot remains None. Uses existing pattern from shutdown_sidecar_kills_and_clears_handle test.",
+      "status": "done",
+      "commit": "f1e62557"
+    },
+    {
+      "id": "step-2",
+      "type": "impl",
+      "description": "Verify shutdown_sidecar already handles None (no code change needed \u2014 the existing `if let Some(handle)` guard already covers this). Test should pass immediately.",
+      "status": "done",
+      "commit": "f1e62557"
+    },
+    {
+      "id": "step-3",
+      "type": "test",
+      "description": "Write test `wait_ready_returns_err_on_crash_during_wait`: create a SidecarHandle in Starting state with a duplex reader, drop the data_writer immediately to trigger EOF \u2192 Crashed state. Call wait_ready and verify it returns Err with crash message. This covers the edge case where notify fires due to crash, not Ready.",
+      "status": "done",
+      "commit": "f1e62557"
+    },
+    {
+      "id": "step-4",
+      "type": "impl",
+      "description": "Verify wait_ready already handles crash-during-wait correctly (no code change needed \u2014 existing code re-checks state after notification and returns Err for Crashed). Test should pass immediately.",
+      "status": "done",
+      "commit": "f1e62557"
+    },
+    {
+      "id": "step-5",
+      "type": "test",
+      "description": "Write test `ensure_sidecar_ready_spawns_and_waits_when_none`: create an empty sidecar slot (Mutex<Option<SidecarHandle>> = None). Create a spawn closure that returns a SidecarHandle built from_parts with a duplex that sends the 'ready' message. Call ensure_sidecar_ready and verify it returns Ok(()) and the slot now contains Some(handle).",
+      "status": "done",
+      "commit": "24c09583"
+    },
+    {
+      "id": "step-6",
+      "type": "impl",
+      "description": "Add `pub async fn ensure_sidecar_ready<F, Fut>(sidecar: &Mutex<Option<SidecarHandle>>, spawn_fn: F, ready_timeout: Duration) -> Result<(), String>` to claude_bridge.rs. Implementation: lock sidecar, if None call spawn_fn().await?, subscribe to ready_notify BEFORE storing handle (prevents race), release lock, then await ready notification with timeout.",
+      "status": "done",
+      "commit": "24c09583"
+    },
+    {
+      "id": "step-7",
+      "type": "test",
+      "description": "Write test `ensure_sidecar_ready_skips_spawn_when_already_some`: pre-populate the sidecar slot with a Ready handle. Use an AtomicBool to track whether spawn_fn was called. Call ensure_sidecar_ready and verify Ok(()) is returned and spawn_fn was NOT invoked.",
+      "status": "done",
+      "commit": "24c09583"
+    },
+    {
+      "id": "step-8",
+      "type": "impl",
+      "description": "Verify the already-Some path works (no code change needed \u2014 the if-None check naturally skips spawning). Test should pass.",
+      "status": "done",
+      "commit": "24c09583"
+    },
+    {
+      "id": "step-9",
+      "type": "test",
+      "description": "Write test `ensure_sidecar_ready_propagates_spawn_error`: empty sidecar slot with spawn_fn that returns Err('spawn failed'). Call ensure_sidecar_ready and verify it returns the same Err. Verify the sidecar slot is still None.",
+      "status": "done",
+      "commit": "24c09583"
+    },
+    {
+      "id": "step-10",
+      "type": "impl",
+      "description": "Verify spawn error propagation works (no code change needed \u2014 the ? operator on spawn_fn().await? propagates errors). Test should pass.",
+      "status": "done",
+      "commit": "24c09583"
+    },
+    {
+      "id": "step-11",
+      "type": "test",
+      "description": "Write test `ensure_sidecar_ready_timeout_when_no_ready_signal`: empty sidecar slot with spawn_fn returning a handle whose reader never sends 'ready' (duplex stays open). Call ensure_sidecar_ready with 100ms timeout. Verify it returns Err mentioning timeout.",
+      "status": "done",
+      "commit": "24c09583"
+    },
+    {
+      "id": "step-12",
+      "type": "impl",
+      "description": "Verify timeout handling works (no code change needed \u2014 the tokio::time::timeout wrapping the notified future handles this). Test should pass.",
+      "status": "done",
+      "commit": "24c09583"
+    },
+    {
+      "id": "step-13",
+      "type": "impl",
+      "description": "Refactor main.rs `claude_send_message` to use `ensure_sidecar_ready`. Replace the inline lazy-spawn + ready-wait block (~35 lines) with a single call to ensure_sidecar_ready, passing a closure that resolves the sidecar path and calls spawn_sidecar_impl. The command body shrinks to: path resolution, ensure_sidecar_ready call, claude_send_message_impl call.",
+      "status": "done",
+      "commit": "7e16bffc"
+    },
+    {
+      "id": "step-14",
+      "type": "test",
+      "description": "Run full test suite (`cargo test -p reify-gui --lib`) to verify no regressions from the refactor. All existing claude_bridge_tests plus new tests must pass.",
+      "status": "done",
+      "commit": "7e16bffc"
+    },
+    {
+      "id": "step-15",
+      "type": "test",
+      "description": "Write test `ensure_sidecar_ready_notified_race_on_multithread`: use `#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]` to reproduce the race condition. Create a spawn closure that returns a handle whose reader sends the ready message immediately (the ready line is already written before from_parts is called, so the reader task processes it as soon as it's polled). Run ensure_sidecar_ready and verify it returns Ok(()) \u2014 not a timeout error. This test will intermittently fail (timeout due to lost wakeup) with the current code because `notify.notified()` is called after lock release, and the multi-thread executor can let the reader task fire `notify_waiters()` before `notified()` registers. Use a loop of 20 iterations to increase failure probability on the current (buggy) code.",
+      "status": "done",
+      "commit": "85745cb4"
+    },
+    {
+      "id": "step-16",
+      "type": "impl",
+      "description": "Fix race condition: move `let notified = notify.notified();` inside the lock scope in `ensure_sidecar_ready`. The Notified future must be created BEFORE the guard is dropped so it pre-registers as a waiter before any concurrent reader task can call `notify_waiters()`. Change Phase 1 to return `(notified, state)` instead of `(notify, state)`, where `notified` is the already-created `Notified` future. Remove the separate Phase 2 comment and the `let notified = notify.notified();` line outside the block. Update the docstring to reflect that notification subscription happens inside the lock scope (matching the pattern used by `SidecarHandle::wait_ready` and the original main.rs code).",
+      "status": "done",
+      "commit": "85745cb4"
+    },
+    {
+      "id": "step-17",
+      "type": "test",
+      "description": "Write test `ensure_sidecar_ready_clears_slot_on_timeout`: empty sidecar slot with spawn_fn returning a handle that never sends ready (duplex stays open). Call ensure_sidecar_ready with 100ms timeout. Verify Err is returned AND the sidecar slot is `None` after the error. This test will fail with the current code because the timeout error path does not clear the slot. Also verify that a subsequent call to ensure_sidecar_ready with a working spawn_fn succeeds (proving recovery is possible).",
+      "status": "done",
+      "commit": "01668dbc"
+    },
+    {
+      "id": "step-18",
+      "type": "impl",
+      "description": "Fix slot cleanup on timeout: after the `tokio::time::timeout` returns `Err`, re-acquire the sidecar lock and set `*guard = None` before returning the timeout error. This clears the stale handle so the next call can re-enter the spawn path. Implementation: wrap Phase 2+3 in a closure or use a match; on any error after handle storage, call `*sidecar.lock().await = None;` before returning Err.",
+      "status": "done",
+      "commit": "c5d79c97"
+    },
+    {
+      "id": "step-19",
+      "type": "test",
+      "description": "Write test `ensure_sidecar_ready_clears_slot_on_crash`: empty sidecar slot with spawn_fn returning a handle whose data_writer is dropped immediately after from_parts (triggers EOF \u2192 Crashed). Call ensure_sidecar_ready. Verify Err mentioning 'crashed' is returned AND the sidecar slot is `None` after the error. Also verify a subsequent call with a working spawn_fn succeeds (recovery works).",
+      "status": "done",
+      "commit": "01668dbc"
+    },
+    {
+      "id": "step-20",
+      "type": "impl",
+      "description": "Fix slot cleanup on crash/non-ready: in the Phase 3 match arms for `SidecarState::Crashed` and the `other` (non-Ready) case, re-acquire the sidecar lock and set `*guard = None` before returning Err. This can share the same cleanup pattern as step-18 \u2014 refactor Phase 2+3 error handling so any Err path after handle storage clears the slot. A clean pattern: after Phase 1, use a helper block that returns Result; if it's Err, clear the slot and propagate.",
+      "status": "done",
+      "commit": "c5d79c97"
+    },
+    {
+      "id": "step-21",
+      "type": "test",
+      "description": "Write test `ensure_sidecar_ready_rejects_crashed_existing_handle`: pre-populate the sidecar slot with a handle in `SidecarState::Crashed` state. Provide a working spawn_fn with an AtomicBool tracker. Call ensure_sidecar_ready. Verify it returns Ok(()) (not an immediate Ok from the old is_some fast-path), the slot now contains a *new* handle in Ready state, and spawn_fn WAS called (the Crashed handle was cleared and a fresh one spawned). This test will fail with the current code because `guard.is_some()` returns true for the Crashed handle.",
+      "status": "done",
+      "commit": "01668dbc"
+    },
+    {
+      "id": "step-22",
+      "type": "impl",
+      "description": "Fix fast-path readiness check: replace the bare `if guard.is_some() { return Ok(()); }` with a check that inspects the handle's state. If the handle exists AND its state is `SidecarState::Ready`, return Ok(()) immediately (fast path). If the handle exists but state is NOT Ready (Crashed, Starting, or other), clear the slot (`*guard = None;`) and fall through to the spawn path. This ensures a Crashed or stuck handle is automatically recovered on the next call rather than permanently poisoning the slot.",
+      "status": "done",
+      "commit": "c5d79c97"
+    },
+    {
+      "id": "step-23",
+      "type": "test",
+      "description": "Update existing test `ensure_sidecar_ready_skips_spawn_when_already_some` (step-7) if needed: ensure the pre-populated handle is in `SidecarState::Ready` (it already is \u2014 verify this still passes after the fast-path change). Also run the full test suite (`cargo test -p reify-gui --lib`) to verify no regressions from all three fixes.",
+      "status": "done",
+      "commit": "c5d79c97"
+    },
+    {
+      "id": "step-24",
+      "type": "test",
+      "description": "Write test `ensure_sidecar_ready_respawns_starting_stale_handle`: pre-populate the sidecar slot with a handle in `SidecarState::Starting` (simulating a previous spawn that never completed). Provide a working spawn_fn. Call ensure_sidecar_ready. Verify the stale Starting handle is cleared, spawn_fn is called, and the function returns Ok(()) with a new Ready handle. This covers the edge case where a previous ensure_sidecar_ready was interrupted (e.g., by task cancellation) leaving a Starting handle.",
+      "status": "done",
+      "commit": "01668dbc"
+    }
+  ],
+  "design_decisions": [
+    {
+      "decision": "Use generic async closure pattern for ensure_sidecar_ready: `<F: FnOnce() -> Fut, Fut: Future<Output = Result<SidecarHandle, String>>>`",
+      "rationale": "Generic closure avoids boxing overhead and matches Rust async idioms. The caller in main.rs can use `|| async move { spawn_sidecar_impl(...).await }` naturally. In tests, `|| async { Ok(handle) }` or `|| async { Err('fail'.into()) }` work directly."
+    },
+    {
+      "decision": "Subscribe to ready_notify BEFORE storing handle and releasing the sidecar lock",
+      "rationale": "Prevents a race condition where the reader task processes the Ready message and calls notify_waiters() between when the handle is stored and when we await the notification. This is the same pattern used in the current main.rs code and must be preserved in the extracted function."
+    },
+    {
+      "decision": "S6 (CloseRequested) requires no code changes \u2014 only verification",
+      "rationale": "The WindowEvent::CloseRequested handler is already correctly implemented in main.rs line 442. The task 139 review finding was addressed during the original merge. Adding a regression test for shutdown_sidecar on empty slot covers the edge case."
+    },
+    {
+      "decision": "Keep ensure_sidecar_ready in claude_bridge.rs alongside spawn_sidecar_impl and shutdown_sidecar",
+      "rationale": "All three functions form the sidecar lifecycle API: ensure_ready (lazy spawn + wait), spawn (OS process creation), shutdown (kill + clear). Colocation makes the lifecycle management discoverable."
+    },
+    {
+      "decision": "Create Notified future inside lock scope, not after lock release",
+      "rationale": "Review finding: on a multi-threaded Tokio executor, releasing the lock before creating the Notified future creates a window where the reader task can call notify_waiters() before the waiter is registered, causing a lost wakeup. The Notified future must be created while the guard is held so it pre-registers as a waiter. This matches SidecarHandle::wait_ready and the original main.rs code before this diff."
+    },
+    {
+      "decision": "Clear sidecar slot on ALL error paths after handle storage",
+      "rationale": "Review finding: leaving a failed/crashed handle in the slot permanently poisons it \u2014 subsequent calls see is_some() and return Ok() without checking readiness. Clearing on error (timeout, crash, non-ready) allows the next call to re-enter the spawn path for automatic recovery. The re-lock cost is negligible since error paths are rare."
+    },
+    {
+      "decision": "Fast-path checks SidecarState::Ready, not just is_some()",
+      "rationale": "Review finding: a Crashed or stale Starting handle is permanently stuck if the fast path only checks existence. Checking Ready state and clearing non-Ready handles enables automatic recovery without requiring an explicit shutdown_sidecar call from the caller."
+    }
+  ],
+  "reuse": [
+    {
+      "what": "SidecarHandle::from_parts constructor",
+      "where": "claude_bridge.rs",
+      "how": "Used in all new tests to create test handles with controlled duplex I/O \u2014 same pattern as existing tests (e.g., sidecar_handle_abort_writes_abort_json)"
+    },
+    {
+      "what": "tokio::io::duplex for test I/O",
+      "where": "Existing claude_bridge_tests.rs tests",
+      "how": "Duplex channels simulate sidecar stdin/stdout. One end writes ready messages, other end reads written data. Dropping one end triggers EOF/crash detection."
+    },
+    {
+      "what": "shutdown_sidecar function",
+      "where": "claude_bridge.rs",
+      "how": "Already exists and is used in main.rs on_window_event handler. New test just covers the None edge case."
+    },
+    {
+      "what": "Existing test patterns from claude_bridge_tests.rs",
+      "where": "Tests using Arc<Mutex<SidecarState>>, from_parts, duplex I/O",
+      "how": "Follow identical setup patterns for new ensure_sidecar_ready tests \u2014 state construction, duplex creation, handle construction via from_parts."
+    },
+    {
+      "what": "SidecarHandle::state() accessor",
+      "where": "claude_bridge.rs line 292",
+      "how": "Used in fast-path readiness check (step-22) to inspect handle state without consuming the handle. Also used in new tests to verify state transitions."
+    }
+  ],
+  "_session_id": "353-e582c4ce",
+  "_created_at": "2026-03-25T17:39:09.354626+00:00"
+}
