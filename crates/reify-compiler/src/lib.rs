@@ -705,11 +705,14 @@ fn compile_unit(
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<UnitEntry> {
     let dimension = resolve_dimension_type(&decl.dimension_type, diagnostics)?;
-    let factor = decl
-        .conversion
-        .as_ref()
-        .and_then(|expr| evaluate_const_expr(expr, registry, diagnostics))
-        .unwrap_or(1.0);
+    let factor = if let Some(expr) = &decl.conversion {
+        match evaluate_const_expr(expr, registry, diagnostics) {
+            Some(v) => v,
+            None => return None, // evaluation failed; diagnostic already emitted
+        }
+    } else {
+        1.0 // base unit with no conversion expression
+    };
     let offset = decl
         .offset
         .as_ref()
@@ -2295,6 +2298,7 @@ fn compile_purpose(
     enum_defs: &[reify_types::EnumDef],
     functions: &[CompiledFunction],
     template_registry: &HashMap<String, &TopologyTemplate>,
+    unit_registry: &UnitRegistry,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> CompiledPurpose {
     let purpose_name = &purpose_def.name;
@@ -2302,6 +2306,7 @@ fn compile_purpose(
     // Create a compilation scope for the purpose body.
     // Purpose params are registered so their members can be referenced.
     let mut scope = CompilationScope::new(purpose_name);
+    scope.set_unit_registry(unit_registry);
 
     // Register purpose params as identifiers in scope.
     // Each param binds an entity reference (e.g., `subject : Structure`).
@@ -2947,6 +2952,7 @@ pub fn compile_with_prelude(
                     &resolution_enums,
                     &functions,
                     &purpose_template_registry,
+                    &unit_registry,
                     &mut diagnostics,
                 );
                 purposes.push(compiled);
