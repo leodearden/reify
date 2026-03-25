@@ -6783,11 +6783,11 @@
         "description": "Fix wait_ready() (claude_bridge.rs:306-332) not calling Notified::enable() before re-check — in multi-threaded runtime, notification can be lost causing full timeout. Add notified.as_mut().enable() before re-check.\n\nTest improvements:\n- Crashed-sidecar test uses &b\"\"[..] causing on_exit race; use tokio::io::duplex() and assert exact crash reason\n- Fix misleading comment claiming 3 scheduling orderings when single-threaded runtime only exercises 1\n\nMemory hints: search \"wait_ready Notified enable race condition\", entities: ClaudeBridge, wait_ready",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-03-25T22:01:41.235Z"
+        "updatedAt": "2026-03-25T22:01:42.886Z"
       },
       {
         "id": "364",
@@ -7748,7 +7748,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-25T22:01:42.815Z",
+      "lastModified": "2026-03-25T22:01:42.886Z",
       "taskCount": 435,
       "completedCount": 229,
       "tags": [
