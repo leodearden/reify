@@ -835,3 +835,42 @@ structure def S : Safe {
         "expected constraint from trait default"
     );
 }
+
+// ── S21: Sub requirement deduplication ───────────────────────────────────
+
+/// Two non-diamond traits A and B both declare `sub hole = Hole`.
+/// A structure missing the sub-component should produce exactly ONE
+/// "missing sub-component" error for "hole", not two.
+///
+/// Without the fix, collect_all_requirements pushes duplicate Sub requirements
+/// (one from each trait), causing check_trait_conformance to emit two identical errors.
+#[test]
+fn diamond_sub_requirement_deduped() {
+    let source = r#"
+trait HasHoleA {
+    sub hole = Hole()
+}
+trait HasHoleB {
+    sub hole = Hole()
+}
+structure def Hole {}
+structure def Widget : HasHoleA + HasHoleB {}
+"#;
+
+    let module = compile_module(source);
+    let sub_errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Error && d.message.contains("hole")
+        })
+        .collect();
+
+    assert_eq!(
+        sub_errors.len(),
+        1,
+        "expected exactly 1 missing-sub error for 'hole', got {}: {:?}",
+        sub_errors.len(),
+        sub_errors
+    );
+}
