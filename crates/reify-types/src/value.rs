@@ -348,16 +348,11 @@ impl Value {
                 ContentHash::of(&[24]).combine(min.content_hash()).combine(max.content_hash())
             }
             Value::Range { lower, upper, lower_inclusive, upper_inclusive } => {
-                debug_assert!(
-                    lower.is_some() || !lower_inclusive,
-                    "Range invariant violated: lower_inclusive must be false when lower is None"
-                );
-                debug_assert!(
-                    upper.is_some() || !upper_inclusive,
-                    "Range invariant violated: upper_inclusive must be false when upper is None"
-                );
+                // Defensive re-normalization: None bounds → inclusive=false
+                let lower_inclusive = *lower_inclusive && lower.is_some();
+                let upper_inclusive = *upper_inclusive && upper.is_some();
                 // tag=17; flags then optional bounds
-                let mut h = ContentHash::of(&[17, *lower_inclusive as u8, *upper_inclusive as u8]);
+                let mut h = ContentHash::of(&[17, lower_inclusive as u8, upper_inclusive as u8]);
                 match lower {
                     None => h = h.combine(ContentHash::of(&[0])),
                     Some(v) => h = h.combine(ContentHash::of(&[1])).combine(v.content_hash()),
