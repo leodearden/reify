@@ -613,34 +613,22 @@ std::unique_ptr<OcctShape> make_circle_face(double radius, double z_height) {
 
 std::unique_ptr<OcctShape> loft_two_profiles(const OcctShape& wire1, const OcctShape& wire2) {
     try {
-        if (!(std::isfinite(radius) && radius > 0.0)) {
-            throw std::runtime_error("make_circle_face: radius must be finite and positive");
-        }
-        gp_Ax2 axes(gp_Pnt(0, 0, z_height), gp_Dir(0, 0, 1));
-        Handle(Geom_Circle) circle = new Geom_Circle(axes, radius);
-        BRepBuilderAPI_MakeEdge edgeBuilder(circle);
-        if (!edgeBuilder.IsDone()) {
-            throw std::runtime_error("make_circle_face: MakeEdge failed");
-        }
-        TopoDS_Edge edge = edgeBuilder.Edge();
-        BRepBuilderAPI_MakeWire wireBuilder(edge);
-        if (!wireBuilder.IsDone()) {
-            throw std::runtime_error("make_circle_face: MakeWire failed");
-        }
-        TopoDS_Wire wire = wireBuilder.Wire();
-        BRepBuilderAPI_MakeFace faceBuilder(wire, Standard_True);
-        if (!faceBuilder.IsDone()) {
-            throw std::runtime_error("make_circle_face: MakeFace failed");
+        BRepOffsetAPI_ThruSections loft(Standard_True, Standard_False);
+        loft.AddWire(TopoDS::Wire(wire1.shape));
+        loft.AddWire(TopoDS::Wire(wire2.shape));
+        loft.Build();
+        if (!loft.IsDone()) {
+            throw std::runtime_error("BRepOffsetAPI_ThruSections (loft_two_profiles) failed");
         }
         auto result = std::make_unique<OcctShape>();
-        result->shape = faceBuilder.Face();
+        result->shape = loft.Shape();
         return result;
     } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT make_circle_face: ") + e.GetMessageString());
+        throw std::runtime_error(std::string("OCCT loft_two_profiles: ") + e.GetMessageString());
     } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT make_circle_face: unexpected: ") + e.what());
+        throw std::runtime_error(std::string("OCCT loft_two_profiles: unexpected: ") + e.what());
     } catch (...) {
-        throw std::runtime_error("OCCT make_circle_face: unknown C++ exception");
+        throw std::runtime_error("OCCT loft_two_profiles: unknown C++ exception");
     }
 }
 
