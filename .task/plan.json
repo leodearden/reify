@@ -140,15 +140,15 @@
       "id": "step-11",
       "type": "test",
       "description": "Write comprehensive edge-case tests: (a) `multiple_annotations_all_preserved`: `@test @deprecated(\"old\") structure S { param x : Real }` has 2 annotations, first.name==\"test\" and second has String arg. (b) `annotation_arg_types_lowered`: `@config(\"name\", 42, 3.14, true, mechanical) structure S { param x : Real }` has 5 args: String, Int(42), Real(3.14), Bool(true), Ident(\"mechanical\"). (c) `annotation_on_occurrence_propagates`: `@test occurrence Heat { param temp : Real }` propagates to template with entity_kind == Occurrence.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "c14a891f"
     },
     {
       "id": "step-12",
       "type": "impl",
       "description": "Verify all tests pass. Fix any issues with annotation argument lowering (ensure NumberLiteral distinguishes Int from Real: if value == value.floor() && value.abs() < i64::MAX as f64, use AnnotationArg::Int(value as i64), else AnnotationArg::Real(value)). Ensure occurrence annotations flow through EntityDefRef correctly. Run full test suite: `cargo test -p reify-types -p reify-compiler -p reify-expr -p reify-test-support`.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "a1955bdb"
     }
   ],
   "design_decisions": [
