@@ -932,6 +932,11 @@ fn compile_expr_guarded(
             CompiledExpr::literal(Value::String(s.clone()), Type::String)
         }
         reify_syntax::ExprKind::Ident(name) => {
+            // Intercept `none` before scope lookup — it's a language-level keyword.
+            // Default inner type is Real; contextual override happens at param/let sites.
+            if name == "none" {
+                return CompiledExpr::option_none(Type::Option(Box::new(Type::Real)));
+            }
             match scope.resolve(name) {
                 Some((id, ty)) => {
                     CompiledExpr::value_ref(id.clone(), ty.clone())
@@ -1083,6 +1088,35 @@ fn compile_expr_guarded(
             }
         }
         reify_syntax::ExprKind::FunctionCall { name, args } => {
+            // Intercept `some(expr)` before general function resolution.
+            // some() is a language-level constructor, not a user-defined function.
+            if name == "some" {
+                if args.len() != 1 {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "some() requires exactly 1 argument, got {}",
+                            args.len()
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            expr.span,
+                            "wrong number of arguments",
+                        )),
+                    );
+                    return CompiledExpr::literal(Value::Undef, Type::Real);
+                }
+                let inner = compile_expr_guarded(
+                    &args[0],
+                    scope,
+                    enum_defs,
+                    functions,
+                    diagnostics,
+                    current_guard,
+                    lambda_counter,
+                );
+                let result_type = Type::Option(Box::new(inner.result_type.clone()));
+                return CompiledExpr::option_some(inner, result_type);
+            }
+
             let compiled_args: Vec<CompiledExpr> = args
                 .iter()
                 .map(|arg| compile_expr_guarded(arg, scope, enum_defs, functions, diagnostics, current_guard, lambda_counter))
@@ -2832,7 +2866,18 @@ fn compile_entity(
                     let default_expr = param
                         .default
                         .as_ref()
-                        .map(|expr| compile_expr(expr, &scope, enum_defs, functions, diagnostics));
+                        .map(|expr| {
+                            let mut compiled =
+                                compile_expr(expr, &scope, enum_defs, functions, diagnostics);
+                            // If the default is OptionNone and the param type is Option<T>,
+                            // override the OptionNone's type to match the declared type.
+                            if matches!(&compiled.kind, CompiledExprKind::OptionNone)
+                                && matches!(&cell_type, Type::Option(_))
+                            {
+                                compiled = CompiledExpr::option_none(cell_type.clone());
+                            }
+                            compiled
+                        });
 
                     ValueCellDecl {
                         id,
