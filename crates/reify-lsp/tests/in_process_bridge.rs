@@ -131,6 +131,58 @@ async fn hover_returns_info_for_known_symbol() {
 }
 
 #[tokio::test]
+async fn hover_on_documented_structure_shows_doc_via_bridge() {
+    let lsp = InProcessLsp::new();
+
+    lsp.handle_request("initialize", json!({}))
+        .await
+        .unwrap();
+    lsp.handle_request("initialized", json!({}))
+        .await
+        .unwrap();
+
+    let source = "/// A bracket.\nstructure Bracket {\n    param width: Scalar = 80mm\n}";
+    lsp.handle_request(
+        "textDocument/didOpen",
+        json!({
+            "textDocument": {
+                "uri": "file:///test.ri",
+                "languageId": "reify",
+                "version": 1,
+                "text": source
+            }
+        }),
+    )
+    .await
+    .unwrap();
+
+    let result = lsp
+        .handle_request(
+            "textDocument/hover",
+            json!({
+                "textDocument": { "uri": "file:///test.ri" },
+                "position": { "line": 1, "character": 12 }
+            }),
+        )
+        .await
+        .expect("hover should succeed");
+
+    // Hover should return non-null info containing doc comment
+    assert!(
+        !result.is_null(),
+        "hover should return info for documented structure, got null"
+    );
+    let contents = &result["contents"];
+    let hover_text = contents["value"]
+        .as_str()
+        .unwrap_or_else(|| contents.as_str().unwrap_or(""));
+    assert!(
+        hover_text.contains("A bracket."),
+        "hover should contain doc comment 'A bracket.', got: {hover_text}"
+    );
+}
+
+#[tokio::test]
 async fn goto_definition_returns_location() {
     let lsp = InProcessLsp::new();
 
