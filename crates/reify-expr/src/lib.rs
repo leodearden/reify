@@ -1112,6 +1112,22 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
         {
             scale_components(components, scalar, eval_mul, Value::Point)
         }
+        // Transform * Vector: apply rotation only (translation is ignored for vectors)
+        (
+            Value::Transform { rotation, .. },
+            Value::Vector(components),
+        ) => {
+            if let Value::Orientation { w, x, y, z } = rotation.as_ref() {
+                if let Some((vx, vy, vz, dim)) = vec3_components(components) {
+                    let (rx, ry, rz) = quat_rotate((*w, *x, *y, *z), vx, vy, vz);
+                    Value::Vector(make_components_3(rx, ry, rz, dim))
+                } else {
+                    Value::Undef
+                }
+            } else {
+                Value::Undef
+            }
+        }
         _ => Value::Undef,
     }
 }
