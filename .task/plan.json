@@ -1,6 +1,6 @@
 {
   "task_id": "407",
-  "title": "Fix sidecar bridge doc staleness and wait_ready notification race",
+  "title": "Fix sidecar bridge doc staleness and wait_ready/ensure_sidecar_ready notification race",
   "files": [
     "gui/src-tauri/src/claude_bridge.rs",
     "gui/src-tauri/src/tests/claude_bridge_tests.rs"
@@ -8,7 +8,7 @@
   "modules": [
     "gui/src-tauri/src"
   ],
-  "analysis": "Two targeted fixes in gui/src-tauri/src/claude_bridge.rs:\n\n1. **Doc comment staleness (line 447):** The spawn_sidecar_impl doc says 'The caller is responsible for calling wait_ready and storing the returned handle in the shared sidecar slot.' This is stale \u2014 the actual caller in main.rs (claude_send_message, line 318) uses ensure_sidecar_ready which handles both storing the handle in the slot and awaiting readiness internally via a direct notify_arc.notified() subscription (ensure_sidecar_ready line 569). The doc should reflect that ensure_sidecar_ready is the typical caller, with wait_ready available for manual use.\n\n2. **wait_ready notification race (lines 306-321):** In wait_ready, line 314 creates a Notified future via self.ready_notify.notified(), but the waiter is not registered until the future is first polled. Between line 314 and the first poll at line 321 (inside tokio::time::timeout), there is an await point at line 317 (self.state.lock().await for the re-check). On a multi-threaded runtime, the following interleaving causes a lost notification:\n  a. wait_ready: notified() created (line 314) \u2014 waiter NOT yet registered\n  b. wait_ready: acquires state lock (line 317), sees Starting, releases lock\n  c. reader task: acquires state lock, sets Ready, calls notify_waiters() \u2014 nobody registered \u2192 notification lost\n  d. wait_ready: polls notified at line 321 \u2014 registers waiter, but notification already fired \u2192 spurious timeout\n\nThe fix adds tokio::pin!(notified) + notified.as_mut().enable() immediately after creation. enable() eagerly registers the waiter so notify_waiters() calls during intervening await points are captured.\n\nExisting tests cover wait_ready on single-threaded runtime (deterministic scheduling). A new multi-threaded test is needed to exercise the race window probabilistically.",
+  "analysis": "Three targeted fixes in gui/src-tauri/src/claude_bridge.rs:\n\n1. **Doc comment staleness (line 447):** The spawn_sidecar_impl doc says 'The caller is responsible for calling wait_ready and storing the returned handle in the shared sidecar slot.' This is stale \u2014 the actual caller in main.rs (claude_send_message, line 318) uses ensure_sidecar_ready which handles both storing the handle in the slot and awaiting readiness internally via a direct notify_arc.notified() subscription (ensure_sidecar_ready line 569). The doc should reflect that ensure_sidecar_ready is the typical caller, with wait_ready available for manual use.\n\n2. **wait_ready notification race (lines 306-321):** In wait_ready, line 314 creates a Notified future via self.ready_notify.notified(), but the waiter is not registered until the future is first polled. Between line 314 and the first poll at line 321 (inside tokio::time::timeout), there is an await point at line 317 (self.state.lock().await for the re-check). On a multi-threaded runtime, the following interleaving causes a lost notification:\n  a. wait_ready: notified() created (line 314) \u2014 waiter NOT yet registered\n  b. wait_ready: acquires state lock (line 317), sees Starting, releases lock\n  c. reader task: acquires state lock, sets Ready, calls notify_waiters() \u2014 nobody registered \u2192 notification lost\n  d. wait_ready: polls notified at line 321 \u2014 registers waiter, but notification already fired \u2192 spurious timeout\n\nThe fix adds tokio::pin!(notified) + notified.as_mut().enable() immediately after creation. enable() eagerly registers the waiter so notify_waiters() calls during intervening await points are captured.\n\n3. **ensure_sidecar_ready notification race (line 582):** The identical race exists in ensure_sidecar_ready. At line 582, `notify_arc.notified()` creates a Notified future whose waiter is NOT registered until first polled. Between line 582 and the first poll at line 613 (`tokio::time::timeout(ready_timeout, notified)`), there are three await points forming a race window: `sidecar.lock().await` (line 586), `state_arc.lock().await` (line 592), and `h.kill().await` (line 606). On a multi-thread runtime the reader task can fire `notify_waiters()` during any of these, producing a lost wakeup and a spurious timeout. The comment at lines 577-581 is factually wrong \u2014 it states 'Creating the Notified future here pre-registers us as a potential waiter' which is precisely the false assumption the wait_ready fix corrects. ensure_sidecar_ready is the primary sidecar-startup path (called from claude_send_message), making this race more impactful than the one in wait_ready. The fix applies the same pattern: `tokio::pin!(notified); notified.as_mut().enable();` immediately after line 582, and updates the comment to explain that `enable()` is required for eager registration.\n\nExisting tests cover wait_ready on single-threaded runtime (deterministic scheduling). The existing ensure_sidecar_ready_notified_race_on_multithread test (line 1751) was written for a different fix (moving notified() before the lock) and may not reliably catch the enable() race. New multi-threaded tests are needed to exercise both race windows probabilistically.",
   "prerequisites": [],
   "steps": [
     {
@@ -31,6 +31,20 @@
       "description": "Update the spawn_sidecar_impl doc comment (lines 443-450) to remove the stale claim that 'the caller is responsible for calling wait_ready'. Replace with accurate text: the returned handle starts in Starting state; the caller typically uses ensure_sidecar_ready to store and await readiness, or can call wait_ready manually.",
       "status": "done",
       "commit": "3589f95d"
+    },
+    {
+      "id": "step-4",
+      "type": "test",
+      "description": "Write a multi-threaded test ensure_sidecar_ready_enable_prevents_missed_notification_race in claude_bridge_tests.rs. Uses #[tokio::test(flavor = \"multi_thread\", worker_threads = 2)] with 50 iterations. Each iteration: create a spawn_fn that returns a handle with a live duplex pre-loaded with {\"type\":\"ready\"}\\n (written before handle creation so the reader task can process it immediately on the second thread), pre-populate the sidecar slot with an existing non-ready handle (to trigger the h.kill().await at line 606, widening the race window), then call ensure_sidecar_ready with 500ms timeout. Without enable(), notify_waiters() can fire during any of the three phase-3 await points (sidecar.lock, state_arc.lock, h.kill) between notified() creation at line 582 and first poll at line 613. With enable(), all iterations pass. This is distinct from the existing ensure_sidecar_ready_notified_race_on_multithread test which was written for the earlier fix (moving notified() before the lock) and uses only 20 iterations without pre-populated sidecar slot.",
+      "status": "done",
+      "commit": "b1598fcb"
+    },
+    {
+      "id": "step-5",
+      "type": "impl",
+      "description": "In ensure_sidecar_ready, immediately after line 582 (`let notified = notify_arc.notified();`), add `tokio::pin!(notified);` and `notified.as_mut().enable();` to eagerly register the waiter. Update the comment at lines 577-581 to replace the incorrect 'Creating the Notified future here pre-registers us as a potential waiter' claim with an accurate explanation: `Notified::notified()` does NOT register the waiter until the future is first polled; we must pin + enable() eagerly so that any `notify_waiters()` call during the phase-3 await points (sidecar.lock, state_arc.lock, h.kill) is captured. Mirror the IMPORTANT comment style used in wait_ready (lines 315-322).",
+      "status": "done",
+      "commit": "4b3821da"
     }
   ],
   "design_decisions": [
@@ -49,6 +63,14 @@
     {
       "decision": "Spawn a separate task to set state + notify rather than using the reader task",
       "rationale": "The test bypasses the reader task's Ready message processing (which involves a spawned sub-task and JSON parsing) and directly sets state + calls notify_waiters(). This isolates the wait_ready enable() behavior from the reader task's scheduling, making the test more targeted and reliable."
+    },
+    {
+      "decision": "Pre-populate sidecar slot in ensure_sidecar_ready enable() test",
+      "rationale": "Pre-populating the sidecar slot with a non-ready handle triggers the h.kill().await at line 606, adding a third await point between notified() creation and first poll. This widens the race window and increases the probability of triggering the lost-wakeup bug. The existing test (ensure_sidecar_ready_notified_race_on_multithread) starts with an empty slot, so only the sidecar.lock().await at line 586 provides a race opportunity. The new test is strictly more aggressive."
+    },
+    {
+      "decision": "Same enable() pattern for ensure_sidecar_ready as wait_ready",
+      "rationale": "The race mechanism is identical: Notified::notified() does not register the waiter until first poll, and there are await points between creation and first poll where notify_waiters() can fire unobserved. The fix is the same: pin + enable() immediately after creation. Consistency between the two call sites also reduces cognitive overhead for future readers."
     }
   ],
   "reuse": [
@@ -60,9 +82,14 @@
     {
       "what": "Multi-thread race test structure from ensure_sidecar_ready_notified_race_on_multithread",
       "where": "gui/src-tauri/src/tests/claude_bridge_tests.rs (line 1751)",
-      "how": "Follow the same structure: #[tokio::test(flavor = \"multi_thread\", worker_threads = 2)], loop with multiple iterations, spawn a task to fire the Ready transition, assert success on each iteration with descriptive failure message."
+      "how": "Follow the same structure: #[tokio::test(flavor = \"multi_thread\", worker_threads = 2)], loop with multiple iterations, spawn_fn closure returning handle with pre-written ready message, assert success with descriptive failure message."
+    },
+    {
+      "what": "wait_ready enable() fix pattern from step-2",
+      "where": "gui/src-tauri/src/claude_bridge.rs (lines 323-325)",
+      "how": "Apply the identical three-line pattern to ensure_sidecar_ready: let notified = notify_arc.notified(); tokio::pin!(notified); notified.as_mut().enable(); Mirror the IMPORTANT comment block from lines 315-322."
     }
   ],
   "_session_id": "407-8094e70e",
-  "_created_at": "2026-03-25T21:41:30.821613+00:00"
+  "_created_at": "2026-03-25T21:51:57.743726+00:00"
 }
