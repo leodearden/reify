@@ -260,6 +260,37 @@ mod tests {
         );
     }
 
+    // --- doc comment hover on members ---
+
+    #[test]
+    fn hover_on_documented_param_shows_doc() {
+        let source = "structure Bracket {\n    /// The width dimension.\n    param width: Scalar = 80mm\n}";
+        let position = Position::new(2, 10); // on 'width'
+        let md = hover_markdown(source, position).expect("hover should return info");
+        assert!(md.contains("param width: Scalar"), "should contain param signature, got: {md}");
+        assert!(md.contains("The width dimension."), "should contain doc comment, got: {md}");
+    }
+
+    #[test]
+    fn hover_on_documented_let_shows_doc() {
+        let source = "structure Bracket {\n    param width: Scalar = 80mm\n    param height: Scalar = 40mm\n    /// Computed volume.\n    let area = width * height\n}";
+        let position = Position::new(4, 8); // on 'area'
+        let md = hover_markdown(source, position).expect("hover should return info");
+        assert!(md.contains("let area"), "should contain let signature, got: {md}");
+        assert!(md.contains("Computed volume."), "should contain doc comment, got: {md}");
+    }
+
+    #[test]
+    fn hover_on_undocumented_param_no_doc_section() {
+        let source = reify_test_support::bracket_source();
+        let position = Position::new(1, 10); // on 'width'
+        let md = hover_markdown(source, position).expect("hover should return info");
+        assert!(md.contains("param"), "should contain 'param', got: {md}");
+        assert!(md.contains("width"), "should contain 'width', got: {md}");
+        // No doc section — no trailing paragraph
+        assert!(!md.ends_with("\n\n"), "should not end with double newline (empty doc section), got: {md}");
+    }
+
     // --- doc comment hover on structures ---
 
     #[test]
