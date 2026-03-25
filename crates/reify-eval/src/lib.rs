@@ -1091,7 +1091,6 @@ impl Engine {
                     if let Some(n) = count {
                         for idx in 0..n {
                             let scoped_entity = format!("{}.{}[{}]", template.name, sub.name, idx);
-                            let meta_map = self.meta_map.clone();
                             elaborate_child_instance(
                                 &mut values,
                                 &mut snapshot,
@@ -1102,7 +1101,7 @@ impl Engine {
                                 child_template,
                                 &scoped_entity,
                                 &sub.args,
-                                &meta_map,
+                                &self.meta_map,
                             );
                         }
 
@@ -1136,7 +1135,6 @@ impl Engine {
                 // Build scoped entity prefix: "ParentName.sub_name"
                 let scoped_entity = format!("{}.{}", template.name, sub.name);
 
-                let meta_map = self.meta_map.clone();
                 elaborate_child_instance(
                     &mut values,
                     &mut snapshot,
@@ -1147,7 +1145,7 @@ impl Engine {
                     child_template,
                     &scoped_entity,
                     &sub.args,
-                    &meta_map,
+                    &self.meta_map,
                 );
             }
 
