@@ -56,6 +56,53 @@ fn eval_meta_access_sub_structure() {
     );
 }
 
+/// step-5: meta_access survives edit_param — let binding with MetaAccess is
+/// stable after editing an unrelated param.
+///
+/// Build template 'Box' with meta {"tag": "v1"}, a Param 'size' with default
+/// 10.0 and a Let 'label' whose expr is meta_access("Box", "tag").
+/// After eval() then edit_param(size, 20.0), 'label' should still hold "v1".
+#[test]
+fn eval_meta_access_survives_edit_param() {
+    let size_id = ValueCellId::new("Box", "size");
+    let label_id = ValueCellId::new("Box", "label");
+    let meta_expr = CompiledExpr::meta_access("Box".to_string(), "tag".to_string());
+
+    let template = TopologyTemplateBuilder::new("Box")
+        .meta(
+            [("tag".to_string(), "v1".to_string())]
+                .into_iter()
+                .collect(),
+        )
+        .param(
+            "Box",
+            "size",
+            Type::Real,
+            Some(CompiledExpr::literal(Value::Real(10.0), Type::Real)),
+        )
+        .let_binding("Box", "label", Type::String, meta_expr)
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+    engine.eval(&module);
+
+    // edit_param: change size from 10.0 to 20.0
+    let result = engine
+        .edit_param(size_id, Value::Real(20.0))
+        .expect("edit_param should succeed");
+
+    assert_eq!(
+        result.values.get(&label_id),
+        Some(&Value::String("v1".to_string())),
+        "meta label should survive edit_param unchanged"
+    );
+}
+
 /// step-1: A let binding using MetaAccess resolves to the meta value.
 ///
 /// Build template 'Widget' with meta {"description": "A widget"} and a
