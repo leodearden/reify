@@ -2,15 +2,15 @@
 //!
 //! Tests for compiling purpose declarations into CompiledPurpose entries.
 
+mod common;
+
 use reify_compiler::*;
 use reify_types::*;
 
-/// Helper: parse source and compile, returning the CompiledModule.
-/// Asserts no parse errors and no compile-level Severity::Error diagnostics.
+/// Helper: parse source and compile, asserting no parse errors AND no compile errors.
+/// Stricter than common::compile_module (which only checks parse errors).
 fn compile_module(source: &str) -> CompiledModule {
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
-    let compiled = reify_compiler::compile(&parsed);
+    let compiled = common::compile_module(source);
     let errors: Vec<_> = compiled
         .diagnostics
         .iter()

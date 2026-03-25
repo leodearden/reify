@@ -1,116 +1,174 @@
 {
-  "task_id": "213",
-  "title": "Meta block access: tests",
+  "task_id": "399",
+  "title": "Review: Compiler trait conformance refactoring (23 suggestions from task 193)",
   "files": [
-    "crates/reify-eval/tests/meta_e2e.rs"
+    "crates/reify-compiler/src/lib.rs",
+    "crates/reify-compiler/tests/trait_conformance_tests.rs",
+    "crates/reify-compiler/tests/common/mod.rs",
+    "crates/reify-compiler/tests/port_compile_tests.rs",
+    "crates/reify-compiler/tests/silent_defaults_tests.rs",
+    "crates/reify-compiler/tests/purpose_compile_tests.rs",
+    "crates/reify-compiler/tests/connect_compile_tests.rs",
+    "crates/reify-compiler/tests/field_compile_tests.rs",
+    "crates/reify-compiler/tests/occurrence_compile_tests.rs",
+    "crates/reify-compiler/tests/trait_bounds_tests.rs",
+    "crates/reify-compiler/tests/entity_overload_tests.rs",
+    "crates/reify-compiler/tests/guard_compilation.rs",
+    "crates/reify-compiler/tests/meta_compile_tests.rs",
+    "crates/reify-compiler/tests/chained_comparison_tests.rs",
+    "crates/reify-compiler/tests/prepass_consolidation_tests.rs",
+    "crates/reify-compiler/tests/collection_sub_tests.rs"
   ],
   "modules": [
-    "crates/reify-eval"
+    "crates/reify-compiler/src",
+    "crates/reify-compiler/tests"
   ],
-  "analysis": "Task 213 adds end-to-end (E2E) tests for the meta block access feature implemented in tasks 211 (compiler) and 212 (evaluator). The existing test coverage is split across unit/boundary layers:\n\n- **Compiler tests** (`crates/reify-compiler/tests/meta_compile_tests.rs`, 6 tests): meta storage, MetaAccess compilation, nonexistent key error, no meta block error, duplicate error, constraint context. These test compilation only.\n- **Expr eval tests** (`crates/reify-expr/tests/meta_eval_tests.rs`, 4 tests): MetaAccess evaluation with mock contexts. These test the expression evaluator in isolation.\n- **Eval integration tests** (`crates/reify-eval/tests/meta_eval_integration.rs`, 6 tests): Let binding resolution, sub-structure access, edit_param stability, guarded groups, collection subs, cached eval. These use `TopologyTemplateBuilder` (no parsing).\n\n**Gap:** No tests exercise the full pipeline from `.ri` source text through parse → compile → eval → verify values. This is what task 213 provides — E2E integration tests proving the feature works end-to-end with real source code.\n\nThe E2E pattern is well-established in the codebase (`occurrence_eval.rs`, `e2e_bracket.rs`): parse with `reify_syntax::parse()`, compile with `reify_compiler::compile()`, eval with `Engine::new(MockConstraintChecker, None).eval()`, then assert on `result.values`.\n\nAll 8 required scenarios map naturally to this pattern. Error cases (nonexistent key, no meta block) verify compile-time diagnostics without needing eval. Success cases verify runtime values. String comparison is tested through let bindings (`let ok : Bool = meta.key == \"expected\"`) rather than constraints, because `SimpleConstraintChecker` doesn't wire meta context into its EvalContext — a known limitation that doesn't affect the feature correctness.",
-  "prerequisites": [],
+  "analysis": "## Triage of 23 Suggestions Against Current Codebase\n\nThe 23 suggestions from esc-193-42 were produced by the task-193 steward review. However, task 193's code was subsequently reverted by commit 3a248e07 ('chore: add review follow-up tasks #384-#385'), which removed ~26k lines including:\n- Public API functions: check_trait_conformance (public form), check_trait_conformance_chain, check_trait_conformance_multi\n- Private helper: collect_chain_requirements\n- ConformanceError enum, PortInfo/SubInfo types\n- qualified_access_compile_tests.rs, annotation_compile_tests.rs, and other test files\n- DefaultKind::Let struct variant (reverted to tuple variant)\n- CompiledTrait.annotations field\n\n### Applicable Suggestions (7 of 23)\n\n1. **S3 (excessive arity)** — collect_all_requirements takes 10 mut ref params. Extract into RequirementCollectionState struct.\n2. **S4 (semantic gap)** — structure_members HashMap<String, Type> conflates param and let. Currently the conformance check treats RequirementKind::Param and RequirementKind::Let identically, so this is by-design. Document the decision; add a targeted test.\n3. **S7 (O(n*m) sub lookups)** — Sub-component lookup in check_trait_conformance iterates structure.members with .any() for each Sub requirement. Build a lookup map.\n4. **S13 (test helper duplication)** — compile_module/compile_first_template duplicated across 12+ test files. Extract to tests/common/mod.rs.\n5. **S21 (missing Sub dedup)** — RequirementKind::Sub requirements skip the seen_names dedup check in collect_all_requirements (lines 4528-4550). Two non-diamond traits with identical sub requirements produce duplicate errors.\n6. **S22 (unbounded recursion)** — collect_all_requirements has no depth limit; only a visited set for cycle detection. Pathologically deep (but acyclic) chains could overflow the stack.\n7. **S23 (asymmetric error filtering)** — Document that TypeMismatch errors are intentionally never suppressed by defaults (the structure explicitly provided a wrong type).\n\n### Not Applicable (16 of 23)\n\nS1, S2, S5, S6, S8, S9, S10, S11, S12 reference public API functions (check_trait_conformance_chain/multi, collect_chain_requirements, ConformanceError) that were reverted.\nS14, S15, S16, S17, S18, S19 reference test files (qualified_access_compile_tests.rs, qualified_access_eval.rs) that were reverted.\nS20 references port conformance checking (RequirementKind::Port) that doesn't exist in current code.\n\nThese will be re-assessed when qualified access (task 193) is re-implemented via tasks #384/#385.\n\n### Approach\n\nPrerequisites first: extract shared test helpers (S13) and create the state struct (S3). Then TDD steps for bug fixes (S21, S22) and performance (S7). Documentation changes (S4, S23) are inline with implementation.",
+  "prerequisites": [
+    {
+      "id": "pre-1",
+      "description": "Create crates/reify-compiler/tests/common/mod.rs with shared compile_module and compile_first_template helpers extracted from trait_conformance_tests.rs",
+      "status": "done",
+      "commit": "4dffbf60",
+      "tests": []
+    },
+    {
+      "id": "pre-2",
+      "description": "Migrate trait_conformance_tests.rs to use `mod common;` instead of inline helper definitions. Verify all existing tests still pass.",
+      "status": "done",
+      "commit": "5d6616d8",
+      "tests": [
+        "trait_conformance_tests"
+      ]
+    },
+    {
+      "id": "pre-3",
+      "description": "Migrate remaining 11 test files (port_compile_tests, silent_defaults_tests, purpose_compile_tests, connect_compile_tests, field_compile_tests, occurrence_compile_tests, trait_bounds_tests, entity_overload_tests, meta_compile_tests, chained_comparison_tests, prepass_consolidation_tests) to use `mod common;`. Verify all tests pass.",
+      "status": "done",
+      "commit": "d2e56260",
+      "tests": []
+    }
+  ],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Create `crates/reify-eval/tests/meta_e2e.rs` with a helper function `parse_compile_eval(source) -> (CompiledModule, EvalResult)` that runs the full pipeline (parse → compile → eval with MockConstraintChecker). Write test `e2e_meta_access_on_structure`: source has `structure def Bracket { meta { description = \"A bracket\" } let label : String = meta.description }`, verify label == Value::String(\"A bracket\"). Should pass immediately since tasks 211/212 implemented the feature.",
+      "description": "Write failing test: diamond_sub_requirement_deduped — two non-diamond traits A and B both declare `sub hole = Hole`, structure provides one hole. Assert exactly 0 errors (currently expect duplicate 'missing sub' errors if structure doesn't provide sub, or duplicate requirements collected). (S21)",
       "status": "done",
-      "commit": "60815544"
+      "commit": "954cdeb8"
     },
     {
       "id": "step-2",
-      "type": "test",
-      "description": "Write test `e2e_meta_access_on_occurrence`: source has `occurrence def Welding { meta { process = \"MIG\" } let label : String = meta.process }`, verify entity_kind == EntityKind::Occurrence and label == Value::String(\"MIG\"). This is the ONLY test covering meta blocks on occurrences — no existing test uses `occurrence def` with meta.",
+      "type": "impl",
+      "description": "Fix Sub dedup in collect_all_requirements: add a seen_sub_names HashSet<(String, String)> keyed by (name, structure_name). Skip duplicate Sub requirements. Report conflicting Sub requirements (same name, different structure_name) as diagnostics. (S21)",
       "status": "done",
-      "commit": "60815544"
+      "commit": "606cf970"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write test `e2e_meta_nonexistent_key_error`: source has `structure def X { meta { a = \"1\" } let x : String = meta.nonexistent }`, parse and compile (no eval), assert at least one error diagnostic containing \"no key\". Validates compile-time key validation through the full pipeline.",
+      "description": "Write failing test: conflicting_sub_requirements — trait A declares `sub hole = Hole`, trait B declares `sub hole = Plug`. Structure implements both. Assert conflict diagnostic mentioning 'hole'. (S21 extension)",
       "status": "done",
-      "commit": "60815544"
+      "commit": "79cf13dd"
     },
     {
       "id": "step-4",
-      "type": "test",
-      "description": "Write test `e2e_meta_no_meta_block_error`: source has `structure def X { param width : Length = 10mm  let x : String = meta.foo }`, parse and compile (no eval), assert at least one error diagnostic containing \"no meta block\". Validates compile-time meta block presence check through the full pipeline.",
+      "type": "impl",
+      "description": "Implement Sub conflict detection: when seen_sub_names already has (name, different_structure_name), emit 'conflicting sub-component requirements' diagnostic. (S21 extension)",
       "status": "done",
-      "commit": "60815544"
+      "commit": "1833ec67"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write test `e2e_meta_on_sub_structure`: source defines two structures — `structure def Part { meta { material = \"steel\" } let label : String = meta.material  param size : Length = 10mm }` and `structure def Assembly { sub part = Part() }`. After eval, verify Part's label == Value::String(\"steel\"). Proves child template meta resolves correctly when evaluated as part of a parent assembly.",
+      "description": "Write test: deep_chain_recursion_depth_limit — create a trait hierarchy 200 levels deep (programmatically generate source). Assert compilation doesn't panic/stack-overflow and produces a diagnostic. (S22)",
       "status": "done",
-      "commit": "60815544"
+      "commit": "8e5e8a93"
     },
     {
       "id": "step-6",
-      "type": "test",
-      "description": "Write test `e2e_meta_value_in_let_binding`: source has `structure def Widget { meta { author = \"Team A\", version = \"2.0\", material = \"steel\" }  let a : String = meta.author  let v : String = meta.version  let m : String = meta.material }`. After eval, verify all three let bindings resolve to their respective meta values. Tests multiple keys accessed via multiple let bindings.",
+      "type": "impl",
+      "description": "Add depth parameter to collect_all_requirements (or use a counter in the state struct). When depth exceeds MAX_TRAIT_DEPTH (128), emit 'trait refinement chain too deep' diagnostic and return early. (S22)",
       "status": "done",
-      "commit": "60815544"
+      "commit": "357f4345"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write test `e2e_meta_string_comparison_equal`: source has `structure def Bolt { meta { grade = \"A2\" }  let matches : Bool = meta.grade == \"A2\" }`. After eval, verify matches == Value::Bool(true). Proves meta values participate correctly in string equality comparisons at runtime.",
+      "description": "Write test: sub_conformance_basic — trait declares `sub hole = Hole`, structure provides matching sub. Assert no errors. This tests the linear-lookup path that will be optimized. (S7 + coverage gap)",
       "status": "done",
-      "commit": "60815544"
+      "commit": "c025e412"
     },
     {
       "id": "step-8",
-      "type": "test",
-      "description": "Write test `e2e_meta_string_comparison_not_equal`: source has `structure def Bolt { meta { grade = \"A2\" }  let matches : Bool = meta.grade == \"A4\" }`. After eval, verify matches == Value::Bool(false). Proves string comparison correctly reports inequality when meta value differs from the compared literal.",
+      "type": "impl",
+      "description": "Refactor check_trait_conformance: before the requirement loop, build a HashMap<&str, &str> for sub-component lookups (name -> structure_name) from structure.members. Replace the O(n) .any() iteration with O(1) HashMap lookup. (S7)",
       "status": "done",
-      "commit": "60815544"
+      "commit": "ea026860"
+    },
+    {
+      "id": "step-9",
+      "type": "test",
+      "description": "Write test: param_vs_let_cross_satisfaction — trait requires `param x : Length`, structure has `let x : Length = 5mm`. Assert NO error (documenting that param-vs-let is intentionally fungible in conformance checking). (S4 documentation test)",
+      "status": "done",
+      "commit": "2a220f5b"
+    },
+    {
+      "id": "step-10",
+      "type": "impl",
+      "description": "Refactor collect_all_requirements signature: extract 7 mutable parameters (requirements, defaults, visited, seen_names, seen_defaults, seen_sub_names, depth) into a RequirementCollectionState struct. Pass &mut state instead. Add doc comments explaining param-vs-let fungibility (S4) and TypeMismatch non-suppression (S23). (S3 + S4 + S23)",
+      "status": "done",
+      "commit": "527527ad"
     }
   ],
   "design_decisions": [
     {
-      "decision": "All tests use E2E pipeline (parse → compile → eval) rather than builder APIs",
-      "rationale": "Tasks 211/212 already provide unit and boundary tests using builder APIs. Task 213's value is proving the feature works with real .ri source code through the complete pipeline. This catches integration issues between parser, compiler, and evaluator that layer-specific tests miss."
+      "decision": "16 of 23 suggestions triaged as NOT APPLICABLE because they reference code reverted by commit 3a248e07",
+      "rationale": "Task 193's public API (check_trait_conformance_chain/multi, ConformanceError, collect_chain_requirements) and associated test files were removed. These suggestions should be re-evaluated when qualified access is re-implemented via tasks #384/#385."
     },
     {
-      "decision": "String comparison tested via let bindings, not constraints",
-      "rationale": "SimpleConstraintChecker creates EvalContext without meta context (EvalContext::new(values, functions) — no .with_meta()). MetaAccess in a constraint expression would panic at runtime with SimpleConstraintChecker. MockConstraintChecker doesn't evaluate expressions at all. Testing `let matches : Bool = meta.key == \"literal\"` achieves the same coverage since the Engine's eval() properly wires meta into EvalContext for let binding evaluation."
+      "decision": "Param-vs-let fungibility in conformance checking is intentional (S4) — document, don't change",
+      "rationale": "The current code treats RequirementKind::Param and RequirementKind::Let identically when checking structure_members. Both resolve through the same HashMap<String, Type>. The trait system's purpose is to ensure structural completeness (the right named members with the right types exist), not to enforce param-vs-let semantics. Adding param/let distinction would break existing code where structures use `let` to satisfy a `param` requirement. Add a test documenting this as intentional behavior."
     },
     {
-      "decision": "Use MockConstraintChecker for all E2E tests",
-      "rationale": "The MockConstraintChecker returns Satisfied by default without evaluating expressions. This avoids the meta-context gap in SimpleConstraintChecker while still testing the eval pipeline. Constraints are not the focus of these tests — meta value resolution is."
+      "decision": "Extract test helpers to common/mod.rs rather than a separate crate",
+      "rationale": "Rust integration test convention uses `tests/common/mod.rs` with `mod common;` in each test file. This avoids adding a new crate dependency and follows idiomatic Rust test organization. The 12+ files with duplicated compile_module/compile_first_template all have identical bodies."
     },
     {
-      "decision": "Single test file in crates/reify-eval/tests/",
-      "rationale": "All tests follow the same E2E pattern and have the same dependencies (reify-syntax, reify-compiler, reify-eval, reify-test-support). Placing them in one file with a shared helper minimizes boilerplate. The crate's Cargo.toml already has all needed dev-dependencies."
+      "decision": "Max trait depth = 128 levels",
+      "rationale": "Realistic trait hierarchies rarely exceed 10 levels. 128 provides ample headroom while preventing stack overflow from pathological inputs. Each recursion frame is modest (~200 bytes for refs), so 128 levels < 25KB stack usage."
     },
     {
-      "decision": "Sub-structure test verifies child's own meta, not parent accessing child's meta",
-      "rationale": "In the compiler, `meta.key` syntax resolves to the current entity's meta (scope.entity_name). There's no syntax for cross-entity meta access like `sub_name.meta.key`. The E2E test proves the child template's meta let-bindings resolve correctly when the child is instantiated as a sub-component of a parent."
+      "decision": "State struct extraction (S3) done LAST to avoid merge conflicts",
+      "rationale": "The state struct refactor touches the same function signature as S21 (sub dedup) and S22 (depth limit). Doing it last means all functional changes are in place and the refactor is purely structural, minimizing risk."
+    },
+    {
+      "decision": "guard_compilation.rs excluded from common/mod.rs migration — it only has compile_first_template, not compile_module",
+      "rationale": "guard_compilation.rs defines compile_first_template inline (which internally calls a local compile_module), so it can still benefit from the common module. Include it in pre-3 migration."
     }
   ],
   "reuse": [
     {
-      "what": "E2E test pattern: parse → compile → eval → verify",
-      "where": "crates/reify-eval/tests/occurrence_eval.rs (e2e_occurrence_eval_basic)",
-      "how": "Follow the same helper pattern: reify_syntax::parse() → reify_compiler::compile() → Engine::new(MockConstraintChecker, None).eval() → assert on result.values. Extract into a shared helper fn."
+      "what": "compile_module and compile_first_template helper pattern",
+      "where": "crates/reify-compiler/tests/trait_conformance_tests.rs (lines 10-21)",
+      "how": "Extract to tests/common/mod.rs verbatim; all 12+ copies have identical bodies"
     },
     {
-      "what": "MockConstraintChecker::new()",
-      "where": "crates/reify-test-support/src/mocks.rs",
-      "how": "Returns Satisfied for all constraints by default. Used by all non-geometry E2E tests in the codebase."
+      "what": "Existing seen_names HashMap<String, Type> dedup pattern for Param/Let",
+      "where": "crates/reify-compiler/src/lib.rs:4534-4548 (collect_all_requirements)",
+      "how": "Apply same pattern for Sub requirements using HashSet<(String, String)> keyed by (name, structure_name)"
     },
     {
-      "what": "ValueCellId::new(entity, member) for value lookup",
-      "where": "crates/reify-types/src/lib.rs",
-      "how": "Construct cell IDs to look up evaluated values in result.values HashMap."
+      "what": "Existing visited HashSet cycle detection pattern",
+      "where": "crates/reify-compiler/src/lib.rs:4496 (collect_all_requirements)",
+      "how": "Add depth counter alongside visited set; same early-return pattern with diagnostic emission"
     },
     {
-      "what": "Diagnostic severity filtering pattern",
-      "where": "crates/reify-compiler/tests/meta_compile_tests.rs (all error tests)",
-      "how": "Filter diagnostics by Severity::Error and assert on error message content for compile-error tests."
+      "what": "Diagnostic::error with DiagnosticLabel pattern",
+      "where": "Throughout crates/reify-compiler/src/lib.rs",
+      "how": "New diagnostics for conflicting subs and depth limit follow the established pattern: Diagnostic::error(format!(...)).with_label(DiagnosticLabel::new(span, label_text))"
     }
   ],
-  "_session_id": "213-3ad48203",
-  "_created_at": "2026-03-25T13:08:05.415215+00:00"
+  "_session_id": "399-b4ecea58",
+  "_created_at": "2026-03-25T13:19:12.236207+00:00"
 }

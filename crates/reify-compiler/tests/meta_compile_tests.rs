@@ -1,25 +1,10 @@
 //! Tests for meta block compilation — `meta { key = "value" }` and `meta.key` access.
 
-use reify_compiler::{CompiledModule, TopologyTemplate};
-use reify_types::{CompiledExpr, CompiledExprKind, Diagnostic, ModulePath, Severity};
+mod common;
 
-/// Helper: parse source and compile, returning the CompiledModule.
-fn compile_module(source: &str) -> CompiledModule {
-    let parsed = reify_syntax::parse(source, ModulePath::single("meta_test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
-    reify_compiler::compile(&parsed)
-}
-
-/// Helper: parse source and compile, returning first template + diagnostics.
-fn compile_first_template(source: &str) -> (TopologyTemplate, Vec<Diagnostic>) {
-    let module = compile_module(source);
-    let template = module
-        .templates
-        .into_iter()
-        .next()
-        .expect("expected 1 template");
-    (template, module.diagnostics)
-}
+use common::{compile_first_template, compile_module};
+use reify_compiler::TopologyTemplate;
+use reify_types::{CompiledExpr, CompiledExprKind, Diagnostic, Severity};
 
 /// Helper: get the default_expr for a value cell by member name.
 fn get_cell_expr<'a>(template: &'a TopologyTemplate, member: &str) -> &'a reify_types::CompiledExpr {
