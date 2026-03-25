@@ -8,7 +8,7 @@
   "modules": [
     "crates/reify-compiler"
   ],
-  "analysis": "Task 182 established the pure `check_trait_conformance` function and `ConformanceError` enum with 4 variants covering Param and Let checking. The function takes a flat `HashMap<String, Type>` of structure members plus a `CompiledTrait`, and returns `Vec<ConformanceError>`. Port and Sub requirements are explicitly skipped with a `// Sub checking not in scope for this function` comment.\n\nThis task extends conformance checking to cover Port and Sub members. Key findings:\n\n**Port conformance:** `TraitMember::Port` has name, ty (Type), and direction (PortDirection). In `compile_trait()`, the `MemberDecl::Port` variant falls through the catch-all `_ =>` branch. We need to (1) add `RequirementKind::Port { type_name, direction }`, (2) handle `MemberDecl::Port` in `compile_trait()` to emit port requirements, (3) add ConformanceError variants for missing/mismatched ports, and (4) extend `check_trait_conformance()` to accept port data and check it.\n\n**Sub conformance:** `RequirementKind::Sub(String)` already exists and `compile_trait()` already emits sub requirements. However, `check_trait_conformance()` ignores them. The check_and_apply_trait_conformance integration function does a simple name+structure_name equality check, but the task asks for trait-bound satisfaction checking. We need to (1) add ConformanceError variants for missing/unsatisfied subs, (2) extend `check_trait_conformance()` to accept sub data and check it.\n\n**Function signature change:** The pure function needs richer input. We add `PortInfo` and `SubInfo` structs as lightweight descriptors, and extend the function to take `&[PortInfo]` and `&[SubInfo]` slices. All 8 existing call sites in tests pass `&[]` for the new params (backward-compatible behavior).\n\n**Direction semantics:** For conformance, we use exact direction matching (not connection-compatibility). A trait requiring `in` means the structure must declare `in`, not just a compatible direction.",
+  "analysis": "Task 182 established the pure `check_trait_conformance` function and `ConformanceError` enum with 4 variants covering Param and Let checking. The function takes a flat `HashMap<String, Type>` of structure members plus a `CompiledTrait`, and returns `Vec<ConformanceError>`. Port and Sub requirements are explicitly skipped with a `// Sub checking not in scope for this function` comment.\n\nThis task extends conformance checking to cover Port and Sub members. Key findings:\n\n**Port conformance:** `TraitMember::Port` has name, ty (Type), and direction (PortDirection). In `compile_trait()`, the `MemberDecl::Port` variant falls through the catch-all `_ =>` branch. We need to (1) add `RequirementKind::Port { type_name, direction }`, (2) handle `MemberDecl::Port` in `compile_trait()` to emit port requirements, (3) add ConformanceError variants for missing/mismatched ports, and (4) extend `check_trait_conformance()` to accept port data and check it.\n\n**Sub conformance:** `RequirementKind::Sub(String)` already exists and `compile_trait()` already emits sub requirements. However, `check_trait_conformance()` ignores them. The check_and_apply_trait_conformance integration function does a simple name+structure_name equality check, but the task asks for trait-bound satisfaction checking. We need to (1) add ConformanceError variants for missing/unsatisfied subs, (2) extend `check_trait_conformance()` to accept sub data and check it.\n\n**Function signature change:** The pure function needs richer input. We add `PortInfo` and `SubInfo` structs as lightweight descriptors, and extend the function to take `&[PortInfo]` and `&[SubInfo]` slices. All 8 existing call sites in tests pass `&[]` for the new params (backward-compatible behavior).\n\n**Direction semantics:** For conformance, we use exact direction matching (not connection-compatibility). A trait requiring `in` means the structure must declare `in`, not just a compatible direction.\n\n**REVIEW FIX — Sub semantic contract violation (steps 21-26):** Post-review analysis revealed that `RequirementKind::Sub(String)` has inconsistent semantics between the two call sites. `compile_trait()` (line 1813) stores `sub_decl.structure_name` — a concrete structure name like \"BoltSet\". But `check_trait_conformance()` (line 204-218) treats that same String as a trait name and checks `sub.trait_bounds.contains(it)`. Meanwhile, `check_and_apply_trait_conformance()` (line 4757-4776) correctly treats it as a structure name and checks `s.structure_name == structure_name`. The unit tests only passed accidentally because `make_sub_trait()` manually constructed RequirementKind::Sub with a trait name string, bypassing `compile_trait()`. The grammar/parser (`SubDecl.structure_name`) produces structure names — there is no trait_ref in the syntax AST for sub declarations. Fix: align `check_trait_conformance()` with `check_and_apply_trait_conformance()` by switching to structure-name matching. Rename ConformanceError variants from trait semantics to structure semantics. Remove `SubInfo.trait_bounds` field (unused after fix). Update all sub unit tests.",
   "prerequisites": [
     {
       "id": "pre-1",
@@ -36,7 +36,7 @@
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing test: MissingPort \u2014 trait requires port 'input' of type 'Signal' with direction In, structure has no ports \u2192 ConformanceError::MissingPort",
+      "description": "Write failing test: MissingPort — trait requires port 'input' of type 'Signal' with direction In, structure has no ports → ConformanceError::MissingPort",
       "status": "done",
       "commit": "94d7c9d0"
     },
@@ -50,7 +50,7 @@
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing test: PortTypeMismatch \u2014 trait requires port 'mount' of type 'MountInterface', structure has port 'mount' of type 'OtherInterface' \u2192 ConformanceError::PortTypeMismatch",
+      "description": "Write failing test: PortTypeMismatch — trait requires port 'mount' of type 'MountInterface', structure has port 'mount' of type 'OtherInterface' → ConformanceError::PortTypeMismatch",
       "status": "done",
       "commit": "94d7c9d0"
     },
@@ -64,7 +64,7 @@
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing test: PortDirectionMismatch \u2014 trait requires port 'output' with direction Out, structure has port 'output' with direction In \u2192 ConformanceError::PortDirectionMismatch",
+      "description": "Write failing test: PortDirectionMismatch — trait requires port 'output' with direction Out, structure has port 'output' with direction In → ConformanceError::PortDirectionMismatch",
       "status": "done",
       "commit": "94d7c9d0"
     },
@@ -78,14 +78,14 @@
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write passing test: port fully satisfied \u2014 trait requires port 'input : Signal in', structure has matching port \u2192 no errors (happy path verification)",
+      "description": "Write passing test: port fully satisfied — trait requires port 'input : Signal in', structure has matching port → no errors (happy path verification)",
       "status": "done",
       "commit": "94d7c9d0"
     },
     {
       "id": "step-8",
       "type": "test",
-      "description": "Write failing test: MissingSub \u2014 trait requires sub 'hole' satisfying trait 'Hole', structure has no subs \u2192 ConformanceError::MissingSub",
+      "description": "Write failing test: MissingSub — trait requires sub 'hole' satisfying trait 'Hole', structure has no subs → ConformanceError::MissingSub",
       "status": "done",
       "commit": "94d7c9d0"
     },
@@ -99,7 +99,7 @@
     {
       "id": "step-10",
       "type": "test",
-      "description": "Write failing test: SubTraitNotSatisfied \u2014 trait requires sub 'mount' satisfying trait 'MountInterface', structure has sub 'mount' whose structure type does not declare MountInterface bound \u2192 ConformanceError::SubTraitNotSatisfied",
+      "description": "Write failing test: SubTraitNotSatisfied — trait requires sub 'mount' satisfying trait 'MountInterface', structure has sub 'mount' whose structure type does not declare MountInterface bound → ConformanceError::SubTraitNotSatisfied",
       "status": "done",
       "commit": "94d7c9d0"
     },
@@ -113,14 +113,14 @@
     {
       "id": "step-12",
       "type": "test",
-      "description": "Write passing test: sub fully satisfied \u2014 trait requires sub 'hole' satisfying 'Hole', structure has sub 'hole' with trait_bounds containing 'Hole' \u2192 no errors",
+      "description": "Write passing test: sub fully satisfied — trait requires sub 'hole' satisfying 'Hole', structure has sub 'hole' with trait_bounds containing 'Hole' → no errors",
       "status": "done",
       "commit": "94d7c9d0"
     },
     {
       "id": "step-13",
       "type": "test",
-      "description": "Write failing test: compile_trait handles MemberDecl::Port \u2014 parse a trait with 'port input : Signal in', verify compiled trait has RequirementKind::Port with correct type_name and direction",
+      "description": "Write failing test: compile_trait handles MemberDecl::Port — parse a trait with 'port input : Signal in', verify compiled trait has RequirementKind::Port with correct type_name and direction",
       "status": "done",
       "commit": "d1c93299"
     },
@@ -134,14 +134,14 @@
     {
       "id": "step-15",
       "type": "test",
-      "description": "Write integration test: structure with matching port satisfies trait port requirement \u2014 compile full source with trait+structure, assert no error diagnostics",
+      "description": "Write integration test: structure with matching port satisfies trait port requirement — compile full source with trait+structure, assert no error diagnostics",
       "status": "done",
       "commit": "cfab6e3d"
     },
     {
       "id": "step-16",
       "type": "test",
-      "description": "Write integration test: structure missing required port \u2014 compile source where structure lacks the port required by trait, assert error diagnostic mentioning missing port",
+      "description": "Write integration test: structure missing required port — compile source where structure lacks the port required by trait, assert error diagnostic mentioning missing port",
       "status": "done",
       "commit": "cfab6e3d"
     },
@@ -155,23 +155,51 @@
     {
       "id": "step-18",
       "type": "test",
-      "description": "Write integration test: structure with sub satisfying trait sub requirement \u2014 compile full source, assert no error diagnostics",
+      "description": "Write integration test: structure with sub satisfying trait sub requirement — compile full source, assert no error diagnostics",
       "status": "done",
       "commit": "cfab6e3d"
     },
     {
       "id": "step-19",
       "type": "test",
-      "description": "Write integration test: structure missing required sub \u2014 compile source where structure lacks the sub required by trait, assert error diagnostic mentioning missing sub",
+      "description": "Write integration test: structure missing required sub — compile source where structure lacks the sub required by trait, assert error diagnostic mentioning missing sub",
       "status": "done",
       "commit": "cfab6e3d"
     },
     {
       "id": "step-20",
       "type": "test",
-      "description": "Write test: multiple port requirements in a single trait \u2014 one satisfied, one missing \u2192 exactly one error",
+      "description": "Write test: multiple port requirements in a single trait — one satisfied, one missing → exactly one error",
       "status": "done",
       "commit": "94d7c9d0"
+    },
+    {
+      "id": "step-21",
+      "type": "test",
+      "description": "Write failing test exposing the semantic mismatch: construct RequirementKind::Sub(\"BoltSet\") (a structure name, as compile_trait produces) and a SubInfo with structure_name \"BoltSet\" but trait_bounds: [] → currently fails because check_trait_conformance checks trait_bounds instead of structure_name, but should return no errors since the structure name matches",
+      "status": "done",
+      "commit": "91b096da"
+    },
+    {
+      "id": "step-22",
+      "type": "impl",
+      "description": "Fix the Sub semantic contract violation: (1) Update RequirementKind::Sub doc comment to clarify it stores a structure name, not a trait name. (2) Rename ConformanceError::MissingSub field from expected_trait to expected_structure. (3) Rename ConformanceError::SubTraitNotSatisfied to SubStructureMismatch { name, expected_structure, actual_structure }. (4) Change check_trait_conformance() Sub arm to check sub.structure_name == expected instead of sub.trait_bounds.contains(). (5) Remove trait_bounds field from SubInfo (now unused). (6) Update all existing sub unit tests (make_sub_trait helper, steps 8/10/12 tests) to use structure-name semantics in SubInfo construction and error assertions.",
+      "status": "done",
+      "commit": "cc7aa749"
+    },
+    {
+      "id": "step-23",
+      "type": "test",
+      "description": "Write test verifying compile_trait→check_trait_conformance agreement: parse a trait with 'sub bolt = BoltSet()', compile it via compile_module, extract RequirementKind::Sub and verify it contains \"BoltSet\" (structure name), then pass to check_trait_conformance with SubInfo { name: \"bolt\", structure_name: \"BoltSet\" } → no errors. This proves the two code paths agree.",
+      "status": "done",
+      "commit": "bcd56714"
+    },
+    {
+      "id": "step-24",
+      "type": "test",
+      "description": "Write test for structure-name mismatch via the compile_trait path: compile a trait with 'sub bolt = BoltSet()', check_trait_conformance with SubInfo { name: \"bolt\", structure_name: \"WrongStructure\" } → ConformanceError::SubStructureMismatch { expected_structure: \"BoltSet\", actual_structure: \"WrongStructure\" }",
+      "status": "done",
+      "commit": "bcd56714"
     }
   ],
   "design_decisions": [
@@ -181,15 +209,19 @@
     },
     {
       "decision": "Use lightweight PortInfo and SubInfo structs rather than passing full CompiledPort/SubComponentDecl",
-      "rationale": "The pure function should not depend on compilation-stage types. PortInfo/SubInfo contain only the fields needed for conformance checking (name, type_name, direction for ports; name, structure_name, trait_bounds for subs), keeping the API clean and testable."
+      "rationale": "The pure function should not depend on compilation-stage types. PortInfo/SubInfo contain only the fields needed for conformance checking (name, type_name, direction for ports; name, structure_name for subs), keeping the API clean and testable."
     },
     {
       "decision": "Port direction conformance uses exact match, not connection-compatibility",
-      "rationale": "Connection compatibility (is_forward_compatible) is for port-to-port wiring, not trait conformance. A trait requiring 'port x : T in' means the structure must declare the port with direction In. Bidi is not a wildcard for conformance \u2014 the trait specifies the contract."
+      "rationale": "Connection compatibility (is_forward_compatible) is for port-to-port wiring, not trait conformance. A trait requiring 'port x : T in' means the structure must declare the port with direction In. Bidi is not a wildcard for conformance — the trait specifies the contract."
     },
     {
-      "decision": "Sub conformance checks trait_bounds membership rather than structure_name equality",
-      "rationale": "The task specifies 'verify structure has a sub satisfying the trait bound'. TraitMember::Sub has a trait_ref, meaning the sub's structure type must conform to that trait. Checking trait_bounds is more semantically correct than requiring an exact structure name match."
+      "decision": "[REVISED] Sub conformance checks structure_name equality, not trait_bounds membership",
+      "rationale": "Review identified a semantic contract violation: compile_trait() stores sub_decl.structure_name (a structure name like 'BoltSet') in RequirementKind::Sub, but check_trait_conformance treated it as a trait name and checked trait_bounds. check_and_apply_trait_conformance already correctly does structure_name equality. The grammar/parser (SubDecl) only produces structure names — there is no trait_ref in the syntax AST for sub declarations. Both code paths must agree: Sub(String) stores a structure name and is checked via structure_name equality. Unit tests previously passed accidentally because make_sub_trait() manually constructed the same string in both RequirementKind::Sub and SubInfo.trait_bounds. Trait-ref semantics can be added in a future task when the grammar supports `sub x : TraitName` syntax distinct from `sub x = StructureName()`."
+    },
+    {
+      "decision": "Remove SubInfo.trait_bounds field after Sub semantics fix",
+      "rationale": "With structure-name matching, trait_bounds is unused by check_trait_conformance. Keeping dead fields creates confusion about what the function actually checks. SubInfo becomes { name, structure_name } — minimal and precise."
     },
     {
       "decision": "Separate ConformanceError variants for Port type vs direction mismatch",
@@ -227,11 +259,11 @@
       "how": "Same pattern used in existing tests for constructing CompiledTrait in unit tests"
     },
     {
-      "what": "check_and_apply_trait_conformance integration pattern",
-      "where": "crates/reify-compiler/src/lib.rs:4521-4687",
-      "how": "Add RequirementKind::Port handling following the same diagnostic-push pattern used for Sub (lines 4665-4685)"
+      "what": "check_and_apply_trait_conformance Sub arm pattern (structure_name matching)",
+      "where": "crates/reify-compiler/src/lib.rs:4757-4776",
+      "how": "check_trait_conformance Sub arm should follow the same structure_name equality pattern used by check_and_apply_trait_conformance, ensuring both code paths agree"
     }
   ],
   "_session_id": "183-1d1af319",
-  "_created_at": "2026-03-25T01:57:53.874730+00:00"
+  "_created_at": "2026-03-25T02:13:32.300798+00:00"
 }
