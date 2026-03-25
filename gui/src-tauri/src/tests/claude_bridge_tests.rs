@@ -1566,6 +1566,110 @@ async fn ensure_sidecar_ready_kills_evicted_stale_handle() {
     );
 }
 
+// --- ensure_sidecar_ready kill-on-error-cleanup tests (task-353/steps-27,28) ---
+
+/// Verify that when `ensure_sidecar_ready` times out waiting for the ready
+/// notification, `kill()` is called on the stored handle rather than just
+/// clearing the slot.
+///
+/// `kill()` sets state to `SidecarState::NotStarted`. A bare `*guard = None`
+/// leaves state as `Starting`. The test shares the state Arc with spawn_fn
+/// and checks for `NotStarted` after the timeout Err is returned.
+#[tokio::test]
+async fn ensure_sidecar_ready_kills_handle_on_timeout_cleanup() {
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::io::BufReader;
+    use tokio::sync::Mutex;
+
+    // Shared state Arc — spawn_fn passes it to SidecarHandle so we can check
+    // it after ensure_sidecar_ready returns.
+    let shared_state = Arc::new(Mutex::new(SidecarState::Starting));
+    let shared_state_clone = Arc::clone(&shared_state);
+
+    // held_writer keeps the reader task alive (no EOF → stays in Starting state).
+    let held_writer: Arc<Mutex<Option<tokio::io::DuplexStream>>> = Arc::new(Mutex::new(None));
+    let held_clone = Arc::clone(&held_writer);
+
+    let spawn_fn = move || {
+        let state = Arc::clone(&shared_state_clone);
+        let held = Arc::clone(&held_clone);
+        async move {
+            let (data_writer, data_reader) = tokio::io::duplex(1024);
+            let reader = BufReader::new(data_reader);
+            let (stdin_writer, _stdin_reader) = tokio::io::duplex(1024);
+            let handle = SidecarHandle::from_parts(stdin_writer, reader, state);
+            // Keep writer alive so no EOF → reader stays open in Starting state.
+            *held.lock().await = Some(data_writer);
+            Ok(handle)
+        }
+    };
+
+    let sidecar: Mutex<Option<SidecarHandle>> = Mutex::new(None);
+    let result = ensure_sidecar_ready(&sidecar, spawn_fn, Duration::from_millis(100)).await;
+
+    assert!(result.is_err(), "Expected timeout error: {:?}", result);
+
+    // The handle must have been killed (not just cleared from the slot).
+    // kill() sets state to NotStarted; a bare clear leaves state as Starting.
+    let state_after = shared_state.lock().await.clone();
+    assert!(
+        matches!(state_after, SidecarState::NotStarted),
+        "Handle must be killed on timeout cleanup (state = NotStarted), got: {:?}",
+        state_after
+    );
+}
+
+/// Verify that when the sidecar crashes before becoming ready,
+/// `kill()` is called on the stored handle during cleanup.
+///
+/// `kill()` sets state to `SidecarState::NotStarted`. A bare `*guard = None`
+/// leaves state as `Crashed`. The test shares the state Arc with spawn_fn
+/// and verifies `NotStarted` after the crash Err is returned.
+#[tokio::test]
+async fn ensure_sidecar_ready_kills_handle_on_crash_cleanup() {
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::io::BufReader;
+    use tokio::sync::Mutex;
+
+    let shared_state = Arc::new(Mutex::new(SidecarState::Starting));
+    let shared_state_clone = Arc::clone(&shared_state);
+
+    let spawn_fn = move || {
+        let state = Arc::clone(&shared_state_clone);
+        async move {
+            let (data_writer, data_reader) = tokio::io::duplex(1024);
+            // Drop data_writer immediately → EOF → reader task sets Crashed.
+            drop(data_writer);
+            let reader = BufReader::new(data_reader);
+            let (stdin_writer, _stdin_reader) = tokio::io::duplex(1024);
+            let handle = SidecarHandle::from_parts(stdin_writer, reader, state);
+            Ok::<SidecarHandle, String>(handle)
+        }
+    };
+
+    let sidecar: Mutex<Option<SidecarHandle>> = Mutex::new(None);
+    let result = ensure_sidecar_ready(&sidecar, spawn_fn, Duration::from_secs(5)).await;
+
+    assert!(result.is_err(), "Expected crash error: {:?}", result);
+    let err_msg = result.unwrap_err();
+    assert!(
+        err_msg.contains("crashed") || err_msg.contains("not ready"),
+        "Error should mention crash: {}",
+        err_msg
+    );
+
+    // The handle must have been killed during crash cleanup.
+    // kill() sets state to NotStarted; a bare clear leaves state as Crashed.
+    let state_after = shared_state.lock().await.clone();
+    assert!(
+        matches!(state_after, SidecarState::NotStarted),
+        "Handle must be killed on crash cleanup (state = NotStarted), got: {:?}",
+        state_after
+    );
+}
+
 // --- multi-thread race regression test (task-353/step-15) ---
 
 /// Reproduce the race condition where `notify.notified()` is called AFTER the
