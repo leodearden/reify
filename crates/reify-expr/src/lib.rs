@@ -590,6 +590,9 @@ fn eval_method_call(obj: &Value, method: &str, args: &[Value], result_type: &Typ
                             return Value::Undef;
                         }
                     }
+                    // Note: fold may return a raw Value::Matrix if the lambda produces one.
+                    // Callers consuming fold results in arithmetic contexts should canonicalize,
+                    // or route through eval_binop which handles canonicalization.
                     acc
                 }
                 _ => Value::Undef,
