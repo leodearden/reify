@@ -574,9 +574,17 @@ where
 
     // Subscribe to the ready notification BEFORE re-locking.  On a multi-thread
     // executor the reader task can call `notify_waiters()` immediately after
-    // spawn_fn returns and before Phase 3 re-acquires the lock.  Eagerly
-    // register interest via `enable()` so a `notify_waiters()` call between
-    // now and the first poll of `notified` is not lost.
+    // spawn_fn returns and before Phase 3 re-acquires the lock.
+    //
+    // IMPORTANT: `Notified::notified()` does NOT register the waiter until the
+    // future is first polled. We must pin + enable() eagerly so that any
+    // `notify_waiters()` call during the Phase 3 await points (sidecar.lock,
+    // state_arc.lock, h.kill) is captured. Without enable(), a multi-thread
+    // executor can interleave:
+    //   1. notified() created — waiter not registered
+    //   2. Phase 3 await points execute (lock, state check, kill)
+    //   3. reader task sets Ready + calls notify_waiters() — lost
+    //   4. notified polled at Phase 4 — registers waiter, but notification already fired
     let mut notified = std::pin::pin!(notify_arc.notified());
     notified.as_mut().enable();
 
