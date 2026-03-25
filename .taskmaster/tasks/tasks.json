@@ -7652,6 +7652,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 428,
+        "title": "Add unit tests for GUI format_value Range edge cases",
+        "description": "Add a #[cfg(test)] module to gui/src-tauri/src/types.rs with unit tests for format_value covering: basic Range display, Range with None lower + inclusive=true, Range with None upper + inclusive=true. No Tauri dependency needed. (Review followup from task 364)",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -7664,7 +7675,7 @@
       ],
       "created": "2026-03-25T21:43:14.716Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-25T21:43:14.719Z"
+      "updated": "2026-03-25T21:43:17.602Z"
     }
   }
 }
