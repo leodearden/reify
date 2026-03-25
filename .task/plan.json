@@ -114,29 +114,29 @@
       "id": "step-11",
       "type": "test",
       "description": "Write failing eval test in crates/reify-eval/src/lib.rs #[cfg(test)] block: compile_geometry_op_revolve_produces_revolve_variant — create CompiledGeometryOp::Sweep { kind: SweepKind::Revolve } with profile at Step(0) and axis/angle args, call compile_geometry_op with step_handles=[GeometryHandleId(100)], assert result is Some(GeometryOp::Revolve { profile: GeometryHandleId(100), axis_origin: [expected], axis_dir: [expected], angle_rad: expected }). Fails because SweepKind::Revolve arm missing in compile_geometry_op.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "b3269cd3"
     },
     {
       "id": "step-12",
       "type": "impl",
       "description": "Add SweepKind::Revolve arm in compile_geometry_op() in crates/reify-eval/src/lib.rs, after the Extrude arm (~line 3140). Resolve profile from profiles[0] via step_handles (same as Extrude pattern). Evaluate ox/oy/oz/ax/ay/az/angle args via eval_expr, extract f64 values with .as_f64().expect(). Return Some(GeometryOp::Revolve { profile, axis_origin, axis_dir, angle_rad }). Make step-11 pass.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "fa48b3e3"
     },
     {
       "id": "step-13",
       "type": "test",
       "description": "Write mock kernel test in crates/reify-eval/tests/boundary4_geometry.rs: mock_kernel_revolve — create a box handle via MockGeometryKernel, then execute GeometryOp::Revolve { profile: box_handle.id, axis_origin: [0,0,0], axis_dir: [0,0,1], angle_rad: TAU }, assert new handle returned with incremented id.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "25a4ac73"
     },
     {
       "id": "step-14",
       "type": "impl",
       "description": "Verify mock kernel test passes (MockGeometryKernel handles all GeometryOp variants via catch-all). Run full test suite (cargo test --workspace) to confirm no regressions across all crates.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "c104eee2"
     }
   ],
   "design_decisions": [
