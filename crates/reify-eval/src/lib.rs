@@ -1158,6 +1158,7 @@ impl Engine {
                         0,
                         self.max_unfold_depth,
                         &self.meta_map,
+                        &mut diagnostics,
                     );
                     continue;
                 }
@@ -3181,15 +3182,17 @@ fn unfold_recursive_sub(
     depth: usize,
     max_depth: usize,
     meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
 ) {
     let guard_expr = match &sub.guard_expr {
         Some(g) => g,
         None => return,
     };
 
-    // Build a local values context that maps template-scoped names to the current entity's values.
-    // This allows the guard and args (which reference e.g. "S.n") to use the current level's values.
-    let mut local_values = values.clone();
+    // Build a small overlay map with only the template-scoped entries needed for
+    // guard/arg evaluation. This avoids cloning the entire global ValueMap (O(V))
+    // at every recursion depth — only the template's own cells are remapped (O(C)).
+    let mut local_values = ValueMap::new();
     for cell in &child_template.value_cells {
         let scoped_id = ValueCellId::new(parent_entity, &cell.id.member);
         if let Some(v) = values.get(&scoped_id) {
@@ -3203,9 +3206,27 @@ fn unfold_recursive_sub(
         &reify_expr::EvalContext::new(&local_values, functions).with_meta(meta_map),
     );
 
-    // Only unfold if guard is explicitly Bool(true) and depth limit not exceeded.
-    if guard_val != Value::Bool(true) || depth >= max_depth {
-        return;
+    // Differentiate guard outcomes: Bool(true) continues, Bool(false)/Undef terminate
+    // normally, any other type is a guard expression bug that deserves a diagnostic.
+    match &guard_val {
+        Value::Bool(true) => {
+            if depth >= max_depth {
+                diagnostics.push(Diagnostic::warning(format!(
+                    "recursive unfolding of '{}' truncated at depth limit {} (guard still true)",
+                    parent_entity, max_depth,
+                )));
+                return;
+            }
+        }
+        Value::Bool(false) => return, // Normal termination — guard says stop
+        Value::Undef => return,       // Param not yet determined — do not unfold (per spec)
+        other => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "guard for recursive sub '{}' in '{}' evaluated to {:?} (expected Bool), treating as termination",
+                sub.name, parent_entity, other,
+            )));
+            return;
+        }
     }
 
     // Pre-evaluate args in the local context (so child uses current level's param values, not top-level).
@@ -3256,6 +3277,7 @@ fn unfold_recursive_sub(
         depth + 1,
         max_depth,
         meta_map,
+        diagnostics,
     );
 
     // Phase 3 (bottom-up): Evaluate let-bindings for next_entity.
@@ -3273,6 +3295,7 @@ fn unfold_recursive_sub(
         &next_entity,
         child_values,
         meta_map,
+        Some(&sub.name),
     );
 }
 
@@ -3303,7 +3326,7 @@ fn elaborate_child_instance(
     );
     elaborate_child_lets_only(
         values, snapshot, functions, journal, cache, version_id,
-        child_template, scoped_entity, child_values, meta_map,
+        child_template, scoped_entity, child_values, meta_map, None,
     );
 }
 
@@ -3405,23 +3428,38 @@ fn elaborate_child_lets_only(
     scoped_entity: &str,
     mut child_values: ValueMap,
     meta_map: &HashMap<String, HashMap<String, String>>,
+    recursive_sub_name: Option<&str>,
 ) {
     // Enrich child_values with sub-component values projected from the global map.
-    // This enables cross-level references in let expressions to resolve correctly
-    // when children have already been elaborated (leaves-first ordering).
-    let scoped_prefix = format!("{}.", scoped_entity);
-    let template_prefix = format!("{}.", child_template.name);
-    let enrichment: Vec<(ValueCellId, Value)> = values
-        .iter()
-        .filter_map(|(key, val)| {
-            key.entity.strip_prefix(&scoped_prefix).map(|suffix| {
-                let remapped_entity = format!("{}{}", template_prefix, suffix);
-                (ValueCellId::new(remapped_entity, &key.member), val.clone())
-            })
-        })
-        .collect();
-    for (id, val) in enrichment {
-        child_values.insert(id, val);
+    // Only needed for recursive subs where deeper levels have already been elaborated
+    // (leaves-first ordering). Instead of scanning the entire global map (O(V) per
+    // depth level), walk the known recursive entity chain:
+    // scoped_entity.sub_name, scoped_entity.sub_name.sub_name, ...
+    // Each level has exactly child_template.value_cells entries, giving O(D×C) total.
+    if let Some(sub_name) = recursive_sub_name {
+        let scoped_prefix = format!("{}.", scoped_entity);
+        let template_prefix = format!("{}.", child_template.name);
+        let mut depth_entity = format!("{}.{}", scoped_entity, sub_name);
+        loop {
+            let mut found_any = false;
+            for cell in &child_template.value_cells {
+                let id = ValueCellId::new(&depth_entity, &cell.id.member);
+                if let Some(val) = values.get(&id) {
+                    if let Some(suffix) = depth_entity.strip_prefix(&scoped_prefix) {
+                        let remapped_entity = format!("{}{}", template_prefix, suffix);
+                        child_values.insert(
+                            ValueCellId::new(remapped_entity, &cell.id.member),
+                            val.clone(),
+                        );
+                        found_any = true;
+                    }
+                }
+            }
+            if !found_any {
+                break;
+            }
+            depth_entity = format!("{}.{}", depth_entity, sub_name);
+        }
     }
 
     // Evaluate let-bindings in topological order.
