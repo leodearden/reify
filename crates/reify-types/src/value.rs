@@ -459,22 +459,11 @@ impl PartialEq for Value {
                 Value::Range { lower: al, upper: au, lower_inclusive: ali, upper_inclusive: aui },
                 Value::Range { lower: bl, upper: bu, lower_inclusive: bli, upper_inclusive: bui },
             ) => {
-                debug_assert!(
-                    al.is_some() || !ali,
-                    "Range invariant violated: lower_inclusive must be false when lower is None"
-                );
-                debug_assert!(
-                    au.is_some() || !aui,
-                    "Range invariant violated: upper_inclusive must be false when upper is None"
-                );
-                debug_assert!(
-                    bl.is_some() || !bli,
-                    "Range invariant violated: lower_inclusive must be false when lower is None"
-                );
-                debug_assert!(
-                    bu.is_some() || !bui,
-                    "Range invariant violated: upper_inclusive must be false when upper is None"
-                );
+                // Defensive re-normalization: None bounds → inclusive=false
+                let ali = *ali && al.is_some();
+                let aui = *aui && au.is_some();
+                let bli = *bli && bl.is_some();
+                let bui = *bui && bu.is_some();
                 al == bl && au == bu && ali == bli && aui == bui
             }
             (Value::Matrix(a), Value::Matrix(b)) => a == b,
