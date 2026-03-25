@@ -91,3 +91,45 @@ structure def S : A + B {
         x_cells.iter().map(|vc| &vc.id).collect::<Vec<_>>()
     );
 }
+
+// ── step-3 ───────────────────────────────────────────────────────────────────
+
+/// Diamond hierarchy: D{param x:Length}, B:D, C:D, A:B+C, structure S:A.
+/// The param x from D is reachable via two paths (through B and through C).
+/// The visited-set in collect_all_requirements deduplicates it.
+/// Assert: no errors, exactly 1 'x' value cell (not 2).
+#[test]
+fn diamond_hierarchy_params_deduped() {
+    let source = r#"
+trait D {
+    param x : Length
+}
+
+trait B : D {
+}
+
+trait C : D {
+}
+
+trait A : B + C {
+}
+
+structure def S : A {
+    param x : Length = 5mm
+}
+"#;
+
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    let x_cells: Vec<_> = template.value_cells.iter().filter(|vc| vc.id.member == "x").collect();
+    assert_eq!(
+        x_cells.len(),
+        1,
+        "expected exactly 1 'x' value cell (diamond dedup), got {}: {:?}",
+        x_cells.len(),
+        x_cells.iter().map(|vc| &vc.id).collect::<Vec<_>>()
+    );
+}
