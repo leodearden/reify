@@ -1,0 +1,552 @@
+//! Tests for stdlib/materials_mechanical.ri — mechanical material traits.
+//!
+//! Tests validate that the .ri file parses and compiles cleanly, that each
+//! trait and enum is correctly represented in the compiled module, and that
+//! trait conformance and constraint injection work as expected.
+
+use reify_compiler::*;
+use reify_types::*;
+use std::path::PathBuf;
+
+// ─── helpers ──────────────────────────────────────────────────────────────────
+
+/// Load and compile stdlib/materials_mechanical.ri from the crate root.
+/// Panics on parse errors or if the file doesn't exist.
+fn load_stdlib_module() -> CompiledModule {
+    let path: PathBuf = [env!("CARGO_MANIFEST_DIR"), "stdlib", "materials_mechanical.ri"]
+        .iter()
+        .collect();
+    let source = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("failed to read {}: {}", path.display(), e));
+    let parsed = reify_syntax::parse(&source, ModulePath::single("stdlib"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors in materials_mechanical.ri: {:?}",
+        parsed.errors
+    );
+    reify_compiler::compile(&parsed)
+}
+
+/// Compile inline source, returning the CompiledModule.
+fn compile_module(source: &str) -> CompiledModule {
+    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    reify_compiler::compile(&parsed)
+}
+
+/// Compile inline source, return the first template + diagnostics.
+fn compile_first_template(source: &str) -> (TopologyTemplate, Vec<Diagnostic>) {
+    let module = compile_module(source);
+    let template = module
+        .templates
+        .into_iter()
+        .next()
+        .expect("expected at least 1 template");
+    (template, module.diagnostics)
+}
+
+// ─── step-1: file exists, parses, compiles without errors ────────────────────
+
+/// Step 1: materials_mechanical.ri file exists, parses cleanly, compiles
+/// without error-severity diagnostics, and has at least one trait def.
+#[test]
+fn stdlib_file_parses_and_compiles_without_errors() {
+    let module = load_stdlib_module();
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "unexpected error diagnostics in materials_mechanical.ri: {:?}",
+        errors
+    );
+
+    assert!(
+        !module.trait_defs.is_empty(),
+        "expected at least one trait def, got zero"
+    );
+}
+
+// ─── step-3: Elastic trait ───────────────────────────────────────────────────
+
+/// Step 3: Elastic trait exists with 3 required members: youngs_modulus,
+/// poissons_ratio, shear_modulus — all typed as Real.
+#[test]
+fn elastic_trait_has_three_real_members() {
+    let module = load_stdlib_module();
+
+    let elastic = module
+        .trait_defs
+        .iter()
+        .find(|t| t.name == "Elastic")
+        .expect("expected 'Elastic' trait in compiled module");
+
+    assert_eq!(
+        elastic.required_members.len(),
+        3,
+        "Elastic should have exactly 3 required members, got: {:?}",
+        elastic.required_members.iter().map(|r| &r.name).collect::<Vec<_>>()
+    );
+
+    let member_names: Vec<&str> = elastic
+        .required_members
+        .iter()
+        .map(|r| r.name.as_str())
+        .collect();
+    assert!(
+        member_names.contains(&"youngs_modulus"),
+        "expected 'youngs_modulus' in Elastic, got: {:?}",
+        member_names
+    );
+    assert!(
+        member_names.contains(&"poissons_ratio"),
+        "expected 'poissons_ratio' in Elastic, got: {:?}",
+        member_names
+    );
+    assert!(
+        member_names.contains(&"shear_modulus"),
+        "expected 'shear_modulus' in Elastic, got: {:?}",
+        member_names
+    );
+
+    for req in &elastic.required_members {
+        match &req.kind {
+            RequirementKind::Param(ty) => {
+                assert_eq!(
+                    *ty,
+                    Type::Real,
+                    "Elastic member '{}' should be Real, got {:?}",
+                    req.name,
+                    ty
+                );
+            }
+            other => panic!(
+                "Elastic member '{}' should be Param, got {:?}",
+                req.name, other
+            ),
+        }
+    }
+}
+
+// ─── step-5: Strong trait ────────────────────────────────────────────────────
+
+/// Step 5: Strong trait has 3 required members and at least 1 constraint
+/// default (the `uts >= yield_strength` constraint).
+#[test]
+fn strong_trait_has_members_and_constraint_default() {
+    let module = load_stdlib_module();
+
+    let strong = module
+        .trait_defs
+        .iter()
+        .find(|t| t.name == "Strong")
+        .expect("expected 'Strong' trait in compiled module");
+
+    assert_eq!(
+        strong.required_members.len(),
+        3,
+        "Strong should have exactly 3 required members, got: {:?}",
+        strong.required_members.iter().map(|r| &r.name).collect::<Vec<_>>()
+    );
+
+    let member_names: Vec<&str> = strong
+        .required_members
+        .iter()
+        .map(|r| r.name.as_str())
+        .collect();
+    assert!(
+        member_names.contains(&"yield_strength"),
+        "expected 'yield_strength' in Strong"
+    );
+    assert!(member_names.contains(&"uts"), "expected 'uts' in Strong");
+    assert!(
+        member_names.contains(&"compressive_strength"),
+        "expected 'compressive_strength' in Strong"
+    );
+
+    let constraint_defaults: Vec<_> = strong
+        .defaults
+        .iter()
+        .filter(|d| matches!(d.kind, DefaultKind::Constraint(_)))
+        .collect();
+    assert!(
+        !constraint_defaults.is_empty(),
+        "Strong trait should have at least 1 constraint default (uts >= yield_strength)"
+    );
+}
+
+// ─── step-7: HardnessScale enum and Hard trait ───────────────────────────────
+
+/// Step 7: HardnessScale enum has exactly 7 variants (Rockwell_A, Rockwell_B,
+/// Rockwell_C, Brinell, Vickers, Shore_A, Shore_D) and Hard trait has 2
+/// required members (hardness_value : Real, hardness_scale : Enum(HardnessScale)).
+#[test]
+fn hardness_scale_enum_and_hard_trait() {
+    let module = load_stdlib_module();
+
+    // Enum check
+    let enum_def = module
+        .enum_defs
+        .iter()
+        .find(|e| e.name == "HardnessScale")
+        .expect("expected 'HardnessScale' enum in compiled module");
+
+    let expected_variants = [
+        "Rockwell_A",
+        "Rockwell_B",
+        "Rockwell_C",
+        "Brinell",
+        "Vickers",
+        "Shore_A",
+        "Shore_D",
+    ];
+    assert_eq!(
+        enum_def.variants.len(),
+        expected_variants.len(),
+        "HardnessScale should have {} variants, got: {:?}",
+        expected_variants.len(),
+        enum_def.variants
+    );
+    for variant in &expected_variants {
+        assert!(
+            enum_def.variants.contains(&variant.to_string()),
+            "HardnessScale missing variant '{}', variants: {:?}",
+            variant,
+            enum_def.variants
+        );
+    }
+
+    // Hard trait check
+    let hard = module
+        .trait_defs
+        .iter()
+        .find(|t| t.name == "Hard")
+        .expect("expected 'Hard' trait in compiled module");
+
+    assert_eq!(
+        hard.required_members.len(),
+        2,
+        "Hard should have exactly 2 required members, got: {:?}",
+        hard.required_members.iter().map(|r| &r.name).collect::<Vec<_>>()
+    );
+
+    let hardness_value = hard
+        .required_members
+        .iter()
+        .find(|r| r.name == "hardness_value")
+        .expect("Hard trait should have 'hardness_value' member");
+    match &hardness_value.kind {
+        RequirementKind::Param(ty) => assert_eq!(
+            *ty,
+            Type::Real,
+            "hardness_value should be Real, got {:?}",
+            ty
+        ),
+        other => panic!("hardness_value should be Param, got {:?}", other),
+    }
+
+    let hardness_scale = hard
+        .required_members
+        .iter()
+        .find(|r| r.name == "hardness_scale")
+        .expect("Hard trait should have 'hardness_scale' member");
+    match &hardness_scale.kind {
+        RequirementKind::Param(ty) => assert_eq!(
+            *ty,
+            Type::Enum("HardnessScale".to_string()),
+            "hardness_scale should be Enum(HardnessScale), got {:?}",
+            ty
+        ),
+        other => panic!("hardness_scale should be Param, got {:?}", other),
+    }
+}
+
+// ─── step-9: Steel conformance with Elastic + Strong ─────────────────────────
+
+/// Step 9: `structure def Steel : Elastic + Strong { ... }` type-checks
+/// without errors. The structure provides all 6 required params. The compiled
+/// template has trait_bounds containing both 'Elastic' and 'Strong'.
+#[test]
+fn steel_conforms_to_elastic_and_strong() {
+    let source = r#"
+trait Elastic {
+    param youngs_modulus : Real
+    param poissons_ratio : Real
+    param shear_modulus : Real
+}
+
+trait Strong {
+    param yield_strength : Real
+    param uts : Real
+    param compressive_strength : Real
+    constraint uts >= yield_strength
+}
+
+structure def Steel : Elastic + Strong {
+    param youngs_modulus : Real = 200.0
+    param poissons_ratio : Real = 0.3
+    param shear_modulus : Real = 77.0
+    param yield_strength : Real = 250.0
+    param uts : Real = 400.0
+    param compressive_strength : Real = 250.0
+}
+"#;
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "Steel conformance should have no errors, got: {:?}",
+        errors
+    );
+
+    assert!(
+        template.trait_bounds.contains(&"Elastic".to_string()),
+        "Steel should have 'Elastic' trait bound, got: {:?}",
+        template.trait_bounds
+    );
+    assert!(
+        template.trait_bounds.contains(&"Strong".to_string()),
+        "Steel should have 'Strong' trait bound, got: {:?}",
+        template.trait_bounds
+    );
+}
+
+// ─── step-11: constraint injection into Steel ─────────────────────────────────
+
+/// Step 11: The constraint from Strong (`uts >= yield_strength`) is injected
+/// into a conforming Steel structure — template.constraints is non-empty.
+#[test]
+fn strong_constraint_injected_into_steel() {
+    let source = r#"
+trait Strong {
+    param yield_strength : Real
+    param uts : Real
+    param compressive_strength : Real
+    constraint uts >= yield_strength
+}
+
+structure def Steel : Strong {
+    param yield_strength : Real = 250.0
+    param uts : Real = 400.0
+    param compressive_strength : Real = 250.0
+}
+"#;
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no errors, got: {:?}",
+        errors
+    );
+
+    assert!(
+        !template.constraints.is_empty(),
+        "expected constraint from Strong trait injected into Steel, but constraints is empty"
+    );
+}
+
+// ─── step-13: HardnessScale.Vickers access ────────────────────────────────────
+
+/// Step 13: `let scale = HardnessScale.Vickers` compiles without errors in a
+/// structure, and the resulting 'scale' value cell has Enum type.
+#[test]
+fn hardness_scale_vickers_access() {
+    let source = r#"
+enum HardnessScale { Rockwell_A, Rockwell_B, Rockwell_C, Brinell, Vickers, Shore_A, Shore_D }
+
+structure def S {
+    let scale = HardnessScale.Vickers
+}
+"#;
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no errors for HardnessScale.Vickers access, got: {:?}",
+        errors
+    );
+
+    let scale_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "scale")
+        .expect("expected 'scale' value cell in template");
+
+    assert_eq!(
+        scale_cell.cell_type,
+        Type::Enum("HardnessScale".to_string()),
+        "scale should have Enum(HardnessScale) type, got {:?}",
+        scale_cell.cell_type
+    );
+}
+
+// ─── step-15: remaining 5 traits ─────────────────────────────────────────────
+
+/// Step 15: FatigueRated, FractureTough, Ductile, ImpactResistant, Damping
+/// all exist in the compiled module with correct required member counts.
+#[test]
+fn remaining_five_traits_exist() {
+    let module = load_stdlib_module();
+
+    // FatigueRated: 1 member (endurance_limit)
+    let fatigue = module
+        .trait_defs
+        .iter()
+        .find(|t| t.name == "FatigueRated")
+        .expect("expected 'FatigueRated' trait");
+    assert_eq!(
+        fatigue.required_members.len(),
+        1,
+        "FatigueRated should have 1 required member"
+    );
+    assert!(
+        fatigue.required_members.iter().any(|r| r.name == "endurance_limit"),
+        "FatigueRated should have 'endurance_limit' member"
+    );
+
+    // FractureTough: 1 member (fracture_toughness)
+    let fracture = module
+        .trait_defs
+        .iter()
+        .find(|t| t.name == "FractureTough")
+        .expect("expected 'FractureTough' trait");
+    assert_eq!(
+        fracture.required_members.len(),
+        1,
+        "FractureTough should have 1 required member"
+    );
+    assert!(
+        fracture.required_members.iter().any(|r| r.name == "fracture_toughness"),
+        "FractureTough should have 'fracture_toughness' member"
+    );
+
+    // Ductile: 2 members (elongation, reduction_of_area)
+    let ductile = module
+        .trait_defs
+        .iter()
+        .find(|t| t.name == "Ductile")
+        .expect("expected 'Ductile' trait");
+    assert_eq!(
+        ductile.required_members.len(),
+        2,
+        "Ductile should have 2 required members"
+    );
+    assert!(
+        ductile.required_members.iter().any(|r| r.name == "elongation"),
+        "Ductile should have 'elongation' member"
+    );
+    assert!(
+        ductile.required_members.iter().any(|r| r.name == "reduction_of_area"),
+        "Ductile should have 'reduction_of_area' member"
+    );
+
+    // ImpactResistant: 1 member (impact_energy)
+    let impact = module
+        .trait_defs
+        .iter()
+        .find(|t| t.name == "ImpactResistant")
+        .expect("expected 'ImpactResistant' trait");
+    assert_eq!(
+        impact.required_members.len(),
+        1,
+        "ImpactResistant should have 1 required member"
+    );
+    assert!(
+        impact.required_members.iter().any(|r| r.name == "impact_energy"),
+        "ImpactResistant should have 'impact_energy' member"
+    );
+
+    // Damping: 2 members (damping_ratio, loss_factor)
+    let damping = module
+        .trait_defs
+        .iter()
+        .find(|t| t.name == "Damping")
+        .expect("expected 'Damping' trait");
+    assert_eq!(
+        damping.required_members.len(),
+        2,
+        "Damping should have 2 required members"
+    );
+    assert!(
+        damping.required_members.iter().any(|r| r.name == "damping_ratio"),
+        "Damping should have 'damping_ratio' member"
+    );
+    assert!(
+        damping.required_members.iter().any(|r| r.name == "loss_factor"),
+        "Damping should have 'loss_factor' member"
+    );
+}
+
+// ─── step-17: full integration ────────────────────────────────────────────────
+
+/// Step 17: The complete .ri file compiles to exactly 9 traits and 1 enum,
+/// with zero error-severity diagnostics.
+#[test]
+fn full_module_has_nine_traits_and_one_enum() {
+    let module = load_stdlib_module();
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected zero error diagnostics in complete .ri file, got: {:?}",
+        errors
+    );
+
+    assert_eq!(
+        module.trait_defs.len(),
+        9,
+        "expected exactly 9 traits, got: {:?}",
+        module.trait_defs.iter().map(|t| &t.name).collect::<Vec<_>>()
+    );
+
+    assert_eq!(
+        module.enum_defs.len(),
+        1,
+        "expected exactly 1 enum, got: {:?}",
+        module.enum_defs.iter().map(|e| &e.name).collect::<Vec<_>>()
+    );
+
+    // Verify all expected trait names are present
+    let expected_traits = [
+        "Material",
+        "Elastic",
+        "Strong",
+        "Hard",
+        "FatigueRated",
+        "FractureTough",
+        "Ductile",
+        "ImpactResistant",
+        "Damping",
+    ];
+    for trait_name in &expected_traits {
+        assert!(
+            module.trait_defs.iter().any(|t| t.name == *trait_name),
+            "expected trait '{}' in compiled module, but it's missing",
+            trait_name
+        );
+    }
+
+    assert!(
+        module.enum_defs.iter().any(|e| e.name == "HardnessScale"),
+        "expected 'HardnessScale' enum in compiled module"
+    );
+}

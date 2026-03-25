@@ -1,145 +1,204 @@
 {
-  "task_id": "396",
-  "title": "Emit diagnostics for ERROR nodes and silent drops in lower_connect_body",
+  "task_id": "327",
+  "title": "Stdlib: Material, Elastic, Strong, Hard + mechanical material traits",
   "files": [
-    "crates/reify-syntax/src/ts_parser.rs",
-    "crates/reify-syntax/tests/connect_chain_tests.rs"
+    "crates/reify-compiler/stdlib/materials_mechanical.ri",
+    "crates/reify-compiler/tests/materials_mechanical_tests.rs"
   ],
   "modules": [
-    "crates/reify-syntax"
+    "crates/reify-compiler"
   ],
-  "analysis": "lower_connect_body() at ts_parser.rs:1284-1316 has three silent-failure paths that should emit ParseError diagnostics:\n\n1. **ERROR nodes swallowed by catch-all**: The `_ => {}` catch-all discards ERROR nodes produced by tree-sitter error recovery (e.g. user writes `{ >= }` inside a connect body). Every other match-on-children site in the parser (top-level at line 163, constraint body at line 637, member declarations at line 852) has an explicit \"ERROR\" arm that pushes a ParseError. lower_connect_body must follow suit.\n\n2. **connect_param_assignment silent drops**: When `child_by_field_name(\"name\")` returns None, the entire assignment is silently skipped. When name is present but `child_by_field_name(\"value\")` returns None or `lower_expr` fails, the assignment is silently dropped after computing the name string. These should emit diagnostics.\n\n3. **port_mapping silent drops**: When `child_by_field_name(\"from\")` or `child_by_field_name(\"to\")` returns None, the mapping is silently skipped. This should emit a diagnostic.\n\n4. **[REVIEWER BLOCKER] Outer connect_statement missing check_and_lower!**: At ts_parser.rs:846, `lower_member` calls `self.lower_connect(child).map(MemberDecl::Connect)` directly, without the `check_and_lower!` guard that every other member type uses. When the connect_statement node itself is malformed at the outer level (e.g. `connect >= b` \u2014 missing left endpoint, broken operator), `lower_connect` returns `None` via `?` operators on `child_by_field_name(\"left\")`, `child_by_field_name(\"operator\")`, or `child_by_field_name(\"right\")`, silently discarding the error with no diagnostic. Previously `check_and_lower!` would catch `has_error()` on the node and emit `\"invalid connect: ...\"`. This is a regression.\n\nThe grammar (grammar.js:496-515) defines connect_body as `{ commaSep(choice(port_mapping, connect_param_assignment)) }`. Anonymous child tokens ({, }, ,) correctly hit the catch-all and should remain silent.\n\nThe fix follows established patterns: (a) add \"ERROR\" arm with contextual message `\"syntax error in connect body: ...\"` matching the constraint body pattern at line 637, (b) add `child.has_error()` guards on param/mapping arms matching the check_and_lower! macro pattern at line 12-23, (c) convert `if let` chains to `let ... else` with diagnostic-emitting else branches, (d) wrap the connect_statement arm in lower_member with check_and_lower! to match all other member type arms.\n\nTest strategy: integration tests in connect_chain_tests.rs that parse malformed connect bodies. For ERROR nodes, use clearly invalid syntax like `{ >= }`. For the has_error() guard paths, use syntax that partially matches but has internal errors. Tests assert at least one error exists with an expected message substring, tolerant of tree-sitter error recovery variations.",
-  "prerequisites": [],
+  "analysis": "Task 327 creates stdlib .ri definitions for mechanical material traits: Material, Elastic, Strong, Hard (with HardnessScale enum), FatigueRated, FractureTough, Ductile, ImpactResistant, and Damping.\n\nDependency task 326 (stdlib prelude loader with include_str!/OnceLock caching) is marked done but not yet merged to main. This task creates the .ri file in crates/reify-compiler/stdlib/ where task 326 expects it, and writes tests that directly read and compile the file (independent of the loader).\n\nExisting infrastructure:\n- reify_syntax::parse() handles trait declarations with params, constraints, and trait refinements\n- reify_compiler::compile() compiles traits into CompiledTrait with required_members and defaults\n- Trait conformance checking works for `structure def X : A + B { ... }` syntax\n- Constraints inside traits (e.g., `constraint x > 0mm`) are injected into conforming structures as defaults\n- Enums are parsed and compiled into EnumDef with named variants\n- resolve_type_name() supports: Bool, Int, Real, String, Scalar (=Length), Length, Mass\n- unit_to_scalar() supports: mm, cm, m, in, deg, rad, kg, g, s\n\nType constraints: The compiler currently lacks Pressure and Density as recognized type names. Since adding these requires changes to reify-types dimension constants and the compiler's resolve_type_name(), and no Pa/MPa/GPa unit literals exist either, the pragmatic approach is to use `Real` for dimensionless quantities (poissons_ratio, damping_ratio, elongation, etc.) and `Real` as a stand-in for pressure/density-dimensioned quantities. This avoids blocking on type system extensions while still providing correct trait structure, constraint validation, and enum definitions. A follow-up task can upgrade Real\u2192Pressure/Density once those types and units are added.\n\nTest strategy: Tests use a helper that reads the .ri file from stdlib/materials_mechanical.ri (relative to crate root), parses and compiles it, then inspects CompiledModule fields (trait_defs, enum_defs). For conformance tests, inline source combines the trait definitions with user structures. This approach mirrors trait_conformance_tests.rs patterns (compile_module/compile_first_template helpers).",
+  "prerequisites": [
+    {
+      "id": "pre-1",
+      "description": "Create crates/reify-compiler/stdlib/ directory for .ri stdlib source files (task 326 infrastructure). This is the directory where the prelude loader will look for embedded .ri files.",
+      "status": "done",
+      "commit": "107ee2d2",
+      "tests": []
+    }
+  ],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing test `connect_body_error_node_emits_diagnostic`: parse `structure S { port a : out T  port b : in T  connect a -> b { >= } }` and assert errors is non-empty and at least one error message contains 'connect body' or 'syntax error'. Currently the catch-all silently discards ERROR nodes, so the test will fail.",
+      "description": "Write failing test: materials_mechanical.ri file exists at stdlib/materials_mechanical.ri, parses without errors, and compiles without error-severity diagnostics. Helper function `load_stdlib_module(filename)` reads from `stdlib/<filename>`, parses with reify_syntax::parse(), compiles with reify_compiler::compile(), returns CompiledModule. Assert trait_defs is non-empty.",
       "status": "done",
-      "commit": "1b2e8b4c"
+      "commit": "dc5d8915"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Add explicit \"ERROR\" arm to the match in lower_connect_body, before the `_ => {}` catch-all: `\"ERROR\" => { self.errors.push(ParseError { message: format!(\"syntax error in connect body: {}\", self.node_text(child)), span: self.span(child) }); }`. This follows the pattern at lines 637-644. Step-1 test should now pass.",
+      "description": "Create crates/reify-compiler/stdlib/materials_mechanical.ri with the Material trait: `trait Material { param density : Real  param name : String }`. This is the base material trait that all materials should implement. Uses Real for density (Density type not yet in compiler). File should parse and compile cleanly.",
       "status": "done",
-      "commit": "a519be49"
+      "commit": "107ee2d2"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing test `connect_body_malformed_param_emits_diagnostic`: parse a connect body with a broken parameter assignment (e.g. `{ = 5 }` or other syntax that tree-sitter error recovery produces as a typed node with has_error()). Assert at least one error is emitted. Currently the if-let chains silently skip broken nodes.",
+      "description": "Write failing test: Elastic trait exists in compiled module with 3 required members (youngs_modulus, poissons_ratio, shear_modulus). Find the trait by name in module.trait_defs, assert required_members contains all three names with RequirementKind::Param(Type::Real) for each.",
       "status": "done",
-      "commit": "bc0c2d43"
+      "commit": "dc5d8915"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Refactor the connect_param_assignment arm in lower_connect_body: (a) Add a `if child.has_error()` guard at the top that emits `format!(\"invalid connect parameter: {}\", self.node_text(child))` and continues. (b) Convert `if let Some(name_node) = child.child_by_field_name(\"name\")` to `let Some(name_node) = ... else { push error 'connect parameter missing name', continue }`. (c) Convert the value+lower_expr chain: if value_node is None, emit 'connect parameter X missing value'; if lower_expr returns None, emit 'invalid value in connect parameter X'. Step-3 test should now pass.",
+      "description": "Add Elastic trait to materials_mechanical.ri: `trait Elastic { param youngs_modulus : Real  param poissons_ratio : Real  param shear_modulus : Real }`. All three are required (no defaults), representing Young's modulus (Pa), Poisson's ratio (dimensionless), and shear modulus (Pa).",
       "status": "done",
-      "commit": "26765f06"
+      "commit": "9a970a7e"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing test `connect_body_malformed_mapping_emits_diagnostic`: parse a connect body with a broken port mapping (e.g. syntax that produces an incomplete port_mapping node). Assert at least one error is emitted. Currently the if-let silently drops incomplete mappings.",
+      "description": "Write failing test: Strong trait exists with 3 required members (yield_strength, uts, compressive_strength) and has at least 1 default (the constraint). Verify the trait's defaults vector contains a DefaultKind::Constraint entry. This tests that the `constraint uts >= yield_strength` declaration in the trait is parsed and compiled.",
       "status": "done",
-      "commit": "3feb7ae6"
+      "commit": "dc5d8915"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Refactor the port_mapping arm in lower_connect_body: (a) Add a `if child.has_error()` guard at the top that emits `format!(\"invalid port mapping: {}\", self.node_text(child))` and continues. (b) Add an else branch to the `if let (Some(from), Some(to))` destructure that emits `format!(\"incomplete port mapping: {}\", self.node_text(child))`. Step-5 test should now pass.",
+      "description": "Add Strong trait to materials_mechanical.ri: `trait Strong { param yield_strength : Real  param uts : Real  param compressive_strength : Real  constraint uts >= yield_strength }`. The constraint ensures ultimate tensile strength is at least as large as yield strength.",
       "status": "done",
-      "commit": "39412649"
+      "commit": "a9c784dc"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write regression test `connect_body_valid_no_spurious_errors`: explicitly verify that a well-formed connect body with both params and port mappings (`connect a -> b : BoltSet { grade = 8.8, shaft -> bore }`) produces zero errors. This guards against the refactored code accidentally triggering diagnostics on valid input. (Existing tests already assert errors.is_empty() but this makes the intent explicit for this task.)",
+      "description": "Write failing test: HardnessScale enum exists in compiled module with exactly 7 variants: Rockwell_A, Rockwell_B, Rockwell_C, Brinell, Vickers, Shore_A, Shore_D. Find enum by name in module.enum_defs, assert variants list matches. Also verify Hard trait exists with 2 required members (hardness_value : Real, hardness_scale with Enum type).",
       "status": "done",
-      "commit": "231e1732"
+      "commit": "dc5d8915"
     },
     {
       "id": "step-8",
-      "type": "test",
-      "description": "Write failing test `connect_statement_malformed_outer_emits_diagnostic`: parse `structure S { port a : out T  connect >= b }` and assert `!errors.is_empty()` and at least one error message contains 'invalid connect' or 'syntax error'. This tests the reviewer-identified regression: line 846 in lower_member calls `self.lower_connect(child).map(MemberDecl::Connect)` without `check_and_lower!`, so when the outer connect_statement node is malformed (has_error() is true because left endpoint is missing and operator is broken), lower_connect silently returns None via `?` with no diagnostic. The test should currently fail because no diagnostic is emitted.",
+      "type": "impl",
+      "description": "Add HardnessScale enum and Hard trait to materials_mechanical.ri: `enum HardnessScale { Rockwell_A, Rockwell_B, Rockwell_C, Brinell, Vickers, Shore_A, Shore_D }` and `trait Hard { param hardness_value : Real  param hardness_scale : HardnessScale }`. Also modified compile_trait() to accept enum_defs and resolve enum type names as Type::Enum.",
       "status": "done",
-      "commit": "f47bf6da"
+      "commit": "10cd2910"
     },
     {
       "id": "step-9",
-      "type": "impl",
-      "description": "Wrap the connect_statement arm in lower_member (line 846) with check_and_lower!, matching all other member type arms: change `\"connect_statement\" => self.lower_connect(child).map(MemberDecl::Connect),` to `\"connect_statement\" => check_and_lower!(self, child, \"connect\", self.lower_connect(child).map(MemberDecl::Connect)),`. This restores the is_error()||has_error() guard that emits `\"invalid connect: <text>\"` before returning None. Step-8 test should now pass.",
+      "type": "test",
+      "description": "Write failing test: user-defined `structure def Steel : Elastic + Strong { ... }` type-checks without errors. Inline source combines the Elastic and Strong trait definitions with a Steel structure providing all required params with Real defaults. Compile and assert zero error-severity diagnostics. Also assert the template has trait_bounds containing both 'Elastic' and 'Strong'.",
       "status": "done",
-      "commit": "da9dbd1e"
+      "commit": "dc5d8915"
     },
     {
       "id": "step-10",
-      "type": "test",
-      "description": "Write regression test `connect_statement_valid_outer_no_spurious_errors`: parse a simple well-formed connect `structure S { port a : out T  port b : in T  connect a -> b }` and assert errors.is_empty(). This guards against the check_and_lower! addition accidentally triggering false positives on valid connect statements. (Overlaps with existing parse_connect_simple but makes the intent explicit for this fix.)",
+      "type": "impl",
+      "description": "Verify Steel conformance test passes. The existing trait conformance infrastructure (trait_conformance_tests.rs patterns) already handles multi-trait bounds via `A + B` syntax. The test should pass with the inline trait definitions and Steel structure. If any issue arises, adjust the inline source.",
       "status": "done",
-      "commit": "0cdfb9eb"
+      "commit": "dc5d8915"
+    },
+    {
+      "id": "step-11",
+      "type": "test",
+      "description": "Write failing test: constraint from Strong trait is injected into conforming Steel structure. Compile the inline source (Strong trait + Steel structure) and assert template.constraints is non-empty, confirming the `uts >= yield_strength` constraint was injected as a default.",
+      "status": "done",
+      "commit": "dc5d8915"
+    },
+    {
+      "id": "step-12",
+      "type": "impl",
+      "description": "Verify constraint injection test passes. The existing DefaultKind::Constraint mechanism in compile_entity already handles trait constraint injection. The test should pass since Strong's constraint is a default that gets merged into conforming structures.",
+      "status": "done",
+      "commit": "dc5d8915"
+    },
+    {
+      "id": "step-13",
+      "type": "test",
+      "description": "Write failing test: HardnessScale.Vickers is accessible in a structure let-binding. Inline source: HardnessScale enum + `structure def S { let scale = HardnessScale.Vickers }`. Compile and assert no errors, verify value cell 'scale' exists with Enum type.",
+      "status": "done",
+      "commit": "dc5d8915"
+    },
+    {
+      "id": "step-14",
+      "type": "impl",
+      "description": "Verify HardnessScale.Vickers access test passes. The existing enum access syntax (`EnumName.Variant`) is already supported by the parser and compiler. The test should pass with the inline HardnessScale enum definition.",
+      "status": "done",
+      "commit": "dc5d8915"
+    },
+    {
+      "id": "step-15",
+      "type": "test",
+      "description": "Write failing test: remaining 5 traits (FatigueRated, FractureTough, Ductile, ImpactResistant, Damping) exist in compiled module. Load the .ri file, compile, and for each trait name assert it appears in module.trait_defs. Verify required member counts: FatigueRated(1: endurance_limit), FractureTough(1: fracture_toughness), Ductile(2: elongation, reduction_of_area), ImpactResistant(1: impact_energy), Damping(2: damping_ratio, loss_factor).",
+      "status": "done",
+      "commit": "dc5d8915"
+    },
+    {
+      "id": "step-16",
+      "type": "impl",
+      "description": "Add remaining 5 traits to materials_mechanical.ri: `trait FatigueRated { param endurance_limit : Real }`, `trait FractureTough { param fracture_toughness : Real }`, `trait Ductile { param elongation : Real  param reduction_of_area : Real }`, `trait ImpactResistant { param impact_energy : Real }`, `trait Damping { param damping_ratio : Real  param loss_factor : Real }`.",
+      "status": "done",
+      "commit": "992d06cc"
+    },
+    {
+      "id": "step-17",
+      "type": "test",
+      "description": "Write integration test: full .ri file compiles to exactly 9 traits (Material, Elastic, Strong, Hard, FatigueRated, FractureTough, Ductile, ImpactResistant, Damping) and 1 enum (HardnessScale). Load the file, compile, assert trait_defs.len() == 9 and enum_defs.len() == 1. Assert zero error-severity diagnostics.",
+      "status": "done",
+      "commit": "dc5d8915"
+    },
+    {
+      "id": "step-18",
+      "type": "impl",
+      "description": "Verify full integration test passes. All 9 traits and 1 enum should already be defined from previous steps. Final verification that the complete .ri file compiles cleanly end-to-end.",
+      "status": "done",
+      "commit": "992d06cc"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Use contextual message prefix 'syntax error in connect body' for ERROR nodes",
-      "rationale": "Matches the constraint body pattern at line 637 which uses 'syntax error in constraint body'. Contextual prefixes help users locate errors. Top-level and member declaration sites use just 'syntax error' but the body-level pattern with context is more descriptive."
+      "decision": "Use Real type for all mechanical properties (density, pressure-like quantities) instead of adding Pressure/Density dimension types",
+      "rationale": "The compiler's resolve_type_name() only supports Length and Mass as dimension-specific types. Adding Pressure (mass*length^-1*time^-2) and Density (mass*length^-3) would require changes to reify-types dimension constants, resolve_type_name in reify-compiler, and unit_to_scalar for Pa/MPa/GPa/kg_m3 units. This is a type-system extension beyond the scope of 'write stdlib .ri definitions'. Using Real preserves correct trait structure, conformance checking, and constraint validation. A follow-up task can upgrade Real\u2192Pressure/Density when those types and units are implemented."
     },
     {
-      "decision": "Add child.has_error() guards before field extraction in param/mapping arms",
-      "rationale": "Follows the check_and_lower! macro pattern (lines 12-23) which checks is_error()||has_error() before lowering. When tree-sitter error recovery produces a typed node (e.g. connect_param_assignment) with internal errors, fields may be missing or corrupt. The has_error() guard catches this early, producing a clear diagnostic instead of falling through to field-level else branches."
+      "decision": "Place .ri file in crates/reify-compiler/stdlib/ even though the loader (task 326) isn't merged yet",
+      "rationale": "Task 326 specifies crates/reify-compiler/stdlib/ as the directory for stdlib .ri files loaded via include_str!(). Placing files there now means they'll be ready for the loader once it merges. Tests read the file directly via fs::read_to_string() with a relative path, making them independent of the loader."
     },
     {
-      "decision": "Use let-else pattern instead of nested if-let for field extraction",
-      "rationale": "Converting `if let Some(name) = child_by_field_name(\"name\") { ... }` to `let Some(name) = ... else { push_error; continue; }` makes the error path explicit and prevents silent drops. The happy path is unchanged. This is idiomatic Rust for 'required field or bail with error'."
+      "decision": "Tests read .ri file from disk rather than using include_str!() or inlining the full .ri content",
+      "rationale": "Reading from disk (like task 313's eval_ri_file pattern) validates the actual file content, catches file-not-found issues, and avoids duplicating .ri content in test strings. For conformance tests that combine traits + user structures, we inline just the relevant trait definitions to keep tests self-contained and fast."
     },
     {
-      "decision": "Tests assert errors.iter().any(|e| e.message.contains(...)) rather than exact counts or messages",
-      "rationale": "Tree-sitter error recovery is implementation-defined and may produce different ERROR/MISSING node structures depending on surrounding context. Asserting at least one error with the expected message substring is robust across tree-sitter versions while still verifying diagnostic code is exercised."
+      "decision": "HardnessScale enum uses underscore-separated variant names (Rockwell_A not RockwellA)",
+      "rationale": "Task description specifies: 'Rockwell_A/B/C, Brinell, Vickers, Shore_A/D'. The existing enum parser supports identifiers with underscores. This matches the task spec exactly."
     },
     {
-      "decision": "Place all tests in connect_chain_tests.rs rather than creating a new file",
-      "rationale": "The existing connect_chain_tests.rs already contains all connect statement tests and the parse_decls helper. Adding diagnostic tests for connect body errors keeps them co-located with the happy-path tests. No new test file needed."
+      "decision": "Strong trait constraint uses `uts >= yield_strength` (not a labeled constraint)",
+      "rationale": "The existing trait constraint mechanism uses unlabeled constraints as defaults (DefaultKind::Constraint). The grammar doesn't support labeled constraints yet (label is always None per trait_conformance_tests.rs step 27a comment). Using an unlabeled constraint matches existing infrastructure."
     },
     {
-      "decision": "Wrap connect_statement with check_and_lower! in lower_member to fix outer-level silent drop",
-      "rationale": "The reviewer identified that line 846 calls lower_connect directly without the check_and_lower! guard that every other member type arm uses. This is the simplest and most consistent fix: it follows the established pattern exactly, emitting 'invalid connect: <text>' when the node has is_error()||has_error(). The alternative (adding guards inside lower_connect itself) would work but breaks consistency with how all other member types handle this."
+      "decision": "Hard trait uses param hardness_scale typed as enum rather than a let-bound enum",
+      "rationale": "Making hardness_scale a required param forces conforming structures to explicitly specify the hardness measurement scale, preventing ambiguity. The Type::Enum('HardnessScale') is resolved when the enum is defined in the same module."
     }
   ],
   "reuse": [
     {
-      "what": "ParseError struct and self.errors.push() pattern",
-      "where": "crates/reify-syntax/src/lib.rs:524, crates/reify-syntax/src/ts_parser.rs:163-168",
-      "how": "Reuse the identical pattern: self.errors.push(ParseError { message: format!(...), span: self.span(child) })"
+      "what": "compile_module() test helper pattern",
+      "where": "crates/reify-compiler/tests/trait_conformance_tests.rs",
+      "how": "Reuse the same pattern: parse source with reify_syntax::parse(), compile with reify_compiler::compile(), return CompiledModule. Adapt with a file-reading variant for .ri file tests."
     },
     {
-      "what": "ERROR arm pattern from constraint body",
-      "where": "crates/reify-syntax/src/ts_parser.rs:637-644",
-      "how": "Copy the exact pattern with contextual message prefix changed to 'syntax error in connect body'"
+      "what": "compile_first_template() test helper pattern",
+      "where": "crates/reify-compiler/tests/trait_conformance_tests.rs",
+      "how": "Reuse for Steel conformance tests: compile inline source, extract first template, check diagnostics for errors."
     },
     {
-      "what": "check_and_lower! macro for outer connect_statement guard",
-      "where": "crates/reify-syntax/src/ts_parser.rs:12-23",
-      "how": "Wrap the connect_statement arm in lower_member with check_and_lower!(self, child, \"connect\", ...) \u2014 identical usage to all other member type arms (lines 828-850)"
+      "what": "Trait conformance infrastructure",
+      "where": "crates/reify-compiler/src/lib.rs (compile_entity, collect_all_requirements)",
+      "how": "Existing multi-trait conformance via `A + B` syntax, requirement checking, default merging, and constraint injection. No changes needed \u2014 the .ri files just exercise this existing infrastructure."
     },
     {
-      "what": "check_and_lower! has_error() guard concept",
-      "where": "crates/reify-syntax/src/ts_parser.rs:12-23",
-      "how": "Apply the same child.has_error() check concept inline for param/mapping arms. Cannot use the macro directly since it returns Option and we are in a for-loop pushing to vectors."
+      "what": "Enum compilation and access pattern",
+      "where": "crates/reify-compiler/src/lib.rs (enum_defs compilation), examples/m5_guarded_enum.ri",
+      "how": "Existing enum parsing (Declaration::Enum \u2192 EnumDef) and `EnumName.Variant` access syntax. HardnessScale follows the exact same pattern as Shape { Round, Square, Hex }."
     },
     {
-      "what": "parse_decls test helper",
-      "where": "crates/reify-syntax/tests/connect_chain_tests.rs:8-11",
-      "how": "Reuse existing parse_decls(source) -> (Vec<Declaration>, Vec<ParseError>) helper for all new diagnostic tests"
-    },
-    {
-      "what": "self.node_text() and self.span() helpers",
-      "where": "crates/reify-syntax/src/ts_parser.rs:69-75",
-      "how": "Used in all new diagnostic messages and spans, same as all existing ERROR arms throughout the file"
+      "what": "eval_ri_file() file-loading pattern",
+      "where": "crates/reify-eval/tests/m8_stdlib_integration.rs (task 313)",
+      "how": "Adapt the fs::read_to_string + parse + compile pattern for loading stdlib .ri files in tests. Use relative path stdlib/materials_mechanical.ri from crate root."
     }
   ],
-  "_session_id": "396-6831415d",
-  "_created_at": "2026-03-25T18:12:56.728209+00:00"
+  "_session_id": "327-e946111e",
+  "_created_at": "2026-03-25T18:43:01.499904+00:00"
 }

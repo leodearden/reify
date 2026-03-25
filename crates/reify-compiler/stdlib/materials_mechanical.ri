@@ -1,0 +1,82 @@
+// Stdlib: Mechanical Material Traits
+// Provides core trait definitions for engineering material characterization.
+// All dimensioned quantities use Real (dimensionless) pending Pressure/Density
+// type system extensions in a future task.
+
+// ── Base material trait ──────────────────────────────────────────────────────
+
+trait Material {
+    param density : Real
+    param name : String
+}
+
+// ── Elasticity ───────────────────────────────────────────────────────────────
+
+// Young's modulus (Pa), Poisson's ratio (dimensionless), shear modulus (Pa).
+// All use Real pending Pressure type introduction.
+trait Elastic {
+    param youngs_modulus : Real
+    param poissons_ratio : Real
+    param shear_modulus : Real
+}
+
+// ── Strength ─────────────────────────────────────────────────────────────────
+
+// yield_strength, uts (ultimate tensile strength), compressive_strength all
+// in Pa (using Real). The constraint enforces uts >= yield_strength.
+trait Strong {
+    param yield_strength : Real
+    param uts : Real
+    param compressive_strength : Real
+    constraint uts >= yield_strength
+}
+
+// ── Hardness ─────────────────────────────────────────────────────────────────
+
+// Hardness measurement scale selector.
+enum HardnessScale { Rockwell_A, Rockwell_B, Rockwell_C, Brinell, Vickers, Shore_A, Shore_D }
+
+// hardness_value is the numeric reading; hardness_scale specifies the test method.
+trait Hard {
+    param hardness_value : Real
+    param hardness_scale : HardnessScale
+}
+
+// ── Fatigue ───────────────────────────────────────────────────────────────────
+
+// Stress amplitude below which the material can sustain unlimited cycles (Pa, using Real).
+trait FatigueRated {
+    param endurance_limit : Real
+}
+
+// ── Fracture toughness ────────────────────────────────────────────────────────
+
+// Critical stress intensity factor K_Ic (Pa·√m, using Real).
+trait FractureTough {
+    param fracture_toughness : Real
+}
+
+// ── Ductility ─────────────────────────────────────────────────────────────────
+
+// elongation: % elongation at break; reduction_of_area: % cross-section reduction.
+// Both dimensionless fractions — use Real.
+trait Ductile {
+    param elongation : Real
+    param reduction_of_area : Real
+}
+
+// ── Impact resistance ─────────────────────────────────────────────────────────
+
+// Energy absorbed in a Charpy or Izod impact test (J, using Real).
+trait ImpactResistant {
+    param impact_energy : Real
+}
+
+// ── Damping ───────────────────────────────────────────────────────────────────
+
+// damping_ratio: fraction of critical damping (dimensionless).
+// loss_factor: ratio of dissipated to stored energy per cycle (dimensionless).
+trait Damping {
+    param damping_ratio : Real
+    param loss_factor : Real
+}
