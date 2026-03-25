@@ -7510,10 +7510,11 @@
         "description": "Six code quality improvements in crates/reify-compiler/src/lib.rs:\n\n1. Extract shared dimension name->DimensionVector mapping used by both resolve_dimension_type and resolve_type_name.\n2. Use HashMap entry API in UnitRegistry::register() to avoid double lookup.\n3. Have register() return a reference to the inserted entry instead of requiring a separate lookup().\n4. Reduce field duplication between UnitEntry (7 fields) and CompiledUnit (6 of same fields).\n5. Include is_pub in unit content hash.\n6. Evaluate both sides of BinOp in evaluate_const_expr before returning, to collect all diagnostics.\n\nSource: review suggestions from esc-208-28 (task 208).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-03-25T21:40:11.760Z"
       },
       {
         "id": "419",
@@ -7644,7 +7645,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-25T21:40:11.693Z",
+      "lastModified": "2026-03-25T21:40:11.760Z",
       "taskCount": 426,
       "completedCount": 228,
       "tags": [
