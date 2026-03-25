@@ -1,67 +1,31 @@
 {
-  "task_id": "265",
-  "title": "Annotation framework: types and compiler",
+  "task_id": "308",
+  "title": "Stdlib: extrude operation \u2014 FFI + compiler + eval",
   "files": [
-    "crates/reify-types/src/annotation.rs",
-    "crates/reify-types/src/lib.rs",
-    "crates/reify-types/src/expr.rs",
-    "crates/reify-types/tests/exports.rs",
+    "crates/reify-types/src/geometry.rs",
     "crates/reify-compiler/src/lib.rs",
-    "crates/reify-compiler/tests/annotation_compile_tests.rs",
-    "crates/reify-compiler/tests/trait_conformance_tests.rs",
-    "crates/reify-test-support/src/builders.rs",
-    "crates/reify-expr/src/lib.rs",
-    "crates/reify-expr/tests/collection_eval_tests.rs",
-    "crates/reify-expr/tests/lambda_eval_tests.rs"
+    "crates/reify-eval/src/lib.rs",
+    "crates/reify-kernel-occt/src/ffi.rs",
+    "crates/reify-kernel-occt/src/lib.rs",
+    "crates/reify-kernel-occt/cpp/occt_wrapper.h",
+    "crates/reify-kernel-occt/cpp/occt_wrapper.cpp",
+    "crates/reify-eval/tests/extrude_e2e.rs",
+    "crates/reify-kernel-occt/tests/extrude_integration.rs"
   ],
   "modules": [
     "crates/reify-types",
     "crates/reify-compiler",
-    "crates/reify-test-support",
-    "crates/reify-expr"
+    "crates/reify-eval",
+    "crates/reify-kernel-occt",
+    "crates/reify-kernel-occt/cpp"
   ],
-  "analysis": "Task 264 (dependency) added parsed Annotation { name: String, args: Vec<Expr>, span: SourceSpan } to reify-syntax and the annotations: Vec<Annotation> field to all 10 declaration AST types (StructureDef, OccurrenceDef, FnDef, TraitDecl, FieldDef, PurposeDef, EnumDecl, ImportDecl, ConstraintDef, UnitDecl). Task 265 must: (1) define a compiled Annotation type in reify-types with AnnotationArg enum for resolved argument values, (2) add annotations fields to all 5 compiled output types (TopologyTemplate, CompiledFunction, CompiledTrait, CompiledField, CompiledPurpose), (3) implement compiler lowering from parsed syntax::Annotation to compiled types::Annotation by converting Expr args to AnnotationArg values, (4) validate known annotations against valid contexts. Adding the annotations field to CompiledFunction (in reify-types) and TopologyTemplate/CompiledTrait/etc. (in reify-compiler) requires mechanical updates to all struct construction sites across reify-compiler, reify-test-support, reify-expr, and reify-compiler tests. The trait_conformance_tests.rs file alone has ~30 direct CompiledTrait {} constructions and reify-expr has ~10 direct CompiledFunction {} constructions that all need annotations: vec![].",
+  "analysis": "Implement `extrude(profile, distance)` as a sweep operation that extrudes a 2D Shell profile along Z by a given distance using OCCT's BRepPrimAPI_MakePrism.\n\nThe architecture follows the existing Loft sweep pattern across 5 layers:\n1. **Types** (`reify-types`): Add `GeometryOp::Extrude { profile: GeometryHandleId, distance: Value }` variant.\n2. **Compiler** (`reify-compiler`): Add `SweepKind::Extrude` variant and handle `\"extrude\"` in `compile_geometry_call()` \u2014 2 args (profile geometry, distance scalar), producing `CompiledGeometryOp::Sweep` with profiles=[GeomRef::Step(0)] and distance in args.\n3. **Eval** (`reify-eval`): Add `SweepKind::Extrude` arm in sweep eval that resolves the profile GeomRef to a GeometryHandleId and evaluates the distance arg to a Value.\n4. **FFI** (`reify-kernel-occt`): New C++ `make_prism(shape, dx, dy, dz)` using BRepPrimAPI_MakePrism with gp_Vec. Exposed via CXX bridge.\n5. **Kernel** (`reify-kernel-occt`): Handle `GeometryOp::Extrude` in `OcctKernel::execute()` \u2014 extract f64 distance, validate non-zero/finite, call `make_prism(profile, 0, 0, distance)`.\n\nTask 306 (dependency) provides circle/rectangle 2D profile operations. This task adds the extrude sweep that consumes those profiles.\n\nThe FFI `make_prism` is general-purpose (accepts dx/dy/dz direction vector), but the language-level `extrude()` always uses Z-direction (0, 0, distance). Negative distance extrudes in -Z. Zero distance is an error.\n\nFor BRepPrimAPI_MakePrism to produce a Solid, the input profile must be a Face (closed shell). Wire input would produce a Shell. The kernel should accept both but the task spec focuses on Shell/Face profiles from task 306.",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "Create crates/reify-types/src/annotation.rs with Annotation struct and AnnotationArg enum. Annotation has fields: name (String), args (Vec<AnnotationArg>), span (SourceSpan). AnnotationArg is an enum with variants: String(String), Int(i64), Real(f64), Bool(bool), Ident(String). Derive Debug, Clone on Annotation; derive Debug, Clone, PartialEq on AnnotationArg.",
+      "description": "Add C++ make_prism function to FFI layer. In occt_wrapper.h: declare `std::unique_ptr<OcctShape> make_prism(const OcctShape& profile, double dx, double dy, double dz);`. In occt_wrapper.cpp: implement using BRepPrimAPI_MakePrism(profile.shape, gp_Vec(dx, dy, dz)), with standard triple-catch error handling (Standard_Failure / std::exception / catch-all). Validate direction vector magnitude > 0. In ffi.rs: add bridge declaration `fn make_prism(profile: &OcctShape, dx: f64, dy: f64, dz: f64) -> Result<UniquePtr<OcctShape>>;` in the unsafe extern C++ block under a new '// --- Sweep / Extrude ---' section.",
       "status": "done",
-      "commit": "52afdce2",
-      "tests": []
-    },
-    {
-      "id": "pre-2",
-      "description": "Add `pub mod annotation;` to crates/reify-types/src/lib.rs and add re-exports: `pub use annotation::{Annotation, AnnotationArg};`",
-      "status": "done",
-      "commit": "52afdce2",
-      "tests": []
-    },
-    {
-      "id": "pre-3",
-      "description": "Add `pub annotations: Vec<crate::annotation::Annotation>` field to CompiledFunction in crates/reify-types/src/expr.rs (after content_hash). Then fix ALL downstream CompiledFunction {} construction sites by adding `annotations: vec![]`: (a) crates/reify-compiler/src/lib.rs line ~5293, (b) crates/reify-expr/src/lib.rs (~6 sites in test helpers make_double_fn, make_fn_with_let, make_factorial_fn, make_infinite_fn, area_fn in eval_user_fn_dimension_args, process1+process2 in eval_user_fn_overload_by_arity), (c) crates/reify-expr/tests/collection_eval_tests.rs (~4 sites: double_fn, is_even_fn, add_fn, is_even_fn), (d) crates/reify-expr/tests/lambda_eval_tests.rs (~2 sites: double_fn instances).",
-      "status": "done",
-      "commit": "52afdce2",
-      "tests": []
-    },
-    {
-      "id": "pre-4",
-      "description": "Add `pub annotations: Vec<reify_types::Annotation>` field to TopologyTemplate, CompiledTrait, CompiledField, CompiledPurpose in crates/reify-compiler/src/lib.rs. Then fix ALL construction sites in this file: (a) TopologyTemplate {} in compile_entity (~line 3850): add annotations: vec![], (b) CompiledTrait {} in compile_trait (~line 1999) and check_trait_conformance_chain flat_trait (~line 267): add annotations: vec![], (c) CompiledField {} in compile_field (~line 5390): add annotations: vec![], (d) CompiledPurpose {} in compile_purpose (~line 2189): add annotations: vec![].",
-      "status": "done",
-      "commit": "52afdce2",
-      "tests": []
-    },
-    {
-      "id": "pre-5",
-      "description": "Fix CompiledTrait {} construction sites in crates/reify-compiler/tests/trait_conformance_tests.rs (~30 instances including empty_trait() helper, individual test functions, make_sub_trait() helper, make_port_trait-style helpers). Add `annotations: vec![]` to every CompiledTrait struct literal.",
-      "status": "done",
-      "commit": "52afdce2",
-      "tests": []
-    },
-    {
-      "id": "pre-6",
-      "description": "Fix construction sites in crates/reify-test-support/src/builders.rs: (a) TopologyTemplateBuilder field + build() (~line 678), (b) Two CompiledTraitBuilder::build() methods (~lines 1138 and 1660), (c) CompiledField {} constructions in field builders, (d) CompiledPurpose {} constructions in purpose builders. Add `annotations: vec![]` to each struct literal. Also add an `annotations(Vec<Annotation>)` builder method to TopologyTemplateBuilder for setting annotations in test fixtures.",
-      "status": "done",
-      "commit": "52afdce2",
+      "commit": "594daaab",
       "tests": []
     }
   ],
@@ -69,146 +33,142 @@
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write test in crates/reify-types/tests/exports.rs: new test fn `annotation_types_exported` that constructs Annotation { name: \"test\".into(), args: vec![AnnotationArg::String(\"msg\".into())], span: SourceSpan::new(0,0) } and exercises all AnnotationArg variants (String, Int, Real, Bool, Ident). Verifies types are accessible from crate root via `reify_types::Annotation` and `reify_types::AnnotationArg`.",
+      "description": "Write failing test in crates/reify-eval/tests/extrude_e2e.rs: `extrude_through_full_eval_pipeline` \u2014 follows the loft_through_full_eval_pipeline pattern in geometry_error_handling.rs. Creates 3 ops: Sphere(radius=5mm) as profile placeholder at Step(0), then CompiledGeometryOp::Sweep { kind: SweepKind::Extrude, profiles: vec![GeomRef::Step(0)], args: vec![(\"profile\", sphere_expr), (\"distance\", mm_literal(10.0))] }. Runs Engine::build with MockGeometryKernel. Asserts ops_ref[1].op matches GeometryOp::Extrude { profile: handle_from_op_0, distance } where distance.as_f64() \u2248 0.01 (10mm in SI). Test fails because SweepKind::Extrude and GeometryOp::Extrude don't exist yet.",
       "status": "done",
-      "commit": "f467ca96"
+      "commit": "23e2b29c"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Verify prerequisites pre-1 through pre-6 make the project compile. Run `cargo check -p reify-types -p reify-compiler -p reify-expr -p reify-test-support` and fix any compilation errors. The exports test from step-1 should pass.",
+      "description": "Add type definitions across two crates: (a) In reify-types/src/geometry.rs: add `/// Extrude a 2D profile along Z axis by distance.\\nExtrude { profile: GeometryHandleId, distance: Value }` variant to GeometryOp enum (after the Loft variant, before Draft). (b) In reify-compiler/src/lib.rs: add `Extrude` variant to SweepKind enum (after Loft, ~line 691).",
       "status": "done",
-      "commit": "f467ca96"
+      "commit": "fc4eb910"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing test in crates/reify-compiler/tests/annotation_compile_tests.rs: `annotation_on_structure_propagates`. Parse `@test structure S { param x : Real }` via compile_module helper (parse + compile pattern from other test files). Assert module has no error-level diagnostics, templates[0].annotations.len() == 1, annotations[0].name == \"test\", annotations[0].args.is_empty().",
-      "status": "done",
-      "commit": "373ebfc6"
+      "description": "Write failing test in crates/reify-eval/tests/extrude_e2e.rs: `extrude_compiler_rejects_wrong_arg_count` \u2014 tests that compile_geometry_call for \"extrude\" with 0, 1, or 3 args produces error diagnostics. Uses the same compilation infrastructure as existing compiler tests. Test fails because \"extrude\" is not yet handled by the compiler (falls through to unknown-function path).",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Implement annotation lowering for structures/occurrences: (1) Add `annotations: &'a [reify_syntax::Annotation]` field to EntityDefRef struct (~line 2850), update From<StructureDef> and From<OccurrenceDef> impls to pass &s.annotations / &o.annotations. (2) Write standalone fn `lower_annotations(parsed: &[reify_syntax::Annotation], diagnostics: &mut Vec<Diagnostic>) -> Vec<reify_types::Annotation>` that maps each parsed annotation: name passes through, args are lowered from Expr to AnnotationArg (NumberLiteral with value==floor and fits i64→Int else→Real, StringLiteral→String, BoolLiteral→Bool, Ident→Ident, other→diagnostic warning and skip arg). (3) In compile_entity, call lower_annotations(structure.annotations, diagnostics) and set TopologyTemplate.annotations field.",
-      "status": "done",
-      "commit": "d1440c20"
+      "description": "Add \"extrude\" match arm in compile_geometry_call() in reify-compiler/src/lib.rs. Insert after the loft sweep section (~line 5918) and before the modify-extensions section. Pattern: validate compiled_args.len() == 2 (emit diagnostic if not), then create CompiledGeometryOp::Sweep { kind: SweepKind::Extrude, profiles: vec![GeomRef::Step(0)], args: vec![(\"profile\".to_string(), arg0), (\"distance\".to_string(), arg1)] }. Follow the thicken/shell 2-arg validation pattern.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write test: `annotation_with_args_on_function_propagates`. Parse `@deprecated(\"use new_calc\") fn old_calc(x: Real) -> Real { x }`. Assert functions[0].annotations[0].name == \"deprecated\", annotations[0].args.len() == 1, annotations[0].args[0] == AnnotationArg::String(\"use new_calc\".into()).",
-      "status": "done",
-      "commit": "856da5d2"
+      "description": "The step-1 test (extrude_through_full_eval_pipeline) should now compile but still fail because the eval layer doesn't handle SweepKind::Extrude \u2014 the match on SweepKind is non-exhaustive. Verify this is the failure mode.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "In compile_function(), add annotation lowering: call lower_annotations(&fn_def.annotations, diagnostics) and set annotations field in the CompiledFunction return struct literal (~line 5293).",
-      "status": "done",
-      "commit": "856da5d2"
+      "description": "Add SweepKind::Extrude handler in reify-eval/src/lib.rs in the compile_geometry_op() function's Sweep match arm (~line 3104). After the existing Loft arm, add: `reify_compiler::SweepKind::Extrude => { let profile_handle = match &profiles[0] { GeomRef::Step(idx) => step_handles.get(*idx).copied()?, GeomRef::Sub(_) => step_handles.last().copied()? }; let distance = eval_arg(\"distance\"); Some(reify_types::GeometryOp::Extrude { profile: profile_handle, distance }) }`. Uses the same eval_arg helper already available in scope for evaluating named args to Values.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write three tests: (a) `annotation_on_trait_propagates`: parse `@deprecated trait Measurable { param width : Length }`, assert trait_defs[0].annotations[0].name == \"deprecated\". (b) `annotation_on_field_propagates`: parse `@deprecated field temp_field : Point3 -> Real = analytical { 0.0 }`, assert fields[0].annotations[0].name == \"deprecated\". (c) `annotation_on_purpose_propagates`: parse a structure S + `@deprecated purpose P(subject: S) { minimize subject.x }`, assert compiled_purposes[0].annotations[0].name == \"deprecated\".",
-      "status": "done",
-      "commit": "143013da"
+      "description": "Write failing OCCT integration tests in crates/reify-kernel-occt/tests/extrude_integration.rs (gated with #[cfg(has_occt)]): (a) `extrude_zero_distance_returns_error` \u2014 create OcctKernel, execute Box to get a handle, then Extrude with distance=Value::Real(0.0), assert OperationFailed error with 'zero' in message. (b) `extrude_non_finite_distance_returns_error` \u2014 test with NaN and Infinity values. Tests fail because OcctKernel::execute() doesn't handle Extrude variant.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Add annotation lowering in compile_trait (call lower_annotations(&trait_decl.annotations, diagnostics), set CompiledTrait.annotations), compile_field (call lower_annotations(&field_def.annotations, diagnostics), set CompiledField.annotations), and compile_purpose (call lower_annotations(&purpose_def.annotations, diagnostics), set CompiledPurpose.annotations).",
-      "status": "done",
-      "commit": "143013da"
+      "description": "Add GeometryOp::Extrude handler in OcctKernel::execute() in reify-kernel-occt/src/lib.rs. Insert before the closing `};` of the match (~line 435). Pattern: `GeometryOp::Extrude { profile, distance } => { let dist = extract_f64(distance)?; if !dist.is_finite() { return Err(GeometryError::OperationFailed(\"extrude distance must be finite\".into())); } if dist == 0.0 { return Err(GeometryError::OperationFailed(\"extrude distance must not be zero\".into())); } let profile_shape = self.get_shape(*profile)?; ffi::ffi::make_prism(profile_shape, 0.0, 0.0, dist).map_err(|e| GeometryError::OperationFailed(e.to_string()))? }`. The ReprKind for the stored result is determined by self.store() which uses the OCCT shape type.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write validation tests: (a) `known_annotation_valid_context_no_warning`: `@test structure S { param x : Real }` produces no warning-level diagnostics about annotations. (b) `known_annotation_invalid_context_produces_warning`: `@test field f : Point3 -> Real = analytical { 0.0 }` produces a warning diagnostic containing '@test' and 'field'. (c) `deprecated_valid_on_any_context`: `@deprecated fn f(x: Real) -> Real { x }` and `@deprecated structure S { param x : Real }` produce no annotation warnings. (d) `unknown_annotation_produces_warning`: `@foobar structure S { param x : Real }` produces a warning diagnostic containing 'foobar' and 'unknown'.",
-      "status": "done",
-      "commit": "5ecb0b84"
+      "description": "Write OCCT integration volume tests (gated #[cfg(has_occt)]): (a) `extrude_circle_profile_volume` \u2014 use task 306's circle profile FFI (e.g., make_circle_face) to create a circle face with radius=5mm, then Extrude by distance=10mm, query volume, assert \u2248 \u03c0 * (0.005)\u00b2 * 0.01 m\u00b3 with 1% tolerance. (b) `extrude_rectangle_profile_volume` \u2014 use task 306's rectangle FFI to create 10mm\u00d720mm face, extrude by 5mm, query volume = 0.01 * 0.02 * 0.005 m\u00b3. (c) `extrude_negative_distance_produces_solid` \u2014 extrude circle by -10mm, verify volume is same magnitude as positive extrusion (BRepPrimAPI_MakePrism handles negative direction).",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Add annotation context validation. Define fn `validate_annotations(annotations: &[reify_types::Annotation], context: &str, span: SourceSpan, diagnostics: &mut Vec<Diagnostic>)` where context is one of \"structure\", \"occurrence\", \"function\", \"trait\", \"field\", \"purpose\". Known annotation rules: @test valid on [structure, occurrence, function]; @optimized valid on [structure, occurrence]; @solver_hint valid on [structure, occurrence]; @deprecated valid on any context. Misplaced known annotations emit Diagnostic::warning. Unknown annotation names emit Diagnostic::warning with 'unknown annotation' message. Call validate_annotations at each lowering site (compile_entity, compile_function, compile_trait, compile_field, compile_purpose) after lower_annotations.",
-      "status": "done",
-      "commit": "d2c93a3d"
-    },
-    {
-      "id": "step-11",
-      "type": "test",
-      "description": "Write comprehensive edge-case tests: (a) `multiple_annotations_all_preserved`: `@test @deprecated(\"old\") structure S { param x : Real }` has 2 annotations, first.name==\"test\" and second has String arg. (b) `annotation_arg_types_lowered`: `@config(\"name\", 42, 3.14, true, mechanical) structure S { param x : Real }` has 5 args: String, Int(42), Real(3.14), Bool(true), Ident(\"mechanical\"). (c) `annotation_on_occurrence_propagates`: `@test occurrence Heat { param temp : Real }` propagates to template with entity_kind == Occurrence.",
-      "status": "done",
-      "commit": "c14a891f"
-    },
-    {
-      "id": "step-12",
-      "type": "impl",
-      "description": "Verify all tests pass. Fix any issues with annotation argument lowering (ensure NumberLiteral distinguishes Int from Real: if value == value.floor() && value.abs() < i64::MAX as f64, use AnnotationArg::Int(value as i64), else AnnotationArg::Real(value)). Ensure occurrence annotations flow through EntityDefRef correctly. Run full test suite: `cargo test -p reify-types -p reify-compiler -p reify-expr -p reify-test-support`.",
-      "status": "done",
-      "commit": "a1955bdb"
+      "description": "Verify all integration tests pass. Fix any issues with make_prism handling of Face vs Wire vs Shell input topologies. Ensure BRepPrimAPI_MakePrism produces correct Solid shapes from Face profiles. If profile type auto-detection is needed in the C++ layer, add TopAbs_ShapeEnum check to ensure the input is at least a Face or Wire. Add descriptive error message if input is a Solid or Compound (not valid for extrusion).",
+      "status": "pending",
+      "commit": null
     }
   ],
   "design_decisions": [
     {
-      "decision": "AnnotationArg is a simple enum of literal values (String, Int, Real, Bool, Ident) rather than reusing CompiledExpr",
-      "rationale": "Annotations are compile-time metadata, not runtime expressions. Using a simple value enum keeps the API clean, prevents misuse, and avoids pulling in the full expression tree for what should be constant data. Complex expressions in annotation positions emit a diagnostic and are skipped."
+      "decision": "Extrude modeled as SweepKind::Extrude in CompiledGeometryOp::Sweep, not as a new CompiledGeometryOp variant",
+      "rationale": "Follows the established architectural pattern where Loft is also a SweepKind. Sweeps share the same structure: profiles (geometry refs) + args (scalar expressions). This keeps the CompiledGeometryOp enum stable and groups related operations."
     },
     {
-      "decision": "Include SourceSpan on compiled Annotation",
-      "rationale": "Downstream consumers (LSP hover, deprecation warnings, test discovery) need to point back to the annotation source location. While validation happens in the compiler, the span enables richer downstream tooling."
+      "decision": "FFI make_prism takes general direction vector (dx, dy, dz), but GeometryOp::Extrude stores only distance as Value",
+      "rationale": "The FFI layer is intentionally more general than the language-level op. This supports future extensions (extrude_along, angled extrude) without FFI changes. The kernel maps simple distance to direction (0, 0, distance). The direction vector approach matches BRepPrimAPI_MakePrism's native gp_Vec parameter."
     },
     {
-      "decision": "Validation uses warnings (not errors) for context violations and unknown annotations",
-      "rationale": "Forward compatibility: new annotations may be added in the future, and third-party annotations may be valid. Warnings inform the user without blocking compilation. This matches the pragmas pattern already in use."
+      "decision": "Zero distance is an explicit error, negative distance is valid (extrudes in -Z)",
+      "rationale": "Zero-length extrusion produces a degenerate shape (zero volume), which is always a modeling error. Negative distance is geometrically meaningful \u2014 it extrudes in the opposite direction, which is standard CAD behavior. BRepPrimAPI_MakePrism handles negative vectors correctly."
     },
     {
-      "decision": "Annotation lowering is a standalone function reused across all compile_X functions rather than per-type logic",
-      "rationale": "The lowering logic (Expr to AnnotationArg conversion) is identical regardless of declaration type. A single lower_annotations() function eliminates duplication and ensures consistent behavior."
+      "decision": "Profile argument is first, distance second: extrude(profile, distance)",
+      "rationale": "Follows the subject-then-parameter pattern used by other operations (fillet(target, radius), thicken(target, offset)). The profile is the primary operand, distance is the parameter. Matches the stdlib reference documentation."
     },
     {
-      "decision": "NumberLiteral args are classified as Int when value == floor(value) and fits in i64, else Real",
-      "rationale": "The parser produces f64 for all numbers. Integer annotation args (e.g., @solver_hint(max_iterations, 100)) are common and downstream consumers will want to match on Int without lossy conversion."
+      "decision": "GeometryOp::Extrude uses GeometryHandleId for profile (not Value)",
+      "rationale": "Consistent with all other operations that reference existing geometry (Union, Fillet, Loft, etc.). The profile is a previously-computed geometry handle, not a scalar value. The Sweep compilation pattern resolves GeomRef::Step(0) to a handle ID during evaluation."
     },
     {
-      "decision": "annotations: Vec<Annotation> field added to CompiledFunction in reify-types rather than a wrapper in reify-compiler",
-      "rationale": "CompiledFunction is the canonical compiled function type shared across all crates. Adding annotations here keeps the single-source-of-truth principle. The cost is mechanical updates to ~15 construction sites across reify-expr and reify-compiler, but these are trivial (annotations: vec![])."
+      "decision": "Extrude uses profiles vec with single entry rather than a target field like Modify ops",
+      "rationale": "The CompiledGeometryOp::Sweep variant already has a profiles: Vec<GeomRef> field designed for geometry references. Using profiles[0] for the extrude profile is consistent with how Loft uses the same field. A separate target field would require a new CompiledGeometryOp variant."
     }
   ],
   "reuse": [
     {
-      "what": "Existing Diagnostic infrastructure (Diagnostic::warning, DiagnosticLabel, SourceSpan)",
-      "where": "crates/reify-types/src/diagnostics.rs",
-      "how": "Use for all annotation validation diagnostics: wrong context warnings and unknown annotation warnings"
+      "what": "SweepKind enum pattern",
+      "where": "crates/reify-compiler/src/lib.rs line 688-692",
+      "how": "Add Extrude variant to existing SweepKind enum. Follows same pattern as Loft."
     },
     {
-      "what": "compile_module() test helper pattern",
-      "where": "crates/reify-compiler/tests/*.rs (e.g., visibility_compile_tests.rs)",
-      "how": "New annotation_compile_tests.rs follows the same pattern: parse source string, call reify_compiler::compile(), assert on compiled output"
+      "what": "CompiledGeometryOp::Sweep variant structure",
+      "where": "crates/reify-compiler/src/lib.rs line 637-642",
+      "how": "Reuse the existing Sweep { kind, profiles, args } structure. Extrude uses profiles=[Step(0)] for the profile reference and args for both profile expr and distance expr."
     },
     {
-      "what": "ContentHash combining pattern",
-      "where": "crates/reify-types/src/hash.rs, used throughout compiler",
-      "how": "Annotation hashes should be included in parent type content_hash computation at each compile_X function for incremental build correctness"
+      "what": "Loft compile_geometry_call pattern",
+      "where": "crates/reify-compiler/src/lib.rs line 5895-5918",
+      "how": "Follow same arg-count validation, compile, produce CompiledGeometryOp::Sweep pattern. Extrude differs in requiring exactly 2 args (not variadic like Loft)."
     },
     {
-      "what": "EntityDefRef adapter pattern",
-      "where": "crates/reify-compiler/src/lib.rs (~line 2850)",
-      "how": "Extend EntityDefRef with annotations: &'a [reify_syntax::Annotation] field, update From impls to pass through from StructureDef/OccurrenceDef"
+      "what": "Loft eval resolution pattern",
+      "where": "crates/reify-eval/src/lib.rs line 3104-3120",
+      "how": "Follow same GeomRef to GeometryHandleId resolution via step_handles. Extrude additionally evaluates the distance arg via eval_arg helper available in the same scope."
     },
     {
-      "what": "TopologyTemplateBuilder in test-support",
-      "where": "crates/reify-test-support/src/builders.rs",
-      "how": "Add .annotations() builder method so test fixtures can set annotations on templates"
+      "what": "extract_f64 + validation pattern in OcctKernel::execute",
+      "where": "crates/reify-kernel-occt/src/lib.rs line 131-146 (Box example)",
+      "how": "Reuse extract_f64() for distance Value to f64 conversion. Follow the same is_finite() validation pattern. Use the same error mapping: ffi call .map_err(|e| GeometryError::OperationFailed(e.to_string()))."
     },
     {
-      "what": "errors_only() / warnings filtering test pattern",
-      "where": "crates/reify-compiler/tests/visibility_compile_tests.rs and similar",
-      "how": "Use to filter diagnostics in annotation validation tests, checking for warning-level diagnostics on invalid contexts"
+      "what": "C++ error handling triple-catch pattern",
+      "where": "crates/reify-kernel-occt/cpp/occt_wrapper.cpp (all make_* functions)",
+      "how": "make_prism follows identical try { } catch (Standard_Failure) { } catch (std::exception) { } catch (...) { } pattern with descriptive OCCT make_prism: error prefixes."
+    },
+    {
+      "what": "TopologyTemplateBuilder + MockGeometryKernel test infrastructure",
+      "where": "crates/reify-test-support/src/ (builders.rs, mocks.rs, values.rs)",
+      "how": "Use TopologyTemplateBuilder::new().realization() to build test modules. Use MockGeometryKernel with operations_ref() to capture and inspect executed GeometryOps. Use mm() helper for length Value literals."
+    },
+    {
+      "what": "loft_through_full_eval_pipeline test pattern",
+      "where": "crates/reify-eval/tests/geometry_error_handling.rs line 267-347",
+      "how": "Follow identical structure for extrude E2E test: build ops list, create template/module, run Engine::build with mock kernel, inspect captured ops for correct GeometryOp variant and field values."
     }
   ],
-  "_session_id": "265-ce58e0d4",
-  "_created_at": "2026-03-25T03:24:30.567674+00:00"
+  "_session_id": "308-f4ddbf85",
+  "_created_at": "2026-03-25T04:06:55.472269+00:00"
 }
