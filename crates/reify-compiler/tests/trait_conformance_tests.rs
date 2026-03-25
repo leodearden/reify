@@ -1604,3 +1604,73 @@ fn chain_diamond_missing_exactly_one_error() {
         other => panic!("expected MissingParam for 'x', got: {:?}", other),
     }
 }
+
+/// step-13 (task-186): conflicting requirements — C requires `x : Length`, D requires `x : Mass`.
+/// Trait A refines both C and D → expect ConflictingRequirement { name: "x", .. }.
+/// Fails until ConflictingRequirement variant is added.
+#[test]
+fn chain_conflicting_requirements() {
+    let length = || Type::Scalar { dimension: DimensionVector::LENGTH };
+    let mass = || Type::Scalar { dimension: DimensionVector::MASS };
+    let trait_c = CompiledTrait {
+        name: "C".to_string(),
+        is_pub: true,
+        type_params: vec![],
+        refinements: vec![],
+        required_members: vec![TraitRequirement {
+            name: "x".to_string(),
+            kind: RequirementKind::Param(length()),
+            span: test_span(),
+        }],
+        defaults: vec![],
+        content_hash: ContentHash::of_str("C_conflict"),
+    };
+    let trait_d = CompiledTrait {
+        name: "D".to_string(),
+        is_pub: true,
+        type_params: vec![],
+        refinements: vec![],
+        required_members: vec![TraitRequirement {
+            name: "x".to_string(),
+            kind: RequirementKind::Param(mass()),
+            span: test_span(),
+        }],
+        defaults: vec![],
+        content_hash: ContentHash::of_str("D_conflict"),
+    };
+    // Trait A refines both C and D (conflicting on `x`).
+    let trait_a = CompiledTrait {
+        name: "A".to_string(),
+        is_pub: true,
+        type_params: vec![],
+        refinements: vec!["C".to_string(), "D".to_string()],
+        required_members: vec![],
+        defaults: vec![],
+        content_hash: ContentHash::of_str("A_conflict"),
+    };
+    let mut registry = std::collections::HashMap::new();
+    registry.insert("A".to_string(), &trait_a);
+    registry.insert("C".to_string(), &trait_c);
+    registry.insert("D".to_string(), &trait_d);
+    // Structure provides `x` as Length (matches C, not D).
+    let mut members = std::collections::HashMap::new();
+    members.insert("x".to_string(), length());
+    let errors = check_trait_conformance_chain(&members, "A", &registry, &[], &[]);
+    // Should have at least 1 ConflictingRequirement error.
+    let conflict = errors.iter().find(|e| matches!(e, ConformanceError::ConflictingRequirement { name, .. } if name == "x"));
+    assert!(conflict.is_some(), "expected ConflictingRequirement for 'x', got: {:?}", errors);
+    match conflict.unwrap() {
+        ConformanceError::ConflictingRequirement { name, type_a, type_b } => {
+            assert_eq!(name, "x");
+            // type_a is from the first parent (C: Length), type_b from the conflicting (D: Mass).
+            let types = [type_a.clone(), type_b.clone()];
+            assert!(
+                types.contains(&length()) && types.contains(&mass()),
+                "expected one Length and one Mass, got: {:?} and {:?}",
+                type_a,
+                type_b
+            );
+        }
+        other => panic!("expected ConflictingRequirement, got: {:?}", other),
+    }
+}

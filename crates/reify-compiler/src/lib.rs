@@ -135,6 +135,8 @@ pub enum ConformanceError {
     MissingSub { name: String, expected_structure: String },
     /// The structure has a `sub` member but its concrete structure name does not match.
     SubStructureMismatch { name: String, expected_structure: String, actual_structure: String },
+    /// Two traits in the refinement chain require the same member name with different types.
+    ConflictingRequirement { name: String, type_a: Type, type_b: Type },
 }
 
 /// Pure conformance check: given a flat member map, port list, sub list, and a
@@ -359,8 +361,16 @@ fn collect_chain_requirements(
         };
 
         if let Some(expected_type) = maybe_type {
-            if seen_names.contains_key(&req.name) {
-                // Duplicate (same or conflicting) — conflict detection added in a later step.
+            if let Some(existing_type) = seen_names.get(&req.name) {
+                if existing_type != &expected_type {
+                    // Same name, different types across the chain → ConflictingRequirement.
+                    chain_errors.push(ConformanceError::ConflictingRequirement {
+                        name: req.name.clone(),
+                        type_a: existing_type.clone(),
+                        type_b: expected_type,
+                    });
+                }
+                // Either way (same or conflicting), deduplicate: skip this requirement.
                 continue;
             }
             seen_names.insert(req.name.clone(), expected_type);
