@@ -4094,6 +4094,7 @@ fn check_trait_conformance(
     let mut visited_traits: HashSet<String> = HashSet::new();
     let mut seen_requirement_names: HashMap<String, Type> = HashMap::new();
     let mut seen_default_names: HashMap<String, Type> = HashMap::new();
+    let mut seen_let_hashes: HashMap<String, ContentHash> = HashMap::new();
 
     for trait_bound in structure.trait_bounds {
         collect_all_requirements(
@@ -4104,6 +4105,7 @@ fn check_trait_conformance(
             &mut visited_traits,
             &mut seen_requirement_names,
             &mut seen_default_names,
+            &mut seen_let_hashes,
             &structure_members,
             structure.span,
             diagnostics,
@@ -4275,6 +4277,7 @@ fn collect_all_requirements(
     visited: &mut HashSet<String>,
     seen_names: &mut HashMap<String, Type>,
     seen_defaults: &mut HashMap<String, Type>,
+    seen_let_hashes: &mut HashMap<String, ContentHash>,
     structure_members: &HashMap<String, Type>,
     span: SourceSpan,
     diagnostics: &mut Vec<Diagnostic>,
@@ -4304,6 +4307,7 @@ fn collect_all_requirements(
             visited,
             seen_names,
             seen_defaults,
+            seen_let_hashes,
             structure_members,
             span,
             diagnostics,
@@ -4342,7 +4346,29 @@ fn collect_all_requirements(
             // Unnamed defaults (e.g., unlabeled constraints) — always push.
             defaults.push(default.clone());
         } else if let Some(name) = &default.name {
-            // Extract type for dedup comparison.
+            // For let bindings: use content_hash comparison to distinguish same vs different exprs.
+            if let DefaultKind::Let(let_decl) = &default.kind {
+                if let Some(existing_hash) = seen_let_hashes.get(name.as_str()) {
+                    if existing_hash != &let_decl.content_hash
+                        && !structure_members.contains_key(name.as_str())
+                    {
+                        // Same name, different expression, not overridden → conflict
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "conflicting trait let bindings for '{}': different expressions from merged traits",
+                                name
+                            ))
+                            .with_label(DiagnosticLabel::new(span, "conflicting trait let bindings")),
+                        );
+                    }
+                    // Same name already seen (same or different hash) → skip.
+                    continue;
+                }
+                seen_let_hashes.insert(name.clone(), let_decl.content_hash);
+                // Fall through to insert into seen_defaults and push.
+            }
+
+            // Extract type sentinel for dedup comparison (non-Let defaults).
             let default_type = match &default.kind {
                 DefaultKind::Param { cell_type, .. } => cell_type.clone(),
                 DefaultKind::Let(_) => Type::Real,
