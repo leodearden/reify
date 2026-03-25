@@ -1814,6 +1814,18 @@ fn compile_trait(
                     span: sub_decl.span,
                 });
             }
+            reify_syntax::MemberDecl::Port(port_decl) => {
+                let direction =
+                    port_decl.direction.unwrap_or(reify_types::PortDirection::Bidi);
+                required_members.push(TraitRequirement {
+                    name: port_decl.name.clone(),
+                    kind: RequirementKind::Port {
+                        type_name: port_decl.type_name.clone(),
+                        direction,
+                    },
+                    span: port_decl.span,
+                });
+            }
             _ => {
                 // Minimize, Maximize, GuardedGroup, AssociatedType — skip for now
             }
