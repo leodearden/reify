@@ -1715,6 +1715,36 @@ mod tests {
         }
     }
 
+    #[test]
+    fn loft_four_circles_creates_solid() {
+        let mut kernel = OcctKernel::new();
+        // Create 4 circle wire profiles at different heights with decreasing radii
+        let w1 = ffi::ffi::make_circle_wire(10.0, 0.0).expect("wire1");
+        let id1 = kernel.store_raw(w1);
+        let w2 = ffi::ffi::make_circle_wire(8.0, 10.0).expect("wire2");
+        let id2 = kernel.store_raw(w2);
+        let w3 = ffi::ffi::make_circle_wire(6.0, 20.0).expect("wire3");
+        let id3 = kernel.store_raw(w3);
+        let w4 = ffi::ffi::make_circle_wire(4.0, 30.0).expect("wire4");
+        let id4 = kernel.store_raw(w4);
+
+        // Loft through all 4 profiles
+        let loft_h = kernel
+            .execute(&GeometryOp::Loft {
+                profiles: vec![id1, id2, id3, id4],
+            })
+            .unwrap();
+
+        // Query volume — should be positive
+        let vol = kernel.query(&GeometryQuery::Volume(loft_h.id)).unwrap();
+        match vol {
+            Value::Real(v) => {
+                assert!(v > 0.0, "loft volume should be positive, got {v}");
+            }
+            other => panic!("expected Value::Real, got {:?}", other),
+        }
+    }
+
     // --- Thicken / Shell tests ---
 
     #[test]
