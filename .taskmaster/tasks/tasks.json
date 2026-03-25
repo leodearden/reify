@@ -7500,11 +7500,11 @@
         "description": "CompilationScope stores UnitRegistry as *const UnitRegistry raw pointer (lib.rs:1099) to bypass lifetime constraints. All other registries are threaded as explicit parameters. Refactor to thread unit_registry as a &UnitRegistry parameter to compile_expr_guarded, and remove unit_registry_ptr, set_unit_registry, and lookup_unit_in_registry from CompilationScope.\n\nSource: review suggestions from esc-208-28 (task 208).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-25T23:28:27.395Z"
+        "updatedAt": "2026-03-25T23:28:27.607Z"
       },
       {
         "id": "418",
@@ -7821,7 +7821,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-25T23:28:27.509Z",
+      "lastModified": "2026-03-25T23:28:27.607Z",
       "taskCount": 441,
       "completedCount": 231,
       "tags": [
