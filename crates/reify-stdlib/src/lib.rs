@@ -476,6 +476,28 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
         "constrained" => Value::Undef,
         "partially_determined" => Value::Undef,
 
+        // --- Frame constructors ---
+        "frame3" => {
+            if args.len() != 2 {
+                return Value::Undef;
+            }
+            let origin = &args[0];
+            let basis = &args[1];
+            // First arg must be a Point with exactly 3 components
+            match origin {
+                Value::Point(components) if components.len() == 3 => {}
+                _ => return Value::Undef,
+            }
+            // Second arg must be an Orientation
+            if !matches!(basis, Value::Orientation { .. }) {
+                return Value::Undef;
+            }
+            Value::Frame {
+                origin: Box::new(origin.clone()),
+                basis: Box::new(basis.clone()),
+            }
+        }
+
         // --- Orientation constructors ---
         "orient_identity" => {
             if args.is_empty() {
@@ -3876,5 +3898,107 @@ mod tests {
         if let Value::Vector(items) = &v2 {
             let _ = items;
         }
+    }
+
+    // ── frame3 tests (step-5) ────────────────────────────────────────────────
+
+    fn make_point3_len() -> Value {
+        Value::Point(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ])
+    }
+
+    fn make_identity_orientation() -> Value {
+        Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 }
+    }
+
+    #[test]
+    fn frame3_valid_args_returns_frame() {
+        let origin = make_point3_len();
+        let basis = make_identity_orientation();
+        let result = eval_builtin("frame3", &[origin.clone(), basis.clone()]);
+        match result {
+            Value::Frame { origin: o, basis: b } => {
+                assert_eq!(*o, origin);
+                assert_eq!(*b, basis);
+            }
+            other => panic!("expected Value::Frame, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn frame3_stores_origin_and_basis_correctly() {
+        let origin = Value::Point(vec![
+            Value::length(5.0),
+            Value::length(6.0),
+            Value::length(7.0),
+        ]);
+        let basis = Value::Orientation { w: 0.0, x: 1.0, y: 0.0, z: 0.0 };
+        let result = eval_builtin("frame3", &[origin.clone(), basis.clone()]);
+        match result {
+            Value::Frame { origin: o, basis: b } => {
+                assert_eq!(*o, origin, "origin should be stored exactly");
+                assert_eq!(*b, basis, "basis should be stored exactly");
+            }
+            other => panic!("expected Value::Frame, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn frame3_no_args_returns_undef() {
+        assert!(eval_builtin("frame3", &[]).is_undef());
+    }
+
+    #[test]
+    fn frame3_one_arg_returns_undef() {
+        assert!(eval_builtin("frame3", &[make_point3_len()]).is_undef());
+    }
+
+    #[test]
+    fn frame3_three_args_returns_undef() {
+        let o = make_point3_len();
+        let b = make_identity_orientation();
+        assert!(eval_builtin("frame3", &[o.clone(), b.clone(), Value::Real(0.0)]).is_undef());
+    }
+
+    #[test]
+    fn frame3_non_point_first_arg_returns_undef() {
+        let basis = make_identity_orientation();
+        // First arg is Real, not Point
+        assert!(eval_builtin("frame3", &[Value::Real(1.0), basis]).is_undef());
+    }
+
+    #[test]
+    fn frame3_non_orientation_second_arg_returns_undef() {
+        let origin = make_point3_len();
+        // Second arg is Real, not Orientation
+        assert!(eval_builtin("frame3", &[origin, Value::Real(1.0)]).is_undef());
+    }
+
+    #[test]
+    fn frame3_point2_origin_returns_undef() {
+        // Point2 (wrong component count) should be rejected
+        let origin_2d = Value::Point(vec![Value::length(1.0), Value::length(2.0)]);
+        let basis = make_identity_orientation();
+        assert!(eval_builtin("frame3", &[origin_2d, basis]).is_undef());
+    }
+
+    #[test]
+    fn frame3_dimensionless_point3_is_accepted() {
+        // Point3 with dimensionless (Real) components is accepted
+        let origin = Value::Point(vec![
+            Value::Real(0.0),
+            Value::Real(0.0),
+            Value::Real(0.0),
+        ]);
+        let basis = make_identity_orientation();
+        let result = eval_builtin("frame3", &[origin.clone(), basis.clone()]);
+        assert!(
+            matches!(&result, Value::Frame { .. }),
+            "expected Value::Frame for dimensionless Point3 origin, got {:?}",
+            result
+        );
     }
 }
