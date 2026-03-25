@@ -3845,4 +3845,29 @@ mod tests {
             other => panic!("expected GeometryOp::Extrude, got {:?}", other),
         }
     }
+
+    #[test]
+    #[should_panic(expected = "compiler bug")]
+    fn compile_geometry_op_revolve_missing_arg_panics() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        // Revolve with missing 'ox' arg — should panic, not silently use 0.0
+        let op = CompiledGeometryOp::Sweep {
+            kind: SweepKind::Revolve,
+            profiles: vec![GeomRef::Step(0)],
+            args: vec![
+                // Deliberately omit "ox"
+                ("oy".into(), literal_f64(0.0)),
+                ("oz".into(), literal_f64(0.0)),
+                ("ax".into(), literal_f64(0.0)),
+                ("ay".into(), literal_f64(0.0)),
+                ("az".into(), literal_f64(1.0)),
+                ("angle".into(), literal_f64(std::f64::consts::PI)),
+            ],
+        };
+
+        // This should panic because 'ox' is missing
+        compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+    }
 }
