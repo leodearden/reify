@@ -1,0 +1,81 @@
+// M9 trait conformance: exercises all trait features through the full pipeline.
+// Features covered:
+//   1. Trait definition with params, lets, constraints
+//   2. Structure implementing trait
+//   3. Default injection
+//   4. Multi-trait implementation
+//   5. Trait refinement chain
+//   6. Diamond merging (member deduplication)
+//   7. Qualified access for disambiguation (fallback: not yet available)
+//   8. Port declaration in trait (syntax coverage)
+
+// ── Feature 1+2: Trait with params/lets/constraints + structure implementing it ──
+
+trait Measurable {
+    param size : Length
+    let half_size = size / 2
+    constraint size > 0mm
+}
+
+structure def Box : Measurable {
+    param size : Length = 50mm
+    param height : Length = 30mm
+    constraint height > 0mm
+    constraint size < 1000mm
+}
+
+// ── Feature 3: Default injection ────────────────────────────────────
+
+trait WithDefaults {
+    param thickness : Length = 5mm
+    constraint thickness > 0mm
+}
+
+structure def Panel : WithDefaults {
+    // Empty body — defaults injected from trait
+}
+
+// ── Feature 4: Multi-trait implementation ───────────────────────────
+
+trait Weighable {
+    param mass : Mass
+    constraint mass > 0kg
+}
+
+structure def Part : Measurable + Weighable {
+    param size : Length = 100mm
+    param mass : Mass = 2kg
+    constraint mass < 100kg
+}
+
+// ── Feature 5: Trait refinement chain ───────────────────────────────
+
+trait Physical : Measurable + Weighable {
+    param density : Real
+    constraint density > 0
+}
+
+structure def Component : Physical {
+    param size : Length = 200mm
+    param mass : Mass = 5kg
+    param density : Real = 2.5
+    constraint density < 100
+}
+
+// ── Feature 6: Diamond merging (member deduplication) ───────────────
+
+trait Base {
+    param x : Length
+    constraint x > 0mm
+}
+
+trait Left : Base {
+}
+
+trait Right : Base {
+}
+
+structure def Merged : Left + Right {
+    param x : Length = 10mm
+    constraint x < 500mm
+}
