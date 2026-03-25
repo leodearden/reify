@@ -4,8 +4,9 @@ use std::collections::{HashMap, HashSet};
 
 use reify_types::{
     BinOp, CompiledExpr, CompiledExprKind, ConstraintDomain, ConstraintNodeId, ContentHash,
-    DimensionVector, Diagnostic, DiagnosticLabel, OptimizationObjective, RealizationNodeId,
-    ResolvedFunction, SourceSpan, Type, UnOp, Value, ValueCellId, FIELD_ENTITY_PREFIX,
+    DeterminacyPredicateKind, DimensionVector, Diagnostic, DiagnosticLabel,
+    OptimizationObjective, RealizationNodeId, ResolvedFunction, SourceSpan, Type, UnOp, Value,
+    ValueCellId, FIELD_ENTITY_PREFIX,
 };
 
 /// A compiled import declaration.
@@ -1459,6 +1460,68 @@ fn compile_expr_guarded(
                 );
                 let result_type = Type::Option(Box::new(inner.result_type.clone()));
                 return CompiledExpr::option_some(inner, result_type);
+            }
+
+            // Intercept determinacy predicates before general function resolution.
+            // These are compiler intrinsics — not stdlib functions.
+            let determinacy_kind = match name.as_str() {
+                "determined" => Some(DeterminacyPredicateKind::Determined),
+                "undetermined" => Some(DeterminacyPredicateKind::Undetermined),
+                "constrained" => Some(DeterminacyPredicateKind::Constrained),
+                "partially_determined" => Some(DeterminacyPredicateKind::PartiallyDetermined),
+                _ => None,
+            };
+            if let Some(det_kind) = determinacy_kind {
+                if args.len() != 1 {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "{}() requires exactly 1 argument, got {}",
+                            name,
+                            args.len()
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            expr.span,
+                            "wrong number of arguments",
+                        )),
+                    );
+                    return CompiledExpr::literal(Value::Undef, Type::Bool);
+                }
+                // Argument must be a bare identifier (not an expression).
+                let arg_name = match &args[0].kind {
+                    reify_syntax::ExprKind::Ident(ident) => ident,
+                    _ => {
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "{}() argument must be a bare identifier, not an expression",
+                                name
+                            ))
+                            .with_label(DiagnosticLabel::new(
+                                args[0].span,
+                                "expected bare identifier",
+                            )),
+                        );
+                        return CompiledExpr::literal(Value::Undef, Type::Bool);
+                    }
+                };
+                // Resolve the identifier to a ValueCellId.
+                match scope.resolve(arg_name) {
+                    Some((cell_id, _ty)) => {
+                        return CompiledExpr::determinacy_predicate(det_kind, cell_id.clone());
+                    }
+                    None => {
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "unknown identifier '{}' in {}() argument",
+                                arg_name, name
+                            ))
+                            .with_label(DiagnosticLabel::new(
+                                args[0].span,
+                                "unresolved identifier",
+                            )),
+                        );
+                        return CompiledExpr::literal(Value::Undef, Type::Bool);
+                    }
+                }
             }
 
             let compiled_args: Vec<CompiledExpr> = args
@@ -4857,6 +4920,9 @@ fn collect_body_refs_inner(expr: &CompiledExpr, refs: &mut Vec<ValueCellId>) {
             collect_body_refs_inner(inner, refs);
         }
         CompiledExprKind::OptionNone => {}
+        CompiledExprKind::DeterminacyPredicate { cell, .. } => {
+            refs.push(cell.clone());
+        }
     }
 }
 

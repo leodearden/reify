@@ -1,30 +1,40 @@
 {
-  "task_id": "193",
-  "title": "Qualified trait access: tests",
+  "task_id": "200",
+  "title": "Determinacy predicates: compiler intrinsic",
   "files": [
-    "crates/reify-compiler/tests/qualified_access_compile_tests.rs",
-    "crates/reify-eval/tests/qualified_access_eval.rs",
+    "crates/reify-types/src/expr.rs",
+    "crates/reify-types/src/lib.rs",
     "crates/reify-compiler/src/lib.rs",
-    "crates/reify-compiler/tests/trait_conformance_tests.rs"
+    "crates/reify-expr/src/lib.rs",
+    "crates/reify-compiler/tests/boundary2_producer.rs",
+    "crates/reify-compiler/tests/determinacy_compile_tests.rs"
   ],
   "modules": [
+    "crates/reify-types",
     "crates/reify-compiler",
-    "crates/reify-eval"
+    "crates/reify-expr"
   ],
-  "analysis": "Task 193 is a tests-only task for qualified trait access, depending on task 192 (compiler/evaluator implementation) and transitively on task 191 (parser).\n\nTask 191 (done) added grammar rules and parser support:\n- `qualified_access`: `TypeName::ident` (prec 2, left-associative)\n- `instance_qualified_access`: `expr.(TypeName::ident)` (prec 8)\n- ExprKind::QualifiedAccess { qualifier, member } and ExprKind::InstanceQualifiedAccess { object, qualified } in reify-syntax\n\nTask 192 (pending, dependency) will add:\n- CompiledExprKind::QualifiedAccess and InstanceQualifiedAccess variants\n- Compiler resolution: look up trait in trait_registry, resolve member in trait definition\n- Evaluator: resolve qualified access to the correct ValueCell\n- Error diagnostics: trait not found, member not in trait, instance doesn't implement trait\n\nTask 193 must write >=8 tests covering: (1) disambiguation when two traits define same member name, (2) instance-level qualified access, (3) error: trait not found, (4) error: member not in trait, (5) error: instance doesn't implement trait, (6) qualified access in constraint expressions.\n\nTest infrastructure follows established patterns: compile_module()/compile_first_template() helpers for compiler tests, parse_compile_check() + Engine for eval tests, SimpleConstraintChecker for real constraint checking. Two new test files: qualified_access_compile_tests.rs (compiler-level) and qualified_access_eval.rs (full pipeline eval).\n\nKey design consideration: The reify trait system deduplicates same-name/same-type members from multiple traits. When S : A + B and both A and B have `param x : Length`, there's only one `x` value cell. Qualified access (A::x vs B::x) should both resolve to that same cell. The disambiguation value is when the user wants to be explicit about provenance, and for error checking (e.g., ensuring a member really comes from a specific trait).\n\n--- Review Fix Analysis ---\n\nIssue 1 (api_contract_violation): The public functions `check_trait_conformance_chain` and `check_trait_conformance_multi` (lines 246-322) use `collect_chain_requirements` (lines 331-385) which only collects `required_members` but NOT `defaults`. The compiler's internal `collect_all_requirements` (line 5426) collects BOTH and performs a cross-check at lines 5174-5185 and 5208: a missing requirement is satisfied if another trait provides a matching default. The public API will emit spurious MissingParam/MissingLet errors for members satisfied by trait defaults. Fix: extend `collect_chain_requirements` to also collect defaults, then add defaults cross-check logic in the chain/multi functions before delegating to `check_trait_conformance`.\n\nIssue 2 (incomplete_type_inference): The `none` keyword at line 1201-1202 produces `CompiledExpr::option_none(Type::Option(Box::new(Type::Real)))` as a placeholder. The param-default path (lines 3444-3450) fixes this up when the declared param type is Option<T>. But the let-binding path (lines 3481-3507) has NO such fixup: `cell_type` is always `compiled_expr.result_type.clone()` and `let_decl.type_expr` is never consulted. So `let y : Option<Length> = none` gets `Option<Real>` instead of `Option<Length>`. Fix: in the let-binding second pass, resolve `let_decl.type_expr` via `resolve_type_expr` when present, use it as `cell_type`, and apply the same OptionNone fixup as the param path.",
+  "analysis": "Currently determined/constrained/undetermined/partially_determined are compiled as normal stdlib FunctionCall nodes and dispatched at runtime through reify-stdlib where they return Value::Undef as stubs. The task is to make them compiler intrinsics: the compiler intercepts these function names, verifies the argument is a bare identifier that resolves to a ValueCellId, and emits a new DeterminacyPredicate { kind, cell } variant of CompiledExprKind instead of FunctionCall. This requires: (1) adding DeterminacyPredicateKind enum and the DeterminacyPredicate variant to CompiledExprKind in reify-types, (2) updating all 6 exhaustive matches on CompiledExprKind (walk, collect_value_refs_inner, remap_entity in expr.rs; eval_expr in reify-expr; collect_body_refs_inner in reify-compiler; assert_no_unresolved in boundary2_producer test), (3) adding the compiler intercept in compile_expr_guarded before args are compiled (since we need the raw AST ident, not a compiled expression), and (4) adding a constructor with content hash tag 16. The eval layer (reify-expr) returns Value::Undef for now since it lacks DeterminacyState access; actual evaluation happens at the reify-eval engine level where snapshot state is available (a separate concern for a future task). Content hash tags 0-15 are already allocated to existing variants; tag 16 is the next available.",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "Create crates/reify-compiler/tests/qualified_access_compile_tests.rs with module imports (reify_compiler::*, reify_types::*) and helper functions compile_module() and compile_first_template() matching the pattern from trait_conformance_tests.rs and trait_merge_tests.rs.",
+      "description": "Add DeterminacyPredicateKind enum (Determined, Undetermined, Constrained, PartiallyDetermined) and DeterminacyPredicate { kind, cell } variant to CompiledExprKind in crates/reify-types/src/expr.rs. Add CompiledExpr::determinacy_predicate() constructor with content hash tag [16, kind_byte]. Update walk() (leaf node \u2014 no children), collect_value_refs_inner() (push cell to refs \u2014 it is a dependency), and remap_entity() (remap cell.entity like ValueRef). Re-export DeterminacyPredicateKind from crates/reify-types/src/lib.rs.",
       "status": "done",
-      "commit": "7ed4c29a",
+      "commit": "d7f5738a",
       "tests": []
     },
     {
       "id": "pre-2",
-      "description": "Create crates/reify-eval/tests/qualified_access_eval.rs with imports (reify_compiler, reify_syntax, reify_eval::Engine, reify_constraints::SimpleConstraintChecker, reify_types::{Severity, ModulePath, ValueCellId}) and a parse_compile_check() helper that runs the full pipeline: parse -> compile (assert no errors) -> return compiled module.",
+      "description": "Update eval_expr() in crates/reify-expr/src/lib.rs to handle DeterminacyPredicate variant \u2014 return Value::Undef (eval-layer lacks DeterminacyState access; real evaluation is at engine level with snapshot context).",
       "status": "done",
-      "commit": "7ed4c29a",
+      "commit": "d7f5738a",
+      "tests": []
+    },
+    {
+      "id": "pre-3",
+      "description": "Update collect_body_refs_inner() in crates/reify-compiler/src/lib.rs to handle DeterminacyPredicate \u2014 push cell id to refs. Update assert_no_unresolved() in crates/reify-compiler/tests/boundary2_producer.rs \u2014 DeterminacyPredicate is a resolved leaf node (no-op, no children to recurse into).",
+      "status": "done",
+      "commit": "d7f5738a",
       "tests": []
     }
   ],
@@ -32,188 +42,169 @@
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write compiler test `basic_qualified_access_compiles`: trait A{param x:Length}, structure S:A{param x:Length=5mm, let y:Length = A::x}. Assert: no compile errors, template has value cells for both 'x' and 'y'.",
+      "description": "Write failing test compile_determined_param in determinacy_compile_tests.rs: parse 'structure S { param x : Scalar = 5mm \\n let d = determined(x) }', extract the default_expr for cell 'd', assert it matches CompiledExprKind::DeterminacyPredicate { kind: Determined, cell } where cell == ValueCellId::new('S', 'x'). Also assert result_type == Type::Bool. Uses compile_and_get_expr helper pattern from option_compile_tests.rs.",
       "status": "done",
-      "commit": "7ed4c29a"
+      "commit": "38c781f1"
     },
     {
       "id": "step-2",
-      "type": "test",
-      "description": "Write compiler test `disambiguation_two_traits_same_member`: trait A{param size:Length}, trait B{param size:Length}, structure S:A+B{param size:Length=5mm, let a_size:Length = A::size, let b_size:Length = B::size}. Assert: no compile errors, template has value cells for 'size', 'a_size', and 'b_size'. Both qualified accesses resolve without ambiguity errors.",
+      "type": "impl",
+      "description": "Add compiler intercept in compile_expr_guarded: in the FunctionCall arm, before arg compilation (after the existing 'some()' intercept), check if name matches determined/undetermined/constrained/partially_determined. If so: verify exactly 1 arg, verify arg is ExprKind::Ident, resolve ident via scope.resolve() to ValueCellId, map name to DeterminacyPredicateKind, emit CompiledExpr::determinacy_predicate(kind, cell). On error (wrong arity, non-ident arg, unresolved name), emit Diagnostic::error with source span and return Literal(Undef, Bool).",
       "status": "done",
-      "commit": "7ed4c29a"
+      "commit": "c8bc1bef"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write compiler test `error_trait_not_found`: structure S{param x:Length=5mm, let y:Length = UnknownTrait::x}. Assert: error diagnostic containing 'trait' and 'not found' (or 'unknown').",
+      "description": "Write test compile_all_four_determinacy_kinds: structure S { param x : Scalar = 5mm, let a = determined(x), let b = undetermined(x), let c = constrained(x), let d = partially_determined(x) }. Extract default_expr for each let and assert each has the correct DeterminacyPredicateKind (Determined, Undetermined, Constrained, PartiallyDetermined) and all reference the same cell ValueCellId::new('S', 'x').",
       "status": "done",
-      "commit": "7ed4c29a"
+      "commit": "5aa1d76a"
     },
     {
       "id": "step-4",
-      "type": "test",
-      "description": "Write compiler test `error_member_not_in_trait`: trait A{param x:Length}, structure S:A{param x:Length=5mm, let y:Length = A::nonexistent}. Assert: error diagnostic mentioning the member name 'nonexistent' and indicating it is not defined in the trait.",
+      "type": "impl",
+      "description": "Verify all four kinds pass (should already work from step-2 implementation). Fix any issues.",
       "status": "done",
-      "commit": "7ed4c29a"
+      "commit": "5aa1d76a"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write compiler test `qualified_access_in_constraint_expr`: trait A{param x:Length}, structure S:A{param x:Length=5mm, constraint A::x > 0mm}. Assert: no compile errors, template has at least 1 constraint.",
+      "description": "Write test error_wrong_arity: compile 'structure S { param x : Scalar = 5mm \\n let d = determined() }' and 'structure S { param x : Scalar = 5mm \\n param y : Scalar = 3mm \\n let d = determined(x, y) }'. Assert each produces at least one error diagnostic containing 'exactly 1 argument'. Assert the let 'd' does NOT compile to DeterminacyPredicate (falls back to Literal Undef).",
       "status": "done",
-      "commit": "7ed4c29a"
+      "commit": "5aa1d76a"
     },
     {
       "id": "step-6",
-      "type": "test",
-      "description": "Write compiler test `error_instance_does_not_implement_trait`: trait A{param x:Length}, trait B{param y:Length}, structure Outer{sub inner = Inner, let z:Length = inner.(A::x)}, structure Inner:B{param y:Length=3mm}. Assert: error diagnostic about Inner not implementing trait A (or qualified access resolution failure).",
+      "type": "impl",
+      "description": "Verify arity check passes (should already work from step-2). Fix any issues.",
       "status": "done",
-      "commit": "7ed4c29a"
+      "commit": "5aa1d76a"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write eval test `qualified_access_returns_correct_value`: trait A{param x:Length}, structure S:A{param x:Length=5mm, let y:Length = A::x}. Full pipeline parse->compile->eval. Assert: ValueCellId('S','y') evaluates to mm(5.0) = 0.005 SI.",
+      "description": "Write test error_non_identifier_argument: compile 'structure S { param x : Scalar = 5mm \\n let d = determined(x + 1) }'. Assert error diagnostic containing 'bare identifier' or 'identifier'. Assert the let 'd' does NOT compile to DeterminacyPredicate.",
       "status": "done",
-      "commit": "7ed4c29a"
+      "commit": "5aa1d76a"
     },
     {
       "id": "step-8",
-      "type": "test",
-      "description": "Write eval test `qualified_access_in_constraint_satisfied`: trait A{param x:Length}, structure S:A{param x:Length=5mm, constraint A::x > 0mm}. Full pipeline parse->compile->check. Assert: constraint result is Satisfied (5mm > 0mm).",
+      "type": "impl",
+      "description": "Verify non-identifier check passes (should already work from step-2). Fix any issues.",
       "status": "done",
-      "commit": "7ed4c29a"
+      "commit": "5aa1d76a"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write eval test `qualified_access_in_constraint_violated`: trait A{param x:Length}, structure S:A{param x:Length=5mm, constraint A::x > 10mm}. Full pipeline parse->compile->check. Assert: at least one constraint result is Violated (5mm < 10mm).",
+      "description": "Write test error_unresolved_name: compile 'structure S { let d = determined(nonexistent) }'. Assert error diagnostic about unresolved or unknown identifier 'nonexistent'. Assert the let 'd' does NOT compile to DeterminacyPredicate.",
       "status": "done",
-      "commit": "7ed4c29a"
+      "commit": "5aa1d76a"
     },
     {
       "id": "step-10",
-      "type": "test",
-      "description": "Write eval test `instance_qualified_access_basic`: trait A{param x:Length}, structure Inner:A{param x:Length=3mm}, structure Outer{sub part = Inner, let val:Length = part.(A::x)}. Full pipeline parse->compile->eval. Assert: ValueCellId('Outer','val') evaluates to mm(3.0) = 0.003 SI.",
+      "type": "impl",
+      "description": "Verify unresolved-name check passes (should already work from step-2). Fix any issues.",
       "status": "done",
-      "commit": "7ed4c29a"
+      "commit": "5aa1d76a"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write failing test `chain_conformance_defaults_satisfy_requirement` in trait_conformance_tests.rs: Build CompiledTrait A with required_members=[TraitRequirement{name:'x', kind:Param(Length)}] and empty defaults. Build CompiledTrait B with empty required_members and defaults=[TraitDefault{name:'x', kind:Param{cell_type:Length, ...}}]. Call `check_trait_conformance_multi(&empty_members, &[\"A\", \"B\"], &registry, &[], &[])`. Currently reports spurious MissingParam for 'x' because collect_chain_requirements ignores defaults. Should report no errors \u2014 B's default satisfies A's requirement, matching the compiler's internal collect_all_requirements semantics.",
+      "description": "Write test collect_value_refs_includes_cell: construct DeterminacyPredicate manually via CompiledExpr::determinacy_predicate(DeterminacyPredicateKind::Determined, ValueCellId::new('S', 'x')), call collect_value_refs(), assert result contains ValueCellId::new('S', 'x').",
       "status": "done",
-      "commit": "81f6c685"
+      "commit": "5aa1d76a"
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "Fix the API contract violation in lib.rs: (1) Add a `defaults` Vec<TraitDefault> output parameter to `collect_chain_requirements` so it collects `compiled_trait.defaults` alongside `required_members`, with dedup on name. (2) In `check_trait_conformance_chain` and `check_trait_conformance_multi`, after calling collect_chain_requirements, build an `available_defaults: HashMap<String, Type>` from collected defaults (mirroring lines 5174-5185). (3) Filter the errors returned by `check_trait_conformance`: remove MissingParam/MissingLet entries whose name+type match an entry in available_defaults. This unifies semantics with the compiler's internal `collect_all_requirements` path without modifying the single-trait checker.",
+      "description": "Verify collect_value_refs passes (should already work from pre-1). Fix any issues.",
       "status": "done",
-      "commit": "84b79614"
+      "commit": "5aa1d76a"
     },
     {
       "id": "step-13",
       "type": "test",
-      "description": "Write failing test `let_none_with_typed_annotation_gets_correct_type` in qualified_access_compile_tests.rs: Source `structure def S { let y : Option<Length> = none }`. Compile, find value cell 'y'. Assert: cell_type is `Type::Option(Box::new(Type::Scalar { dimension: DimensionVector::LENGTH }))` (not Option<Real>). Also assert default_expr is OptionNone with matching result_type. Currently fails because let-binding path at line 3488 uses compiled_expr.result_type (Option<Real> placeholder) instead of the declared type annotation, and has no OptionNone fixup.",
+      "description": "Write test content_hash_stability_and_uniqueness: build DeterminacyPredicate for (Determined, S.x) twice \u2014 assert same content_hash. Build for (Undetermined, S.x) \u2014 assert different hash from Determined. Build for (Determined, S.y) \u2014 assert different hash from (Determined, S.x).",
       "status": "done",
-      "commit": "6161bb18"
+      "commit": "5aa1d76a"
     },
     {
       "id": "step-14",
       "type": "impl",
-      "description": "Fix the incomplete type inference in lib.rs let-binding second pass (~line 3481): After `let compiled_expr = compile_expr(...)`, resolve `let_decl.type_expr` via `resolve_type_expr(type_expr, &type_param_names)` when present. Use the resolved declared type as `cell_type` instead of `compiled_expr.result_type`. Then apply OptionNone fixup: if `compiled_expr.kind` is `OptionNone` and `cell_type` is `Type::Option(_)`, replace `compiled_expr` with `CompiledExpr::option_none(cell_type.clone())`. This mirrors the param-default fixup at lines 3444-3450 and ensures `let y: Option<Length> = none` correctly produces Option<Length>.",
+      "description": "Verify content hash test passes (should already work from pre-1 constructor). Fix any issues.",
       "status": "done",
-      "commit": "bd642a62"
+      "commit": "5aa1d76a"
+    },
+    {
+      "id": "step-15",
+      "type": "test",
+      "description": "Write test not_compiled_as_function_call: compile 'structure S { param x : Scalar = 5mm \\n let d = determined(x) }', extract default_expr for 'd', assert it is NOT CompiledExprKind::FunctionCall. This confirms the intrinsic intercept takes priority over stdlib fallthrough. Also verify no walk()-visited nodes contain a FunctionCall with name 'determined'.",
+      "status": "done",
+      "commit": "5aa1d76a"
+    },
+    {
+      "id": "step-16",
+      "type": "impl",
+      "description": "Verify not-function-call test passes (should already work from step-2). Fix any issues.",
+      "status": "done",
+      "commit": "5aa1d76a"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Create two separate test files: qualified_access_compile_tests.rs and qualified_access_eval.rs",
-      "rationale": "Follows the established pattern from task 190 (trait_merge_tests.rs + trait_merge_eval.rs) and the broader codebase convention of separating compiler-level tests from eval-pipeline tests. Compiler tests verify AST resolution and error diagnostics; eval tests verify full pipeline correctness."
+      "decision": "Intercept before arg compilation, not after",
+      "rationale": "Determinacy predicates need the raw AST argument to verify it's a bare ExprKind::Ident. Compiling the arg first would lose the distinction between 'determined(x)' (valid bare ident) and 'determined(x + 0)' (invalid expression). The some() intercept pattern at line 1437 is the precedent \u2014 it intercepts before general overload resolution."
     },
     {
-      "decision": "Test disambiguation with same-name/same-type members from two traits, not different types",
-      "rationale": "The reify trait system detects same-name/different-type as a 'conflicting' error (see composition_conflict_error test in trait_conformance_tests.rs). Qualified access disambiguation is most useful when two traits legitimately provide same-named members of the same type, and the user wants to be explicit about provenance."
+      "decision": "Only support bare identifiers as arguments, not member access expressions",
+      "rationale": "The scope.resolve() mechanism handles bare names including port composite keys (port.member registered as a single key). Supporting arbitrary MemberAccess (e.g., sub.param) would require walking the AST member access chain, adding significant complexity. The task description says 'resolves the argument to a specific ValueCellId' \u2014 bare identifiers are the canonical way to do this in the scope system."
     },
     {
-      "decision": "Use full parse->compile->eval/check pipeline for eval tests rather than builders",
-      "rationale": "The qualified access syntax (TypeName::member) needs to survive the full pipeline from parsing through compilation to evaluation. Builder-based tests would bypass the parser and compiler, which are the critical code paths being tested."
+      "decision": "Eval layer (reify-expr) returns Value::Undef for DeterminacyPredicate",
+      "rationale": "EvalContext only has ValueMap (ValueCellId -> Value), not DeterminacyState. The actual determinacy evaluation happens at the engine level (reify-eval) where Snapshot.values stores (Value, DeterminacyState). This matches the existing pattern where stdlib stubs return Undef and the engine intercepts at a higher level. A future task will add snapshot-level evaluation."
     },
     {
-      "decision": "Use SimpleConstraintChecker (real checker) for eval constraint tests",
-      "rationale": "Matches the pattern from trait_merge_eval.rs. The goal is to verify qualified access expressions are correctly evaluated within constraints during the full pipeline, not just that the expression tree is constructed correctly."
+      "decision": "Content hash tag byte is 16 with kind discriminant",
+      "rationale": "Tags 0-15 are used by existing variants (0=Literal, 1=ValueRef, 2=BinOp, 3=UnOp, 5=Conditional, 7=Lambda, 8=ListLiteral, 9=SetLiteral, 10=MapLiteral, 11=IndexAccess, 12=MethodCall, 13=Quantifier, 14=OptionSome, 15=OptionNone; 4/6 used in compiler). Hash is ContentHash::of(&[16, kind as u8]).combine(cell_id_hash) for uniqueness across kinds and cells."
     },
     {
-      "decision": "Include 10 tests (exceeding the >=8 minimum) to cover all specified categories comprehensively",
-      "rationale": "6 compiler tests + 4 eval tests cover all categories: disambiguation (steps 1-2), errors (steps 3-4,6), constraints (step 5), and eval pipeline (steps 7-10). Extra tests provide confidence in both the compile-time resolution and runtime evaluation of qualified access."
+      "decision": "DeterminacyPredicate is a leaf node in walk() with cell as dependency in collect_value_refs",
+      "rationale": "The cell ValueCellId is resolved at compile time and stored directly \u2014 no child expressions to recurse. The cell IS a dependency (added in collect_value_refs_inner) because the determinacy state of a cell changes when the cell's value changes, so dependents must be re-evaluated."
     },
     {
-      "decision": "Fix conformance API by post-filtering MissingParam/MissingLet errors against collected defaults, rather than modifying check_trait_conformance itself",
-      "rationale": "The existing `check_trait_conformance` function checks a single flat trait against structure members. The defaults cross-check is inherently a multi-trait concern (one trait's default satisfying another trait's requirement). By collecting defaults in `collect_chain_requirements` and filtering the error output in the chain/multi wrappers, we avoid modifying the well-tested single-trait conformance checker while achieving semantic parity with the compiler's internal path."
-    },
-    {
-      "decision": "Fix none type inference at the let-binding compilation site rather than at the none keyword site",
-      "rationale": "The none keyword (line 1201) correctly uses a placeholder type since it has no context at that point. Type resolution belongs at the declaration site where the type annotation is available. The param path already follows this pattern (lines 3444-3450). Adding the same fixup to the let path is the minimal, consistent fix that resolves the type via resolve_type_expr when let_decl.type_expr is present."
-    },
-    {
-      "decision": "Place conformance defaults cross-check test in trait_conformance_tests.rs alongside existing chain/multi tests",
-      "rationale": "The existing file already contains all `check_trait_conformance_chain` and `check_trait_conformance_multi` tests (steps 5-13 from task 186). Adding the defaults cross-check test there maintains test cohesion and makes the regression obvious in context."
+      "decision": "Result type is always Type::Bool",
+      "rationale": "Determinacy predicates answer a yes/no question about a cell's state (is it determined? is it constrained? etc.). Bool is the natural return type regardless of the cell's own type."
     }
   ],
   "reuse": [
     {
-      "what": "compile_module() and compile_first_template() helper pattern",
-      "where": "crates/reify-compiler/tests/trait_conformance_tests.rs lines 10-21, trait_merge_tests.rs lines 13-25",
-      "how": "Copy the same helpers into qualified_access_compile_tests.rs: parse with reify_syntax::parse(), assert no parse errors, compile with reify_compiler::compile(), extract first template."
+      "what": "some() intercept pattern in compile_expr_guarded",
+      "where": "crates/reify-compiler/src/lib.rs lines 1437-1462",
+      "how": "Follow the same pattern: check function name before compiling args, validate arity, inspect raw AST arg kind, emit a specialized CompiledExprKind variant instead of FunctionCall. Insert the determinacy intercept right after the some() check."
     },
     {
-      "what": "parse_compile_check() helper for error-free pipeline",
-      "where": "crates/reify-eval/tests/trait_merge_eval.rs lines 12-25",
-      "how": "Copy into qualified_access_eval.rs: parse, assert no parse errors, compile, assert no compile errors, return CompiledModule."
+      "what": "option_compile_tests.rs test helper pattern",
+      "where": "crates/reify-compiler/tests/option_compile_tests.rs lines 11-45",
+      "how": "Reuse the compile_and_get_expr helper pattern (parse source, compile, extract default_expr for named cell) and compile_expecting_errors helper in the new determinacy_compile_tests.rs."
     },
     {
-      "what": "SimpleConstraintChecker for real constraint evaluation",
-      "where": "crates/reify-constraints (re-exported), used in trait_merge_eval.rs",
-      "how": "Import reify_constraints::SimpleConstraintChecker for eval tests that check constraint satisfaction via Engine::check()."
+      "what": "CompiledExpr constructor pattern (option_some)",
+      "where": "crates/reify-types/src/expr.rs lines 510-517",
+      "how": "Follow the same constructor pattern: compute content_hash from tag byte + constituent data, return CompiledExpr { kind, result_type, content_hash }."
     },
     {
-      "what": "Error diagnostic assertion pattern",
-      "where": "crates/reify-compiler/tests/trait_conformance_tests.rs lines 121-133 (missing_member_error), lines 153-161 (type_mismatch_error)",
-      "how": "Filter diagnostics by Severity::Error, assert non-empty, format as string and check for expected keywords. Apply to trait-not-found, member-not-in-trait, and instance-doesn't-implement-trait error tests."
+      "what": "CompilationScope.resolve() for name-to-ValueCellId resolution",
+      "where": "crates/reify-compiler/src/lib.rs lines 1213-1214, usage at line 1284",
+      "how": "Use scope.resolve(arg_name) to get the ValueCellId for the bare identifier argument, exactly as the Ident case does at line 1284."
     },
     {
-      "what": "Full pipeline eval + value assertion pattern",
-      "where": "crates/reify-eval/tests/trait_merge_eval.rs lines 164-194 (let_from_trait_evaluated)",
-      "how": "Parse, compile, Engine::new(SimpleConstraintChecker).eval(), then get ValueCellId and assert as_f64() matches expected SI value. Apply to qualified_access_returns_correct_value and instance_qualified_access_basic tests."
-    },
-    {
-      "what": "Constraint satisfaction assertion pattern",
-      "where": "crates/reify-eval/tests/trait_merge_eval.rs lines 36-65 (merged_trait_constraint_satisfied/violated)",
-      "how": "Engine::check(), assert constraint_results non-empty, check Satisfaction::Satisfied or Violated. Apply to qualified_access_in_constraint_satisfied/violated tests."
-    },
-    {
-      "what": "Direct check_trait_conformance_multi test pattern with CompiledTrait structs",
-      "where": "crates/reify-compiler/tests/trait_conformance_tests.rs lines 1808-1855 (chain_diamond_dedup_satisfied)",
-      "how": "Build CompiledTrait structs with required_members and defaults fields, insert into registry HashMap, call check_trait_conformance_multi. Apply to conformance defaults cross-check test (step 11)."
-    },
-    {
-      "what": "available_defaults cross-check logic from compiler-internal path",
-      "where": "crates/reify-compiler/src/lib.rs lines 5174-5185 (available_defaults map) and 5206-5211 (satisfaction check)",
-      "how": "Mirror the same pattern in check_trait_conformance_chain/multi: after collecting defaults alongside requirements, build HashMap<String, Type> from defaults, then filter MissingParam/MissingLet errors when a matching default exists."
-    },
-    {
-      "what": "OptionNone fixup pattern from param-default path",
-      "where": "crates/reify-compiler/src/lib.rs lines 3444-3450",
-      "how": "Apply the same pattern in the let-binding path: if matches!(&compiled_expr.kind, CompiledExprKind::OptionNone) && matches!(&cell_type, Type::Option(_)) { compiled_expr = CompiledExpr::option_none(cell_type.clone()); }"
-    },
-    {
-      "what": "resolve_type_expr() for handling Option<T> type annotations",
-      "where": "crates/reify-compiler/src/lib.rs lines 843-852",
-      "how": "Use resolve_type_expr(type_expr, &type_param_names) in the let-binding path to resolve declared type from let_decl.type_expr, handling generic forms like Option<Length>."
+      "what": "Diagnostic error pattern with source span",
+      "where": "crates/reify-compiler/src/lib.rs lines 1438-1449 (some() arity error)",
+      "how": "Follow same error reporting pattern: Diagnostic::error(message).with_label(DiagnosticLabel::new(expr.span, label)), then return CompiledExpr::literal(Value::Undef, Type::Bool)."
     }
   ],
-  "_session_id": "193-0914b68b",
-  "_created_at": "2026-03-25T08:58:32.569248+00:00"
+  "_session_id": "200-e79f2596",
+  "_created_at": "2026-03-25T10:02:19.098617+00:00"
 }
