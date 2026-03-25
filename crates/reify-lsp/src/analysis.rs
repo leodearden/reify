@@ -201,6 +201,44 @@ pub fn format_value(value: &Value) -> String {
                 format!("{re} {sign} {im_abs}i {unit}")
             }
         }
+        Value::Matrix(rows) => {
+            let inner: Vec<String> = rows.iter().map(|row| {
+                let cols: Vec<String> = row.iter().map(format_value).collect();
+                format!("[{}]", cols.join(", "))
+            }).collect();
+            format!("[{}]", inner.join(", "))
+        }
+        Value::Point(components) => {
+            let inner: Vec<String> = components.iter().map(format_value).collect();
+            format!("Point({})", inner.join(", "))
+        }
+        Value::Vector(components) => {
+            let inner: Vec<String> = components.iter().map(format_value).collect();
+            format!("Vector({})", inner.join(", "))
+        }
+        Value::Orientation { w, x, y, z } => {
+            format!("Orientation(w={w}, x={x}, y={y}, z={z})")
+        }
+        Value::Frame { origin, basis } => {
+            format!("Frame(origin={}, basis={})", format_value(origin), format_value(basis))
+        }
+        Value::Transform { rotation, translation } => {
+            format!("Transform(rotation={}, translation={})", format_value(rotation), format_value(translation))
+        }
+        Value::Plane { origin, normal } => {
+            format!("Plane(origin={}, normal={})", format_value(origin), format_value(normal))
+        }
+        Value::Axis { origin, direction } => {
+            format!("Axis(origin={}, direction={})", format_value(origin), format_value(direction))
+        }
+        Value::BoundingBox { min, max } => {
+            format!("BoundingBox(min={}, max={})", format_value(min), format_value(max))
+        }
+        Value::Range { lower, upper, .. } => {
+            let lo = lower.as_ref().map(|v| format_value(v)).unwrap_or_else(|| "..".to_string());
+            let hi = upper.as_ref().map(|v| format_value(v)).unwrap_or_else(|| "..".to_string());
+            format!("{lo}..{hi}")
+        }
         Value::Undef => "(undefined)".to_string(),
     }
 }

@@ -45,6 +45,24 @@ fn infer_value_type(v: &Value) -> Type {
             panic!("literal() cannot infer Tensor type (rank/n/quantity). Use CompiledExpr::literal(value, type) directly.")
         }
         Value::Complex { dimension, .. } => Type::complex(Type::Scalar { dimension: *dimension }),
+        Value::Matrix(_) => {
+            panic!("literal() cannot infer Matrix type. Use CompiledExpr::literal(value, type) directly.")
+        }
+        Value::Point(components) => {
+            let q = components.first().map(infer_value_type).unwrap_or(Type::Real);
+            Type::Point { n: components.len(), quantity: Box::new(q) }
+        }
+        Value::Vector(components) => {
+            let q = components.first().map(infer_value_type).unwrap_or(Type::Real);
+            Type::Vector { n: components.len(), quantity: Box::new(q) }
+        }
+        Value::Orientation { .. } => Type::Orientation(3),
+        Value::Frame { .. } => Type::Frame(3),
+        Value::Transform { .. } => Type::Transform(3),
+        Value::Plane { .. } => Type::Bool, // placeholder — no Type::Plane yet
+        Value::Axis { .. } => Type::Bool, // placeholder — no Type::Axis yet
+        Value::BoundingBox { .. } => Type::Bool, // placeholder — no Type::BoundingBox yet
+        Value::Range { .. } => Type::Bool, // placeholder
         Value::Undef => Type::Bool,
     }
 }

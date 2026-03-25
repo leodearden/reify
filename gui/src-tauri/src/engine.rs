@@ -543,6 +543,15 @@ fn format_expr(expr: &reify_types::CompiledExpr) -> String {
         CompiledExprKind::OptionSome(inner) => format!("some({})", format_expr(inner)),
         CompiledExprKind::OptionNone => "none".to_string(),
         CompiledExprKind::MetaAccess { entity, key } => format!("{}.meta.{}", entity, key),
+        CompiledExprKind::DeterminacyPredicate { kind, cell } => {
+            let fn_name = match kind {
+                reify_types::DeterminacyPredicateKind::Determined => "determined",
+                reify_types::DeterminacyPredicateKind::Undetermined => "undetermined",
+                reify_types::DeterminacyPredicateKind::Constrained => "constrained",
+                reify_types::DeterminacyPredicateKind::PartiallyDetermined => "partially_determined",
+            };
+            format!("{}({})", fn_name, cell.member)
+        }
     }
 }
 

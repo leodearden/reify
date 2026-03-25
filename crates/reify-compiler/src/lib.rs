@@ -4349,6 +4349,9 @@ fn collect_body_refs_inner(expr: &CompiledExpr, refs: &mut Vec<ValueCellId>) {
         }
         CompiledExprKind::OptionNone => {}
         CompiledExprKind::MetaAccess { .. } => {}
+        CompiledExprKind::DeterminacyPredicate { cell, .. } => {
+            refs.push(cell.clone());
+        }
     }
 }
 

@@ -133,6 +133,7 @@ fn assert_no_unresolved(expr: &reify_types::CompiledExpr) {
         }
         CompiledExprKind::OptionNone => {}
         CompiledExprKind::MetaAccess { .. } => {}
+        CompiledExprKind::DeterminacyPredicate { .. } => {}
     }
 }
 

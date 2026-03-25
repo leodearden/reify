@@ -94,6 +94,21 @@ pub enum CompiledExprKind {
         entity: String,
         key: String,
     },
+    /// Determinacy predicate: checks the determinacy state of a value cell.
+    /// Returns Bool at the engine level (eval layer returns Undef — lacks DeterminacyState access).
+    DeterminacyPredicate {
+        kind: DeterminacyPredicateKind,
+        cell: ValueCellId,
+    },
+}
+
+/// Determinacy predicate kinds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DeterminacyPredicateKind {
+    Determined,
+    Undetermined,
+    Constrained,
+    PartiallyDetermined,
 }
 
 /// The kind of quantifier: universal (forall) or existential (exists).
@@ -284,6 +299,7 @@ impl CompiledExpr {
             }
             CompiledExprKind::OptionNone => {}
             CompiledExprKind::MetaAccess { .. } => {}
+            CompiledExprKind::DeterminacyPredicate { .. } => {}
         }
     }
 
@@ -392,6 +408,9 @@ impl CompiledExpr {
             }
             CompiledExprKind::OptionNone => {}
             CompiledExprKind::MetaAccess { .. } => {}
+            CompiledExprKind::DeterminacyPredicate { cell, .. } => {
+                refs.push(cell.clone());
+            }
         }
     }
 
@@ -644,6 +663,11 @@ impl CompiledExpr {
             CompiledExprKind::MetaAccess { entity, .. } => {
                 if entity == from_entity {
                     *entity = to_entity.to_string();
+                }
+            }
+            CompiledExprKind::DeterminacyPredicate { cell, .. } => {
+                if cell.entity == from_entity {
+                    cell.entity = to_entity.to_string();
                 }
             }
         }
