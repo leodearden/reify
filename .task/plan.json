@@ -1,118 +1,210 @@
 {
-  "task_id": "241",
-  "title": "Connector params: compiler",
+  "task_id": "233",
+  "title": "Orientation: Type, Value, constructors",
   "files": [
-    "crates/reify-compiler/src/lib.rs",
-    "crates/reify-compiler/tests/connect_compile_tests.rs"
+    "crates/reify-types/src/ty.rs",
+    "crates/reify-types/src/value.rs",
+    "crates/reify-types/tests/exports.rs",
+    "crates/reify-stdlib/src/lib.rs"
   ],
   "modules": [
-    "crates/reify-compiler"
+    "crates/reify-types",
+    "crates/reify-stdlib"
   ],
-  "analysis": "Task 241 requires the compiler to: (1) create synthetic __connector_N sub-components when a connector type is specified in a connect statement, (2) compile parameter assignments from the connector body, (3) generate port compatibility constraints, and (4) generate frame alignment constraints when both ports satisfy LocatedPort.\n\nAll four requirements are ALREADY IMPLEMENTED in compile_connection() at lib.rs:3773-4034:\n- Lines 3903-3966: Synthetic sub-component creation (__connector_N) with compiled params, content hash, best-effort param validation against connector template\n- Lines 3888-3901: Compatibility constraint generation (connect_compat_{left}_{right}) as boolean literal\n- Lines 3992-4022: Frame alignment constraint generation via trait_satisfies() check for LocatedPort (including transitive refinement)\n- Lines 3305-3327: Content hash computation includes all connection components (ports, operator, mappings, connector_sub, frame_constraint)\n\n21 existing tests in connect_compile_tests.rs all pass, covering: basic connections, connector sub-component creation, chain desugaring, direction errors (forward/reverse/bidi), port mapping propagation, unknown port errors, content hash sensitivity (type, params, operator, frame), port type mismatch warnings, trait refinement, connector param validation, frame alignment with LocatedPort, frame alignment via refinement chain, and frame_constraint=None for non-LocatedPort.\n\nGaps identified: (1) No test for connector with BOTH params AND port mappings combined, (2) No test for multiple connectors on same entity verifying __connector_0/__connector_1 indexing, (3) No test verifying connector args can reference parent scope parameters. These edge cases should be tested to ensure robustness.",
+  "analysis": "Task 233 adds Orientation as a first-class type in Reify. ALREADY FULLY IMPLEMENTED ON MAIN: Type::Orientation(usize) exists in ty.rs (line 47) with Display (Orientation{N}), Eq/Hash, and a Type::orientation(n) factory method. Value::Orientation { w, x, y, z } exists in value.rs (line 60) with Display, Ord, Hash, content_hash, and dimension() returning DIMENSIONLESS. All 5 constructors exist in reify-stdlib: orient_identity (no-arg, returns identity quaternion), orient_quaternion(w,x,y,z) (normalizes via normalize_quaternion helper), orient_axis_angle(axis_vec, angle) (extracts 3D vector + trig_input angle, normalizes axis, computes half-angle), orient_euler(convention, a, b, c) (12 convention strings, uses elementary_rotation_quat + quat_mul composition), orient_basis(x,y,z) (validates 3D vectors, checks orthonormality within 1e-6, rejects left-handed bases via determinant, uses Shepperd's method for rotation matrix to quaternion). Export tests exist in exports.rs. 23 tests pass in reify-types, 34 tests pass in reify-stdlib (57 total). No compiler or expr evaluator changes needed since orientation constructors dispatch through the standard eval_builtin path.",
   "prerequisites": [],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write test `connector_with_params_and_port_mappings` verifying that a connect statement with BOTH params and port mappings produces: (a) a connector sub-component with correct structure_name and compiled args, (b) port_mappings propagated to CompiledConnection, (c) no errors. Source: `connect a -> b : BoltSet { grade = 10.9  shaft -> bore }`",
+      "description": "Write failing tests for Type::Orientation(usize) variant: construction, Display ('Orientation3', 'Orientation2'), Eq/Hash behavior, Type::orientation(n) factory, is_numeric() returns false",
       "status": "done",
-      "commit": "30cfa457"
+      "commit": "5136510b"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Verify step-1 test passes against existing implementation (compile_connection already handles both params and port_mappings independently; this test confirms they work together). Fix if needed.",
+      "description": "Add Orientation(usize) variant to Type enum in ty.rs with Display impl ('Orientation{n}'), Type::orientation(n) factory method, ensure Eq/Hash derive covers it",
       "status": "done",
-      "commit": "30cfa457"
+      "commit": "280585ae"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write test `multiple_connectors_per_entity` verifying that two connect statements with connectors in the same structure produce __connector_0 and __connector_1 with distinct names and correct structure_names. Source: two connect statements with different connector types (BoltSet and RivetSet).",
+      "description": "Write failing tests for Value::Orientation { w, x, y, z }: construction, Display ('orientation(w, x, y, z)'), PartialEq/Ord with NaN/neg-zero edge cases, content_hash determinism, type_tag ordering (tag 15), dimension() returns DIMENSIONLESS",
       "status": "done",
-      "commit": "30cfa457"
+      "commit": "a3aaf2f5"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Verify step-3 test passes against existing implementation (connector_index is tracked in ConnectAccumulator and incremented per connector). Fix if needed.",
+      "description": "Add Orientation { w: f64, x: f64, y: f64, z: f64 } variant to Value enum in value.rs with Display, PartialEq, Ord (bitwise f64 comparison), content_hash, type_tag=15, dimension()=DIMENSIONLESS",
       "status": "done",
-      "commit": "30cfa457"
+      "commit": "10fb1be1"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write test `connector_args_reference_parent_params` verifying that connector parameter expressions can reference the parent structure's params. Source: `structure def S { param g : Real = 8.8 ... connect a -> b : BoltSet { grade = g } }`. Assert the connector sub-component's args contain a CompiledExpr with a ValueRef to the parent param.",
+      "description": "Write export test in exports.rs verifying Type::Orientation(3), Type::orientation(3), and Value::Orientation { w, x, y, z } are publicly accessible from reify_types crate",
       "status": "done",
-      "commit": "30cfa457"
+      "commit": "44e50715"
     },
     {
       "id": "step-6",
-      "type": "impl",
-      "description": "Verify step-5 test passes against existing implementation (compile_expr uses ctx.scope which includes parent params). Fix if needed.",
+      "type": "test",
+      "description": "Write failing test for orient_identity: no-arg returns Value::Orientation { w:1, x:0, y:0, z:0 }, with-args returns Undef",
       "status": "done",
-      "commit": "30cfa457"
+      "commit": "79778f91"
     },
     {
       "id": "step-7",
-      "type": "test",
-      "description": "Run full compiler test suite (`cargo test -p reify-compiler`) and verify all tests pass including the 21 existing connect_compile_tests plus the 3 new edge-case tests.",
+      "type": "impl",
+      "description": "Implement orient_identity in eval_builtin match: check args.is_empty(), return identity quaternion or Undef",
       "status": "done",
-      "commit": "30cfa457"
+      "commit": "9e2587ad"
     },
     {
       "id": "step-8",
-      "type": "impl",
-      "description": "Final verification: ensure no regressions across the full compiler test suite. All 24+ connect tests and all other compiler tests must pass.",
+      "type": "test",
+      "description": "Write failing tests for orient_quaternion(w,x,y,z): normalizes unnormalized input, preserves already-normalized, arbitrary values normalize correctly, zero-vector returns Undef, NaN/Inf returns Undef, wrong arg count returns Undef",
       "status": "done",
-      "commit": "30cfa457"
+      "commit": "1edde1c7"
+    },
+    {
+      "id": "step-9",
+      "type": "impl",
+      "description": "Implement orient_quaternion in eval_builtin with normalize_quaternion(w,x,y,z) helper: extract 4 f64 args, validate finiteness, compute L2 norm, reject zero norm, divide by norm to produce unit quaternion",
+      "status": "done",
+      "commit": "8e11d458"
+    },
+    {
+      "id": "step-10",
+      "type": "test",
+      "description": "Write failing tests for orient_axis_angle(axis, angle): 90deg around Z axis, 180deg around X axis, accepts Angle scalar for angle arg, zero axis returns Undef, non-3D axis returns Undef, wrong arg count returns Undef",
+      "status": "done",
+      "commit": "70075b53"
+    },
+    {
+      "id": "step-11",
+      "type": "impl",
+      "description": "Implement orient_axis_angle in eval_builtin: extract 3D vector via tensor_components_f64, extract angle via trig_input, validate axis non-zero, normalize axis, compute half-angle quaternion (cos(a/2), sin(a/2)*axis), normalize result",
+      "status": "done",
+      "commit": "da6eb5cd"
+    },
+    {
+      "id": "step-12",
+      "type": "test",
+      "description": "Write failing tests for orient_euler(convention, a, b, c): xyz single-axis rotation, zyx single-axis, zero angles = identity, invalid convention returns Undef, non-string convention returns Undef, accepts Angle scalars, wrong arg count returns Undef",
+      "status": "done",
+      "commit": "92ed969d"
+    },
+    {
+      "id": "step-13",
+      "type": "impl",
+      "description": "Implement orient_euler in eval_builtin: match convention string against 12 valid conventions (xyz/xzy/yxz/yzx/zxy/zyx/xyx/xzx/yxy/yzy/zxz/zyz), extract 3 angles via trig_input, implement elementary_rotation_quat + quat_mul helpers, compose rotations in convention order, normalize result",
+      "status": "done",
+      "commit": "1bab91e2"
+    },
+    {
+      "id": "step-14",
+      "type": "test",
+      "description": "Write failing tests for orient_basis(x_vec, y_vec, z_vec): identity basis, 90deg-rotated basis, non-orthogonal returns Undef, non-3D returns Undef, zero-length returns Undef, wrong arg count returns Undef",
+      "status": "done",
+      "commit": "557258cf"
+    },
+    {
+      "id": "step-15",
+      "type": "impl",
+      "description": "Implement orient_basis in eval_builtin: extract 3x3D vectors via tensor_components_f64, validate lengths non-zero, normalize basis vectors, check mutual orthogonality (dot products < 1e-6), check right-handedness (determinant ~ 1.0), convert rotation matrix to quaternion via Shepperd's method, normalize result",
+      "status": "done",
+      "commit": "8128684f"
+    },
+    {
+      "id": "step-16",
+      "type": "test",
+      "description": "Write compound rotation tests for orient_euler: xyz with two nonzero angles, zyx with three nonzero angles, xzx proper Euler compound - verify quaternion components against known reference values within 1e-9 tolerance",
+      "status": "done",
+      "commit": "f6f42ca8"
+    },
+    {
+      "id": "step-17",
+      "type": "test",
+      "description": "Write left-handed basis rejection tests for orient_basis: reflected XY plane basis returns Undef, swapped Y/Z basis returns Undef, near-tolerance right-handed basis passes",
+      "status": "done",
+      "commit": "c6a14f34"
     }
   ],
   "design_decisions": [
     {
-      "decision": "No new implementation code needed — core connector compilation is already complete",
-      "rationale": "compile_connection() at lib.rs:3773-4034 already handles all four task requirements: synthetic __connector_N sub-components (lines 3903-3966), parameter compilation (3908-3913), compatibility constraints (3888-3901), and frame alignment constraints (3992-4022). 21 tests verify this behavior. The remaining work is edge-case test coverage."
+      "decision": "Orientation(usize) parameterized by spatial dimension N rather than fixed to 3D",
+      "rationale": "Allows future 2D orientation support (N=2, stored as angle) while N=3 uses unit quaternion. Consistent with Point { n } and Vector { n } patterns."
     },
     {
-      "decision": "Connector sub-components use Private visibility and __connector_N naming",
-      "rationale": "Connectors are implementation details of the connection, not user-visible members. Private visibility prevents external access. The __connector_N naming uses a monotonically incrementing index within each entity to ensure unique names, matching the __count_N and __guard_N synthetic naming conventions."
+      "decision": "Value::Orientation stores quaternion as { w, x, y, z } named fields rather than [f64; 4]",
+      "rationale": "Named fields are self-documenting (w is scalar part), prevent ordering bugs, and match the codebase pattern (Complex uses { re, im })."
     },
     {
-      "decision": "Frame alignment constraint is a boolean literal (true) placeholder",
-      "rationale": "The current implementation emits frame_align_{left}_{right} constraints as Bool(true) literals. This establishes the constraint infrastructure and content hash dependency. The actual frame transformation logic (comparing frame expressions from both ports) will be implemented in a later task when the evaluator supports spatial transforms."
+      "decision": "Normalize quaternion on construction in all constructors",
+      "rationale": "Guarantees unit quaternion invariant. Downstream operations (rotation composition, SLERP) can assume |q|=1 without re-checking."
     },
     {
-      "decision": "Connector param validation is best-effort (only when connector template already compiled)",
-      "rationale": "The compiler processes entities in source order. If the connector structure appears after the entity using it, its template won't be available yet for param validation. The current implementation gracefully skips validation in this case via the `ctx.compiled_templates.iter().find()` guard at line 3917."
+      "decision": "Return Value::Undef on all validation failures rather than panicking",
+      "rationale": "Follows project convention (feedback_silent_defaults_pattern): logic errors should be noisy at the evaluation layer, not crash the engine. Undef propagates through dependent expressions."
+    },
+    {
+      "decision": "orient_euler supports 12 conventions (6 Tait-Bryan + 6 proper Euler) via string parameter",
+      "rationale": "Covers all standard aerospace/robotics conventions. String parameter avoids enum proliferation and matches reify's dynamic evaluation model."
+    },
+    {
+      "decision": "orient_basis validates right-handedness via determinant check (det ~ 1.0)",
+      "rationale": "Left-handed bases represent reflections, not rotations. Quaternions can only represent proper rotations (SO(3)), so left-handed input is semantically invalid."
+    },
+    {
+      "decision": "Use Shepperd's method for rotation matrix to quaternion conversion in orient_basis",
+      "rationale": "Numerically stable for all rotation angles, avoids the singularities of the naive trace-based method near 180-degree rotations."
+    },
+    {
+      "decision": "Orientation dimension() returns DIMENSIONLESS",
+      "rationale": "Orientations are pure rotations with no physical dimension. Angles are consumed during construction (via trig_input) but the resulting quaternion is dimensionless."
     }
   ],
   "reuse": [
     {
-      "what": "compile_expr for connector parameter compilation",
-      "where": "crates/reify-compiler/src/lib.rs:3908-3913",
-      "how": "Connector params are compiled using the same compile_expr() used for all other expression compilation, with the parent entity's CompilationScope. This means connector params can reference parent params, lets, and port members."
+      "what": "tensor_components_f64() helper",
+      "where": "crates/reify-stdlib/src/lib.rs",
+      "how": "Extracts f64 components from Vector/Point/Tensor values for axis and basis vector arguments"
     },
     {
-      "what": "trait_satisfies for LocatedPort detection",
-      "where": "crates/reify-compiler/src/lib.rs:3998-4001",
-      "how": "Frame alignment detection reuses the existing trait_satisfies() function which performs transitive refinement checking through the trait registry. This means ports typed with MechanicalPort (which refines LocatedPort) automatically get frame constraints."
+      "what": "trig_input() helper",
+      "where": "crates/reify-stdlib/src/lib.rs",
+      "how": "Extracts angle in radians from either ANGLE Scalar or bare Real, used for orient_axis_angle and orient_euler angle arguments"
     },
     {
-      "what": "ContentHash pattern for connector sub-components",
-      "where": "crates/reify-compiler/src/lib.rs:3943-3949",
-      "how": "Connector sub-component hash combines connector type + operator + port names + param expression hashes using the same ContentHash::combine/of_str pattern used throughout the compiler."
+      "what": "normalize_quaternion() helper pattern",
+      "where": "crates/reify-stdlib/src/lib.rs",
+      "how": "Shared helper validates finiteness and normalizes quaternion, reused by orient_quaternion, orient_axis_angle, orient_euler, and orient_basis"
     },
     {
-      "what": "SubComponentDecl struct for connector subs",
-      "where": "crates/reify-compiler/src/lib.rs:3951-3961",
-      "how": "Synthetic connector sub-components reuse the same SubComponentDecl struct as regular sub-components (params, type_args, is_collection, count_cell, content_hash), just with Private visibility and auto-generated name."
+      "what": "Value::as_f64() method",
+      "where": "crates/reify-types/src/value.rs",
+      "how": "Used by orient_quaternion to extract numeric components from any numeric Value variant"
     },
     {
-      "what": "Existing test helpers (compile_module, compile_first_template)",
-      "where": "crates/reify-compiler/tests/connect_compile_tests.rs:9-20",
-      "how": "All new edge-case tests reuse the existing test helper functions that parse source text and compile to CompiledModule or (TopologyTemplate, Vec<Diagnostic>)."
+      "what": "assert_orientation_approx! test macro",
+      "where": "crates/reify-stdlib/src/lib.rs (test module)",
+      "how": "Macro for comparing Orientation values within floating-point tolerance, reused across all orient_* test functions"
+    },
+    {
+      "what": "Content hash / Ord / Display patterns from Complex variant",
+      "where": "crates/reify-types/src/value.rs",
+      "how": "Orientation follows same implementation patterns as Complex for PartialEq (bitwise f64), Ord (component-wise), content_hash (hash each f64 as bits), Display"
+    },
+    {
+      "what": "elementary_rotation_quat() and quat_mul() helpers",
+      "where": "crates/reify-stdlib/src/lib.rs",
+      "how": "Elementary single-axis rotation quaternion and Hamilton product, composed by orient_euler for arbitrary Euler angle sequences"
     }
   ],
-  "_session_id": "241-1d6f7cda",
-  "_created_at": "2026-03-24T23:37:41.981333+00:00"
+  "_session_id": "233-af70d415",
+  "_created_at": "2026-03-24T23:41:32.583435+00:00"
 }
