@@ -659,6 +659,12 @@ fn eval_binop(op: BinOp, left: &CompiledExpr, right: &CompiledExpr, ctx: &EvalCo
     let lv = eval_expr(left, ctx);
     let rv = eval_expr(right, ctx);
 
+    // Canonicalize Matrix → nested Tensor before arithmetic dispatch.
+    // Placed after eval but before undef check (DO NOW #16 ordering pattern).
+    // canonicalize_matrix() is identity for non-Matrix values including Undef.
+    let lv = lv.canonicalize_matrix();
+    let rv = rv.canonicalize_matrix();
+
     // Strict undef propagation for arithmetic/comparison
     if lv.is_undef() || rv.is_undef() {
         return Value::Undef;
@@ -1074,6 +1080,8 @@ fn eval_cmp(lv: &Value, rv: &Value, cmp: fn(f64, f64) -> bool) -> Value {
 
 fn eval_unop(op: UnOp, operand: &CompiledExpr, ctx: &EvalContext) -> Value {
     let v = eval_expr(operand, ctx);
+    // Canonicalize Matrix → nested Tensor before dispatch (mirrors eval_binop pattern).
+    let v = v.canonicalize_matrix();
     if v.is_undef() {
         return Value::Undef;
     }
@@ -1085,7 +1093,7 @@ fn eval_unop(op: UnOp, operand: &CompiledExpr, ctx: &EvalContext) -> Value {
                 si_value: -si_value,
                 dimension,
             },
-            // Negate all components of a Tensor
+            // Negate all components of a Tensor (recursive for nested/rank-2+ tensors)
             Value::Tensor(components) => {
                 let results: Vec<Value> = components
                     .into_iter()
@@ -1094,6 +1102,11 @@ fn eval_unop(op: UnOp, operand: &CompiledExpr, ctx: &EvalContext) -> Value {
                         Value::Real(r) => Value::Real(-r),
                         Value::Scalar { si_value, dimension } => {
                             Value::Scalar { si_value: -si_value, dimension }
+                        }
+                        Value::Tensor(_) => {
+                            // Recurse into nested tensor (e.g. rank-2 from canonicalized Matrix)
+                            let neg_expr = CompiledExpr::literal(c, Type::Real);
+                            eval_unop(UnOp::Neg, &neg_expr, ctx)
                         }
                         _ => Value::Undef,
                     })
