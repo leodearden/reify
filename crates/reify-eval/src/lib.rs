@@ -1087,6 +1087,7 @@ impl Engine {
                     if let Some(n) = count {
                         for idx in 0..n {
                             let scoped_entity = format!("{}.{}[{}]", template.name, sub.name, idx);
+                            let meta_map = self.meta_map.clone();
                             elaborate_child_instance(
                                 &mut values,
                                 &mut snapshot,
@@ -1097,6 +1098,7 @@ impl Engine {
                                 child_template,
                                 &scoped_entity,
                                 &sub.args,
+                                &meta_map,
                             );
                         }
 
@@ -1130,6 +1132,7 @@ impl Engine {
                 // Build scoped entity prefix: "ParentName.sub_name"
                 let scoped_entity = format!("{}.{}", template.name, sub.name);
 
+                let meta_map = self.meta_map.clone();
                 elaborate_child_instance(
                     &mut values,
                     &mut snapshot,
@@ -1140,6 +1143,7 @@ impl Engine {
                     child_template,
                     &scoped_entity,
                     &sub.args,
+                    &meta_map,
                 );
             }
 
@@ -3120,6 +3124,7 @@ fn elaborate_child_instance(
     child_template: &TopologyTemplate,
     scoped_entity: &str,
     args: &[(String, reify_types::CompiledExpr)],
+    meta_map: &HashMap<String, HashMap<String, String>>,
 ) {
     let mut child_values = ValueMap::new();
 
@@ -3132,9 +3137,9 @@ fn elaborate_child_instance(
         let member = &cell.id.member;
 
         let val = if let Some((_name, arg_expr)) = args.iter().find(|(name, _)| name == member) {
-            reify_expr::eval_expr(arg_expr, &reify_expr::EvalContext::new(values, functions))
+            reify_expr::eval_expr(arg_expr, &reify_expr::EvalContext::new(values, functions).with_meta(meta_map))
         } else if let Some(ref default_expr) = cell.default_expr {
-            reify_expr::eval_expr(default_expr, &reify_expr::EvalContext::new(&child_values, functions))
+            reify_expr::eval_expr(default_expr, &reify_expr::EvalContext::new(&child_values, functions).with_meta(meta_map))
         } else {
             Value::Undef
         };
@@ -3200,7 +3205,7 @@ fn elaborate_child_instance(
         };
         let member = &child_cell_id.member;
 
-        let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&child_values, functions));
+        let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&child_values, functions).with_meta(meta_map));
         child_values.insert(child_cell_id.clone(), val.clone());
 
         let scoped_id = ValueCellId::new(scoped_entity, member);
