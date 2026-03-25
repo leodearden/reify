@@ -6795,11 +6795,11 @@
         "description": "Value::Range fields are public, allowing bypass of normalization constructor. Seal construction or add defensive re-normalization in Display/PartialEq. Display uses raw stored flags; un-normalized instance renders nonsensical brackets — re-normalize at Display site as cheap defense.\n\nMissing tests:\n- Hash-equivalence test for both-None Range with different inclusivity flags\n- Test documenting that direct struct-literal bypasses normalization (or that PartialEq compensates)\n- Both-bounds-present Range test (most common case untested)\n\nMemory hints: search \"Value::Range normalization inclusivity PartialEq content_hash\", entities: Value::Range, normalize_range",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-03-25T21:30:08.363Z"
+        "updatedAt": "2026-03-25T21:31:59.736Z"
       },
       {
         "id": "365",
@@ -7638,7 +7638,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-25T21:30:39.300Z",
+      "lastModified": "2026-03-25T21:31:59.736Z",
       "taskCount": 426,
       "completedCount": 227,
       "tags": [
