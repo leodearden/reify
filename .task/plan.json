@@ -8,7 +8,7 @@
   "modules": [
     "crates/reify-syntax"
   ],
-  "analysis": "lower_connect_body() at ts_parser.rs:1284-1316 has three silent-failure paths that should emit ParseError diagnostics:\n\n1. **ERROR nodes swallowed by catch-all**: The `_ => {}` catch-all discards ERROR nodes produced by tree-sitter error recovery (e.g. user writes `{ >= }` inside a connect body). Every other match-on-children site in the parser (top-level at line 163, constraint body at line 637, member declarations at line 852) has an explicit \"ERROR\" arm that pushes a ParseError. lower_connect_body must follow suit.\n\n2. **connect_param_assignment silent drops**: When `child_by_field_name(\"name\")` returns None, the entire assignment is silently skipped. When name is present but `child_by_field_name(\"value\")` returns None or `lower_expr` fails, the assignment is silently dropped after computing the name string. These should emit diagnostics.\n\n3. **port_mapping silent drops**: When `child_by_field_name(\"from\")` or `child_by_field_name(\"to\")` returns None, the mapping is silently skipped. This should emit a diagnostic.\n\nThe grammar (grammar.js:496-515) defines connect_body as `{ commaSep(choice(port_mapping, connect_param_assignment)) }`. Anonymous child tokens ({, }, ,) correctly hit the catch-all and should remain silent.\n\nThe fix follows established patterns: (a) add \"ERROR\" arm with contextual message `\"syntax error in connect body: ...\"` matching the constraint body pattern at line 637, (b) add `child.has_error()` guards on param/mapping arms matching the check_and_lower! macro pattern at line 12-23, (c) convert `if let` chains to `let ... else` with diagnostic-emitting else branches.\n\nTest strategy: integration tests in connect_chain_tests.rs that parse malformed connect bodies. For ERROR nodes, use clearly invalid syntax like `{ >= }`. For the has_error() guard paths, use syntax that partially matches but has internal errors. Tests assert at least one error exists with an expected message substring, tolerant of tree-sitter error recovery variations.",
+  "analysis": "lower_connect_body() at ts_parser.rs:1284-1316 has three silent-failure paths that should emit ParseError diagnostics:\n\n1. **ERROR nodes swallowed by catch-all**: The `_ => {}` catch-all discards ERROR nodes produced by tree-sitter error recovery (e.g. user writes `{ >= }` inside a connect body). Every other match-on-children site in the parser (top-level at line 163, constraint body at line 637, member declarations at line 852) has an explicit \"ERROR\" arm that pushes a ParseError. lower_connect_body must follow suit.\n\n2. **connect_param_assignment silent drops**: When `child_by_field_name(\"name\")` returns None, the entire assignment is silently skipped. When name is present but `child_by_field_name(\"value\")` returns None or `lower_expr` fails, the assignment is silently dropped after computing the name string. These should emit diagnostics.\n\n3. **port_mapping silent drops**: When `child_by_field_name(\"from\")` or `child_by_field_name(\"to\")` returns None, the mapping is silently skipped. This should emit a diagnostic.\n\n4. **[REVIEWER BLOCKER] Outer connect_statement missing check_and_lower!**: At ts_parser.rs:846, `lower_member` calls `self.lower_connect(child).map(MemberDecl::Connect)` directly, without the `check_and_lower!` guard that every other member type uses. When the connect_statement node itself is malformed at the outer level (e.g. `connect >= b` \u2014 missing left endpoint, broken operator), `lower_connect` returns `None` via `?` operators on `child_by_field_name(\"left\")`, `child_by_field_name(\"operator\")`, or `child_by_field_name(\"right\")`, silently discarding the error with no diagnostic. Previously `check_and_lower!` would catch `has_error()` on the node and emit `\"invalid connect: ...\"`. This is a regression.\n\nThe grammar (grammar.js:496-515) defines connect_body as `{ commaSep(choice(port_mapping, connect_param_assignment)) }`. Anonymous child tokens ({, }, ,) correctly hit the catch-all and should remain silent.\n\nThe fix follows established patterns: (a) add \"ERROR\" arm with contextual message `\"syntax error in connect body: ...\"` matching the constraint body pattern at line 637, (b) add `child.has_error()` guards on param/mapping arms matching the check_and_lower! macro pattern at line 12-23, (c) convert `if let` chains to `let ... else` with diagnostic-emitting else branches, (d) wrap the connect_statement arm in lower_member with check_and_lower! to match all other member type arms.\n\nTest strategy: integration tests in connect_chain_tests.rs that parse malformed connect bodies. For ERROR nodes, use clearly invalid syntax like `{ >= }`. For the has_error() guard paths, use syntax that partially matches but has internal errors. Tests assert at least one error exists with an expected message substring, tolerant of tree-sitter error recovery variations.",
   "prerequisites": [],
   "steps": [
     {
@@ -59,6 +59,27 @@
       "description": "Write regression test `connect_body_valid_no_spurious_errors`: explicitly verify that a well-formed connect body with both params and port mappings (`connect a -> b : BoltSet { grade = 8.8, shaft -> bore }`) produces zero errors. This guards against the refactored code accidentally triggering diagnostics on valid input. (Existing tests already assert errors.is_empty() but this makes the intent explicit for this task.)",
       "status": "done",
       "commit": "231e1732"
+    },
+    {
+      "id": "step-8",
+      "type": "test",
+      "description": "Write failing test `connect_statement_malformed_outer_emits_diagnostic`: parse `structure S { port a : out T  connect >= b }` and assert `!errors.is_empty()` and at least one error message contains 'invalid connect' or 'syntax error'. This tests the reviewer-identified regression: line 846 in lower_member calls `self.lower_connect(child).map(MemberDecl::Connect)` without `check_and_lower!`, so when the outer connect_statement node is malformed (has_error() is true because left endpoint is missing and operator is broken), lower_connect silently returns None via `?` with no diagnostic. The test should currently fail because no diagnostic is emitted.",
+      "status": "done",
+      "commit": "f47bf6da"
+    },
+    {
+      "id": "step-9",
+      "type": "impl",
+      "description": "Wrap the connect_statement arm in lower_member (line 846) with check_and_lower!, matching all other member type arms: change `\"connect_statement\" => self.lower_connect(child).map(MemberDecl::Connect),` to `\"connect_statement\" => check_and_lower!(self, child, \"connect\", self.lower_connect(child).map(MemberDecl::Connect)),`. This restores the is_error()||has_error() guard that emits `\"invalid connect: <text>\"` before returning None. Step-8 test should now pass.",
+      "status": "done",
+      "commit": "da9dbd1e"
+    },
+    {
+      "id": "step-10",
+      "type": "test",
+      "description": "Write regression test `connect_statement_valid_outer_no_spurious_errors`: parse a simple well-formed connect `structure S { port a : out T  port b : in T  connect a -> b }` and assert errors.is_empty(). This guards against the check_and_lower! addition accidentally triggering false positives on valid connect statements. (Overlaps with existing parse_connect_simple but makes the intent explicit for this fix.)",
+      "status": "done",
+      "commit": "0cdfb9eb"
     }
   ],
   "design_decisions": [
@@ -81,6 +102,10 @@
     {
       "decision": "Place all tests in connect_chain_tests.rs rather than creating a new file",
       "rationale": "The existing connect_chain_tests.rs already contains all connect statement tests and the parse_decls helper. Adding diagnostic tests for connect body errors keeps them co-located with the happy-path tests. No new test file needed."
+    },
+    {
+      "decision": "Wrap connect_statement with check_and_lower! in lower_member to fix outer-level silent drop",
+      "rationale": "The reviewer identified that line 846 calls lower_connect directly without the check_and_lower! guard that every other member type arm uses. This is the simplest and most consistent fix: it follows the established pattern exactly, emitting 'invalid connect: <text>' when the node has is_error()||has_error(). The alternative (adding guards inside lower_connect itself) would work but breaks consistency with how all other member types handle this."
     }
   ],
   "reuse": [
@@ -93,6 +118,11 @@
       "what": "ERROR arm pattern from constraint body",
       "where": "crates/reify-syntax/src/ts_parser.rs:637-644",
       "how": "Copy the exact pattern with contextual message prefix changed to 'syntax error in connect body'"
+    },
+    {
+      "what": "check_and_lower! macro for outer connect_statement guard",
+      "where": "crates/reify-syntax/src/ts_parser.rs:12-23",
+      "how": "Wrap the connect_statement arm in lower_member with check_and_lower!(self, child, \"connect\", ...) \u2014 identical usage to all other member type arms (lines 828-850)"
     },
     {
       "what": "check_and_lower! has_error() guard concept",
@@ -111,5 +141,5 @@
     }
   ],
   "_session_id": "396-6831415d",
-  "_created_at": "2026-03-25T17:56:00.136575+00:00"
+  "_created_at": "2026-03-25T18:12:56.728209+00:00"
 }
