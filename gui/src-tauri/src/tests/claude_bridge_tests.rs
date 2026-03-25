@@ -1156,8 +1156,9 @@ async fn wait_ready_returns_err_on_crash_during_wait() {
     assert!(result.is_err(), "wait_ready should return Err when sidecar crashes during wait");
     let msg = result.unwrap_err();
     assert!(
-        msg.contains("crashed"),
-        "Error should mention crash: {}",
+        msg.contains("test crash"),
+        "Error should contain the exact crash reason from the test task, \
+         not the reader's on_exit handler: {}",
         msg
     );
 }
