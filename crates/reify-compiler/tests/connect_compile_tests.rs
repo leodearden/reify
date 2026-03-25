@@ -417,6 +417,40 @@ structure def S2 {
     );
 }
 
+// ── step-7: no_auto_match_different_traits ────────────────────────────
+
+#[test]
+fn no_auto_match_different_traits() {
+    // Left port has trait MechPort, right port has trait RotaryPort, both with param `d`.
+    // Assert port_mappings is empty and no auto-match or unmatched diagnostic is emitted.
+    let source = r#"
+trait MechPort { param d : Length }
+trait RotaryPort { param d : Length }
+structure def S {
+    port a : out MechPort { param d : Length = 5mm }
+    port b : in RotaryPort { param d : Length = 5mm }
+    connect a -> b
+}
+"#;
+    let (template, diagnostics) = compile_first_template(source);
+    // No unmatched-member warnings
+    let unmatched_warnings: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning && d.message.contains("unmatched"))
+        .collect();
+    assert!(
+        unmatched_warnings.is_empty(),
+        "expected no 'unmatched' warnings for different-trait ports, got: {:?}",
+        unmatched_warnings
+    );
+    // port_mappings should be empty (no auto-match)
+    assert_eq!(
+        template.connections[0].port_mappings,
+        Vec::<(String, String)>::new(),
+        "expected empty port_mappings for different-trait ports"
+    );
+}
+
 // ── step-5: auto_match_unmatched_emits_diagnostic ────────────────────
 
 #[test]
