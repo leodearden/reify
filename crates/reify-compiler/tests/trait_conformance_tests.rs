@@ -826,3 +826,235 @@ structure def S : Safe {
         "expected constraint from trait default"
     );
 }
+
+// ── Port conformance unit tests ─────────────────────────────────────────────
+
+fn make_port_trait(
+    trait_name: &str,
+    port_name: &str,
+    type_name: &str,
+    direction: reify_types::PortDirection,
+) -> CompiledTrait {
+    CompiledTrait {
+        name: trait_name.to_string(),
+        is_pub: true,
+        type_params: vec![],
+        refinements: vec![],
+        required_members: vec![TraitRequirement {
+            name: port_name.to_string(),
+            kind: RequirementKind::Port {
+                type_name: type_name.to_string(),
+                direction,
+            },
+            span: test_span(),
+        }],
+        defaults: vec![],
+        content_hash: ContentHash::of_str(trait_name),
+    }
+}
+
+/// step-1: MissingPort — trait requires port 'input : Signal in', structure has no ports → MissingPort.
+#[test]
+fn conformance_missing_port_error() {
+    let trait_def = make_port_trait("HasInput", "input", "Signal", reify_types::PortDirection::In);
+    let structure_members: std::collections::HashMap<String, Type> =
+        std::collections::HashMap::new();
+    let errors = check_trait_conformance(&structure_members, &trait_def, &[], &[]);
+    assert_eq!(errors.len(), 1, "expected 1 error, got: {:?}", errors);
+    match &errors[0] {
+        ConformanceError::MissingPort { name, expected_type, expected_direction } => {
+            assert_eq!(name, "input");
+            assert_eq!(expected_type, "Signal");
+            assert_eq!(*expected_direction, reify_types::PortDirection::In);
+        }
+        other => panic!("expected MissingPort, got: {:?}", other),
+    }
+}
+
+/// step-3: PortTypeMismatch — trait requires port 'mount : MountInterface', structure has 'mount : OtherInterface'.
+#[test]
+fn conformance_port_type_mismatch_error() {
+    let trait_def =
+        make_port_trait("HasMount", "mount", "MountInterface", reify_types::PortDirection::In);
+    let ports = vec![PortInfo {
+        name: "mount".to_string(),
+        type_name: "OtherInterface".to_string(),
+        direction: reify_types::PortDirection::In,
+    }];
+    let structure_members: std::collections::HashMap<String, Type> =
+        std::collections::HashMap::new();
+    let errors = check_trait_conformance(&structure_members, &trait_def, &ports, &[]);
+    assert_eq!(errors.len(), 1, "expected 1 error, got: {:?}", errors);
+    match &errors[0] {
+        ConformanceError::PortTypeMismatch { name, expected_type, actual_type } => {
+            assert_eq!(name, "mount");
+            assert_eq!(expected_type, "MountInterface");
+            assert_eq!(actual_type, "OtherInterface");
+        }
+        other => panic!("expected PortTypeMismatch, got: {:?}", other),
+    }
+}
+
+/// step-5: PortDirectionMismatch — trait requires port 'output : Signal out', structure has 'output : Signal in'.
+#[test]
+fn conformance_port_direction_mismatch_error() {
+    let trait_def =
+        make_port_trait("HasOutput", "output", "Signal", reify_types::PortDirection::Out);
+    let ports = vec![PortInfo {
+        name: "output".to_string(),
+        type_name: "Signal".to_string(),
+        direction: reify_types::PortDirection::In,
+    }];
+    let structure_members: std::collections::HashMap<String, Type> =
+        std::collections::HashMap::new();
+    let errors = check_trait_conformance(&structure_members, &trait_def, &ports, &[]);
+    assert_eq!(errors.len(), 1, "expected 1 error, got: {:?}", errors);
+    match &errors[0] {
+        ConformanceError::PortDirectionMismatch {
+            name,
+            expected_direction,
+            actual_direction,
+        } => {
+            assert_eq!(name, "output");
+            assert_eq!(*expected_direction, reify_types::PortDirection::Out);
+            assert_eq!(*actual_direction, reify_types::PortDirection::In);
+        }
+        other => panic!("expected PortDirectionMismatch, got: {:?}", other),
+    }
+}
+
+/// step-7: port fully satisfied — trait requires 'input : Signal in', structure has matching port → no errors.
+#[test]
+fn conformance_port_fully_satisfied() {
+    let trait_def = make_port_trait("HasInput", "input", "Signal", reify_types::PortDirection::In);
+    let ports = vec![PortInfo {
+        name: "input".to_string(),
+        type_name: "Signal".to_string(),
+        direction: reify_types::PortDirection::In,
+    }];
+    let structure_members: std::collections::HashMap<String, Type> =
+        std::collections::HashMap::new();
+    let errors = check_trait_conformance(&structure_members, &trait_def, &ports, &[]);
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+}
+
+// ── Sub conformance unit tests ───────────────────────────────────────────────
+
+fn make_sub_trait(trait_name: &str, sub_name: &str, required_trait: &str) -> CompiledTrait {
+    CompiledTrait {
+        name: trait_name.to_string(),
+        is_pub: true,
+        type_params: vec![],
+        refinements: vec![],
+        required_members: vec![TraitRequirement {
+            name: sub_name.to_string(),
+            kind: RequirementKind::Sub(required_trait.to_string()),
+            span: test_span(),
+        }],
+        defaults: vec![],
+        content_hash: ContentHash::of_str(trait_name),
+    }
+}
+
+/// step-8: MissingSub — trait requires sub 'hole : Hole', structure has no subs → MissingSub.
+#[test]
+fn conformance_missing_sub_error() {
+    let trait_def = make_sub_trait("HasHole", "hole", "Hole");
+    let structure_members: std::collections::HashMap<String, Type> =
+        std::collections::HashMap::new();
+    let errors = check_trait_conformance(&structure_members, &trait_def, &[], &[]);
+    assert_eq!(errors.len(), 1, "expected 1 error, got: {:?}", errors);
+    match &errors[0] {
+        ConformanceError::MissingSub { name, expected_trait } => {
+            assert_eq!(name, "hole");
+            assert_eq!(expected_trait, "Hole");
+        }
+        other => panic!("expected MissingSub, got: {:?}", other),
+    }
+}
+
+/// step-10: SubTraitNotSatisfied — trait requires sub 'mount : MountInterface',
+/// structure has sub 'mount' whose structure type does not declare MountInterface bound.
+#[test]
+fn conformance_sub_trait_not_satisfied_error() {
+    let trait_def = make_sub_trait("HasMount", "mount", "MountInterface");
+    let subs = vec![SubInfo {
+        name: "mount".to_string(),
+        structure_name: "Bracket".to_string(),
+        trait_bounds: vec!["OtherTrait".to_string()],
+    }];
+    let structure_members: std::collections::HashMap<String, Type> =
+        std::collections::HashMap::new();
+    let errors = check_trait_conformance(&structure_members, &trait_def, &[], &subs);
+    assert_eq!(errors.len(), 1, "expected 1 error, got: {:?}", errors);
+    match &errors[0] {
+        ConformanceError::SubTraitNotSatisfied { name, expected_trait, actual_structure } => {
+            assert_eq!(name, "mount");
+            assert_eq!(expected_trait, "MountInterface");
+            assert_eq!(actual_structure, "Bracket");
+        }
+        other => panic!("expected SubTraitNotSatisfied, got: {:?}", other),
+    }
+}
+
+/// step-12: sub fully satisfied — trait requires sub 'hole : Hole', structure has sub 'hole'
+/// with trait_bounds containing 'Hole' → no errors.
+#[test]
+fn conformance_sub_fully_satisfied() {
+    let trait_def = make_sub_trait("HasHole", "hole", "Hole");
+    let subs = vec![SubInfo {
+        name: "hole".to_string(),
+        structure_name: "ScrewHole".to_string(),
+        trait_bounds: vec!["Hole".to_string(), "Fastener".to_string()],
+    }];
+    let structure_members: std::collections::HashMap<String, Type> =
+        std::collections::HashMap::new();
+    let errors = check_trait_conformance(&structure_members, &trait_def, &[], &subs);
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+}
+
+/// step-20: multiple port requirements — one satisfied, one missing → exactly one error.
+#[test]
+fn conformance_multiple_port_requirements_one_missing() {
+    let trait_def = CompiledTrait {
+        name: "HasTwoPorts".to_string(),
+        is_pub: true,
+        type_params: vec![],
+        refinements: vec![],
+        required_members: vec![
+            TraitRequirement {
+                name: "input".to_string(),
+                kind: RequirementKind::Port {
+                    type_name: "Signal".to_string(),
+                    direction: reify_types::PortDirection::In,
+                },
+                span: test_span(),
+            },
+            TraitRequirement {
+                name: "output".to_string(),
+                kind: RequirementKind::Port {
+                    type_name: "Signal".to_string(),
+                    direction: reify_types::PortDirection::Out,
+                },
+                span: test_span(),
+            },
+        ],
+        defaults: vec![],
+        content_hash: ContentHash::of_str("HasTwoPorts"),
+    };
+    // Only provide 'input', not 'output'.
+    let ports = vec![PortInfo {
+        name: "input".to_string(),
+        type_name: "Signal".to_string(),
+        direction: reify_types::PortDirection::In,
+    }];
+    let structure_members: std::collections::HashMap<String, Type> =
+        std::collections::HashMap::new();
+    let errors = check_trait_conformance(&structure_members, &trait_def, &ports, &[]);
+    assert_eq!(errors.len(), 1, "expected 1 error, got: {:?}", errors);
+    assert!(
+        matches!(&errors[0], ConformanceError::MissingPort { name, .. } if name == "output"),
+        "expected MissingPort for 'output', got: {:?}",
+        errors
+    );
+}
