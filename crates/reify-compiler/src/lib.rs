@@ -1194,6 +1194,31 @@ fn compile_expr_guarded(
                 return CompiledExpr::value_ref(count_id, Type::Int);
             }
 
+            // Check if this is a meta block access: meta.key
+            if let reify_syntax::ExprKind::Ident(name) = &object.kind
+                && name == "meta"
+            {
+                if scope.meta_entries.is_empty() {
+                    diagnostics.push(
+                        Diagnostic::error("entity has no meta block".to_string())
+                            .with_label(DiagnosticLabel::new(expr.span, "no meta block")),
+                    );
+                    return CompiledExpr::literal(Value::Undef, Type::String);
+                }
+                if scope.meta_entries.contains_key(member.as_str()) {
+                    return CompiledExpr::meta_access(
+                        scope.entity_name.clone(),
+                        member.clone(),
+                    );
+                } else {
+                    diagnostics.push(
+                        Diagnostic::error(format!("meta block has no key: {}", member))
+                            .with_label(DiagnosticLabel::new(expr.span, "unknown meta key")),
+                    );
+                    return CompiledExpr::literal(Value::Undef, Type::String);
+                }
+            }
+
             // For non-port member access, check if it's a known collection method
             let compiled_obj = compile_expr_guarded(object, scope, enum_defs, functions, diagnostics, current_guard, lambda_counter);
             let collection_methods = ["count", "sum", "keys", "values"];
