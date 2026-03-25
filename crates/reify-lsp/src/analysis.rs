@@ -228,6 +228,15 @@ pub fn format_value(value: &Value) -> String {
         Value::Transform { rotation, translation } => {
             format!("transform({}, {})", format_value(rotation), format_value(translation))
         }
+        Value::Plane { origin, normal } => {
+            format!("plane({}, {})", format_value(origin), format_value(normal))
+        }
+        Value::Axis { origin, direction } => {
+            format!("axis({}, {})", format_value(origin), format_value(direction))
+        }
+        Value::BoundingBox { min, max } => {
+            format!("bbox({}, {})", format_value(min), format_value(max))
+        }
         Value::Range {
             lower,
             upper,

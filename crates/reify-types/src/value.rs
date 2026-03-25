@@ -62,6 +62,12 @@ pub enum Value {
     Frame { origin: Box<Value>, basis: Box<Value> },
     /// Rigid-body transformation: a rotation (Orientation) and a translation (Vector).
     Transform { rotation: Box<Value>, translation: Box<Value> },
+    /// 3D plane: an origin Point3 and a unit normal Vector3 (dimensionless).
+    Plane { origin: Box<Value>, normal: Box<Value> },
+    /// 3D axis (ray): an origin Point3 and a unit direction Vector3 (dimensionless).
+    Axis { origin: Box<Value>, direction: Box<Value> },
+    /// 3D axis-aligned bounding box: min and max corner Point3 values.
+    BoundingBox { min: Box<Value>, max: Box<Value> },
     /// Range with optional inclusive/exclusive bounds.
     Range {
         lower: Option<Box<Value>>,
@@ -329,6 +335,18 @@ impl Value {
                 // tag=21; combine rotation and translation content hashes
                 ContentHash::of(&[21]).combine(rotation.content_hash()).combine(translation.content_hash())
             }
+            Value::Plane { origin, normal } => {
+                // tag=22; combine origin and normal content hashes
+                ContentHash::of(&[22]).combine(origin.content_hash()).combine(normal.content_hash())
+            }
+            Value::Axis { origin, direction } => {
+                // tag=23; combine origin and direction content hashes
+                ContentHash::of(&[23]).combine(origin.content_hash()).combine(direction.content_hash())
+            }
+            Value::BoundingBox { min, max } => {
+                // tag=24; combine min and max content hashes
+                ContentHash::of(&[24]).combine(min.content_hash()).combine(max.content_hash())
+            }
             Value::Range { lower, upper, lower_inclusive, upper_inclusive } => {
                 debug_assert!(
                     lower.is_some() || !lower_inclusive,
@@ -426,6 +444,18 @@ impl PartialEq for Value {
                 Value::Transform { rotation: br, translation: bt },
             ) => ar == br && at == bt,
             (
+                Value::Plane { origin: ao, normal: an },
+                Value::Plane { origin: bo, normal: bn },
+            ) => ao == bo && an == bn,
+            (
+                Value::Axis { origin: ao, direction: ad },
+                Value::Axis { origin: bo, direction: bd },
+            ) => ao == bo && ad == bd,
+            (
+                Value::BoundingBox { min: amin, max: amax },
+                Value::BoundingBox { min: bmin, max: bmax },
+            ) => amin == bmin && amax == bmax,
+            (
                 Value::Range { lower: al, upper: au, lower_inclusive: ali, upper_inclusive: aui },
                 Value::Range { lower: bl, upper: bu, lower_inclusive: bli, upper_inclusive: bui },
             ) => {
@@ -467,7 +497,7 @@ impl Ord for Value {
         use std::cmp::Ordering;
 
         // Type-tag discriminant for cross-type ordering:
-        // Undef=0, Bool=1, Int=2, Real=3, Scalar=4, String=5, Enum=6, List=7, Set=8, Map=9, Option=10, Field=11, Lambda=12, Tensor=13, Complex=14, Orientation=15, Range=16, Point=17, Vector=18, Matrix=19, Frame=20, Transform=21
+        // Undef=0, Bool=1, Int=2, Real=3, Scalar=4, String=5, Enum=6, List=7, Set=8, Map=9, Option=10, Field=11, Lambda=12, Tensor=13, Complex=14, Orientation=15, Range=16, Point=17, Vector=18, Matrix=19, Frame=20, Transform=21, Plane=22, Axis=23, BoundingBox=24
         fn type_tag(v: &Value) -> u8 {
             match v {
                 Value::Undef => 0,
@@ -492,6 +522,9 @@ impl Ord for Value {
                 Value::Matrix(_) => 19,
                 Value::Frame { .. } => 20,
                 Value::Transform { .. } => 21,
+                Value::Plane { .. } => 22,
+                Value::Axis { .. } => 23,
+                Value::BoundingBox { .. } => 24,
             }
         }
 
@@ -599,6 +632,18 @@ impl Ord for Value {
                 Value::Transform { rotation: ar, translation: at },
                 Value::Transform { rotation: br, translation: bt },
             ) => ar.cmp(br).then_with(|| at.cmp(bt)),
+            (
+                Value::Plane { origin: ao, normal: an },
+                Value::Plane { origin: bo, normal: bn },
+            ) => ao.cmp(bo).then_with(|| an.cmp(bn)),
+            (
+                Value::Axis { origin: ao, direction: ad },
+                Value::Axis { origin: bo, direction: bd },
+            ) => ao.cmp(bo).then_with(|| ad.cmp(bd)),
+            (
+                Value::BoundingBox { min: amin, max: amax },
+                Value::BoundingBox { min: bmin, max: bmax },
+            ) => amin.cmp(bmin).then_with(|| amax.cmp(bmax)),
             _ => unreachable!("same type tag but different variants"),
         }
     }
@@ -734,6 +779,15 @@ impl std::fmt::Display for Value {
             }
             Value::Transform { rotation, translation } => {
                 write!(f, "transform({}, {})", rotation, translation)
+            }
+            Value::Plane { origin, normal } => {
+                write!(f, "plane({}, {})", origin, normal)
+            }
+            Value::Axis { origin, direction } => {
+                write!(f, "axis({}, {})", origin, direction)
+            }
+            Value::BoundingBox { min, max } => {
+                write!(f, "bbox({}, {})", min, max)
             }
             Value::Range { lower, upper, lower_inclusive, upper_inclusive } => {
                 debug_assert!(
@@ -3080,5 +3134,241 @@ mod tests {
         let t1 = make_transform(rotation.clone(), trans_pos);
         let t2 = make_transform(rotation, trans_neg);
         assert_ne!(t1.content_hash(), t2.content_hash());
+    }
+
+    // ── Value::Plane tests (pre-2) ────────────────────────────────────────────
+
+    fn make_plane(origin: Value, normal: Value) -> Value {
+        Value::Plane { origin: Box::new(origin), normal: Box::new(normal) }
+    }
+
+    fn make_point3_origin() -> Value {
+        Value::Point(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)])
+    }
+
+    fn make_normal_z() -> Value {
+        Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)])
+    }
+
+    #[test]
+    fn value_plane_construction() {
+        let origin = make_point3_origin();
+        let normal = make_normal_z();
+        let plane = make_plane(origin.clone(), normal.clone());
+        match plane {
+            Value::Plane { origin: o, normal: n } => {
+                assert_eq!(*o, origin);
+                assert_eq!(*n, normal);
+            }
+            other => panic!("expected Value::Plane, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn value_plane_partial_eq_same() {
+        let p1 = make_plane(make_point3_origin(), make_normal_z());
+        let p2 = make_plane(make_point3_origin(), make_normal_z());
+        assert_eq!(p1, p2);
+    }
+
+    #[test]
+    fn value_plane_partial_eq_different() {
+        let p1 = make_plane(make_point3_origin(), make_normal_z());
+        let normal_x = Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
+        let p2 = make_plane(make_point3_origin(), normal_x);
+        assert_ne!(p1, p2);
+    }
+
+    #[test]
+    fn value_plane_display() {
+        let origin = Value::Point(vec![Value::length(0.0), Value::length(0.0), Value::length(0.0)]);
+        let normal = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
+        let plane = make_plane(origin, normal);
+        let s = format!("{}", plane);
+        assert!(s.starts_with("plane("), "display should start with 'plane(', got: {}", s);
+    }
+
+    #[test]
+    fn value_plane_content_hash_deterministic() {
+        let p1 = make_plane(make_point3_origin(), make_normal_z());
+        let p2 = make_plane(make_point3_origin(), make_normal_z());
+        assert_eq!(p1.content_hash(), p2.content_hash());
+    }
+
+    #[test]
+    fn value_plane_content_hash_no_collision_with_transform() {
+        let plane = make_plane(make_point3_origin(), make_normal_z());
+        let transform = make_transform(make_orientation_identity(), make_vector3_length());
+        assert_ne!(plane.content_hash(), transform.content_hash());
+    }
+
+    #[test]
+    fn value_plane_ord_cross_type() {
+        // Plane type_tag=22 > Transform type_tag=21
+        let plane = make_plane(make_point3_origin(), make_normal_z());
+        let transform = make_transform(make_orientation_identity(), make_vector3_length());
+        assert!(plane > transform);
+    }
+
+    #[test]
+    fn value_plane_dimension_dimensionless() {
+        let plane = make_plane(make_point3_origin(), make_normal_z());
+        assert_eq!(plane.dimension(), DimensionVector::DIMENSIONLESS);
+    }
+
+    // ── Value::Axis tests (pre-3) ─────────────────────────────────────────────
+
+    fn make_axis(origin: Value, direction: Value) -> Value {
+        Value::Axis { origin: Box::new(origin), direction: Box::new(direction) }
+    }
+
+    fn make_direction_z() -> Value {
+        Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)])
+    }
+
+    #[test]
+    fn value_axis_construction() {
+        let origin = make_point3_origin();
+        let direction = make_direction_z();
+        let axis = make_axis(origin.clone(), direction.clone());
+        match axis {
+            Value::Axis { origin: o, direction: d } => {
+                assert_eq!(*o, origin);
+                assert_eq!(*d, direction);
+            }
+            other => panic!("expected Value::Axis, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn value_axis_partial_eq_same() {
+        let a1 = make_axis(make_point3_origin(), make_direction_z());
+        let a2 = make_axis(make_point3_origin(), make_direction_z());
+        assert_eq!(a1, a2);
+    }
+
+    #[test]
+    fn value_axis_partial_eq_different() {
+        let a1 = make_axis(make_point3_origin(), make_direction_z());
+        let dir_x = Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
+        let a2 = make_axis(make_point3_origin(), dir_x);
+        assert_ne!(a1, a2);
+    }
+
+    #[test]
+    fn value_axis_display() {
+        let origin = Value::Point(vec![Value::length(0.0), Value::length(0.0), Value::length(0.0)]);
+        let direction = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
+        let axis = make_axis(origin, direction);
+        let s = format!("{}", axis);
+        assert!(s.starts_with("axis("), "display should start with 'axis(', got: {}", s);
+    }
+
+    #[test]
+    fn value_axis_content_hash_deterministic() {
+        let a1 = make_axis(make_point3_origin(), make_direction_z());
+        let a2 = make_axis(make_point3_origin(), make_direction_z());
+        assert_eq!(a1.content_hash(), a2.content_hash());
+    }
+
+    #[test]
+    fn value_axis_content_hash_no_collision_with_plane() {
+        let axis = make_axis(make_point3_origin(), make_direction_z());
+        let plane = make_plane(make_point3_origin(), make_normal_z());
+        // Plane tag=22, Axis tag=23 — distinct even if fields match
+        assert_ne!(axis.content_hash(), plane.content_hash());
+    }
+
+    #[test]
+    fn value_axis_ord_cross_type() {
+        // Axis type_tag=23 > Plane type_tag=22
+        let axis = make_axis(make_point3_origin(), make_direction_z());
+        let plane = make_plane(make_point3_origin(), make_normal_z());
+        assert!(axis > plane);
+    }
+
+    #[test]
+    fn value_axis_dimension_dimensionless() {
+        let axis = make_axis(make_point3_origin(), make_direction_z());
+        assert_eq!(axis.dimension(), DimensionVector::DIMENSIONLESS);
+    }
+
+    // ── Value::BoundingBox tests (pre-4) ──────────────────────────────────────
+
+    fn make_bbox(min: Value, max: Value) -> Value {
+        Value::BoundingBox { min: Box::new(min), max: Box::new(max) }
+    }
+
+    fn make_point3_min() -> Value {
+        Value::Point(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)])
+    }
+
+    fn make_point3_max() -> Value {
+        Value::Point(vec![Value::length(4.0), Value::length(6.0), Value::length(9.0)])
+    }
+
+    #[test]
+    fn value_bbox_construction() {
+        let min = make_point3_min();
+        let max = make_point3_max();
+        let bbox = make_bbox(min.clone(), max.clone());
+        match bbox {
+            Value::BoundingBox { min: mn, max: mx } => {
+                assert_eq!(*mn, min);
+                assert_eq!(*mx, max);
+            }
+            other => panic!("expected Value::BoundingBox, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn value_bbox_partial_eq_same() {
+        let b1 = make_bbox(make_point3_min(), make_point3_max());
+        let b2 = make_bbox(make_point3_min(), make_point3_max());
+        assert_eq!(b1, b2);
+    }
+
+    #[test]
+    fn value_bbox_partial_eq_different() {
+        let b1 = make_bbox(make_point3_min(), make_point3_max());
+        let max2 = Value::Point(vec![Value::length(5.0), Value::length(6.0), Value::length(9.0)]);
+        let b2 = make_bbox(make_point3_min(), max2);
+        assert_ne!(b1, b2);
+    }
+
+    #[test]
+    fn value_bbox_display() {
+        let bbox = make_bbox(make_point3_min(), make_point3_max());
+        let s = format!("{}", bbox);
+        assert!(s.starts_with("bbox("), "display should start with 'bbox(', got: {}", s);
+    }
+
+    #[test]
+    fn value_bbox_content_hash_deterministic() {
+        let b1 = make_bbox(make_point3_min(), make_point3_max());
+        let b2 = make_bbox(make_point3_min(), make_point3_max());
+        assert_eq!(b1.content_hash(), b2.content_hash());
+    }
+
+    #[test]
+    fn value_bbox_content_hash_no_collision_with_axis() {
+        let bbox = make_bbox(make_point3_min(), make_point3_max());
+        let axis = make_axis(make_point3_origin(), make_direction_z());
+        // BoundingBox tag=24, Axis tag=23 — distinct
+        assert_ne!(bbox.content_hash(), axis.content_hash());
+    }
+
+    #[test]
+    fn value_bbox_ord_cross_type() {
+        // BoundingBox type_tag=24 > Axis type_tag=23
+        let bbox = make_bbox(make_point3_min(), make_point3_max());
+        let axis = make_axis(make_point3_origin(), make_direction_z());
+        assert!(bbox > axis);
+    }
+
+    #[test]
+    fn value_bbox_dimension_dimensionless() {
+        let bbox = make_bbox(make_point3_min(), make_point3_max());
+        assert_eq!(bbox.dimension(), DimensionVector::DIMENSIONLESS);
     }
 }
