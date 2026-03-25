@@ -48,57 +48,57 @@
       "id": "step-3",
       "type": "test",
       "description": "Write failing test in crates/reify-eval/tests/extrude_e2e.rs: `extrude_compiler_rejects_wrong_arg_count` \u2014 tests that compile_geometry_call for \"extrude\" with 0, 1, or 3 args produces error diagnostics. Uses the same compilation infrastructure as existing compiler tests. Test fails because \"extrude\" is not yet handled by the compiler (falls through to unknown-function path).",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "04e51f1f"
     },
     {
       "id": "step-4",
       "type": "impl",
       "description": "Add \"extrude\" match arm in compile_geometry_call() in reify-compiler/src/lib.rs. Insert after the loft sweep section (~line 5918) and before the modify-extensions section. Pattern: validate compiled_args.len() == 2 (emit diagnostic if not), then create CompiledGeometryOp::Sweep { kind: SweepKind::Extrude, profiles: vec![GeomRef::Step(0)], args: vec![(\"profile\".to_string(), arg0), (\"distance\".to_string(), arg1)] }. Follow the thicken/shell 2-arg validation pattern.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "966dc93d"
     },
     {
       "id": "step-5",
       "type": "test",
       "description": "The step-1 test (extrude_through_full_eval_pipeline) should now compile but still fail because the eval layer doesn't handle SweepKind::Extrude \u2014 the match on SweepKind is non-exhaustive. Verify this is the failure mode.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "966dc93d"
     },
     {
       "id": "step-6",
       "type": "impl",
       "description": "Add SweepKind::Extrude handler in reify-eval/src/lib.rs in the compile_geometry_op() function's Sweep match arm (~line 3104). After the existing Loft arm, add: `reify_compiler::SweepKind::Extrude => { let profile_handle = match &profiles[0] { GeomRef::Step(idx) => step_handles.get(*idx).copied()?, GeomRef::Sub(_) => step_handles.last().copied()? }; let distance = eval_arg(\"distance\"); Some(reify_types::GeometryOp::Extrude { profile: profile_handle, distance }) }`. Uses the same eval_arg helper already available in scope for evaluating named args to Values.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "966dc93d"
     },
     {
       "id": "step-7",
       "type": "test",
       "description": "Write failing OCCT integration tests in crates/reify-kernel-occt/tests/extrude_integration.rs (gated with #[cfg(has_occt)]): (a) `extrude_zero_distance_returns_error` \u2014 create OcctKernel, execute Box to get a handle, then Extrude with distance=Value::Real(0.0), assert OperationFailed error with 'zero' in message. (b) `extrude_non_finite_distance_returns_error` \u2014 test with NaN and Infinity values. Tests fail because OcctKernel::execute() doesn't handle Extrude variant.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "96f49b16"
     },
     {
       "id": "step-8",
       "type": "impl",
       "description": "Add GeometryOp::Extrude handler in OcctKernel::execute() in reify-kernel-occt/src/lib.rs. Insert before the closing `};` of the match (~line 435). Pattern: `GeometryOp::Extrude { profile, distance } => { let dist = extract_f64(distance)?; if !dist.is_finite() { return Err(GeometryError::OperationFailed(\"extrude distance must be finite\".into())); } if dist == 0.0 { return Err(GeometryError::OperationFailed(\"extrude distance must not be zero\".into())); } let profile_shape = self.get_shape(*profile)?; ffi::ffi::make_prism(profile_shape, 0.0, 0.0, dist).map_err(|e| GeometryError::OperationFailed(e.to_string()))? }`. The ReprKind for the stored result is determined by self.store() which uses the OCCT shape type.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "96f49b16"
     },
     {
       "id": "step-9",
       "type": "test",
       "description": "Write OCCT integration volume tests (gated #[cfg(has_occt)]): (a) `extrude_circle_profile_volume` \u2014 use task 306's circle profile FFI (e.g., make_circle_face) to create a circle face with radius=5mm, then Extrude by distance=10mm, query volume, assert \u2248 \u03c0 * (0.005)\u00b2 * 0.01 m\u00b3 with 1% tolerance. (b) `extrude_rectangle_profile_volume` \u2014 use task 306's rectangle FFI to create 10mm\u00d720mm face, extrude by 5mm, query volume = 0.01 * 0.02 * 0.005 m\u00b3. (c) `extrude_negative_distance_produces_solid` \u2014 extrude circle by -10mm, verify volume is same magnitude as positive extrusion (BRepPrimAPI_MakePrism handles negative direction).",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "96f49b16"
     },
     {
       "id": "step-10",
       "type": "impl",
       "description": "Verify all integration tests pass. Fix any issues with make_prism handling of Face vs Wire vs Shell input topologies. Ensure BRepPrimAPI_MakePrism produces correct Solid shapes from Face profiles. If profile type auto-detection is needed in the C++ layer, add TopAbs_ShapeEnum check to ensure the input is at least a Face or Wire. Add descriptive error message if input is a Solid or Compound (not valid for extrusion).",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "96f49b16"
     }
   ],
   "design_decisions": [
