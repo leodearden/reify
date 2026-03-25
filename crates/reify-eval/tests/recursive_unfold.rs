@@ -5,7 +5,7 @@
 //! depth-first until the guard evaluates to false or the depth limit is reached.
 
 use reify_eval::Engine;
-use reify_test_support::builders::{binop, gt, literal, value_ref_typed};
+use reify_test_support::builders::{binop, conditional_expr, gt, literal, value_ref_typed};
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
 use reify_types::*;
@@ -328,16 +328,22 @@ fn unfold_recursive_with_let_bindings() {
     }
 }
 
-// ─── step-11: leaves-first ordering ──────────────────────────────────────────
+// ─── step-11/23: leaves-first ordering (cross-level data dependency) ─────────
 
-/// S(n=2) with a let `doubled = n * 2`.
-/// After unfolding: S.child.doubled should be 4 (2*2), S.child.child.doubled should be 2 (1*2).
-/// This verifies that let bindings in child instances are correctly evaluated at each level.
-/// (Also serves as the leaves-first ordering test — leaves exist before parent let-bindings
-/// that might reference them could be re-evaluated.)
+/// S(n=2) with `let total: Int = if n > 0 then n + S.child.total else n`.
+///
+/// This creates a genuine cross-level data dependency:
+/// - S.child.child (n=0): total = 0 (else branch, base case)
+/// - S.child (n=1): total = 1 + S.child.child.total = 1 + 0 = 1 (then branch)
+///
+/// The test MUST FAIL with a top-down (elaborate-then-recurse) implementation
+/// because when S.child's let-bindings are evaluated, S.child.child hasn't been
+/// created yet — so `S.child.total` resolves to Undef instead of 1.
+///
+/// With the correct leaves-first (recurse-then-elaborate) implementation,
+/// S.child.child is elaborated first, then S.child can reference its value.
 #[test]
 fn unfold_recursive_leaves_first_order() {
-    // Build S with let doubled = n * 2
     let guard = gt(
         value_ref_typed("S", "n", Type::Int),
         literal(Value::Int(0)),
@@ -347,10 +353,15 @@ fn unfold_recursive_leaves_first_order() {
         value_ref_typed("S", "n", Type::Int),
         literal(Value::Int(1)),
     );
-    let doubled_expr = binop(
-        BinOp::Mul,
+    // total = if n > 0 then n + S.child.total else n
+    let total_expr = conditional_expr(
+        gt(value_ref_typed("S", "n", Type::Int), literal(Value::Int(0))),
+        binop(
+            BinOp::Add,
+            value_ref_typed("S", "n", Type::Int),
+            value_ref_typed("S.child", "total", Type::Int),
+        ),
         value_ref_typed("S", "n", Type::Int),
-        literal(Value::Int(2)),
     );
 
     let template = TopologyTemplateBuilder::new("S")
@@ -360,31 +371,29 @@ fn unfold_recursive_leaves_first_order() {
             Type::Int,
             Some(CompiledExpr::literal(Value::Int(2), Type::Int)),
         )
-        .let_binding("S", "doubled", Type::Int, doubled_expr)
+        .let_binding("S", "total", Type::Int, total_expr)
         .is_recursive(true)
         .sub_component_with_guard("child", "S", vec![("n".to_string(), n_minus_1)], guard)
         .build();
 
     let result = eval_single_template(template);
 
-    // Root S.doubled = 2 * 2 = 4
-    let s_doubled = ValueCellId::new("S", "doubled");
-    assert_eq!(result.values.get(&s_doubled), Some(&Value::Int(4)));
-
-    // S.child.n = 1, S.child.doubled = 1 * 2 = 2
-    let child_doubled = ValueCellId::new("S.child", "doubled");
+    // S.child.child (n=0): else branch → total = 0
+    let grandchild_total = ValueCellId::new("S.child.child", "total");
     assert_eq!(
-        result.values.get(&child_doubled),
-        Some(&Value::Int(2)),
-        "S.child.doubled should be 2 (= 1 * 2)"
+        result.values.get(&grandchild_total),
+        Some(&Value::Int(0)),
+        "S.child.child.total should be 0 (n=0, else branch), got {:?}",
+        result.values.get(&grandchild_total)
     );
 
-    // S.child.child.n = 0, S.child.child.doubled = 0 * 2 = 0
-    let grandchild_doubled = ValueCellId::new("S.child.child", "doubled");
+    // S.child (n=1): then branch → total = 1 + S.child.child.total = 1 + 0 = 1
+    let child_total = ValueCellId::new("S.child", "total");
     assert_eq!(
-        result.values.get(&grandchild_doubled),
-        Some(&Value::Int(0)),
-        "S.child.child.doubled should be 0 (= 0 * 2)"
+        result.values.get(&child_total),
+        Some(&Value::Int(1)),
+        "S.child.total should be 1 (= 1 + S.child.child.total = 1 + 0), got {:?}",
+        result.values.get(&child_total)
     );
 }
 
