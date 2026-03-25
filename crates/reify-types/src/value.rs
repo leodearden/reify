@@ -2583,17 +2583,18 @@ mod tests {
     // with an invariant violation (lower/upper_inclusive=true when bound is None).
     // Each impl (content_hash, PartialEq, Ord, Display) must panic via debug_assert!.
 
-    #[cfg(debug_assertions)]
     #[test]
-    #[should_panic(expected = "Range invariant violated")]
-    fn value_range_invariant_bypass_lower_none_inclusive_content_hash() {
-        let r = Value::Range {
+    fn value_range_bypass_hash_renormalizes() {
+        // Bypassed Range with lower=None+lower_inclusive=true should hash
+        // identically to the correctly-constructed version.
+        let bypassed = Value::Range {
             lower: None,
             lower_inclusive: true,
             upper: Some(Box::new(Value::Int(10))),
             upper_inclusive: false,
         };
-        let _ = r.content_hash();
+        let correct = Value::range(None, Some(Value::Int(10)), false, false);
+        assert_eq!(bypassed.content_hash(), correct.content_hash());
     }
 
     #[test]
