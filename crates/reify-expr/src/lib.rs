@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use reify_types::{BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, QuantifierKind, Type, UnOp, Value, ValueCellId, ValueMap};
 
 /// Maximum recursion depth for user-defined function calls.
@@ -11,6 +13,9 @@ pub struct EvalContext<'a> {
     pub functions: &'a [CompiledFunction],
     /// Current recursion depth (private — managed internally).
     recursion_depth: u32,
+    /// Meta block entries per entity: entity name → (key → value).
+    /// `None` means meta context was not provided — MetaAccess evaluation will panic.
+    pub meta: Option<&'a HashMap<String, HashMap<String, String>>>,
 }
 
 impl<'a> EvalContext<'a> {
@@ -20,6 +25,7 @@ impl<'a> EvalContext<'a> {
             values,
             functions,
             recursion_depth: 0,
+            meta: None,
         }
     }
 
@@ -29,7 +35,14 @@ impl<'a> EvalContext<'a> {
             values,
             functions: &[],
             recursion_depth: 0,
+            meta: None,
         }
+    }
+
+    /// Attach meta block data for MetaAccess evaluation.
+    pub fn with_meta(mut self, meta: &'a HashMap<String, HashMap<String, String>>) -> Self {
+        self.meta = Some(meta);
+        self
     }
 
     /// Create a child context with a new scope (for function body evaluation).
@@ -41,6 +54,7 @@ impl<'a> EvalContext<'a> {
             values,
             functions: self.functions,
             recursion_depth: self.recursion_depth + 1,
+            meta: self.meta,
         }
     }
 }
@@ -207,6 +221,22 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
         }
 
         CompiledExprKind::OptionNone => Value::Option(None),
+
+        CompiledExprKind::MetaAccess { entity, key } => {
+            let meta_map = ctx.meta.unwrap_or_else(|| {
+                panic!("MetaAccess evaluation requires meta context in EvalContext")
+            });
+            let entity_meta = meta_map.get(entity.as_str()).unwrap_or_else(|| {
+                panic!("MetaAccess: entity '{}' not found in meta context", entity)
+            });
+            let value = entity_meta.get(key.as_str()).unwrap_or_else(|| {
+                panic!(
+                    "MetaAccess: key '{}' not found in entity '{}' meta",
+                    key, entity
+                )
+            });
+            Value::String(value.clone())
+        }
 
         CompiledExprKind::OptionSome(inner) => {
             let val = eval_expr(inner, ctx);

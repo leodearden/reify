@@ -73,6 +73,7 @@ pub enum MemberDecl {
     Port(PortDecl),
     Connect(ConnectDecl),
     Chain(ChainDecl),
+    MetaBlock(MetaBlockDecl),
 }
 
 /// `where condition { ...members... } else { ...members... }`
@@ -208,6 +209,14 @@ impl ConnectOp {
 #[derive(Debug, Clone)]
 pub struct ChainDecl {
     pub elements: Vec<Expr>,
+    pub span: SourceSpan,
+    pub content_hash: ContentHash,
+}
+
+/// `meta { description = "A bracket", part_number = "BR-001" }`
+#[derive(Debug, Clone)]
+pub struct MetaBlockDecl {
+    pub entries: Vec<(String, String)>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
 }

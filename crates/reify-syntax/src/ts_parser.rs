@@ -847,6 +847,8 @@ impl<'a> Lowering<'a> {
                 self.lower_connect(child).map(MemberDecl::Connect)),
             "chain_statement" => check_and_lower!(self, child, "chain",
                 self.lower_chain(child).map(MemberDecl::Chain)),
+            "meta_block" => check_and_lower!(self, child, "meta",
+                self.lower_meta_block(child).map(MemberDecl::MetaBlock)),
             "ERROR" => {
                 self.errors.push(ParseError {
                     message: format!("syntax error: {}", self.node_text(child)),
@@ -1359,6 +1361,33 @@ impl<'a> Lowering<'a> {
         })
     }
 
+    fn lower_meta_block(&self, node: tree_sitter::Node) -> Option<MetaBlockDecl> {
+        let mut entries = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "meta_entry" {
+                let key_node = child.child_by_field_name("key");
+                let value_node = child.child_by_field_name("value");
+                if let (Some(k), Some(v)) = (key_node, value_node) {
+                    let key = self.node_text(k).to_string();
+                    let raw = self.node_text(v);
+                    // Strip outer quotes safely
+                    let value = raw
+                        .strip_prefix('"')
+                        .and_then(|s| s.strip_suffix('"'))
+                        .unwrap_or(raw)
+                        .to_string();
+                    entries.push((key, value));
+                }
+            }
+        }
+        Some(MetaBlockDecl {
+            entries,
+            span: self.span(node),
+            content_hash: self.content_hash(node),
+        })
+    }
+
     fn lower_named_arg(&self, node: tree_sitter::Node) -> Option<(String, Expr)> {
         let name_node = node.child_by_field_name("name")?;
         let name = self.node_text(name_node).to_string();
@@ -1833,6 +1862,7 @@ mod tests {
             MemberDecl::Port(p) => format!("port:{}", p.name),
             MemberDecl::Connect(_) => "connect".into(),
             MemberDecl::Chain(_) => "chain".into(),
+            MemberDecl::MetaBlock(_) => "meta".into(),
         }).collect();
         assert_eq!(names, vec![
             "param:width", "param:height", "param:thickness",
@@ -2000,6 +2030,7 @@ mod tests {
                 MemberDecl::Port(p) => p.span,
                 MemberDecl::Connect(c) => c.span,
                 MemberDecl::Chain(c) => c.span,
+                MemberDecl::MetaBlock(m) => m.span,
             };
             assert!(span.start < span.end, "member {} span empty", i);
             assert!((span.end as usize) <= source.len(), "member {} span overflows", i);
@@ -2043,6 +2074,9 @@ mod tests {
                 }
                 MemberDecl::Chain(_) => {
                     assert!(text.starts_with("chain"), "chain member {} text: {:?}", i, text);
+                }
+                MemberDecl::MetaBlock(_) => {
+                    assert!(text.starts_with("meta"), "meta member {} text: {:?}", i, text);
                 }
             }
         }
@@ -2089,6 +2123,7 @@ mod tests {
                 MemberDecl::Port(p) => (p.span, p.content_hash),
                 MemberDecl::Connect(c) => (c.span, c.content_hash),
                 MemberDecl::Chain(c) => (c.span, c.content_hash),
+                MemberDecl::MetaBlock(m) => (m.span, m.content_hash),
             };
             let text = &source[span.start as usize..span.end as usize];
             assert_eq!(hash, ContentHash::of_str(text), "member {} hash from source text", i);
@@ -2175,6 +2210,7 @@ mod tests {
                 MemberDecl::Port(p) => (p.content_hash, p.span),
                 MemberDecl::Connect(c) => (c.content_hash, c.span),
                 MemberDecl::Chain(c) => (c.content_hash, c.span),
+                MemberDecl::MetaBlock(m) => (m.content_hash, m.span),
             };
             let (hash_b, span_b) = match m_b {
                 MemberDecl::Param(p) => (p.content_hash, p.span),
@@ -2188,6 +2224,7 @@ mod tests {
                 MemberDecl::Port(p) => (p.content_hash, p.span),
                 MemberDecl::Connect(c) => (c.content_hash, c.span),
                 MemberDecl::Chain(c) => (c.content_hash, c.span),
+                MemberDecl::MetaBlock(m) => (m.content_hash, m.span),
             };
             assert_eq!(hash_a, hash_b, "member {} hash determinism", i);
             assert_eq!(span_a, span_b, "member {} span determinism", i);

@@ -1934,6 +1934,10 @@
           "named": true
         },
         {
+          "type": "meta_block",
+          "named": true
+        },
+        {
           "type": "minimize_declaration",
           "named": true
         },
@@ -3066,6 +3070,47 @@
     }
   },
   {
+    "type": "meta_block",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "meta_entry",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "meta_entry",
+    "named": true,
+    "fields": {
+      "key": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "value": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "string_literal",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "minimize_declaration",
     "named": true,
     "fields": {
@@ -3309,6 +3354,10 @@
         },
         {
           "type": "maximize_declaration",
+          "named": true
+        },
+        {
+          "type": "meta_block",
           "named": true
         },
         {
@@ -4348,6 +4397,10 @@
           "named": true
         },
         {
+          "type": "meta_block",
+          "named": true
+        },
+        {
           "type": "minimize_declaration",
           "named": true
         },
@@ -5225,6 +5278,10 @@
   },
   {
     "type": "maximize",
+    "named": false
+  },
+  {
+    "type": "meta",
     "named": false
   },
   {

@@ -542,6 +542,7 @@ fn format_expr(expr: &reify_types::CompiledExpr) -> String {
         }
         CompiledExprKind::OptionSome(inner) => format!("some({})", format_expr(inner)),
         CompiledExprKind::OptionNone => "none".to_string(),
+        CompiledExprKind::MetaAccess { entity, key } => format!("{}.meta.{}", entity, key),
     }
 }
 

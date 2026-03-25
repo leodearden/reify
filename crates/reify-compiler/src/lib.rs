@@ -174,6 +174,8 @@ pub struct TopologyTemplate {
     /// ValueCellIds whose boolean value controls topology (guard cells).
     pub structure_controlling: HashSet<ValueCellId>,
     pub objective: Option<OptimizationObjective>,
+    /// Key-value entries from the entity's `meta { ... }` block (if any).
+    pub meta: HashMap<String, String>,
     pub content_hash: ContentHash,
 }
 
@@ -756,6 +758,8 @@ struct CompilationScope {
     /// Populated from already-compiled child templates to resolve correct types for
     /// indexed member access (e.g., bolts[0].diameter → Type::length()).
     collection_sub_member_types: HashMap<String, HashMap<String, Type>>,
+    /// Meta block entries for the current entity: key → value.
+    meta_entries: HashMap<String, String>,
 }
 
 impl CompilationScope {
@@ -766,6 +770,7 @@ impl CompilationScope {
             port_names: HashSet::new(),
             collection_sub_names: HashSet::new(),
             collection_sub_member_types: HashMap::new(),
+            meta_entries: HashMap::new(),
         }
     }
 
@@ -1187,6 +1192,31 @@ fn compile_expr_guarded(
                 let count_member = format!("__count_{}", name);
                 let count_id = ValueCellId::new(&scope.entity_name, &count_member);
                 return CompiledExpr::value_ref(count_id, Type::Int);
+            }
+
+            // Check if this is a meta block access: meta.key
+            if let reify_syntax::ExprKind::Ident(name) = &object.kind
+                && name == "meta"
+            {
+                if scope.meta_entries.is_empty() {
+                    diagnostics.push(
+                        Diagnostic::error("entity has no meta block".to_string())
+                            .with_label(DiagnosticLabel::new(expr.span, "no meta block")),
+                    );
+                    return CompiledExpr::literal(Value::Undef, Type::String);
+                }
+                if scope.meta_entries.contains_key(member.as_str()) {
+                    return CompiledExpr::meta_access(
+                        scope.entity_name.clone(),
+                        member.clone(),
+                    );
+                } else {
+                    diagnostics.push(
+                        Diagnostic::error(format!("meta block has no key: {}", member))
+                            .with_label(DiagnosticLabel::new(expr.span, "unknown meta key")),
+                    );
+                    return CompiledExpr::literal(Value::Undef, Type::String);
+                }
             }
 
             // For non-port member access, check if it's a known collection method
@@ -1768,6 +1798,18 @@ fn compile_purpose(
                     )),
                 );
             }
+            reify_syntax::MemberDecl::MetaBlock(m) => {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "meta blocks in purpose bodies are not supported"
+                            .to_string(),
+                    )
+                    .with_label(DiagnosticLabel::new(
+                        m.span,
+                        "unsupported in purpose".to_string(),
+                    )),
+                );
+            }
         }
     }
 
@@ -2291,6 +2333,7 @@ fn compile_entity(
     let mut structure_controlling: HashSet<ValueCellId> = HashSet::new();
     let mut connections: Vec<CompiledConnection> = Vec::new();
     let mut objective: Option<OptimizationObjective> = None;
+    let mut first_meta_span: Option<SourceSpan> = None;
     let mut constraint_index: u32 = 0;
     let mut guard_index: u32 = 0;
     let mut connector_index: u32 = 0;
@@ -2415,6 +2458,20 @@ fn compile_entity(
                             .map(|vc| (vc.id.member.clone(), vc.cell_type.clone()))
                             .collect();
                         scope.collection_sub_member_types.insert(sub.name.clone(), member_types);
+                    }
+                }
+            }
+            reify_syntax::MemberDecl::MetaBlock(meta) => {
+                if let Some(first_span) = first_meta_span {
+                    diagnostics.push(
+                        Diagnostic::error("duplicate meta block".to_string())
+                            .with_label(DiagnosticLabel::new(meta.span, "duplicate defined here"))
+                            .with_label(DiagnosticLabel::new(first_span, "first defined here")),
+                    );
+                } else {
+                    first_meta_span = Some(meta.span);
+                    for (key, value) in &meta.entries {
+                        scope.meta_entries.insert(key.clone(), value.clone());
                     }
                 }
             }
@@ -2899,6 +2956,9 @@ fn compile_entity(
                     );
                 }
             }
+            reify_syntax::MemberDecl::MetaBlock(_) => {
+                // Meta blocks are collected in the first pass; skip in second pass.
+            }
         }
     }
 
@@ -3221,6 +3281,7 @@ fn compile_entity(
         guarded_groups,
         structure_controlling,
         objective,
+        meta: scope.meta_entries.clone(),
         content_hash,
     }
 }
@@ -3701,6 +3762,7 @@ fn collect_body_refs_inner(expr: &CompiledExpr, refs: &mut Vec<ValueCellId>) {
             collect_body_refs_inner(inner, refs);
         }
         CompiledExprKind::OptionNone => {}
+        CompiledExprKind::MetaAccess { .. } => {}
     }
 }
 
