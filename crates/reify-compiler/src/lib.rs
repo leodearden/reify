@@ -3563,8 +3563,29 @@ fn compile_entity(
                     continue;
                 }
 
-                let compiled_expr = compile_expr(&let_decl.value, &scope, enum_defs, functions, diagnostics);
-                let cell_type = compiled_expr.result_type.clone();
+                let mut compiled_expr = compile_expr(&let_decl.value, &scope, enum_defs, functions, diagnostics);
+
+                // Determine cell type: use declared type annotation when present,
+                // fall back to the compiled expression's result type.
+                // This mirrors the param-default path and ensures that e.g.
+                // `let y : Option<Length> = none` produces Option<Length> rather than
+                // the Option<Real> placeholder emitted by the `none` keyword.
+                let cell_type = if let Some(type_expr) = &let_decl.type_expr {
+                    resolve_type_expr(type_expr, &type_param_names)
+                        .unwrap_or_else(|| compiled_expr.result_type.clone())
+                } else {
+                    compiled_expr.result_type.clone()
+                };
+
+                // If the expression is OptionNone and cell_type is Option<T>, fix up
+                // the OptionNone's result_type to match the declared annotation.
+                // Mirrors the param-default fixup at lines 3444-3450.
+                if matches!(&compiled_expr.kind, CompiledExprKind::OptionNone)
+                    && matches!(&cell_type, Type::Option(_))
+                {
+                    compiled_expr = CompiledExpr::option_none(cell_type.clone());
+                }
+
                 let id = ValueCellId::new(entity_name, &let_decl.name);
 
                 // Update the scope with the inferred type
