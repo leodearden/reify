@@ -2605,4 +2605,83 @@ mod tests {
             vol_neg
         );
     }
+
+    // --- Extrude kernel-path volume tests (task-308 step-14) ---
+    // These exercise the full OcctKernel::execute() + query() path using
+    // store_raw to inject FFI-created circle faces as kernel handles.
+
+    #[test]
+    fn extrude_circle_face_through_kernel() {
+        // Store a circle face (radius=5) via store_raw, then extrude via execute().
+        // Expected volume: π * r² * h = π * 25 * 10 = 785.4
+        let mut kernel = OcctKernel::new();
+        let face = ffi::ffi::make_circle_face(5.0, 0.0)
+            .expect("make_circle_face should succeed");
+        let face_id = kernel.store_raw(face);
+
+        let result = kernel
+            .execute(&GeometryOp::Extrude {
+                profile: face_id,
+                distance: Value::Real(10.0),
+            })
+            .expect("Extrude through kernel should succeed");
+
+        let vol = kernel
+            .query(&GeometryQuery::Volume(result.id))
+            .expect("Volume query should succeed");
+        let vol_f64 = vol.as_f64().expect("Volume should be numeric");
+        let expected = std::f64::consts::PI * 25.0 * 10.0;
+        let rel_err = (vol_f64 - expected).abs() / expected;
+        assert!(
+            rel_err < 0.01,
+            "expected extrude circle volume ≈ {:.2}, got {:.2} (rel_err={:.4})",
+            expected,
+            vol_f64,
+            rel_err
+        );
+    }
+
+    #[test]
+    fn extrude_negative_distance_through_kernel() {
+        // Negative distance should produce same volume as positive.
+        let mut kernel = OcctKernel::new();
+
+        let face_pos = ffi::ffi::make_circle_face(5.0, 0.0)
+            .expect("make_circle_face should succeed");
+        let face_pos_id = kernel.store_raw(face_pos);
+        let result_pos = kernel
+            .execute(&GeometryOp::Extrude {
+                profile: face_pos_id,
+                distance: Value::Real(10.0),
+            })
+            .expect("Extrude +Z through kernel should succeed");
+        let vol_pos = kernel
+            .query(&GeometryQuery::Volume(result_pos.id))
+            .expect("Volume query +Z should succeed")
+            .as_f64()
+            .expect("Volume should be numeric");
+
+        let face_neg = ffi::ffi::make_circle_face(5.0, 0.0)
+            .expect("make_circle_face should succeed for negative test");
+        let face_neg_id = kernel.store_raw(face_neg);
+        let result_neg = kernel
+            .execute(&GeometryOp::Extrude {
+                profile: face_neg_id,
+                distance: Value::Real(-10.0),
+            })
+            .expect("Extrude -Z through kernel should succeed");
+        let vol_neg = kernel
+            .query(&GeometryQuery::Volume(result_neg.id))
+            .expect("Volume query -Z should succeed")
+            .as_f64()
+            .expect("Volume should be numeric");
+
+        let rel_diff = (vol_pos - vol_neg).abs() / vol_pos;
+        assert!(
+            rel_diff < 0.01,
+            "positive and negative extrude should have same volume, got pos={:.2} neg={:.2}",
+            vol_pos,
+            vol_neg
+        );
+    }
 }
