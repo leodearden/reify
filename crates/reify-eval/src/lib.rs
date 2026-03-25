@@ -107,6 +107,11 @@ pub struct Engine {
     /// Prevents runaway recursion when guard expressions don't terminate.
     /// Default: 64.
     max_unfold_depth: usize,
+    /// Maximum total nodes created during recursive sub-component unfolding.
+    /// Prevents exponential blowup when a template has multiple recursive subs
+    /// (e.g., binary tree with `left` and `right` produces B^D nodes).
+    /// Default: 10_000.
+    max_unfold_nodes: usize,
 }
 
 /// Statistics about cache behavior during a cached evaluation.
@@ -273,6 +278,7 @@ impl Engine {
             objectives: HashMap::new(),
             meta_map: HashMap::new(),
             max_unfold_depth: 64,
+            max_unfold_nodes: 10_000,
         }
     }
 
@@ -286,6 +292,17 @@ impl Engine {
     pub fn set_max_unfold_depth(&mut self, depth: usize) {
         assert!(depth >= 1, "max_unfold_depth must be >= 1");
         self.max_unfold_depth = depth;
+    }
+
+    /// Set the maximum total nodes created during recursive sub-component unfolding.
+    /// The default is 10,000. This prevents exponential blowup when templates have
+    /// multiple recursive subs (B subs × D depth = B^D nodes without this limit).
+    ///
+    /// # Panics
+    /// Panics if `limit == 0`.
+    pub fn set_max_unfold_nodes(&mut self, limit: usize) {
+        assert!(limit >= 1, "max_unfold_nodes must be >= 1");
+        self.max_unfold_nodes = limit;
     }
 
     /// Set the constraint solver for resolving auto parameters.
@@ -1080,6 +1097,16 @@ impl Engine {
         // Sub-component elaboration: evaluate child template params/lets
         // for each sub_component in each template.
         for template in &module.templates {
+            // Pre-compute all recursive subs once per template (not per sub) to avoid
+            // O(S²) re-filtering inside the sub iteration loop.
+            let all_recursive_subs: Vec<&reify_compiler::SubComponentDecl> = if template.is_recursive {
+                template.sub_components.iter().filter(|s| s.guard_expr.is_some()).collect()
+            } else {
+                Vec::new()
+            };
+            let all_recursive_sub_names: Vec<&str> =
+                all_recursive_subs.iter().map(|s| s.name.as_str()).collect();
+
             for sub in &template.sub_components {
                 // Find the referenced child template by name
                 let child_template = match module.templates.iter().find(|t| t.name == sub.structure_name) {
@@ -1151,13 +1178,7 @@ impl Engine {
 
                 // Recursive sub: evaluate guard before elaborating, then unfold recursively.
                 if template.is_recursive && sub.guard_expr.is_some() {
-                    // Collect ALL recursive subs of this template so that unfold_recursive_sub
-                    // can create the full tree (all cross-sub children, not just same-sub chains).
-                    let all_recursive_subs: Vec<&reify_compiler::SubComponentDecl> = template
-                        .sub_components
-                        .iter()
-                        .filter(|s| s.guard_expr.is_some())
-                        .collect();
+                    let mut unfold_budget = self.max_unfold_nodes;
                     unfold_recursive_sub(
                         &mut values,
                         &mut snapshot,
@@ -1173,6 +1194,8 @@ impl Engine {
                         &self.meta_map,
                         &mut diagnostics,
                         &all_recursive_subs,
+                        &all_recursive_sub_names,
+                        &mut unfold_budget,
                     );
                     continue;
                 }
@@ -3184,6 +3207,8 @@ fn compile_geometry_op(
 /// - `max_depth`: maximum allowed depth before stopping
 /// - `all_recursive_subs`: ALL recursive subs of the template (those with guard_expr.is_some()).
 ///   Used in Phase 2 to unfold all sub chains at each child level, not just the spawning sub.
+/// - `node_budget`: remaining total nodes allowed across all branches. Prevents exponential
+///   blowup when B > 1 recursive subs exist (B^D total without this limit).
 #[allow(clippy::too_many_arguments)]
 fn unfold_recursive_sub<'t>(
     values: &mut ValueMap,
@@ -3200,7 +3225,19 @@ fn unfold_recursive_sub<'t>(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
     all_recursive_subs: &[&'t reify_compiler::SubComponentDecl],
+    all_recursive_sub_names: &[&str],
+    node_budget: &mut usize,
 ) {
+    // Check total node budget before doing any work.
+    if *node_budget == 0 {
+        diagnostics.push(Diagnostic::error(format!(
+            "recursive unfolding of '{}' stopped: total node budget exhausted at depth {}",
+            parent_entity, depth,
+        )));
+        return;
+    }
+    *node_budget -= 1;
+
     let guard_expr = match &sub.guard_expr {
         Some(g) => g,
         None => return,
@@ -3240,7 +3277,7 @@ fn unfold_recursive_sub<'t>(
         Value::Bool(false) => return, // Normal termination — guard says stop
         Value::Undef => return,       // Param not yet determined — do not unfold (per spec)
         other => {
-            diagnostics.push(Diagnostic::warning(format!(
+            diagnostics.push(Diagnostic::error(format!(
                 "guard for recursive sub '{}' in '{}' evaluated to {:?} (expected Bool), treating as termination",
                 sub.name, parent_entity, other,
             )));
@@ -3301,6 +3338,8 @@ fn unfold_recursive_sub<'t>(
             meta_map,
             diagnostics,
             all_recursive_subs,
+            all_recursive_sub_names,
+            node_budget,
         );
     }
 
@@ -3309,8 +3348,6 @@ fn unfold_recursive_sub<'t>(
     // values projected from the global map — so cross-level references like
     // `S.child.total` resolve to the already-computed deeper-level value.
     // Pass all recursive sub names so BFS walks all branches (fixes cross-sub projection).
-    let all_recursive_sub_names: Vec<&str> =
-        all_recursive_subs.iter().map(|s| s.name.as_str()).collect();
     elaborate_child_lets_only(
         values,
         snapshot,
@@ -3322,7 +3359,7 @@ fn unfold_recursive_sub<'t>(
         &next_entity,
         child_values,
         meta_map,
-        &all_recursive_sub_names,
+        all_recursive_sub_names,
     );
 }
 
