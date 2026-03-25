@@ -1670,6 +1670,74 @@ async fn ensure_sidecar_ready_kills_handle_on_crash_cleanup() {
     );
 }
 
+// --- shutdown unblocked during spawn test (task-353/step-30) ---
+
+/// Verify that `shutdown_sidecar` can complete while `ensure_sidecar_ready`
+/// is blocked inside `spawn_fn`.
+///
+/// With the current code the sidecar Mutex is held for the entire duration of
+/// `spawn_fn().await?`, so `shutdown_sidecar` blocks until spawn finishes.
+/// After step-31 (spawn outside the lock), shutdown acquires the lock
+/// immediately while `spawn_fn` is still running — no timeout.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shutdown_not_blocked_during_ensure_sidecar_ready_spawn() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::sync::Mutex;
+
+    // Atomic flag set by spawn_fn when it has started blocking.
+    let spawn_entered = Arc::new(AtomicBool::new(false));
+    let spawn_entered_clone = Arc::clone(&spawn_entered);
+
+    // Oneshot channel: the test signals spawn_fn to unblock after shutdown.
+    let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+
+    let sidecar: Arc<Mutex<Option<SidecarHandle>>> = Arc::new(Mutex::new(None));
+    let sidecar_for_spawn = Arc::clone(&sidecar);
+    let sidecar_for_shutdown = Arc::clone(&sidecar);
+
+    let spawn_fn = move || {
+        let entered = Arc::clone(&spawn_entered_clone);
+        async move {
+            // Signal that we have entered spawn_fn (Phase 1's lock is released).
+            entered.store(true, Ordering::SeqCst);
+            // Block until the test unblocks us.
+            rx.await.ok();
+            Err::<SidecarHandle, String>("cancelled".to_string())
+        }
+    };
+
+    // Start ensure_sidecar_ready in the background.
+    let ensure_handle = tokio::spawn(async move {
+        ensure_sidecar_ready(&*sidecar_for_spawn, spawn_fn, Duration::from_secs(5)).await
+    });
+
+    // Wait until spawn_fn has been entered (the sidecar lock has been released).
+    while !spawn_entered.load(Ordering::SeqCst) {
+        tokio::task::yield_now().await;
+    }
+
+    // shutdown_sidecar should NOT block — the lock is free because spawn_fn
+    // runs outside the lock after step-31.  With the current code (lock held
+    // during spawn), this times out.
+    let shutdown_result = tokio::time::timeout(
+        Duration::from_millis(200),
+        shutdown_sidecar(&*sidecar_for_shutdown),
+    )
+    .await;
+    assert!(
+        shutdown_result.is_ok(),
+        "shutdown_sidecar must not block while ensure_sidecar_ready is in spawn_fn"
+    );
+
+    // Unblock spawn_fn so ensure_sidecar_ready can finish (returns Err — no slot
+    // to place the handle since shutdown cleared it, but spawn_fn returned Err
+    // anyway so ensure_sidecar_ready propagates Err directly).
+    let _ = tx.send(());
+    let _ = ensure_handle.await;
+}
+
 // --- multi-thread race regression test (task-353/step-15) ---
 
 /// Reproduce the race condition where `notify.notified()` is called AFTER the
