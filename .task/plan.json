@@ -1,187 +1,181 @@
 {
-  "task_id": "244",
-  "title": "Port mapping: automatic matching",
+  "task_id": "212",
+  "title": "Meta block access: evaluator",
   "files": [
-    "crates/reify-compiler/src/lib.rs",
-    "crates/reify-compiler/tests/connect_compile_tests.rs"
+    "crates/reify-eval/src/lib.rs",
+    "crates/reify-eval/tests/meta_eval_integration.rs",
+    "crates/reify-test-support/src/builders.rs"
   ],
   "modules": [
-    "crates/reify-compiler"
+    "crates/reify-eval",
+    "crates/reify-test-support"
   ],
-  "analysis": "The task requires adding automatic port member matching when connecting two ports that implement the same port trait and no explicit port_mappings are provided.\n\nCurrent state:\n- `compile_connection` in lib.rs (lines 3562-3739) handles connection compilation.\n- `CompiledConnection.port_mappings` is `Vec<(String, String)>` \u2014 currently only stores explicit mappings passed through from syntax.\n- `CompiledPort` has `name`, `type_name` (trait name), `members: Vec<ValueCellDecl>`, where each member's `id.member` is a composite like `port_name.param_name`.\n- Ports are looked up by name from `ConnectContext.ports` (only bare/non-dotted names resolve).\n- `ValueCellKind` enum: Param, Let, Auto. Param and Auto are interface members; Let is derived.\n\nApproach:\n1. Add a helper function `auto_match_port_members` that takes two `CompiledPort` references, extracts raw member names (stripping port prefix from `id.member`), and attempts to match by name.\n2. In `compile_connection`, after direction checks and before creating `CompiledConnection` (around line 3729): if `port_mappings` is empty AND both ports are bare names AND both ports have the same `type_name`, invoke auto-matching.\n3. If all Param/Auto members match by name on both sides, generate the identity mapping `[(name, name), ...]`.\n4. If any member is unmatched on either side, emit a Warning diagnostic listing the unmatched members and suggesting explicit mapping. No auto-mapping is generated in this case.\n5. Dotted ports (sub-component references like `motor.shaft`) are skipped since we can't look up their CompiledPort.\n6. Explicit mappings always take precedence (auto-matching only when port_mappings is empty).",
-  "prerequisites": [],
+  "analysis": "Task 211 completed all compiler and expression-evaluator work: MetaAccess variant in CompiledExprKind, EvalContext.meta field with with_meta() builder, and the eval_expr arm that looks up meta from context. Tests exist in reify-expr/tests/meta_eval_tests.rs.\n\nWhat remains (task 212) is wiring meta data from TopologyTemplate.meta into the Engine's evaluation pipeline in reify-eval. Currently, ALL ~25 EvalContext::new() calls in reify-eval/src/lib.rs create contexts WITHOUT meta, meaning any expression containing MetaAccess will panic at runtime.\n\nThe implementation requires:\n1. Add `meta_map: HashMap<String, HashMap<String, String>>` field to Engine struct\n2. In Engine::eval(), build meta_map from module.templates: for each template, insert template.name -> template.meta\n3. Wire .with_meta(&meta_map) to all EvalContext::new() calls across 6 functions:\n   - eval() main path: field eval (810,815), param defaults (908), guard eval (948,971,1008)\n   - evaluate_let_bindings() (2809)\n   - elaborate_child_instance() free fn (3113,3115,3181) -- needs meta_map parameter\n   - edit_param() (1382,1457,1482,1500,1642,1708,1732,1818)\n   - eval_cached() (2119,2212)\n   - resolve_concurrent_edit() (702)\n4. Add meta_map field to ConcurrentEditSetup for concurrent edit path\n5. Pass meta_map to compile_geometry_op() free fn (2852,2903) for completeness\n\nFor sub-structure meta access (sub.meta.key): The compiler produces MetaAccess { entity: child_template_name, key } when compiling sub.meta.key. During child elaboration, the child template's expressions use the original entity name (not the scoped name), so the meta_map naturally contains the correct entry via template.name -> template.meta. No special scoping logic needed.\n\nFor collection subs: Each indexed instance evaluates against child_values with original entity names, so meta lookup works identically to singular subs.\n\nTopologyTemplateBuilder in reify-test-support currently hard-codes `meta: HashMap::new()` in build(). Need to add a meta() builder method for integration tests.",
+  "prerequisites": [
+    {
+      "id": "pre-1",
+      "description": "Add `meta()` builder method to TopologyTemplateBuilder in crates/reify-test-support/src/builders.rs. Method signature: `pub fn meta(mut self, entries: HashMap<String, String>) -> Self`. Store entries in a new `meta: HashMap<String, String>` field on the builder (default empty). Use the field in build() instead of hard-coded empty HashMap.",
+      "status": "done",
+      "commit": "209d130b",
+      "tests": []
+    },
+    {
+      "id": "pre-2",
+      "description": "Add `meta_map: HashMap<String, HashMap<String, String>>` field to Engine struct. Initialize as empty HashMap in Engine::new(). This stores the entity-name-to-meta-entries mapping built during eval() and reused by edit_param() and other incremental paths.",
+      "status": "done",
+      "commit": "209d130b",
+      "tests": []
+    }
+  ],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing test `auto_match_ports_same_trait_same_members`: two ports of same trait T with identical param name `d`, no explicit mapping via `connect a -> b`. Assert `port_mappings` on CompiledConnection contains `[(\"d\", \"d\")]`.",
+      "description": "Write failing test `eval_meta_access_in_let_binding` in new file crates/reify-eval/tests/meta_eval_integration.rs. Build a TopologyTemplate 'Widget' with meta {\"description\": \"A widget\"} and a Let binding whose expr is CompiledExpr::meta_access(\"Widget\", \"description\"). Eval via Engine and assert the let cell's value == Value::String(\"A widget\"). Test will panic because eval() doesn't wire meta into EvalContext.",
       "status": "done",
-      "commit": "778776b6"
+      "commit": "646a244b"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Add `auto_match_port_members` helper function and integrate into `compile_connection`. Logic: when port_mappings is empty, both port names are bare (no dots), and both ports found in ctx.ports have the same type_name \u2014 extract raw member names from Param/Auto members by stripping `port_name.` prefix, compute set intersection, check both sets are fully covered. If all match, return sorted identity mappings. Wire effective_mappings into CompiledConnection.port_mappings instead of raw port_mappings.",
+      "description": "In Engine::eval(), after module is available: build meta_map from module.templates (filter non-empty .meta, map name->meta). Store as self.meta_map. Wire .with_meta(&self.meta_map) to all EvalContext::new() calls within eval() body: field eval (lines ~810,815), param default (908), guard expr (948), guard members (971,1008). Also wire in evaluate_let_bindings() (2809) -- pass &self.meta_map as new parameter or use self reference.",
       "status": "done",
-      "commit": "947b0bbc"
+      "commit": "313bc8f1"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write test `auto_match_multiple_members`: both ports have same trait with 3 params (d, length, angle), no explicit mapping. Assert all 3 are auto-mapped as identity pairs, sorted alphabetically.",
+      "description": "Write failing test `eval_meta_access_sub_structure` in meta_eval_integration.rs. Build two templates: 'Part' with meta {\"material\": \"steel\"} and param size, and 'Assembly' with sub_component 'part' -> 'Part' and a Let binding using CompiledExpr::meta_access(\"Part\", \"material\"). Eval via Engine and assert the Assembly let cell's value == Value::String(\"steel\"). Tests that child template meta is accessible from parent context.",
       "status": "done",
-      "commit": "bae34065"
+      "commit": "55717109"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Verify step-3 test passes with existing implementation (should pass if step-2 handles multiple members correctly). Fix if needed.",
+      "description": "Pass &self.meta_map to elaborate_child_instance() as a new parameter. Wire .with_meta(meta_map) to the three EvalContext::new() calls inside elaborate_child_instance (child arg eval ~3113, child default ~3115, child let ~3181). Update all call sites of elaborate_child_instance in eval() to pass &self.meta_map.",
       "status": "done",
-      "commit": "3b75cd4e"
+      "commit": "26438ae3"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing test `auto_match_unmatched_emits_diagnostic`: same trait T, left port a has params {d, l}, right port b has params {d, r}. Assert a Warning diagnostic is emitted containing 'unmatched' and mentioning the unmatched member names. Assert port_mappings is empty (no partial auto-match).",
+      "description": "Write failing test `eval_meta_access_survives_edit_param` in meta_eval_integration.rs. Build a template 'Box' with meta {\"tag\": \"v1\"}, a Param 'size' with default 10.0, and a Let 'label' whose expr is meta_access(\"Box\", \"tag\"). Call engine.eval(), then engine.edit_param(size_cell, new_value). Assert that after edit_param, the 'label' cell still has Value::String(\"v1\").",
       "status": "done",
-      "commit": "8049e0da"
+      "commit": "c2e4eaab"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Add unmatched-member diagnostic logic to `auto_match_port_members`. When left_names != right_names, collect unmatched names from both sides, emit Warning with message listing them and suggesting explicit mapping via `{ left_member -> right_member }` syntax. Return empty Vec for mappings.",
+      "description": "Wire .with_meta(&self.meta_map) to all EvalContext::new() calls inside edit_param() method: main re-eval (~1382), wave2 after resolution (~1457), guard re-elab members (~1482,1500), resolution wave2 (~1642), second guard re-elab (~1708,1732), collection sub cell eval (~1818).",
       "status": "done",
-      "commit": "f46c0c5b"
+      "commit": "a511a202"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write test `no_auto_match_different_traits`: left port has trait MechPort, right port has trait RotaryPort, both with param `d`. Assert port_mappings is empty and no auto-match or unmatched diagnostic is emitted.",
+      "description": "Write failing test `eval_meta_access_in_guarded_group` in meta_eval_integration.rs. Build template 'S' with meta {\"mode\": \"active\"}, a Bool param 'active' (default true), and a guarded group whose member Let 'mode_label' uses meta_access(\"S\", \"mode\"). Eval via Engine and assert mode_label == Value::String(\"active\") when guard is true.",
       "status": "done",
-      "commit": "1fd223ab"
+      "commit": "393a392b"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Verify step-7 passes (type_name equality check already prevents auto-matching for different traits). Fix if needed.",
+      "description": "Verify that step-2's wiring of guard eval EvalContext calls (lines ~948, 971, 1008) already passes this test. If not, ensure the guarded group member expression evaluation at lines 971 and 1008 in eval() uses .with_meta(&self.meta_map). Guarded group evaluation in eval() evaluates member default_exprs directly -- confirm they get meta context.",
       "status": "done",
-      "commit": "9219ff31"
+      "commit": "1de71146"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write test `explicit_mapping_skips_auto_match`: same trait, same member names, but explicit mapping `{ d -> d }` provided. Assert the explicit mapping is preserved and no auto-match logic runs (port_mappings == explicit input).",
+      "description": "Write test `eval_meta_access_cached_eval` in meta_eval_integration.rs. Call engine.eval_cached() with a module containing meta access. Assert the let binding resolves to the correct Value::String. This tests the eval_cached() incremental path.",
       "status": "done",
-      "commit": "81830f1c"
+      "commit": "393a392b"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Verify step-9 passes (auto-matching is gated on port_mappings.is_empty()). Fix if needed.",
+      "description": "Wire .with_meta(&self.meta_map) to EvalContext::new() calls inside eval_cached() (~2119, 2212). Also wire resolve_concurrent_edit() (~702). Add meta_map field to ConcurrentEditSetup struct, populate it in prepare_concurrent_edit() from self.meta_map. Wire compile_geometry_op() calls (~2852, 2903 and others) by passing meta_map parameter for completeness.",
       "status": "done",
-      "commit": "89773953"
+      "commit": "1de71146"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write test `no_auto_match_dotted_ports`: connect with dotted sub-component port refs `motor.shaft -> gear.input` (using sub-components with ports). Assert port_mappings is empty since dotted names can't be looked up in ctx.ports.",
+      "description": "Write test `eval_meta_access_collection_sub_component` in meta_eval_integration.rs. Build two templates: 'Bolt' with meta {\"grade\": \"A2\"} and a param 'len', and 'Plate' with a collection sub_component 'bolts' -> 'Bolt' (count=3) and a Let binding using meta_access(\"Bolt\", \"grade\"). Eval via Engine and assert the Plate let cell == Value::String(\"A2\"). This tests that collection sub-component elaboration correctly passes meta context and validates the hot-loop allocation fix from step-12.",
       "status": "done",
-      "commit": "93e54450"
+      "commit": "7140d72a"
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "Verify step-11 passes (dotted ports contain '.' so fail the bare-name guard). Fix if needed.",
+      "description": "Fix unnecessary allocation in collection sub-component hot loop (review issue reviewer_performance/unnecessary_allocation_in_hot_loop). At lib.rs line ~1094, `self.meta_map.clone()` is called inside the `for idx in 0..n` loop, creating O(n) redundant deep clones of the HashMap. Since elaborate_child_instance() is a free function taking `&HashMap<...>`, and Rust supports disjoint struct field borrows, replace `let meta_map = self.meta_map.clone();` + `&meta_map` with `&self.meta_map` directly in the elaborate_child_instance call. The borrow checker allows this because `self.meta_map` (immutable), `self.journal` (mutable), and `self.cache` (mutable) are disjoint fields. Also apply the same optimization to the singular sub-component call site at line ~1139 for consistency, replacing its clone with `&self.meta_map`.",
       "status": "done",
-      "commit": "1a9fd626"
-    },
-    {
-      "id": "step-13",
-      "type": "test",
-      "description": "Write test `auto_match_empty_members`: both ports have same trait but the trait and ports declare zero params. Assert port_mappings is empty and no diagnostic is emitted (vacuous match).",
-      "status": "done",
-      "commit": "ca3a4c9a"
-    },
-    {
-      "id": "step-14",
-      "type": "impl",
-      "description": "Verify step-13 passes (empty member sets are equal, produces empty mapping). Fix if needed.",
-      "status": "done",
-      "commit": "e244c07e"
-    },
-    {
-      "id": "step-15",
-      "type": "test",
-      "description": "Write test `auto_match_chain_desugared`: chain a -> b -> c where all three ports have same trait T and matching param `d`. Assert both desugared connections have auto-generated port_mappings `[(\"d\", \"d\")]`.",
-      "status": "done",
-      "commit": "de0b76ef"
-    },
-    {
-      "id": "step-16",
-      "type": "impl",
-      "description": "Verify step-15 passes (chain desugaring passes empty port_mappings to compile_connection, which triggers auto-match for each pair). Fix if needed.",
-      "status": "done",
-      "commit": "744c1ada"
+      "commit": "d93ffe32"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Only match Param and Auto kind members, not Let bindings",
-      "rationale": "Let bindings are derived/computed values internal to the port, not part of the connectable interface. Param and Auto members represent the trait's interface contract and are the appropriate targets for port mapping."
+      "decision": "Store meta_map on Engine struct rather than rebuilding per-call",
+      "rationale": "The meta map is built once from TopologyTemplate.meta during eval() and reused across edit_param(), eval_cached(), resolve_concurrent_edit(), and other incremental paths. Storing on Engine follows the same pattern as `functions: Vec<CompiledFunction>` and `compiled_purposes: Vec<CompiledPurpose>` which are also captured during eval() for later use."
     },
     {
-      "decision": "All-or-nothing matching: either all members match or none are auto-mapped",
-      "rationale": "Partial auto-mapping would be confusing and error-prone. The task states 'all ports on both sides must have a match'. If any member is unmatched, the user should provide explicit mapping for the full set."
+      "decision": "Meta map keyed by template name (not scoped entity names)",
+      "rationale": "MetaAccess { entity, key } uses the template name as entity (set at compile time). During sub-component elaboration, child expressions are evaluated against child_values with original entity names -- the scoped entity prefix is only used for storing results in the parent's value map. So the meta map naturally needs template names as keys, not scoped names like 'Parent.sub[0]'."
     },
     {
-      "decision": "Use Warning severity for unmatched-member diagnostic, not Error",
-      "rationale": "The task says 'suggesting explicit mapping', implying guidance rather than a hard compilation failure. Existing code that connects same-trait ports without mappings should not suddenly break. A Warning is visible but non-blocking."
+      "decision": "Pass meta_map as parameter to free functions rather than global state",
+      "rationale": "elaborate_child_instance() and compile_geometry_op() are free functions (not Engine methods). Adding a &HashMap parameter is consistent with how `functions: &[CompiledFunction]` is already passed. This avoids the need for a larger refactor to make these methods on Engine."
     },
     {
-      "decision": "Skip auto-matching for dotted (sub-component) port references",
-      "rationale": "Dotted names like `motor.shaft` reference ports on sub-components whose CompiledPort definitions are not available in the current structure's ConnectContext. Auto-matching requires access to both ports' member lists, which is only possible for the structure's own declared ports."
+      "decision": "Wire ALL EvalContext calls including geometry compilation",
+      "rationale": "While geometry arguments are typically numeric and unlikely to use MetaAccess, wiring meta to all EvalContext calls ensures correctness if a future expression context uses meta values (e.g., a conditional geometry parameter based on meta). The cost is negligible -- just an additional .with_meta() chain."
     },
     {
-      "decision": "Auto-match based on type_name string equality, not trait hierarchy",
-      "rationale": "Simplest correct approach. Two ports claim the same trait interface via type_name; if the names match, the members should correspond. Trait refinement (inheritance) matching is a separate future enhancement."
+      "decision": "Add meta_map to ConcurrentEditSetup for concurrent evaluation",
+      "rationale": "ConcurrentEditSetup already carries functions, values, and other state needed for off-thread evaluation. Adding meta_map ensures concurrent eval paths can also resolve MetaAccess expressions without accessing the Engine directly."
     },
     {
-      "decision": "Auto-generated mappings are sorted alphabetically",
-      "rationale": "Deterministic output order ensures content hashes are stable and test assertions are predictable. BTreeSet naturally provides sorted iteration."
+      "decision": "Use direct &self.meta_map reference instead of clone for elaborate_child_instance calls",
+      "rationale": "elaborate_child_instance is a free function (not an Engine method), so borrowing self.meta_map immutably alongside self.journal and self.cache mutably works via Rust's disjoint struct field borrows. This eliminates O(n) redundant deep clones in the collection loop. The evaluate_let_bindings calls still require a clone because that method takes &mut self, which conflicts with borrowing self.meta_map."
     }
   ],
   "reuse": [
     {
-      "what": "ConnectContext.ports for port lookup",
-      "where": "crates/reify-compiler/src/lib.rs lines 3533-3548",
-      "how": "ConnectContext.ports provides access to CompiledPort list for looking up both left and right ports by name. No changes needed to ConnectContext."
+      "what": "TopologyTemplateBuilder from reify-test-support",
+      "where": "crates/reify-test-support/src/builders.rs",
+      "how": "Use the builder pattern with .meta() to construct test templates with meta blocks. Follow the pattern from guard_eval.rs and collection_sub_eval.rs for building CompiledModules in integration tests."
     },
     {
-      "what": "compile_connection function flow",
-      "where": "crates/reify-compiler/src/lib.rs lines 3562-3739",
-      "how": "Insert auto-matching logic around line 3728 (after connector_sub creation, before CompiledConnection push). Replace `port_mappings.to_vec()` with `effective_mappings` computed by auto-match or passthrough."
+      "what": "EvalContext.with_meta() builder from task 211",
+      "where": "crates/reify-expr/src/lib.rs",
+      "how": "Chain .with_meta(&meta_map) after EvalContext::new() at every call site. The builder is already implemented and tested in reify-expr."
     },
     {
-      "what": "Diagnostic::warning() and DiagnosticLabel",
-      "where": "crates/reify-types/src/diagnostics.rs",
-      "how": "Use existing diagnostic infrastructure for the unmatched-member warning. Same builder pattern as existing diagnostics in compile_connection."
+      "what": "Engine field storage pattern (functions, compiled_purposes)",
+      "where": "crates/reify-eval/src/lib.rs Engine struct and eval() method",
+      "how": "Follow the same pattern: add field to Engine, initialize empty in new(), populate in eval() from module data, use in edit_param() and other incremental paths."
     },
     {
-      "what": "Test helpers compile_module / compile_first_template",
-      "where": "crates/reify-compiler/tests/connect_compile_tests.rs lines 9-20",
-      "how": "Reuse existing test helpers for all new tests. Same pattern: parse source \u2192 compile \u2192 inspect template and diagnostics."
+      "what": "Guard eval test pattern from guard_eval.rs",
+      "where": "crates/reify-eval/tests/guard_eval.rs",
+      "how": "Follow the test structure: build template with TopologyTemplateBuilder, wrap in CompiledModuleBuilder, create MockConstraintChecker, run Engine::eval(), assert values by ValueCellId lookup."
     },
     {
-      "what": "ValueCellDecl.id.member composite naming",
-      "where": "crates/reify-compiler/src/lib.rs lines 2863-2864",
-      "how": "Port members use format '{port_name}.{param_name}'. Strip the port prefix via `strip_prefix` to extract raw member names for set-based matching."
+      "what": "CompiledExpr::meta_access() constructor from task 211",
+      "where": "crates/reify-types/src/expr.rs",
+      "how": "Use CompiledExpr::meta_access(entity, key) to build MetaAccess expressions in test let bindings. Result type is always Type::String."
     },
     {
-      "what": "is_bare name check pattern",
-      "where": "crates/reify-compiler/src/lib.rs line 3602",
-      "how": "Reuse the `!name.contains('.')` pattern already used for undefined-port validation to gate auto-matching on bare port names."
+      "what": "Sub-component test pattern from collection_sub_eval.rs",
+      "where": "crates/reify-eval/tests/collection_sub_eval.rs",
+      "how": "Follow the pattern for building multi-template modules with sub-components: parent template with sub_component(), child template in same module, verify cross-template evaluation."
+    },
+    {
+      "what": "Collection sub-component builder pattern",
+      "where": "crates/reify-eval/tests/collection_sub_eval.rs",
+      "how": "Use TopologyTemplateBuilder.collection_sub_component(name, target, count_expr, args) for building collection subs. Follow existing tests for count cell setup and __list_ synthetic cell assertions."
     }
   ],
-  "_session_id": "244-073db2e7",
-  "_created_at": "2026-03-25T12:26:28.233232+00:00"
+  "_session_id": "212-33616d8b",
+  "_created_at": "2026-03-25T12:23:07.427652+00:00"
 }

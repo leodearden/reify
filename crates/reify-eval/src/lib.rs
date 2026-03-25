@@ -93,6 +93,11 @@ pub struct Engine {
     /// Active optimization objectives injected by purposes.
     /// Maps purpose name → optimization objective.
     active_objective_map: HashMap<String, OptimizationObjective>,
+    /// Template meta entries from the last eval() call.
+    /// Maps template name → meta key/value pairs from the template's meta block.
+    /// Populated during eval() so that edit_param() and other incremental paths
+    /// can resolve MetaAccess expressions without re-reading the module.
+    meta_map: HashMap<String, HashMap<String, String>>,
     /// Template-native optimization objectives from the last eval() call.
     /// Maps template name → optimization objective declared in the template.
     /// Populated during eval() so that edit_param() can look up the objective
@@ -198,6 +203,9 @@ pub struct ConcurrentEditSetup {
     pub changed_cells: HashSet<ValueCellId>,
     /// User-defined functions from the module (for evaluating UserFunctionCall nodes).
     pub functions: Vec<CompiledFunction>,
+    /// Template-to-meta-entries mapping, populated from Engine::meta_map.
+    /// Used to resolve MetaAccess expressions during concurrent evaluation.
+    pub meta_map: HashMap<String, HashMap<String, String>>,
     /// Template-native optimization objective for this edit's scope, if any.
     /// Populated from Engine::objectives during prepare_concurrent_edit().
     pub objective: Option<OptimizationObjective>,
@@ -259,6 +267,7 @@ impl Engine {
             active_purposes: HashMap::new(),
             active_objective_map: HashMap::new(),
             objectives: HashMap::new(),
+            meta_map: HashMap::new(),
         }
     }
 
@@ -477,6 +486,7 @@ impl Engine {
             parent_snapshot_id: parent_id,
             changed_cells: changed_set,
             functions: self.functions.clone(),
+            meta_map: self.meta_map.clone(),
             objective: self.objectives.get(&cell.entity).cloned(),
         })
     }
@@ -699,7 +709,7 @@ impl Engine {
                                         && let Some(node) = setup.graph.value_cells.get(vcid)
                                         && let Some(ref expr) = node.default_expr
                                     {
-                                        let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&result.values, &setup.functions));
+                                        let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&result.values, &setup.functions).with_meta(&setup.meta_map));
                                         result.values.insert(vcid.clone(), val.clone());
                                         result.snapshot_values.insert(
                                             vcid.clone(),
@@ -768,6 +778,14 @@ impl Engine {
         // snapshot discards all purpose-injected constraints/objectives.
         self.active_purposes.clear();
         self.active_objective_map.clear();
+        // Build meta_map: template name → meta key/value pairs.
+        // Only includes templates with non-empty meta blocks.
+        self.meta_map = module
+            .templates
+            .iter()
+            .filter(|t| !t.meta.is_empty())
+            .map(|t| (t.name.clone(), t.meta.clone()))
+            .collect();
         let functions = &module.functions;
 
         let mut values = ValueMap::new();
@@ -807,12 +825,14 @@ impl Engine {
         for field in &module.fields {
             let lambda_value = match &field.source {
                 reify_compiler::CompiledFieldSource::Analytical { expr } => {
-                    let ctx = reify_expr::EvalContext::new(&values, functions);
+                    let ctx = reify_expr::EvalContext::new(&values, functions)
+                        .with_meta(&self.meta_map);
                     let val = reify_expr::eval_expr(expr, &ctx);
                     Box::new(val)
                 }
                 reify_compiler::CompiledFieldSource::Composed { expr } => {
-                    let ctx = reify_expr::EvalContext::new(&values, functions);
+                    let ctx = reify_expr::EvalContext::new(&values, functions)
+                        .with_meta(&self.meta_map);
                     let val = reify_expr::eval_expr(expr, &ctx);
                     Box::new(val)
                 }
@@ -905,7 +925,7 @@ impl Engine {
                         payload: None,
                     });
 
-                    let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, functions));
+                    let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, functions).with_meta(&self.meta_map));
                     values.insert(cell.id.clone(), val.clone());
 
                     // Update snapshot values
@@ -938,14 +958,17 @@ impl Engine {
             // Second pass: evaluate Let bindings in topological order
             // (handles forward references where a let declared earlier
             //  depends on a let declared later)
-            self.evaluate_let_bindings(template, &mut values, &mut snapshot, version_id, functions);
+            {
+                let meta_map = self.meta_map.clone();
+                self.evaluate_let_bindings(template, &mut values, &mut snapshot, version_id, functions, &meta_map);
+            }
 
             // Third pass: evaluate guarded groups.
             // Guard cells are Let-kind synthetic cells — evaluate their expressions,
             // then conditionally evaluate members based on guard truth value.
             for group in &template.guarded_groups {
                 // Evaluate the guard cell expression
-                let guard_val = reify_expr::eval_expr(&group.guard_expr, &reify_expr::EvalContext::new(&values, functions));
+                let guard_val = reify_expr::eval_expr(&group.guard_expr, &reify_expr::EvalContext::new(&values, functions).with_meta(&self.meta_map));
                 values.insert(group.guard_value_cell.clone(), guard_val.clone());
 
                 let guard_determinacy = match &guard_val {
@@ -968,7 +991,7 @@ impl Engine {
                             || cell.kind == ValueCellKind::Let
                         {
                             if let Some(ref expr) = cell.default_expr {
-                                let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, functions));
+                                let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, functions).with_meta(&self.meta_map));
                                 values.insert(cell.id.clone(), val.clone());
                                 snapshot.values.insert(
                                     cell.id.clone(),
@@ -1005,7 +1028,7 @@ impl Engine {
                             || cell.kind == ValueCellKind::Let
                         {
                             if let Some(ref expr) = cell.default_expr {
-                                let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, functions));
+                                let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, functions).with_meta(&self.meta_map));
                                 values.insert(cell.id.clone(), val.clone());
                                 snapshot.values.insert(
                                     cell.id.clone(),
@@ -1078,6 +1101,7 @@ impl Engine {
                                 child_template,
                                 &scoped_entity,
                                 &sub.args,
+                                &self.meta_map,
                             );
                         }
 
@@ -1121,6 +1145,7 @@ impl Engine {
                     child_template,
                     &scoped_entity,
                     &sub.args,
+                    &self.meta_map,
                 );
             }
 
@@ -1128,7 +1153,8 @@ impl Engine {
             // (created during collection sub-component elaboration above)
             let has_collection_subs = template.sub_components.iter().any(|s| s.is_collection);
             if has_collection_subs {
-                self.evaluate_let_bindings(template, &mut values, &mut snapshot, version_id, functions);
+                let meta_map = self.meta_map.clone();
+                self.evaluate_let_bindings(template, &mut values, &mut snapshot, version_id, functions, &meta_map);
             }
         }
 
@@ -1257,7 +1283,8 @@ impl Engine {
                         };
 
                         // Re-run let binding evaluation in topological order
-                        self.evaluate_let_bindings(template, &mut values, &mut snapshot, res_version_id, &module.functions);
+                        let meta_map = self.meta_map.clone();
+                        self.evaluate_let_bindings(template, &mut values, &mut snapshot, res_version_id, &module.functions, &meta_map);
                     }
                     SolveResult::Infeasible { diagnostics: solver_diags } => {
                         diagnostics.extend(solver_diags);
@@ -1379,7 +1406,7 @@ impl Engine {
                     payload: None,
                 });
 
-                let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, &functions));
+                let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, &functions).with_meta(&self.meta_map));
                 values.insert(vcid.clone(), val.clone());
                 new_snapshot.values.insert(
                     vcid.clone(),
@@ -1454,7 +1481,7 @@ impl Engine {
                     // Re-evaluate the guard cell's expression
                     let guard_val = if let Some(node) = graph.value_cells.get(&group.guard_cell) {
                         if let Some(ref expr) = node.default_expr {
-                            reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, &functions))
+                            reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, &functions).with_meta(&self.meta_map))
                         } else {
                             Value::Undef
                         }
@@ -1479,7 +1506,7 @@ impl Engine {
                             if let Some(node) = graph.value_cells.get(mid)
                                 && let Some(ref expr) = node.default_expr
                             {
-                                let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, &functions));
+                                let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, &functions).with_meta(&self.meta_map));
                                 values.insert(mid.clone(), val.clone());
                                 new_snapshot.values.insert(
                                     mid.clone(), (val, DeterminacyState::Determined),
@@ -1497,7 +1524,7 @@ impl Engine {
                             if let Some(node) = graph.value_cells.get(mid)
                                 && let Some(ref expr) = node.default_expr
                             {
-                                let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, &functions));
+                                let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, &functions).with_meta(&self.meta_map));
                                 values.insert(mid.clone(), val.clone());
                                 new_snapshot.values.insert(
                                     mid.clone(), (val, DeterminacyState::Determined),
@@ -1639,7 +1666,7 @@ impl Engine {
                                         && let Some(node) = new_snapshot.graph.value_cells.get(vcid)
                                         && let Some(ref expr) = node.default_expr
                                     {
-                                        let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, &functions));
+                                        let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, &functions).with_meta(&self.meta_map));
                                         values.insert(vcid.clone(), val.clone());
                                         new_snapshot.values.insert(
                                             vcid.clone(),
@@ -1705,7 +1732,7 @@ impl Engine {
                             if let Some(node) = new_snapshot.graph.value_cells.get(member_id)
                                 && let Some(ref expr) = node.default_expr
                             {
-                                let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, &functions));
+                                let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, &functions).with_meta(&self.meta_map));
                                 values.insert(member_id.clone(), val.clone());
                                 new_snapshot.values.insert(
                                     member_id.clone(),
@@ -1729,7 +1756,7 @@ impl Engine {
                             if let Some(node) = new_snapshot.graph.value_cells.get(member_id)
                                 && let Some(ref expr) = node.default_expr
                             {
-                                let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, &functions));
+                                let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, &functions).with_meta(&self.meta_map));
                                 values.insert(member_id.clone(), val.clone());
                                 new_snapshot.values.insert(
                                     member_id.clone(),
@@ -1815,7 +1842,7 @@ impl Engine {
 
                         // Evaluate the cell
                         let val = if let Some(expr) = default_expr {
-                            reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, &functions))
+                            reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, &functions).with_meta(&self.meta_map))
                         } else {
                             Value::Undef
                         };
@@ -1968,6 +1995,16 @@ impl Engine {
         let diagnostics = Vec::new();
         let mut stats = CacheStats::default();
 
+        // Build meta_map from module templates (same logic as eval()).
+        // This ensures MetaAccess expressions resolve correctly even when
+        // eval_cached is called without a prior eval().
+        self.meta_map = module
+            .templates
+            .iter()
+            .filter(|t| !t.meta.is_empty())
+            .map(|t| (t.name.clone(), t.meta.clone()))
+            .collect();
+
         for template in &module.templates {
             // First pass: evaluate Param defaults, Auto cells, (or use overrides)
             for cell in &template.value_cells {
@@ -2116,7 +2153,7 @@ impl Engine {
                     let val = if let Some(override_val) = self.param_overrides.get(&cell.id) {
                         override_val.clone()
                     } else if let Some(ref expr) = cell.default_expr {
-                        reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, &module.functions))
+                        reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, &module.functions).with_meta(&self.meta_map))
                     } else {
                         reify_types::Value::Undef
                     };
@@ -2209,7 +2246,7 @@ impl Engine {
                         payload: None,
                     });
 
-                    let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, &module.functions));
+                    let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, &module.functions).with_meta(&self.meta_map));
 
                     // Build dependency trace from expression refs
                     let trace = extract_dependency_trace(expr);
@@ -2459,7 +2496,7 @@ impl Engine {
                     let handle_start = step_handles.len();
                     for op in &realization.operations {
                         total_ops += 1;
-                        let geom_op = compile_geometry_op(op, &values, &step_handles[handle_start..], &module.functions);
+                        let geom_op = compile_geometry_op(op, &values, &step_handles[handle_start..], &module.functions, &self.meta_map);
                         match geom_op {
                             Some(geom_op) => match kernel.execute(&geom_op) {
                                 Ok(handle) => {
@@ -2534,7 +2571,7 @@ impl Engine {
                     for op in &realization.operations {
                         total_ops += 1;
                         let geom_op =
-                            compile_geometry_op(op, &check_result.values, &step_handles[handle_start..], &module.functions);
+                            compile_geometry_op(op, &check_result.values, &step_handles[handle_start..], &module.functions, &self.meta_map);
                         match geom_op {
                             Some(geom_op) => match kernel.execute(&geom_op) {
                                 Ok(handle) => {
@@ -2609,6 +2646,7 @@ impl Engine {
             module,
             &check_result.values,
             &mut diagnostics,
+            &self.meta_map,
         );
 
         TessellateResult {
@@ -2631,6 +2669,7 @@ impl Engine {
         module: &CompiledModule,
         values: &ValueMap,
         diagnostics: &mut Vec<Diagnostic>,
+        meta_map: &HashMap<String, HashMap<String, String>>,
     ) -> Vec<(String, Mesh)> {
         let mut meshes = Vec::new();
 
@@ -2651,6 +2690,7 @@ impl Engine {
                         values,
                         &step_handles[handle_start..],
                         &module.functions,
+                        meta_map,
                     );
                     match geom_op {
                         Some(geom_op) => match kernel.execute(&geom_op) {
@@ -2750,6 +2790,7 @@ impl Engine {
             module,
             &values,
             &mut diagnostics,
+            &self.meta_map,
         );
 
         Some(TessellateResult {
@@ -2774,6 +2815,7 @@ impl Engine {
         snapshot: &mut Snapshot,
         version_id: u64,
         functions: &[CompiledFunction],
+        meta_map: &HashMap<String, HashMap<String, String>>,
     ) {
         let let_cells: HashMap<NodeId, &reify_types::CompiledExpr> = template
             .value_cells
@@ -2806,7 +2848,7 @@ impl Engine {
                 payload: None,
             });
 
-            let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions));
+            let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions).with_meta(meta_map));
             values.insert(cell_id.clone(), val.clone());
 
             snapshot.values.insert(
@@ -2841,6 +2883,7 @@ fn compile_geometry_op(
     values: &ValueMap,
     step_handles: &[GeometryHandleId],
     functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
 ) -> Option<reify_types::GeometryOp> {
     use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
 
@@ -2849,7 +2892,7 @@ fn compile_geometry_op(
             let eval_arg = |name: &str| -> reify_types::Value {
                 args.iter()
                     .find(|(n, _)| n == name)
-                    .map(|(_, expr)| reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions)))
+                    .map(|(_, expr)| reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions).with_meta(meta_map)))
                     .unwrap_or(reify_types::Value::Undef)
             };
 
@@ -2900,7 +2943,7 @@ fn compile_geometry_op(
             let eval_arg = |name: &str| -> reify_types::Value {
                 args.iter()
                     .find(|(n, _)| n == name)
-                    .map(|(_, expr)| reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions)))
+                    .map(|(_, expr)| reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions).with_meta(meta_map)))
                     .unwrap_or(reify_types::Value::Undef)
             };
             match kind {
@@ -2919,7 +2962,7 @@ fn compile_geometry_op(
                         .iter()
                         .filter(|(n, _)| n.starts_with("face_"))
                         .filter_map(|(_, expr)| {
-                            reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions)).as_f64().map(|v| v as usize)
+                            reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions).with_meta(meta_map)).as_f64().map(|v| v as usize)
                         })
                         .collect();
                     Some(reify_types::GeometryOp::Shell {
@@ -2957,7 +3000,7 @@ fn compile_geometry_op(
             let eval_arg_f64 = |name: &str| -> f64 {
                 args.iter()
                     .find(|(n, _)| n == name)
-                    .and_then(|(_, expr)| reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions)).as_f64())
+                    .and_then(|(_, expr)| reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions).with_meta(meta_map)).as_f64())
                     .unwrap_or(0.0)
             };
             match kind {
@@ -2986,13 +3029,13 @@ fn compile_geometry_op(
             let eval_arg = |name: &str| -> reify_types::Value {
                 args.iter()
                     .find(|(n, _)| n == name)
-                    .map(|(_, expr)| reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions)))
+                    .map(|(_, expr)| reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions).with_meta(meta_map)))
                     .unwrap_or(reify_types::Value::Undef)
             };
             let eval_arg_f64 = |name: &str| -> f64 {
                 args.iter()
                     .find(|(n, _)| n == name)
-                    .and_then(|(_, expr)| reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions)).as_f64())
+                    .and_then(|(_, expr)| reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions).with_meta(meta_map)).as_f64())
                     .unwrap_or(0.0)
             };
             // Pattern operations resolve target via step index
@@ -3098,6 +3141,7 @@ fn elaborate_child_instance(
     child_template: &TopologyTemplate,
     scoped_entity: &str,
     args: &[(String, reify_types::CompiledExpr)],
+    meta_map: &HashMap<String, HashMap<String, String>>,
 ) {
     let mut child_values = ValueMap::new();
 
@@ -3110,9 +3154,9 @@ fn elaborate_child_instance(
         let member = &cell.id.member;
 
         let val = if let Some((_name, arg_expr)) = args.iter().find(|(name, _)| name == member) {
-            reify_expr::eval_expr(arg_expr, &reify_expr::EvalContext::new(values, functions))
+            reify_expr::eval_expr(arg_expr, &reify_expr::EvalContext::new(values, functions).with_meta(meta_map))
         } else if let Some(ref default_expr) = cell.default_expr {
-            reify_expr::eval_expr(default_expr, &reify_expr::EvalContext::new(&child_values, functions))
+            reify_expr::eval_expr(default_expr, &reify_expr::EvalContext::new(&child_values, functions).with_meta(meta_map))
         } else {
             Value::Undef
         };
@@ -3178,7 +3222,7 @@ fn elaborate_child_instance(
         };
         let member = &child_cell_id.member;
 
-        let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&child_values, functions));
+        let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&child_values, functions).with_meta(meta_map));
         child_values.insert(child_cell_id.clone(), val.clone());
 
         let scoped_id = ValueCellId::new(scoped_entity, member);
@@ -3236,7 +3280,7 @@ mod tests {
             args: vec![],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[]);
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
         let result = result.expect("compile_geometry_op should return Some for Loft");
 
         match result {
