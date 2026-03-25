@@ -1912,4 +1912,35 @@ mod tests {
         let v = Value::Tensor(vec![Value::Int(1), Value::Int(2)]);
         assert_eq!(v.clone().canonicalize_matrix(), v);
     }
+
+    // ── Value::Matrix try_into_matrix() tests (step-9) ────────────────────────
+
+    #[test]
+    fn try_into_matrix_round_trip_non_empty() {
+        let original = Value::Matrix(vec![
+            vec![Value::Int(1), Value::Int(2)],
+            vec![Value::Int(3), Value::Int(4)],
+        ]);
+        let canonicalized = original.clone().canonicalize_matrix();
+        assert_eq!(canonicalized.try_into_matrix(), Some(original));
+    }
+
+    #[test]
+    fn try_into_matrix_empty_outer_round_trip_returns_none() {
+        // Documents known invariant break: round-trip fails for empty matrices
+        let empty = Value::Matrix(vec![]);
+        let canonicalized = empty.canonicalize_matrix();
+        assert_eq!(canonicalized.try_into_matrix(), None);
+    }
+
+    #[test]
+    fn try_into_matrix_non_tensor_returns_none() {
+        assert_eq!(Value::Real(1.0).try_into_matrix(), None);
+    }
+
+    #[test]
+    fn try_into_matrix_flat_tensor_returns_none() {
+        let flat = Value::Tensor(vec![Value::Real(1.0)]);
+        assert_eq!(flat.try_into_matrix(), None);
+    }
 }
