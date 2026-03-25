@@ -212,7 +212,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             // Meta access resolves at runtime from the entity's TopologyTemplate meta map.
             // The EvalContext currently doesn't carry meta — return the value from
             // ctx.values if a synthetic cell was wired, otherwise Undef.
-            let meta_cell = reify_types::ValueCellId::new(entity, &format!("__meta_{}", key));
+            let meta_cell = reify_types::ValueCellId::new(entity, format!("__meta_{}", key));
             let v = ctx.values.get_or_undef(&meta_cell);
             if v.is_undef() {
                 // Fallback: meta not yet wired into eval context.
