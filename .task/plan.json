@@ -99,6 +99,34 @@
       "description": "Verify all integration tests pass. Fix any issues with make_prism handling of Face vs Wire vs Shell input topologies. Ensure BRepPrimAPI_MakePrism produces correct Solid shapes from Face profiles. If profile type auto-detection is needed in the C++ layer, add TopAbs_ShapeEnum check to ensure the input is at least a Face or Wire. Add descriptive error message if input is a Solid or Compound (not valid for extrusion).",
       "status": "done",
       "commit": "96f49b16"
+    },
+    {
+      "id": "step-11",
+      "type": "impl",
+      "description": "REVIEW FIX [silent_default_on_logic_error]: In crates/reify-eval/src/lib.rs ~line 3135 (SweepKind::Extrude arm), replace `.unwrap_or(reify_types::Value::Undef)` with `.expect(\"Extrude Sweep args must contain 'distance' key \u2014 compiler bug\")`. The 'distance' key is always injected by compile_geometry_call for extrude; its absence is a compiler invariant violation that must panic loudly, not silently produce Value::Undef. This follows the project convention documented in feedback_silent_defaults_pattern.md.",
+      "status": "done",
+      "commit": "4eb2cf9b"
+    },
+    {
+      "id": "step-12",
+      "type": "impl",
+      "description": "REVIEW FIX [test_does_not_test_what_it_claims]: In crates/reify-eval/tests/extrude_e2e.rs, fix vacuous assertions in `extrude_compiler_rejects_one_arg` (lines 43-46) and `extrude_compiler_rejects_three_args` (lines 72-75). Replace `assert!(!has_extrude_op || !compiled.diagnostics.is_empty(), ...)` with two strict assertions per test: (1) `assert!(!compiled.diagnostics.is_empty(), \"expected error diagnostic for wrong arg count\")` to verify a diagnostic IS emitted, and (2) `assert!(!has_extrude_op, \"should not produce Sweep(Extrude) op with wrong arg count\")` to verify no Extrude op was produced. The current `||` assertions pass vacuously when neither condition holds (no diagnostic emitted AND no op produced).",
+      "status": "done",
+      "commit": "c9c4dbf0"
+    },
+    {
+      "id": "step-13",
+      "type": "test",
+      "description": "REVIEW FIX [missing_tests part 1]: Create crates/reify-kernel-occt/tests/extrude_integration.rs (the file planned in steps 7/9 but never created). Gate entire file with `#![cfg(has_occt)]`. Write public-API integration tests using OcctKernel::execute(): (a) `extrude_zero_distance_returns_error` \u2014 execute Box to get a profile handle, then execute Extrude with distance=Value::Real(0.0), assert Err(GeometryError::OperationFailed(msg)) where msg contains 'zero'. (b) `extrude_non_finite_distance_returns_error` \u2014 same profile setup, test with Value::Real(f64::NAN) and Value::Real(f64::INFINITY), assert both return OperationFailed with 'finite' in message. These test the kernel Extrude handler's validation paths through the public API.",
+      "status": "done",
+      "commit": "b4311adc"
+    },
+    {
+      "id": "step-14",
+      "type": "test",
+      "description": "REVIEW FIX [missing_tests part 2]: Add kernel-path volume correctness tests in crates/reify-kernel-occt/src/lib.rs inline test module (requires private FFI access for face creation via store_raw + make_circle_face). Rewrite existing FFI-direct volume tests to exercise the full OcctKernel::execute() path: (a) `extrude_circle_face_through_kernel` \u2014 store_raw(make_circle_face(5.0, 0.0)) to get face handle, then kernel.execute(&GeometryOp::Extrude { profile: face_id, distance: Value::Real(10.0) }), query volume on result, assert \u2248 \u03c0*25*10 = 785.4 with 1% tolerance. (b) `extrude_negative_distance_through_kernel` \u2014 same but distance=Value::Real(-10.0), verify volume matches positive extrusion. The existing FFI-direct tests (extrude_circle_face_volume, extrude_negative_distance_same_volume) can remain as supplementary FFI-level tests.",
+      "status": "done",
+      "commit": "82b4a9cb"
     }
   ],
   "design_decisions": [
@@ -125,6 +153,14 @@
     {
       "decision": "Extrude uses profiles vec with single entry rather than a target field like Modify ops",
       "rationale": "The CompiledGeometryOp::Sweep variant already has a profiles: Vec<GeomRef> field designed for geometry references. Using profiles[0] for the extrude profile is consistent with how Loft uses the same field. A separate target field would require a new CompiledGeometryOp variant."
+    },
+    {
+      "decision": "OCCT kernel volume tests split between integration test file and inline module",
+      "rationale": "Integration tests in tests/extrude_integration.rs can only access the public API (OcctKernel::execute/query). Error-path tests (zero/NaN/Inf distance) work with Box as a dummy profile since errors trigger before the FFI call. Volume correctness tests need make_circle_face (private FFI) and store_raw (test-only helper), so they must remain in the inline #[cfg(all(test, has_occt))] mod tests block. Both locations exercise the kernel Extrude handler through execute()."
+    },
+    {
+      "decision": "Extrude distance arg uses expect() not unwrap_or(Value::Undef)",
+      "rationale": "The 'distance' key in Sweep args is a compiler invariant \u2014 compile_geometry_call always injects it for SweepKind::Extrude. Its absence indicates a compiler bug. Per project convention (feedback_silent_defaults_pattern.md), logic errors must be noisy: expect() with a descriptive message panics at the source rather than silently propagating Value::Undef downstream."
     }
   ],
   "reuse": [
@@ -167,8 +203,13 @@
       "what": "loft_through_full_eval_pipeline test pattern",
       "where": "crates/reify-eval/tests/geometry_error_handling.rs line 267-347",
       "how": "Follow identical structure for extrude E2E test: build ops list, create template/module, run Engine::build with mock kernel, inspect captured ops for correct GeometryOp variant and field values."
+    },
+    {
+      "what": "Inline OCCT kernel test pattern with store_raw",
+      "where": "crates/reify-kernel-occt/src/lib.rs line 636-660 (test helpers) and line 662+ (tests)",
+      "how": "Use store_raw() to insert FFI-created shapes (make_circle_face) as kernel handles, then exercise kernel.execute(&GeometryOp::Extrude { ... }) and kernel.query(&GeometryQuery::Volume(...)) for end-to-end kernel path tests."
     }
   ],
   "_session_id": "308-f4ddbf85",
-  "_created_at": "2026-03-25T04:06:55.472269+00:00"
+  "_created_at": "2026-03-25T04:39:17.631539+00:00"
 }
