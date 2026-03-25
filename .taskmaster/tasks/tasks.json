@@ -7441,11 +7441,11 @@
         "description": "Three allocation issues in the gradient sampling path (crates/reify-expr/src/lib.rs):\n\n1. Use Arc instead of Box+clone for the lambda slot in eval_gradient (~line 429) to avoid deep-cloning the original field on every gradient() call.\n2. Reuse a mutable buffer in compute_numerical_gradient instead of cloning coords Vec 6 times per sample (lines 475-476).\n3. Reduce or eliminate captures.clone() in apply_lambda (~line 376) which is called 6 times per gradient sample.\n\nSource: review suggestions from esc-281-11 (task 281).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-25T22:49:39.877Z"
+        "updatedAt": "2026-03-25T22:57:50.193Z"
       },
       {
         "id": "413",
@@ -7819,7 +7819,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-25T22:57:28.039Z",
+      "lastModified": "2026-03-25T22:57:50.194Z",
       "taskCount": 441,
       "completedCount": 231,
       "tags": [
