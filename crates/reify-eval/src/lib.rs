@@ -3236,8 +3236,7 @@ fn compile_geometry_op(
                     let distance = args
                         .iter()
                         .find(|(n, _)| n == "distance")
-                        .map(|(_, expr)| reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions).with_meta(meta_map)))
-                        .expect("Extrude Sweep args must contain distance key — compiler bug");
+                        .map(|(_, expr)| reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions).with_meta(meta_map)))?;
                     Some(reify_types::GeometryOp::Extrude {
                         profile: profile_handle,
                         distance,
@@ -3248,18 +3247,16 @@ fn compile_geometry_op(
                         GeomRef::Step(idx) => step_handles.get(*idx).copied()?,
                         GeomRef::Sub(_) => step_handles.last().copied()?,
                     };
-                    let eval_arg_f64 = |name: &str| -> f64 {
+                    let eval_arg_f64 = |name: &str| -> Option<f64> {
                         let (_, expr) = args.iter()
-                            .find(|(n, _)| n == name)
-                            .unwrap_or_else(|| panic!("Revolve Sweep '{}' arg missing — compiler bug", name));
+                            .find(|(n, _)| n == name)?;
                         reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions).with_meta(meta_map))
                             .as_f64()
-                            .unwrap_or_else(|| panic!("Revolve '{}' arg must evaluate to f64 — compiler bug", name))
                     };
                     let axis_dir = [
-                        eval_arg_f64("ax"),
-                        eval_arg_f64("ay"),
-                        eval_arg_f64("az"),
+                        eval_arg_f64("ax")?,
+                        eval_arg_f64("ay")?,
+                        eval_arg_f64("az")?,
                     ];
                     let mag = axis_dir.iter().map(|x| x * x).sum::<f64>().sqrt();
                     if !mag.is_finite() || mag < 1e-12 {
@@ -3268,12 +3265,12 @@ fn compile_geometry_op(
                     Some(reify_types::GeometryOp::Revolve {
                         profile: profile_handle,
                         axis_origin: [
-                            eval_arg_f64("ox"),
-                            eval_arg_f64("oy"),
-                            eval_arg_f64("oz"),
+                            eval_arg_f64("ox")?,
+                            eval_arg_f64("oy")?,
+                            eval_arg_f64("oz")?,
                         ],
                         axis_dir,
-                        angle_rad: eval_arg_f64("angle"),
+                        angle_rad: eval_arg_f64("angle")?,
                     })
                 }
                 reify_compiler::SweepKind::Sweep => {
