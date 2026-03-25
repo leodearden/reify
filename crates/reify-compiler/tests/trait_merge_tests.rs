@@ -330,3 +330,46 @@ structure def S : A + B {
         "expected ValueCellKind::Let for 'y'"
     );
 }
+
+// ── step-9 ───────────────────────────────────────────────────────────────────
+
+/// Two traits provide `let y` with DIFFERENT expressions: A has `let y = 42`,
+/// B has `let y = 99`.  This is a conflict — different content means different
+/// behaviour depending on which trait wins, so the compiler must reject it.
+///
+/// This test will FAIL against the pre-step-10 code because
+/// `collect_all_requirements` maps all `DefaultKind::Let(_)` to a uniform
+/// `Type::Real` sentinel, which causes both to appear identical and be silently
+/// deduplicated without an error.  The fix (step-10) compares `LetDecl`
+/// `content_hash` values and emits a "conflicting trait let bindings"
+/// diagnostic when they differ.
+#[test]
+fn let_conflict_different_expr() {
+    let source = r#"
+trait A {
+    let y = 42
+}
+
+trait B {
+    let y = 99
+}
+
+structure def S : A + B {
+}
+"#;
+
+    let (_, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    assert!(
+        !errors.is_empty(),
+        "expected a conflict error for let y with different expressions, got none"
+    );
+
+    let msg = format!("{:?}", errors);
+    assert!(
+        msg.contains("conflicting") && msg.contains("y"),
+        "error should mention 'conflicting' and 'y', got: {}",
+        msg
+    );
+}
