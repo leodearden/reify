@@ -843,7 +843,8 @@ impl<'a> Lowering<'a> {
             }
             "port_declaration" => check_and_lower!(self, child, "port",
                 self.lower_port(child).map(MemberDecl::Port)),
-            "connect_statement" => self.lower_connect(child).map(MemberDecl::Connect),
+            "connect_statement" => check_and_lower!(self, child, "connect",
+                self.lower_connect(child).map(MemberDecl::Connect)),
             "chain_statement" => check_and_lower!(self, child, "chain",
                 self.lower_chain(child).map(MemberDecl::Chain)),
             "meta_block" => check_and_lower!(self, child, "meta",

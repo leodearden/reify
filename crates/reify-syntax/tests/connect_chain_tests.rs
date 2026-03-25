@@ -443,8 +443,12 @@ fn connect_body_error_node_emits_diagnostic() {
         "expected at least one parse error for invalid connect body syntax, got none"
     );
     assert!(
-        errors.iter().any(|e| e.message.contains("connect body") || e.message.contains("syntax error")),
-        "expected an error mentioning 'connect body' or 'syntax error', got: {:?}",
+        errors.iter().any(|e| {
+            e.message.contains("connect body")
+                || e.message.contains("syntax error")
+                || e.message.contains("invalid connect")
+        }),
+        "expected an error mentioning 'connect body', 'syntax error', or 'invalid connect', got: {:?}",
         errors
     );
 }
