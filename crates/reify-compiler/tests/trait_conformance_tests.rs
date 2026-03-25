@@ -1232,3 +1232,81 @@ fn conformance_sub_structure_name_match_no_error() {
     // Should be satisfied: sub.structure_name == RequirementKind::Sub value "BoltSet".
     assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
 }
+
+/// step-23: verify compile_trait → check_trait_conformance agreement.
+/// Parse a trait with 'sub bolt = BoltSet()', compile it via compile_module,
+/// extract RequirementKind::Sub and verify it contains "BoltSet" (structure name),
+/// then pass to check_trait_conformance with SubInfo { name: "bolt", structure_name: "BoltSet" }
+/// → no errors. Proves both code paths agree on structure-name semantics.
+#[test]
+fn compile_trait_sub_check_conformance_agreement() {
+    let source = r#"
+trait HasBolt {
+    sub bolt = BoltSet()
+}
+"#;
+    let module = compile_module(source);
+    assert_eq!(module.trait_defs.len(), 1, "expected 1 trait def");
+    let trait_def = &module.trait_defs[0];
+    assert_eq!(trait_def.name, "HasBolt");
+    assert_eq!(
+        trait_def.required_members.len(),
+        1,
+        "expected 1 required member (sub), got: {:?}",
+        trait_def.required_members
+    );
+    let req = &trait_def.required_members[0];
+    assert_eq!(req.name, "bolt");
+    // Verify compile_trait stores structure name "BoltSet", not a trait name.
+    match &req.kind {
+        RequirementKind::Sub(structure_name) => {
+            assert_eq!(structure_name, "BoltSet", "Sub should store structure name");
+        }
+        other => panic!("expected RequirementKind::Sub, got: {:?}", other),
+    }
+    // Now verify check_trait_conformance agrees: SubInfo with structure_name="BoltSet" → no errors.
+    let subs = vec![SubInfo {
+        name: "bolt".to_string(),
+        structure_name: "BoltSet".to_string(),
+    }];
+    let structure_members: std::collections::HashMap<String, Type> =
+        std::collections::HashMap::new();
+    let errors = check_trait_conformance(&structure_members, trait_def, &[], &subs);
+    assert!(
+        errors.is_empty(),
+        "compile_trait + check_trait_conformance should agree — no errors, got: {:?}",
+        errors
+    );
+}
+
+/// step-24: structure-name mismatch via the compile_trait path.
+/// Compile a trait with 'sub bolt = BoltSet()', check_trait_conformance with
+/// SubInfo { name: "bolt", structure_name: "WrongStructure" }
+/// → ConformanceError::SubStructureMismatch { expected_structure: "BoltSet", actual_structure: "WrongStructure" }.
+#[test]
+fn compile_trait_sub_structure_mismatch() {
+    let source = r#"
+trait HasBolt {
+    sub bolt = BoltSet()
+}
+"#;
+    let module = compile_module(source);
+    let trait_def = &module.trait_defs[0];
+    // Sub with wrong structure name.
+    let subs = vec![SubInfo {
+        name: "bolt".to_string(),
+        structure_name: "WrongStructure".to_string(),
+    }];
+    let structure_members: std::collections::HashMap<String, Type> =
+        std::collections::HashMap::new();
+    let errors = check_trait_conformance(&structure_members, trait_def, &[], &subs);
+    assert_eq!(errors.len(), 1, "expected 1 error, got: {:?}", errors);
+    match &errors[0] {
+        ConformanceError::SubStructureMismatch { name, expected_structure, actual_structure } => {
+            assert_eq!(name, "bolt");
+            assert_eq!(expected_structure, "BoltSet");
+            assert_eq!(actual_structure, "WrongStructure");
+        }
+        other => panic!("expected SubStructureMismatch, got: {:?}", other),
+    }
+}
