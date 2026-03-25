@@ -496,6 +496,77 @@ pub async fn shutdown_sidecar(sidecar: &Mutex<Option<SidecarHandle>>) {
     *guard = None;
 }
 
+/// Ensure the sidecar is spawned and ready to accept messages.
+///
+/// If the sidecar slot is `None`, calls `spawn_fn` to create a new handle,
+/// stores it in the slot (under the lock), then subscribes to the ready
+/// notification immediately after releasing the lock and waits with the given
+/// timeout.
+///
+/// **Race-safety note**: `spawn_fn` is awaited while holding the sidecar lock.
+/// In Tokio's single-threaded executor (used by `#[tokio::test]` and by Tauri's
+/// command dispatch), the reader task spawned inside `from_parts` cannot run
+/// until we yield, so `notify.notified()` is called before the reader task
+/// ever gets to process the ready message.  In a multi-threaded executor the
+/// window is bounded by the time between lock release and `notified()`, which
+/// is sub-microsecond and occurs before any OS-process round-trip.
+///
+/// If the slot already contains a handle, returns `Ok(())` immediately without
+/// spawning.
+///
+/// Returns `Err` if:
+/// - `spawn_fn` returns an error
+/// - The ready notification does not fire within `ready_timeout`
+/// - The sidecar crashes before becoming ready (notification fires due to crash)
+pub async fn ensure_sidecar_ready<F, Fut>(
+    sidecar: &Mutex<Option<SidecarHandle>>,
+    spawn_fn: F,
+    ready_timeout: Duration,
+) -> Result<(), String>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<SidecarHandle, String>>,
+{
+    // Phase 1: spawn if needed, extract Arc refs, release the lock.
+    let (notify, state) = {
+        let mut guard = sidecar.lock().await;
+        if guard.is_some() {
+            // Already running — skip spawn and wait.
+            return Ok(());
+        }
+        // Spawn the sidecar process via the caller-supplied closure.
+        let handle = spawn_fn().await?;
+        let notify = Arc::clone(handle.ready_notify());
+        let state = Arc::clone(handle.state());
+        *guard = Some(handle);
+        (notify, state)
+        // guard dropped here — sidecar lock released
+    };
+
+    // Phase 2: subscribe to the notification immediately after the lock is
+    // released (no yield in between on a single-threaded executor, so the
+    // reader task cannot have fired yet).
+    let notified = notify.notified();
+
+    tokio::time::timeout(ready_timeout, notified)
+        .await
+        .map_err(|_| {
+            format!(
+                "Sidecar did not become ready within {}ms",
+                ready_timeout.as_millis()
+            )
+        })?;
+
+    // Phase 3: check state after notification — the notify may have been
+    // triggered by a crash rather than the Ready message.
+    let state_val = state.lock().await.clone();
+    match state_val {
+        SidecarState::Ready => Ok(()),
+        SidecarState::Crashed(msg) => Err(format!("sidecar crashed: {}", msg)),
+        other => Err(format!("sidecar not ready after notification: {:?}", other)),
+    }
+}
+
 /// Map an OutboundMessage to a Tauri event name and JSON payload.
 pub fn outbound_to_event(msg: &OutboundMessage) -> (String, Value) {
     match msg {
