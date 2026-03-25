@@ -1845,3 +1845,61 @@ async fn ensure_sidecar_ready_notified_race_on_multithread() {
         );
     }
 }
+
+// --- wait_ready enable() race test (task-407/step-1) ---
+
+/// Reproduce the race condition in `wait_ready` where `self.ready_notify.notified()`
+/// creates a Notified future (line 314) but the waiter is NOT registered until first
+/// poll. Between creation and the first poll at `tokio::time::timeout` (line 321),
+/// there is an await point at `self.state.lock().await` (line 317). On a multi-thread
+/// runtime the following interleaving causes a lost notification:
+///
+///   1. wait_ready: `notified()` created — waiter NOT registered
+///   2. wait_ready: acquires state lock, sees Starting, releases lock
+///   3. notifier task: acquires state lock, sets Ready, calls `notify_waiters()` — lost
+///   4. wait_ready: polls `notified` — registers waiter, but notification already fired
+///
+/// The fix adds `tokio::pin!(notified)` + `notified.as_mut().enable()` so the waiter
+/// is eagerly registered before the intervening await point.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn wait_ready_enable_prevents_missed_notification_race() {
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::io::BufReader;
+    use tokio::sync::Mutex;
+
+    for i in 0..50 {
+        let state = Arc::new(Mutex::new(SidecarState::Starting));
+
+        // Create a live duplex to prevent EOF → Crashed state transition.
+        let (_data_writer, data_reader) = tokio::io::duplex(1024);
+        let reader = BufReader::new(data_reader);
+        let (writer, _writer_end) = tokio::io::duplex(1024);
+
+        let handle = SidecarHandle::from_parts(writer, reader, state.clone());
+
+        let notify_arc = Arc::clone(handle.ready_notify());
+        let state_clone = Arc::clone(&state);
+
+        // Spawn a task that yields minimally then sets Ready + notifies.
+        // On a multi-thread runtime this can preempt wait_ready between
+        // notified() creation and the first poll, triggering the race.
+        tokio::spawn(async move {
+            // Yield to give wait_ready a chance to reach the race window.
+            tokio::task::yield_now().await;
+            let mut s = state_clone.lock().await;
+            *s = SidecarState::Ready;
+            drop(s);
+            notify_arc.notify_waiters();
+        });
+
+        let result = handle.wait_ready(Duration::from_millis(500)).await;
+        assert!(
+            result.is_ok(),
+            "iteration {}: wait_ready should succeed (race: notify_waiters \
+             fires between notified() creation and first poll): {:?}",
+            i,
+            result
+        );
+    }
+}
