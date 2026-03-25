@@ -1208,3 +1208,30 @@ structure def BadAssembly : HasFastener {
         error_msg
     );
 }
+
+// ── Review fix: Sub semantic contract (steps 21-24) ─────────────────────────
+
+/// step-21: expose the semantic mismatch — RequirementKind::Sub stores a structure
+/// name (as compile_trait produces), but the current implementation checks
+/// trait_bounds instead of structure_name. A SubInfo with structure_name == the
+/// required name but empty trait_bounds should produce no errors after the fix.
+///
+/// Currently FAILS: returns SubTraitNotSatisfied because trait_bounds doesn't
+/// contain "BoltSet". After step-22 fix, returns no errors.
+#[test]
+fn conformance_sub_structure_name_match_no_error() {
+    // make_sub_trait passes "BoltSet" as the second argument to RequirementKind::Sub —
+    // exactly what compile_trait() would do for `sub bolt = BoltSet()`.
+    let trait_def = make_sub_trait("HasBolt", "bolt", "BoltSet");
+    let subs = vec![SubInfo {
+        name: "bolt".to_string(),
+        structure_name: "BoltSet".to_string(),
+        // Empty trait_bounds — matches only by structure_name.
+        trait_bounds: vec![],
+    }];
+    let structure_members: std::collections::HashMap<String, Type> =
+        std::collections::HashMap::new();
+    let errors = check_trait_conformance(&structure_members, &trait_def, &[], &subs);
+    // Should be satisfied: sub.structure_name == RequirementKind::Sub value "BoltSet".
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+}
