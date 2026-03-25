@@ -614,6 +614,10 @@ pub fn type_compatible(param_ty: &Type, arg_ty: &Type) -> bool {
     if matches!((param_ty, arg_ty), (Type::Real, Type::Int)) {
         return true;
     }
+    // Bidirectional implicit tensor/vector/matrix conversions
+    if implicitly_converts_to(param_ty, arg_ty) || implicitly_converts_to(arg_ty, param_ty) {
+        return true;
+    }
     false
 }
 
