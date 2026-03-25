@@ -616,6 +616,15 @@ where
         // Guard dropped here — lock released.
     }
 
+    // Re-check: the reader task may have already set Ready and called
+    // notify_waiters() before our notified()/enable() subscription was set up
+    // (e.g., during spawn_fn's internal await points).  Without this check,
+    // a lost notification would cause a spurious timeout.  This mirrors the
+    // re-check in wait_ready (line 329).
+    if matches!(*state.lock().await, SidecarState::Ready) {
+        return Ok(());
+    }
+
     // Phase 4: wait for the ready notification with timeout.
     let wait_result = tokio::time::timeout(ready_timeout, notified).await.map_err(|_| {
         format!("Sidecar did not become ready within {}ms", ready_timeout.as_millis())
