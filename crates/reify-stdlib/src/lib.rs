@@ -477,6 +477,20 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
         "partially_determined" => Value::Undef,
 
         // --- Frame constructors ---
+        "frame3_identity" => {
+            if args.is_empty() {
+                Value::Frame {
+                    origin: Box::new(Value::Point(vec![
+                        Value::length(0.0),
+                        Value::length(0.0),
+                        Value::length(0.0),
+                    ])),
+                    basis: Box::new(Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 }),
+                }
+            } else {
+                Value::Undef
+            }
+        }
         "frame3" => {
             if args.len() != 2 {
                 return Value::Undef;
@@ -4000,5 +4014,51 @@ mod tests {
             "expected Value::Frame for dimensionless Point3 origin, got {:?}",
             result
         );
+    }
+
+    // ── frame3_identity tests (step-7) ────────────────────────────────────────
+
+    #[test]
+    fn frame3_identity_no_args_returns_frame() {
+        let result = eval_builtin("frame3_identity", &[]);
+        assert!(
+            matches!(&result, Value::Frame { .. }),
+            "expected Value::Frame, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn frame3_identity_origin_is_zero_length_point3() {
+        let result = eval_builtin("frame3_identity", &[]);
+        match result {
+            Value::Frame { origin, .. } => {
+                let expected_origin = Value::Point(vec![
+                    Value::length(0.0),
+                    Value::length(0.0),
+                    Value::length(0.0),
+                ]);
+                assert_eq!(*origin, expected_origin, "identity origin should be zero Point3<Length>");
+            }
+            other => panic!("expected Value::Frame, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn frame3_identity_basis_is_identity_quaternion() {
+        let result = eval_builtin("frame3_identity", &[]);
+        match result {
+            Value::Frame { basis, .. } => {
+                let expected_basis = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+                assert_eq!(*basis, expected_basis, "identity basis should be (w:1,x:0,y:0,z:0)");
+            }
+            other => panic!("expected Value::Frame, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn frame3_identity_with_any_args_returns_undef() {
+        assert!(eval_builtin("frame3_identity", &[Value::Real(1.0)]).is_undef());
+        assert!(eval_builtin("frame3_identity", &[Value::Real(1.0), Value::Real(2.0)]).is_undef());
     }
 }
