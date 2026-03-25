@@ -151,6 +151,15 @@ pub fn format_value(v: &Value) -> (String, String) {
         Value::Transform { rotation, translation } => {
             (format!("transform({}, {})", format_value(rotation).0, format_value(translation).0), String::new())
         }
+        Value::Plane { origin, normal } => {
+            (format!("plane({}, {})", format_value(origin).0, format_value(normal).0), String::new())
+        }
+        Value::Axis { origin, direction } => {
+            (format!("axis({}, {})", format_value(origin).0, format_value(direction).0), String::new())
+        }
+        Value::BoundingBox { min, max } => {
+            (format!("bbox({}, {})", format_value(min).0, format_value(max).0), String::new())
+        }
         Value::Range { lower, upper, lower_inclusive, upper_inclusive } => {
             let lower_bracket = if *lower_inclusive { "[" } else { "(" };
             let upper_bracket = if *upper_inclusive { "]" } else { ")" };
