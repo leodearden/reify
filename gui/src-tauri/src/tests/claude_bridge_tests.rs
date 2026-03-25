@@ -1099,3 +1099,65 @@ fn format_inbound_send_message_with_context_includes_context() {
     let json_val: serde_json::Value = serde_json::from_str(line.trim_end()).unwrap();
     assert_eq!(json_val["context"]["selected_entity"], "box1");
 }
+
+// --- shutdown_sidecar edge-case tests (task-353/step-1) ---
+
+#[tokio::test]
+async fn shutdown_sidecar_noop_on_empty_slot() {
+    use tokio::sync::Mutex;
+
+    // Slot is already None — the `if let Some` guard handles this gracefully.
+    let sidecar: Mutex<Option<SidecarHandle>> = Mutex::new(None);
+
+    // Should not panic or error.
+    shutdown_sidecar(&sidecar).await;
+
+    // Slot must remain None.
+    assert!(
+        sidecar.lock().await.is_none(),
+        "Expected None after shutdown_sidecar on empty slot"
+    );
+}
+
+// --- wait_ready crash-during-wait test (task-353/step-3) ---
+
+#[tokio::test]
+async fn wait_ready_returns_err_on_crash_during_wait() {
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::io::BufReader;
+    use tokio::sync::Mutex;
+
+    let state = Arc::new(Mutex::new(SidecarState::Starting));
+    let data: &[u8] = b"";
+    let empty_reader = BufReader::new(data);
+    let (writer, _writer_end) = tokio::io::duplex(1024);
+
+    let handle = SidecarHandle::from_parts(writer, empty_reader, state.clone());
+
+    // Clone notify and state so a spawned task can trigger a crash.
+    let notify = Arc::clone(handle.ready_notify());
+    let state_for_crash = Arc::clone(handle.state());
+
+    // Spawn a task that simulates a crash after wait_ready has subscribed.
+    // In #[tokio::test] (single-threaded current_thread), wait_ready yields at
+    // its timeout/await point before this task runs, ensuring it is already
+    // subscribed when notify_waiters() fires.
+    tokio::spawn(async move {
+        // Yield a few times — wait_ready reaches its notified.await before us.
+        for _ in 0..20 {
+            tokio::task::yield_now().await;
+        }
+        *state_for_crash.lock().await = SidecarState::Crashed("test crash".to_string());
+        notify.notify_waiters();
+    });
+
+    let result = handle.wait_ready(Duration::from_secs(5)).await;
+    assert!(result.is_err(), "wait_ready should return Err when sidecar crashes during wait");
+    let msg = result.unwrap_err();
+    assert!(
+        msg.contains("crashed"),
+        "Error should mention crash: {}",
+        msg
+    );
+}
