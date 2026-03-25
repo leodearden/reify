@@ -133,3 +133,46 @@ structure def S : A {
         x_cells.iter().map(|vc| &vc.id).collect::<Vec<_>>()
     );
 }
+
+// ── step-4 ───────────────────────────────────────────────────────────────────
+
+/// Diamond hierarchy with a default at the root: D{param x:Length=10mm}.
+/// Structure S:A does not override x — the default is injected exactly once.
+/// Assert: no errors, exactly 1 'x' value cell with default_expr set.
+#[test]
+fn diamond_hierarchy_default_deduped() {
+    let source = r#"
+trait D {
+    param x : Length = 10mm
+}
+
+trait B : D {
+}
+
+trait C : D {
+}
+
+trait A : B + C {
+}
+
+structure def S : A {
+}
+"#;
+
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    let x_cells: Vec<_> = template.value_cells.iter().filter(|vc| vc.id.member == "x").collect();
+    assert_eq!(
+        x_cells.len(),
+        1,
+        "expected exactly 1 'x' value cell (diamond default dedup), got {}",
+        x_cells.len()
+    );
+    assert!(
+        x_cells[0].default_expr.is_some(),
+        "expected default_expr to be set on the injected 'x' cell"
+    );
+}
