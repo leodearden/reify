@@ -6771,11 +6771,11 @@
         "description": "Fix name_to_idx HashMap (lib.rs:2095-2099) silently dropping first template when two have the same name — assert/check for duplicates. Add source location labels to recursive-cycle warning diagnostic (currently spanless, all others have labels). Deduplicate adjacency list (sort+dedup after collect) for improved self-loop check.\n\nMissing tests:\n- mutual_recursion_both_tagged should assert a warning diagnostic was emitted\n- Warning count should use exact len() == 1 instead of !is_empty()\n- Cycle-path assertion should check for \" -> \" format, not single-char contains('A')\n\nMemory hints: search \"recursive structure cycle detection name_to_idx Tarjan\", entities: compile_recursive_structures, DiagnosticLabel",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-03-25T22:02:21.336Z"
+        "updatedAt": "2026-03-25T22:06:31.410Z"
       },
       {
         "id": "363",
@@ -7748,7 +7748,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-25T22:06:00.981Z",
+      "lastModified": "2026-03-25T22:06:31.413Z",
       "taskCount": 435,
       "completedCount": 229,
       "tags": [
