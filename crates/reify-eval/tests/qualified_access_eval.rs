@@ -173,7 +173,7 @@ structure def Inner : A {
 }
 
 structure def Outer {
-    sub part = Inner
+    sub part = Inner()
     let val : Length = part.(A::x)
 }
 "#;

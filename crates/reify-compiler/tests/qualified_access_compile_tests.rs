@@ -246,7 +246,7 @@ structure def Inner : B {
 }
 
 structure def Outer {
-    sub inner = Inner
+    sub inner = Inner()
     let z : Length = inner.(A::x)
 }
 "#;
