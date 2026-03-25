@@ -3877,4 +3877,28 @@ mod tests {
         // This should panic because 'ox' is missing
         compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
     }
+
+    #[test]
+    fn compile_geometry_op_revolve_zero_axis_returns_none() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        // All 7 args present and numeric, but ax=ay=az=0.0 (zero-length rotation axis)
+        let op = CompiledGeometryOp::Sweep {
+            kind: SweepKind::Revolve,
+            profiles: vec![GeomRef::Step(0)],
+            args: vec![
+                ("ox".into(), literal_f64(0.0)),
+                ("oy".into(), literal_f64(0.0)),
+                ("oz".into(), literal_f64(0.0)),
+                ("ax".into(), literal_f64(0.0)),
+                ("ay".into(), literal_f64(0.0)),
+                ("az".into(), literal_f64(0.0)),
+                ("angle".into(), literal_f64(std::f64::consts::PI)),
+            ],
+        };
+
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        assert!(result.is_none(), "zero-length rotation axis should return None");
+    }
 }
