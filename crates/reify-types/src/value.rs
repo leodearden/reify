@@ -1800,4 +1800,35 @@ mod tests {
         let tensor = Value::Tensor(vec![Value::Tensor(vec![Value::Int(1), Value::Int(2)])]);
         assert_ne!(matrix, tensor, "Matrix and nested Tensor should be distinct variants");
     }
+
+    // ── Value::Matrix content_hash tests (step-3) ─────────────────────────────
+
+    #[test]
+    fn matrix_content_hash_determinism() {
+        let m = Value::Matrix(vec![
+            vec![Value::Int(1), Value::Int(2)],
+            vec![Value::Int(3), Value::Int(4)],
+        ]);
+        let h1 = m.content_hash();
+        let h2 = m.content_hash();
+        assert_eq!(h1, h2, "same matrix should hash identically across two calls");
+    }
+
+    #[test]
+    fn matrix_content_hash_differs_from_nested_tensor() {
+        // Matrix tag=18 vs Tensor tag=14 — hashes must differ
+        let matrix = Value::Matrix(vec![
+            vec![Value::Int(1), Value::Int(2)],
+            vec![Value::Int(3), Value::Int(4)],
+        ]);
+        let tensor = Value::Tensor(vec![
+            Value::Tensor(vec![Value::Int(1), Value::Int(2)]),
+            Value::Tensor(vec![Value::Int(3), Value::Int(4)]),
+        ]);
+        assert_ne!(
+            matrix.content_hash(),
+            tensor.content_hash(),
+            "Matrix (tag 18) hash should differ from nested Tensor (tag 14)"
+        );
+    }
 }
