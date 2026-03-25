@@ -40,7 +40,19 @@ fn eval_ri_file(path: &str, module_name: &str) -> reify_eval::EvalResult {
     );
     let checker = MockConstraintChecker::new();
     let mut engine = reify_eval::Engine::new(Box::new(checker), None);
-    engine.eval(&compiled)
+    let result = engine.eval(&compiled);
+    let eval_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        eval_errors.is_empty(),
+        "eval errors in {}: {:?}",
+        path,
+        eval_errors
+    );
+    result
 }
 
 // ── Section 1: math_linalg.ri ────────────────────────────────────────────────
