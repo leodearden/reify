@@ -376,13 +376,15 @@ fn connect_body_valid_no_spurious_errors() {
     assert_eq!(connect.port_mappings[0].1, "bore");
 }
 
-// ── task-396 step-5: malformed port mapping emits diagnostic ──────────
+// ── task-396 step-5: malformed port mapping caught by check_and_lower! ──
 
 #[test]
 fn connect_body_malformed_mapping_emits_diagnostic() {
     // `{ shaft -> }` has a "from" but no "to"; tree-sitter error recovery
-    // may produce a port_mapping with has_error() or missing fields, which
-    // lower_connect_body currently silently skips.
+    // sets has_error() on the connect_statement (has_error propagates from
+    // descendants). check_and_lower! catches this before lower_connect_body
+    // is reached, emitting "invalid connect: ...".
+    // Body-level diagnostics are tested directly in ts_parser::tests.
     let (_decls, errors) = parse_decls(
         "structure S { port a : out T  port b : in T  connect a -> b { shaft -> } }",
     );
@@ -391,24 +393,21 @@ fn connect_body_malformed_mapping_emits_diagnostic() {
         "expected at least one parse error for malformed port mapping, got none"
     );
     assert!(
-        errors.iter().any(|e| {
-            e.message.contains("connect body")
-                || e.message.contains("port mapping")
-                || e.message.contains("syntax error")
-                || e.message.contains("invalid connect")
-        }),
-        "expected an error mentioning connect body or port mapping issue, got: {:?}",
+        errors.iter().any(|e| e.message.contains("invalid connect")),
+        "expected check_and_lower! to emit 'invalid connect', got: {:?}",
         errors
     );
 }
 
-// ── task-396 step-3: malformed param in connect body emits diagnostic ─
+// ── task-396 step-3: malformed param caught by check_and_lower! ─
 
 #[test]
 fn connect_body_malformed_param_emits_diagnostic() {
     // `{ grade = }` has a name but no value expression; tree-sitter error
-    // recovery may produce a connect_param_assignment with has_error() or
-    // missing fields, which lower_connect_body currently silently skips.
+    // recovery sets has_error() on the connect_statement (has_error propagates
+    // from descendants). check_and_lower! catches this before lower_connect_body
+    // is reached, emitting "invalid connect: ...".
+    // Body-level diagnostics are tested directly in ts_parser::tests.
     let (_decls, errors) = parse_decls(
         "structure S { port a : out T  port b : in T  connect a -> b : BoltSet { grade = } }",
     );
@@ -417,24 +416,21 @@ fn connect_body_malformed_param_emits_diagnostic() {
         "expected at least one parse error for malformed connect parameter, got none"
     );
     assert!(
-        errors.iter().any(|e| {
-            e.message.contains("connect body")
-                || e.message.contains("connect param")
-                || e.message.contains("syntax error")
-                || e.message.contains("invalid connect")
-        }),
-        "expected an error mentioning connect body or param issue, got: {:?}",
+        errors.iter().any(|e| e.message.contains("invalid connect")),
+        "expected check_and_lower! to emit 'invalid connect', got: {:?}",
         errors
     );
 }
 
-// ── task-396 step-1: ERROR node in connect body emits diagnostic ───
+// ── task-396 step-1: ERROR node in connect body caught by check_and_lower! ───
 
 #[test]
 fn connect_body_error_node_emits_diagnostic() {
     // `{ >= }` is clearly invalid syntax inside a connect body; tree-sitter
-    // error recovery should produce an ERROR node, which lower_connect_body
-    // must surface as a ParseError.
+    // error recovery sets has_error() on the connect_statement (has_error
+    // propagates from descendants). check_and_lower! catches this before
+    // lower_connect_body is reached, emitting "invalid connect: ...".
+    // Body-level diagnostics are tested directly in ts_parser::tests.
     let (_decls, errors) = parse_decls(
         "structure S { port a : out T  port b : in T  connect a -> b { >= } }",
     );
@@ -443,12 +439,8 @@ fn connect_body_error_node_emits_diagnostic() {
         "expected at least one parse error for invalid connect body syntax, got none"
     );
     assert!(
-        errors.iter().any(|e| {
-            e.message.contains("connect body")
-                || e.message.contains("syntax error")
-                || e.message.contains("invalid connect")
-        }),
-        "expected an error mentioning 'connect body', 'syntax error', or 'invalid connect', got: {:?}",
+        errors.iter().any(|e| e.message.contains("invalid connect")),
+        "expected check_and_lower! to emit 'invalid connect', got: {:?}",
         errors
     );
 }

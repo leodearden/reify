@@ -2852,4 +2852,103 @@ mod tests {
             other => panic!("expected AdHocSelector, got {:?}", other),
         }
     }
+
+    // ── lower_connect_body direct tests ─────────────────────────────
+    //
+    // These tests call lower_connect_body directly, bypassing the
+    // check_and_lower! guard that normally preempts body-level
+    // diagnostics when has_error() propagates to the connect_statement.
+
+    /// Helper: parse source with tree-sitter and find the first node of a given kind.
+    fn find_node_by_kind<'a>(
+        node: tree_sitter::Node<'a>,
+        kind: &str,
+    ) -> Option<tree_sitter::Node<'a>> {
+        if node.kind() == kind {
+            return Some(node);
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if let Some(found) = find_node_by_kind(child, kind) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    /// Helper: parse source, find the connect_body node, call lower_connect_body
+    /// directly (bypassing check_and_lower!), and return the errors.
+    fn lower_body_directly(source: &str) -> Vec<ParseError> {
+        let mut ts_parser = tree_sitter::Parser::new();
+        ts_parser
+            .set_language(&tree_sitter_reify::language().into())
+            .expect("Error loading Reify grammar");
+        let tree = ts_parser.parse(source, None).expect("Failed to parse");
+        let root = tree.root_node();
+
+        let body_node = find_node_by_kind(root, "connect_body")
+            .expect("no connect_body node found in parse tree");
+
+        let mut lowering = Lowering::new(source);
+        lowering.lower_connect_body(body_node);
+        lowering.errors
+    }
+
+    #[test]
+    fn lower_connect_body_error_node_emits_diagnostic() {
+        // `{ >= }` produces an ERROR child inside connect_body.
+        // When lower_connect_body is called directly, the ERROR arm fires.
+        let errors = lower_body_directly(
+            "structure S { port a : out T  port b : in T  connect a -> b { >= } }",
+        );
+        assert!(
+            !errors.is_empty(),
+            "expected body-level diagnostic for ERROR node, got none"
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("syntax error in connect body")),
+            "expected 'syntax error in connect body', got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn lower_connect_body_malformed_param_emits_diagnostic() {
+        // `{ grade = }` produces a connect_param_assignment with has_error().
+        // When lower_connect_body is called directly, the has_error() guard fires.
+        let errors = lower_body_directly(
+            "structure S { port a : out T  port b : in T  connect a -> b : BoltSet { grade = } }",
+        );
+        assert!(
+            !errors.is_empty(),
+            "expected body-level diagnostic for malformed param, got none"
+        );
+        assert!(
+            errors.iter().any(|e| e.message.contains("connect parameter")),
+            "expected error mentioning 'connect parameter', got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn lower_connect_body_malformed_mapping_emits_diagnostic() {
+        // `{ shaft -> }` produces a port_mapping with has_error().
+        // When lower_connect_body is called directly, the has_error() guard fires.
+        let errors = lower_body_directly(
+            "structure S { port a : out T  port b : in T  connect a -> b { shaft -> } }",
+        );
+        assert!(
+            !errors.is_empty(),
+            "expected body-level diagnostic for malformed mapping, got none"
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("port mapping")),
+            "expected error mentioning 'port mapping', got: {:?}",
+            errors
+        );
+    }
 }
