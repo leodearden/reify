@@ -132,6 +132,7 @@ fn assert_no_unresolved(expr: &reify_types::CompiledExpr) {
             assert_no_unresolved(inner);
         }
         CompiledExprKind::OptionNone => {}
+        CompiledExprKind::MetaAccess { .. } => {}
     }
 }
 

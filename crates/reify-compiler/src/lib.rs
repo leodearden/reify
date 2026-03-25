@@ -174,6 +174,8 @@ pub struct TopologyTemplate {
     /// ValueCellIds whose boolean value controls topology (guard cells).
     pub structure_controlling: HashSet<ValueCellId>,
     pub objective: Option<OptimizationObjective>,
+    /// Key-value entries from the entity's `meta { ... }` block (if any).
+    pub meta: HashMap<String, String>,
     pub content_hash: ContentHash,
 }
 
@@ -756,6 +758,8 @@ struct CompilationScope {
     /// Populated from already-compiled child templates to resolve correct types for
     /// indexed member access (e.g., bolts[0].diameter → Type::length()).
     collection_sub_member_types: HashMap<String, HashMap<String, Type>>,
+    /// Meta block entries for the current entity: key → value.
+    meta_entries: HashMap<String, String>,
 }
 
 impl CompilationScope {
@@ -766,6 +770,7 @@ impl CompilationScope {
             port_names: HashSet::new(),
             collection_sub_names: HashSet::new(),
             collection_sub_member_types: HashMap::new(),
+            meta_entries: HashMap::new(),
         }
     }
 
@@ -3236,6 +3241,7 @@ fn compile_entity(
         guarded_groups,
         structure_controlling,
         objective,
+        meta: scope.meta_entries.clone(),
         content_hash,
     }
 }
@@ -3716,6 +3722,7 @@ fn collect_body_refs_inner(expr: &CompiledExpr, refs: &mut Vec<ValueCellId>) {
             collect_body_refs_inner(inner, refs);
         }
         CompiledExprKind::OptionNone => {}
+        CompiledExprKind::MetaAccess { .. } => {}
     }
 }
 

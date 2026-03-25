@@ -639,6 +639,7 @@ impl TopologyTemplateBuilder {
             guarded_groups: self.guarded_groups,
             structure_controlling: self.structure_controlling,
             objective: self.objective,
+            meta: std::collections::HashMap::new(),
             content_hash,
         }
     }

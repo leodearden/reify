@@ -88,6 +88,12 @@ pub enum CompiledExprKind {
     OptionSome(Box<CompiledExpr>),
     /// Option-none: the intentional absence value Value::Option(None).
     OptionNone,
+    /// Meta access: resolves a key from an entity's meta block at runtime.
+    /// Result type is always Type::String.
+    MetaAccess {
+        entity: String,
+        key: String,
+    },
 }
 
 /// The kind of quantifier: universal (forall) or existential (exists).
@@ -277,6 +283,7 @@ impl CompiledExpr {
                 inner.walk(f);
             }
             CompiledExprKind::OptionNone => {}
+            CompiledExprKind::MetaAccess { .. } => {}
         }
     }
 
@@ -384,6 +391,7 @@ impl CompiledExpr {
                 inner.collect_value_refs_inner(refs);
             }
             CompiledExprKind::OptionNone => {}
+            CompiledExprKind::MetaAccess { .. } => {}
         }
     }
 
@@ -633,6 +641,11 @@ impl CompiledExpr {
                 inner.remap_entity(from_entity, to_entity);
             }
             CompiledExprKind::OptionNone => {}
+            CompiledExprKind::MetaAccess { entity, .. } => {
+                if entity == from_entity {
+                    *entity = to_entity.to_string();
+                }
+            }
         }
     }
 
@@ -656,6 +669,18 @@ impl CompiledExpr {
                 args,
             },
             result_type,
+            content_hash,
+        }
+    }
+
+    /// Create a meta access expression (resolves a key from an entity's meta block).
+    pub fn meta_access(entity: String, key: String) -> Self {
+        let content_hash = ContentHash::of(&[16])
+            .combine(ContentHash::of_str(&entity))
+            .combine(ContentHash::of_str(&key));
+        CompiledExpr {
+            kind: CompiledExprKind::MetaAccess { entity, key },
+            result_type: Type::String,
             content_hash,
         }
     }
