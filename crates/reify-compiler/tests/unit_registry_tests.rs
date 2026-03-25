@@ -457,6 +457,29 @@ fn compile_unit_broken_conversion_not_registered() {
     );
 }
 
+// ─── step-29: compile_unit returns None for broken offset expression ──────────
+
+#[test]
+fn compile_unit_broken_offset_not_registered() {
+    // 'some_var' in offset position is a non-constant expression.
+    // compile_unit() should return None, so the unit is NOT added to module.units.
+    // Currently the offset code silently sets offset=None when eval fails,
+    // registering the unit as if no offset was declared.
+    let module = parse_and_compile("unit broken_off : Temperature = 1 offset some_var");
+    // The unit should NOT appear in compiled units
+    assert!(
+        !module.units.iter().any(|u| u.name == "broken_off"),
+        "unit with broken offset should NOT be registered; got: {:?}",
+        module.units.iter().map(|u| &u.name).collect::<Vec<_>>()
+    );
+    // An error diagnostic should be present
+    let errors = errors_only(&module);
+    assert!(
+        !errors.is_empty(),
+        "expected error diagnostic for non-constant offset expression"
+    );
+}
+
 // ─── step-23: regression test — hardcoded units still work ────────────────────
 
 #[test]
