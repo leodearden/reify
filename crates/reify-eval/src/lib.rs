@@ -3713,9 +3713,70 @@ mod tests {
         reify_types::CompiledExpr::literal(reify_types::Value::Real(v), reify_types::Type::Real)
     }
 
-    // NOTE: Scale, RotateAround, Revolve tests commented out — compiler enum variants not yet available.
-    // Uncomment when reify_compiler::TransformKind gains Scale/RotateAround
-    // and reify_compiler::SweepKind gains Extrude/Revolve.
+    #[test]
+    fn compile_geometry_op_scale_produces_scale_variant() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Transform {
+            kind: TransformKind::Scale,
+            target: GeomRef::Step(0),
+            args: vec![("factor".into(), literal_f64(2.0))],
+        };
+
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = result.expect("compile_geometry_op should return Some for Scale");
+
+        match result {
+            reify_types::GeometryOp::Scale { target, factor } => {
+                assert_eq!(target, GeometryHandleId(42));
+                assert!((factor - 2.0).abs() < 1e-12);
+            }
+            other => panic!("expected GeometryOp::Scale, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn compile_geometry_op_rotate_around_produces_rotate_around_variant() {
+        let step_handles = vec![GeometryHandleId(99)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Transform {
+            kind: TransformKind::RotateAround,
+            target: GeomRef::Step(0),
+            args: vec![
+                ("px".into(), literal_f64(0.05)),
+                ("py".into(), literal_f64(0.0)),
+                ("pz".into(), literal_f64(0.0)),
+                ("axis_x".into(), literal_f64(0.0)),
+                ("axis_y".into(), literal_f64(0.0)),
+                ("axis_z".into(), literal_f64(1.0)),
+                ("angle".into(), literal_f64(std::f64::consts::FRAC_PI_2)),
+            ],
+        };
+
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = result.expect("compile_geometry_op should return Some for RotateAround");
+
+        match result {
+            reify_types::GeometryOp::RotateAround {
+                target,
+                point,
+                axis,
+                angle_rad,
+            } => {
+                assert_eq!(target, GeometryHandleId(99));
+                assert!((point[0] - 0.05).abs() < 1e-12);
+                assert!((point[1]).abs() < 1e-12);
+                assert!((point[2]).abs() < 1e-12);
+                assert!((axis[0]).abs() < 1e-12);
+                assert!((axis[1]).abs() < 1e-12);
+                assert!((axis[2] - 1.0).abs() < 1e-12);
+                assert!((angle_rad - std::f64::consts::FRAC_PI_2).abs() < 1e-12);
+            }
+            other => panic!("expected GeometryOp::RotateAround, got {:?}", other),
+        }
+    }
 
     #[test]
     fn compile_geometry_op_sweep_resolves_distinct_profiles() {
