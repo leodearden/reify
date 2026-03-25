@@ -3138,6 +3138,37 @@ fn compile_geometry_op(
                         distance,
                     })
                 }
+                reify_compiler::SweepKind::Revolve => {
+                    // Resolve profile GeomRef (first entry in profiles) to a handle
+                    let profile_handle = match profiles.first()? {
+                        GeomRef::Step(idx) => step_handles.get(*idx).copied()?,
+                        GeomRef::Sub(_) => step_handles.last().copied()?,
+                    };
+                    let ctx = reify_expr::EvalContext::new(values, functions);
+                    let eval_arg = |name: &str| -> f64 {
+                        let val = args
+                            .iter()
+                            .find(|(n, _)| n == name)
+                            .map(|(_, expr)| reify_expr::eval_expr(expr, &ctx))
+                            .expect(&format!(
+                                "Revolve Sweep args must contain '{}' key — compiler bug",
+                                name
+                            ));
+                        val.as_f64().expect(&format!(
+                            "Revolve '{}' arg must evaluate to f64 — compiler bug",
+                            name
+                        ))
+                    };
+                    let axis_origin = [eval_arg("ox"), eval_arg("oy"), eval_arg("oz")];
+                    let axis_dir = [eval_arg("ax"), eval_arg("ay"), eval_arg("az")];
+                    let angle_rad = eval_arg("angle");
+                    Some(reify_types::GeometryOp::Revolve {
+                        profile: profile_handle,
+                        axis_origin,
+                        axis_dir,
+                        angle_rad,
+                    })
+                }
             }
         }
     }
