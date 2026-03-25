@@ -1508,6 +1508,7 @@ fn eval_method_map_with_user_function() {
             ),
         },
         content_hash: ContentHash::of(b"double_int"),
+        annotations: vec![],
     };
 
     // Lambda body: double(x) — a UserFunctionCall node
@@ -1577,6 +1578,7 @@ fn eval_method_filter_with_user_function() {
             ),
         },
         content_hash: ContentHash::of(b"is_even_fn"),
+        annotations: vec![],
     };
 
     // Lambda body: is_even(x)
@@ -1646,6 +1648,7 @@ fn eval_method_fold_with_user_function() {
             ),
         },
         content_hash: ContentHash::of(b"add_fn"),
+        annotations: vec![],
     };
 
     // Lambda body: add(acc, x)
@@ -1724,6 +1727,7 @@ fn eval_method_all_any_with_user_function() {
             ),
         },
         content_hash: ContentHash::of(b"is_even_fn_all_any"),
+        annotations: vec![],
     };
 
     let x_id = ValueCellId::new("$lambda_all_any_uf.S", "x");

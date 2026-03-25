@@ -33,6 +33,7 @@ pub struct CompiledTrait {
     /// Members with defaults that are injected if the structure doesn't override.
     pub defaults: Vec<TraitDefault>,
     pub content_hash: ContentHash,
+    pub annotations: Vec<reify_types::Annotation>,
 }
 
 /// A required member in a trait — conforming structures must provide this.
@@ -272,6 +273,7 @@ pub fn check_trait_conformance_chain(
         required_members: requirements,
         defaults: vec![],
         content_hash: ContentHash::of_str(trait_name),
+        annotations: vec![],
     };
 
     chain_errors.extend(check_trait_conformance(structure_members, &flat_trait, ports, subs));
@@ -312,6 +314,7 @@ pub fn check_trait_conformance_multi(
         required_members: requirements,
         defaults: vec![],
         content_hash: ContentHash::of_str("__multi__"),
+        annotations: vec![],
     };
 
     chain_errors.extend(check_trait_conformance(structure_members, &flat_trait, ports, subs));
@@ -403,6 +406,7 @@ pub struct CompiledField {
     pub codomain_type: Type,
     pub source: CompiledFieldSource,
     pub content_hash: ContentHash,
+    pub annotations: Vec<reify_types::Annotation>,
 }
 
 /// A compiled purpose parameter — binds an entity reference.
@@ -434,6 +438,7 @@ pub struct CompiledPurpose {
     /// Reflective schema queries resolved at compile time.
     pub resolved_queries: Vec<ResolvedSchemaQuery>,
     pub content_hash: ContentHash,
+    pub annotations: Vec<reify_types::Annotation>,
 }
 
 /// A compiled module — the output of the compiler.
@@ -483,6 +488,7 @@ pub struct TopologyTemplate {
     /// True if this template participates in a recursive sub-component cycle.
     /// Set by the post-compilation recursive structure detection pass.
     pub is_recursive: bool,
+    pub annotations: Vec<reify_types::Annotation>,
 }
 
 /// A compiled connection between ports — compiled from a ConnectDecl or desugared from a ChainDecl.
@@ -2004,6 +2010,11 @@ fn compile_trait(
         required_members,
         defaults,
         content_hash,
+        annotations: {
+            let anns = lower_annotations(&trait_decl.annotations, diagnostics);
+            validate_annotations(&anns, "trait", diagnostics);
+            anns
+        },
     }
 }
 
@@ -2194,6 +2205,11 @@ fn compile_purpose(
         objective,
         resolved_queries,
         content_hash: purpose_def.content_hash,
+        annotations: {
+            let anns = lower_annotations(&purpose_def.annotations, diagnostics);
+            validate_annotations(&anns, "purpose", diagnostics);
+            anns
+        },
     }
 }
 
@@ -2853,6 +2869,7 @@ struct EntityDefRef<'a> {
     type_params: &'a [reify_syntax::TypeParamDecl],
     trait_bounds: &'a [reify_syntax::TraitBoundRef],
     members: &'a [reify_syntax::MemberDecl],
+    annotations: &'a [reify_syntax::Annotation],
     span: SourceSpan,
     #[allow(dead_code)]
     content_hash: ContentHash,
@@ -2866,6 +2883,7 @@ impl<'a> From<&'a reify_syntax::StructureDef> for EntityDefRef<'a> {
             type_params: &s.type_params,
             trait_bounds: &s.trait_bounds,
             members: &s.members,
+            annotations: &s.annotations,
             span: s.span,
             content_hash: s.content_hash,
         }
@@ -2880,8 +2898,127 @@ impl<'a> From<&'a reify_syntax::OccurrenceDef> for EntityDefRef<'a> {
             type_params: &o.type_params,
             trait_bounds: &o.trait_bounds,
             members: &o.members,
+            annotations: &o.annotations,
             span: o.span,
             content_hash: o.content_hash,
+        }
+    }
+}
+
+/// Lower parsed syntax annotations to compiled annotation types.
+///
+/// Converts `Expr` args to `AnnotationArg` values:
+/// - NumberLiteral with integer value → Int(i64)
+/// - NumberLiteral otherwise → Real(f64)
+/// - StringLiteral → String
+/// - BoolLiteral → Bool
+/// - Ident → Ident
+/// - Other expressions → warning diagnostic, arg skipped
+fn lower_annotations(
+    parsed: &[reify_syntax::Annotation],
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Vec<reify_types::Annotation> {
+    parsed
+        .iter()
+        .map(|ann| {
+            let args = ann
+                .args
+                .iter()
+                .filter_map(|expr| {
+                    use reify_syntax::ExprKind;
+                    match &expr.kind {
+                        ExprKind::NumberLiteral(value) => {
+                            if *value == value.floor() && value.abs() < i64::MAX as f64 {
+                                Some(reify_types::AnnotationArg::Int(*value as i64))
+                            } else {
+                                Some(reify_types::AnnotationArg::Real(*value))
+                            }
+                        }
+                        ExprKind::StringLiteral(s) => {
+                            Some(reify_types::AnnotationArg::String(s.clone()))
+                        }
+                        ExprKind::BoolLiteral(b) => Some(reify_types::AnnotationArg::Bool(*b)),
+                        ExprKind::Ident(name) => {
+                            Some(reify_types::AnnotationArg::Ident(name.clone()))
+                        }
+                        _ => {
+                            diagnostics.push(Diagnostic::warning(
+                                format!(
+                                    "unsupported expression in annotation @{} argument; only literals and identifiers are allowed",
+                                    ann.name
+                                ),
+                            ).with_label(DiagnosticLabel::new(expr.span, "complex expression")));
+                            None
+                        }
+                    }
+                })
+                .collect();
+            reify_types::Annotation {
+                name: ann.name.clone(),
+                args,
+                span: ann.span,
+            }
+        })
+        .collect()
+}
+
+/// Validate annotations against known annotation rules and context.
+///
+/// Known annotations and their valid contexts:
+/// - `@test`: valid on structure, occurrence, function
+/// - `@optimized`: valid on structure, occurrence
+/// - `@solver_hint`: valid on structure, occurrence
+/// - `@deprecated`: valid on any context
+///
+/// Unknown annotations emit a warning. Known annotations in wrong contexts emit a warning.
+fn validate_annotations(
+    annotations: &[reify_types::Annotation],
+    context: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    for ann in annotations {
+        match ann.name.as_str() {
+            "deprecated" => {
+                // Valid on any context — no warning.
+            }
+            "test" => {
+                if !matches!(context, "structure" | "occurrence" | "function") {
+                    diagnostics.push(
+                        Diagnostic::warning(format!(
+                            "annotation @test is not valid on {context} declarations"
+                        ))
+                        .with_label(DiagnosticLabel::new(ann.span, "@test")),
+                    );
+                }
+            }
+            "optimized" => {
+                if !matches!(context, "structure" | "occurrence") {
+                    diagnostics.push(
+                        Diagnostic::warning(format!(
+                            "annotation @optimized is not valid on {context} declarations"
+                        ))
+                        .with_label(DiagnosticLabel::new(ann.span, "@optimized")),
+                    );
+                }
+            }
+            "solver_hint" => {
+                if !matches!(context, "structure" | "occurrence") {
+                    diagnostics.push(
+                        Diagnostic::warning(format!(
+                            "annotation @solver_hint is not valid on {context} declarations"
+                        ))
+                        .with_label(DiagnosticLabel::new(ann.span, "@solver_hint")),
+                    );
+                }
+            }
+            other => {
+                diagnostics.push(
+                    Diagnostic::warning(format!(
+                        "unknown annotation @{other}"
+                    ))
+                    .with_label(DiagnosticLabel::new(ann.span, "unknown annotation")),
+                );
+            }
         }
     }
 }
@@ -3864,6 +4001,12 @@ fn compile_entity(
         objective,
         content_hash,
         is_recursive: false,
+        annotations: {
+            let anns = lower_annotations(structure.annotations, diagnostics);
+            let context = if entity_kind == EntityKind::Occurrence { "occurrence" } else { "structure" };
+            validate_annotations(&anns, context, diagnostics);
+            anns
+        },
     }
 }
 
@@ -5300,6 +5443,11 @@ fn compile_function(
             result_expr,
         },
         content_hash,
+        annotations: {
+            let anns = lower_annotations(&fn_def.annotations, diagnostics);
+            validate_annotations(&anns, "function", diagnostics);
+            anns
+        },
     })
 }
 
@@ -5394,6 +5542,11 @@ fn compile_field(
         codomain_type,
         source,
         content_hash,
+        annotations: {
+            let anns = lower_annotations(&field_def.annotations, diagnostics);
+            validate_annotations(&anns, "field", diagnostics);
+            anns
+        },
     }
 }
 

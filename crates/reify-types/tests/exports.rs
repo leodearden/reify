@@ -246,3 +246,28 @@ fn all_m5_types_exported() {
         dimension: reify_types::DimensionVector::DIMENSIONLESS,
     };
 }
+
+#[test]
+fn annotation_types_exported() {
+    // Annotation with all AnnotationArg variants
+    let ann = reify_types::Annotation {
+        name: "test".into(),
+        args: vec![
+            reify_types::AnnotationArg::String("msg".into()),
+            reify_types::AnnotationArg::Int(42),
+            reify_types::AnnotationArg::Real(3.14),
+            reify_types::AnnotationArg::Bool(true),
+            reify_types::AnnotationArg::Ident("mechanical".into()),
+        ],
+        span: reify_types::SourceSpan::new(0, 0),
+    };
+
+    // Verify construction
+    assert_eq!(ann.name, "test");
+    assert_eq!(ann.args.len(), 5);
+    assert_eq!(ann.args[0], reify_types::AnnotationArg::String("msg".into()));
+    assert_eq!(ann.args[1], reify_types::AnnotationArg::Int(42));
+    assert_eq!(ann.args[2], reify_types::AnnotationArg::Real(3.14));
+    assert_eq!(ann.args[3], reify_types::AnnotationArg::Bool(true));
+    assert_eq!(ann.args[4], reify_types::AnnotationArg::Ident("mechanical".into()));
+}

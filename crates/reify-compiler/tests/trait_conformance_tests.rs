@@ -16,6 +16,7 @@ fn empty_trait(name: &str) -> CompiledTrait {
         required_members: vec![],
         defaults: vec![],
         content_hash: ContentHash::of_str(name),
+        annotations: vec![],
     }
 }
 
@@ -51,6 +52,7 @@ fn conformance_missing_param_error() {
         }],
         defaults: vec![],
         content_hash: ContentHash::of_str("HasWidth"),
+        annotations: vec![],
     };
     let structure_members: std::collections::HashMap<String, Type> =
         std::collections::HashMap::new();
@@ -85,6 +87,7 @@ fn conformance_type_mismatch_error() {
         }],
         defaults: vec![],
         content_hash: ContentHash::of_str("Weighted"),
+        annotations: vec![],
     };
     // Provide 'mass' but with Length instead of Mass.
     let mut structure_members = std::collections::HashMap::new();
@@ -121,6 +124,7 @@ fn conformance_satisfied_param_no_errors() {
         }],
         defaults: vec![],
         content_hash: ContentHash::of_str("HasWidth"),
+        annotations: vec![],
     };
     let mut structure_members = std::collections::HashMap::new();
     structure_members.insert(
@@ -162,6 +166,7 @@ fn conformance_multiple_requirements_mixed() {
         ],
         defaults: vec![],
         content_hash: ContentHash::of_str("Complex"),
+        annotations: vec![],
     };
     // 'width' correct, 'mass' wrong type (Length not Mass), 'name' missing.
     let mut structure_members = std::collections::HashMap::new();
@@ -203,6 +208,7 @@ fn conformance_let_requirement_checked() {
         }],
         defaults: vec![],
         content_hash: ContentHash::of_str("HasArea"),
+        annotations: vec![],
     };
     let structure_members: std::collections::HashMap<String, Type> =
         std::collections::HashMap::new();
@@ -234,6 +240,7 @@ fn conformance_exact_type_equality_dimensions() {
         }],
         defaults: vec![],
         content_hash: ContentHash::of_str("HasLength"),
+        annotations: vec![],
     };
 
     // Wrong dimension → TypeMismatch.
@@ -850,6 +857,7 @@ fn make_port_trait(
         }],
         defaults: vec![],
         content_hash: ContentHash::of_str(trait_name),
+        annotations: vec![],
     }
 }
 
@@ -953,6 +961,7 @@ fn make_sub_trait(trait_name: &str, sub_name: &str, required_trait: &str) -> Com
         }],
         defaults: vec![],
         content_hash: ContentHash::of_str(trait_name),
+        annotations: vec![],
     }
 }
 
@@ -1040,6 +1049,7 @@ fn conformance_multiple_port_requirements_one_missing() {
         ],
         defaults: vec![],
         content_hash: ContentHash::of_str("HasTwoPorts"),
+        annotations: vec![],
     };
     // Only provide 'input', not 'output'.
     let ports = vec![PortInfo {
@@ -1330,6 +1340,7 @@ fn chain_single_trait_no_refinement() {
         }],
         defaults: vec![],
         content_hash: ContentHash::of_str("HasWidthChain"),
+        annotations: vec![],
     };
     let mut registry = std::collections::HashMap::new();
     registry.insert("HasWidth".to_string(), &trait_def);
@@ -1362,6 +1373,7 @@ fn chain_two_level_walks_parent() {
         }],
         defaults: vec![],
         content_hash: ContentHash::of_str("B"),
+        annotations: vec![],
     };
     // Trait A: refines B, requires `height : Length`.
     let trait_a = CompiledTrait {
@@ -1376,6 +1388,7 @@ fn chain_two_level_walks_parent() {
         }],
         defaults: vec![],
         content_hash: ContentHash::of_str("A"),
+        annotations: vec![],
     };
     let mut registry = std::collections::HashMap::new();
     registry.insert("A".to_string(), &trait_a);
@@ -1409,6 +1422,7 @@ fn chain_three_level_all_satisfied() {
         }],
         defaults: vec![],
         content_hash: ContentHash::of_str("C"),
+        annotations: vec![],
     };
     let trait_b = CompiledTrait {
         name: "B".to_string(),
@@ -1422,6 +1436,7 @@ fn chain_three_level_all_satisfied() {
         }],
         defaults: vec![],
         content_hash: ContentHash::of_str("B"),
+        annotations: vec![],
     };
     let trait_a = CompiledTrait {
         name: "A".to_string(),
@@ -1435,6 +1450,7 @@ fn chain_three_level_all_satisfied() {
         }],
         defaults: vec![],
         content_hash: ContentHash::of_str("A"),
+        annotations: vec![],
     };
     let mut registry = std::collections::HashMap::new();
     registry.insert("A".to_string(), &trait_a);
@@ -1465,6 +1481,7 @@ fn chain_missing_deep_ancestor_member() {
         }],
         defaults: vec![],
         content_hash: ContentHash::of_str("C2"),
+        annotations: vec![],
     };
     let trait_b = CompiledTrait {
         name: "B".to_string(),
@@ -1478,6 +1495,7 @@ fn chain_missing_deep_ancestor_member() {
         }],
         defaults: vec![],
         content_hash: ContentHash::of_str("B2"),
+        annotations: vec![],
     };
     let trait_a = CompiledTrait {
         name: "A".to_string(),
@@ -1491,6 +1509,7 @@ fn chain_missing_deep_ancestor_member() {
         }],
         defaults: vec![],
         content_hash: ContentHash::of_str("A2"),
+        annotations: vec![],
     };
     let mut registry = std::collections::HashMap::new();
     registry.insert("A".to_string(), &trait_a);
@@ -1525,6 +1544,7 @@ fn chain_diamond_dedup_satisfied() {
         }],
         defaults: vec![],
         content_hash: ContentHash::of_str("C_diamond"),
+        annotations: vec![],
     };
     let trait_a = CompiledTrait {
         name: "A".to_string(),
@@ -1534,6 +1554,7 @@ fn chain_diamond_dedup_satisfied() {
         required_members: vec![],
         defaults: vec![],
         content_hash: ContentHash::of_str("A_diamond"),
+        annotations: vec![],
     };
     let trait_b = CompiledTrait {
         name: "B".to_string(),
@@ -1543,6 +1564,7 @@ fn chain_diamond_dedup_satisfied() {
         required_members: vec![],
         defaults: vec![],
         content_hash: ContentHash::of_str("B_diamond"),
+        annotations: vec![],
     };
     let mut registry = std::collections::HashMap::new();
     registry.insert("A".to_string(), &trait_a);
@@ -1572,6 +1594,7 @@ fn chain_diamond_missing_exactly_one_error() {
         }],
         defaults: vec![],
         content_hash: ContentHash::of_str("C_diamond2"),
+        annotations: vec![],
     };
     let trait_a = CompiledTrait {
         name: "A".to_string(),
@@ -1581,6 +1604,7 @@ fn chain_diamond_missing_exactly_one_error() {
         required_members: vec![],
         defaults: vec![],
         content_hash: ContentHash::of_str("A_diamond2"),
+        annotations: vec![],
     };
     let trait_b = CompiledTrait {
         name: "B".to_string(),
@@ -1590,6 +1614,7 @@ fn chain_diamond_missing_exactly_one_error() {
         required_members: vec![],
         defaults: vec![],
         content_hash: ContentHash::of_str("B_diamond2"),
+        annotations: vec![],
     };
     let mut registry = std::collections::HashMap::new();
     registry.insert("A".to_string(), &trait_a);
@@ -1624,6 +1649,7 @@ fn chain_conflicting_requirements() {
         }],
         defaults: vec![],
         content_hash: ContentHash::of_str("C_conflict"),
+        annotations: vec![],
     };
     let trait_d = CompiledTrait {
         name: "D".to_string(),
@@ -1637,6 +1663,7 @@ fn chain_conflicting_requirements() {
         }],
         defaults: vec![],
         content_hash: ContentHash::of_str("D_conflict"),
+        annotations: vec![],
     };
     // Trait A refines both C and D (conflicting on `x`).
     let trait_a = CompiledTrait {
@@ -1647,6 +1674,7 @@ fn chain_conflicting_requirements() {
         required_members: vec![],
         defaults: vec![],
         content_hash: ContentHash::of_str("A_conflict"),
+        annotations: vec![],
     };
     let mut registry = std::collections::HashMap::new();
     registry.insert("A".to_string(), &trait_a);
@@ -1693,6 +1721,7 @@ fn chain_unresolved_trait() {
         }],
         defaults: vec![],
         content_hash: ContentHash::of_str("A_unresolved"),
+        annotations: vec![],
     };
     let mut registry = std::collections::HashMap::new();
     registry.insert("A".to_string(), &trait_a);

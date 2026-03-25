@@ -147,6 +147,7 @@ pub struct CompiledFunction {
     pub return_type: Type,
     pub body: CompiledFnBody,
     pub content_hash: ContentHash,
+    pub annotations: Vec<crate::annotation::Annotation>,
 }
 
 /// A compiled function body: let bindings followed by a result expression.
