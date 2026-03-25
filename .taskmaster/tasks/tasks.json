@@ -7779,6 +7779,19 @@
         ],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 439,
+        "title": "Expand type alias parser test coverage: error cases, edge cases, precedence",
+        "description": "Add missing test coverage for type alias parsing in crates/reify-syntax/tests/type_alias_tests.rs: (1) malformed inputs — missing name, missing =, empty RHS — assert ParseError is emitted, (2) type params combined with dimensional RHS (e.g. `type Velocity<T> = T / Time`), (3) nested parameterized types on RHS (e.g. `type Registry = Map<String, List<Int>>`), (4) mixed operator precedence confirming left-associativity (e.g. `type X = Mass / Time * Scalar` → outer is `*`). Memory hints: search \"type alias parser tests\" and get_entity \"TypeAliasDecl\".",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          144
+        ],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -7791,7 +7804,7 @@
       ],
       "created": "2026-03-25T22:38:46.113Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-25T22:38:46.117Z"
+      "updated": "2026-03-25T22:38:52.035Z"
     }
   }
 }
