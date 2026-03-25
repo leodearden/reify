@@ -3444,15 +3444,15 @@ fn elaborate_child_lets_only(
             let mut found_any = false;
             for cell in &child_template.value_cells {
                 let id = ValueCellId::new(&depth_entity, &cell.id.member);
-                if let Some(val) = values.get(&id) {
-                    if let Some(suffix) = depth_entity.strip_prefix(&scoped_prefix) {
-                        let remapped_entity = format!("{}{}", template_prefix, suffix);
-                        child_values.insert(
-                            ValueCellId::new(remapped_entity, &cell.id.member),
-                            val.clone(),
-                        );
-                        found_any = true;
-                    }
+                if let Some(val) = values.get(&id)
+                    && let Some(suffix) = depth_entity.strip_prefix(&scoped_prefix)
+                {
+                    let remapped_entity = format!("{}{}", template_prefix, suffix);
+                    child_values.insert(
+                        ValueCellId::new(remapped_entity, &cell.id.member),
+                        val.clone(),
+                    );
+                    found_any = true;
                 }
             }
             if !found_any {
