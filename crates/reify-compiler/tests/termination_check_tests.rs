@@ -335,6 +335,43 @@ structure Outer {
 
 // ─── Step 19: recursive sub inside block guard (when n > 0 { sub child = S(...) }) ──
 
+// ─── Step 21: block guard sub — documents compiler limitation ────────────────
+
+/// Documents the pre-existing compiler limitation: `compile_guarded_members` has a
+/// `_ => {}` catch-all (lib.rs:4597-4599) that silently drops ALL Sub declarations
+/// inside `where {}` blocks.  As a result, `sub_components` is empty and Tarjan SCC
+/// never finds a cycle, so `is_recursive` remains false.
+///
+/// This test documents the ACTUAL current behavior.  It will break (correctly) when
+/// `compile_guarded_members` is updated to compile Sub declarations into sub_components.
+#[test]
+fn block_guard_sub_not_yet_compiled() {
+    let source = r#"
+structure S {
+    param n : Int = 5
+    where n > 0 {
+        sub child = S(n: n - 1)
+    }
+}
+"#;
+
+    let (template, _diagnostics) = compile_first_template(source);
+
+    // Sub inside where{} block is silently dropped by compile_guarded_members — sub_components is empty.
+    assert!(
+        template.sub_components.is_empty(),
+        "expected sub_components to be empty because compile_guarded_members drops Sub \
+         declarations inside where{{}} blocks (pre-existing limitation), but got: {:?}",
+        template.sub_components.iter().map(|s| &s.name).collect::<Vec<_>>()
+    );
+
+    // Because no sub_components exist, Tarjan SCC finds no cycle → is_recursive == false.
+    assert!(
+        !template.is_recursive,
+        "expected is_recursive == false because no sub_components exist for Tarjan to analyse"
+    );
+}
+
 /// A recursive sub inside a block guard `when n > 0 { sub child = S(n: n-1) }`
 /// should be recognized as having a termination condition via the enclosing block guard.
 /// Assert NO error.
