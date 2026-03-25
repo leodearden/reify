@@ -3,7 +3,7 @@
 //! Validates UnitEntry, UnitRegistry, resolve_dimension_type,
 //! evaluate_const_expr, compile_unit, and the full unit pre-pass in compile().
 
-use reify_compiler::{compile, CompiledModule, CompiledUnit, UnitEntry, UnitRegistry};
+use reify_compiler::{compile, CompiledModule, UnitEntry, UnitRegistry};
 use reify_types::{DimensionVector, ModulePath, Severity, SourceSpan};
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
