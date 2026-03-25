@@ -4324,6 +4324,7 @@ fn check_trait_conformance(
             &structure_members,
             structure.span,
             diagnostics,
+            0,
         );
     }
 
@@ -4482,6 +4483,10 @@ fn check_trait_conformance(
     }
 }
 
+/// Maximum allowed depth for trait refinement chains to prevent stack overflow.
+/// Realistic hierarchies rarely exceed 10 levels; 128 provides ample headroom.
+const MAX_TRAIT_DEPTH: usize = 128;
+
 /// Recursively collect all requirements and defaults from a trait and its refinements.
 #[allow(clippy::too_many_arguments)]
 fn collect_all_requirements(
@@ -4496,7 +4501,19 @@ fn collect_all_requirements(
     structure_members: &HashMap<String, Type>,
     span: SourceSpan,
     diagnostics: &mut Vec<Diagnostic>,
+    depth: usize,
 ) {
+    if depth > MAX_TRAIT_DEPTH {
+        diagnostics.push(
+            Diagnostic::error(format!(
+                "trait refinement chain too deep (exceeded {} levels) at '{}'",
+                MAX_TRAIT_DEPTH, trait_name
+            ))
+            .with_label(DiagnosticLabel::new(span, "trait chain too deep")),
+        );
+        return;
+    }
+
     if !visited.insert(trait_name.to_string()) {
         return; // Already visited (diamond pattern)
     }
@@ -4526,6 +4543,7 @@ fn collect_all_requirements(
             structure_members,
             span,
             diagnostics,
+            depth + 1,
         );
     }
 
