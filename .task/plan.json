@@ -1,114 +1,238 @@
 {
-  "task_id": "163",
-  "title": "some/none: evaluator",
+  "task_id": "310",
+  "title": "Stdlib: sweep operation + extend loft to N profiles",
   "files": [
-    "crates/reify-expr/src/lib.rs",
-    "crates/reify-expr/tests/option_eval_tests.rs"
+    "crates/reify-kernel-occt/cpp/occt_wrapper.h",
+    "crates/reify-kernel-occt/cpp/occt_wrapper.cpp",
+    "crates/reify-kernel-occt/src/ffi.rs",
+    "crates/reify-kernel-occt/src/lib.rs",
+    "crates/reify-types/src/geometry.rs",
+    "crates/reify-compiler/src/lib.rs",
+    "crates/reify-eval/src/lib.rs",
+    "crates/reify-eval/tests/sweep_e2e.rs"
   ],
   "modules": [
-    "crates/reify-expr"
+    "crates/reify-kernel-occt",
+    "crates/reify-kernel-occt/cpp",
+    "crates/reify-types",
+    "crates/reify-compiler",
+    "crates/reify-eval"
   ],
-  "analysis": "Task 163 adds evaluation support for `some(expr)` and `none` expression forms in the reify-expr evaluator. Task 162 (dependency, status: done) adds `CompiledExprKind::OptionSome(Box<CompiledExpr>)` and `CompiledExprKind::OptionNone` variants to the enum in reify-types, along with constructor helpers, walk/collect_value_refs/remap_entity arms. This task adds the corresponding match arms in `eval_expr` and comprehensive tests.\n\nThe core semantics:\n- `none` evaluates to `Value::Option(None)`\n- `some(expr)` evaluates the inner expr and wraps: `Value::Option(Some(Box::new(eval(expr))))`\n- Critically, `some(undef)` produces `Value::Option(Some(Box::new(Value::Undef)))` — it does NOT propagate Undef. This preserves the three-way distinction: `Value::Undef` (error/missing), `Value::Option(None)` (intentional absence), `Value::Option(Some(Value::Undef))` (present but value undefined).\n\nThe implementation is small (2-4 lines per variant in eval_expr) but the test suite must verify the subtle Undef-wrapping semantics thoroughly. Tests follow the established pattern in crates/reify-expr/tests/ (lambda_eval_tests.rs, quantifier_eval_tests.rs, etc.).\n\nExisting infrastructure: `Value::Option(Option<Box<Value>>)` already exists with PartialEq, Ord, Display, content_hash. Test helpers `reify_test_support::values::{some_val, none_val, undef}` exist. `CompiledExpr::literal()` and `CompiledExpr::value_ref()` are available for building test expressions. Task 162 should provide `CompiledExpr::option_some()` and/or `CompiledExpr::option_none()` constructors; if not, tests can construct CompiledExpr structs directly.",
+  "analysis": "This task has two main goals: (1) implement sweep(profile, path) via BRepOffsetAPI_MakePipe, and (2) generalize loft to N profiles by replacing the hard-coded loft_two_profiles/loft_three_profiles C++ functions with a generic loop-based approach.\n\nThe current loft implementation has separate C++ functions for 2 and 3 profiles (occt_wrapper.cpp lines 606-648), with the Rust kernel matching on profile count (lib.rs lines 331-357). The kernel rejects >3 profiles with an error. This must be replaced with a single generic function that loops AddWire() for any number of profiles.\n\nFor the generic loft, CXX bridge cannot pass Vec<&OcctShape> or slices of opaque types across FFI. The solution is to introduce an opaque OcctShapeVec type on the C++ side with push/build semantics: new_shape_vec() creates it, shape_vec_push() adds shapes, and loft_profiles() consumes it. This builder pattern is clean, CXX-compatible, and reusable for future N-shape operations.\n\nFor sweep, BRepOffsetAPI_MakePipe takes a Wire (spine) and a Shape (profile) and produces a pipe solid. The OCCT TKOffset library is already linked in build.rs. A make_pipe() C++ function wraps this. A make_line_wire() helper creates straight wire paths for testing.\n\nThe GeometryOp enum needs a new Sweep { profile, path } variant. The compiler SweepKind enum needs a Sweep variant. The compiler must recognize sweep() as a geometry function taking 2 args (profile, path), both geometry references. The eval layer must dispatch SweepKind::Sweep to GeometryOp::Sweep by resolving both profile and path handles from the profiles vector.\n\nAll changes follow established patterns: C++ function with try/catch wrapping OCCT calls, CXX bridge declarations, kernel dispatch with validation, compiler function recognition, and eval GeomRef resolution.",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "Verify task 162 (parser/compiler) has landed: CompiledExprKind::OptionSome and OptionNone variants exist in crates/reify-types/src/expr.rs with walk/collect_value_refs/remap_entity arms and constructor helpers. If constructors are missing, they must be added before tests can be written cleanly.",
-      "status": "blocked",
-      "commit": null,
-      "tests": [],
-      "blocker_note": "Task 162 is marked done in task system but OptionSome/OptionNone variants are absent from codebase (main at 5256c4c and all branches). Escalated as esc-163-25."
+      "description": "Add OcctShapeVec opaque C++ type (wraps std::vector<TopoDS_Shape>) with new_shape_vec(), shape_vec_push(vec, shape), shape_vec_len(vec) to occt_wrapper.h/.cpp and ffi.rs. Uses Pin<&mut OcctShapeVec> for mutable FFI access. This builder pattern allows passing N opaque shapes across the CXX FFI boundary for generic loft.",
+      "status": "done",
+      "commit": "87a54d92",
+      "tests": []
+    },
+    {
+      "id": "pre-2",
+      "description": "Add make_line_wire(x1,y1,z1, x2,y2,z2) C++ helper to occt_wrapper.h/.cpp and ffi.rs. Uses BRepBuilderAPI_MakeEdge(gp_Pnt(x1,y1,z1), gp_Pnt(x2,y2,z2)) then BRepBuilderAPI_MakeWire(edge) to create a TopoDS_Wire. Needed for sweep path creation in tests.",
+      "status": "done",
+      "commit": "87a54d92",
+      "tests": []
+    },
+    {
+      "id": "pre-3",
+      "description": "Add #include <BRepOffsetAPI_MakePipe.hxx> to occt_wrapper.cpp. This header provides BRepOffsetAPI_MakePipe for the sweep implementation. TKOffset library is already linked in build.rs.",
+      "status": "done",
+      "commit": "87a54d92",
+      "tests": []
     }
   ],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Create crates/reify-expr/tests/option_eval_tests.rs with 2 failing tests: (a) eval_none_produces_option_none — construct a CompiledExprKind::OptionNone expression, evaluate with eval_expr, assert result == Value::Option(None). (b) eval_none_is_not_undef — assert the result of evaluating none is not Value::Undef (verifying Option(None) != Undef at the evaluator level).",
+      "description": "Write failing test loft_four_circles_creates_solid in kernel lib.rs #[cfg(all(test, has_occt))]: create 4 circle wire profiles via make_circle_wire at different heights (radii 10,8,6,4 at z=0,10,20,30), store each via store_raw, execute GeometryOp::Loft { profiles: vec![id1,id2,id3,id4] }, query volume and assert > 0. Currently fails with 'Loft with 4 profiles not yet supported (max 3)' error.",
       "status": "done",
-      "commit": "7a85c79"
+      "commit": "b1c38ea4"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Add OptionNone match arm in eval_expr in crates/reify-expr/src/lib.rs: `CompiledExprKind::OptionNone => Value::Option(None)`. Tests from step-1 pass.",
+      "description": "Implement generic loft: (1) Add loft_profiles(const OcctShapeVec& profiles) to C++ \u2014 creates BRepOffsetAPI_ThruSections(isSolid=true, ruled=false), loops profiles calling AddWire(TopoDS::Wire(shape)) for each, Build(), check IsDone(). Add to occt_wrapper.h/.cpp. (2) Add loft_profiles FFI declaration in ffi.rs. (3) Update kernel lib.rs Loft dispatch: remove match on len 2/3/n, replace with: if <2 return error, else build OcctShapeVec via new_shape_vec()+shape_vec_push() for each profile, call loft_profiles(). (4) Remove loft_two_profiles and loft_three_profiles from C++ header/impl and ffi.rs.",
       "status": "done",
-      "commit": "7a85c79"
+      "commit": "258bebad"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Add 3 failing tests: (a) eval_some_wraps_int — OptionSome(literal(Int(5))) evaluates to Value::Option(Some(Box::new(Value::Int(5)))). (b) eval_some_wraps_bool — OptionSome(literal(Bool(true))) evaluates to Value::Option(Some(Box::new(Value::Bool(true)))). (c) eval_some_wraps_real — OptionSome(literal(Real(3.14))) evaluates to Value::Option(Some(Box::new(Value::Real(3.14)))).",
+      "description": "Write test loft_one_profile_returns_error in kernel lib.rs: create 1 circle wire, attempt loft with vec![id1], verify Err(GeometryError::OperationFailed) containing 'at least 2'. Regression test \u2014 error path must still work after generic loft refactor.",
       "status": "done",
-      "commit": "0e0037b"
+      "commit": "d468cc20"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Add OptionSome match arm in eval_expr: `CompiledExprKind::OptionSome(inner) => { let val = eval_expr(inner, ctx); Value::Option(Some(Box::new(val))) }`. IMPORTANT: No Undef short-circuit — wrapping Undef is intentional semantics. Tests from step-3 pass.",
+      "description": "Verify existing loft_two_circles_creates_solid test still passes with the generic loft implementation. No new code \u2014 this step validates the refactor preserved 2-profile loft behavior. Run all kernel tests to confirm.",
       "status": "done",
-      "commit": "0e0037b"
+      "commit": "258bebad"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Add 3 verification tests for Undef semantics (should pass with step-4 impl): (a) eval_some_undef_produces_option_some_undef — some(literal(Undef)) yields Value::Option(Some(Box::new(Value::Undef))), NOT Value::Undef. (b) eval_some_undef_not_equal_to_none — assert some(undef) != Value::Option(None). (c) eval_some_undef_not_equal_to_bare_undef — assert some(undef) != Value::Undef.",
+      "description": "Write failing test loft_two_different_circles_cone_like in kernel lib.rs: create circle wire r=10 at z=0 and circle wire r=2 at z=20, loft them, query volume and verify it's between a cylinder (pi*4*20 ~= 251) and a cylinder (pi*100*20 ~= 6283), i.e. a cone-like frustum. Confirms loft geometry correctness with different-size profiles.",
       "status": "done",
-      "commit": "253633a"
+      "commit": "652cd3c7"
     },
     {
       "id": "step-6",
-      "type": "test",
-      "description": "Add 4 verification tests for nesting and value refs (should pass with step-4 impl): (a) eval_some_nested_some — some(some(Int(3))) yields Value::Option(Some(Box::new(Value::Option(Some(Box::new(Value::Int(3))))))). (b) eval_some_wraps_none — some(none) yields Value::Option(Some(Box::new(Value::Option(None)))). (c) eval_some_value_ref — some(value_ref(x)) where x=Int(42) in ValueMap yields Value::Option(Some(Box::new(Value::Int(42)))). (d) eval_some_missing_ref_wraps_undef — some(value_ref(x)) where x is absent from ValueMap yields Value::Option(Some(Box::new(Value::Undef))), not bare Undef.",
+      "type": "impl",
+      "description": "Verify the cone-like loft test passes with the generic implementation. No new code expected \u2014 validates that the generic ThruSections loop handles different-radius profiles correctly.",
       "status": "done",
-      "commit": "253633a"
+      "commit": "652cd3c7"
+    },
+    {
+      "id": "step-7",
+      "type": "test",
+      "description": "Write failing test geometry_op_sweep_variant_exists in reify-types geometry.rs #[cfg(test)]: construct GeometryOp::Sweep { profile: GeometryHandleId(1), path: GeometryHandleId(2) }, pattern-match to verify fields. Fails because Sweep variant doesn't exist.",
+      "status": "done",
+      "commit": "777f8b58"
+    },
+    {
+      "id": "step-8",
+      "type": "impl",
+      "description": "Add Sweep variant to GeometryOp enum in reify-types/src/geometry.rs (after Loft, before Extrude): /// Sweep a profile along a path wire (BRepOffsetAPI_MakePipe).\\nSweep { profile: GeometryHandleId, path: GeometryHandleId }. Make step-7 pass.",
+      "status": "done",
+      "commit": "44c96cfc"
+    },
+    {
+      "id": "step-9",
+      "type": "test",
+      "description": "Write failing test sweep_circle_along_line_creates_pipe in kernel lib.rs: create circle face (r=2.0, z=0) via make_circle_face, create line wire (0,0,0 to 0,0,10) via make_line_wire, store both via store_raw, execute GeometryOp::Sweep { profile, path }, query volume and assert approximately pi*r^2*h = pi*4*10 ~= 125.66 (within 5%). Fails because kernel doesn't dispatch Sweep yet.",
+      "status": "done",
+      "commit": "ac85b84b"
+    },
+    {
+      "id": "step-10",
+      "type": "impl",
+      "description": "Implement sweep: (1) Add make_pipe(const OcctShape& profile, const OcctShape& spine) to C++ using BRepOffsetAPI_MakePipe(TopoDS::Wire(spine.shape), profile.shape) with standard try/catch. Add to occt_wrapper.h/.cpp. (2) Add make_pipe FFI declaration in ffi.rs. (3) Add GeometryOp::Sweep dispatch in kernel lib.rs execute(): get profile and path shapes via get_shape(), call ffi::ffi::make_pipe(profile_shape, path_shape), map error. Make step-9 pass.",
+      "status": "done",
+      "commit": "44c96cfc"
+    },
+    {
+      "id": "step-11",
+      "type": "test",
+      "description": "Write test sweep_solid_path_returns_error in kernel lib.rs: create a box solid (10x10x10), create a circle face profile (r=2), attempt GeometryOp::Sweep with the box as path. Verify Err(GeometryError::OperationFailed) is returned (OCCT MakePipe rejects non-wire spines).",
+      "status": "done",
+      "commit": "56434cbe"
+    },
+    {
+      "id": "step-12",
+      "type": "impl",
+      "description": "Verify sweep_solid_path_returns_error passes \u2014 OCCT's MakePipe should naturally propagate the error via the try/catch wrapper. If the error message is unclear, add a descriptive Rust-side check before the FFI call.",
+      "status": "done",
+      "commit": "56434cbe"
+    },
+    {
+      "id": "step-13",
+      "type": "test",
+      "description": "Write failing compiler tests in reify-compiler lib.rs #[cfg(test)]: (a) is_geometry_function_sweep \u2014 assert is_geometry_function('sweep') returns true. (b) compile_sweep_produces_sweep_kind \u2014 compile sweep(profile_expr, path_expr) with 2 args, assert produces CompiledGeometryOp::Sweep { kind: SweepKind::Sweep, profiles with 2 GeomRefs [Step(0), Step(1)] }. (c) compile_sweep_wrong_arg_count \u2014 sweep with 1 or 3 args, assert diagnostic error. Fails because SweepKind::Sweep doesn't exist and 'sweep' isn't recognized.",
+      "status": "done",
+      "commit": "a4eeb16c"
+    },
+    {
+      "id": "step-14",
+      "type": "impl",
+      "description": "Add Sweep variant to SweepKind enum in reify-compiler. Add 'sweep' to is_geometry_function() matches! list. Add sweep(profile, path) compilation case in compile_geometry_call(): validate exactly 2 args, extract profile_expr and path_expr, produce CompiledGeometryOp::Sweep { kind: SweepKind::Sweep, profiles: vec![GeomRef::Step(0), GeomRef::Step(1)], args: [('profile', profile_expr), ('path', path_expr)] }. Make step-13 pass.",
+      "status": "done",
+      "commit": "a4eeb16c"
+    },
+    {
+      "id": "step-15",
+      "type": "test",
+      "description": "Write failing test sweep_through_full_eval_pipeline in crates/reify-eval/tests/sweep_e2e.rs: build CompiledModule with a template containing 3 ops \u2014 Primitive(Sphere) as profile stand-in at step 0, Primitive(Sphere) as path stand-in at step 1, Sweep { kind: SweepKind::Sweep, profiles: [Step(0), Step(1)] } at step 2. Run through Engine::build() with MockGeometryKernel. Verify the 3rd dispatched op is GeometryOp::Sweep with profile handle from step 0 and path handle from step 1. Fails because eval doesn't handle SweepKind::Sweep.",
+      "status": "done",
+      "commit": "251e45cb"
+    },
+    {
+      "id": "step-16",
+      "type": "impl",
+      "description": "Add SweepKind::Sweep dispatch in reify-eval/src/lib.rs compile_geometry_op() after the Revolve arm: resolve profile handle from profiles[0] and path handle from profiles[1] via step_handles lookup (same pattern as Loft's multi-profile resolution), return Some(GeometryOp::Sweep { profile: profile_handle, path: path_handle }). Make step-15 pass.",
+      "status": "done",
+      "commit": "49f4a030"
     }
   ],
   "design_decisions": [
     {
-      "decision": "No Undef propagation in OptionSome evaluation",
-      "rationale": "The task description explicitly requires some(undef) to produce Value::Option(Some(Box::new(Value::Undef))), which is distinct from both Value::Option(None) and Value::Undef. This preserves a three-way distinction: error state (Undef), intentional absence (None), and present-but-undefined (Some(Undef)). Unlike BinOp/FunctionCall which short-circuit on Undef, OptionSome must NOT propagate Undef — it wraps whatever the inner expression evaluates to."
+      "decision": "Use OcctShapeVec opaque C++ type for passing N shapes across CXX FFI boundary",
+      "rationale": "CXX bridge cannot pass Vec<&OcctShape> or slices of opaque types. An opaque builder type with push/consume pattern is the cleanest CXX-compatible solution. It avoids BRep serialization round-trips and is reusable for future N-shape operations. Uses Pin<&mut OcctShapeVec> for mutable access from Rust, which is well-supported by CXX."
     },
     {
-      "decision": "New test file option_eval_tests.rs",
-      "rationale": "Following the established pattern: lambda_eval_tests.rs, quantifier_eval_tests.rs, collection_eval_tests.rs each cover a distinct feature area. Option evaluation gets its own file for consistency and clear module boundary."
+      "decision": "Single loft_profiles() replaces both loft_two_profiles and loft_three_profiles",
+      "rationale": "Task explicitly requires replacing the fixed-count functions with a generic implementation. The generic version loops AddWire() on shapes from OcctShapeVec, supporting any N >= 2 profiles through BRepOffsetAPI_ThruSections. Eliminates the match-on-count pattern in the Rust kernel."
     },
     {
-      "decision": "Rely on task 162 for CompiledExprKind variants and constructor helpers",
-      "rationale": "Task 162 (parser/compiler) adds OptionSome/OptionNone variants to CompiledExprKind. Rust's exhaustive match means walk/collect_value_refs/remap_entity arms must be added at the same time. Constructors are likely added for the compiler's use. If constructors are absent, tests can build CompiledExpr structs directly using the kind enum and ContentHash."
+      "decision": "Sweep uses BRepOffsetAPI_MakePipe (not MakePipeShell)",
+      "rationale": "Task specifies BRepOffsetAPI_MakePipe which is simpler and sufficient for sweep(profile, path). MakePipeShell adds features like auxiliary spine, contact modes, and Frenet framing that aren't needed for the basic sweep operation. MakePipe is in TKOffset which is already linked."
+    },
+    {
+      "decision": "Let OCCT validate sweep path type rather than adding Rust-side TopAbs_ShapeEnum query",
+      "rationale": "MakePipe will fail with an exception if the spine is not a wire, which gets caught by the standard try/catch wrapper and propagated as GeometryError::OperationFailed. Adding a shape-type query FFI function for pre-validation is additional scope. If OCCT's error message is unclear, we add a Rust-side check post-hoc."
+    },
+    {
+      "decision": "Sweep variant uses { profile, path } fields (both GeometryHandleId) in GeometryOp enum",
+      "rationale": "Follows the pattern of Extrude { profile, distance } but with path as a geometry handle instead of a scalar value. Profile is a face/wire, path is a wire \u2014 both are geometry objects managed by the kernel. Simple and direct."
+    },
+    {
+      "decision": "SweepKind::Sweep added to compiler enum alongside Loft/Extrude/Revolve",
+      "rationale": "Sweep is a sweep-family operation (profile along path). Using the existing CompiledGeometryOp::Sweep { kind: SweepKind } structure is consistent with how other sweep operations are compiled. sweep() compilation puts BOTH profile and path in the profiles vector (as GeomRef) since both are geometry references."
+    },
+    {
+      "decision": "Compiler sweep() takes exactly 2 args: sweep(profile, path)",
+      "rationale": "BRepOffsetAPI_MakePipe takes exactly a profile shape and a spine wire. No additional parameters are needed for the basic sweep operation. This matches the language stdlib spec: sweep(profile, path)."
     }
   ],
   "reuse": [
     {
-      "what": "CompiledExpr::literal() constructor",
-      "where": "crates/reify-types/src/expr.rs:156",
-      "how": "Build inner expressions for some(literal_value) test cases"
+      "what": "Existing C++ error handling try/catch pattern",
+      "where": "crates/reify-kernel-occt/cpp/occt_wrapper.cpp (all functions)",
+      "how": "All C++ functions use try { ... } catch (Standard_Failure) { throw runtime_error(OCCT msg) } catch (std::exception) { ... } catch (...) { ... }. Apply identically to make_pipe, loft_profiles, make_line_wire."
     },
     {
-      "what": "CompiledExpr::value_ref() constructor",
-      "where": "crates/reify-types/src/expr.rs:166",
-      "how": "Build inner expressions for some(value_ref) test cases with ValueMap"
+      "what": "BRepOffsetAPI_ThruSections loft pattern",
+      "where": "crates/reify-kernel-occt/cpp/occt_wrapper.cpp lines 606-648",
+      "how": "The existing loft_two/three_profiles show ThruSections(isSolid=true, ruled=false) + AddWire() + Build() + IsDone(). The generic loft_profiles simply loops AddWire() over shapes in the OcctShapeVec."
     },
     {
-      "what": "reify_test_support::values::{some_val, none_val, undef}",
-      "where": "crates/reify-test-support/src/values.rs:199-211",
-      "how": "Construct expected Value::Option values in test assertions — saves verbose Box::new wrapping"
+      "what": "make_circle_wire and make_circle_face helpers",
+      "where": "crates/reify-kernel-occt/cpp/occt_wrapper.cpp lines 544-604",
+      "how": "Reuse in tests: make_circle_face provides face profiles for sweep tests, make_circle_wire provides wire profiles for loft tests. make_line_wire follows the same MakeEdge->MakeWire construction pattern as make_circle_wire."
     },
     {
-      "what": "EvalContext::simple(&ValueMap) pattern",
-      "where": "Used throughout crates/reify-expr/tests/ (lambda_eval_tests.rs:45, quantifier_eval_tests.rs)",
-      "how": "Standard way to create eval context for tests with no user-defined functions"
+      "what": "Kernel GeometryOp dispatch pattern",
+      "where": "crates/reify-kernel-occt/src/lib.rs execute() method",
+      "how": "Sweep dispatch follows same pattern as Extrude/Revolve: get_shape() for handles, FFI call, map_err to GeometryError::OperationFailed."
     },
     {
-      "what": "Value::Option(Option<Box<Value>>) variant",
-      "where": "crates/reify-types/src/value.rs",
-      "how": "Already exists with PartialEq, Ord, Display, content_hash — no changes needed to Value enum"
+      "what": "Compiler sweep compilation pattern",
+      "where": "crates/reify-compiler/src/lib.rs lines 5925-5944 (extrude)",
+      "how": "sweep() follows extrude: validate arg count, extract expressions, produce CompiledGeometryOp::Sweep. Difference: both args are geometry refs in profiles vector, not one ref + one scalar."
     },
     {
-      "what": "Test file structure from lambda_eval_tests.rs",
-      "where": "crates/reify-expr/tests/lambda_eval_tests.rs",
-      "how": "Same imports (reify_expr::{eval_expr, EvalContext}, reify_types::{CompiledExpr, Type, Value, ValueCellId, ValueMap}), helper structure, and assertion patterns"
+      "what": "Eval SweepKind dispatch and GeomRef resolution",
+      "where": "crates/reify-eval/src/lib.rs lines 3104-3171",
+      "how": "SweepKind::Sweep dispatch follows Loft's multi-profile resolution: resolve handles from profiles[0] and profiles[1] via step_handles, produce GeometryOp::Sweep."
+    },
+    {
+      "what": "store_raw() test helper for injecting raw shapes",
+      "where": "crates/reify-kernel-occt/src/lib.rs line 680",
+      "how": "Used in existing loft test to store FFI-created wire shapes. Reuse for sweep tests to store circle_face and line_wire, and for new loft tests with 4 profiles."
+    },
+    {
+      "what": "Eval E2E test pattern with MockGeometryKernel",
+      "where": "crates/reify-eval/tests/extrude_e2e.rs",
+      "how": "sweep_e2e.rs follows same pattern: build CompiledModule with TopologyTemplateBuilder, run Engine::build() with MockGeometryKernel, inspect dispatched operations to verify correct GeometryOp variant and handle IDs."
+    },
+    {
+      "what": "is_geometry_function() registry",
+      "where": "crates/reify-compiler/src/lib.rs lines 710-731",
+      "how": "Add 'sweep' to the existing matches! macro alongside loft, extrude, revolve."
     }
   ],
-  "_session_id": "163-6300ffc2",
-  "_created_at": "2026-03-24T10:47:53.407410+00:00"
+  "_session_id": "310-f1ab3325",
+  "_created_at": "2026-03-25T06:07:31.839348+00:00"
 }

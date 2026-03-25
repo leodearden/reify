@@ -1710,6 +1710,10 @@ mod tests {
 
     #[test]
     fn loft_one_profile_returns_error() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
         let mut kernel = OcctKernel::new();
         let w1 = ffi::ffi::make_circle_wire(10.0, 0.0).expect("wire1");
         let id1 = kernel.store_raw(w1);
@@ -1727,6 +1731,10 @@ mod tests {
 
     #[test]
     fn loft_two_different_circles_cone_like() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
         let mut kernel = OcctKernel::new();
         let w1 = ffi::ffi::make_circle_wire(10.0, 0.0).expect("wire1");
         let id1 = kernel.store_raw(w1);
@@ -1755,6 +1763,10 @@ mod tests {
 
     #[test]
     fn loft_four_circles_creates_solid() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
         let mut kernel = OcctKernel::new();
         // Create 4 circle wire profiles at different heights with decreasing radii
         let w1 = ffi::ffi::make_circle_wire(10.0, 0.0).expect("wire1");
@@ -2254,6 +2266,10 @@ mod tests {
 
     #[test]
     fn sweep_solid_path_returns_error() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
         let mut kernel = OcctKernel::new();
         // Create a box solid as (invalid) path
         let box_h = kernel
@@ -2279,6 +2295,10 @@ mod tests {
 
     #[test]
     fn sweep_circle_along_line_creates_pipe() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
         let mut kernel = OcctKernel::new();
         // Circle face profile: r=2.0 at z=0
         let face = ffi::ffi::make_circle_face(2.0, 0.0).expect("circle face");
