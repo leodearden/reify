@@ -30,6 +30,7 @@ pub enum Declaration {
 #[derive(Debug, Clone)]
 pub struct StructureDef {
     pub name: String,
+    pub doc: Option<String>,
     pub is_pub: bool,
     pub type_params: Vec<TypeParamDecl>,
     pub trait_bounds: Vec<TraitBoundRef>,
@@ -51,6 +52,7 @@ pub struct TraitBoundRef {
 #[derive(Debug, Clone)]
 pub struct OccurrenceDef {
     pub name: String,
+    pub doc: Option<String>,
     pub is_pub: bool,
     pub type_params: Vec<TypeParamDecl>,
     pub trait_bounds: Vec<TraitBoundRef>,
@@ -97,6 +99,7 @@ pub struct WhereClause {
 #[derive(Debug, Clone)]
 pub struct ParamDecl {
     pub name: String,
+    pub doc: Option<String>,
     pub type_expr: Option<TypeExpr>,
     pub default: Option<Expr>,
     pub where_clause: Option<WhereClause>,
@@ -108,6 +111,7 @@ pub struct ParamDecl {
 #[derive(Debug, Clone)]
 pub struct LetDecl {
     pub name: String,
+    pub doc: Option<String>,
     pub is_pub: bool,
     pub type_expr: Option<TypeExpr>,
     pub value: Expr,
@@ -253,6 +257,7 @@ pub struct ImportDecl {
 #[derive(Debug, Clone)]
 pub struct EnumDecl {
     pub name: String,
+    pub doc: Option<String>,
     pub is_pub: bool,
     pub variants: Vec<String>,
     pub span: SourceSpan,
@@ -263,6 +268,7 @@ pub struct EnumDecl {
 #[derive(Debug, Clone)]
 pub struct FnDef {
     pub name: String,
+    pub doc: Option<String>,
     pub is_pub: bool,
     pub type_params: Vec<TypeParamDecl>,
     pub params: Vec<FnParam>,
@@ -276,6 +282,7 @@ pub struct FnDef {
 #[derive(Debug, Clone)]
 pub struct TraitDecl {
     pub name: String,
+    pub doc: Option<String>,
     pub is_pub: bool,
     pub type_params: Vec<TypeParamDecl>,
     pub refinements: Vec<String>,

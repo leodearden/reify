@@ -183,12 +183,14 @@ fn type_error_dimension_mismatch() {
         path: ModulePath::single("dim_mismatch"),
         declarations: vec![Declaration::Structure(StructureDef {
             name: "Bad".into(),
+            doc: None,
             is_pub: false,
             type_params: vec![],
             trait_bounds: vec![],
             members: vec![
                 MemberDecl::Param(ParamDecl {
                     name: "thickness".into(),
+                    doc: None,
                     type_expr: Some(TypeExpr {
                         name: "Scalar".into(),
                         type_args: vec![],
@@ -207,6 +209,7 @@ fn type_error_dimension_mismatch() {
                 }),
                 MemberDecl::Let(LetDecl {
                     name: "bad".into(),
+                    doc: None,
                     is_pub: false,
                     type_expr: None,
                     value: Expr {
@@ -265,12 +268,14 @@ fn constraint_non_bool_produces_warning() {
         path: ModulePath::single("non_bool_constraint"),
         declarations: vec![Declaration::Structure(StructureDef {
             name: "Bad".into(),
+            doc: None,
             is_pub: false,
             type_params: vec![],
             trait_bounds: vec![],
             members: vec![
                 MemberDecl::Param(ParamDecl {
                     name: "width".into(),
+                    doc: None,
                     type_expr: Some(TypeExpr {
                         name: "Scalar".into(),
                         type_args: vec![],
@@ -289,6 +294,7 @@ fn constraint_non_bool_produces_warning() {
                 }),
                 MemberDecl::Param(ParamDecl {
                     name: "height".into(),
+                    doc: None,
                     type_expr: Some(TypeExpr {
                         name: "Scalar".into(),
                         type_args: vec![],
@@ -445,12 +451,14 @@ fn mul_div_different_dimensions_no_diagnostic() {
         path: ModulePath::single("mul_div_dims"),
         declarations: vec![Declaration::Structure(StructureDef {
             name: "Good".into(),
+            doc: None,
             is_pub: false,
             type_params: vec![],
             trait_bounds: vec![],
             members: vec![
                 MemberDecl::Param(ParamDecl {
                     name: "width".into(),
+                    doc: None,
                     type_expr: Some(TypeExpr {
                         name: "Scalar".into(),
                         type_args: vec![],
@@ -469,6 +477,7 @@ fn mul_div_different_dimensions_no_diagnostic() {
                 }),
                 MemberDecl::Param(ParamDecl {
                     name: "height".into(),
+                    doc: None,
                     type_expr: Some(TypeExpr {
                         name: "Scalar".into(),
                         type_args: vec![],
@@ -488,6 +497,7 @@ fn mul_div_different_dimensions_no_diagnostic() {
                 // let area = width * height (Length * Length → Area)
                 MemberDecl::Let(LetDecl {
                     name: "area".into(),
+                    doc: None,
                     is_pub: false,
                     type_expr: None,
                     value: Expr {
@@ -511,6 +521,7 @@ fn mul_div_different_dimensions_no_diagnostic() {
                 // let ratio = width / height (Length / Length → dimensionless Real)
                 MemberDecl::Let(LetDecl {
                     name: "ratio".into(),
+                    doc: None,
                     is_pub: false,
                     type_expr: None,
                     value: Expr {
@@ -1364,12 +1375,14 @@ fn scalar_plus_int_type_error() {
         path: ModulePath::single("scalar_plus_int"),
         declarations: vec![Declaration::Structure(StructureDef {
             name: "Bad".into(),
+            doc: None,
             is_pub: false,
             type_params: vec![],
             trait_bounds: vec![],
             members: vec![
                 MemberDecl::Param(ParamDecl {
                     name: "width".into(),
+                    doc: None,
                     type_expr: Some(TypeExpr {
                         name: "Scalar".into(),
                         type_args: vec![],
@@ -1389,6 +1402,7 @@ fn scalar_plus_int_type_error() {
                 // let bad = width + 5
                 MemberDecl::Let(LetDecl {
                     name: "bad".into(),
+                    doc: None,
                     is_pub: false,
                     type_expr: None,
                     value: Expr {

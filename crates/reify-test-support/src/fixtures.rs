@@ -51,12 +51,14 @@ pub fn bracket_parsed_module() -> ParsedModule {
 
     let structure = StructureDef {
         name: "Bracket".into(),
+        doc: None,
         is_pub: false,
         type_params: vec![],
         trait_bounds: vec![],
         members: vec![
             MemberDecl::Param(ParamDecl {
                 name: "width".into(),
+                doc: None,
                 type_expr: Some(TypeExpr {
                     name: "Scalar".into(),
                     type_args: vec![],
@@ -75,6 +77,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
             }),
             MemberDecl::Param(ParamDecl {
                 name: "height".into(),
+                doc: None,
                 type_expr: Some(TypeExpr {
                     name: "Scalar".into(),
                     type_args: vec![],
@@ -93,6 +96,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
             }),
             MemberDecl::Param(ParamDecl {
                 name: "thickness".into(),
+                doc: None,
                 type_expr: Some(TypeExpr {
                     name: "Scalar".into(),
                     type_args: vec![],
@@ -111,6 +115,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
             }),
             MemberDecl::Param(ParamDecl {
                 name: "fillet_radius".into(),
+                doc: None,
                 type_expr: Some(TypeExpr {
                     name: "Scalar".into(),
                     type_args: vec![],
@@ -129,6 +134,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
             }),
             MemberDecl::Param(ParamDecl {
                 name: "hole_diameter".into(),
+                doc: None,
                 type_expr: Some(TypeExpr {
                     name: "Scalar".into(),
                     type_args: vec![],
@@ -147,6 +153,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
             }),
             MemberDecl::Let(LetDecl {
                 name: "volume".into(),
+                doc: None,
                 is_pub: false,
                 type_expr: None,
                 value: Expr {
@@ -263,6 +270,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
             // The `let body = box(...)` line — parsed as a let with function call
             MemberDecl::Let(LetDecl {
                 name: "body".into(),
+                doc: None,
                 is_pub: false,
                 type_expr: None,
                 value: Expr {

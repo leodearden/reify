@@ -25,11 +25,13 @@ fn reject_unresolved_type_names() {
         path: ModulePath::single("bad"),
         declarations: vec![Declaration::Structure(StructureDef {
             name: "Bad".into(),
+            doc: None,
             is_pub: false,
             type_params: vec![],
             trait_bounds: vec![],
             members: vec![MemberDecl::Param(ParamDecl {
                 name: "x".into(),
+                doc: None,
                 type_expr: Some(TypeExpr {
                     name: "NonexistentType".into(),
                     type_args: vec![],
@@ -213,11 +215,13 @@ fn handle_parse_errors_gracefully() {
         path: ModulePath::single("partial"),
         declarations: vec![Declaration::Structure(StructureDef {
             name: "Partial".into(),
+            doc: None,
             is_pub: false,
             type_params: vec![],
             trait_bounds: vec![],
             members: vec![MemberDecl::Param(ParamDecl {
                 name: "width".into(),
+                doc: None,
                 type_expr: Some(TypeExpr {
                     name: "Scalar".into(),
                     type_args: vec![],

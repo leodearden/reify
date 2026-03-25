@@ -80,6 +80,32 @@ impl<'a> Lowering<'a> {
         ContentHash::of_str(self.node_text(node))
     }
 
+    /// Extract a doc comment from `///` line comments immediately preceding a node.
+    ///
+    /// Walks backward through previous siblings collecting consecutive `line_comment`
+    /// nodes whose text starts with `///`. Returns `None` if no doc comments are found.
+    fn extract_doc_comment(&self, node: tree_sitter::Node) -> Option<String> {
+        let mut lines = Vec::new();
+        let mut sibling = node.prev_sibling();
+        while let Some(s) = sibling {
+            if s.kind() == "line_comment" {
+                let text = self.node_text(s);
+                if let Some(stripped) = text.strip_prefix("///") {
+                    // Collect in reverse order (we walk backward)
+                    lines.push(stripped.strip_prefix(' ').unwrap_or(stripped));
+                    sibling = s.prev_sibling();
+                    continue;
+                }
+            }
+            break;
+        }
+        if lines.is_empty() {
+            return None;
+        }
+        lines.reverse();
+        Some(lines.join("\n"))
+    }
+
     /// Check if a node has an anonymous 'pub' keyword child.
     fn has_pub_keyword(&self, node: tree_sitter::Node) -> bool {
         let mut cursor = node.walk();
@@ -265,8 +291,11 @@ impl<'a> Lowering<'a> {
             }
         }
 
+        let doc = self.extract_doc_comment(node);
+
         Some(EnumDecl {
             name,
+            doc,
             is_pub,
             variants,
             span: self.span(node),
@@ -433,6 +462,7 @@ impl<'a> Lowering<'a> {
         let name_node = node.child_by_field_name("name")?;
         let name = self.node_text(name_node).to_string();
 
+        let doc = self.extract_doc_comment(node);
         let is_pub = self.has_pub_keyword(node);
 
         // Extract optional type parameters
@@ -478,6 +508,7 @@ impl<'a> Lowering<'a> {
 
         Some(FnDef {
             name,
+            doc,
             is_pub,
             type_params,
             params,
@@ -494,6 +525,7 @@ impl<'a> Lowering<'a> {
         let name_node = node.child_by_field_name("name")?;
         let name = self.node_text(name_node).to_string();
 
+        let doc = self.extract_doc_comment(node);
         let is_pub = self.has_pub_keyword(node);
         let type_params = self.lower_type_parameters(node);
 
@@ -504,6 +536,7 @@ impl<'a> Lowering<'a> {
 
         Some(TraitDecl {
             name,
+            doc,
             is_pub,
             type_params,
             refinements,
@@ -779,6 +812,7 @@ impl<'a> Lowering<'a> {
 
         Some(LetDecl {
             name,
+            doc: None, // fn let bindings don't have doc comments
             type_expr,
             is_pub: false,
             value,
@@ -876,6 +910,8 @@ impl<'a> Lowering<'a> {
         let name_node = node.child_by_field_name("name")?;
         let name = self.node_text(name_node).to_string();
 
+        let doc = self.extract_doc_comment(node);
+
         // Detect 'pub' keyword by checking anonymous children
         let is_pub = self.has_pub_keyword(node);
 
@@ -891,6 +927,7 @@ impl<'a> Lowering<'a> {
 
         Some(StructureDef {
             name,
+            doc,
             is_pub,
             type_params,
             trait_bounds,
@@ -904,6 +941,7 @@ impl<'a> Lowering<'a> {
         let name_node = node.child_by_field_name("name")?;
         let name = self.node_text(name_node).to_string();
 
+        let doc = self.extract_doc_comment(node);
         let is_pub = self.has_pub_keyword(node);
         let type_params = self.lower_type_parameters(node);
         let trait_bounds = self.find_trait_bound_refs(node);
@@ -912,6 +950,7 @@ impl<'a> Lowering<'a> {
 
         Some(OccurrenceDef {
             name,
+            doc,
             is_pub,
             type_params,
             trait_bounds,
@@ -984,6 +1023,8 @@ impl<'a> Lowering<'a> {
         let name_node = node.child_by_field_name("name")?;
         let name = self.node_text(name_node).to_string();
 
+        let doc = self.extract_doc_comment(node);
+
         let type_expr = node.child_by_field_name("type").map(|t| {
             self.lower_type_expr_node(t)
         });
@@ -1001,6 +1042,7 @@ impl<'a> Lowering<'a> {
 
         Some(ParamDecl {
             name,
+            doc,
             type_expr,
             default,
             where_clause,
@@ -1012,6 +1054,8 @@ impl<'a> Lowering<'a> {
     fn lower_let(&self, node: tree_sitter::Node) -> Option<LetDecl> {
         let name_node = node.child_by_field_name("name")?;
         let name = self.node_text(name_node).to_string();
+
+        let doc = self.extract_doc_comment(node);
 
         // Detect 'pub' keyword by checking anonymous children
         let is_pub = self.has_pub_keyword(node);
@@ -1027,6 +1071,7 @@ impl<'a> Lowering<'a> {
 
         Some(LetDecl {
             name,
+            doc,
             is_pub,
             type_expr,
             value,
@@ -2950,5 +2995,84 @@ mod tests {
             "expected error mentioning 'port mapping', got: {:?}",
             errors
         );
+    }
+
+    // ── Doc comment extraction tests ─────────────────────────
+
+    #[test]
+    fn doc_comment_on_structure_is_extracted() {
+        let src = "/// A bracket for mounting.\nstructure Bracket {\n  param w: Scalar = 1\n}";
+        let module = parse(src, ModulePath::single("test"));
+        let decl = match &module.declarations[0] {
+            Declaration::Structure(s) => s,
+            other => panic!("expected Structure, got: {other:?}"),
+        };
+        assert_eq!(decl.doc.as_deref(), Some("A bracket for mounting."));
+    }
+
+    #[test]
+    fn multi_line_doc_comment_joined() {
+        let src = "/// Line one.\n/// Line two.\nstructure S {\n  param x: Scalar = 1\n}";
+        let module = parse(src, ModulePath::single("test"));
+        let decl = match &module.declarations[0] {
+            Declaration::Structure(s) => s,
+            other => panic!("expected Structure, got: {other:?}"),
+        };
+        assert_eq!(decl.doc.as_deref(), Some("Line one.\nLine two."));
+    }
+
+    #[test]
+    fn no_doc_comment_yields_none() {
+        let src = "structure S {\n  param x: Scalar = 1\n}";
+        let module = parse(src, ModulePath::single("test"));
+        let decl = match &module.declarations[0] {
+            Declaration::Structure(s) => s,
+            other => panic!("expected Structure, got: {other:?}"),
+        };
+        assert!(decl.doc.is_none());
+    }
+
+    #[test]
+    fn regular_comment_not_treated_as_doc() {
+        let src = "// Just a comment\nstructure S {\n  param x: Scalar = 1\n}";
+        let module = parse(src, ModulePath::single("test"));
+        let decl = match &module.declarations[0] {
+            Declaration::Structure(s) => s,
+            other => panic!("expected Structure, got: {other:?}"),
+        };
+        assert!(decl.doc.is_none(), "regular // comment should not be a doc comment");
+    }
+
+    #[test]
+    fn doc_comment_on_fn_is_extracted() {
+        let src = "/// Compute area.\nfn area(w: Scalar, h: Scalar) -> Scalar { w * h }";
+        let module = parse(src, ModulePath::single("test"));
+        let decl = match &module.declarations[0] {
+            Declaration::Function(f) => f,
+            other => panic!("expected Function, got: {other:?}"),
+        };
+        assert_eq!(decl.doc.as_deref(), Some("Compute area."));
+    }
+
+    #[test]
+    fn doc_comment_on_enum_is_extracted() {
+        let src = "/// Direction enum.\nenum Dir { In, Out }";
+        let module = parse(src, ModulePath::single("test"));
+        let decl = match &module.declarations[0] {
+            Declaration::Enum(e) => e,
+            other => panic!("expected Enum, got: {other:?}"),
+        };
+        assert_eq!(decl.doc.as_deref(), Some("Direction enum."));
+    }
+
+    #[test]
+    fn doc_comment_on_trait_is_extracted() {
+        let src = "/// A rigid body.\ntrait Rigid {\n  param mass: Scalar\n}";
+        let module = parse(src, ModulePath::single("test"));
+        let decl = match &module.declarations[0] {
+            Declaration::Trait(t) => t,
+            other => panic!("expected Trait, got: {other:?}"),
+        };
+        assert_eq!(decl.doc.as_deref(), Some("A rigid body."));
     }
 }
