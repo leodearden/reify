@@ -450,12 +450,13 @@ pub async fn claude_clear_session_impl(
     }
 }
 
-/// Spawn the Claude sidecar process and return a ready-to-use [`SidecarHandle`].
+/// Spawn the Claude sidecar process and return a [`SidecarHandle`] in `Starting` state.
 ///
 /// Extracts stdin/stdout from the child, wraps stdout in a [`BufReader`], and
 /// wires up event emission and MCP interception via [`SidecarHandle::from_parts_with_mcp`].
-/// The caller is responsible for calling [`SidecarHandle::wait_ready`] and storing
-/// the returned handle in the shared sidecar slot.
+/// The returned handle starts in [`SidecarState::Starting`]; the caller typically uses
+/// [`ensure_sidecar_ready`] to store it in the shared sidecar slot and await readiness,
+/// or can call [`SidecarHandle::wait_ready`] manually.
 ///
 /// Returns `Err` if the process cannot be spawned or if stdin/stdout are unavailable.
 pub async fn spawn_sidecar_impl<F>(
