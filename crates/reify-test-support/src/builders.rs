@@ -382,6 +382,7 @@ pub struct TopologyTemplateBuilder {
     guarded_groups: Vec<CompiledGuardedGroup>,
     structure_controlling: HashSet<ValueCellId>,
     objective: Option<reify_types::OptimizationObjective>,
+    meta: std::collections::HashMap<String, String>,
 }
 
 impl TopologyTemplateBuilder {
@@ -399,7 +400,14 @@ impl TopologyTemplateBuilder {
             guarded_groups: Vec::new(),
             structure_controlling: HashSet::new(),
             objective: None,
+            meta: std::collections::HashMap::new(),
         }
+    }
+
+    /// Set meta entries for this template.
+    pub fn meta(mut self, entries: std::collections::HashMap<String, String>) -> Self {
+        self.meta = entries;
+        self
     }
 
     /// Declare a trait bound this structure conforms to.
@@ -639,7 +647,7 @@ impl TopologyTemplateBuilder {
             guarded_groups: self.guarded_groups,
             structure_controlling: self.structure_controlling,
             objective: self.objective,
-            meta: std::collections::HashMap::new(),
+            meta: self.meta,
             content_hash,
         }
     }

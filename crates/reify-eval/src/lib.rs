@@ -93,6 +93,11 @@ pub struct Engine {
     /// Active optimization objectives injected by purposes.
     /// Maps purpose name → optimization objective.
     active_objective_map: HashMap<String, OptimizationObjective>,
+    /// Template meta entries from the last eval() call.
+    /// Maps template name → meta key/value pairs from the template's meta block.
+    /// Populated during eval() so that edit_param() and other incremental paths
+    /// can resolve MetaAccess expressions without re-reading the module.
+    meta_map: HashMap<String, HashMap<String, String>>,
     /// Template-native optimization objectives from the last eval() call.
     /// Maps template name → optimization objective declared in the template.
     /// Populated during eval() so that edit_param() can look up the objective
@@ -259,6 +264,7 @@ impl Engine {
             active_purposes: HashMap::new(),
             active_objective_map: HashMap::new(),
             objectives: HashMap::new(),
+            meta_map: HashMap::new(),
         }
     }
 
