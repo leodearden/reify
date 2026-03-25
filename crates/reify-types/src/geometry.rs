@@ -132,6 +132,13 @@ pub enum GeometryOp {
         profile: GeometryHandleId,
         distance: Value,
     },
+    /// Create a revolved solid by rotating a profile around an axis.
+    Revolve {
+        profile: GeometryHandleId,
+        axis_origin: [f64; 3],
+        axis_dir: [f64; 3],
+        angle_rad: f64,
+    },
     /// Apply draft angle to faces.
     Draft {
         target: GeometryHandleId,
@@ -327,5 +334,29 @@ mod tests {
         assert_ne!(h1, h2);
         assert_ne!(h1, h3);
         assert_ne!(h2, h3);
+    }
+
+    #[test]
+    fn geometry_op_revolve_variant_exists() {
+        let op = GeometryOp::Revolve {
+            profile: GeometryHandleId(1),
+            axis_origin: [0.0, 0.0, 0.0],
+            axis_dir: [0.0, 0.0, 1.0],
+            angle_rad: std::f64::consts::TAU,
+        };
+        match &op {
+            GeometryOp::Revolve {
+                profile,
+                axis_origin,
+                axis_dir,
+                angle_rad,
+            } => {
+                assert_eq!(*profile, GeometryHandleId(1));
+                assert_eq!(*axis_origin, [0.0, 0.0, 0.0]);
+                assert_eq!(*axis_dir, [0.0, 0.0, 1.0]);
+                assert!((*angle_rad - std::f64::consts::TAU).abs() < 1e-15);
+            }
+            _ => panic!("expected Revolve variant"),
+        }
     }
 }

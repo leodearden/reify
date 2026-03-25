@@ -1,215 +1,239 @@
 {
-  "task_id": "308",
-  "title": "Stdlib: extrude operation \u2014 FFI + compiler + eval",
+  "task_id": "309",
+  "title": "Stdlib: revolve and revolve_full operations",
   "files": [
     "crates/reify-types/src/geometry.rs",
-    "crates/reify-compiler/src/lib.rs",
-    "crates/reify-eval/src/lib.rs",
-    "crates/reify-kernel-occt/src/ffi.rs",
-    "crates/reify-kernel-occt/src/lib.rs",
     "crates/reify-kernel-occt/cpp/occt_wrapper.h",
     "crates/reify-kernel-occt/cpp/occt_wrapper.cpp",
-    "crates/reify-eval/tests/extrude_e2e.rs",
-    "crates/reify-kernel-occt/tests/extrude_integration.rs"
+    "crates/reify-kernel-occt/src/ffi.rs",
+    "crates/reify-kernel-occt/src/lib.rs",
+    "crates/reify-compiler/src/lib.rs",
+    "crates/reify-eval/src/lib.rs",
+    "crates/reify-eval/tests/boundary4_geometry.rs"
   ],
   "modules": [
     "crates/reify-types",
-    "crates/reify-compiler",
-    "crates/reify-eval",
     "crates/reify-kernel-occt",
-    "crates/reify-kernel-occt/cpp"
+    "crates/reify-kernel-occt/cpp",
+    "crates/reify-compiler",
+    "crates/reify-eval"
   ],
-  "analysis": "Implement `extrude(profile, distance)` as a sweep operation that extrudes a 2D Shell profile along Z by a given distance using OCCT's BRepPrimAPI_MakePrism.\n\nThe architecture follows the existing Loft sweep pattern across 5 layers:\n1. **Types** (`reify-types`): Add `GeometryOp::Extrude { profile: GeometryHandleId, distance: Value }` variant.\n2. **Compiler** (`reify-compiler`): Add `SweepKind::Extrude` variant and handle `\"extrude\"` in `compile_geometry_call()` \u2014 2 args (profile geometry, distance scalar), producing `CompiledGeometryOp::Sweep` with profiles=[GeomRef::Step(0)] and distance in args.\n3. **Eval** (`reify-eval`): Add `SweepKind::Extrude` arm in sweep eval that resolves the profile GeomRef to a GeometryHandleId and evaluates the distance arg to a Value.\n4. **FFI** (`reify-kernel-occt`): New C++ `make_prism(shape, dx, dy, dz)` using BRepPrimAPI_MakePrism with gp_Vec. Exposed via CXX bridge.\n5. **Kernel** (`reify-kernel-occt`): Handle `GeometryOp::Extrude` in `OcctKernel::execute()` \u2014 extract f64 distance, validate non-zero/finite, call `make_prism(profile, 0, 0, distance)`.\n\nTask 306 (dependency) provides circle/rectangle 2D profile operations. This task adds the extrude sweep that consumes those profiles.\n\nThe FFI `make_prism` is general-purpose (accepts dx/dy/dz direction vector), but the language-level `extrude()` always uses Z-direction (0, 0, distance). Negative distance extrudes in -Z. Zero distance is an error.\n\nFor BRepPrimAPI_MakePrism to produce a Solid, the input profile must be a Face (closed shell). Wire input would produce a Shell. The kernel should accept both but the task spec focuses on Shell/Face profiles from task 306.",
+  "analysis": "Implement revolve(profile, axis, angle) and revolve_full(profile, axis) using OCCT BRepPrimAPI_MakeRevol. This follows the exact same bottom-up pattern as extrude (task 308), which is the direct dependency.\n\nThe pipeline mirrors extrude across 5 layers:\n1. **C++ FFI** \u2014 new make_revolve() using BRepPrimAPI_MakeRevol, plus make_rect_face() helper for tests\n2. **Types** \u2014 GeometryOp::Revolve { profile, axis_origin, axis_dir, angle_rad } variant\n3. **Kernel** \u2014 OcctKernel::execute() match arm with validation (finite params, non-zero angle, non-zero axis)\n4. **Compiler** \u2014 SweepKind::Revolve, 'revolve'/'revolve_full' in is_geometry_function, compile_geometry_call arms\n5. **Eval** \u2014 SweepKind::Revolve arm in compile_geometry_op resolving profile handle + evaluating axis/angle args\n\nKey differences from extrude:\n- Revolve has 8 args (profile + 3 axis_origin + 3 axis_dir + angle) vs extrude's 2 (profile + distance)\n- revolve_full is compiler sugar that injects literal 2\u03c0 for the angle\n- Axis params use [f64; 3] arrays matching CircularPattern's convention (not Value)\n- Zero angle is an error (no geometry produced), negative angles are valid (reverse rotation)\n\nVolume tests use Pappus' centroid theorem: V = 2\u03c0R \u00d7 A where R is centroid-to-axis distance and A is profile area. A circle face of radius r offset by R from the axis, revolved 360\u00b0, produces torus volume 2\u03c0\u00b2Rr\u00b2. Half-angle (180\u00b0) should produce half volume.\n\nBRepPrimAPI_MakeRevol is in TKPrim which is already linked. The gp_Ax1 type needed for the axis is already included via existing headers.",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "Add C++ make_prism function to FFI layer. In occt_wrapper.h: declare `std::unique_ptr<OcctShape> make_prism(const OcctShape& profile, double dx, double dy, double dz);`. In occt_wrapper.cpp: implement using BRepPrimAPI_MakePrism(profile.shape, gp_Vec(dx, dy, dz)), with standard triple-catch error handling (Standard_Failure / std::exception / catch-all). Validate direction vector magnitude > 0. In ffi.rs: add bridge declaration `fn make_prism(profile: &OcctShape, dx: f64, dy: f64, dz: f64) -> Result<UniquePtr<OcctShape>>;` in the unsafe extern C++ block under a new '// --- Sweep / Extrude ---' section.",
+      "description": "Add make_rect_face C++ helper function for creating rectangular face profiles in tests. Creates a planar rectangular face centered at (cx, cy, cz) with given width (X) and height (Y) in the XY plane. Uses BRepBuilderAPI_MakeEdge (4 line edges) \u2192 MakeWire \u2192 MakeFace. Add to occt_wrapper.h, occt_wrapper.cpp, and ffi.rs. Signature: make_rect_face(width: f64, height: f64, cx: f64, cy: f64, cz: f64) \u2192 UniquePtr<OcctShape>.",
       "status": "done",
-      "commit": "594daaab",
-      "tests": []
+      "commit": "0babe507905483610fef6dc1033008fd5391b04d",
+      "tests": [
+        "Compile check \u2014 make_rect_face callable from Rust FFI"
+      ]
+    },
+    {
+      "id": "pre-2",
+      "description": "Add make_revolve C++ implementation using BRepPrimAPI_MakeRevol. Add #include <BRepPrimAPI_MakeRevol.hxx> to occt_wrapper.cpp. Create gp_Ax1 from origin point + direction, call BRepPrimAPI_MakeRevol(profile.shape, axis, angle_rad), check IsDone(). Add declarations to occt_wrapper.h and ffi.rs. Signature: make_revolve(profile: &OcctShape, ox, oy, oz, ax, ay, az, angle_rad: f64) \u2192 UniquePtr<OcctShape>.",
+      "status": "done",
+      "commit": "0babe507905483610fef6dc1033008fd5391b04d",
+      "tests": [
+        "Compile check \u2014 make_revolve callable from Rust FFI"
+      ]
     }
   ],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing test in crates/reify-eval/tests/extrude_e2e.rs: `extrude_through_full_eval_pipeline` \u2014 follows the loft_through_full_eval_pipeline pattern in geometry_error_handling.rs. Creates 3 ops: Sphere(radius=5mm) as profile placeholder at Step(0), then CompiledGeometryOp::Sweep { kind: SweepKind::Extrude, profiles: vec![GeomRef::Step(0)], args: vec![(\"profile\", sphere_expr), (\"distance\", mm_literal(10.0))] }. Runs Engine::build with MockGeometryKernel. Asserts ops_ref[1].op matches GeometryOp::Extrude { profile: handle_from_op_0, distance } where distance.as_f64() \u2248 0.01 (10mm in SI). Test fails because SweepKind::Extrude and GeometryOp::Extrude don't exist yet.",
+      "description": "Write failing FFI-level tests in crates/reify-kernel-occt/src/lib.rs #[cfg(all(test, has_occt))] block: (a) revolve_ffi_circle_face_full_rotation \u2014 make_circle_face(r=5, z=0), translate it 20 units on X via translate_shape, then make_revolve around Z axis (origin 0,0,0 dir 0,0,1) by 2\u03c0, assert shape is non-null and query_volume > 0. (b) make_rect_face_creates_valid_face \u2014 make_rect_face(10, 5, 20, 0, 0), query_area \u2248 50. Tests fail because make_revolve and make_rect_face don't exist in FFI.",
       "status": "done",
-      "commit": "23e2b29c"
+      "commit": "71122c6302939e58d903798f55d7b635fb3c72e4"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Add type definitions across two crates: (a) In reify-types/src/geometry.rs: add `/// Extrude a 2D profile along Z axis by distance.\\nExtrude { profile: GeometryHandleId, distance: Value }` variant to GeometryOp enum (after the Loft variant, before Draft). (b) In reify-compiler/src/lib.rs: add `Extrude` variant to SweepKind enum (after Loft, ~line 691).",
+      "description": "Implement pre-1 (make_rect_face) and pre-2 (make_revolve): Add C++ implementations to occt_wrapper.cpp, declarations to occt_wrapper.h, and FFI bridge declarations to ffi.rs. Include BRepPrimAPI_MakeRevol.hxx. Verify step-1 FFI tests pass.",
       "status": "done",
-      "commit": "fc4eb910"
+      "commit": "0babe507905483610fef6dc1033008fd5391b04d"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing test in crates/reify-eval/tests/extrude_e2e.rs: `extrude_compiler_rejects_wrong_arg_count` \u2014 tests that compile_geometry_call for \"extrude\" with 0, 1, or 3 args produces error diagnostics. Uses the same compilation infrastructure as existing compiler tests. Test fails because \"extrude\" is not yet handled by the compiler (falls through to unknown-function path).",
+      "description": "Write failing test for GeometryOp::Revolve variant in crates/reify-types/src/geometry.rs: construct Revolve { profile: GeometryHandleId(1), axis_origin: [0.0,0.0,0.0], axis_dir: [0.0,0.0,1.0], angle_rad: std::f64::consts::TAU } and assert it matches the Revolve pattern. Fails because variant doesn't exist.",
       "status": "done",
-      "commit": "04e51f1f"
+      "commit": "88434fcf506d6e76329a39688180bc65e63ef017"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Add \"extrude\" match arm in compile_geometry_call() in reify-compiler/src/lib.rs. Insert after the loft sweep section (~line 5918) and before the modify-extensions section. Pattern: validate compiled_args.len() == 2 (emit diagnostic if not), then create CompiledGeometryOp::Sweep { kind: SweepKind::Extrude, profiles: vec![GeomRef::Step(0)], args: vec![(\"profile\".to_string(), arg0), (\"distance\".to_string(), arg1)] }. Follow the thicken/shell 2-arg validation pattern.",
+      "description": "Add Revolve variant to GeometryOp enum in crates/reify-types/src/geometry.rs (after Extrude, before Draft): /// Create a revolved solid by rotating a profile around an axis.\\nRevolve { profile: GeometryHandleId, axis_origin: [f64; 3], axis_dir: [f64; 3], angle_rad: f64 }. Make step-3 pass.",
       "status": "done",
-      "commit": "966dc93d"
+      "commit": "2c32a8e7afa17907f4c60d734f8a1010423b9c4b"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "The step-1 test (extrude_through_full_eval_pipeline) should now compile but still fail because the eval layer doesn't handle SweepKind::Extrude \u2014 the match on SweepKind is non-exhaustive. Verify this is the failure mode.",
+      "description": "Write failing kernel error tests in crates/reify-kernel-occt/src/lib.rs #[cfg(all(test, has_occt))] block: (a) revolve_zero_angle_returns_error \u2014 execute Revolve with angle_rad=0.0, assert Err(OperationFailed) containing 'zero'. (b) revolve_nan_params_returns_error \u2014 test with NaN angle, assert Err containing 'finite'. (c) revolve_zero_axis_dir_returns_error \u2014 test with axis_dir=[0,0,0], assert Err containing 'zero'. Fail because Revolve match arm missing in execute().",
       "status": "done",
-      "commit": "966dc93d"
+      "commit": "57853ff1a90225c6e93b626d9476cb76a8fcf0f6"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Add SweepKind::Extrude handler in reify-eval/src/lib.rs in the compile_geometry_op() function's Sweep match arm (~line 3104). After the existing Loft arm, add: `reify_compiler::SweepKind::Extrude => { let profile_handle = match &profiles[0] { GeomRef::Step(idx) => step_handles.get(*idx).copied()?, GeomRef::Sub(_) => step_handles.last().copied()? }; let distance = eval_arg(\"distance\"); Some(reify_types::GeometryOp::Extrude { profile: profile_handle, distance }) }`. Uses the same eval_arg helper already available in scope for evaluating named args to Values.",
+      "description": "Add Revolve match arm to OcctKernel::execute() in crates/reify-kernel-occt/src/lib.rs. Validate: all 6 axis floats + angle_rad are finite (else 'must be finite'), angle_rad != 0 (else 'must not be zero'), axis_dir magnitude > epsilon (else 'must not be zero-length'). Get profile shape via get_shape(). Call ffi::ffi::make_revolve(). Map errors. Make step-5 pass.",
       "status": "done",
-      "commit": "966dc93d"
+      "commit": "cccf27bb942040f0d83b7031599cd1ebfd5392e3"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing OCCT integration tests in crates/reify-kernel-occt/tests/extrude_integration.rs (gated with #[cfg(has_occt)]): (a) `extrude_zero_distance_returns_error` \u2014 create OcctKernel, execute Box to get a handle, then Extrude with distance=Value::Real(0.0), assert OperationFailed error with 'zero' in message. (b) `extrude_non_finite_distance_returns_error` \u2014 test with NaN and Infinity values. Tests fail because OcctKernel::execute() doesn't handle Extrude variant.",
+      "description": "Write kernel volume tests in crates/reify-kernel-occt/src/lib.rs: (a) revolve_circle_face_full_volume \u2014 store_raw(make_circle_face(r=5, z=0)), translate_shape by (20,0,0), store_raw the translated face, execute Revolve around Z axis by 2\u03c0, query volume, assert \u2248 2\u03c0\u00b2\u00d720\u00d725 (Pappus: V=2\u03c0R\u00d7A where R=20, A=\u03c0\u00d725). (b) revolve_half_angle_half_volume \u2014 same setup but angle=\u03c0, assert volume \u2248 half of full. (c) revolve_rect_face_torus_volume \u2014 store_raw(make_rect_face(w=4,h=2,cx=10,cy=0,cz=0)), revolve around Z by 2\u03c0, assert volume \u2248 2\u03c0\u00d710\u00d7(4\u00d72) = 160\u03c0 (Pappus).",
       "status": "done",
-      "commit": "96f49b16"
+      "commit": "db9127f4"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Add GeometryOp::Extrude handler in OcctKernel::execute() in reify-kernel-occt/src/lib.rs. Insert before the closing `};` of the match (~line 435). Pattern: `GeometryOp::Extrude { profile, distance } => { let dist = extract_f64(distance)?; if !dist.is_finite() { return Err(GeometryError::OperationFailed(\"extrude distance must be finite\".into())); } if dist == 0.0 { return Err(GeometryError::OperationFailed(\"extrude distance must not be zero\".into())); } let profile_shape = self.get_shape(*profile)?; ffi::ffi::make_prism(profile_shape, 0.0, 0.0, dist).map_err(|e| GeometryError::OperationFailed(e.to_string()))? }`. The ReprKind for the stored result is determined by self.store() which uses the OCCT shape type.",
+      "description": "Verify volume tests pass with existing implementation from step-6. If tolerances need adjustment or OCCT produces unexpected results, debug and fix. The BRepPrimAPI_MakeRevol implementation should produce correct geometry.",
       "status": "done",
-      "commit": "96f49b16"
+      "commit": "db9127f4"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write OCCT integration volume tests (gated #[cfg(has_occt)]): (a) `extrude_circle_profile_volume` \u2014 use task 306's circle profile FFI (e.g., make_circle_face) to create a circle face with radius=5mm, then Extrude by distance=10mm, query volume, assert \u2248 \u03c0 * (0.005)\u00b2 * 0.01 m\u00b3 with 1% tolerance. (b) `extrude_rectangle_profile_volume` \u2014 use task 306's rectangle FFI to create 10mm\u00d720mm face, extrude by 5mm, query volume = 0.01 * 0.02 * 0.005 m\u00b3. (c) `extrude_negative_distance_produces_solid` \u2014 extrude circle by -10mm, verify volume is same magnitude as positive extrusion (BRepPrimAPI_MakePrism handles negative direction).",
+      "description": "Write failing compiler tests in crates/reify-compiler/src/lib.rs #[cfg(test)] block: (a) is_geometry_function_revolve \u2014 assert is_geometry_function('revolve') returns true. (b) is_geometry_function_revolve_full \u2014 assert is_geometry_function('revolve_full') returns true. (c) compile_revolve_produces_sweep \u2014 compile 'revolve(profile, 0, 0, 0, 0, 0, 1, 3.14)' with 8 args, assert produces CompiledGeometryOp::Sweep { kind: SweepKind::Revolve }. (d) compile_revolve_full_produces_sweep \u2014 compile 'revolve_full(profile, 0, 0, 0, 0, 0, 1)' with 7 args, assert produces Sweep(Revolve) with angle arg \u2248 2\u03c0. (e) compile_revolve_wrong_arg_count \u2014 revolve with 5 args, assert diagnostic error. Fail because SweepKind::Revolve doesn't exist.",
       "status": "done",
-      "commit": "96f49b16"
+      "commit": "eb3c935b"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Verify all integration tests pass. Fix any issues with make_prism handling of Face vs Wire vs Shell input topologies. Ensure BRepPrimAPI_MakePrism produces correct Solid shapes from Face profiles. If profile type auto-detection is needed in the C++ layer, add TopAbs_ShapeEnum check to ensure the input is at least a Face or Wire. Add descriptive error message if input is a Solid or Compound (not valid for extrusion).",
+      "description": "Add SweepKind::Revolve to enum in crates/reify-compiler/src/lib.rs. Add 'revolve' | 'revolve_full' to is_geometry_function() matches! macro. Add match arms in compile_geometry_call(): revolve expects 8 args (profile, ox, oy, oz, ax, ay, az, angle), revolve_full expects 7 args (same without angle). Both produce CompiledGeometryOp::Sweep { kind: SweepKind::Revolve, profiles: vec![GeomRef::Step(0)], args }. revolve_full injects a literal CompiledExpr for 2\u03c0 as the angle arg. Make step-9 pass.",
       "status": "done",
-      "commit": "96f49b16"
+      "commit": "c2ba7cb1"
     },
     {
       "id": "step-11",
-      "type": "impl",
-      "description": "REVIEW FIX [silent_default_on_logic_error]: In crates/reify-eval/src/lib.rs ~line 3135 (SweepKind::Extrude arm), replace `.unwrap_or(reify_types::Value::Undef)` with `.expect(\"Extrude Sweep args must contain 'distance' key \u2014 compiler bug\")`. The 'distance' key is always injected by compile_geometry_call for extrude; its absence is a compiler invariant violation that must panic loudly, not silently produce Value::Undef. This follows the project convention documented in feedback_silent_defaults_pattern.md.",
+      "type": "test",
+      "description": "Write failing eval test in crates/reify-eval/src/lib.rs #[cfg(test)] block: compile_geometry_op_revolve_produces_revolve_variant \u2014 create CompiledGeometryOp::Sweep { kind: SweepKind::Revolve } with profile at Step(0) and axis/angle args, call compile_geometry_op with step_handles=[GeometryHandleId(100)], assert result is Some(GeometryOp::Revolve { profile: GeometryHandleId(100), axis_origin: [expected], axis_dir: [expected], angle_rad: expected }). Fails because SweepKind::Revolve arm missing in compile_geometry_op.",
       "status": "done",
-      "commit": "4eb2cf9b"
+      "commit": "b3269cd3"
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "REVIEW FIX [test_does_not_test_what_it_claims]: In crates/reify-eval/tests/extrude_e2e.rs, fix vacuous assertions in `extrude_compiler_rejects_one_arg` (lines 43-46) and `extrude_compiler_rejects_three_args` (lines 72-75). Replace `assert!(!has_extrude_op || !compiled.diagnostics.is_empty(), ...)` with two strict assertions per test: (1) `assert!(!compiled.diagnostics.is_empty(), \"expected error diagnostic for wrong arg count\")` to verify a diagnostic IS emitted, and (2) `assert!(!has_extrude_op, \"should not produce Sweep(Extrude) op with wrong arg count\")` to verify no Extrude op was produced. The current `||` assertions pass vacuously when neither condition holds (no diagnostic emitted AND no op produced).",
+      "description": "Add SweepKind::Revolve arm in compile_geometry_op() in crates/reify-eval/src/lib.rs, after the Extrude arm (~line 3140). Resolve profile from profiles[0] via step_handles (same as Extrude pattern). Evaluate ox/oy/oz/ax/ay/az/angle args via eval_expr, extract f64 values with .as_f64().expect(). Return Some(GeometryOp::Revolve { profile, axis_origin, axis_dir, angle_rad }). Make step-11 pass.",
       "status": "done",
-      "commit": "c9c4dbf0"
+      "commit": "fa48b3e3"
     },
     {
       "id": "step-13",
       "type": "test",
-      "description": "REVIEW FIX [missing_tests part 1]: Create crates/reify-kernel-occt/tests/extrude_integration.rs (the file planned in steps 7/9 but never created). Gate entire file with `#![cfg(has_occt)]`. Write public-API integration tests using OcctKernel::execute(): (a) `extrude_zero_distance_returns_error` \u2014 execute Box to get a profile handle, then execute Extrude with distance=Value::Real(0.0), assert Err(GeometryError::OperationFailed(msg)) where msg contains 'zero'. (b) `extrude_non_finite_distance_returns_error` \u2014 same profile setup, test with Value::Real(f64::NAN) and Value::Real(f64::INFINITY), assert both return OperationFailed with 'finite' in message. These test the kernel Extrude handler's validation paths through the public API.",
+      "description": "Write mock kernel test in crates/reify-eval/tests/boundary4_geometry.rs: mock_kernel_revolve \u2014 create a box handle via MockGeometryKernel, then execute GeometryOp::Revolve { profile: box_handle.id, axis_origin: [0,0,0], axis_dir: [0,0,1], angle_rad: TAU }, assert new handle returned with incremented id.",
       "status": "done",
-      "commit": "b4311adc"
+      "commit": "25a4ac73"
     },
     {
       "id": "step-14",
-      "type": "test",
-      "description": "REVIEW FIX [missing_tests part 2]: Add kernel-path volume correctness tests in crates/reify-kernel-occt/src/lib.rs inline test module (requires private FFI access for face creation via store_raw + make_circle_face). Rewrite existing FFI-direct volume tests to exercise the full OcctKernel::execute() path: (a) `extrude_circle_face_through_kernel` \u2014 store_raw(make_circle_face(5.0, 0.0)) to get face handle, then kernel.execute(&GeometryOp::Extrude { profile: face_id, distance: Value::Real(10.0) }), query volume on result, assert \u2248 \u03c0*25*10 = 785.4 with 1% tolerance. (b) `extrude_negative_distance_through_kernel` \u2014 same but distance=Value::Real(-10.0), verify volume matches positive extrusion. The existing FFI-direct tests (extrude_circle_face_volume, extrude_negative_distance_same_volume) can remain as supplementary FFI-level tests.",
+      "type": "impl",
+      "description": "Verify mock kernel test passes (MockGeometryKernel handles all GeometryOp variants via catch-all). Run full test suite (cargo test --workspace) to confirm no regressions across all crates.",
       "status": "done",
-      "commit": "82b4a9cb"
+      "commit": "c104eee2"
+    },
+    {
+      "id": "step-15",
+      "type": "test",
+      "description": "Write FFI-level regression test in crates/reify-kernel-occt/src/lib.rs #[cfg(all(test, has_occt))] block: revolve_result_is_solid_not_shell \u2014 make_rect_face(w=4,h=2,cx=10,cy=0,cz=0), make_revolve around Z axis by 2\u03c0, then query_volume and assert volume > 0. A Shell shape returns 0 or near-0 for volume, so this test guards the contract that make_revolve always returns a volumetric Solid. Additionally, assert the volume matches the Pappus expectation (\u2248160\u03c0) with reasonable tolerance, proving the result is geometrically correct. This test passes with current code (the happy path works), serving as a regression guard for the Shell\u2192Solid conversion path.",
+      "status": "done",
+      "commit": "4606b50a"
+    },
+    {
+      "id": "step-16",
+      "type": "impl",
+      "description": "Fix silent failure in make_revolve Shell\u2192Solid conversion (occt_wrapper.cpp lines 706-711). Change the conditional block so that when BRepBuilderAPI_MakeSolid IsDone() returns false, an error is thrown instead of silently continuing with the Shell: add `else { throw std::runtime_error(\"make_revolve: Shell\u2192Solid conversion failed \u2014 BRepBuilderAPI_MakeSolid did not complete\"); }` after the existing `if (solidMaker.IsDone())` block. Also remove the dead-code duplicate OrientClosedSolid block (lines 714-716) which operates on a temporary and has no effect \u2014 the correct version on lines 718-721 already handles this. Run full test suite to verify no regressions.",
+      "status": "done",
+      "commit": "13703640"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Extrude modeled as SweepKind::Extrude in CompiledGeometryOp::Sweep, not as a new CompiledGeometryOp variant",
-      "rationale": "Follows the established architectural pattern where Loft is also a SweepKind. Sweeps share the same structure: profiles (geometry refs) + args (scalar expressions). This keeps the CompiledGeometryOp enum stable and groups related operations."
+      "decision": "Use SweepKind::Revolve under CompiledGeometryOp::Sweep rather than a new top-level CompiledGeometryOp variant",
+      "rationale": "Revolve is semantically a sweep operation (like Loft and Extrude). Reusing the Sweep variant keeps the compiler enum compact and follows the established pattern where sweep-class operations share the same compiled representation with different SweepKind discriminants."
     },
     {
-      "decision": "FFI make_prism takes general direction vector (dx, dy, dz), but GeometryOp::Extrude stores only distance as Value",
-      "rationale": "The FFI layer is intentionally more general than the language-level op. This supports future extensions (extrude_along, angled extrude) without FFI changes. The kernel maps simple distance to direction (0, 0, distance). The direction vector approach matches BRepPrimAPI_MakePrism's native gp_Vec parameter."
+      "decision": "revolve takes 8 positional args: profile, ox, oy, oz, ax, ay, az, angle",
+      "rationale": "Task spec says 'Axis passed as two f64[3] arrays extracted from Vector or Axis value'. Using 6 separate f64 args for axis_origin and axis_dir (3+3) matches the FFI calling convention and avoids needing compound type extraction at compile time. This mirrors circular_pattern's parameter style."
     },
     {
-      "decision": "Zero distance is an explicit error, negative distance is valid (extrudes in -Z)",
-      "rationale": "Zero-length extrusion produces a degenerate shape (zero volume), which is always a modeling error. Negative distance is geometrically meaningful \u2014 it extrudes in the opposite direction, which is standard CAD behavior. BRepPrimAPI_MakePrism handles negative vectors correctly."
+      "decision": "revolve_full is pure compiler sugar \u2014 injects literal 2\u03c0 angle",
+      "rationale": "revolve_full(profile, ox, oy, oz, ax, ay, az) is just revolve with angle=2\u03c0. Handling this entirely in the compiler (injecting a literal CompiledExpr for 2\u03c0) avoids a separate GeometryOp variant and keeps the kernel/eval layers simple. No new SweepKind needed."
     },
     {
-      "decision": "Profile argument is first, distance second: extrude(profile, distance)",
-      "rationale": "Follows the subject-then-parameter pattern used by other operations (fillet(target, radius), thicken(target, offset)). The profile is the primary operand, distance is the parameter. Matches the stdlib reference documentation."
+      "decision": "Add make_rect_face C++ FFI helper for test profiles",
+      "rationale": "Revolve tests need a rectangular face profile to validate Pappus' theorem (V=2\u03c0R\u00d7A for known area A). make_circle_face exists but a rectangle at a controllable offset from the axis is cleaner for torus volume validation. Follows the established make_circle_face/make_circle_wire helper pattern."
     },
     {
-      "decision": "GeometryOp::Extrude uses GeometryHandleId for profile (not Value)",
-      "rationale": "Consistent with all other operations that reference existing geometry (Union, Fillet, Loft, etc.). The profile is a previously-computed geometry handle, not a scalar value. The Sweep compilation pattern resolves GeomRef::Step(0) to a handle ID during evaluation."
+      "decision": "Zero angle returns error, not a no-op",
+      "rationale": "Task spec explicitly lists 'Zero angle \u2192 error'. A zero-angle revolve produces no geometry, so erroring is the correct behavior rather than silently returning an empty or degenerate shape."
     },
     {
-      "decision": "Extrude uses profiles vec with single entry rather than a target field like Modify ops",
-      "rationale": "The CompiledGeometryOp::Sweep variant already has a profiles: Vec<GeomRef> field designed for geometry references. Using profiles[0] for the extrude profile is consistent with how Loft uses the same field. A separate target field would require a new CompiledGeometryOp variant."
+      "decision": "GeometryOp::Revolve uses f64 fields (not Value) for axis and angle",
+      "rationale": "Following the Rotate variant pattern which uses angle_rad: f64 and axis: [f64; 3]. The angle/axis are evaluated from Value/CompiledExpr to f64 in the eval layer (compile_geometry_op), keeping the kernel interface numeric-only. Consistent with CircularPattern's axis_origin/axis_dir: [f64; 3]."
     },
     {
-      "decision": "OCCT kernel volume tests split between integration test file and inline module",
-      "rationale": "Integration tests in tests/extrude_integration.rs can only access the public API (OcctKernel::execute/query). Error-path tests (zero/NaN/Inf distance) work with Box as a dummy profile since errors trigger before the FFI call. Volume correctness tests need make_circle_face (private FFI) and store_raw (test-only helper), so they must remain in the inline #[cfg(all(test, has_occt))] mod tests block. Both locations exercise the kernel Extrude handler through execute()."
+      "decision": "Translate circle face for revolve volume tests rather than creating offset profiles",
+      "rationale": "make_circle_face creates at origin. To test revolve around Z axis at offset R, translate the face by (R,0,0) first using existing translate_shape FFI. This reuses existing infrastructure rather than parameterizing make_circle_face with offset."
     },
     {
-      "decision": "Extrude distance arg uses expect() not unwrap_or(Value::Undef)",
-      "rationale": "The 'distance' key in Sweep args is a compiler invariant \u2014 compile_geometry_call always injects it for SweepKind::Extrude. Its absence indicates a compiler bug. Per project convention (feedback_silent_defaults_pattern.md), logic errors must be noisy: expect() with a descriptive message panics at the source rather than silently propagating Value::Undef downstream."
+      "decision": "Promote Shell\u2192Solid conversion failure to hard error instead of silent fallthrough",
+      "rationale": "Review finding [silent_failure_on_error_path]: when BRepPrimAPI_MakeRevol produces a Shell and BRepBuilderAPI_MakeSolid fails, silently returning the Shell violates the caller's contract that revolve produces a volumetric Solid. Volume queries on a Shell return 0 or incorrect results with no error indication. Throwing an explicit error ensures callers always receive either a verified Solid or a clear error, following the project norm of noisy failures on logic errors (feedback_silent_defaults_pattern)."
     }
   ],
   "reuse": [
     {
-      "what": "SweepKind enum pattern",
-      "where": "crates/reify-compiler/src/lib.rs line 688-692",
-      "how": "Add Extrude variant to existing SweepKind enum. Follows same pattern as Loft."
+      "what": "SweepKind enum + CompiledGeometryOp::Sweep variant",
+      "where": "crates/reify-compiler/src/lib.rs (lines 688-693, 636-643)",
+      "how": "Add Revolve variant to existing SweepKind enum. Reuse the Sweep { kind, profiles, args } compiled op structure \u2014 profiles[0] is the revolve profile, args carry ox/oy/oz/ax/ay/az/angle parameters."
     },
     {
-      "what": "CompiledGeometryOp::Sweep variant structure",
-      "where": "crates/reify-compiler/src/lib.rs line 637-642",
-      "how": "Reuse the existing Sweep { kind, profiles, args } structure. Extrude uses profiles=[Step(0)] for the profile reference and args for both profile expr and distance expr."
+      "what": "Extrude compile_geometry_call pattern",
+      "where": "crates/reify-compiler/src/lib.rs (lines 5922-5941)",
+      "how": "Follow identical structure for revolve: validate arg count, decompose compiled_args via iterator, produce CompiledGeometryOp::Sweep with named arg pairs. revolve_full adds an extra literal arg for 2\u03c0."
     },
     {
-      "what": "Loft compile_geometry_call pattern",
-      "where": "crates/reify-compiler/src/lib.rs line 5895-5918",
-      "how": "Follow same arg-count validation, compile, produce CompiledGeometryOp::Sweep pattern. Extrude differs in requiring exactly 2 args (not variadic like Loft)."
+      "what": "SweepKind::Extrude eval resolution pattern",
+      "where": "crates/reify-eval/src/lib.rs (lines 3119-3140)",
+      "how": "Revolve arm follows Extrude's pattern: resolve profile handle from profiles[0] via step_handles, evaluate named args via eval_expr, construct GeometryOp::Revolve."
     },
     {
-      "what": "Loft eval resolution pattern",
-      "where": "crates/reify-eval/src/lib.rs line 3104-3120",
-      "how": "Follow same GeomRef to GeometryHandleId resolution via step_handles. Extrude additionally evaluates the distance arg via eval_arg helper available in the same scope."
+      "what": "Extrude validation pattern in OcctKernel::execute",
+      "where": "crates/reify-kernel-occt/src/lib.rs (lines 435-450)",
+      "how": "Revolve follows the same pattern: get profile shape, validate parameters (finite, non-zero angle, non-zero axis magnitude), call FFI function, map error."
     },
     {
-      "what": "extract_f64 + validation pattern in OcctKernel::execute",
-      "where": "crates/reify-kernel-occt/src/lib.rs line 131-146 (Box example)",
-      "how": "Reuse extract_f64() for distance Value to f64 conversion. Follow the same is_finite() validation pattern. Use the same error mapping: ffi call .map_err(|e| GeometryError::OperationFailed(e.to_string()))."
+      "what": "make_prism C++ implementation pattern",
+      "where": "crates/reify-kernel-occt/cpp/occt_wrapper.cpp (lines 646-670)",
+      "how": "make_revolve follows identical structure: try/catch with Standard_Failure, parameter validation, BRepPrimAPI constructor, Build(), IsDone() check, wrap in OcctShape."
     },
     {
-      "what": "C++ error handling triple-catch pattern",
-      "where": "crates/reify-kernel-occt/cpp/occt_wrapper.cpp (all make_* functions)",
-      "how": "make_prism follows identical try { } catch (Standard_Failure) { } catch (std::exception) { } catch (...) { } pattern with descriptive OCCT make_prism: error prefixes."
+      "what": "make_circle_face C++ helper pattern",
+      "where": "crates/reify-kernel-occt/cpp/occt_wrapper.cpp (lines 567-598)",
+      "how": "make_rect_face follows same structure: validate inputs, build edges+wire+face via BRepBuilderAPI builders, wrap result in OcctShape unique_ptr."
     },
     {
-      "what": "TopologyTemplateBuilder + MockGeometryKernel test infrastructure",
-      "where": "crates/reify-test-support/src/ (builders.rs, mocks.rs, values.rs)",
-      "how": "Use TopologyTemplateBuilder::new().realization() to build test modules. Use MockGeometryKernel with operations_ref() to capture and inspect executed GeometryOps. Use mm() helper for length Value literals."
+      "what": "Extrude kernel test patterns (error + volume)",
+      "where": "crates/reify-kernel-occt/src/lib.rs (lines 2468-2682)",
+      "how": "Revolve tests mirror extrude tests: error cases (zero/nan/inf), FFI-level volume validation, kernel-path volume via store_raw + execute + query pattern."
     },
     {
-      "what": "loft_through_full_eval_pipeline test pattern",
-      "where": "crates/reify-eval/tests/geometry_error_handling.rs line 267-347",
-      "how": "Follow identical structure for extrude E2E test: build ops list, create template/module, run Engine::build with mock kernel, inspect captured ops for correct GeometryOp variant and field values."
+      "what": "circular_pattern axis parameter style",
+      "where": "crates/reify-kernel-occt/src/ffi.rs (lines 101-111)",
+      "how": "Revolve uses the same (ox,oy,oz,ax,ay,az) axis parameterization as circular_pattern, keeping FFI style consistent."
     },
     {
-      "what": "Inline OCCT kernel test pattern with store_raw",
-      "where": "crates/reify-kernel-occt/src/lib.rs line 636-660 (test helpers) and line 662+ (tests)",
-      "how": "Use store_raw() to insert FFI-created shapes (make_circle_face) as kernel handles, then exercise kernel.execute(&GeometryOp::Extrude { ... }) and kernel.query(&GeometryQuery::Volume(...)) for end-to-end kernel path tests."
+      "what": "is_geometry_function registry",
+      "where": "crates/reify-compiler/src/lib.rs (lines 706-729)",
+      "how": "Add 'revolve' | 'revolve_full' to the existing matches! macro."
     }
   ],
-  "_session_id": "308-f4ddbf85",
-  "_created_at": "2026-03-25T04:39:17.631539+00:00"
+  "_session_id": "309-dfbaa32a",
+  "_created_at": "2026-03-25T05:40:25.046235+00:00"
 }

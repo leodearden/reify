@@ -3138,6 +3138,37 @@ fn compile_geometry_op(
                         distance,
                     })
                 }
+                reify_compiler::SweepKind::Revolve => {
+                    // Resolve profile GeomRef (first entry in profiles) to a handle
+                    let profile_handle = match profiles.first()? {
+                        GeomRef::Step(idx) => step_handles.get(*idx).copied()?,
+                        GeomRef::Sub(_) => step_handles.last().copied()?,
+                    };
+                    let ctx = reify_expr::EvalContext::new(values, functions);
+                    let eval_arg = |name: &str| -> f64 {
+                        let val = args
+                            .iter()
+                            .find(|(n, _)| n == name)
+                            .map(|(_, expr)| reify_expr::eval_expr(expr, &ctx))
+                            .unwrap_or_else(|| panic!(
+                                "Revolve Sweep args must contain '{}' key — compiler bug",
+                                name
+                            ));
+                        val.as_f64().unwrap_or_else(|| panic!(
+                            "Revolve '{}' arg must evaluate to f64 — compiler bug",
+                            name
+                        ))
+                    };
+                    let axis_origin = [eval_arg("ox"), eval_arg("oy"), eval_arg("oz")];
+                    let axis_dir = [eval_arg("ax"), eval_arg("ay"), eval_arg("az")];
+                    let angle_rad = eval_arg("angle");
+                    Some(reify_types::GeometryOp::Revolve {
+                        profile: profile_handle,
+                        axis_origin,
+                        axis_dir,
+                        angle_rad,
+                    })
+                }
             }
         }
     }
@@ -3358,6 +3389,78 @@ mod tests {
                 );
             }
             other => panic!("expected GeometryOp::RotateAround, got {:?}", other),
+        }
+    }
+
+    // --- Revolve eval tests (task-309 step-11) ---
+
+    #[test]
+    fn compile_geometry_op_revolve_produces_revolve_variant() {
+        let step_handles = vec![GeometryHandleId(100)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Sweep {
+            kind: SweepKind::Revolve,
+            profiles: vec![GeomRef::Step(0)],
+            args: vec![
+                ("profile".to_string(), literal_f64(0.0)),
+                ("ox".to_string(), literal_f64(1.0)),
+                ("oy".to_string(), literal_f64(2.0)),
+                ("oz".to_string(), literal_f64(3.0)),
+                ("ax".to_string(), literal_f64(0.0)),
+                ("ay".to_string(), literal_f64(0.0)),
+                ("az".to_string(), literal_f64(1.0)),
+                ("angle".to_string(), literal_f64(std::f64::consts::TAU)),
+            ],
+        };
+
+        let result = compile_geometry_op(&op, &values, &step_handles, &[]);
+        let geom_op = result.expect("compile_geometry_op should return Some for Revolve");
+        match geom_op {
+            reify_types::GeometryOp::Revolve {
+                profile,
+                axis_origin,
+                axis_dir,
+                angle_rad,
+            } => {
+                assert_eq!(profile, GeometryHandleId(100), "profile should be handle 100");
+                assert!(
+                    (axis_origin[0] - 1.0).abs() < 1e-12,
+                    "axis_origin[0] should be 1.0, got {}",
+                    axis_origin[0]
+                );
+                assert!(
+                    (axis_origin[1] - 2.0).abs() < 1e-12,
+                    "axis_origin[1] should be 2.0, got {}",
+                    axis_origin[1]
+                );
+                assert!(
+                    (axis_origin[2] - 3.0).abs() < 1e-12,
+                    "axis_origin[2] should be 3.0, got {}",
+                    axis_origin[2]
+                );
+                assert!(
+                    (axis_dir[0]).abs() < 1e-12,
+                    "axis_dir[0] should be 0.0, got {}",
+                    axis_dir[0]
+                );
+                assert!(
+                    (axis_dir[1]).abs() < 1e-12,
+                    "axis_dir[1] should be 0.0, got {}",
+                    axis_dir[1]
+                );
+                assert!(
+                    (axis_dir[2] - 1.0).abs() < 1e-12,
+                    "axis_dir[2] should be 1.0, got {}",
+                    axis_dir[2]
+                );
+                assert!(
+                    (angle_rad - std::f64::consts::TAU).abs() < 1e-12,
+                    "angle_rad should be TAU, got {}",
+                    angle_rad
+                );
+            }
+            other => panic!("expected GeometryOp::Revolve, got {:?}", other),
         }
     }
 
