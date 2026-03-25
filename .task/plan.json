@@ -10,15 +10,18 @@
     "crates/reify-syntax/src/ts_parser.rs",
     "crates/reify-types/src/expr.rs",
     "crates/reify-compiler/src/lib.rs",
-    "crates/reify-compiler/tests/meta_compile_tests.rs"
+    "crates/reify-compiler/tests/meta_compile_tests.rs",
+    "crates/reify-expr/src/lib.rs",
+    "crates/reify-expr/tests/meta_eval_tests.rs"
   ],
   "modules": [
     "tree-sitter-reify",
     "crates/reify-syntax",
     "crates/reify-types",
-    "crates/reify-compiler"
+    "crates/reify-compiler",
+    "crates/reify-expr"
   ],
-  "analysis": "The task requires implementing `expr.meta.key` access in the compiler, producing a MetaAccess compiled expression. Currently, NO meta block support exists anywhere: not in the tree-sitter grammar, the parser, the AST types, the compiled expression types, or the compiler itself. The language spec (Section 4.8) defines meta blocks as `meta { key = \"value\", ... }` with string-keyed, string-valued entries accessible via dot notation.\n\nThe implementation requires changes across 4 modules:\n1. **tree-sitter-reify**: Add `meta_block` grammar rule as a new `_member` choice\n2. **reify-syntax**: Add `MetaBlockDecl` struct and `MemberDecl::MetaBlock` variant, plus `lower_meta_block()` parser method\n3. **reify-types**: Add `CompiledExprKind::MetaAccess { entity, key }` variant with walk/collect/remap support\n4. **reify-compiler**: Add `meta: HashMap<String, String>` to TopologyTemplate, `meta_entries` to CompilationScope, handle `meta.key` pattern in MemberAccess compilation, validate keys at compile time\n\nThe access pattern `meta.key` within an entity body appears as `MemberAccess { object: Ident(\"meta\"), member: \"key\" }` in the AST. The compiler detects `Ident(\"meta\")` as the object of a MemberAccess, looks up the key in the entity's collected meta entries, and produces a `MetaAccess { entity, key }` expression with result type `Type::String`. Nonexistent keys produce compile-time errors.\n\nExisting compiler tests all use the pattern: parse source -> compile -> inspect template/diagnostics. This requires the full grammar->parser->AST->compiler pipeline to work. The grammar/parser/AST changes are therefore mandatory prerequisites.",
+  "analysis": "The task requires implementing `expr.meta.key` access in the compiler, producing a MetaAccess compiled expression. Currently, NO meta block support exists anywhere: not in the tree-sitter grammar, the parser, the AST types, the compiled expression types, or the compiler itself. The language spec (Section 4.8) defines meta blocks as `meta { key = \"value\", ... }` with string-keyed, string-valued entries accessible via dot notation.\n\nThe implementation requires changes across 4 modules:\n1. **tree-sitter-reify**: Add `meta_block` grammar rule as a new `_member` choice\n2. **reify-syntax**: Add `MetaBlockDecl` struct and `MemberDecl::MetaBlock` variant, plus `lower_meta_block()` parser method\n3. **reify-types**: Add `CompiledExprKind::MetaAccess { entity, key }` variant with walk/collect/remap support\n4. **reify-compiler**: Add `meta: HashMap<String, String>` to TopologyTemplate, `meta_entries` to CompilationScope, handle `meta.key` pattern in MemberAccess compilation, validate keys at compile time\n\nThe access pattern `meta.key` within an entity body appears as `MemberAccess { object: Ident(\"meta\"), member: \"key\" }` in the AST. The compiler detects `Ident(\"meta\")` as the object of a MemberAccess, looks up the key in the entity's collected meta entries, and produces a `MetaAccess { entity, key }` expression with result type `Type::String`. Nonexistent keys produce compile-time errors.\n\nExisting compiler tests all use the pattern: parse source -> compile -> inspect template/diagnostics. This requires the full grammar->parser->AST->compiler pipeline to work. The grammar/parser/AST changes are therefore mandatory prerequisites.\n\n**Review fix (steps 13-18):** The MetaAccess evaluator in reify-expr was a stub that always returned Value::Undef via synthetic ValueCellId lookup. This violates the project's 'silent defaults' convention (feedback_silent_defaults_pattern.md). The fix adds an `meta: Option<&HashMap<String, HashMap<String, String>>>` field to EvalContext (entity name \u2192 key \u2192 value), updates the MetaAccess eval arm to look up values from this map, and panics when meta context is missing or key is not found. The EvalContext constructors default meta to None for backward compatibility (40+ existing call sites unchanged); callers that need meta resolution use the new `with_meta()` builder. The reify-eval/reify-runtime wiring to populate meta from TopologyTemplate at runtime is a natural follow-up outside this task's compiler scope.",
   "prerequisites": [
     {
       "id": "pre-1",
@@ -147,6 +150,48 @@
       "description": "No new implementation expected -- step-4's MemberAccess handler already works for any expression context. This step verifies correctness and adjusts if the test reveals issues.",
       "status": "done",
       "commit": "c6228bf7"
+    },
+    {
+      "id": "step-13",
+      "type": "test",
+      "description": "Create `crates/reify-expr/tests/meta_eval_tests.rs`. Write test `eval_meta_access_returns_string_value`: construct `CompiledExpr::meta_access(\"Bracket\".into(), \"description\".into())`. Build a meta map `HashMap<String, HashMap<String, String>>` with {\"Bracket\": {\"description\": \"A bracket\"}}. Create an EvalContext via `EvalContext::simple(&values).with_meta(&meta_map)`. Call `eval_expr(&expr, &ctx)` and assert result == `Value::String(\"A bracket\".to_string())`. Also write test `eval_meta_access_is_not_undef` with the same setup asserting result != `Value::Undef`. These tests will fail because EvalContext has no `meta` field and no `with_meta()` method.",
+      "status": "done",
+      "commit": "d09e2898"
+    },
+    {
+      "id": "step-14",
+      "type": "impl",
+      "description": "In `crates/reify-expr/src/lib.rs`: (1) Add `use std::collections::HashMap;`. (2) Add field `pub meta: Option<&'a HashMap<String, HashMap<String, String>>>` to EvalContext. (3) Set `meta: None` in `new()`, `simple()`, and propagate `meta: self.meta` in `with_scope()`. (4) Add builder method `pub fn with_meta(mut self, meta: &'a HashMap<String, HashMap<String, String>>) -> Self { self.meta = Some(meta); self }`. (5) Replace the MetaAccess eval arm entirely: remove synthetic `__meta_` ValueCellId logic. If `ctx.meta` is None, panic with \"MetaAccess evaluation requires meta context in EvalContext\". If Some, look up entity in outer map then key in inner map. If found, return `Value::String(value.clone())`. If entity not found, panic with \"MetaAccess: entity '{entity}' not found in meta context\". If key not found, panic with \"MetaAccess: key '{key}' not found in entity '{entity}' meta\".",
+      "status": "done",
+      "commit": "aa02577b"
+    },
+    {
+      "id": "step-15",
+      "type": "test",
+      "description": "Write test `eval_meta_access_multiple_keys` in meta_eval_tests.rs: build a meta map with entity \"Widget\" having keys {\"name\": \"Gear\", \"version\": \"2.0\", \"material\": \"steel\"}. Eval MetaAccess for each key and assert each returns the correct Value::String. Confirms multi-key entity lookup works correctly.",
+      "status": "done",
+      "commit": "eaecdcb1"
+    },
+    {
+      "id": "step-16",
+      "type": "impl",
+      "description": "Should pass from step-14 implementation. Verify and adjust if needed.",
+      "status": "done",
+      "commit": "eaecdcb1"
+    },
+    {
+      "id": "step-17",
+      "type": "test",
+      "description": "Write test `eval_meta_access_no_context_panics` in meta_eval_tests.rs with `#[should_panic(expected = \"MetaAccess evaluation requires meta context\")]`: create a MetaAccess(\"Bracket\", \"description\") expression and evaluate with `EvalContext::simple(&values)` (meta defaults to None). Asserts that evaluation panics rather than silently returning Undef \u2014 enforcing the project's 'silent defaults should be noisy' convention from feedback_silent_defaults_pattern.md.",
+      "status": "done",
+      "commit": "eebe807e"
+    },
+    {
+      "id": "step-18",
+      "type": "impl",
+      "description": "Should pass from step-14 implementation (panic path when ctx.meta is None). Verify panic message matches the #[should_panic(expected)] string and adjust if needed.",
+      "status": "done",
+      "commit": "eebe807e"
     }
   ],
   "design_decisions": [
@@ -173,6 +218,18 @@
     {
       "decision": "Meta block check positioned after port/collection checks but before generic method/error path in MemberAccess handler",
       "rationale": "Port and collection checks are more common and should short-circuit first. The meta check uses Ident(\"meta\") detection which won't conflict with ports/collections since 'meta' is a language keyword."
+    },
+    {
+      "decision": "EvalContext.meta as Option<&HashMap<String, HashMap<String, String>>> with None default",
+      "rationale": "Adding meta as an Option preserves backward compatibility for all 40+ existing EvalContext::new/simple call sites \u2014 they continue to work with meta: None. Only callers that need meta resolution opt in via the with_meta() builder. The outer HashMap maps entity name to meta entries, supporting future cross-entity meta access. Panic on None (instead of silent Undef) follows the project's 'silent defaults should be noisy' convention from feedback_silent_defaults_pattern.md."
+    },
+    {
+      "decision": "Panic (not Value::Undef) when MetaAccess eval lacks meta context or key",
+      "rationale": "The compiler validates meta keys at compile time (step-5/step-7), so a runtime MetaAccess with a missing key indicates a bug in the wiring between compiler and evaluator \u2014 not a user error. Panicking makes this immediately visible rather than silently producing wrong values. This directly addresses the review findings about violating feedback_silent_defaults_pattern.md."
+    },
+    {
+      "decision": "Runtime wiring in reify-eval/reify-runtime deferred to follow-up",
+      "rationale": "The Engine in reify-eval has access to TopologyTemplate.meta and can build the entity\u2192meta HashMap to pass via EvalContext::with_meta(). However, this involves modifying ConcurrentEditSetup and the concurrent evaluator \u2014 separate modules with their own concurrency concerns. The eval arm is now correct and tested at the reify-expr level; wiring it into the full runtime is a natural follow-up task."
     }
   ],
   "reuse": [
@@ -205,8 +262,18 @@
       "what": "Diagnostic error pattern with span labels",
       "where": "crates/reify-compiler/src/lib.rs (port member errors, type errors)",
       "how": "Use Diagnostic::error(message).with_label(DiagnosticLabel::new(span, hint)) followed by returning CompiledExpr::literal(Value::Undef, Type::String) as fallback."
+    },
+    {
+      "what": "Eval test pattern: construct CompiledExpr + EvalContext, call eval_expr, assert result",
+      "where": "crates/reify-expr/tests/option_eval_tests.rs",
+      "how": "Follow the pattern: build a CompiledExpr via constructor (e.g. meta_access), create ValueMap + EvalContext::simple(), call eval_expr(&expr, &ctx), assert on Value variant. For meta tests, chain with_meta() on the EvalContext."
+    },
+    {
+      "what": "EvalContext builder/propagation pattern",
+      "where": "crates/reify-expr/src/lib.rs (with_scope method)",
+      "how": "with_scope creates a new EvalContext propagating functions and recursion_depth while replacing values. The with_meta() builder follows the same self-modifying pattern \u2014 take mut self, set field, return self."
     }
   ],
   "_session_id": "211-2be81429",
-  "_created_at": "2026-03-25T10:40:41.183193+00:00"
+  "_created_at": "2026-03-25T11:25:45.273914+00:00"
 }
