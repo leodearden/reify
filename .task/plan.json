@@ -1,133 +1,96 @@
 {
-  "task_id": "234",
-  "title": "Frame: Type, Value, constructors",
+  "task_id": "163",
+  "title": "some/none: evaluator",
   "files": [
-    "crates/reify-types/src/ty.rs",
-    "crates/reify-types/src/value.rs",
-    "crates/reify-stdlib/src/lib.rs"
+    "crates/reify-expr/src/lib.rs",
+    "crates/reify-expr/tests/option_eval_tests.rs"
   ],
   "modules": [
-    "crates/reify-types",
-    "crates/reify-stdlib"
+    "crates/reify-expr"
   ],
-  "analysis": "Task 234 adds a Frame geometric type to Reify, following the established patterns from Point (task 223) and Orientation (task 233). Frame represents a coordinate frame: an origin point + a basis orientation. The Type variant is `Frame(usize)` parameterized by spatial dimension N (matching Orientation(usize)). The Value variant is `Frame { origin: Box<Value>, basis: Box<Value> }` where origin is a Value::Point and basis is a Value::Orientation. Two constructors are needed: `frame3(origin, basis)` taking a Point3 origin and Orientation3 basis, and `frame3_identity` taking no args and returning origin=(0m,0m,0m) with identity orientation.\n\nKey implementation details:\n- Type::Frame(usize): follows Orientation(usize) pattern exactly. Display: `Frame3`. Factory: `Type::frame(n)`. is_numeric: false.\n- Value::Frame { origin: Box<Value>, basis: Box<Value> }: content_hash tag=20 (next available — tags 0-19 are used by existing variants). type_tag for Ord=20. dimension() returns DIMENSIONLESS (frame itself has no physical dimension). PartialEq compares origin and basis via delegation. Display: `frame({origin}, {basis})` — delegates to inner Display impls.\n- frame3 constructor: validates exactly 2 args, first must be Value::Point with 3 components, second must be Value::Orientation. Returns Value::Undef on any validation failure.\n- frame3_identity: no args, returns Frame with origin=Point([Value::length(0.0) x3]) and basis=Orientation{w:1,x:0,y:0,z:0}.",
+  "analysis": "Task 163 adds evaluation support for some(expr) and none option expressions. The CompiledExprKind::OptionSome(Box<CompiledExpr>) and OptionNone AST nodes were defined in reify-types (task 162 dependency). The evaluator in crates/reify-expr/src/lib.rs needs two match arms in eval_expr: (1) OptionNone maps directly to Value::Option(None), and (2) OptionSome(inner) recursively evaluates the inner expression then wraps in Value::Option(Some(Box::new(val))). Critically, some() must NOT propagate Undef — some(undef) must produce Value::Option(Some(Box::new(Value::Undef))), preserving the three-way distinction between Value::Option(None) (intentional absence), Value::Option(Some(Value::Undef)) (present but undefined), and Value::Undef (evaluation failure). The implementation is minimal (6 lines of evaluator code at lines 222-227) since the AST, type system, compiler, and parser are all handled by task 162. Tests in option_eval_tests.rs cover: none semantics (2 tests), some wrapping literals of int/bool/real types (3 tests), undef non-propagation with three-way inequality checks (3 tests), and nesting/value-ref integration including some(some(x)), some(none), and missing-ref wrapping (4 tests). Both implementation and all 12 tests are already present in this worktree and passing.",
   "prerequisites": [],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing tests in ty.rs for Type::Frame(usize): construction and equality (Frame(3)==Frame(3), Frame(3)!=Frame(2)), Display ('Frame3', 'Frame2'), factory method Type::frame(n), hash consistency via HashMap, is_numeric returns false, as_name returns None, Frame(3) != Orientation(3)",
+      "description": "Write failing tests for OptionNone evaluation in crates/reify-expr/tests/option_eval_tests.rs: (a) eval_none_produces_option_none — construct CompiledExpr::option_none(Type::Option(Box::new(Type::Int))), evaluate with empty ValueMap, assert result equals Value::Option(None). (b) eval_none_is_not_undef — same setup, assert result does NOT equal Value::Undef. These test the simplest evaluator case with no inner expression.",
       "status": "done",
-      "commit": "0dfd6b03"
+      "commit": "79e6d96c5265180b8a23bb39d8be6a508d03c719"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Add Frame(usize) variant to Type enum in ty.rs. Add Display arm writing `Frame{n}`. Add factory method `Type::frame(n: usize) -> Self`. Add is_numeric match arm returning false. All step-1 tests pass.",
+      "description": "Add match arm in eval_expr (crates/reify-expr/src/lib.rs) for CompiledExprKind::OptionNone => Value::Option(None). Single line addition after the MethodCall arm.",
       "status": "done",
-      "commit": "0dfd6b03"
+      "commit": "79e6d96c5265180b8a23bb39d8be6a508d03c719"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing tests in value.rs for Value::Frame { origin, basis }: construction with Point origin and Orientation basis, PartialEq (equal frames equal, different origin differs, different basis differs), Display format `frame(point(...), [w,x,y,z]q)`, dimension() returns DIMENSIONLESS, content_hash determinism (same frame same hash), content_hash distinct from Orientation and Point, Ord type_tag=20 ordering (Frame > Matrix), same-type Ord (compare origin first then basis), content_hash with neg-zero differs",
+      "description": "Write failing tests for OptionSome wrapping literal values: (a) eval_some_wraps_int — some(5) → Value::Option(Some(Box::new(Value::Int(5)))), (b) eval_some_wraps_bool — some(true) → wrapped Bool, (c) eval_some_wraps_real — some(3.14) → wrapped Real. Each constructs CompiledExpr::option_some(CompiledExpr::literal(val, ty), Option<ty>) and evaluates with empty ValueMap.",
       "status": "done",
-      "commit": "3a649cf2"
+      "commit": "79e6d96c5265180b8a23bb39d8be6a508d03c719"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Add `Frame { origin: Box<Value>, basis: Box<Value> }` variant to Value enum. Implement: content_hash (tag=20, combine origin.content_hash() + basis.content_hash()), PartialEq (delegate to origin==origin && basis==basis), Ord (type_tag=20, cmp origin then basis), Display (`frame({origin}, {basis})`), dimension() returns DIMENSIONLESS. All step-3 tests pass.",
+      "description": "Add match arm in eval_expr for CompiledExprKind::OptionSome(inner): recursively eval_expr(inner, ctx), wrap result in Value::Option(Some(Box::new(val))). Three lines in crates/reify-expr/src/lib.rs. Importantly, do NOT add any Undef short-circuiting — the inner value must be wrapped unconditionally.",
       "status": "done",
-      "commit": "3a649cf2"
+      "commit": "79e6d96c5265180b8a23bb39d8be6a508d03c719"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing tests in stdlib lib.rs for frame3(origin, basis): valid Point3<Length> origin + Orientation basis returns Frame value, verify origin and basis are stored correctly, wrong arg count (0, 1, 3 args) returns Undef, non-Point first arg (e.g. Real) returns Undef, non-Orientation second arg (e.g. Real) returns Undef, Point2 origin (wrong component count) returns Undef, dimensionless Point3<Real> origin is accepted",
+      "description": "Write tests validating undef non-propagation semantics (should pass immediately given step-4 implementation): (a) eval_some_undef_produces_option_some_undef — some(undef) must equal Value::Option(Some(Box::new(Value::Undef))), (b) eval_some_undef_not_equal_to_none — Some(Undef) ≠ Option(None), (c) eval_some_undef_not_equal_to_bare_undef — Some(Undef) ≠ Value::Undef. These enforce the critical three-way distinction.",
       "status": "done",
-      "commit": "98ae96a8"
+      "commit": "79e6d96c5265180b8a23bb39d8be6a508d03c719"
     },
     {
       "id": "step-6",
-      "type": "impl",
-      "description": "Add `frame3` match arm to eval_builtin in lib.rs: validate exactly 2 args, first must be Value::Point with exactly 3 components, second must be Value::Orientation, return Value::Frame { origin: Box::new(args[0].clone()), basis: Box::new(args[1].clone()) }. Return Undef on any validation failure. All step-5 tests pass.",
-      "status": "done",
-      "commit": "98ae96a8"
-    },
-    {
-      "id": "step-7",
       "type": "test",
-      "description": "Write failing tests in stdlib lib.rs for frame3_identity: no-arg call returns Frame, verify origin equals Point([0m, 0m, 0m]) and basis equals identity Orientation(w:1,x:0,y:0,z:0), call with any args returns Undef",
+      "description": "Write tests for nesting and value-ref integration (should pass given step-4): (a) eval_some_nested_some — some(some(3)) yields doubly-wrapped Option(Some(Option(Some(Int(3))))), (b) eval_some_wraps_none — some(none) yields Option(Some(Option(None))), (c) eval_some_value_ref — some(value_ref(x)) where x=42 in ValueMap yields Option(Some(Int(42))), (d) eval_some_missing_ref_wraps_undef — some(value_ref(x)) where x absent yields Option(Some(Undef)), NOT bare Undef. These validate composition and recursive evaluation correctness.",
       "status": "done",
-      "commit": "6f6dd389"
-    },
-    {
-      "id": "step-8",
-      "type": "impl",
-      "description": "Add `frame3_identity` match arm to eval_builtin in lib.rs: if args.is_empty(), return Value::Frame with origin=Value::Point(vec![Value::length(0.0), Value::length(0.0), Value::length(0.0)]) and basis=Value::Orientation{w:1.0,x:0.0,y:0.0,z:0.0}; else return Value::Undef. All step-7 tests pass.",
-      "status": "done",
-      "commit": "6f6dd389"
+      "commit": "79e6d96c5265180b8a23bb39d8be6a508d03c719"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Frame(usize) parameterized only by spatial dimension N, not by quantity type",
-      "rationale": "The task spec says Frame(usize), matching Orientation(usize). Unlike Point/Vector which carry a quantity type parameter, Frame's dimensionality is its key parameter. This keeps the type simple and aligned with geometric semantics where a frame is a position + orientation in N-space."
+      "decision": "No Undef propagation in some() — evaluate inner expression unconditionally and wrap the result",
+      "rationale": "The task explicitly requires some(undef) to produce Value::Option(Some(Value::Undef)), distinct from both Value::Option(None) and Value::Undef. Unlike arithmetic operators which propagate Undef (e.g., undef + 1 → Undef), some() is a wrapper that intentionally preserves whatever the inner expression produces. This maintains the three-way distinction fundamental to option type semantics."
     },
     {
-      "decision": "Value::Frame stores origin and basis as Box<Value> rather than decomposed scalar fields",
-      "rationale": "Storing as Box<Value> reuses existing Point and Orientation value representations, enables delegation for Display/content_hash/comparison, and keeps the Value enum from growing too wide. The Box indirection adds one level of heap allocation but is consistent with how Field and Lambda already use Box<Value>."
-    },
-    {
-      "decision": "content_hash tag=20 for Frame",
-      "rationale": "Tags 0-19 are allocated across existing Value variants in content_hash and type_tag. Tag 20 is the next unused value, ensuring no hash collisions."
-    },
-    {
-      "decision": "Frame dimension() returns DIMENSIONLESS",
-      "rationale": "A coordinate frame itself is not a physical quantity — it's a geometric construct. Its origin point carries a dimension (Length), but the frame as a whole is dimensionless, consistent with how Orientation returns DIMENSIONLESS."
-    },
-    {
-      "decision": "frame3 accepts any Point3 regardless of inner quantity dimension",
-      "rationale": "While frame3_identity uses LENGTH-dimensioned zero origin, the frame3 constructor should accept any 3-component Point. This avoids over-constraining: users might create frames with dimensionless coordinates for pure geometric operations."
-    },
-    {
-      "decision": "Display format: frame({origin}, {basis}) delegating to inner displays",
-      "rationale": "Consistent with point(...) and vec(...) display conventions. Produces readable output like `frame(point(0 m, 0 m, 0 m), [1, 0, 0, 0]q)` by reusing existing Display implementations."
+      "decision": "Step-5 and step-6 tests are test-only steps with no corresponding impl step",
+      "rationale": "The OptionSome implementation from step-4 is naturally correct for all cases because it unconditionally wraps eval(inner). The undef, nesting, and value-ref tests pass without additional code — they validate emergent correctness from the recursive evaluation design. Separating them as distinct test steps documents the design intent and catches future regressions if someone incorrectly adds Undef short-circuiting."
     }
   ],
   "reuse": [
     {
-      "what": "Orientation(usize) type variant pattern",
-      "where": "crates/reify-types/src/ty.rs:47",
-      "how": "Frame(usize) follows the identical pattern — single usize parameter, Display as `Frame{n}`, factory method `Type::frame(n)`, is_numeric returns false, as_name returns None."
+      "what": "CompiledExpr::option_some() and CompiledExpr::option_none() constructors",
+      "where": "crates/reify-types/src/expr.rs lines 507-526",
+      "how": "Used in tests to construct AST nodes. Defined as part of task 162. option_some(inner, result_type) wraps an inner CompiledExpr; option_none(result_type) creates a bare None."
     },
     {
-      "what": "Value::Orientation content_hash, PartialEq, Ord implementation patterns",
-      "where": "crates/reify-types/src/value.rs:307-318, 400-407, 538-545",
-      "how": "Frame's trait impls follow the same structural approach: content_hash uses a unique tag and combines sub-component hashes; PartialEq delegates to inner field equality; Ord compares fields in order."
+      "what": "CompiledExpr::literal(value, ty) constructor",
+      "where": "crates/reify-types/src/expr.rs",
+      "how": "Used in tests to create inner literal expressions for some() wrapping. Standard pattern across all evaluator tests."
     },
     {
-      "what": "orient_identity constructor pattern",
-      "where": "crates/reify-stdlib/src/lib.rs:480-486",
-      "how": "frame3_identity follows the exact same pattern — check args.is_empty(), return constructed value, else Undef."
+      "what": "CompiledExpr::value_ref(cell_id, ty) constructor",
+      "where": "crates/reify-types/src/expr.rs",
+      "how": "Used in step-6 tests for value-ref integration — creates a ValueRef expression that looks up a ValueCellId in the ValueMap."
     },
     {
-      "what": "construct_point_or_vector validation pattern",
-      "where": "crates/reify-stdlib/src/lib.rs:663-681",
-      "how": "frame3 constructor follows the same validate-args-then-construct pattern, returning Value::Undef on any failure."
+      "what": "EvalContext::simple(&values) and ValueMap::new()",
+      "where": "crates/reify-expr/src/lib.rs and crates/reify-types/src/value.rs",
+      "how": "Standard test harness pattern used by all evaluator tests: create ValueMap, optionally insert values, evaluate with EvalContext::simple(&values)."
     },
     {
-      "what": "assert_orientation_approx! test macro pattern",
-      "where": "crates/reify-stdlib/src/lib.rs:2567-2584",
-      "how": "Frame tests can use a similar assert_frame macro that matches on Value::Frame and validates inner origin/basis components."
-    },
-    {
-      "what": "Value::length(0.0) factory method",
-      "where": "crates/reify-types/src/value.rs:81-86",
-      "how": "frame3_identity uses Value::length(0.0) for the zero-length origin components, reusing the existing factory."
+      "what": "Recursive eval_expr(inner, ctx) pattern",
+      "where": "crates/reify-expr/src/lib.rs line 54",
+      "how": "OptionSome arm follows the same recursive eval pattern used by UnaryOp, BinOp, If, and other compound expression kinds."
     }
   ],
-  "_session_id": "234-1bf39682",
-  "_created_at": "2026-03-25T01:21:35.911599+00:00"
+  "_session_id": "163-ac503362",
+  "_created_at": "2026-03-25T01:46:34.736843+00:00"
 }
