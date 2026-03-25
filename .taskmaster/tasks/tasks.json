@@ -7674,6 +7674,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 430,
+        "title": "Fix nested lock acquisition and Distance key symmetry in mock kernel",
+        "description": "In crates/reify-test-support/src/mocks.rs: (1) Fix SequencedMockConstraintSolver::solve — release results lock before acquiring last lock. (2) Make Distance QueryKey order-independent by normalizing (from, to) to (min, max). (Review followup from task 351)",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -7686,7 +7697,7 @@
       ],
       "created": "2026-03-25T21:43:14.716Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-25T21:43:21.164Z"
+      "updated": "2026-03-25T21:43:23.405Z"
     }
   }
 }
