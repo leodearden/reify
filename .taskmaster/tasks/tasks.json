@@ -6927,11 +6927,11 @@
         "description": "Missing tests in crates/reify-expr/tests/tensor_matrix_arithmetic_tests.rs:\n\n1. vector_times_matrix_returns_undef — Vector*Matrix (v*M instead of M*v) should return Undef.\n2. Multi-row undef propagation — 2x2 matrix where row 0 adds cleanly (Length+Length) but row 1 has dimension mismatch (Length+Angle), assert whole result is Undef.\n3. Dimension mismatch in dot product — A=[[1m, 1rad]], B=[[1m],[1m]], so C[0][0] = Area + rad·Length = Undef.\n4. Add comment on mat()/vec_lit() helpers documenting Type::Real as dummy annotation (actual types carried by Value variants).\n\nMemory hints: search \"tensor_matrix_arithmetic_tests mat vec_lit eval\", entities: tensor_matrix_arithmetic_tests",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-25T21:30:39.300Z"
+        "updatedAt": "2026-03-25T22:01:41.356Z"
       },
       {
         "id": "376",
@@ -7003,13 +7003,13 @@
         "description": "Frame's display format is independently reimplemented in three places, following a pre-existing pattern for all composite Value types:\n1. `Value`'s `Display` impl (`crates/reify-types/src/value.rs:717`)\n2. `format_value` in LSP analysis (`crates/reify-lsp/src/analysis.rs:225`)\n3. `format_value` in GUI types (`gui/src-tauri/src/types.rs:148`)\n\nFor composite types (Frame, Orientation, Point, Vector, etc.) whose format_value output matches Display exactly, the LSP and GUI functions could delegate to `format!(\"{}\", value)` instead of reimplementing the formatting logic. The GUI function also wastefully allocates empty Strings for the unit tuple element on every recursive call.\n\nSuggested approach:\n- For composite types where the Display output is identical to format_value, delegate to Display\n- Introduce a `format_value_display(v: &Value) -> String` helper in the GUI to avoid the throwaway unit String allocations\n- At minimum, add SYNC comments at all three sites\n\nmemory_hints: search \"display format Value LSP GUI\", entity \"format_value\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [
           "234"
         ],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-03-25T21:54:29.383Z"
+        "updatedAt": "2026-03-25T22:01:41.384Z"
       },
       {
         "id": "382",
@@ -7748,7 +7748,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-25T22:01:41.326Z",
+      "lastModified": "2026-03-25T22:01:41.384Z",
       "taskCount": 435,
       "completedCount": 229,
       "tags": [
