@@ -371,6 +371,12 @@ impl OcctKernel {
                 ffi::ffi::shell_shape(shape, th, &face_indices)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
+            GeometryOp::Sweep { profile, path } => {
+                let profile_shape = self.get_shape(*profile)?;
+                let path_shape = self.get_shape(*path)?;
+                ffi::ffi::make_pipe(profile_shape, path_shape)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+            }
         };
         Ok(self.store(shape))
     }

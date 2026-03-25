@@ -115,6 +115,11 @@ pub enum GeometryOp {
     Loft {
         profiles: Vec<GeometryHandleId>,
     },
+    /// Sweep a profile along a path wire (BRepOffsetAPI_MakePipe).
+    Sweep {
+        profile: GeometryHandleId,
+        path: GeometryHandleId,
+    },
     /// Apply draft angle to faces.
     Draft {
         target: GeometryHandleId,
