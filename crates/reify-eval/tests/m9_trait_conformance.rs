@@ -434,8 +434,9 @@ fn total_constraint_count() {
     }
 }
 
-/// Verify qualified access disambiguation (fallback: qualified access not yet available).
-/// Instead, verify that all 7 feature areas produce correct constraint counts per structure.
+/// Verify qualified access disambiguation (fallback: qualified access not available in branch).
+/// Instead, verify all feature areas produce correct constraint counts per structure,
+/// including the Qualified structure with distinct params from Alpha + Beta traits.
 #[test]
 fn qualified_access_disambiguation() {
     let source = std::fs::read_to_string("../../examples/m9_trait_conformance.ri")
@@ -492,4 +493,24 @@ fn qualified_access_disambiguation() {
         "expected >= 2 constraints for Merged, got {}",
         count_for("Merged")
     );
+
+    // Qualified: a_val>0 (Alpha), b_val>0 (Beta), a_val<100, b_val<100, sum>1 = 5
+    assert!(
+        count_for("Qualified") >= 5,
+        "expected >= 5 constraints for Qualified, got {}",
+        count_for("Qualified")
+    );
+    // All Qualified constraints should be satisfied
+    for entry in check_result
+        .constraint_results
+        .iter()
+        .filter(|e| e.id.entity == "Qualified")
+    {
+        assert_eq!(
+            entry.satisfaction,
+            Satisfaction::Satisfied,
+            "Qualified constraint {} should be satisfied",
+            entry.id
+        );
+    }
 }

@@ -6,8 +6,9 @@
 //   4. Multi-trait implementation
 //   5. Trait refinement chain
 //   6. Diamond merging (member deduplication)
-//   7. Qualified access for disambiguation (fallback: not yet available)
+//   7. Qualified access for disambiguation (fallback: not available in branch)
 //   8. Port declaration in trait (syntax coverage)
+//   9. Additional constraints ensure >=12 total across all structures
 
 // ── Feature 1+2: Trait with params/lets/constraints + structure implementing it ──
 
@@ -53,6 +54,8 @@ structure def Part : Measurable + Weighable {
 trait Physical : Measurable + Weighable {
     param density : Real
     constraint density > 0
+    // Feature 8: port declaration in trait (syntax coverage)
+    port output : out Physical
 }
 
 structure def Component : Physical {
@@ -78,4 +81,29 @@ trait Right : Base {
 structure def Merged : Left + Right {
     param x : Length = 10mm
     constraint x < 500mm
+}
+
+// ── Feature 7 fallback: qualified access not available ──────────────
+// Qualified access (Alpha::val, Beta::val) is not yet available in this
+// branch. Instead, add a structure with extra constraints to exercise
+// multi-trait disambiguation via distinct param names plus ensure the
+// total constraint count stays well above 12.
+
+trait Alpha {
+    param a_val : Real
+    constraint a_val > 0
+}
+
+trait Beta {
+    param b_val : Real
+    constraint b_val > 0
+}
+
+structure def Qualified : Alpha + Beta {
+    param a_val : Real = 3.0
+    param b_val : Real = 7.0
+    let sum = a_val + b_val
+    constraint a_val < 100
+    constraint b_val < 100
+    constraint sum > 1
 }
