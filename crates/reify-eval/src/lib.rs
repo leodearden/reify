@@ -3308,6 +3308,9 @@ fn unfold_recursive_sub<'t>(
     // child_values is enriched inside elaborate_child_lets_only with sub-component
     // values projected from the global map — so cross-level references like
     // `S.child.total` resolve to the already-computed deeper-level value.
+    // Pass all recursive sub names so BFS walks all branches (fixes cross-sub projection).
+    let all_recursive_sub_names: Vec<&str> =
+        all_recursive_subs.iter().map(|s| s.name.as_str()).collect();
     elaborate_child_lets_only(
         values,
         snapshot,
@@ -3319,7 +3322,7 @@ fn unfold_recursive_sub<'t>(
         &next_entity,
         child_values,
         meta_map,
-        Some(&sub.name),
+        &all_recursive_sub_names,
     );
 }
 
@@ -3350,7 +3353,7 @@ fn elaborate_child_instance(
     );
     elaborate_child_lets_only(
         values, snapshot, functions, journal, cache, version_id,
-        child_template, scoped_entity, child_values, meta_map, None,
+        child_template, scoped_entity, child_values, meta_map, &[],
     );
 }
 
@@ -3440,6 +3443,12 @@ fn elaborate_child_params_only(
 /// `"{scoped_entity}."`, strip that prefix and add `"{template_name}."` to produce
 /// a template-scoped key. E.g., when evaluating lets for `S.child` (template `S`):
 ///   global["S.child.child", "total"] → child_values["S.child", "total"]
+///
+/// For templates with multiple recursive subs, `recursive_sub_names` contains all
+/// sub names. A BFS walks the full entity tree under `scoped_entity` (following all
+/// sub name branches at each level), so cross-sub values are projected correctly.
+/// E.g., for subs [left, right] at `S.left`: both `S.left.left.*` and `S.left.right.*`
+/// are projected, enabling lets like `let sum = S.left.val + S.right.val`.
 #[allow(clippy::too_many_arguments)]
 fn elaborate_child_lets_only(
     values: &mut ValueMap,
@@ -3452,19 +3461,27 @@ fn elaborate_child_lets_only(
     scoped_entity: &str,
     mut child_values: ValueMap,
     meta_map: &HashMap<String, HashMap<String, String>>,
-    recursive_sub_name: Option<&str>,
+    recursive_sub_names: &[&str],
 ) {
     // Enrich child_values with sub-component values projected from the global map.
     // Only needed for recursive subs where deeper levels have already been elaborated
-    // (leaves-first ordering). Instead of scanning the entire global map (O(V) per
-    // depth level), walk the known recursive entity chain:
-    // scoped_entity.sub_name, scoped_entity.sub_name.sub_name, ...
-    // Each level has exactly child_template.value_cells entries, giving O(D×C) total.
-    if let Some(sub_name) = recursive_sub_name {
+    // (leaves-first ordering).
+    //
+    // Uses BFS over the entity tree rooted at scoped_entity: starts with one immediate
+    // child per sub name, then expands branches where values exist. This handles both
+    // single-sub chains (O(D×C)) and multi-sub trees (O(B^D×C) where B=branching, D=depth).
+    // The BFS terminates naturally when no values are found at a given entity.
+    if !recursive_sub_names.is_empty() {
         let scoped_prefix = format!("{}.", scoped_entity);
         let template_prefix = format!("{}.", child_template.name);
-        let mut depth_entity = format!("{}.{}", scoped_entity, sub_name);
-        loop {
+
+        // BFS queue: visit all entities in the recursive subtree under scoped_entity.
+        let mut queue: std::collections::VecDeque<String> = recursive_sub_names
+            .iter()
+            .map(|name| format!("{}.{}", scoped_entity, name))
+            .collect();
+
+        while let Some(depth_entity) = queue.pop_front() {
             let mut found_any = false;
             for cell in &child_template.value_cells {
                 let id = ValueCellId::new(&depth_entity, &cell.id.member);
@@ -3479,10 +3496,12 @@ fn elaborate_child_lets_only(
                     found_any = true;
                 }
             }
-            if !found_any {
-                break;
+            if found_any {
+                // Enqueue children of this entity for all sub names (full tree walk).
+                for name in recursive_sub_names {
+                    queue.push_back(format!("{}.{}", depth_entity, name));
+                }
             }
-            depth_entity = format!("{}.{}", depth_entity, sub_name);
         }
     }
 

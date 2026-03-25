@@ -535,6 +535,110 @@ fn unfold_recursive_default_depth_limit_64() {
     );
 }
 
+// ─── step-33: multiple recursive subs — cross-sub let reference ──────────────
+
+/// Template S with param n: Int = 2, two recursive subs (left and right),
+/// and let bindings:
+///   let val: Int = n * 10
+///   let sum: Int = S.left.val + S.right.val
+///
+/// With S(n=2): S.left and S.right each have n=1.
+/// At S.left (n=1): S.left.left (n=0, val=0) and S.left.right (n=0, val=0).
+/// So S.left.sum should be 0 + 0 = 0.
+///
+/// The current `elaborate_child_lets_only` with `recursive_sub_name: Some("left")`
+/// only projects the "left" chain (S.left.left.val → S.left.val), NOT the "right"
+/// chain (S.left.right.val → S.right.val). So S.left.sum resolves to Undef+0 = Undef.
+/// After the fix, both chains are projected, so S.left.sum = 0 + 0 = 0 (Int).
+#[test]
+fn unfold_recursive_multiple_subs_cross_sub_let_reference() {
+    // guard: n > 0
+    let guard_left = gt(
+        value_ref_typed("S", "n", Type::Int),
+        literal(Value::Int(0)),
+    );
+    let guard_right = gt(
+        value_ref_typed("S", "n", Type::Int),
+        literal(Value::Int(0)),
+    );
+    // args: n = n - 1
+    let n_minus_1_left = binop(
+        BinOp::Sub,
+        value_ref_typed("S", "n", Type::Int),
+        literal(Value::Int(1)),
+    );
+    let n_minus_1_right = binop(
+        BinOp::Sub,
+        value_ref_typed("S", "n", Type::Int),
+        literal(Value::Int(1)),
+    );
+
+    // let val: Int = n * 10
+    let val_expr = binop(
+        BinOp::Mul,
+        value_ref_typed("S", "n", Type::Int),
+        literal(Value::Int(10)),
+    );
+
+    // let sum: Int = S.left.val + S.right.val
+    let sum_expr = binop(
+        BinOp::Add,
+        value_ref_typed("S.left", "val", Type::Int),
+        value_ref_typed("S.right", "val", Type::Int),
+    );
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param("S", "n", Type::Int, Some(CompiledExpr::literal(Value::Int(2), Type::Int)))
+        .let_binding("S", "val", Type::Int, val_expr)
+        .let_binding("S", "sum", Type::Int, sum_expr)
+        .is_recursive(true)
+        .sub_component_with_guard("left", "S", vec![("n".to_string(), n_minus_1_left)], guard_left)
+        .sub_component_with_guard("right", "S", vec![("n".to_string(), n_minus_1_right)], guard_right)
+        .build();
+
+    let result = eval_single_template(template);
+
+    // S.left.val = 1 * 10 = 10, S.right.val = 1 * 10 = 10
+    assert_eq!(
+        result.values.get(&ValueCellId::new("S.left", "val")),
+        Some(&Value::Int(10)),
+        "S.left.val should be 10 (= 1 * 10)"
+    );
+    assert_eq!(
+        result.values.get(&ValueCellId::new("S.right", "val")),
+        Some(&Value::Int(10)),
+        "S.right.val should be 10 (= 1 * 10)"
+    );
+
+    // S.left.left.val = 0 * 10 = 0, S.left.right.val = 0 * 10 = 0
+    assert_eq!(
+        result.values.get(&ValueCellId::new("S.left.left", "val")),
+        Some(&Value::Int(0)),
+        "S.left.left.val should be 0 (= 0 * 10)"
+    );
+    assert_eq!(
+        result.values.get(&ValueCellId::new("S.left.right", "val")),
+        Some(&Value::Int(0)),
+        "S.left.right.val should be 0 (= 0 * 10)"
+    );
+
+    // S.left.sum = S.left.left.val + S.left.right.val = 0 + 0 = 0
+    // This requires BOTH "left" and "right" sub chains to be projected into child_values.
+    assert_eq!(
+        result.values.get(&ValueCellId::new("S.left", "sum")),
+        Some(&Value::Int(0)),
+        "S.left.sum should be 0 (= S.left.left.val + S.left.right.val = 0 + 0), \
+         failing means only one sub chain was projected into child_values"
+    );
+
+    // Similarly S.right.sum = 0
+    assert_eq!(
+        result.values.get(&ValueCellId::new("S.right", "sum")),
+        Some(&Value::Int(0)),
+        "S.right.sum should be 0 (= S.right.left.val + S.right.right.val = 0 + 0)"
+    );
+}
+
 // ─── step-31: multiple recursive subs — all cross-sub children are created ────
 
 /// Template S with TWO recursive subs (left and right), both with same guard/args.
