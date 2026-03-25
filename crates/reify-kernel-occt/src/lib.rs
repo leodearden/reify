@@ -3022,4 +3022,51 @@ mod tests {
             Err(other) => panic!("expected OperationFailed, got {:?}", other),
         }
     }
+
+    #[test]
+    fn revolve_result_is_solid_not_shell() {
+        // Regression test: make_revolve must always return a volumetric Solid,
+        // never a Shell. A Shell shape returns 0 or near-0 for volume queries,
+        // which would silently produce wrong results.
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let face = ffi::ffi::make_rect_face(4.0, 2.0, 0.0, 0.0, 0.0)
+            .expect("make_rect_face should succeed");
+        // Rotate to XZ plane and translate to offset 10 from Z axis
+        let rotated = ffi::ffi::rotate_shape(&face, 1.0, 0.0, 0.0, std::f64::consts::FRAC_PI_2)
+            .expect("rotate_shape should succeed");
+        let translated = ffi::ffi::translate_shape(&rotated, 10.0, 0.0, 0.0)
+            .expect("translate_shape should succeed");
+        // Revolve around Z axis by full rotation
+        let revolved = ffi::ffi::make_revolve(
+            &translated,
+            0.0, 0.0, 0.0,  // axis origin
+            0.0, 0.0, 1.0,  // axis direction (Z)
+            std::f64::consts::TAU,
+        )
+        .expect("make_revolve should succeed");
+
+        // Volume must be positive (a Shell would give 0 or near-0)
+        let vol = ffi::ffi::query_volume(&revolved)
+            .expect("query_volume should succeed");
+        assert!(
+            vol > 1.0,
+            "revolve result should be a Solid with positive volume, got {}",
+            vol
+        );
+
+        // Verify geometric correctness via Pappus' theorem:
+        // V = 2π × R × A = 2π × 10 × (4×2) = 160π ≈ 502.65
+        let expected = 2.0 * std::f64::consts::PI * 10.0 * (4.0 * 2.0);
+        let rel_err = (vol - expected).abs() / expected;
+        assert!(
+            rel_err < 0.02,
+            "expected volume ≈ {:.2} (160π), got {:.2} (rel_err={:.4})",
+            expected,
+            vol,
+            rel_err
+        );
+    }
 }
