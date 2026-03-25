@@ -177,6 +177,9 @@ pub struct TopologyTemplate {
     /// Key-value entries from the entity's `meta { ... }` block (if any).
     pub meta: HashMap<String, String>,
     pub content_hash: ContentHash,
+    /// True if this template participates in a recursive sub-component cycle.
+    /// Set by the post-compilation recursive structure detection pass.
+    pub is_recursive: bool,
 }
 
 /// A compiled connection between ports — compiled from a ConnectDecl or desugared from a ChainDecl.
@@ -217,6 +220,8 @@ pub struct SubComponentDecl {
     pub is_collection: bool,
     /// For collection subs, the synthetic count ValueCell (e.g. `__count_bolts`)
     pub count_cell: Option<ValueCellId>,
+    /// Optional guard expression for recursive termination (e.g., `where n > 0`).
+    pub guard_expr: Option<CompiledExpr>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
 }
@@ -2211,6 +2216,15 @@ pub fn compile(
         }
     }
 
+    // Post-compilation pass: detect recursive sub-component cycles.
+    // Build a directed reference graph from sub_components and run DFS to find cycles.
+    // Tag participating templates with is_recursive=true and emit a warning diagnostic.
+    let cyclic_sccs = detect_recursive_structures(&mut templates, &mut diagnostics);
+
+    // Post-compilation pass: verify recursive structures have valid termination conditions.
+    // Emits errors for recursive subs without guards or with non-terminating guard heuristics.
+    check_recursive_termination(&templates, &cyclic_sccs, &mut diagnostics);
+
     // Check for duplicate function signatures: same name + same param types
     {
         let mut seen: HashMap<(String, Vec<Type>), usize> = HashMap::new();
@@ -2376,6 +2390,409 @@ impl<'a> From<&'a reify_syntax::OccurrenceDef> for EntityDefRef<'a> {
             content_hash: o.content_hash,
         }
     }
+}
+
+/// Tags all cycle participants with `is_recursive = true` and emits one warning diagnostic
+/// per strongly connected component (SCC) that contains a cycle.
+///
+/// Uses Tarjan's SCC algorithm to find cycles in the sub-component reference graph.
+/// Returns the list of cyclic SCCs (each as a set of template names) for use by the
+/// termination check pass.
+fn detect_recursive_structures(
+    templates: &mut [TopologyTemplate],
+    diagnostics: &mut Vec<reify_types::Diagnostic>,
+) -> Vec<HashSet<String>> {
+    // Build an index: name -> index in templates
+    let name_to_idx: HashMap<&str, usize> = templates
+        .iter()
+        .enumerate()
+        .map(|(i, t)| (t.name.as_str(), i))
+        .collect();
+
+    // Build adjacency list: for each template index, collect the indices of templates it
+    // references via sub_components (only those that exist in the template set).
+    let adjacency: Vec<Vec<usize>> = templates
+        .iter()
+        .map(|t| {
+            t.sub_components
+                .iter()
+                .filter_map(|sub| name_to_idx.get(sub.structure_name.as_str()).copied())
+                .collect()
+        })
+        .collect();
+
+    let n = templates.len();
+
+    // Tarjan's SCC state
+    let mut st = TarjanState {
+        index: vec![None; n],
+        lowlink: vec![0; n],
+        on_stack: vec![false; n],
+        scc_stack: Vec::new(),
+        index_counter: 0,
+        sccs: Vec::new(),
+    };
+
+    for start in 0..n {
+        if st.index[start].is_none() {
+            tarjan_scc_visit(start, &adjacency, &mut st);
+        }
+    }
+
+    // Tag all members of cyclic SCCs and emit a diagnostic per SCC
+    let mut in_cycle = vec![false; n];
+    for scc in &st.sccs {
+        let is_cycle = if scc.len() > 1 {
+            true
+        } else {
+            // Single-node SCC: cycle only if there is a self-edge
+            let v = scc[0];
+            adjacency[v].contains(&v)
+        };
+
+        if is_cycle {
+            for &v in scc {
+                in_cycle[v] = true;
+            }
+            let cycle_path = reconstruct_scc_cycle(scc, &adjacency, templates);
+            diagnostics.push(reify_types::Diagnostic::warning(format!(
+                "recursive structure cycle detected: {}",
+                cycle_path
+            )));
+        }
+    }
+
+    // Tag all templates that participated in any cycle.
+    // Collect cyclic SCCs as sets of template names (for termination check).
+    let mut cyclic_sccs: Vec<HashSet<String>> = Vec::new();
+    for scc in &st.sccs {
+        let is_cycle = if scc.len() > 1 {
+            true
+        } else {
+            let v = scc[0];
+            adjacency[v].contains(&v)
+        };
+        if is_cycle {
+            let scc_names: HashSet<String> = scc.iter().map(|&v| templates[v].name.clone()).collect();
+            cyclic_sccs.push(scc_names);
+        }
+    }
+
+    for (i, template) in templates.iter_mut().enumerate() {
+        if in_cycle[i] {
+            template.is_recursive = true;
+        }
+    }
+
+    cyclic_sccs
+}
+
+/// Mutable state threaded through Tarjan's SCC traversal.
+struct TarjanState {
+    index: Vec<Option<usize>>,
+    lowlink: Vec<usize>,
+    on_stack: Vec<bool>,
+    scc_stack: Vec<usize>,
+    index_counter: usize,
+    sccs: Vec<Vec<usize>>,
+}
+
+/// Iterative visit for Tarjan's SCC algorithm.
+///
+/// Uses an explicit call stack to avoid OS stack overflow on deep/large structure graphs.
+/// Each frame tracks (node, neighbor_index) so the DFS can be resumed without recursion.
+fn tarjan_scc_visit(v: usize, adjacency: &[Vec<usize>], st: &mut TarjanState) {
+    // Each frame: (node, index into adjacency[node] for the next neighbor to process)
+    let mut call_stack: Vec<(usize, usize)> = Vec::new();
+
+    // Initialize the starting node
+    st.index[v] = Some(st.index_counter);
+    st.lowlink[v] = st.index_counter;
+    st.index_counter += 1;
+    st.scc_stack.push(v);
+    st.on_stack[v] = true;
+    call_stack.push((v, 0));
+
+    while let Some(&mut (node, ref mut neighbor_idx)) = call_stack.last_mut() {
+        if *neighbor_idx < adjacency[node].len() {
+            let w = adjacency[node][*neighbor_idx];
+            *neighbor_idx += 1;
+
+            if st.index[w].is_none() {
+                // w has not been visited — "recurse" by pushing a new frame
+                st.index[w] = Some(st.index_counter);
+                st.lowlink[w] = st.index_counter;
+                st.index_counter += 1;
+                st.scc_stack.push(w);
+                st.on_stack[w] = true;
+                call_stack.push((w, 0));
+            } else if st.on_stack[w] {
+                // w is on the current SCC stack: back edge within the current SCC
+                st.lowlink[node] = st.lowlink[node].min(st.index[w].unwrap());
+            }
+            // If w is off the stack (already in a completed SCC), ignore.
+        } else {
+            // All neighbors of `node` have been processed — equivalent to returning
+            // from the recursive call. Pop this frame and propagate lowlink to parent.
+            let (finished_node, _) = call_stack.pop().unwrap();
+
+            if let Some(&(parent, _)) = call_stack.last() {
+                st.lowlink[parent] = st.lowlink[parent].min(st.lowlink[finished_node]);
+            }
+
+            // If finished_node is a root (lowlink == index), pop the completed SCC
+            if st.lowlink[finished_node] == st.index[finished_node].unwrap() {
+                let mut scc = Vec::new();
+                loop {
+                    let w = st.scc_stack.pop().unwrap();
+                    st.on_stack[w] = false;
+                    scc.push(w);
+                    if w == finished_node {
+                        break;
+                    }
+                }
+                st.sccs.push(scc);
+            }
+        }
+    }
+}
+
+/// Reconstruct a representative cycle path string for a non-trivial SCC.
+///
+/// For single-node SCCs with a self-edge returns "X -> X".
+/// For larger SCCs, performs a DFS within the SCC nodes to find a path from the first
+/// member back to itself, then formats it as "A -> B -> ... -> A".
+fn reconstruct_scc_cycle(
+    scc: &[usize],
+    adjacency: &[Vec<usize>],
+    templates: &[TopologyTemplate],
+) -> String {
+    if scc.len() == 1 {
+        let v = scc[0];
+        return format!("{} -> {}", templates[v].name, templates[v].name);
+    }
+
+    // Build a set of SCC members for fast membership test
+    let scc_set: HashSet<usize> = scc.iter().copied().collect();
+    let start = scc[0];
+
+    if let Some(cycle) = find_cycle_back_to(start, &scc_set, adjacency) {
+        cycle.iter().map(|&i| templates[i].name.as_str()).collect::<Vec<_>>().join(" -> ")
+    } else {
+        // Fallback: list all SCC members (should not happen in a valid SCC)
+        let mut names: Vec<&str> = scc.iter().map(|&i| templates[i].name.as_str()).collect();
+        names.push(templates[scc[0]].name.as_str());
+        names.join(" -> ")
+    }
+}
+
+/// Iterative DFS within SCC nodes to find a cycle from `start` back to itself.
+/// Returns the full cycle path (including the closing `start` node) on success.
+///
+/// Uses an explicit stack to avoid OS stack overflow for large SCCs.
+fn find_cycle_back_to(
+    start: usize,
+    scc_set: &HashSet<usize>,
+    adjacency: &[Vec<usize>],
+) -> Option<Vec<usize>> {
+    let mut path = vec![start];
+    let mut visited = HashSet::new();
+    visited.insert(start);
+    // Each frame: index into adjacency[path.last()] for the next neighbor to try
+    let mut neighbor_idx_stack: Vec<usize> = vec![0];
+
+    while let Some(ni) = neighbor_idx_stack.last_mut() {
+        let current = *path.last().unwrap();
+        if *ni >= adjacency[current].len() {
+            // Backtrack: all neighbors of `current` exhausted
+            path.pop();
+            neighbor_idx_stack.pop();
+            if let Some(&backtracked) = path.last() {
+                // Only remove from visited when we're not the start node
+                // (we keep start in visited to avoid revisiting it as non-target)
+                let _ = backtracked; // backtracked node stays — current gets removed
+                visited.remove(&current);
+            }
+            continue;
+        }
+        let next = adjacency[current][*ni];
+        *ni += 1;
+
+        if !scc_set.contains(&next) {
+            continue; // Stay within the SCC
+        }
+        if next == start && path.len() > 1 {
+            // Completed the cycle back to the start
+            path.push(start);
+            return Some(path);
+        }
+        if !visited.contains(&next) {
+            visited.insert(next);
+            path.push(next);
+            neighbor_idx_stack.push(0);
+        }
+    }
+    None
+}
+
+// ─── Recursive termination check (Task 204) ─────────────────────────────────
+
+/// Verify that all recursive sub-component instantiations have a valid termination condition.
+///
+/// For each template tagged `is_recursive == true`, finds every sub whose target is in
+/// the same strongly-connected component (SCC) and checks:
+/// 1. No `undef` in sub args (forbidden as non-termination mechanism).
+/// 2. Sub has a `guard_expr` (where-clause).
+/// 3. Guard references at least one `Int` or `Bool` param.
+/// 4. Each guard-referenced param is modified toward a base case in the sub's args
+///    (Int: contains Sub or Add, Bool: contains Not; passing param unchanged is rejected).
+fn check_recursive_termination(
+    templates: &[TopologyTemplate],
+    cyclic_sccs: &[HashSet<String>],
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if cyclic_sccs.is_empty() {
+        return;
+    }
+
+    // Build map: template name → SCC index (only for cyclic SCCs)
+    let name_to_scc: HashMap<&str, usize> = cyclic_sccs
+        .iter()
+        .enumerate()
+        .flat_map(|(i, scc)| scc.iter().map(move |name| (name.as_str(), i)))
+        .collect();
+
+    for template in templates {
+        if !template.is_recursive {
+            continue;
+        }
+
+        let Some(&scc_idx) = name_to_scc.get(template.name.as_str()) else {
+            continue;
+        };
+        let scc = &cyclic_sccs[scc_idx];
+
+        for sub in &template.sub_components {
+            // Only check subs that target another template in the same SCC (recursive subs)
+            if !scc.contains(&sub.structure_name) {
+                continue;
+            }
+
+            // Step 14: undef in recursive sub args is forbidden
+            if termination_args_contain_undef(sub) {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "undef is not allowed as a non-termination mechanism in recursive sub arguments",
+                    )
+                    .with_label(DiagnosticLabel::new(sub.span, "recursive sub uses undef")),
+                );
+                continue; // Don't pile on more errors for this sub
+            }
+
+            // Step 4: recursive sub must have a where-clause guard
+            let guard = match &sub.guard_expr {
+                None => {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            "recursive sub has no termination condition: add a where clause (e.g., `where n > 0`)",
+                        )
+                        .with_label(DiagnosticLabel::new(sub.span, "recursive sub without guard")),
+                    );
+                    continue;
+                }
+                Some(g) => g,
+            };
+
+            // Step 8: guard must reference at least one Int or Bool param
+            let guard_refs = termination_collect_refs(guard);
+            let referenced_params: Vec<&ValueCellDecl> = template
+                .value_cells
+                .iter()
+                .filter(|vc| {
+                    vc.kind == ValueCellKind::Param
+                        && matches!(vc.cell_type, Type::Int | Type::Bool)
+                        && guard_refs.contains(&vc.id)
+                })
+                .collect();
+
+            if referenced_params.is_empty() {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "recursive sub guard does not reference any Int or Bool parameter: the guard must mention a parameter that is decremented toward a base case",
+                    )
+                    .with_label(DiagnosticLabel::new(sub.span, "guard references no Int/Bool param")),
+                );
+                continue;
+            }
+
+            // Step 10/12: each guard-referenced param must be modified in the sub's args
+            for param in &referenced_params {
+                let param_name = &param.id.member;
+                let is_modified = sub
+                    .args
+                    .iter()
+                    .find(|(name, _)| name == param_name)
+                    .map(|(_, expr)| termination_is_modifying(expr, &param.id))
+                    .unwrap_or(false);
+
+                if !is_modified {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "recursive sub does not decrement parameter '{}' toward base case: the argument for '{}' must contain a modifying operation (e.g., `n - 1` for Int, `!flag` for Bool)",
+                            param_name, param_name
+                        ))
+                        .with_label(DiagnosticLabel::new(sub.span, "parameter passed unchanged")),
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Returns true if any arg of the recursive sub contains `undef`.
+fn termination_args_contain_undef(sub: &SubComponentDecl) -> bool {
+    sub.args.iter().any(|(_, expr)| {
+        let mut found = false;
+        expr.walk(&mut |e| {
+            if matches!(&e.kind, CompiledExprKind::Literal(Value::Undef)) {
+                found = true;
+            }
+        });
+        found
+    })
+}
+
+/// Collect all ValueCellIds referenced in an expression (for guard analysis).
+fn termination_collect_refs(expr: &CompiledExpr) -> HashSet<ValueCellId> {
+    let mut refs = HashSet::new();
+    expr.walk(&mut |e| {
+        if let CompiledExprKind::ValueRef(id) = &e.kind {
+            refs.insert(id.clone());
+        }
+    });
+    refs
+}
+
+/// Returns true if `expr` represents a modifying operation on a parameter (not just passing it unchanged).
+///
+/// For Int params: must contain BinOp::Sub or BinOp::Add (as proxy for subtraction).
+/// For Bool params: must contain UnOp::Not.
+/// Any expression that is NOT simply `ValueRef(param_id)` AND contains a Sub/Add/Not counts.
+fn termination_is_modifying(expr: &CompiledExpr, param_id: &ValueCellId) -> bool {
+    // If the expression is just the param unchanged, not modifying.
+    if matches!(&expr.kind, CompiledExprKind::ValueRef(id) if id == param_id) {
+        return false;
+    }
+
+    // Walk for Sub, Add (Int modification) or Not (Bool modification)
+    let mut found_mod = false;
+    expr.walk(&mut |e| match &e.kind {
+        CompiledExprKind::BinOp { op: BinOp::Sub, .. } => found_mod = true,
+        CompiledExprKind::BinOp { op: BinOp::Add, .. } => found_mod = true,
+        CompiledExprKind::UnOp { op: UnOp::Not, .. } => found_mod = true,
+        _ => {}
+    });
+    found_mod
 }
 
 /// Compile a single entity definition (structure or occurrence) into a topology template.
@@ -2800,6 +3217,11 @@ fn compile_entity(
                     });
                 }
 
+                // Compile the sub's where_clause into guard_expr (used by termination check).
+                let sub_guard_expr = sub.where_clause.as_ref().map(|wc| {
+                    compile_expr(&wc.condition, &scope, enum_defs, functions, diagnostics)
+                });
+
                 sub_components.push(SubComponentDecl {
                     name: sub.name.clone(),
                     structure_name: sub.structure_name.clone(),
@@ -2808,6 +3230,7 @@ fn compile_entity(
                     type_args: resolved_type_args,
                     is_collection: sub.is_collection,
                     count_cell: None,
+                    guard_expr: sub_guard_expr,
                     span: sub.span,
                     content_hash: sub.content_hash,
                 });
@@ -3353,6 +3776,7 @@ fn compile_entity(
         objective,
         meta: scope.meta_entries.clone(),
         content_hash,
+        is_recursive: false,
     }
 }
 
@@ -3806,6 +4230,7 @@ fn compile_connection(
             type_args: vec![],
             is_collection: false,
             count_cell: None,
+            guard_expr: None,
             span,
             content_hash: conn_hash,
         });
