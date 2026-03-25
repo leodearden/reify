@@ -58,7 +58,7 @@
       "type": "test",
       "description": "Write regression test `connect_body_valid_no_spurious_errors`: explicitly verify that a well-formed connect body with both params and port mappings (`connect a -> b : BoltSet { grade = 8.8, shaft -> bore }`) produces zero errors. This guards against the refactored code accidentally triggering diagnostics on valid input. (Existing tests already assert errors.is_empty() but this makes the intent explicit for this task.)",
       "status": "done",
-      "commit": null
+      "commit": "231e1732"
     }
   ],
   "design_decisions": [
