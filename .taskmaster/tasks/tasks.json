@@ -7683,11 +7683,11 @@
         "description": "In crates/reify-test-support/src/mocks.rs: (1) Fix SequencedMockConstraintSolver::solve — release results lock before acquiring last lock. (2) Make Distance QueryKey order-independent by normalizing (from, to) to (min, max). (Review followup from task 351)",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-25T21:45:43.889Z"
+        "updatedAt": "2026-03-25T22:01:41.635Z"
       },
       {
         "id": "431",
@@ -7728,11 +7728,11 @@
         "description": "In crates/reify-eval/tests/m9_trait_conformance.rs: (1) Replace or configure MockConstraintChecker so satisfaction assertions are meaningful (currently always returns Satisfied). (2) Assert eval diagnostics contain no errors in 3 tests that discard _result. (3) In diamond_merging_values, assert Base constraint appears exactly once (not duplicated). (4) In multi_trait_values, add assertion for Part.half_size = 0.05 SI (inherited let from Measurable). (Review followup from task 194)",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-25T21:56:42.585Z"
+        "updatedAt": "2026-03-25T22:01:41.666Z"
       },
       {
         "id": "435",
@@ -7748,7 +7748,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-25T22:01:41.605Z",
+      "lastModified": "2026-03-25T22:01:41.667Z",
       "taskCount": 435,
       "completedCount": 229,
       "tags": [
