@@ -347,6 +347,35 @@ fn parse_connect_mapping_before_param() {
     assert_eq!(connect.port_mappings[0].1, "input_bore");
 }
 
+// ── task-396 step-7: valid connect body produces no spurious errors ────
+
+#[test]
+fn connect_body_valid_no_spurious_errors() {
+    // A well-formed connect body with both params and port mappings must
+    // produce zero parse errors even after the diagnostic refactoring.
+    // This guards against the refactored code accidentally triggering
+    // diagnostics on valid input.
+    let (decls, errors) = parse_decls(
+        "structure S { port a : out T  port b : in T  connect a -> b : BoltSet { grade = 8.8, shaft -> bore } }",
+    );
+    assert!(errors.is_empty(), "expected no parse errors for valid connect body, got: {:?}", errors);
+
+    let structure = match &decls[0] {
+        Declaration::Structure(s) => s,
+        other => panic!("expected Structure, got {:?}", other),
+    };
+    let connect = match &structure.members[2] {
+        MemberDecl::Connect(c) => c,
+        other => panic!("expected Connect, got {:?}", other),
+    };
+    assert_eq!(connect.connector_type.as_deref(), Some("BoltSet"));
+    assert_eq!(connect.params.len(), 1, "expected 1 param, got {:?}", connect.params);
+    assert_eq!(connect.params[0].0, "grade");
+    assert_eq!(connect.port_mappings.len(), 1, "expected 1 port_mapping, got {:?}", connect.port_mappings);
+    assert_eq!(connect.port_mappings[0].0, "shaft");
+    assert_eq!(connect.port_mappings[0].1, "bore");
+}
+
 // ── task-396 step-5: malformed port mapping emits diagnostic ──────────
 
 #[test]

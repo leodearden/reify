@@ -51,13 +51,13 @@
       "type": "impl",
       "description": "Refactor the port_mapping arm in lower_connect_body: (a) Add a `if child.has_error()` guard at the top that emits `format!(\"invalid port mapping: {}\", self.node_text(child))` and continues. (b) Add an else branch to the `if let (Some(from), Some(to))` destructure that emits `format!(\"incomplete port mapping: {}\", self.node_text(child))`. Step-5 test should now pass.",
       "status": "done",
-      "commit": null
+      "commit": "39412649"
     },
     {
       "id": "step-7",
       "type": "test",
       "description": "Write regression test `connect_body_valid_no_spurious_errors`: explicitly verify that a well-formed connect body with both params and port mappings (`connect a -> b : BoltSet { grade = 8.8, shaft -> bore }`) produces zero errors. This guards against the refactored code accidentally triggering diagnostics on valid input. (Existing tests already assert errors.is_empty() but this makes the intent explicit for this task.)",
-      "status": "pending",
+      "status": "done",
       "commit": null
     }
   ],
