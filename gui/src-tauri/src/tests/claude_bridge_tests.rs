@@ -1738,6 +1738,55 @@ async fn shutdown_not_blocked_during_ensure_sidecar_ready_spawn() {
     let _ = ensure_handle.await;
 }
 
+// --- multi-thread race regression test for wait_ready (task-363/step-1) ---
+
+/// Regression test for the wait_ready() subscribe-before-check pattern.
+///
+/// On a multi-thread runtime, the reader task can process `{"type":"ready"}`
+/// and call `notify_waiters()` on a different worker thread during the window
+/// between `notified()` creation and the first poll of the Notified future.
+/// With `enable()` called eagerly, the waiter is registered before re-check
+/// and the notification is never lost.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn wait_ready_notified_race_on_multithread() {
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::io::{AsyncWriteExt, BufReader};
+    use tokio::sync::Mutex;
+
+    // Run 20 iterations to increase probability of hitting timing-dependent races.
+    for i in 0..20 {
+        let held_writer: Arc<Mutex<Option<tokio::io::DuplexStream>>> =
+            Arc::new(Mutex::new(None));
+        let held_clone = Arc::clone(&held_writer);
+
+        let state = Arc::new(Mutex::new(SidecarState::Starting));
+        let (mut data_writer, data_reader) = tokio::io::duplex(1024);
+
+        // Write ready BEFORE creating the handle so the reader task can
+        // process it immediately when scheduled on the second thread.
+        data_writer
+            .write_all(b"{\"type\":\"ready\"}\n")
+            .await
+            .unwrap();
+        let reader = BufReader::new(data_reader);
+        let (stdin_writer, _stdin_reader) = tokio::io::duplex(1024);
+        let handle = SidecarHandle::from_parts(stdin_writer, reader, state);
+
+        // Hold the writer alive so the reader doesn't see EOF.
+        *held_clone.lock().await = Some(data_writer);
+
+        let result = handle.wait_ready(Duration::from_millis(500)).await;
+        assert!(
+            result.is_ok(),
+            "iteration {}: wait_ready should return Ok \
+             (race condition causes spurious timeout without enable()): {:?}",
+            i,
+            result
+        );
+    }
+}
+
 // --- multi-thread race regression test (task-353/step-15) ---
 
 /// Reproduce the race condition where `notify.notified()` is called AFTER the
