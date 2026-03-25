@@ -47,6 +47,8 @@ pub struct ConcurrentEvalAdapter {
     results: Arc<Mutex<Vec<ConcurrentNodeResult>>>,
     /// User-defined functions for evaluating UserFunctionCall nodes.
     functions: Vec<CompiledFunction>,
+    /// Template-to-meta-entries mapping for resolving MetaAccess expressions.
+    meta_map: Arc<HashMap<String, HashMap<String, String>>>,
     /// Version for this evaluation.
     #[allow(dead_code)]
     version: VersionId,
@@ -65,6 +67,7 @@ impl ConcurrentEvalAdapter {
             previous_hashes: Arc::new(setup.previous_hashes.clone()),
             results: Arc::new(Mutex::new(Vec::new())),
             functions: setup.functions.clone(),
+            meta_map: Arc::new(setup.meta_map.clone()),
             version: setup.version,
         }
     }
@@ -199,7 +202,7 @@ impl AsyncNodeEvaluator for ConcurrentEvalAdapter {
             };
 
             // Evaluate expression (pure, no lock held)
-            let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&current_values, &self.functions));
+            let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&current_values, &self.functions).with_meta(&self.meta_map));
 
             // Compute dependency trace
             let trace = extract_dependency_trace(expr);
