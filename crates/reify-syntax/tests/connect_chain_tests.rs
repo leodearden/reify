@@ -347,6 +347,27 @@ fn parse_connect_mapping_before_param() {
     assert_eq!(connect.port_mappings[0].1, "input_bore");
 }
 
+// ── task-396 step-1: ERROR node in connect body emits diagnostic ───
+
+#[test]
+fn connect_body_error_node_emits_diagnostic() {
+    // `{ >= }` is clearly invalid syntax inside a connect body; tree-sitter
+    // error recovery should produce an ERROR node, which lower_connect_body
+    // must surface as a ParseError.
+    let (_decls, errors) = parse_decls(
+        "structure S { port a : out T  port b : in T  connect a -> b { >= } }",
+    );
+    assert!(
+        !errors.is_empty(),
+        "expected at least one parse error for invalid connect body syntax, got none"
+    );
+    assert!(
+        errors.iter().any(|e| e.message.contains("connect body") || e.message.contains("syntax error")),
+        "expected an error mentioning 'connect body' or 'syntax error', got: {:?}",
+        errors
+    );
+}
+
 // ── parse_connect_reverse ─────────────────────────────────────────
 
 #[test]
