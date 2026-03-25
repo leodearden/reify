@@ -58,6 +58,8 @@ pub enum Value {
     Complex { re: f64, im: f64, dimension: DimensionVector },
     /// Orientation as a unit quaternion (w + xi + yj + zk).
     Orientation { w: f64, x: f64, y: f64, z: f64 },
+    /// Coordinate frame: an origin point and a basis orientation.
+    Frame { origin: Box<Value>, basis: Box<Value> },
     /// Range with optional inclusive/exclusive bounds.
     Range {
         lower: Option<Box<Value>>,
@@ -317,6 +319,10 @@ impl Value {
                 buf[25..33].copy_from_slice(&canon(z).to_le_bytes());
                 ContentHash::of(&buf)
             }
+            Value::Frame { origin, basis } => {
+                // tag=20; combine origin and basis content hashes
+                ContentHash::of(&[20]).combine(origin.content_hash()).combine(basis.content_hash())
+            }
             Value::Range { lower, upper, lower_inclusive, upper_inclusive } => {
                 debug_assert!(
                     lower.is_some() || !lower_inclusive,
@@ -406,6 +412,10 @@ impl PartialEq for Value {
                     && az.to_bits() == bz.to_bits()
             }
             (
+                Value::Frame { origin: ao, basis: ab },
+                Value::Frame { origin: bo, basis: bb },
+            ) => ao == bo && ab == bb,
+            (
                 Value::Range { lower: al, upper: au, lower_inclusive: ali, upper_inclusive: aui },
                 Value::Range { lower: bl, upper: bu, lower_inclusive: bli, upper_inclusive: bui },
             ) => {
@@ -447,7 +457,7 @@ impl Ord for Value {
         use std::cmp::Ordering;
 
         // Type-tag discriminant for cross-type ordering:
-        // Undef=0, Bool=1, Int=2, Real=3, Scalar=4, String=5, Enum=6, List=7, Set=8, Map=9, Option=10, Field=11, Lambda=12, Tensor=13, Complex=14, Orientation=15, Range=16, Point=17, Vector=18, Matrix=19
+        // Undef=0, Bool=1, Int=2, Real=3, Scalar=4, String=5, Enum=6, List=7, Set=8, Map=9, Option=10, Field=11, Lambda=12, Tensor=13, Complex=14, Orientation=15, Range=16, Point=17, Vector=18, Matrix=19, Frame=20
         fn type_tag(v: &Value) -> u8 {
             match v {
                 Value::Undef => 0,
@@ -470,6 +480,7 @@ impl Ord for Value {
                 Value::Point(_) => 17,
                 Value::Vector(_) => 18,
                 Value::Matrix(_) => 19,
+                Value::Frame { .. } => 20,
             }
         }
 
@@ -569,6 +580,10 @@ impl Ord for Value {
                     .then_with(|| au.cmp(bu))
             }
             (Value::Matrix(a), Value::Matrix(b)) => a.cmp(b),
+            (
+                Value::Frame { origin: ao, basis: ab },
+                Value::Frame { origin: bo, basis: bb },
+            ) => ao.cmp(bo).then_with(|| ab.cmp(bb)),
             _ => unreachable!("same type tag but different variants"),
         }
     }
@@ -698,6 +713,9 @@ impl std::fmt::Display for Value {
                     }
                 };
                 write!(f, "[{}, {}, {}, {}]q", fmt_f64(*w), fmt_f64(*x), fmt_f64(*y), fmt_f64(*z))
+            }
+            Value::Frame { origin, basis } => {
+                write!(f, "frame({}, {})", origin, basis)
             }
             Value::Range { lower, upper, lower_inclusive, upper_inclusive } => {
                 debug_assert!(
@@ -2758,5 +2776,146 @@ mod tests {
         ]);
         let round_tripped = matrix.clone().canonicalize_matrix().try_into_matrix();
         assert_eq!(round_tripped, Some(matrix));
+    }
+
+    // ── Value::Frame tests (step-3) ──────────────────────────────────────────
+
+    fn make_point3_length() -> Value {
+        Value::Point(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ])
+    }
+
+    fn make_orientation_identity() -> Value {
+        Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 }
+    }
+
+    fn make_frame(origin: Value, basis: Value) -> Value {
+        Value::Frame { origin: Box::new(origin), basis: Box::new(basis) }
+    }
+
+    #[test]
+    fn value_frame_construction() {
+        let origin = make_point3_length();
+        let basis = make_orientation_identity();
+        let frame = make_frame(origin.clone(), basis.clone());
+        match frame {
+            Value::Frame { origin: o, basis: b } => {
+                assert_eq!(*o, origin);
+                assert_eq!(*b, basis);
+            }
+            other => panic!("expected Value::Frame, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn value_frame_partial_eq_equal() {
+        let f1 = make_frame(make_point3_length(), make_orientation_identity());
+        let f2 = make_frame(make_point3_length(), make_orientation_identity());
+        assert_eq!(f1, f2);
+    }
+
+    #[test]
+    fn value_frame_partial_eq_different_origin() {
+        let origin_a = Value::Point(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]);
+        let origin_b = Value::Point(vec![Value::length(9.0), Value::length(2.0), Value::length(3.0)]);
+        let basis = make_orientation_identity();
+        let f1 = make_frame(origin_a, basis.clone());
+        let f2 = make_frame(origin_b, basis);
+        assert_ne!(f1, f2);
+    }
+
+    #[test]
+    fn value_frame_partial_eq_different_basis() {
+        let origin = make_point3_length();
+        let basis_a = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+        let basis_b = Value::Orientation { w: 0.0, x: 1.0, y: 0.0, z: 0.0 };
+        let f1 = make_frame(origin.clone(), basis_a);
+        let f2 = make_frame(origin, basis_b);
+        assert_ne!(f1, f2);
+    }
+
+    #[test]
+    fn value_frame_display() {
+        let origin = Value::Point(vec![
+            Value::length(0.0),
+            Value::length(0.0),
+            Value::length(0.0),
+        ]);
+        let basis = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+        let frame = make_frame(origin, basis);
+        let s = format!("{}", frame);
+        assert_eq!(s, "frame(point(0 m, 0 m, 0 m), [1, 0, 0, 0]q)");
+    }
+
+    #[test]
+    fn value_frame_dimension_is_dimensionless() {
+        let frame = make_frame(make_point3_length(), make_orientation_identity());
+        assert_eq!(frame.dimension(), DimensionVector::DIMENSIONLESS);
+    }
+
+    #[test]
+    fn value_frame_content_hash_determinism() {
+        let f1 = make_frame(make_point3_length(), make_orientation_identity());
+        let f2 = make_frame(make_point3_length(), make_orientation_identity());
+        assert_eq!(f1.content_hash(), f2.content_hash());
+    }
+
+    #[test]
+    fn value_frame_content_hash_distinct_from_orientation() {
+        let frame = make_frame(make_point3_length(), make_orientation_identity());
+        let orientation = make_orientation_identity();
+        assert_ne!(frame.content_hash(), orientation.content_hash());
+    }
+
+    #[test]
+    fn value_frame_content_hash_distinct_from_point() {
+        let frame = make_frame(make_point3_length(), make_orientation_identity());
+        let point = make_point3_length();
+        assert_ne!(frame.content_hash(), point.content_hash());
+    }
+
+    #[test]
+    fn value_frame_ord_type_tag_gt_matrix() {
+        // Frame type_tag=20 > Matrix type_tag=19
+        let frame = make_frame(make_point3_length(), make_orientation_identity());
+        let matrix = Value::Matrix(vec![vec![Value::Int(1)]]);
+        assert!(frame > matrix);
+    }
+
+    #[test]
+    fn value_frame_ord_same_type_compare_origin_first() {
+        // Two frames with same basis but different origin should order by origin
+        let origin_a = Value::Point(vec![Value::length(1.0), Value::length(0.0), Value::length(0.0)]);
+        let origin_b = Value::Point(vec![Value::length(2.0), Value::length(0.0), Value::length(0.0)]);
+        let basis = make_orientation_identity();
+        let f1 = make_frame(origin_a, basis.clone());
+        let f2 = make_frame(origin_b, basis);
+        assert!(f1 < f2);
+    }
+
+    #[test]
+    fn value_frame_ord_same_origin_compare_basis() {
+        // Same origin, different basis: order by basis quaternion
+        let origin = make_point3_length();
+        // Orientation {w:0} < {w:1} by to_bits ordering (0.0 < 1.0)
+        let basis_a = Value::Orientation { w: 0.0, x: 0.0, y: 0.0, z: 0.0 };
+        let basis_b = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+        let f1 = make_frame(origin.clone(), basis_a);
+        let f2 = make_frame(origin, basis_b);
+        assert!(f1 < f2);
+    }
+
+    #[test]
+    fn value_frame_content_hash_neg_zero_origin_differs() {
+        // neg-zero and pos-zero in origin produce different hashes
+        let origin_pos = Value::Point(vec![Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH }, Value::length(0.0), Value::length(0.0)]);
+        let origin_neg = Value::Point(vec![Value::Scalar { si_value: -0.0, dimension: DimensionVector::LENGTH }, Value::length(0.0), Value::length(0.0)]);
+        let basis = make_orientation_identity();
+        let f1 = make_frame(origin_pos, basis.clone());
+        let f2 = make_frame(origin_neg, basis);
+        assert_ne!(f1.content_hash(), f2.content_hash());
     }
 }
