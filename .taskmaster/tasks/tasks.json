@@ -7524,10 +7524,11 @@
         "description": "Seven test issues in crates/reify-compiler/tests/unit_registry_tests.rs:\n\n1. Add missing 'in' (inch) and 's' (second) to regression_hardcoded_units_all_still_resolve.\n2. Assert all 3 params (mm, deg, kg) in hardcoded_units_still_work_without_declarations.\n3. Add test for Dimensionless dimension type.\n4. Add test for division-by-zero guard in evaluate_const_expr.\n5. Add test for non-constant expression rejection in unit conversion.\n6. Add test that user-declared unit overrides hardcoded unit.\n7. Remove duplicate test: evaluate_const_quantity_literal_cross_ref == unit_cross_ref_in_conversion_expr.\n\nSource: review suggestions from esc-208-28 (task 208).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-03-25T22:57:50.856Z"
       },
       {
         "id": "420",
@@ -7819,7 +7820,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-25T22:57:50.194Z",
+      "lastModified": "2026-03-25T22:57:50.856Z",
       "taskCount": 441,
       "completedCount": 231,
       "tags": [
