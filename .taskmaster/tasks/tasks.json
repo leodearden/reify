@@ -7731,6 +7731,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 435,
+        "title": "Rename qualified_access_disambiguation test to match actual behavior",
+        "description": "In crates/reify-eval/tests/m9_trait_conformance.rs: rename qualified_access_disambiguation to per_structure_constraint_counts. Update docstring to reflect it verifies constraint counts per structure, not qualified access disambiguation. Add TODO for when qualified access syntax is available. (Review followup from task 194)",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -7743,7 +7754,7 @@
       ],
       "created": "2026-03-25T21:55:12.274Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-25T21:55:16.734Z"
+      "updated": "2026-03-25T21:55:20.000Z"
     }
   }
 }
