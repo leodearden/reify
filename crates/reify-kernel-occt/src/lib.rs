@@ -2249,4 +2249,38 @@ mod tests {
             }
         }
     }
+
+    // --- Sweep tests ---
+
+    #[test]
+    fn sweep_circle_along_line_creates_pipe() {
+        let mut kernel = OcctKernel::new();
+        // Circle face profile: r=2.0 at z=0
+        let face = ffi::ffi::make_circle_face(2.0, 0.0).expect("circle face");
+        let profile_id = kernel.store_raw(face);
+        // Line wire path: (0,0,0) to (0,0,10)
+        let wire = ffi::ffi::make_line_wire(0.0, 0.0, 0.0, 0.0, 0.0, 10.0).expect("line wire");
+        let path_id = kernel.store_raw(wire);
+
+        let pipe_h = kernel
+            .execute(&GeometryOp::Sweep {
+                profile: profile_id,
+                path: path_id,
+            })
+            .unwrap();
+
+        // Volume should be approximately pi*r^2*h = pi*4*10 ≈ 125.66
+        let vol = kernel.query(&GeometryQuery::Volume(pipe_h.id)).unwrap();
+        match vol {
+            Value::Real(v) => {
+                let expected = std::f64::consts::PI * 4.0 * 10.0;
+                let rel_err = (v - expected).abs() / expected;
+                assert!(
+                    rel_err < 0.05,
+                    "pipe volume should be ≈ {expected:.2}, got {v:.2} (rel_err={rel_err:.4})"
+                );
+            }
+            other => panic!("expected Value::Real, got {:?}", other),
+        }
+    }
 }
