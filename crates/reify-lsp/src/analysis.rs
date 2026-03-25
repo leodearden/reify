@@ -186,24 +186,6 @@ pub fn format_value(value: &Value) -> String {
             let inner: Vec<String> = items.iter().map(format_value).collect();
             format!("[{}]", inner.join(", "))
         }
-        Value::Point(items) => {
-            let inner: Vec<String> = items.iter().map(format_value).collect();
-            format!("point({})", inner.join(", "))
-        }
-        Value::Vector(items) => {
-            let inner: Vec<String> = items.iter().map(format_value).collect();
-            format!("vec({})", inner.join(", "))
-        }
-        Value::Matrix(rows) => {
-            let row_strs: Vec<String> = rows
-                .iter()
-                .map(|row| {
-                    let inner: Vec<String> = row.iter().map(format_value).collect();
-                    format!("[{}]", inner.join(", "))
-                })
-                .collect();
-            format!("[{}]", row_strs.join(", "))
-        }
         Value::Lambda { .. } => "<lambda>".to_string(),
         Value::Field { domain_type, codomain_type, source, .. } => {
             format!("Field<{}, {}>({:?})", domain_type, codomain_type, source)
@@ -218,42 +200,6 @@ pub fn format_value(value: &Value) -> String {
             } else {
                 format!("{re} {sign} {im_abs}i {unit}")
             }
-        }
-        Value::Orientation { w, x, y, z } => {
-            format!("[{w}, {x}, {y}, {z}]q")
-        }
-        Value::Frame { origin, basis } => {
-            format!("frame({}, {})", format_value(origin), format_value(basis))
-        }
-        Value::Transform { rotation, translation } => {
-            format!("transform({}, {})", format_value(rotation), format_value(translation))
-        }
-        Value::Plane { origin, normal } => {
-            format!("plane({}, {})", format_value(origin), format_value(normal))
-        }
-        Value::Axis { origin, direction } => {
-            format!("axis({}, {})", format_value(origin), format_value(direction))
-        }
-        Value::BoundingBox { min, max } => {
-            format!("bbox({}, {})", format_value(min), format_value(max))
-        }
-        Value::Range {
-            lower,
-            upper,
-            lower_inclusive,
-            upper_inclusive,
-        } => {
-            let lb = if *lower_inclusive { '[' } else { '(' };
-            let ub = if *upper_inclusive { ']' } else { ')' };
-            let lower_str = match lower {
-                None => "-inf".to_string(),
-                Some(v) => format_value(v),
-            };
-            let upper_str = match upper {
-                None => "+inf".to_string(),
-                Some(v) => format_value(v),
-            };
-            format!("{lb}{lower_str}..{upper_str}{ub}")
         }
         Value::Undef => "(undefined)".to_string(),
     }

@@ -11,14 +11,13 @@ pub mod diagnostics;
 pub mod provenance;
 pub mod traits;
 pub mod warm;
-pub mod annotation;
 
 pub use identity::*;
 pub use hash::ContentHash;
 pub use dimension::{DimensionVector, Rational};
 pub use ty::Type;
 pub use value::{DeterminacyState, EvalError, FieldSourceKind, Freshness, Satisfaction, Value, ValueMap};
-pub use expr::{BinOp, CompiledExpr, CompiledExprKind, CompiledFnBody, CompiledFunction, CompiledMatchArm, DeterminacyPredicateKind, QuantifierKind, ResolvedFunction, UnOp};
+pub use expr::{BinOp, CompiledExpr, CompiledExprKind, CompiledFnBody, CompiledFunction, CompiledMatchArm, QuantifierKind, ResolvedFunction, UnOp};
 pub use constraint::{
     AutoParam, ConstraintChecker, ConstraintDiagnostics, ConstraintDomain, ConstraintInput,
     ConstraintResult, ConstraintSolver, OptimizationObjective, ResolutionProblem, SolveResult,
@@ -32,4 +31,3 @@ pub use diagnostics::{Diagnostic, DiagnosticLabel, DiagnosticRef, Severity, Sour
 pub use provenance::SnapshotProvenance;
 pub use traits::{EnumDef, PortDirection, TraitBound, TraitDef, TraitMember, TraitRef, TypeParam};
 pub use warm::{OpaqueState, WarmStartable};
-pub use annotation::{Annotation, AnnotationArg};

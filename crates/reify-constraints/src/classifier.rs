@@ -89,19 +89,11 @@ impl ConstraintClassifier {
                         | Value::Lambda { .. }
                         | Value::Field { .. }
                         | Value::Tensor(_)
-                        | Value::Point(_)
-                        | Value::Vector(_)
-                        | Value::Matrix(_)
-                        | Value::Complex { .. }
-                        | Value::Orientation { .. }
-                        | Value::Frame { .. }
-                        | Value::Transform { .. }
-                        | Value::Plane { .. }
-                        | Value::Axis { .. }
-                        | Value::BoundingBox { .. }
-                        | Value::Range { .. } => {
-                            // Collection, enum, lambda, field, tensor, Point, Vector, Matrix, Complex,
-                            // Orientation, Frame, Transform, Plane, Axis, BoundingBox, and Range types don't contribute to domain classification.
+                        | Value::Complex { .. } => {
+                            // Collection, enum, lambda, field, tensor, and Complex types
+                            // don't contribute to domain classification.
+                            // Complex is not numeric (Type::is_numeric() returns false for
+                            // Complex); needs its own domain if special routing is required.
                         }
                     }
                 }

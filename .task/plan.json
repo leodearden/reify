@@ -1,210 +1,146 @@
 {
-  "task_id": "200",
-  "title": "Determinacy predicates: compiler intrinsic",
+  "task_id": "189",
+  "title": "Trait member merging: diamond hierarchy",
   "files": [
-    "crates/reify-types/src/expr.rs",
-    "crates/reify-types/src/lib.rs",
-    "crates/reify-compiler/src/lib.rs",
-    "crates/reify-expr/src/lib.rs",
-    "crates/reify-compiler/tests/boundary2_producer.rs",
-    "crates/reify-compiler/tests/determinacy_compile_tests.rs"
+    "crates/reify-compiler/tests/trait_conformance_tests.rs",
+    "crates/reify-compiler/src/lib.rs"
   ],
   "modules": [
-    "crates/reify-types",
-    "crates/reify-compiler",
-    "crates/reify-expr"
+    "crates/reify-compiler"
   ],
-  "analysis": "Currently determined/constrained/undetermined/partially_determined are compiled as normal stdlib FunctionCall nodes and dispatched at runtime through reify-stdlib where they return Value::Undef as stubs. The task is to make them compiler intrinsics: the compiler intercepts these function names, verifies the argument is a bare identifier that resolves to a ValueCellId, and emits a new DeterminacyPredicate { kind, cell } variant of CompiledExprKind instead of FunctionCall. This requires: (1) adding DeterminacyPredicateKind enum and the DeterminacyPredicate variant to CompiledExprKind in reify-types, (2) updating all 6 exhaustive matches on CompiledExprKind (walk, collect_value_refs_inner, remap_entity in expr.rs; eval_expr in reify-expr; collect_body_refs_inner in reify-compiler; assert_no_unresolved in boundary2_producer test), (3) adding the compiler intercept in compile_expr_guarded before args are compiled (since we need the raw AST ident, not a compiled expression), and (4) adding a constructor with content hash tag 16. The eval layer (reify-expr) returns Value::Undef for now since it lacks DeterminacyState access; actual evaluation happens at the reify-eval engine level where snapshot state is available (a separate concern for a future task). Content hash tags 0-15 are already allocated to existing variants; tag 16 is the next available.",
-  "prerequisites": [
-    {
-      "id": "pre-1",
-      "description": "Add DeterminacyPredicateKind enum (Determined, Undetermined, Constrained, PartiallyDetermined) and DeterminacyPredicate { kind, cell } variant to CompiledExprKind in crates/reify-types/src/expr.rs. Add CompiledExpr::determinacy_predicate() constructor with content hash tag [16, kind_byte]. Update walk() (leaf node \u2014 no children), collect_value_refs_inner() (push cell to refs \u2014 it is a dependency), and remap_entity() (remap cell.entity like ValueRef). Re-export DeterminacyPredicateKind from crates/reify-types/src/lib.rs.",
-      "status": "done",
-      "commit": "d7f5738a",
-      "tests": []
-    },
-    {
-      "id": "pre-2",
-      "description": "Update eval_expr() in crates/reify-expr/src/lib.rs to handle DeterminacyPredicate variant \u2014 return Value::Undef (eval-layer lacks DeterminacyState access; real evaluation is at engine level with snapshot context).",
-      "status": "done",
-      "commit": "d7f5738a",
-      "tests": []
-    },
-    {
-      "id": "pre-3",
-      "description": "Update collect_body_refs_inner() in crates/reify-compiler/src/lib.rs to handle DeterminacyPredicate \u2014 push cell id to refs. Update assert_no_unresolved() in crates/reify-compiler/tests/boundary2_producer.rs \u2014 DeterminacyPredicate is a resolved leaf node (no-op, no children to recurse into).",
-      "status": "done",
-      "commit": "d7f5738a",
-      "tests": []
-    }
-  ],
+  "analysis": "Task 189 requires comprehensive test coverage for diamond inheritance deduplication in trait member merging. The core topology is: structure S implements trait A, A refines B+C, B and C both refine D — D's members must appear exactly once.\n\nThe implementation already exists in `collect_all_requirements` (lib.rs:4268-4372) via a `visited: HashSet<String>` that prevents re-walking already-visited traits (line 4282-4284). The existing test `diamond_inheritance_deduplication` covers the simpler topology (X : A+B, A:C, B:C) but NOT the deeper single-bound pattern described in this task (S:A, A:B+C, B:D, C:D).\n\nKey behaviors to verify:\n1. Requirements from D collected exactly once (visited set prevents re-traversal)\n2. Defaults from D injected exactly once (seen_defaults dedup by name+type)\n3. Missing member in diamond produces exactly one error (not duplicated)\n4. Conflicts detected correctly even in diamond\n5. Members at every level of the hierarchy merge correctly\n6. Let binding defaults from root deduplicated\n7. Sub-component requirements from root deduplicated\n\nThe implementation is believed to be complete from task 188's work. The primary deliverable is proving correctness through targeted test cases for the specific diamond pattern.",
+  "prerequisites": [],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing test compile_determined_param in determinacy_compile_tests.rs: parse 'structure S { param x : Scalar = 5mm \\n let d = determined(x) }', extract the default_expr for cell 'd', assert it matches CompiledExprKind::DeterminacyPredicate { kind: Determined, cell } where cell == ValueCellId::new('S', 'x'). Also assert result_type == Type::Bool. Uses compile_and_get_expr helper pattern from option_compile_tests.rs.",
+      "description": "Write failing test `diamond_single_bound_satisfied`: S:A, A:B+C, B:D, C:D, D has `param x : Length`, S provides x. Verify no errors — D's requirement collected once.",
       "status": "done",
-      "commit": "38c781f1"
+      "commit": "77da7c4f12bd7b155b731f48892c2c5cea38c4fc"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Add compiler intercept in compile_expr_guarded: in the FunctionCall arm, before arg compilation (after the existing 'some()' intercept), check if name matches determined/undetermined/constrained/partially_determined. If so: verify exactly 1 arg, verify arg is ExprKind::Ident, resolve ident via scope.resolve() to ValueCellId, map name to DeterminacyPredicateKind, emit CompiledExpr::determinacy_predicate(kind, cell). On error (wrong arity, non-ident arg, unresolved name), emit Diagnostic::error with source span and return Literal(Undef, Bool).",
+      "description": "Verify step-1 passes with existing visited-set implementation. If it fails, fix `collect_all_requirements` to handle single-bound deep diamond recursion.",
       "status": "done",
-      "commit": "c8bc1bef"
+      "commit": "77da7c4f12bd7b155b731f48892c2c5cea38c4fc"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write test compile_all_four_determinacy_kinds: structure S { param x : Scalar = 5mm, let a = determined(x), let b = undetermined(x), let c = constrained(x), let d = partially_determined(x) }. Extract default_expr for each let and assert each has the correct DeterminacyPredicateKind (Determined, Undetermined, Constrained, PartiallyDetermined) and all reference the same cell ValueCellId::new('S', 'x').",
+      "description": "Write failing test `diamond_missing_member_single_error`: Same hierarchy but S omits x. Assert exactly 1 'missing required member' error (not 2 from B-path and C-path).",
       "status": "done",
-      "commit": "5aa1d76a"
+      "commit": "77da7c4f12bd7b155b731f48892c2c5cea38c4fc"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Verify all four kinds pass (should already work from step-2 implementation). Fix any issues.",
+      "description": "Verify step-3 passes. If duplicate errors appear, the visited set is not shared correctly across refinement recursion within a single trait bound.",
       "status": "done",
-      "commit": "5aa1d76a"
+      "commit": "77da7c4f12bd7b155b731f48892c2c5cea38c4fc"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write test error_wrong_arity: compile 'structure S { param x : Scalar = 5mm \\n let d = determined() }' and 'structure S { param x : Scalar = 5mm \\n param y : Scalar = 3mm \\n let d = determined(x, y) }'. Assert each produces at least one error diagnostic containing 'exactly 1 argument'. Assert the let 'd' does NOT compile to DeterminacyPredicate (falls back to Literal Undef).",
+      "description": "Write failing test `diamond_default_injected_once`: D provides `param x : Length = 10mm` (default), S:A with no override. Assert exactly 1 'x' value cell injected.",
       "status": "done",
-      "commit": "5aa1d76a"
+      "commit": "77da7c4f12bd7b155b731f48892c2c5cea38c4fc"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Verify arity check passes (should already work from step-2). Fix any issues.",
+      "description": "Verify step-5 passes. If duplicate value cells appear, fix default deduplication in `seen_defaults` within diamond recursion.",
       "status": "done",
-      "commit": "5aa1d76a"
+      "commit": "77da7c4f12bd7b155b731f48892c2c5cea38c4fc"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write test error_non_identifier_argument: compile 'structure S { param x : Scalar = 5mm \\n let d = determined(x + 1) }'. Assert error diagnostic containing 'bare identifier' or 'identifier'. Assert the let 'd' does NOT compile to DeterminacyPredicate.",
+      "description": "Write failing test `diamond_constraint_from_root`: D has `param x : Length` and `constraint x > 0mm`, S:A provides x. Verify constraint is injected and no errors.",
       "status": "done",
-      "commit": "5aa1d76a"
+      "commit": "77da7c4f12bd7b155b731f48892c2c5cea38c4fc"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Verify non-identifier check passes (should already work from step-2). Fix any issues.",
+      "description": "Verify step-7 passes. Unlabeled constraints from D should be injected once via the visited set preventing re-traversal of D.",
       "status": "done",
-      "commit": "5aa1d76a"
+      "commit": "77da7c4f12bd7b155b731f48892c2c5cea38c4fc"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write test error_unresolved_name: compile 'structure S { let d = determined(nonexistent) }'. Assert error diagnostic about unresolved or unknown identifier 'nonexistent'. Assert the let 'd' does NOT compile to DeterminacyPredicate.",
+      "description": "Write failing test `diamond_members_at_every_level`: D has param d, B has param b, C has param c, A has param a. S:A provides all four. Verify no errors and all 4 members satisfied.",
       "status": "done",
-      "commit": "5aa1d76a"
+      "commit": "77da7c4f12bd7b155b731f48892c2c5cea38c4fc"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Verify unresolved-name check passes (should already work from step-2). Fix any issues.",
+      "description": "Verify step-9 passes. Each level's unique members should be collected once via depth-first traversal.",
       "status": "done",
-      "commit": "5aa1d76a"
+      "commit": "77da7c4f12bd7b155b731f48892c2c5cea38c4fc"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write test collect_value_refs_includes_cell: construct DeterminacyPredicate manually via CompiledExpr::determinacy_predicate(DeterminacyPredicateKind::Determined, ValueCellId::new('S', 'x')), call collect_value_refs(), assert result contains ValueCellId::new('S', 'x').",
+      "description": "Write failing test `diamond_let_default_deduped`: D provides `let y = 42`, S:A. Verify exactly 1 'y' value cell injected (let default dedup in diamond).",
       "status": "done",
-      "commit": "5aa1d76a"
+      "commit": "77da7c4f12bd7b155b731f48892c2c5cea38c4fc"
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "Verify collect_value_refs passes (should already work from pre-1). Fix any issues.",
+      "description": "Verify step-11 passes. Let defaults use DefaultKind::Let and are deduped by name in seen_defaults.",
       "status": "done",
-      "commit": "5aa1d76a"
+      "commit": "77da7c4f12bd7b155b731f48892c2c5cea38c4fc"
     },
     {
       "id": "step-13",
       "type": "test",
-      "description": "Write test content_hash_stability_and_uniqueness: build DeterminacyPredicate for (Determined, S.x) twice \u2014 assert same content_hash. Build for (Undetermined, S.x) \u2014 assert different hash from Determined. Build for (Determined, S.y) \u2014 assert different hash from (Determined, S.x).",
+      "description": "Write failing test `diamond_deep_five_level`: E:D, B:E, C:D, A:B+C, S:A — 5 levels. D has param x, E has param y. S provides both. Verify no errors and no duplication.",
       "status": "done",
-      "commit": "5aa1d76a"
+      "commit": "77da7c4f12bd7b155b731f48892c2c5cea38c4fc"
     },
     {
       "id": "step-14",
       "type": "impl",
-      "description": "Verify content hash test passes (should already work from pre-1 constructor). Fix any issues.",
+      "description": "Verify step-13 passes. Deep hierarchies should work identically since visited set is shared across the entire recursive traversal.",
       "status": "done",
-      "commit": "5aa1d76a"
-    },
-    {
-      "id": "step-15",
-      "type": "test",
-      "description": "Write test not_compiled_as_function_call: compile 'structure S { param x : Scalar = 5mm \\n let d = determined(x) }', extract default_expr for 'd', assert it is NOT CompiledExprKind::FunctionCall. This confirms the intrinsic intercept takes priority over stdlib fallthrough. Also verify no walk()-visited nodes contain a FunctionCall with name 'determined'.",
-      "status": "done",
-      "commit": "5aa1d76a"
-    },
-    {
-      "id": "step-16",
-      "type": "impl",
-      "description": "Verify not-function-call test passes (should already work from step-2). Fix any issues.",
-      "status": "done",
-      "commit": "5aa1d76a"
+      "commit": "77da7c4f12bd7b155b731f48892c2c5cea38c4fc"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Intercept before arg compilation, not after",
-      "rationale": "Determinacy predicates need the raw AST argument to verify it's a bare ExprKind::Ident. Compiling the arg first would lose the distinction between 'determined(x)' (valid bare ident) and 'determined(x + 0)' (invalid expression). The some() intercept pattern at line 1437 is the precedent \u2014 it intercepts before general overload resolution."
+      "decision": "Test the single-bound deep diamond (S:A, A:B+C, B:D, C:D) as distinct from the existing multi-bound diamond (X:A+B, A:C, B:C)",
+      "rationale": "The existing diamond_inheritance_deduplication test uses two direct trait bounds on the structure. Task 189 specifically describes a single bound with deeper refinement hierarchy. The visited set behavior is exercised differently: via recursion within a single collect_all_requirements call vs. shared across multiple top-level calls."
     },
     {
-      "decision": "Only support bare identifiers as arguments, not member access expressions",
-      "rationale": "The scope.resolve() mechanism handles bare names including port composite keys (port.member registered as a single key). Supporting arbitrary MemberAccess (e.g., sub.param) would require walking the AST member access chain, adding significant complexity. The task description says 'resolves the argument to a specific ValueCellId' \u2014 bare identifiers are the canonical way to do this in the scope system."
+      "decision": "Verify single-error semantics for missing members in diamond",
+      "rationale": "A key correctness property: if D requires param x and it's missing, the user should see exactly 1 error, not 2 (one per path to D). The visited set prevents this, but we must explicitly test it."
     },
     {
-      "decision": "Eval layer (reify-expr) returns Value::Undef for DeterminacyPredicate",
-      "rationale": "EvalContext only has ValueMap (ValueCellId -> Value), not DeterminacyState. The actual determinacy evaluation happens at the engine level (reify-eval) where Snapshot.values stores (Value, DeterminacyState). This matches the existing pattern where stdlib stubs return Undef and the engine intercepts at a higher level. A future task will add snapshot-level evaluation."
-    },
-    {
-      "decision": "Content hash tag byte is 16 with kind discriminant",
-      "rationale": "Tags 0-15 are used by existing variants (0=Literal, 1=ValueRef, 2=BinOp, 3=UnOp, 5=Conditional, 7=Lambda, 8=ListLiteral, 9=SetLiteral, 10=MapLiteral, 11=IndexAccess, 12=MethodCall, 13=Quantifier, 14=OptionSome, 15=OptionNone; 4/6 used in compiler). Hash is ContentHash::of(&[16, kind as u8]).combine(cell_id_hash) for uniqueness across kinds and cells."
-    },
-    {
-      "decision": "DeterminacyPredicate is a leaf node in walk() with cell as dependency in collect_value_refs",
-      "rationale": "The cell ValueCellId is resolved at compile time and stored directly \u2014 no child expressions to recurse. The cell IS a dependency (added in collect_value_refs_inner) because the determinacy state of a cell changes when the cell's value changes, so dependents must be re-evaluated."
-    },
-    {
-      "decision": "Result type is always Type::Bool",
-      "rationale": "Determinacy predicates answer a yes/no question about a cell's state (is it determined? is it constrained? etc.). Bool is the natural return type regardless of the cell's own type."
+      "decision": "Implementation likely already complete — focus on test coverage",
+      "rationale": "The collect_all_requirements function (lib.rs:4268-4372) already has the visited HashSet with diamond early-return (line 4282-4284), seen_names for requirement dedup, and seen_defaults for default dedup. Task 188 (dependency, done) implemented this. Task 189's value is proving correctness for the specific deep diamond topology."
     }
   ],
   "reuse": [
     {
-      "what": "some() intercept pattern in compile_expr_guarded",
-      "where": "crates/reify-compiler/src/lib.rs lines 1437-1462",
-      "how": "Follow the same pattern: check function name before compiling args, validate arity, inspect raw AST arg kind, emit a specialized CompiledExprKind variant instead of FunctionCall. Insert the determinacy intercept right after the some() check."
+      "what": "compile_module / compile_first_template helpers",
+      "where": "crates/reify-compiler/tests/trait_conformance_tests.rs:10-21",
+      "how": "Reuse existing test helpers for parsing and compiling test source, returning CompiledModule or (TopologyTemplate, Vec<Diagnostic>)."
     },
     {
-      "what": "option_compile_tests.rs test helper pattern",
-      "where": "crates/reify-compiler/tests/option_compile_tests.rs lines 11-45",
-      "how": "Reuse the compile_and_get_expr helper pattern (parse source, compile, extract default_expr for named cell) and compile_expecting_errors helper in the new determinacy_compile_tests.rs."
+      "what": "collect_all_requirements visited-set pattern",
+      "where": "crates/reify-compiler/src/lib.rs:4268-4372",
+      "how": "The existing implementation with HashSet<String> visited set and early return on re-visit already handles diamond deduplication. Tests verify this behavior."
     },
     {
-      "what": "CompiledExpr constructor pattern (option_some)",
-      "where": "crates/reify-types/src/expr.rs lines 510-517",
-      "how": "Follow the same constructor pattern: compute content_hash from tag byte + constituent data, return CompiledExpr { kind, result_type, content_hash }."
-    },
-    {
-      "what": "CompilationScope.resolve() for name-to-ValueCellId resolution",
-      "where": "crates/reify-compiler/src/lib.rs lines 1213-1214, usage at line 1284",
-      "how": "Use scope.resolve(arg_name) to get the ValueCellId for the bare identifier argument, exactly as the Ident case does at line 1284."
-    },
-    {
-      "what": "Diagnostic error pattern with source span",
-      "where": "crates/reify-compiler/src/lib.rs lines 1438-1449 (some() arity error)",
-      "how": "Follow same error reporting pattern: Diagnostic::error(message).with_label(DiagnosticLabel::new(expr.span, label)), then return CompiledExpr::literal(Value::Undef, Type::Bool)."
+      "what": "Error filtering pattern from existing tests",
+      "where": "crates/reify-compiler/tests/trait_conformance_tests.rs (throughout)",
+      "how": "Use the established pattern: filter diagnostics by Severity::Error, assert count and message content."
     }
   ],
-  "_session_id": "200-e79f2596",
-  "_created_at": "2026-03-25T10:02:19.098617+00:00"
+  "_session_id": "189-796bdbd2",
+  "_created_at": "2026-03-25T07:12:49.220832+00:00"
 }

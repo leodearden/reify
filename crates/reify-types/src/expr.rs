@@ -88,12 +88,6 @@ pub enum CompiledExprKind {
     OptionSome(Box<CompiledExpr>),
     /// Option-none: the intentional absence value Value::Option(None).
     OptionNone,
-    /// Determinacy predicate: checks the determinacy state of a value cell.
-    /// Returns Bool at the engine level (eval layer returns Undef — lacks DeterminacyState access).
-    DeterminacyPredicate {
-        kind: DeterminacyPredicateKind,
-        cell: ValueCellId,
-    },
 }
 
 /// The kind of quantifier: universal (forall) or existential (exists).
@@ -101,15 +95,6 @@ pub enum CompiledExprKind {
 pub enum QuantifierKind {
     ForAll,
     Exists,
-}
-
-/// The kind of determinacy predicate.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum DeterminacyPredicateKind {
-    Determined,
-    Undetermined,
-    Constrained,
-    PartiallyDetermined,
 }
 
 /// A compiled match arm.
@@ -162,7 +147,6 @@ pub struct CompiledFunction {
     pub return_type: Type,
     pub body: CompiledFnBody,
     pub content_hash: ContentHash,
-    pub annotations: Vec<crate::annotation::Annotation>,
 }
 
 /// A compiled function body: let bindings followed by a result expression.
@@ -293,7 +277,6 @@ impl CompiledExpr {
                 inner.walk(f);
             }
             CompiledExprKind::OptionNone => {}
-            CompiledExprKind::DeterminacyPredicate { .. } => {}
         }
     }
 
@@ -401,9 +384,6 @@ impl CompiledExpr {
                 inner.collect_value_refs_inner(refs);
             }
             CompiledExprKind::OptionNone => {}
-            CompiledExprKind::DeterminacyPredicate { cell, .. } => {
-                refs.push(cell.clone());
-            }
         }
     }
 
@@ -546,24 +526,6 @@ impl CompiledExpr {
         }
     }
 
-    /// Create a determinacy predicate expression.
-    /// Result type is always Bool.
-    pub fn determinacy_predicate(kind: DeterminacyPredicateKind, cell: ValueCellId) -> Self {
-        let kind_byte = match kind {
-            DeterminacyPredicateKind::Determined => 0,
-            DeterminacyPredicateKind::Undetermined => 1,
-            DeterminacyPredicateKind::Constrained => 2,
-            DeterminacyPredicateKind::PartiallyDetermined => 3,
-        };
-        let content_hash = ContentHash::of(&[16, kind_byte])
-            .combine(ContentHash::of_str(&format!("{}", cell)));
-        CompiledExpr {
-            kind: CompiledExprKind::DeterminacyPredicate { kind, cell },
-            result_type: Type::Bool,
-            content_hash,
-        }
-    }
-
     /// Rewrite all `ValueRef` cell IDs whose entity matches `from_entity`,
     /// replacing the entity part with `to_entity`. This is used during purpose
     /// activation to remap compiled references from the purpose's parameter
@@ -671,11 +633,6 @@ impl CompiledExpr {
                 inner.remap_entity(from_entity, to_entity);
             }
             CompiledExprKind::OptionNone => {}
-            CompiledExprKind::DeterminacyPredicate { cell, .. } => {
-                if cell.entity == from_entity {
-                    cell.entity = to_entity.to_string();
-                }
-            }
         }
     }
 

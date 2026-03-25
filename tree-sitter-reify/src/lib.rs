@@ -91,21 +91,4 @@ mod tests {
             "# should not produce a line_comment node, got: {kinds:?}"
         );
     }
-
-    #[test]
-    fn test_pragma_parsed() {
-        let mut parser = make_parser();
-        // #optimize (no space after #) should parse as a pragma node
-        let source = b"#optimize\nstructure S {}";
-        let tree = parser.parse(source, None).expect("parse failed");
-        let kinds = collect_kinds(tree.root_node());
-        assert!(
-            !tree.root_node().has_error(),
-            "unexpected parse error for '#optimize\\nstructure S {{}}', got: {kinds:?}"
-        );
-        assert!(
-            kinds.contains(&"pragma".to_string()),
-            "expected a 'pragma' node in the parse tree, got: {kinds:?}"
-        );
-    }
 }

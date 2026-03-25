@@ -56,8 +56,6 @@ std::unique_ptr<OcctShape> fillet_all_edges(const OcctShape& shape, double radiu
 
 std::unique_ptr<OcctShape> translate_shape(const OcctShape& shape, double dx, double dy, double dz);
 std::unique_ptr<OcctShape> rotate_shape(const OcctShape& shape, double ax, double ay, double az, double angle_rad);
-std::unique_ptr<OcctShape> scale_shape(const OcctShape& shape, double factor, double cx, double cy, double cz);
-std::unique_ptr<OcctShape> rotate_around_shape(const OcctShape& shape, double px, double py, double pz, double ax, double ay, double az, double angle_rad);
 
 // --- Mirror / Pattern ---
 
@@ -91,12 +89,6 @@ std::unique_ptr<OcctShape> draft_shape(const OcctShape& shape, double angle_rad,
 /// Create a circular wire profile at a given Z height (for loft profiles).
 std::unique_ptr<OcctShape> make_circle_wire(double radius, double z_height);
 
-/// Create a flat circular face (disk) at a given Z height (for extrude profiles).
-std::unique_ptr<OcctShape> make_circle_face(double radius, double z_height);
-
-/// Loft through two wire profiles to create a solid.
-std::unique_ptr<OcctShape> loft_two_profiles(const OcctShape& wire1, const OcctShape& wire2);
-
 /// Create a flat circular face (disk) at a given Z height (for sweep/extrude profiles).
 std::unique_ptr<OcctShape> make_circle_face(double radius, double z_height);
 
@@ -111,24 +103,6 @@ std::unique_ptr<OcctShape> loft_profiles(const OcctShapeVec& profiles);
 
 /// Sweep a profile along a wire path (BRepOffsetAPI_MakePipe).
 std::unique_ptr<OcctShape> make_pipe(const OcctShape& profile, const OcctShape& spine);
-
-// --- Sweep / Extrude / Revolve ---
-
-/// Extrude a profile shape by a direction vector (dx, dy, dz).
-/// The direction vector must have non-zero magnitude.
-std::unique_ptr<OcctShape> make_prism(const OcctShape& profile, double dx, double dy, double dz);
-
-/// Revolve a profile shape around an axis by angle_rad radians.
-/// Axis defined by origin point (ox,oy,oz) and direction (ax,ay,az).
-std::unique_ptr<OcctShape> make_revolve(const OcctShape& profile,
-    double ox, double oy, double oz,
-    double ax, double ay, double az,
-    double angle_rad);
-
-/// Create a rectangular face (planar) centered at (cx, cy, cz) with
-/// given width (X direction) and height (Y direction) in the XY plane.
-std::unique_ptr<OcctShape> make_rect_face(double width, double height,
-    double cx, double cy, double cz);
 
 // --- Queries ---
 
