@@ -1,114 +1,146 @@
 {
-  "task_id": "163",
-  "title": "some/none: evaluator",
+  "task_id": "189",
+  "title": "Trait member merging: diamond hierarchy",
   "files": [
-    "crates/reify-expr/src/lib.rs",
-    "crates/reify-expr/tests/option_eval_tests.rs"
+    "crates/reify-compiler/tests/trait_conformance_tests.rs",
+    "crates/reify-compiler/src/lib.rs"
   ],
   "modules": [
-    "crates/reify-expr"
+    "crates/reify-compiler"
   ],
-  "analysis": "Task 163 adds evaluation support for `some(expr)` and `none` expression forms in the reify-expr evaluator. Task 162 (dependency, status: done) adds `CompiledExprKind::OptionSome(Box<CompiledExpr>)` and `CompiledExprKind::OptionNone` variants to the enum in reify-types, along with constructor helpers, walk/collect_value_refs/remap_entity arms. This task adds the corresponding match arms in `eval_expr` and comprehensive tests.\n\nThe core semantics:\n- `none` evaluates to `Value::Option(None)`\n- `some(expr)` evaluates the inner expr and wraps: `Value::Option(Some(Box::new(eval(expr))))`\n- Critically, `some(undef)` produces `Value::Option(Some(Box::new(Value::Undef)))` — it does NOT propagate Undef. This preserves the three-way distinction: `Value::Undef` (error/missing), `Value::Option(None)` (intentional absence), `Value::Option(Some(Value::Undef))` (present but value undefined).\n\nThe implementation is small (2-4 lines per variant in eval_expr) but the test suite must verify the subtle Undef-wrapping semantics thoroughly. Tests follow the established pattern in crates/reify-expr/tests/ (lambda_eval_tests.rs, quantifier_eval_tests.rs, etc.).\n\nExisting infrastructure: `Value::Option(Option<Box<Value>>)` already exists with PartialEq, Ord, Display, content_hash. Test helpers `reify_test_support::values::{some_val, none_val, undef}` exist. `CompiledExpr::literal()` and `CompiledExpr::value_ref()` are available for building test expressions. Task 162 should provide `CompiledExpr::option_some()` and/or `CompiledExpr::option_none()` constructors; if not, tests can construct CompiledExpr structs directly.",
-  "prerequisites": [
-    {
-      "id": "pre-1",
-      "description": "Verify task 162 (parser/compiler) has landed: CompiledExprKind::OptionSome and OptionNone variants exist in crates/reify-types/src/expr.rs with walk/collect_value_refs/remap_entity arms and constructor helpers. If constructors are missing, they must be added before tests can be written cleanly.",
-      "status": "blocked",
-      "commit": null,
-      "tests": [],
-      "blocker_note": "Task 162 is marked done in task system but OptionSome/OptionNone variants are absent from codebase (main at 5256c4c and all branches). Escalated as esc-163-25."
-    }
-  ],
+  "analysis": "Task 189 requires comprehensive test coverage for diamond inheritance deduplication in trait member merging. The core topology is: structure S implements trait A, A refines B+C, B and C both refine D — D's members must appear exactly once.\n\nThe implementation already exists in `collect_all_requirements` (lib.rs:4268-4372) via a `visited: HashSet<String>` that prevents re-walking already-visited traits (line 4282-4284). The existing test `diamond_inheritance_deduplication` covers the simpler topology (X : A+B, A:C, B:C) but NOT the deeper single-bound pattern described in this task (S:A, A:B+C, B:D, C:D).\n\nKey behaviors to verify:\n1. Requirements from D collected exactly once (visited set prevents re-traversal)\n2. Defaults from D injected exactly once (seen_defaults dedup by name+type)\n3. Missing member in diamond produces exactly one error (not duplicated)\n4. Conflicts detected correctly even in diamond\n5. Members at every level of the hierarchy merge correctly\n6. Let binding defaults from root deduplicated\n7. Sub-component requirements from root deduplicated\n\nThe implementation is believed to be complete from task 188's work. The primary deliverable is proving correctness through targeted test cases for the specific diamond pattern.",
+  "prerequisites": [],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Create crates/reify-expr/tests/option_eval_tests.rs with 2 failing tests: (a) eval_none_produces_option_none — construct a CompiledExprKind::OptionNone expression, evaluate with eval_expr, assert result == Value::Option(None). (b) eval_none_is_not_undef — assert the result of evaluating none is not Value::Undef (verifying Option(None) != Undef at the evaluator level).",
+      "description": "Write failing test `diamond_single_bound_satisfied`: S:A, A:B+C, B:D, C:D, D has `param x : Length`, S provides x. Verify no errors — D's requirement collected once.",
       "status": "done",
-      "commit": "7a85c79"
+      "commit": "77da7c4f12bd7b155b731f48892c2c5cea38c4fc"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Add OptionNone match arm in eval_expr in crates/reify-expr/src/lib.rs: `CompiledExprKind::OptionNone => Value::Option(None)`. Tests from step-1 pass.",
+      "description": "Verify step-1 passes with existing visited-set implementation. If it fails, fix `collect_all_requirements` to handle single-bound deep diamond recursion.",
       "status": "done",
-      "commit": "7a85c79"
+      "commit": "77da7c4f12bd7b155b731f48892c2c5cea38c4fc"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Add 3 failing tests: (a) eval_some_wraps_int — OptionSome(literal(Int(5))) evaluates to Value::Option(Some(Box::new(Value::Int(5)))). (b) eval_some_wraps_bool — OptionSome(literal(Bool(true))) evaluates to Value::Option(Some(Box::new(Value::Bool(true)))). (c) eval_some_wraps_real — OptionSome(literal(Real(3.14))) evaluates to Value::Option(Some(Box::new(Value::Real(3.14)))).",
+      "description": "Write failing test `diamond_missing_member_single_error`: Same hierarchy but S omits x. Assert exactly 1 'missing required member' error (not 2 from B-path and C-path).",
       "status": "done",
-      "commit": "0e0037b"
+      "commit": "77da7c4f12bd7b155b731f48892c2c5cea38c4fc"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Add OptionSome match arm in eval_expr: `CompiledExprKind::OptionSome(inner) => { let val = eval_expr(inner, ctx); Value::Option(Some(Box::new(val))) }`. IMPORTANT: No Undef short-circuit — wrapping Undef is intentional semantics. Tests from step-3 pass.",
+      "description": "Verify step-3 passes. If duplicate errors appear, the visited set is not shared correctly across refinement recursion within a single trait bound.",
       "status": "done",
-      "commit": "0e0037b"
+      "commit": "77da7c4f12bd7b155b731f48892c2c5cea38c4fc"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Add 3 verification tests for Undef semantics (should pass with step-4 impl): (a) eval_some_undef_produces_option_some_undef — some(literal(Undef)) yields Value::Option(Some(Box::new(Value::Undef))), NOT Value::Undef. (b) eval_some_undef_not_equal_to_none — assert some(undef) != Value::Option(None). (c) eval_some_undef_not_equal_to_bare_undef — assert some(undef) != Value::Undef.",
+      "description": "Write failing test `diamond_default_injected_once`: D provides `param x : Length = 10mm` (default), S:A with no override. Assert exactly 1 'x' value cell injected.",
       "status": "done",
-      "commit": "253633a"
+      "commit": "77da7c4f12bd7b155b731f48892c2c5cea38c4fc"
     },
     {
       "id": "step-6",
-      "type": "test",
-      "description": "Add 4 verification tests for nesting and value refs (should pass with step-4 impl): (a) eval_some_nested_some — some(some(Int(3))) yields Value::Option(Some(Box::new(Value::Option(Some(Box::new(Value::Int(3))))))). (b) eval_some_wraps_none — some(none) yields Value::Option(Some(Box::new(Value::Option(None)))). (c) eval_some_value_ref — some(value_ref(x)) where x=Int(42) in ValueMap yields Value::Option(Some(Box::new(Value::Int(42)))). (d) eval_some_missing_ref_wraps_undef — some(value_ref(x)) where x is absent from ValueMap yields Value::Option(Some(Box::new(Value::Undef))), not bare Undef.",
+      "type": "impl",
+      "description": "Verify step-5 passes. If duplicate value cells appear, fix default deduplication in `seen_defaults` within diamond recursion.",
       "status": "done",
-      "commit": "253633a"
+      "commit": "77da7c4f12bd7b155b731f48892c2c5cea38c4fc"
+    },
+    {
+      "id": "step-7",
+      "type": "test",
+      "description": "Write failing test `diamond_constraint_from_root`: D has `param x : Length` and `constraint x > 0mm`, S:A provides x. Verify constraint is injected and no errors.",
+      "status": "done",
+      "commit": "77da7c4f12bd7b155b731f48892c2c5cea38c4fc"
+    },
+    {
+      "id": "step-8",
+      "type": "impl",
+      "description": "Verify step-7 passes. Unlabeled constraints from D should be injected once via the visited set preventing re-traversal of D.",
+      "status": "done",
+      "commit": "77da7c4f12bd7b155b731f48892c2c5cea38c4fc"
+    },
+    {
+      "id": "step-9",
+      "type": "test",
+      "description": "Write failing test `diamond_members_at_every_level`: D has param d, B has param b, C has param c, A has param a. S:A provides all four. Verify no errors and all 4 members satisfied.",
+      "status": "done",
+      "commit": "77da7c4f12bd7b155b731f48892c2c5cea38c4fc"
+    },
+    {
+      "id": "step-10",
+      "type": "impl",
+      "description": "Verify step-9 passes. Each level's unique members should be collected once via depth-first traversal.",
+      "status": "done",
+      "commit": "77da7c4f12bd7b155b731f48892c2c5cea38c4fc"
+    },
+    {
+      "id": "step-11",
+      "type": "test",
+      "description": "Write failing test `diamond_let_default_deduped`: D provides `let y = 42`, S:A. Verify exactly 1 'y' value cell injected (let default dedup in diamond).",
+      "status": "done",
+      "commit": "77da7c4f12bd7b155b731f48892c2c5cea38c4fc"
+    },
+    {
+      "id": "step-12",
+      "type": "impl",
+      "description": "Verify step-11 passes. Let defaults use DefaultKind::Let and are deduped by name in seen_defaults.",
+      "status": "done",
+      "commit": "77da7c4f12bd7b155b731f48892c2c5cea38c4fc"
+    },
+    {
+      "id": "step-13",
+      "type": "test",
+      "description": "Write failing test `diamond_deep_five_level`: E:D, B:E, C:D, A:B+C, S:A — 5 levels. D has param x, E has param y. S provides both. Verify no errors and no duplication.",
+      "status": "done",
+      "commit": "77da7c4f12bd7b155b731f48892c2c5cea38c4fc"
+    },
+    {
+      "id": "step-14",
+      "type": "impl",
+      "description": "Verify step-13 passes. Deep hierarchies should work identically since visited set is shared across the entire recursive traversal.",
+      "status": "done",
+      "commit": "77da7c4f12bd7b155b731f48892c2c5cea38c4fc"
     }
   ],
   "design_decisions": [
     {
-      "decision": "No Undef propagation in OptionSome evaluation",
-      "rationale": "The task description explicitly requires some(undef) to produce Value::Option(Some(Box::new(Value::Undef))), which is distinct from both Value::Option(None) and Value::Undef. This preserves a three-way distinction: error state (Undef), intentional absence (None), and present-but-undefined (Some(Undef)). Unlike BinOp/FunctionCall which short-circuit on Undef, OptionSome must NOT propagate Undef — it wraps whatever the inner expression evaluates to."
+      "decision": "Test the single-bound deep diamond (S:A, A:B+C, B:D, C:D) as distinct from the existing multi-bound diamond (X:A+B, A:C, B:C)",
+      "rationale": "The existing diamond_inheritance_deduplication test uses two direct trait bounds on the structure. Task 189 specifically describes a single bound with deeper refinement hierarchy. The visited set behavior is exercised differently: via recursion within a single collect_all_requirements call vs. shared across multiple top-level calls."
     },
     {
-      "decision": "New test file option_eval_tests.rs",
-      "rationale": "Following the established pattern: lambda_eval_tests.rs, quantifier_eval_tests.rs, collection_eval_tests.rs each cover a distinct feature area. Option evaluation gets its own file for consistency and clear module boundary."
+      "decision": "Verify single-error semantics for missing members in diamond",
+      "rationale": "A key correctness property: if D requires param x and it's missing, the user should see exactly 1 error, not 2 (one per path to D). The visited set prevents this, but we must explicitly test it."
     },
     {
-      "decision": "Rely on task 162 for CompiledExprKind variants and constructor helpers",
-      "rationale": "Task 162 (parser/compiler) adds OptionSome/OptionNone variants to CompiledExprKind. Rust's exhaustive match means walk/collect_value_refs/remap_entity arms must be added at the same time. Constructors are likely added for the compiler's use. If constructors are absent, tests can build CompiledExpr structs directly using the kind enum and ContentHash."
+      "decision": "Implementation likely already complete — focus on test coverage",
+      "rationale": "The collect_all_requirements function (lib.rs:4268-4372) already has the visited HashSet with diamond early-return (line 4282-4284), seen_names for requirement dedup, and seen_defaults for default dedup. Task 188 (dependency, done) implemented this. Task 189's value is proving correctness for the specific deep diamond topology."
     }
   ],
   "reuse": [
     {
-      "what": "CompiledExpr::literal() constructor",
-      "where": "crates/reify-types/src/expr.rs:156",
-      "how": "Build inner expressions for some(literal_value) test cases"
+      "what": "compile_module / compile_first_template helpers",
+      "where": "crates/reify-compiler/tests/trait_conformance_tests.rs:10-21",
+      "how": "Reuse existing test helpers for parsing and compiling test source, returning CompiledModule or (TopologyTemplate, Vec<Diagnostic>)."
     },
     {
-      "what": "CompiledExpr::value_ref() constructor",
-      "where": "crates/reify-types/src/expr.rs:166",
-      "how": "Build inner expressions for some(value_ref) test cases with ValueMap"
+      "what": "collect_all_requirements visited-set pattern",
+      "where": "crates/reify-compiler/src/lib.rs:4268-4372",
+      "how": "The existing implementation with HashSet<String> visited set and early return on re-visit already handles diamond deduplication. Tests verify this behavior."
     },
     {
-      "what": "reify_test_support::values::{some_val, none_val, undef}",
-      "where": "crates/reify-test-support/src/values.rs:199-211",
-      "how": "Construct expected Value::Option values in test assertions — saves verbose Box::new wrapping"
-    },
-    {
-      "what": "EvalContext::simple(&ValueMap) pattern",
-      "where": "Used throughout crates/reify-expr/tests/ (lambda_eval_tests.rs:45, quantifier_eval_tests.rs)",
-      "how": "Standard way to create eval context for tests with no user-defined functions"
-    },
-    {
-      "what": "Value::Option(Option<Box<Value>>) variant",
-      "where": "crates/reify-types/src/value.rs",
-      "how": "Already exists with PartialEq, Ord, Display, content_hash — no changes needed to Value enum"
-    },
-    {
-      "what": "Test file structure from lambda_eval_tests.rs",
-      "where": "crates/reify-expr/tests/lambda_eval_tests.rs",
-      "how": "Same imports (reify_expr::{eval_expr, EvalContext}, reify_types::{CompiledExpr, Type, Value, ValueCellId, ValueMap}), helper structure, and assertion patterns"
+      "what": "Error filtering pattern from existing tests",
+      "where": "crates/reify-compiler/tests/trait_conformance_tests.rs (throughout)",
+      "how": "Use the established pattern: filter diagnostics by Severity::Error, assert count and message content."
     }
   ],
-  "_session_id": "163-6300ffc2",
-  "_created_at": "2026-03-24T10:47:53.407410+00:00"
+  "_session_id": "189-796bdbd2",
+  "_created_at": "2026-03-25T07:12:49.220832+00:00"
 }

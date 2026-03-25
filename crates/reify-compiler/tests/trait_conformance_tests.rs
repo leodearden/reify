@@ -538,6 +538,284 @@ structure def X : A {
     );
 }
 
+/// Task-189 step-1: Single-bound deep diamond satisfied — D's requirement collected once.
+/// Topology: S:A, A:B+C, B:D, C:D, D has `param x : Length`.  S provides x.
+#[test]
+fn diamond_single_bound_satisfied() {
+    let source = r#"
+trait D {
+    param x : Length
+}
+
+trait B : D {
+}
+
+trait C : D {
+}
+
+trait A : B + C {
+}
+
+structure def S : A {
+    param x : Length = 5mm
+}
+"#;
+
+    let (_, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+}
+
+/// Task-189 step-3: Missing member in deep diamond produces exactly 1 error.
+/// Same hierarchy (S:A, A:B+C, B:D, C:D, D has `param x : Length`) but S omits x.
+#[test]
+fn diamond_missing_member_single_error() {
+    let source = r#"
+trait D {
+    param x : Length
+}
+
+trait B : D {
+}
+
+trait C : D {
+}
+
+trait A : B + C {
+}
+
+structure def S : A {
+}
+"#;
+
+    let (_, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(!errors.is_empty(), "expected at least 1 missing-member error");
+
+    // Exactly 1 error (not 2 from B-path and C-path to D).
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly 1 error for missing x, got {}: {:?}",
+        errors.len(),
+        errors
+    );
+
+    let msg = format!("{:?}", errors[0]);
+    assert!(
+        msg.contains("missing required member") && msg.contains("x"),
+        "expected 'missing required member x', got: {}",
+        msg
+    );
+}
+
+/// Task-189 step-5: Default from D injected exactly once in deep diamond.
+/// D provides `param x : Length = 10mm`, S:A with no override.
+#[test]
+fn diamond_default_injected_once() {
+    let source = r#"
+trait D {
+    param x : Length = 10mm
+}
+
+trait B : D {
+}
+
+trait C : D {
+}
+
+trait A : B + C {
+}
+
+structure def S : A {
+}
+"#;
+
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    // Exactly 1 value cell named 'x' (no duplication from diamond).
+    let x_cells: Vec<_> = template.value_cells.iter().filter(|vc| vc.id.member == "x").collect();
+    assert_eq!(
+        x_cells.len(),
+        1,
+        "expected exactly 1 value cell 'x', got {}: {:?}",
+        x_cells.len(),
+        x_cells
+    );
+}
+
+/// Task-189 step-7: Constraint from D injected exactly once in deep diamond.
+/// D has `param x : Length` and `constraint x > 0mm`, S:A provides x.
+#[test]
+fn diamond_constraint_from_root() {
+    let source = r#"
+trait D {
+    param x : Length
+    constraint x > 0mm
+}
+
+trait B : D {
+}
+
+trait C : D {
+}
+
+trait A : B + C {
+}
+
+structure def S : A {
+    param x : Length = 5mm
+}
+"#;
+
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    // Exactly 1 constraint injected from D (not 2 or 3 from multiple paths).
+    assert_eq!(
+        template.constraints.len(),
+        1,
+        "expected exactly 1 constraint from D, got {}: {:?}",
+        template.constraints.len(),
+        template.constraints
+    );
+}
+
+/// Task-189 step-9: Members at every level of the deep diamond collected correctly.
+/// D has param d, B has param b, C has param c, A has param a. S:A provides all four.
+#[test]
+fn diamond_members_at_every_level() {
+    let source = r#"
+trait D {
+    param d : Length
+}
+
+trait B : D {
+    param b : Length
+}
+
+trait C : D {
+    param c : Length
+}
+
+trait A : B + C {
+    param a : Length
+}
+
+structure def S : A {
+    param d : Length = 1mm
+    param b : Length = 2mm
+    param c : Length = 3mm
+    param a : Length = 4mm
+}
+"#;
+
+    let (_, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+}
+
+/// Task-189 step-11: Let default from D injected exactly once in deep diamond.
+/// D provides `let y = 42`, S:A (no override).
+#[test]
+fn diamond_let_default_deduped() {
+    let source = r#"
+trait D {
+    let y = 42
+}
+
+trait B : D {
+}
+
+trait C : D {
+}
+
+trait A : B + C {
+}
+
+structure def S : A {
+}
+"#;
+
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    // Exactly 1 value cell named 'y' (let default dedup in diamond).
+    let y_cells: Vec<_> = template.value_cells.iter().filter(|vc| vc.id.member == "y").collect();
+    assert_eq!(
+        y_cells.len(),
+        1,
+        "expected exactly 1 value cell 'y', got {}: {:?}",
+        y_cells.len(),
+        y_cells
+    );
+}
+
+/// Task-189 step-13: Deep 5-level diamond — E:D, B:E, C:D, A:B+C, S:A.
+/// D has param x, E has param y. S provides both. Verify no errors, no duplication.
+#[test]
+fn diamond_deep_five_level() {
+    let source = r#"
+trait D {
+    param x : Length
+}
+
+trait E : D {
+    param y : Length
+}
+
+trait B : E {
+}
+
+trait C : D {
+}
+
+trait A : B + C {
+}
+
+structure def S : A {
+    param x : Length = 1mm
+    param y : Length = 2mm
+}
+"#;
+
+    let (_, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+}
+
 /// Step 21b: Trait with constraint and param — both injected correctly.
 #[test]
 fn trait_constraint_and_param_both_injected() {
