@@ -161,8 +161,11 @@ pub fn format_value(v: &Value) -> (String, String) {
             (format!("bbox({}, {})", format_value(min).0, format_value(max).0), String::new())
         }
         Value::Range { lower, upper, lower_inclusive, upper_inclusive } => {
-            let lower_bracket = if *lower_inclusive { "[" } else { "(" };
-            let upper_bracket = if *upper_inclusive { "]" } else { ")" };
+            // Defensive re-normalization: None bounds → inclusive=false
+            let lower_inclusive = *lower_inclusive && lower.is_some();
+            let upper_inclusive = *upper_inclusive && upper.is_some();
+            let lower_bracket = if lower_inclusive { "[" } else { "(" };
+            let upper_bracket = if upper_inclusive { "]" } else { ")" };
             let lower_str = lower.as_ref().map(|v| format_value(v).0).unwrap_or_else(|| "-∞".to_string());
             let upper_str = upper.as_ref().map(|v| format_value(v).0).unwrap_or_else(|| "+∞".to_string());
             (format!("{}{}..{}{}", lower_bracket, lower_str, upper_str, upper_bracket), String::new())
