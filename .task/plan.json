@@ -20,8 +20,8 @@
     {
       "id": "pre-2",
       "description": "Merge task/229 branch (Matrix type/value) into this worktree. Type::Matrix { m, n, quantity } and Type::matrix(m, n, q) factory must be available. Must add Value::Matrix variant and exhaustive match arms. Currently NOT in worktree \u2014 requires merge of task/229 branch.",
-      "status": "pending",
-      "commit": null,
+      "status": "done",
+      "commit": "11127e90",
       "tests": []
     }
   ],
