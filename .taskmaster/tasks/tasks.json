@@ -7336,11 +7336,11 @@
         "description": "In `collect_all_requirements` (crates/reify-compiler/src/lib.rs:4546-4558), the depth-limit check fires BEFORE the visited-set check. This means:\n\n1. When depth > MAX_TRAIT_DEPTH, the trait is NOT inserted into `state.visited`\n2. If the same deep trait is reachable via multiple paths (diamond pattern), each path emits its own \"too deep\" diagnostic — duplicate errors\n\nFix: Swap the two guards so the visited check comes first. Insert `trait_name` into `state.visited` before the depth check. This ensures duplicate paths silently skip already-processed traits.\n\n```rust\n// BEFORE (current):\nif depth > MAX_TRAIT_DEPTH { ... return; }\nif !state.visited.insert(trait_name.to_string()) { return; }\n\n// AFTER (fixed):\nif !state.visited.insert(trait_name.to_string()) { return; }\nif depth > MAX_TRAIT_DEPTH { ... return; }\n```\n\nmemory_hints: search \"collect_all_requirements depth MAX_TRAIT_DEPTH visited\" in reify project",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-25T21:34:55.527Z"
+        "updatedAt": "2026-03-25T21:40:06.644Z"
       },
       {
         "id": "404",
@@ -7643,7 +7643,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-25T21:39:09.371Z",
+      "lastModified": "2026-03-25T21:40:06.644Z",
       "taskCount": 426,
       "completedCount": 228,
       "tags": [
