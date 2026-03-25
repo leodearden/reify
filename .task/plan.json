@@ -58,57 +58,57 @@
       "id": "step-5",
       "type": "test",
       "description": "Write failing tests for Tensor<2,N,Q> -> Matrix<N,N,Q> one-way conversion and Matrix->Tensor rejection. Tests: (a) Tensor{2,3,Real} -> Matrix{3,3,Real} == true, (b) Tensor{2,3,Length} -> Matrix{3,3,Length} == true, (c) Matrix{3,3,Real} -> Tensor{2,3,Real} == false (REJECTED \u2014 Matrix->Tensor is not implicit), (d) Tensor{2,3,Real} -> Matrix{3,4,Real} == false (non-square mismatch), (e) Tensor{2,3,Real} -> Matrix{4,4,Real} == false (N mismatch), (f) Tensor{1,3,Real} -> Matrix{3,3,Real} == false (wrong rank). Tests FAIL because Matrix rule not implemented.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "75733a38"
     },
     {
       "id": "step-6",
       "type": "impl",
       "description": "Extend implicitly_converts_to() with one-way Tensor<2>->Matrix rule. Add match arm: from is Tensor{rank:2, n, quantity}, to is Matrix{m, n:mn, quantity:mq} where n==m && n==mn && quantity==mq -> true. No reverse arm for Matrix->Tensor \u2014 the default false return handles rejection.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "cae53cd1"
     },
     {
       "id": "step-7",
       "type": "test",
       "description": "Write comprehensive negative and edge case tests. Tests: (a) identity: implicitly_converts_to(Type::Real, Type::Real) == true, (b) Int->Real: implicitly_converts_to(Int, Real) == false (Int->Real widening is NOT an implicit tensor conversion \u2014 it's a separate concern in type_compatible), (c) Point<3,Real> -> Tensor{1,3,Real} == false (Point is NOT Vector), (d) Vector{3,Real} -> Matrix{3,3,Real} == false (no Vector->Matrix shortcut), (e) Tensor{3,2,Real} -> anything-unexpected == false, (f) Tensor{0,3,Real} -> Tensor{1,3,Real} == false (different ranks, not covered by any rule), (g) unrelated types: Bool -> Tensor{...} == false.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "23a0e692"
     },
     {
       "id": "step-8",
       "type": "impl",
       "description": "Review and fix any edge cases revealed by step-7 tests. Ensure identity check is first (from == to), then specific conversion rules, then default false. Should mostly pass already from steps 2/4/6 implementation.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "23a0e692"
     },
     {
       "id": "step-9",
       "type": "test",
       "description": "Write tests for type_compatible() integration with implicit conversions. Tests: (a) type_compatible(Tensor{1,3,Real}, Vector{3,Real}) == true (bidirectional), (b) type_compatible(Vector{3,Real}, Tensor{1,3,Real}) == true, (c) type_compatible(Real, Int) == true (existing Int->Real widening preserved), (d) type_compatible(Tensor{2,3,Real}, Matrix{3,3,Real}) == true, (e) type_compatible(Matrix{3,3,Real}, Tensor{2,3,Real}) == true (type_compatible is symmetric \u2014 checks both directions). Tests FAIL because type_compatible() still only checks exact match + Int->Real.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "111c47c0"
     },
     {
       "id": "step-10",
       "type": "impl",
       "description": "Update type_compatible() to use implicitly_converts_to(). New logic: (1) if from == to, return true; (2) if Int->Real widening (existing), return true; (3) if implicitly_converts_to(param_ty, arg_ty) || implicitly_converts_to(arg_ty, param_ty), return true; (4) return false. Remove #[allow(dead_code)] annotation. This makes type_compatible bidirectional (either direction of implicit conversion suffices).",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "5592b4e5"
     },
     {
       "id": "step-11",
       "type": "impl",
       "description": "Wire implicitly_converts_to() into trait conformance check at line ~4183. Replace `if actual_type != expected_type` with `if !implicitly_converts_to(actual_type, expected_type)`. Direction: actual (structure member) converts TO expected (trait requirement). This allows a structure to provide Tensor<1,3,Q> where trait requires Vector<3,Q>, or Vector where Tensor<1> is required, but NOT Matrix where Tensor is required.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "c5e69158"
     },
     {
       "id": "step-12",
       "type": "impl",
       "description": "Wire implicitly_converts_to() into field composition type check at line ~4640. Replace `if inner_field.codomain_type != outer_field.domain_type` with `if !implicitly_converts_to(&inner_field.codomain_type, &outer_field.domain_type)`. Direction: inner codomain converts TO outer domain. This allows field composition where inner returns Vector<3,Q> and outer expects Tensor<1,3,Q>, etc.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "acbc4c4d"
     }
   ],
   "design_decisions": [
