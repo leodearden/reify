@@ -439,7 +439,8 @@ fn offset_unit_quantity_literal_applies_offset() {
 
 #[test]
 fn regression_hardcoded_units_all_still_resolve() {
-    // All 9 hardcoded units must still work when no unit declarations are present.
+    // All 9 hardcoded units (mm, cm, m, in, deg, rad, kg, g, s) must still work
+    // when no unit declarations are present.
     let module = parse_and_compile(
         "structure S {\n\
             param a : Length = 1mm\n\
@@ -449,6 +450,8 @@ fn regression_hardcoded_units_all_still_resolve() {
             param e : Angle = 1rad\n\
             param f : Mass = 1kg\n\
             param g : Mass = 1g\n\
+            param h : Length = 1in\n\
+            param i : Time = 1s\n\
         }"
     );
     assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
@@ -479,4 +482,6 @@ fn regression_hardcoded_units_all_still_resolve() {
     check("e", 1.0);     // 1rad
     check("f", 1.0);     // 1kg
     check("g", 0.001);   // 1g
+    check("h", 0.0254);  // 1in (inch = 0.0254m)
+    check("i", 1.0);     // 1s (second, SI base unit)
 }
