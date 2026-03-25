@@ -47,3 +47,51 @@ fn annotation_with_args_on_function_propagates() {
         reify_types::AnnotationArg::String("use new_calc".into())
     );
 }
+
+// ── Step 7: annotation on trait, field, and purpose ─────────────────────
+
+#[test]
+fn annotation_on_trait_propagates() {
+    let module = compile_module("@deprecated trait Measurable { param width : Length }");
+    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
+    assert_eq!(module.trait_defs.len(), 1, "expected 1 trait");
+
+    let trait_def = &module.trait_defs[0];
+    assert_eq!(trait_def.annotations.len(), 1, "expected 1 annotation on trait, got {:?}", trait_def.annotations);
+    assert_eq!(trait_def.annotations[0].name, "deprecated");
+}
+
+#[test]
+fn annotation_on_field_propagates() {
+    let module = compile_module(
+        "field def temp_field : Point3 -> Real = analytical { |p| 0.0 }",
+    );
+    // Note: @deprecated on field is tested separately; first verify basic field compiles
+    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
+
+    let module = compile_module(
+        "@deprecated field def temp_field : Point3 -> Real = analytical { |p| 0.0 }",
+    );
+    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
+    assert_eq!(module.fields.len(), 1);
+    assert_eq!(module.fields[0].annotations.len(), 1, "expected 1 annotation on field");
+    assert_eq!(module.fields[0].annotations[0].name, "deprecated");
+}
+
+#[test]
+fn annotation_on_purpose_propagates() {
+    let source = r#"
+        structure S { param x : Length = 80mm }
+        @deprecated purpose P(subject : Structure) {
+            constraint 80mm > 0mm
+        }
+    "#;
+    let module = compile_module(source);
+    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
+    assert_eq!(module.compiled_purposes.len(), 1, "expected 1 purpose");
+    assert_eq!(
+        module.compiled_purposes[0].annotations.len(), 1,
+        "expected 1 annotation on purpose, got {:?}", module.compiled_purposes[0].annotations
+    );
+    assert_eq!(module.compiled_purposes[0].annotations[0].name, "deprecated");
+}
