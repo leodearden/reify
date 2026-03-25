@@ -1,221 +1,212 @@
 {
-  "task_id": "321",
-  "title": "Stdlib: Plane, Axis, BoundingBox structures + constructors",
+  "task_id": "346",
+  "title": "Stress test: dimensional_chains.ri + query_consistency.ri",
   "files": [
-    "crates/reify-types/src/ty.rs",
-    "crates/reify-types/src/value.rs",
-    "crates/reify-stdlib/src/lib.rs"
+    "examples/dimensional_chains.ri",
+    "crates/reify-eval/tests/stress_dimensional_chains.rs",
+    "crates/reify-eval/tests/stress_query_consistency.rs"
   ],
   "modules": [
-    "crates/reify-types",
-    "crates/reify-stdlib"
+    "examples",
+    "crates/reify-eval/tests"
   ],
-  "analysis": "The task adds three new geometric types (Plane, Axis, BoundingBox) to the Reify type system and stdlib. The codebase has well-established patterns from recently-added composite types Frame(origin+basis) and Transform(rotation+translation). Each new type needs: (1) a Type enum variant in ty.rs with Display and factory method, (2) a Value enum variant in value.rs with PartialEq, Ord, Display, content_hash, and dimension trait impls, and (3) constructor functions in eval_builtin (stdlib/lib.rs). The task specifies 6 convenience constructors (plane_xy/xz/yz with offset, axis_x/y/z with origin point) plus BoundingBox needs a bbox(min,max) constructor with computed size/center accessor functions (bbox_size, bbox_center). The existing type_tag numbering goes up to 21 (Transform); new types get 22-24. Content hash tags similarly extend from 21 to 24. Value::Point/Vector are the established building blocks \u2014 Plane stores origin as Point3 and normal as Vector3<Dimensionless>, Axis stores origin as Point3 and direction as Vector3<Dimensionless>, BoundingBox stores min/max as Point3 pairs. The tensor_components_f64 helper works on Point/Vector values (confirmed by normalize/magnitude usage) and will be reused for BoundingBox computed fields.",
+  "analysis": "This task creates two stress test suites exercising (1) the dimensional type system through complex unit chains, sqrt/root round-trips, and engineering formulas, and (2) geometric query consistency verifying mathematical relationships between query results.\n\nPart 1 (dimensional_chains): The .ri language supports unit literals (mm, m, kg, s), dimensional arithmetic (mul/div add/sub exponents), and dimension-aware stdlib functions (sqrt halves exponents). The existing dimensional_consistency.ri + m8_stdlib_integration.rs tests prove this pattern works. This test will push deeper: 10-step chains (L→A→V→...→L), sqrt(area)→length round-trips, and complex engineering formulas (Reynolds number, moment of inertia, pressure, etc.).\n\nPart 2 (query_consistency): The OCCT kernel provides Volume, SurfaceArea, Centroid, BoundingBox, Distance, and MomentOfInertia queries via GeometryKernel::query(). Spatial queries (contains, intersects) are NOT yet in the FFI layer. Tests will use real OCCT (guarded by OCCT_AVAILABLE) to verify mathematical relationships: sphere V≈4/3πr³, sphere A≈4πr², centroid of centered box at origin, centroid of translated box shifts correctly, and dimensional relationships between volume/area/length. For contains(solid, centroid(solid)) — since the contains FFI doesn't exist yet, mock-based tests will validate the expected eval flow.\n\nKey patterns to follow: m8_stdlib_integration.rs for .ri-based eval tests (eval_ri_file helper), boundary4_geometry.rs for OCCT kernel tests (OCCT_AVAILABLE guard, OcctKernel::new()).",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "Add Type::Plane, Type::Axis, Type::BoundingBox variants to ty.rs enum. Add Display arms ('Plane', 'Axis', 'BoundingBox'). Add factory methods: Type::plane(), Type::axis(), Type::bounding_box().",
+      "description": "Create examples/dimensional_chains.ri fixture with 10-step unit chains, sqrt(area)->length round-trips, and complex engineering formulas (Reynolds number Re=ρvL/μ, moment of inertia I=mr², pressure P=F/A, power P=Fv, kinematic viscosity ν=μ/ρ, gravitational PE mgh, spring energy ½kx²)",
       "status": "done",
-      "commit": "82b4d672",
+      "commit": "6908fcd6",
       "tests": []
-    },
-    {
-      "id": "pre-2",
-      "description": "Add Value::Plane { origin: Box<Value>, normal: Box<Value> } variant to value.rs. Implement: PartialEq (delegate to inner eq), Ord (type_tag=22, compare origin then normal), Display ('plane(origin, normal)'), content_hash (tag=22, combine origin+normal hashes), dimension (returns DIMENSIONLESS following Frame/Transform convention). Add tests: construction, equality, display, content_hash determinism, content_hash no-collision with Transform(tag=21), Ord cross-type ordering.",
-      "status": "done",
-      "commit": "82b4d672",
-      "tests": [
-        "value_plane_construction",
-        "value_plane_partial_eq_same",
-        "value_plane_partial_eq_different",
-        "value_plane_display",
-        "value_plane_content_hash_deterministic",
-        "value_plane_content_hash_no_collision_with_transform",
-        "value_plane_ord_cross_type",
-        "value_plane_dimension_dimensionless"
-      ]
-    },
-    {
-      "id": "pre-3",
-      "description": "Add Value::Axis { origin: Box<Value>, direction: Box<Value> } variant to value.rs. Implement: PartialEq (delegate), Ord (type_tag=23, compare origin then direction), Display ('axis(origin, direction)'), content_hash (tag=23), dimension (DIMENSIONLESS). Add tests following same pattern as Plane.",
-      "status": "done",
-      "commit": "82b4d672",
-      "tests": [
-        "value_axis_construction",
-        "value_axis_partial_eq_same",
-        "value_axis_partial_eq_different",
-        "value_axis_display",
-        "value_axis_content_hash_deterministic",
-        "value_axis_content_hash_no_collision_with_plane",
-        "value_axis_ord_cross_type",
-        "value_axis_dimension_dimensionless"
-      ]
-    },
-    {
-      "id": "pre-4",
-      "description": "Add Value::BoundingBox { min: Box<Value>, max: Box<Value> } variant to value.rs. Implement: PartialEq (delegate), Ord (type_tag=24, compare min then max), Display ('bbox(min, max)'), content_hash (tag=24), dimension (DIMENSIONLESS). Add tests following same pattern.",
-      "status": "done",
-      "commit": "82b4d672",
-      "tests": [
-        "value_bbox_construction",
-        "value_bbox_partial_eq_same",
-        "value_bbox_partial_eq_different",
-        "value_bbox_display",
-        "value_bbox_content_hash_deterministic",
-        "value_bbox_content_hash_no_collision_with_axis",
-        "value_bbox_ord_cross_type",
-        "value_bbox_dimension_dimensionless"
-      ]
     }
   ],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing tests for plane_xy(offset): (1) plane_xy(5mm) returns Plane with origin=Point(0m,0m,5mm) and normal=Vector(0,0,1), (2) plane_xy() with no args returns Undef, (3) plane_xy(Bool) returns Undef, (4) plane_xy with 2 args returns Undef, (5) plane_xy(NaN) returns Undef, (6) plane_xy(Inf) returns Undef, (7) plane_xy(Real(0.0)) produces dimensionless origin.",
+      "description": "Write failing test: stress_dimensional_chains.rs — smoke test that dimensional_chains.ri parses, compiles, and evaluates without errors, producing non-empty values",
       "status": "done",
-      "commit": "116d148f"
+      "commit": "6908fcd6"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Implement plane_xy constructor in eval_builtin: validate single numeric arg via as_f64(), reject NaN/Inf, extract dimension, build origin Point3 with (0,0,offset) using matching dimension for zero-components, build normal Vector3(0,0,1) as dimensionless Reals, return Value::Plane{origin, normal}.",
+      "description": "Ensure dimensional_chains.ri fixture is correct and all expressions evaluate. Fix any parse/compile/eval errors in the .ri file until the smoke test passes",
       "status": "done",
-      "commit": "116d148f"
+      "commit": "6908fcd6"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing tests for plane_xz(offset) and plane_yz(offset): (1) plane_xz(3mm) produces origin=(0m,3mm,0m) and normal=(0,1,0), (2) plane_yz(7mm) produces origin=(7mm,0m,0m) and normal=(1,0,0), (3) plane_xz/yz with invalid args produce Undef.",
+      "description": "Write failing tests for 10-step unit chain assertions: verify each chain step produces the correct dimension (LENGTH→AREA via L*L, AREA→VOLUME via A*L, VOLUME→LENGTH via cbrt-equivalent, chain of force*distance=energy, energy/time=power, etc.) and that final values are numerically correct",
       "status": "done",
-      "commit": "116d148f"
+      "commit": "6908fcd6"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Implement plane_xz and plane_yz constructors in eval_builtin. Extract shared helper make_plane(args, offset_index, normal_components) to DRY the three plane constructors. plane_xz: offset at y-position, normal=(0,1,0). plane_yz: offset at x-position, normal=(1,0,0). Refactor plane_xy to use the shared helper.",
+      "description": "Update dimensional_chains.ri if needed to ensure all 10-step chain computations produce expected dimensions and values. Tests should pass",
       "status": "done",
-      "commit": "116d148f"
+      "commit": "6908fcd6"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing tests for axis_z(origin): (1) axis_z(Point3<Length>) returns Axis with passed origin and direction=Vector(0,0,1), (2) axis_z with no args returns Undef, (3) axis_z(Real) returns Undef (not a Point), (4) axis_z(Point2) returns Undef (wrong dimensionality), (5) axis_z(Vector3) returns Undef (must be Point not Vector).",
+      "description": "Write failing tests for sqrt(area)→length round-trips: verify sqrt(w*h) has LENGTH dimension, sqrt(VOLUME*LENGTH) has AREA dimension, and sqrt(sqrt(L^4)) returns LENGTH. Also test that fractional dimension exponents work (sqrt of LENGTH gives LENGTH^(1/2))",
       "status": "done",
-      "commit": "116d148f"
+      "commit": "6908fcd6"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Implement axis_z constructor in eval_builtin: validate single arg is Value::Point with 3 components, build direction Vector3(0,0,1) as dimensionless Reals, return Value::Axis{origin, direction}.",
+      "description": "Ensure .ri fixture has the sqrt round-trip expressions and they evaluate correctly. Fix any issues to make tests pass",
       "status": "done",
-      "commit": "116d148f"
+      "commit": "6908fcd6"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing tests for axis_x and axis_y: (1) axis_x(origin) returns direction=(1,0,0), (2) axis_y(origin) returns direction=(0,1,0), (3) axis_x/y with invalid args return Undef, (4) axis constructors with dimensionless Point3 origin.",
+      "description": "Write failing tests for complex engineering formula dimensions: Reynolds number (dimensionless), moment of inertia (kg·m²), pressure (kg·m⁻¹·s⁻²), power (kg·m²·s⁻³), gravitational PE (kg·m²·s⁻²), and spring energy (kg·m²·s⁻²). Verify both dimension vectors and numerical values",
       "status": "done",
-      "commit": "116d148f"
+      "commit": "6908fcd6"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Implement axis_x and axis_y constructors. Extract shared helper make_axis(args, direction_components) to DRY the three axis constructors. axis_x: direction=(1,0,0). axis_y: direction=(0,1,0). Refactor axis_z to use the shared helper.",
+      "description": "Ensure .ri fixture engineering formulas produce correct dimensions and values. Fix any issues to make tests pass",
       "status": "done",
-      "commit": "116d148f"
+      "commit": "6908fcd6"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write failing tests for bbox(min, max): (1) bbox with two Point3<Length> values returns BoundingBox, (2) bbox with mismatched dimensions returns Undef, (3) bbox with non-Point args returns Undef, (4) bbox with Point2 returns Undef, (5) bbox with wrong arg count returns Undef, (6) bbox with one Point and one Vector returns Undef.",
+      "description": "Write failing test: stress_query_consistency.rs — sphere volume consistency: create sphere(r=0.05m) via OcctKernel, query volume, assert |V - 4/3·π·r³| < 1e-9. Guarded by OCCT_AVAILABLE",
       "status": "done",
-      "commit": "116d148f"
+      "commit": "6908fcd6"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Implement bbox constructor in eval_builtin: validate exactly 2 args, both Value::Point with 3 components, matching dimensions. Return Value::BoundingBox{min, max}.",
+      "description": "Implement sphere volume consistency test using OCCT kernel. Should pass immediately since it only queries existing kernel functionality",
       "status": "done",
-      "commit": "116d148f"
+      "commit": "6908fcd6"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write failing tests for BoundingBox computed fields: (1) bbox_size on BoundingBox with min=(1m,2m,3m) max=(4m,6m,9m) returns Vector(3m,4m,6m), (2) bbox_center on same returns Point(2.5m,4m,6m), (3) bbox_size/bbox_center with non-BoundingBox arg returns Undef, (4) bbox_size/bbox_center with wrong arg count returns Undef, (5) bbox_size on dimensionless BoundingBox returns Vector of Reals.",
+      "description": "Write failing test: sphere surface area consistency — create sphere(r=0.05m), query SurfaceArea, assert |A - 4·π·r²| < tolerance. Verify A/V ratio ≈ 3/r",
       "status": "done",
-      "commit": "116d148f"
+      "commit": "6908fcd6"
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "Implement bbox_size and bbox_center in eval_builtin. bbox_size: extract min/max via tensor_components_f64, compute component-wise (max-min), return Vector3 with same dimension. bbox_center: compute (min+max)/2.0 component-wise, return Point3 with same dimension. Use dimension-aware make_component helper for Value construction.",
+      "description": "Implement sphere surface area test. Should pass with existing OCCT queries",
       "status": "done",
-      "commit": "116d148f"
+      "commit": "6908fcd6"
+    },
+    {
+      "id": "step-13",
+      "type": "test",
+      "description": "Write failing test: centroid symmetry — create box(10mm,10mm,10mm) centered at origin, query centroid, assert centroid ≈ (0,0,0). Then translate box by (50mm,0,0), query centroid, assert centroid ≈ (0.055,0.005,0.005) shifted correctly",
+      "status": "done",
+      "commit": "6908fcd6"
+    },
+    {
+      "id": "step-14",
+      "type": "impl",
+      "description": "Implement centroid symmetry tests. Parse centroid JSON response and verify coordinates. Should pass with existing OCCT queries",
+      "status": "done",
+      "commit": "6908fcd6"
+    },
+    {
+      "id": "step-15",
+      "type": "test",
+      "description": "Write failing test: Pappus-style volume/area relationships — for a box(w,h,d), verify V=w·h·d and A=2(wh+wd+hd) using Volume and SurfaceArea queries. Test with multiple box sizes to stress numerical precision",
+      "status": "done",
+      "commit": "6908fcd6"
+    },
+    {
+      "id": "step-16",
+      "type": "impl",
+      "description": "Implement Pappus-style box consistency tests. Should pass with existing OCCT queries",
+      "status": "done",
+      "commit": "6908fcd6"
+    },
+    {
+      "id": "step-17",
+      "type": "test",
+      "description": "Write failing test: contains(solid, centroid(solid))=true using MockGeometryKernel — configure mock to return centroid inside bounding box, verify the eval pipeline handles query dispatch correctly. Also test distance(solid, solid)=0 for overlapping shapes",
+      "status": "done",
+      "commit": "6908fcd6"
+    },
+    {
+      "id": "step-18",
+      "type": "impl",
+      "description": "Implement mock-based contains/distance consistency tests. Configure mock geometry kernel with appropriate query results and verify correct dispatch",
+      "status": "done",
+      "commit": "6908fcd6"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Use Value::Point for origins (Plane, Axis) and Value::Point for BoundingBox min/max, consistent with Frame{origin: Point, ...} convention",
-      "rationale": "The task description says 'origin Vector<Length>' but the established codebase convention (Frame, Transform) uses Point for spatial origins and Vector for displacements. Points and Vectors have distinct semantics (point+vector=point, point-point=vector). Following the existing convention ensures consistency and correct arithmetic behavior downstream."
+      "decision": "Split dimensional_chains into .ri fixture + Rust harness, query_consistency as pure Rust kernel tests",
+      "rationale": "Dimensional chains exercise the .ri language's type system and are best tested as .ri source through the full parse→compile→eval pipeline (matching m8_stdlib_integration.rs pattern). Query consistency tests exercise geometry kernel API directly since measurement functions aren't yet .ri-callable stdlib entries — they operate through GeometryKernel::query() at the Rust level."
     },
     {
-      "decision": "Store BoundingBox as just min+max; compute size and center via bbox_size/bbox_center stdlib functions rather than eager storage or method dispatch",
-      "rationale": "Keeps the Value variant minimal (2 fields vs 4), avoids redundant data, and stays within the task's module scope (reify-stdlib + reify-types). Method dispatch (.size, .center) would require changes to reify-expr which is outside scope. Stdlib accessor functions follow the existing functional pattern."
+      "decision": "Use real OCCT kernel for geometry query tests (guarded by OCCT_AVAILABLE)",
+      "rationale": "Mock-based geometry tests don't verify mathematical relationships since we control the mock outputs. Real OCCT gives us genuine mathematical consistency checks (V=4/3πr³ for spheres, centroid at center of symmetric shapes, etc.). The OCCT_AVAILABLE guard ensures tests skip gracefully on systems without OCCT."
     },
     {
-      "decision": "Content hash tags: Plane=22, Axis=23, BoundingBox=24. Ord type tags: Plane=22, Axis=23, BoundingBox=24",
-      "rationale": "Extends sequentially from the highest existing tag (Transform=21). Maintains unique tags for each variant to prevent hash collisions and ensure deterministic ordering."
+      "decision": "Use mock kernel for contains(solid, centroid(solid)) test",
+      "rationale": "The FFI layer doesn't have point_in_solid/contains yet (task 319's spatial queries aren't in the OCCT FFI bindings). We use MockGeometryKernel with configured query results to validate the eval pipeline's query dispatch flow, providing a scaffold for when the real contains FFI is wired."
     },
     {
-      "decision": "Plane constructors accept any numeric offset (Int, Real, Scalar) via as_f64(). Zero-components in origin match the offset's dimension.",
-      "rationale": "Follows the existing pattern where construct_point_or_vector accepts Int/Real/Scalar. If offset is Scalar{5mm, LENGTH}, origin zeros are Scalar{0, LENGTH}. If offset is Real(5.0), zeros are Real(0.0). This preserves dimension consistency within the Point."
+      "decision": "Engineering formulas expressed using unit arithmetic rather than user-defined type aliases",
+      "rationale": "The .ri language constructs derived units via arithmetic: `let n_unit = 1kg * 1m / (1s * 1s)` for Newton. This matches the existing pattern in math_linalg.ri and dimensional_consistency.ri, and exercises the dimension multiplication/division logic directly rather than relying on type alias infrastructure."
     },
     {
-      "decision": "Axis constructors require Point3 origin (not Tensor or Vector), validated via Value::Point match with components.len()==3",
-      "rationale": "Consistent with Frame constructor which requires Point3 for origin. Using a Point (not Vector) communicates the correct geometric semantics. Rejecting Vector/Tensor prevents accidental misuse."
-    },
-    {
-      "decision": "Normal vectors and direction vectors are always dimensionless (Value::Real components), not dependent on origin dimension",
-      "rationale": "Unit direction vectors are inherently dimensionless \u2014 they represent direction, not magnitude. This matches CAD convention (gp_Dir in OCCT is unit-length and dimensionless) and avoids dimension complexity in downstream geometry operations."
-    },
-    {
-      "decision": "Extract shared helpers make_plane() and make_axis() to DRY the three plane_xy/xz/yz and axis_x/y/z constructors",
-      "rationale": "The three plane constructors differ only in which component gets the offset and which normal vector is used. Similarly for axes. A shared helper eliminates code duplication and ensures consistent validation across all variants."
+      "decision": "10-step chain uses a single structure with progressive let-bindings",
+      "rationale": "Each chain step builds on the previous via let-bindings, creating a dependency chain that exercises both the dimensional type system and the eval engine's topological ordering. This is a more realistic stress test than isolated expressions."
     }
   ],
   "reuse": [
     {
-      "what": "Frame/Transform Value variant pattern",
-      "where": "crates/reify-types/src/value.rs lines 62-64 (Frame, Transform variants) and their trait impls (PartialEq ~420-427, Ord ~593-601, Display ~732-737, content_hash ~324-331)",
-      "how": "Copy the pattern exactly for Plane, Axis, BoundingBox: Box<Value> fields, delegating PartialEq/Ord to inner values, combining content hashes with unique tags, Display as 'name(field1, field2)'"
+      "what": "eval_ri_file() helper pattern from m8_stdlib_integration.rs",
+      "where": "crates/reify-eval/tests/stress_dimensional_chains.rs",
+      "how": "Copy the helper that loads a .ri file, parses, compiles (asserting no errors), evaluates with MockConstraintChecker, and returns EvalResult. Same pattern: fs::read_to_string → parse → compile → Engine::new(checker, None) → eval."
     },
     {
-      "what": "construct_point_or_vector() validation pattern",
-      "where": "crates/reify-stdlib/src/lib.rs lines 726-753",
-      "how": "Reference the dimension-matching and numeric-validation pattern when implementing plane offset validation. Don't call directly (planes aren't simple point/vector constructors) but follow the same validation approach."
+      "what": "OCCT_AVAILABLE guard pattern from boundary4_geometry.rs",
+      "where": "crates/reify-eval/tests/stress_query_consistency.rs",
+      "how": "Each test starts with `if !reify_kernel_occt::OCCT_AVAILABLE { eprintln!(\"skipping...\"); return; }` and then creates OcctKernel::new() directly."
     },
     {
-      "what": "tensor_components_f64() helper",
-      "where": "crates/reify-stdlib/src/lib.rs (used by normalize, magnitude, cross, dot)",
-      "how": "Call directly in bbox_size and bbox_center to extract f64 components and dimension from BoundingBox min/max Points. The helper already handles Point and Vector values."
+      "what": "MockGeometryKernel with_query_result from reify-test-support",
+      "where": "crates/reify-eval/tests/stress_query_consistency.rs (contains test)",
+      "how": "Use MockGeometryKernel::new().with_query_result(handle_id, expected_value) to configure mock responses for query dispatch testing."
     },
     {
-      "what": "Value::length() and dimension-aware component construction",
-      "where": "crates/reify-types/src/value.rs lines 84-90 (Value::length factory)",
-      "how": "Use in plane constructors to create zero-valued Scalar components with matching dimension: Value::Scalar { si_value: 0.0, dimension: offset_dim } when offset is dimensioned, or Value::Real(0.0) when dimensionless."
+      "what": "Value constructors from reify-test-support/values.rs (mm, meters, mm2, mm3)",
+      "where": "Both test files",
+      "how": "Use mm(), meters(), mm2(), mm3() for constructing test values with correct SI conversions and dimension vectors."
     },
     {
-      "what": "sanitize_value() for NaN/Inf rejection",
-      "where": "crates/reify-stdlib/src/lib.rs",
-      "how": "Use as_f64() + is_finite() check in plane constructors to reject NaN/Inf offsets early, following the existing convention that non-finite values become Undef."
+      "what": "DimensionVector constants and operations from reify-types",
+      "where": "crates/reify-eval/tests/stress_dimensional_chains.rs",
+      "how": "Use LENGTH, AREA, VOLUME, MASS, TIME, FORCE constants and .mul()/.div()/.root()/.pow() methods to construct expected dimension vectors for assertion comparisons."
     },
     {
-      "what": "frame3 constructor validation pattern",
-      "where": "crates/reify-stdlib/src/lib.rs lines 494-513",
-      "how": "Mirror the exact validation structure for axis constructors: check arg count, validate first arg is Value::Point with 3 components, validate/construct second field, return composite Value."
+      "what": "dimensional_consistency.ri fixture pattern",
+      "where": "examples/dimensional_chains.ri",
+      "how": "Follow same .ri structure: single `structure def` with let-bindings for computed values, unit helpers like `let n_unit = 1kg * 1m / (1s * 1s)`, and inline comments explaining expected results."
+    },
+    {
+      "what": "Centroid JSON parsing from boundary4_geometry.rs translate_centroid test",
+      "where": "crates/reify-eval/tests/stress_query_consistency.rs",
+      "how": "Centroid returns Value::String with JSON {\"x\":f64,\"y\":f64,\"z\":f64}. Parse with string matching or minimal JSON parsing to extract coordinates."
     }
   ],
-  "_session_id": "321-105752f5",
-  "_created_at": "2026-03-25T02:27:00.051293+00:00"
+  "_session_id": "346-f611453b",
+  "_created_at": "2026-03-25T03:01:07.332538+00:00"
 }
