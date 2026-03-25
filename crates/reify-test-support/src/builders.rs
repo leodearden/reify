@@ -533,6 +533,7 @@ impl TopologyTemplateBuilder {
             type_args: Vec::new(),
             is_collection: false,
             count_cell: None,
+            guard_expr: None,
             span: SourceSpan::new(0, 0),
         });
         self
@@ -556,6 +557,7 @@ impl TopologyTemplateBuilder {
             type_args: Vec::new(),
             is_collection: true,
             count_cell: Some(count_cell),
+            guard_expr: None,
             span: SourceSpan::new(0, 0),
         });
         self
@@ -649,6 +651,7 @@ impl TopologyTemplateBuilder {
             objective: self.objective,
             meta: self.meta,
             content_hash,
+            is_recursive: false,
         }
     }
 }
