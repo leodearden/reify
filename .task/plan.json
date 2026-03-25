@@ -11,7 +11,7 @@
     "crates/reify-eval",
     "crates/reify-test-support"
   ],
-  "analysis": "Task 205 implements eager structural unfolding of recursive structures in the evaluator. Dependencies 203 and 204 already provide: (1) `TopologyTemplate.is_recursive: bool` flag set by Tarjan SCC detection, and (2) `SubComponentDecl.guard_expr: Option<CompiledExpr>` for termination guards.\n\nThe current sub-component elaboration flow (lib.rs:1063-1159) iterates over each template's sub_components, finds the child template, and calls `elaborate_child_instance()` for each. For non-recursive subs this is a single-level expansion. For recursive subs (where `template.is_recursive == true` and `sub.guard_expr.is_some()`), the evaluator must now: (a) evaluate the sub's `guard_expr` in the current value context, (b) if true, create a child instance with the provided args (which decrement the recursion param), (c) recursively unfold the child, repeating until the guard evaluates to false or depth limit is hit.\n\nKey architectural decisions:\n- The unfolding happens during eval() in the sub-component elaboration phase, AFTER params and lets are evaluated (so recursion-controlling params have values).\n- A new function `unfold_recursive_sub()` handles the recursive unfolding loop.\n- Each level gets a scoped entity name like `Parent.child.child.child...` (nested dot-separated).\n- The depth limit is configurable on Engine (default 64), stored as a field.\n- If the recursion param is Undef, the sub remains as a placeholder (no unfolding).\n- Resolution order is leaves-first: we recurse to the bottom first, then elaborate back up. This means we unfold eagerly to find the bottom, then call elaborate_child_instance from the deepest level upward.\n- The graph.rs `from_templates()` method does NOT need recursive unfolding \u2014 it only creates static graph structure. The dynamic unfolding happens in eval() where values are known.\n- TopologyTemplateBuilder needs `is_recursive(bool)` and `sub_component_with_guard()` builder methods for test construction.",
+  "analysis": "Task 205 implements eager structural unfolding of recursive structures in the evaluator. Dependencies 203 and 204 already provide: (1) `TopologyTemplate.is_recursive: bool` flag set by Tarjan SCC detection, and (2) `SubComponentDecl.guard_expr: Option<CompiledExpr>` for termination guards.\n\nThe current sub-component elaboration flow (lib.rs:1063-1159) iterates over each template's sub_components, finds the child template, and calls `elaborate_child_instance()` for each. For non-recursive subs this is a single-level expansion. For recursive subs (where `template.is_recursive == true` and `sub.guard_expr.is_some()`), the evaluator must now: (a) evaluate the sub's `guard_expr` in the current value context, (b) if true, create a child instance with the provided args (which decrement the recursion param), (c) recursively unfold the child, repeating until the guard evaluates to false or depth limit is hit.\n\nREVIEW FINDINGS (blocking):\n1. The `unfold_recursive_leaves_first_order` test (step-11) uses `let doubled = n * 2` which has no cross-level data dependency \u2014 it passes identically whether elaboration is top-down or bottom-up. Must be rewritten to use a cross-level reference like `let total = if n > 0 then n + child.total else n`.\n2. The implementation (step-12) in `unfold_recursive_sub` (lines 3229-3257) calls `elaborate_child_instance` BEFORE recursing \u2014 this is top-down (elaborate-then-recurse), NOT leaves-first (recurse-then-elaborate). Any let-binding referencing a child's computed value silently resolves to Undef. Must be fixed to use two-phase approach: set params top-down (for guard evaluation), recurse, then evaluate lets bottom-up.\n3. Additionally, `child_values` in `elaborate_child_instance` (line 3356) only includes template-scoped params \u2014 sub-component values from deeper levels are not mapped in. The let evaluation context must be enriched with sub-component values projected from the global values map after recursion.\n\nKey architectural decisions:\n- The unfolding happens during eval() in the sub-component elaboration phase, AFTER params and lets are evaluated (so recursion-controlling params have values).\n- A new function `unfold_recursive_sub()` handles the recursive unfolding loop.\n- Each level gets a scoped entity name like `Parent.child.child.child...` (nested dot-separated).\n- The depth limit is configurable on Engine (default 64), stored as a field.\n- If the recursion param is Undef, the sub remains as a placeholder (no unfolding).\n- Resolution order is leaves-first: we recurse to the bottom first, then elaborate back up. This means we unfold eagerly to find the bottom, then call elaborate_child_instance from the deepest level upward.\n- The graph.rs `from_templates()` method does NOT need recursive unfolding \u2014 it only creates static graph structure. The dynamic unfolding happens in eval() where values are known.\n- TopologyTemplateBuilder needs `is_recursive(bool)` and `sub_component_with_guard()` builder methods for test construction.",
   "prerequisites": [
     {
       "id": "pre-1",
@@ -189,6 +189,34 @@
       "description": "Verify default depth limit of 64 works correctly. Pass the default-depth-limit test.",
       "status": "done",
       "commit": "5d0718f8"
+    },
+    {
+      "id": "step-23",
+      "type": "test",
+      "description": "Rewrite `unfold_recursive_leaves_first_order` test to validate genuine cross-level data dependency (fixes reviewer finding: test_does_not_test_what_it_claims). Replace the `let doubled = n * 2` expression with a `CompiledExprKind::Conditional` expression: `let total = if n > 0 then n + S.child.total else n`. With S(n=2), this creates an actual data dependency chain: S.child.child (n=0) has total=0 (base case, else branch); S.child (n=1) has total=1+child.total=1+0=1 (then branch, references child's computed value). Assert S.child.total==1 (Int) and S.child.child.total==0 (Int). This test MUST FAIL with the current top-down implementation because when S.child's let-bindings are evaluated inside elaborate_child_instance, S.child.child does not yet exist \u2014 S.child.total resolves to Undef instead of 1. The expression references use value_ref_typed('S.child', 'total', Type::Int) for the cross-level reference and value_ref_typed('S', 'n', Type::Int) for the current level's param, matching template-scoped naming conventions used by elaborate_child_instance's child_values context.",
+      "status": "done",
+      "commit": "53ea8eec"
+    },
+    {
+      "id": "step-24",
+      "type": "impl",
+      "description": "Fix `unfold_recursive_sub` to use leaves-first (recurse-then-elaborate) ordering, fixing the correctness_violation_of_design_contract finding. The current code (lines 3229-3257) calls elaborate_child_instance BEFORE recursing \u2014 swap to two-phase approach:\n\nPhase 1 (top-down, within unfold_recursive_sub): After guard passes and args are pre-evaluated, set only the child's PARAMS in the values/snapshot/journal/cache maps (extract the first-pass param logic from elaborate_child_instance into a helper, or inline it). This is needed so the next recursion level can evaluate its guard using the child's param values.\n\nPhase 2 (recurse): Call unfold_recursive_sub for the next depth level. This recurses all the way to the leaf before returning.\n\nPhase 3 (bottom-up, on recursion return): Evaluate the child's LET-BINDINGS. Before evaluating, build child_values that includes BOTH (a) template-scoped params (as before: ValueCellId('S','n') -> current level's n) AND (b) sub-component values projected from the global values map. The projection maps scoped sub-values back to template-scoped names: for each value in the global map with entity prefix matching '{scoped_entity}.{sub_name}', map it to the template-scoped equivalent (e.g., global values[ValueCellId('S.child.child','total')] -> child_values[ValueCellId('S.child','total')] when evaluating at scoped_entity='S.child' with template_name='S'). This ensures cross-level references like 'S.child.total' resolve to the already-computed deeper-level value.\n\nKeep elaborate_child_instance unchanged for non-recursive subs (it still does both passes atomically). All 22 existing tests plus the step-23 test must pass.",
+      "status": "done",
+      "commit": "40bb1b3c"
+    },
+    {
+      "id": "step-25",
+      "type": "test",
+      "description": "Add regression test `unfold_recursive_cross_level_three_deep` to validate leaves-first ordering at greater depth. S(n=3) with same conditional total pattern: `let total = if n > 0 then n + S.child.total else n`. Expected values: S.child.child.child.total=0 (leaf, n=0), S.child.child.total=1+0=1 (n=1), S.child.total=2+1=3 (n=2). This tests two levels of cascading cross-level dependency (S.child depends on S.child.child which depends on S.child.child.child). All three assertions must produce Int values (not Undef), confirming the full bottom-up evaluation chain works.",
+      "status": "done",
+      "commit": "21c1542c"
+    },
+    {
+      "id": "step-26",
+      "type": "impl",
+      "description": "Verify step-25 test passes with the leaves-first implementation from step-24. If any issues arise with deeper chains (e.g., projection not handling multi-level sub-component nesting), fix them. All tests must pass.",
+      "status": "done",
+      "commit": "21c1542c"
     }
   ],
   "design_decisions": [
@@ -219,6 +247,14 @@
     {
       "decision": "Builder methods added to TopologyTemplateBuilder for is_recursive and guarded subs",
       "rationale": "Test-support builders must be extended to construct recursive template fixtures. is_recursive(bool) setter and sub_component_with_guard() method are needed since the current builder always sets is_recursive=false and guard_expr=None."
+    },
+    {
+      "decision": "Two-phase recursive elaboration: params top-down, lets bottom-up (review fix)",
+      "rationale": "Guard evaluation at each level requires the current level's params to already exist in the values map. But let-bindings may reference sub-component values from deeper levels (e.g., 'let total = n + child.total'). Splitting into two phases \u2014 set params top-down (enabling guard evaluation at the next depth), recurse to the bottom, then evaluate let-bindings bottom-up \u2014 satisfies both requirements. This is the corrected implementation of the 'leaves-first' design decision."
+    },
+    {
+      "decision": "Enrich child_values with sub-component values projected from global values map (review fix)",
+      "rationale": "Template let expressions reference sub-component values using template-scoped names (e.g., ValueCellId('S.child', 'total')). After recursion, deeper-level values exist in the global values map under scoped names (e.g., ValueCellId('S.child.child', 'total')). The projection strips the current scoped_entity prefix and replaces it with the template name prefix, making these values visible in the child_values evaluation context. Without this projection, cross-level references silently resolve to Undef."
     }
   ],
   "reuse": [
@@ -261,8 +297,18 @@
       "what": "Collection sub elaboration test pattern from collection_sub_eval.rs",
       "where": "crates/reify-eval/tests/collection_sub_eval.rs",
       "how": "Similar pattern of verifying scoped entity existence and values after elaboration \u2014 adapt for recursive depth verification."
+    },
+    {
+      "what": "CompiledExprKind::Conditional for cross-level test expressions",
+      "where": "crates/reify-types/src/expr.rs:38-43",
+      "how": "Use Conditional { condition, then_branch, else_branch } to build 'if n > 0 then n + child.total else n' expressions for the leaves-first ordering test. The condition, then, and else branches are CompiledExpr, constructed using existing helpers (gt, binop, value_ref_typed, literal)."
+    },
+    {
+      "what": "elaborate_child_instance first-pass param logic",
+      "where": "crates/reify-eval/src/lib.rs:3279-3330",
+      "how": "Extract or duplicate the param-setting logic (lines 3279-3330) for use in the recursive two-phase flow. The let-binding logic (lines 3332-3391) becomes the post-recursion phase with enriched child_values."
     }
   ],
   "_session_id": "205-8b74fe70",
-  "_created_at": "2026-03-25T18:36:29.854504+00:00"
+  "_created_at": "2026-03-25T19:07:13.287431+00:00"
 }
