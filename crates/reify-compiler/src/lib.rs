@@ -545,18 +545,58 @@ fn convert_type_params(decls: &[reify_syntax::TypeParamDecl]) -> Vec<reify_types
         .collect()
 }
 
+/// Check whether `from` can be implicitly converted to `to`.
+///
+/// Encodes all four directional conversion rules for tensor/vector/matrix types:
+/// 1. `Vector<N,Q>` ↔ `Tensor<1,N,Q>` — bidirectional
+/// 2. `Q` ↔ `Tensor<0,_,Q>` — bidirectional; N is ignored for rank-0
+/// 3. `Tensor<2,N,Q>` → `Matrix<N,N,Q>` — one-way (Tensor2 promotes to square matrix)
+/// 4. `Matrix` → `Tensor` — NOT implicit (handled by default false return)
+///
+/// Identity (`from == to`) always returns true.
+///
+/// **Not applied during overload resolution** (which stays exact-match to avoid
+/// ambiguity between `f(Vector<3>)` and `f(Tensor<1,3>)`). Used in trait
+/// conformance and field composition type checks.
+pub fn implicitly_converts_to(from: &Type, to: &Type) -> bool {
+    // Identity: same type always converts to itself.
+    if from == to {
+        return true;
+    }
+
+    match (from, to) {
+        // Rule 1a: Vector<N,Q> -> Tensor<1,N,Q>
+        (
+            Type::Vector { n: vn, quantity: vq },
+            Type::Tensor { rank: 1, n: tn, quantity: tq },
+        ) => vn == tn && vq == tq,
+
+        // Rule 1b: Tensor<1,N,Q> -> Vector<N,Q>
+        (
+            Type::Tensor { rank: 1, n: tn, quantity: tq },
+            Type::Vector { n: vn, quantity: vq },
+        ) => tn == vn && tq == vq,
+
+        _ => false,
+    }
+}
+
 /// Check if an argument type is compatible with a parameter type.
 /// Exact match always works. Int→Real widening is allowed.
+/// Implicit tensor/vector/matrix conversions are also checked.
 ///
-/// Not used in overload resolution (which uses exact matching), but preserved
-/// for potential use in other type-compatibility checks.
+/// Not used in overload resolution (which uses exact matching), but used
+/// in trait conformance and field composition checks.
 #[allow(dead_code)]
 fn type_compatible(param_ty: &Type, arg_ty: &Type) -> bool {
     if param_ty == arg_ty {
         return true;
     }
     // Allow Int→Real widening coercion
-    matches!((param_ty, arg_ty), (Type::Real, Type::Int))
+    if matches!((param_ty, arg_ty), (Type::Real, Type::Int)) {
+        return true;
+    }
+    false
 }
 
 /// Result of attempting to resolve a function call against user-defined functions.

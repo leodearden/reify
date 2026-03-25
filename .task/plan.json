@@ -31,14 +31,14 @@
       "type": "test",
       "description": "Write failing tests in implicit_conversion_tests.rs for Vector<N,Q> <-> Tensor<1,N,Q> bidirectional conversion. Tests: (a) implicitly_converts_to(Vector{3,Real}, Tensor{1,3,Real}) == true, (b) implicitly_converts_to(Tensor{1,3,Real}, Vector{3,Real}) == true, (c) implicitly_converts_to(Vector{3,Length}, Tensor{1,3,Length}) == true with Scalar quantity, (d) implicitly_converts_to(Vector{2,Real}, Tensor{1,3,Real}) == false (mismatched N). Tests FAIL because implicitly_converts_to() does not exist yet.",
       "status": "done",
-      "commit": "PENDING"
+      "commit": "187bd82d"
     },
     {
       "id": "step-2",
       "type": "impl",
       "description": "Add `pub fn implicitly_converts_to(from: &Type, to: &Type) -> bool` to crates/reify-compiler/src/lib.rs. Initial implementation: return true for identity (from == to), Vector{n,q} -> Tensor{rank:1,n,q} (matching n and quantity), and Tensor{rank:1,n,q} -> Vector{n,q} (reverse). Return false for all other cases. Remove #[allow(dead_code)] from type_compatible if it references this function.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "PENDING"
     },
     {
       "id": "step-3",
