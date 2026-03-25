@@ -534,3 +534,79 @@ fn unfold_recursive_default_depth_limit_64() {
         result.values.get(&too_deep)
     );
 }
+
+// ─── step-25: cross-level dependency at depth 3 ───────────────────────────────
+
+/// Regression test for leaves-first ordering at greater depth.
+///
+/// S(n=3) with `let total: Int = if n > 0 then n + S.child.total else n`.
+/// Expected values (cascading cross-level dependency):
+/// - S.child.child.child (n=0): total = 0 (else branch, base case)
+/// - S.child.child (n=1): total = 1 + S.child.child.child.total = 1 + 0 = 1
+/// - S.child (n=2): total = 2 + S.child.child.total = 2 + 1 = 3
+///
+/// All three assertions must produce Int values (not Undef), confirming the full
+/// bottom-up evaluation chain works for two levels of cascading cross-level dependency.
+#[test]
+fn unfold_recursive_cross_level_three_deep() {
+    let guard = gt(
+        value_ref_typed("S", "n", Type::Int),
+        literal(Value::Int(0)),
+    );
+    let n_minus_1 = binop(
+        BinOp::Sub,
+        value_ref_typed("S", "n", Type::Int),
+        literal(Value::Int(1)),
+    );
+    // total = if n > 0 then n + S.child.total else n
+    let total_expr = conditional_expr(
+        gt(value_ref_typed("S", "n", Type::Int), literal(Value::Int(0))),
+        binop(
+            BinOp::Add,
+            value_ref_typed("S", "n", Type::Int),
+            value_ref_typed("S.child", "total", Type::Int),
+        ),
+        value_ref_typed("S", "n", Type::Int),
+    );
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param(
+            "S",
+            "n",
+            Type::Int,
+            Some(CompiledExpr::literal(Value::Int(3), Type::Int)),
+        )
+        .let_binding("S", "total", Type::Int, total_expr)
+        .is_recursive(true)
+        .sub_component_with_guard("child", "S", vec![("n".to_string(), n_minus_1)], guard)
+        .build();
+
+    let result = eval_single_template(template);
+
+    // S.child.child.child (n=0): else branch → total = 0
+    let ggchild_total = ValueCellId::new("S.child.child.child", "total");
+    assert_eq!(
+        result.values.get(&ggchild_total),
+        Some(&Value::Int(0)),
+        "S.child.child.child.total should be 0 (base case), got {:?}",
+        result.values.get(&ggchild_total)
+    );
+
+    // S.child.child (n=1): then branch → total = 1 + 0 = 1
+    let grandchild_total = ValueCellId::new("S.child.child", "total");
+    assert_eq!(
+        result.values.get(&grandchild_total),
+        Some(&Value::Int(1)),
+        "S.child.child.total should be 1 (= 1 + 0), got {:?}",
+        result.values.get(&grandchild_total)
+    );
+
+    // S.child (n=2): then branch → total = 2 + 1 = 3
+    let child_total = ValueCellId::new("S.child", "total");
+    assert_eq!(
+        result.values.get(&child_total),
+        Some(&Value::Int(3)),
+        "S.child.total should be 3 (= 2 + 1), got {:?}",
+        result.values.get(&child_total)
+    );
+}
