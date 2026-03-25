@@ -2253,6 +2253,31 @@ mod tests {
     // --- Sweep tests ---
 
     #[test]
+    fn sweep_solid_path_returns_error() {
+        let mut kernel = OcctKernel::new();
+        // Create a box solid as (invalid) path
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        // Create a circle face as profile
+        let face = ffi::ffi::make_circle_face(2.0, 0.0).expect("circle face");
+        let profile_id = kernel.store_raw(face);
+
+        let result = kernel.execute(&GeometryOp::Sweep {
+            profile: profile_id,
+            path: box_h.id,
+        });
+        assert!(
+            result.is_err(),
+            "sweep with a solid as path should fail"
+        );
+    }
+
+    #[test]
     fn sweep_circle_along_line_creates_pipe() {
         let mut kernel = OcctKernel::new();
         // Circle face profile: r=2.0 at z=0
