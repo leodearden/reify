@@ -2501,7 +2501,7 @@
         "testStrategy": "Unit tests: all 9 Kleene cells, type checking.",
         "priority": "high",
         "dependencies": [],
-        "status": "in-progress",
+        "status": "pending",
         "metadata": {
           "modules": [
             "crates/reify-types",
@@ -2510,7 +2510,7 @@
           "milestone": "M8"
         },
         "subtasks": [],
-        "updatedAt": "2026-03-25T22:30:36.607Z"
+        "updatedAt": "2026-03-25T22:43:34.837Z"
       },
       {
         "id": "156",
@@ -7796,7 +7796,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-25T22:39:08.176Z",
+      "lastModified": "2026-03-25T22:43:34.837Z",
       "taskCount": 439,
       "completedCount": 229,
       "tags": [
