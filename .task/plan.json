@@ -1,210 +1,133 @@
 {
-  "task_id": "233",
-  "title": "Orientation: Type, Value, constructors",
+  "task_id": "234",
+  "title": "Frame: Type, Value, constructors",
   "files": [
     "crates/reify-types/src/ty.rs",
     "crates/reify-types/src/value.rs",
-    "crates/reify-types/tests/exports.rs",
     "crates/reify-stdlib/src/lib.rs"
   ],
   "modules": [
     "crates/reify-types",
     "crates/reify-stdlib"
   ],
-  "analysis": "Task 233 adds Orientation as a first-class type in Reify. ALREADY FULLY IMPLEMENTED ON MAIN: Type::Orientation(usize) exists in ty.rs (line 47) with Display (Orientation{N}), Eq/Hash, and a Type::orientation(n) factory method. Value::Orientation { w, x, y, z } exists in value.rs (line 60) with Display, Ord, Hash, content_hash, and dimension() returning DIMENSIONLESS. All 5 constructors exist in reify-stdlib: orient_identity (no-arg, returns identity quaternion), orient_quaternion(w,x,y,z) (normalizes via normalize_quaternion helper), orient_axis_angle(axis_vec, angle) (extracts 3D vector + trig_input angle, normalizes axis, computes half-angle), orient_euler(convention, a, b, c) (12 convention strings, uses elementary_rotation_quat + quat_mul composition), orient_basis(x,y,z) (validates 3D vectors, checks orthonormality within 1e-6, rejects left-handed bases via determinant, uses Shepperd's method for rotation matrix to quaternion). Export tests exist in exports.rs. 23 tests pass in reify-types, 34 tests pass in reify-stdlib (57 total). No compiler or expr evaluator changes needed since orientation constructors dispatch through the standard eval_builtin path.",
+  "analysis": "Task 234 adds a Frame geometric type to Reify, following the established patterns from Point (task 223) and Orientation (task 233). Frame represents a coordinate frame: an origin point + a basis orientation. The Type variant is `Frame(usize)` parameterized by spatial dimension N (matching Orientation(usize)). The Value variant is `Frame { origin: Box<Value>, basis: Box<Value> }` where origin is a Value::Point and basis is a Value::Orientation. Two constructors are needed: `frame3(origin, basis)` taking a Point3 origin and Orientation3 basis, and `frame3_identity` taking no args and returning origin=(0m,0m,0m) with identity orientation.\n\nKey implementation details:\n- Type::Frame(usize): follows Orientation(usize) pattern exactly. Display: `Frame3`. Factory: `Type::frame(n)`. is_numeric: false.\n- Value::Frame { origin: Box<Value>, basis: Box<Value> }: content_hash tag=20 (next available \u2014 tags 0-19 are used by existing variants). type_tag for Ord=20. dimension() returns DIMENSIONLESS (frame itself has no physical dimension). PartialEq compares origin and basis via delegation. Display: `frame({origin}, {basis})` \u2014 delegates to inner Display impls.\n- frame3 constructor: validates exactly 2 args, first must be Value::Point with 3 components, second must be Value::Orientation. Returns Value::Undef on any validation failure.\n- frame3_identity: no args, returns Frame with origin=Point([Value::length(0.0) x3]) and basis=Orientation{w:1,x:0,y:0,z:0}.",
   "prerequisites": [],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing tests for Type::Orientation(usize) variant: construction, Display ('Orientation3', 'Orientation2'), Eq/Hash behavior, Type::orientation(n) factory, is_numeric() returns false",
+      "description": "Write failing tests in ty.rs for Type::Frame(usize): construction and equality (Frame(3)==Frame(3), Frame(3)!=Frame(2)), Display ('Frame3', 'Frame2'), factory method Type::frame(n), hash consistency via HashMap, is_numeric returns false, as_name returns None, Frame(3) != Orientation(3)",
       "status": "done",
-      "commit": "5136510b"
+      "commit": "0dfd6b03"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Add Orientation(usize) variant to Type enum in ty.rs with Display impl ('Orientation{n}'), Type::orientation(n) factory method, ensure Eq/Hash derive covers it",
+      "description": "Add Frame(usize) variant to Type enum in ty.rs. Add Display arm writing `Frame{n}`. Add factory method `Type::frame(n: usize) -> Self`. Add is_numeric match arm returning false. All step-1 tests pass.",
       "status": "done",
-      "commit": "280585ae"
+      "commit": "0dfd6b03"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing tests for Value::Orientation { w, x, y, z }: construction, Display ('orientation(w, x, y, z)'), PartialEq/Ord with NaN/neg-zero edge cases, content_hash determinism, type_tag ordering (tag 15), dimension() returns DIMENSIONLESS",
+      "description": "Write failing tests in value.rs for Value::Frame { origin, basis }: construction with Point origin and Orientation basis, PartialEq (equal frames equal, different origin differs, different basis differs), Display format `frame(point(...), [w,x,y,z]q)`, dimension() returns DIMENSIONLESS, content_hash determinism (same frame same hash), content_hash distinct from Orientation and Point, Ord type_tag=20 ordering (Frame > Matrix), same-type Ord (compare origin first then basis), content_hash with neg-zero differs",
       "status": "done",
-      "commit": "a3aaf2f5"
+      "commit": "3a649cf2"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Add Orientation { w: f64, x: f64, y: f64, z: f64 } variant to Value enum in value.rs with Display, PartialEq, Ord (bitwise f64 comparison), content_hash, type_tag=15, dimension()=DIMENSIONLESS",
+      "description": "Add `Frame { origin: Box<Value>, basis: Box<Value> }` variant to Value enum. Implement: content_hash (tag=20, combine origin.content_hash() + basis.content_hash()), PartialEq (delegate to origin==origin && basis==basis), Ord (type_tag=20, cmp origin then basis), Display (`frame({origin}, {basis})`), dimension() returns DIMENSIONLESS. All step-3 tests pass.",
       "status": "done",
-      "commit": "10fb1be1"
+      "commit": "3a649cf2"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write export test in exports.rs verifying Type::Orientation(3), Type::orientation(3), and Value::Orientation { w, x, y, z } are publicly accessible from reify_types crate",
+      "description": "Write failing tests in stdlib lib.rs for frame3(origin, basis): valid Point3<Length> origin + Orientation basis returns Frame value, verify origin and basis are stored correctly, wrong arg count (0, 1, 3 args) returns Undef, non-Point first arg (e.g. Real) returns Undef, non-Orientation second arg (e.g. Real) returns Undef, Point2 origin (wrong component count) returns Undef, dimensionless Point3<Real> origin is accepted",
       "status": "done",
-      "commit": "44e50715"
+      "commit": "98ae96a8"
     },
     {
       "id": "step-6",
-      "type": "test",
-      "description": "Write failing test for orient_identity: no-arg returns Value::Orientation { w:1, x:0, y:0, z:0 }, with-args returns Undef",
+      "type": "impl",
+      "description": "Add `frame3` match arm to eval_builtin in lib.rs: validate exactly 2 args, first must be Value::Point with exactly 3 components, second must be Value::Orientation, return Value::Frame { origin: Box::new(args[0].clone()), basis: Box::new(args[1].clone()) }. Return Undef on any validation failure. All step-5 tests pass.",
       "status": "done",
-      "commit": "79778f91"
+      "commit": "98ae96a8"
     },
     {
       "id": "step-7",
-      "type": "impl",
-      "description": "Implement orient_identity in eval_builtin match: check args.is_empty(), return identity quaternion or Undef",
+      "type": "test",
+      "description": "Write failing tests in stdlib lib.rs for frame3_identity: no-arg call returns Frame, verify origin equals Point([0m, 0m, 0m]) and basis equals identity Orientation(w:1,x:0,y:0,z:0), call with any args returns Undef",
       "status": "done",
-      "commit": "9e2587ad"
+      "commit": "6f6dd389"
     },
     {
       "id": "step-8",
-      "type": "test",
-      "description": "Write failing tests for orient_quaternion(w,x,y,z): normalizes unnormalized input, preserves already-normalized, arbitrary values normalize correctly, zero-vector returns Undef, NaN/Inf returns Undef, wrong arg count returns Undef",
-      "status": "done",
-      "commit": "1edde1c7"
-    },
-    {
-      "id": "step-9",
       "type": "impl",
-      "description": "Implement orient_quaternion in eval_builtin with normalize_quaternion(w,x,y,z) helper: extract 4 f64 args, validate finiteness, compute L2 norm, reject zero norm, divide by norm to produce unit quaternion",
+      "description": "Add `frame3_identity` match arm to eval_builtin in lib.rs: if args.is_empty(), return Value::Frame with origin=Value::Point(vec![Value::length(0.0), Value::length(0.0), Value::length(0.0)]) and basis=Value::Orientation{w:1.0,x:0.0,y:0.0,z:0.0}; else return Value::Undef. All step-7 tests pass.",
       "status": "done",
-      "commit": "8e11d458"
-    },
-    {
-      "id": "step-10",
-      "type": "test",
-      "description": "Write failing tests for orient_axis_angle(axis, angle): 90deg around Z axis, 180deg around X axis, accepts Angle scalar for angle arg, zero axis returns Undef, non-3D axis returns Undef, wrong arg count returns Undef",
-      "status": "done",
-      "commit": "70075b53"
-    },
-    {
-      "id": "step-11",
-      "type": "impl",
-      "description": "Implement orient_axis_angle in eval_builtin: extract 3D vector via tensor_components_f64, extract angle via trig_input, validate axis non-zero, normalize axis, compute half-angle quaternion (cos(a/2), sin(a/2)*axis), normalize result",
-      "status": "done",
-      "commit": "da6eb5cd"
-    },
-    {
-      "id": "step-12",
-      "type": "test",
-      "description": "Write failing tests for orient_euler(convention, a, b, c): xyz single-axis rotation, zyx single-axis, zero angles = identity, invalid convention returns Undef, non-string convention returns Undef, accepts Angle scalars, wrong arg count returns Undef",
-      "status": "done",
-      "commit": "92ed969d"
-    },
-    {
-      "id": "step-13",
-      "type": "impl",
-      "description": "Implement orient_euler in eval_builtin: match convention string against 12 valid conventions (xyz/xzy/yxz/yzx/zxy/zyx/xyx/xzx/yxy/yzy/zxz/zyz), extract 3 angles via trig_input, implement elementary_rotation_quat + quat_mul helpers, compose rotations in convention order, normalize result",
-      "status": "done",
-      "commit": "1bab91e2"
-    },
-    {
-      "id": "step-14",
-      "type": "test",
-      "description": "Write failing tests for orient_basis(x_vec, y_vec, z_vec): identity basis, 90deg-rotated basis, non-orthogonal returns Undef, non-3D returns Undef, zero-length returns Undef, wrong arg count returns Undef",
-      "status": "done",
-      "commit": "557258cf"
-    },
-    {
-      "id": "step-15",
-      "type": "impl",
-      "description": "Implement orient_basis in eval_builtin: extract 3x3D vectors via tensor_components_f64, validate lengths non-zero, normalize basis vectors, check mutual orthogonality (dot products < 1e-6), check right-handedness (determinant ~ 1.0), convert rotation matrix to quaternion via Shepperd's method, normalize result",
-      "status": "done",
-      "commit": "8128684f"
-    },
-    {
-      "id": "step-16",
-      "type": "test",
-      "description": "Write compound rotation tests for orient_euler: xyz with two nonzero angles, zyx with three nonzero angles, xzx proper Euler compound - verify quaternion components against known reference values within 1e-9 tolerance",
-      "status": "done",
-      "commit": "f6f42ca8"
-    },
-    {
-      "id": "step-17",
-      "type": "test",
-      "description": "Write left-handed basis rejection tests for orient_basis: reflected XY plane basis returns Undef, swapped Y/Z basis returns Undef, near-tolerance right-handed basis passes",
-      "status": "done",
-      "commit": "c6a14f34"
+      "commit": "6f6dd389"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Orientation(usize) parameterized by spatial dimension N rather than fixed to 3D",
-      "rationale": "Allows future 2D orientation support (N=2, stored as angle) while N=3 uses unit quaternion. Consistent with Point { n } and Vector { n } patterns."
+      "decision": "Frame(usize) parameterized only by spatial dimension N, not by quantity type",
+      "rationale": "The task spec says Frame(usize), matching Orientation(usize). Unlike Point/Vector which carry a quantity type parameter, Frame's dimensionality is its key parameter. This keeps the type simple and aligned with geometric semantics where a frame is a position + orientation in N-space."
     },
     {
-      "decision": "Value::Orientation stores quaternion as { w, x, y, z } named fields rather than [f64; 4]",
-      "rationale": "Named fields are self-documenting (w is scalar part), prevent ordering bugs, and match the codebase pattern (Complex uses { re, im })."
+      "decision": "Value::Frame stores origin and basis as Box<Value> rather than decomposed scalar fields",
+      "rationale": "Storing as Box<Value> reuses existing Point and Orientation value representations, enables delegation for Display/content_hash/comparison, and keeps the Value enum from growing too wide. The Box indirection adds one level of heap allocation but is consistent with how Field and Lambda already use Box<Value>."
     },
     {
-      "decision": "Normalize quaternion on construction in all constructors",
-      "rationale": "Guarantees unit quaternion invariant. Downstream operations (rotation composition, SLERP) can assume |q|=1 without re-checking."
+      "decision": "content_hash tag=20 for Frame",
+      "rationale": "Tags 0-19 are allocated across existing Value variants in content_hash and type_tag. Tag 20 is the next unused value, ensuring no hash collisions."
     },
     {
-      "decision": "Return Value::Undef on all validation failures rather than panicking",
-      "rationale": "Follows project convention (feedback_silent_defaults_pattern): logic errors should be noisy at the evaluation layer, not crash the engine. Undef propagates through dependent expressions."
+      "decision": "Frame dimension() returns DIMENSIONLESS",
+      "rationale": "A coordinate frame itself is not a physical quantity \u2014 it's a geometric construct. Its origin point carries a dimension (Length), but the frame as a whole is dimensionless, consistent with how Orientation returns DIMENSIONLESS."
     },
     {
-      "decision": "orient_euler supports 12 conventions (6 Tait-Bryan + 6 proper Euler) via string parameter",
-      "rationale": "Covers all standard aerospace/robotics conventions. String parameter avoids enum proliferation and matches reify's dynamic evaluation model."
+      "decision": "frame3 accepts any Point3 regardless of inner quantity dimension",
+      "rationale": "While frame3_identity uses LENGTH-dimensioned zero origin, the frame3 constructor should accept any 3-component Point. This avoids over-constraining: users might create frames with dimensionless coordinates for pure geometric operations."
     },
     {
-      "decision": "orient_basis validates right-handedness via determinant check (det ~ 1.0)",
-      "rationale": "Left-handed bases represent reflections, not rotations. Quaternions can only represent proper rotations (SO(3)), so left-handed input is semantically invalid."
-    },
-    {
-      "decision": "Use Shepperd's method for rotation matrix to quaternion conversion in orient_basis",
-      "rationale": "Numerically stable for all rotation angles, avoids the singularities of the naive trace-based method near 180-degree rotations."
-    },
-    {
-      "decision": "Orientation dimension() returns DIMENSIONLESS",
-      "rationale": "Orientations are pure rotations with no physical dimension. Angles are consumed during construction (via trig_input) but the resulting quaternion is dimensionless."
+      "decision": "Display format: frame({origin}, {basis}) delegating to inner displays",
+      "rationale": "Consistent with point(...) and vec(...) display conventions. Produces readable output like `frame(point(0 m, 0 m, 0 m), [1, 0, 0, 0]q)` by reusing existing Display implementations."
     }
   ],
   "reuse": [
     {
-      "what": "tensor_components_f64() helper",
-      "where": "crates/reify-stdlib/src/lib.rs",
-      "how": "Extracts f64 components from Vector/Point/Tensor values for axis and basis vector arguments"
+      "what": "Orientation(usize) type variant pattern",
+      "where": "crates/reify-types/src/ty.rs:47",
+      "how": "Frame(usize) follows the identical pattern \u2014 single usize parameter, Display as `Frame{n}`, factory method `Type::frame(n)`, is_numeric returns false, as_name returns None."
     },
     {
-      "what": "trig_input() helper",
-      "where": "crates/reify-stdlib/src/lib.rs",
-      "how": "Extracts angle in radians from either ANGLE Scalar or bare Real, used for orient_axis_angle and orient_euler angle arguments"
+      "what": "Value::Orientation content_hash, PartialEq, Ord implementation patterns",
+      "where": "crates/reify-types/src/value.rs:307-318, 400-407, 538-545",
+      "how": "Frame's trait impls follow the same structural approach: content_hash uses a unique tag and combines sub-component hashes; PartialEq delegates to inner field equality; Ord compares fields in order."
     },
     {
-      "what": "normalize_quaternion() helper pattern",
-      "where": "crates/reify-stdlib/src/lib.rs",
-      "how": "Shared helper validates finiteness and normalizes quaternion, reused by orient_quaternion, orient_axis_angle, orient_euler, and orient_basis"
+      "what": "orient_identity constructor pattern",
+      "where": "crates/reify-stdlib/src/lib.rs:480-486",
+      "how": "frame3_identity follows the exact same pattern \u2014 check args.is_empty(), return constructed value, else Undef."
     },
     {
-      "what": "Value::as_f64() method",
-      "where": "crates/reify-types/src/value.rs",
-      "how": "Used by orient_quaternion to extract numeric components from any numeric Value variant"
+      "what": "construct_point_or_vector validation pattern",
+      "where": "crates/reify-stdlib/src/lib.rs:663-681",
+      "how": "frame3 constructor follows the same validate-args-then-construct pattern, returning Value::Undef on any failure."
     },
     {
-      "what": "assert_orientation_approx! test macro",
-      "where": "crates/reify-stdlib/src/lib.rs (test module)",
-      "how": "Macro for comparing Orientation values within floating-point tolerance, reused across all orient_* test functions"
+      "what": "assert_orientation_approx! test macro pattern",
+      "where": "crates/reify-stdlib/src/lib.rs:2567-2584",
+      "how": "Frame tests can use a similar assert_frame macro that matches on Value::Frame and validates inner origin/basis components."
     },
     {
-      "what": "Content hash / Ord / Display patterns from Complex variant",
-      "where": "crates/reify-types/src/value.rs",
-      "how": "Orientation follows same implementation patterns as Complex for PartialEq (bitwise f64), Ord (component-wise), content_hash (hash each f64 as bits), Display"
-    },
-    {
-      "what": "elementary_rotation_quat() and quat_mul() helpers",
-      "where": "crates/reify-stdlib/src/lib.rs",
-      "how": "Elementary single-axis rotation quaternion and Hamilton product, composed by orient_euler for arbitrary Euler angle sequences"
+      "what": "Value::length(0.0) factory method",
+      "where": "crates/reify-types/src/value.rs:81-86",
+      "how": "frame3_identity uses Value::length(0.0) for the zero-length origin components, reusing the existing factory."
     }
   ],
-  "_session_id": "233-af70d415",
-  "_created_at": "2026-03-24T23:41:32.583435+00:00"
+  "_session_id": "234-1bf39682",
+  "_created_at": "2026-03-25T01:21:35.911599+00:00"
 }
