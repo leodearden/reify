@@ -11,7 +11,7 @@
     "crates/reify-eval",
     "crates/reify-test-support"
   ],
-  "analysis": "Task 205 implements eager structural unfolding of recursive structures in the evaluator. Dependencies 203 and 204 already provide: (1) `TopologyTemplate.is_recursive: bool` flag set by Tarjan SCC detection, and (2) `SubComponentDecl.guard_expr: Option<CompiledExpr>` for termination guards.\n\nThe current sub-component elaboration flow (lib.rs:1063-1159) iterates over each template's sub_components, finds the child template, and calls `elaborate_child_instance()` for each. For non-recursive subs this is a single-level expansion. For recursive subs (where `template.is_recursive == true` and `sub.guard_expr.is_some()`), the evaluator must now: (a) evaluate the sub's `guard_expr` in the current value context, (b) if true, create a child instance with the provided args (which decrement the recursion param), (c) recursively unfold the child, repeating until the guard evaluates to false or depth limit is hit.\n\nREVIEW FINDINGS (blocking):\n1. The `unfold_recursive_leaves_first_order` test (step-11) uses `let doubled = n * 2` which has no cross-level data dependency \u2014 it passes identically whether elaboration is top-down or bottom-up. Must be rewritten to use a cross-level reference like `let total = if n > 0 then n + child.total else n`.\n2. The implementation (step-12) in `unfold_recursive_sub` (lines 3229-3257) calls `elaborate_child_instance` BEFORE recursing \u2014 this is top-down (elaborate-then-recurse), NOT leaves-first (recurse-then-elaborate). Any let-binding referencing a child's computed value silently resolves to Undef. Must be fixed to use two-phase approach: set params top-down (for guard evaluation), recurse, then evaluate lets bottom-up.\n3. Additionally, `child_values` in `elaborate_child_instance` (line 3356) only includes template-scoped params \u2014 sub-component values from deeper levels are not mapped in. The let evaluation context must be enriched with sub-component values projected from the global values map after recursion.\n\nKey architectural decisions:\n- The unfolding happens during eval() in the sub-component elaboration phase, AFTER params and lets are evaluated (so recursion-controlling params have values).\n- A new function `unfold_recursive_sub()` handles the recursive unfolding loop.\n- Each level gets a scoped entity name like `Parent.child.child.child...` (nested dot-separated).\n- The depth limit is configurable on Engine (default 64), stored as a field.\n- If the recursion param is Undef, the sub remains as a placeholder (no unfolding).\n- Resolution order is leaves-first: we recurse to the bottom first, then elaborate back up. This means we unfold eagerly to find the bottom, then call elaborate_child_instance from the deepest level upward.\n- The graph.rs `from_templates()` method does NOT need recursive unfolding \u2014 it only creates static graph structure. The dynamic unfolding happens in eval() where values are known.\n- TopologyTemplateBuilder needs `is_recursive(bool)` and `sub_component_with_guard()` builder methods for test construction.",
+  "analysis": "Task 205 implements eager structural unfolding of recursive structures in the evaluator. Dependencies 203 and 204 already provide: (1) `TopologyTemplate.is_recursive: bool` flag set by Tarjan SCC detection, and (2) `SubComponentDecl.guard_expr: Option<CompiledExpr>` for termination guards.\n\nThe current sub-component elaboration flow (lib.rs:1063-1159) iterates over each template's sub_components, finds the child template, and calls `elaborate_child_instance()` for each. For non-recursive subs this is a single-level expansion. For recursive subs (where `template.is_recursive == true` and `sub.guard_expr.is_some()`), the evaluator must now: (a) evaluate the sub's `guard_expr` in the current value context, (b) if true, create a child instance with the provided args (which decrement the recursion param), (c) recursively unfold the child, repeating until the guard evaluates to false or depth limit is hit.\n\nREVIEW FINDINGS (blocking):\n1. The `unfold_recursive_leaves_first_order` test (step-11) uses `let doubled = n * 2` which has no cross-level data dependency \u2014 it passes identically whether elaboration is top-down or bottom-up. Must be rewritten to use a cross-level reference like `let total = if n > 0 then n + child.total else n`.\n2. The implementation (step-12) in `unfold_recursive_sub` (lines 3229-3257) calls `elaborate_child_instance` BEFORE recursing \u2014 this is top-down (elaborate-then-recurse), NOT leaves-first (recurse-then-elaborate). Any let-binding referencing a child's computed value silently resolves to Undef. Must be fixed to use two-phase approach: set params top-down (for guard evaluation), recurse, then evaluate lets bottom-up.\n3. Additionally, `child_values` in `elaborate_child_instance` (line 3356) only includes template-scoped params \u2014 sub-component values from deeper levels are not mapped in. The let evaluation context must be enriched with sub-component values projected from the global values map after recursion.\n\nREVIEW ROUND 2 FINDINGS (blocking):\n4. [silent_data_corruption_at_boundary] When `max_unfold_depth = 0`, the depth check `depth >= max_depth` fires at depth 0 before Phase 1 or Phase 3 runs. The child entity is never written to `values`, so any parent-level let binding referencing `child.*` silently evaluates to Undef. Only a warning (not error) is emitted, breaking the API contract that a warning-clean eval produces a sound result. Fix: reject depth=0 in `set_max_unfold_depth` and escalate the truncation diagnostic from warning to error so callers know the result is unsound.\n5. [incomplete_cross_level_projection_for_multiple_recursive_subs] `elaborate_child_lets_only` only walks the chain for a single sub name (`recursive_sub_name`). For a template with two recursive subs (e.g., `sub left` and `sub right`), values under the other sub's chain are not projected into `child_values`. Additionally, `unfold_recursive_sub` only recurses on the same sub \u2014 a child instance of a template with multiple recursive subs only gets ONE sub chain unfolded, not all of them. Fix: (a) pass all recursive subs into `unfold_recursive_sub` and unfold all of them at each child level, (b) change `recursive_sub_name: Option<&str>` to `recursive_sub_names: &[&str]` in `elaborate_child_lets_only` and iterate over all sub names in the chain walk.\n\nKey architectural decisions:\n- The unfolding happens during eval() in the sub-component elaboration phase, AFTER params and lets are evaluated (so recursion-controlling params have values).\n- A new function `unfold_recursive_sub()` handles the recursive unfolding loop.\n- Each level gets a scoped entity name like `Parent.child.child.child...` (nested dot-separated).\n- The depth limit is configurable on Engine (default 64), stored as a field.\n- If the recursion param is Undef, the sub remains as a placeholder (no unfolding).\n- Resolution order is leaves-first: we recurse to the bottom first, then elaborate back up. This means we unfold eagerly to find the bottom, then call elaborate_child_instance from the deepest level upward.\n- The graph.rs `from_templates()` method does NOT need recursive unfolding \u2014 it only creates static graph structure. The dynamic unfolding happens in eval() where values are known.\n- TopologyTemplateBuilder needs `is_recursive(bool)` and `sub_component_with_guard()` builder methods for test construction.",
   "prerequisites": [
     {
       "id": "pre-1",
@@ -217,6 +217,62 @@
       "description": "Verify step-25 test passes with the leaves-first implementation from step-24. If any issues arise with deeper chains (e.g., projection not handling multi-level sub-component nesting), fix them. All tests must pass.",
       "status": "done",
       "commit": "21c1542c"
+    },
+    {
+      "id": "step-27",
+      "type": "test",
+      "description": "Write failing test `unfold_recursive_depth_limit_zero_rejected` (fixes reviewer finding: silent_data_corruption_at_boundary). Verify that `set_max_unfold_depth(0)` panics with a clear message. Use `#[should_panic(expected = ...)]`. Rationale: depth=0 means the depth check `depth >= max_depth` (0 >= 0) fires immediately before Phase 1 or Phase 3 runs, so no child entity is ever created \u2014 any parent-level let binding referencing `child.*` silently evaluates to Undef. Since the only safe depth values are >= 1 (and the default is 64), rejecting 0 at the API boundary prevents this silent corruption scenario entirely.",
+      "status": "done",
+      "commit": "9b58cc20"
+    },
+    {
+      "id": "step-28",
+      "type": "impl",
+      "description": "Add validation to `set_max_unfold_depth()` in Engine (lib.rs line ~281) to panic if `depth == 0` with message \"max_unfold_depth must be >= 1\". This prevents the depth=0 boundary case where no child entities are created but no error is raised. Pass the step-27 test. All existing tests must also pass (none set depth to 0).",
+      "status": "done",
+      "commit": "9b58cc20"
+    },
+    {
+      "id": "step-29",
+      "type": "test",
+      "description": "Write failing test `unfold_recursive_depth_limit_emits_error_diagnostic` (second part of silent_data_corruption_at_boundary fix). S(n=100) with sub child = S(n: n-1) where n > 0, engine max_unfold_depth=3. After eval(): verify that `result.diagnostics` contains at least one diagnostic with `severity == Severity::Error` and message containing 'truncated at depth limit'. The current implementation emits `Diagnostic::warning` for truncation \u2014 it must be `Diagnostic::error` so callers know the result may be unsound (child references beyond the depth limit resolve to Undef).",
+      "status": "done",
+      "commit": "faf1fffa"
+    },
+    {
+      "id": "step-30",
+      "type": "impl",
+      "description": "In `unfold_recursive_sub()` (lib.rs line ~3214), change `Diagnostic::warning(...)` to `Diagnostic::error(...)` in the depth-limit truncation branch (`depth >= max_depth` when guard is `Bool(true)`). This ensures callers are informed via error-level severity that the result is potentially unsound \u2014 child references beyond the truncated depth resolve to Undef. Pass step-29 test. Update the existing `unfold_recursive_depth_limit_stops_unfolding` test (step-9) if it asserts on diagnostics (it does not \u2014 it only checks values, so no change needed). All existing tests must pass.",
+      "status": "done",
+      "commit": "faf1fffa"
+    },
+    {
+      "id": "step-31",
+      "type": "test",
+      "description": "Write failing test `unfold_recursive_multiple_subs_all_children_created` (fixes reviewer finding: incomplete_cross_level_projection_for_multiple_recursive_subs). Template S with param n: Int = 2, TWO recursive subs: `sub left = S(n: n-1) where n > 0` and `sub right = S(n: n-1) where n > 0`. Both subs reference the same template S and use the same guard/args pattern. After eval() with S(n=2): verify that CROSS-sub children exist at each level \u2014 specifically S.left.right (n=0) and S.right.left (n=0) must exist in the values map. The current implementation only recurses on the SAME sub chain (left\u2192left\u2192left... or right\u2192right\u2192right...), so S.left.right and S.right.left are never created. Assert: S.left.n=1, S.right.n=1, S.left.left.n=0, S.left.right.n=0, S.right.left.n=0, S.right.right.n=0. Also assert S.left.left.left does NOT exist (guard false at n=0) and S.left.right.left does NOT exist.",
+      "status": "done",
+      "commit": "ec3ca973"
+    },
+    {
+      "id": "step-32",
+      "type": "impl",
+      "description": "Fix `unfold_recursive_sub` to unfold ALL recursive subs at each child level, not just the spawning sub. Changes:\n\n1. Add parameter `all_recursive_subs: &[&reify_compiler::SubComponentDecl]` to `unfold_recursive_sub()`. This is the list of ALL recursive subs of the template (those with guard_expr.is_some()).\n\n2. In Phase 2 (recurse), replace the single recursive call with a loop over `all_recursive_subs`: for each recursive sub, call `unfold_recursive_sub(sub=X, parent=next_entity, all_recursive_subs, depth+1, ...)`. This naturally creates the full tree: S.left.left, S.left.right, S.right.left, S.right.right, etc.\n\n3. Update the call site in eval() (lib.rs ~line 1147): collect all recursive subs for the template into a Vec<&SubComponentDecl>, then for each recursive sub call `unfold_recursive_sub` passing the full list. Non-recursive subs of a recursive template continue through the normal `elaborate_child_instance` path.\n\nPass step-31 test. All existing single-sub tests must also pass (they pass an `all_recursive_subs` slice of length 1, which degenerates to the current behavior).",
+      "status": "done",
+      "commit": "ec3ca973"
+    },
+    {
+      "id": "step-33",
+      "type": "test",
+      "description": "Write failing test `unfold_recursive_multiple_subs_cross_sub_let_reference` to verify cross-sub let projection works. Template S with param n: Int = 1, two recursive subs: `sub left = S(n: n-1) where n > 0` and `sub right = S(n: n-1) where n > 0`. Add `let sum: Int = left.val + right.val` where `val` is another let `let val: Int = n * 10`. With S(n=1): S.left (n=0) and S.right (n=0) each have val=0. The top-level S should see S.left.val=0 and S.right.val=0, so S.sum=0+0=0. But more importantly, at the S level where n=1, S.val=10, and S.sum should reference S.left.val and S.right.val (both 0) giving S.sum=0. The key assertion: at each child level, the let evaluation context must include values from BOTH sub chains (left and right), not just one. The current `elaborate_child_lets_only` with `recursive_sub_name: Option<&str>` only projects one chain \u2014 it must project all. Assert S.left.val=0 (Int, not Undef) and S.right.val=0 (Int, not Undef). Also verify the parent-level S does see both sub values.",
+      "status": "done",
+      "commit": "af5d7edf"
+    },
+    {
+      "id": "step-34",
+      "type": "impl",
+      "description": "Fix `elaborate_child_lets_only` to project values from ALL recursive sub chains, not just one. Changes:\n\n1. Change parameter `recursive_sub_name: Option<&str>` to `recursive_sub_names: &[&str]`.\n\n2. Replace the single-chain walk loop (lines 3439-3462) with a nested loop: for each sub_name in `recursive_sub_names`, walk that sub's entity chain (`scoped_entity.sub_name`, `scoped_entity.sub_name.sub_name`, ...) and project all found values into `child_values`. This handles the tree structure: when evaluating lets for S.left, we project from S.left.left.* AND S.left.right.* chains.\n\n3. Update all call sites:\n   - In `unfold_recursive_sub`: change `Some(&sub.name)` to a slice of all recursive sub names (derived from `all_recursive_subs.iter().map(|s| s.name.as_str()).collect()`).\n   - In `elaborate_child_instance` (non-recursive path): pass `&[]` (empty slice, no projection needed).\n\n4. Additionally, the projection walk for multiple subs must handle branching trees, not just linear chains. For sub names [left, right], walk: scoped_entity.left, scoped_entity.left.left, scoped_entity.left.right, scoped_entity.right, scoped_entity.right.left, scoped_entity.right.right, etc. Use a BFS/DFS queue starting from each immediate sub, appending all sub_names at each level.\n\nPass step-33 test. All existing tests must pass (single-sub tests pass a slice of length 1, which degenerates to the current single-chain walk).",
+      "status": "done",
+      "commit": "af5d7edf"
     }
   ],
   "design_decisions": [
@@ -255,6 +311,22 @@
     {
       "decision": "Enrich child_values with sub-component values projected from global values map (review fix)",
       "rationale": "Template let expressions reference sub-component values using template-scoped names (e.g., ValueCellId('S.child', 'total')). After recursion, deeper-level values exist in the global values map under scoped names (e.g., ValueCellId('S.child.child', 'total')). The projection strips the current scoped_entity prefix and replaces it with the template name prefix, making these values visible in the child_values evaluation context. Without this projection, cross-level references silently resolve to Undef."
+    },
+    {
+      "decision": "Reject max_unfold_depth=0 at the API boundary (review round 2 fix)",
+      "rationale": "When max_unfold_depth=0, the depth check fires at depth 0 before any child entity is created, but only a warning is emitted. Parent-level let-bindings referencing child.* silently evaluate to Undef. Since depth=0 has no valid use case (the template wouldn't be marked recursive if no unfolding is intended), rejecting it in set_max_unfold_depth prevents silent data corruption. The default of 64 is always safe."
+    },
+    {
+      "decision": "Depth-limit truncation emits Diagnostic::error, not Diagnostic::warning (review round 2 fix)",
+      "rationale": "When the depth limit truncates a still-true guard, child references beyond that depth resolve to Undef. A warning-clean eval should produce a sound result \u2014 but truncation may make the result unsound. Emitting an error-level diagnostic ensures callers can distinguish between 'eval completed soundly' and 'eval completed but with truncation that may affect correctness'."
+    },
+    {
+      "decision": "Unfold ALL recursive subs at each child level, not just the spawning sub (review round 2 fix)",
+      "rationale": "A child instance of a recursive template is itself an instance of that template, so it has ALL the template's recursive subs \u2014 not just the one that created it. For a template with subs left and right, S.left must also get its right sub unfolded (creating S.left.right), and S.right must get its left sub (S.right.left). The unfold function receives all_recursive_subs and iterates over all of them at each depth level."
+    },
+    {
+      "decision": "Tree-walk projection in elaborate_child_lets_only for multiple subs (review round 2 fix)",
+      "rationale": "With multiple recursive subs, the entity structure is a tree (not a linear chain). Projection must walk all branches: for sub names [left, right], walk S.left, S.left.left, S.left.right, S.right, S.right.left, S.right.right, etc. Using a BFS queue that appends all sub_names at each level ensures complete projection. This replaces the single-chain walk that only followed one sub name."
     }
   ],
   "reuse": [
@@ -307,8 +379,13 @@
       "what": "elaborate_child_instance first-pass param logic",
       "where": "crates/reify-eval/src/lib.rs:3279-3330",
       "how": "Extract or duplicate the param-setting logic (lines 3279-3330) for use in the recursive two-phase flow. The let-binding logic (lines 3332-3391) becomes the post-recursion phase with enriched child_values."
+    },
+    {
+      "what": "Diagnostic::error() and Severity::Error for truncation diagnostics",
+      "where": "crates/reify-types/src/diagnostics.rs:72-77",
+      "how": "Replace Diagnostic::warning with Diagnostic::error in the depth-limit truncation branch. EvalResult.diagnostics already carries Vec<Diagnostic> so callers can filter by severity."
     }
   ],
   "_session_id": "205-8b74fe70",
-  "_created_at": "2026-03-25T19:07:13.287431+00:00"
+  "_created_at": "2026-03-25T19:41:47.197333+00:00"
 }
