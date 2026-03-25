@@ -273,6 +273,36 @@ impl MockGeometryKernel {
     pub fn operations_ref(&self) -> Arc<Mutex<Vec<GeometryOpRecord>>> {
         self.operations.clone()
     }
+
+    /// Return the most recently executed operation, or `None` if no ops have been recorded.
+    pub fn last_op(&self) -> Option<GeometryOpRecord> {
+        self.operations.lock().unwrap().last().cloned()
+    }
+
+    /// Return all operations matching a predicate on the `GeometryOp`.
+    pub fn find_ops<F: Fn(&GeometryOp) -> bool>(&self, f: F) -> Vec<GeometryOpRecord> {
+        self.operations
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|rec| f(&rec.op))
+            .cloned()
+            .collect()
+    }
+
+    /// Return the total number of operations recorded.
+    pub fn op_count(&self) -> usize {
+        self.operations.lock().unwrap().len()
+    }
+
+    /// Return `true` if any recorded operation matches the predicate.
+    pub fn has_op<F: Fn(&GeometryOp) -> bool>(&self, f: F) -> bool {
+        self.operations
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|rec| f(&rec.op))
+    }
 }
 
 impl Default for MockGeometryKernel {
@@ -592,6 +622,94 @@ mod tests {
 
         let result = kernel.query(&GeometryQuery::Volume(id)).unwrap();
         assert_eq!(result, mm3(500.0));
+    }
+
+    // step-7: failing tests for operation inspection helpers
+    #[test]
+    fn mock_last_op_empty_returns_none() {
+        let kernel = MockGeometryKernel::new();
+        assert!(kernel.last_op().is_none());
+    }
+
+    #[test]
+    fn mock_last_op_returns_most_recent() {
+        let mut kernel = MockGeometryKernel::new();
+        kernel
+            .execute(&GeometryOp::Sphere {
+                radius: Value::length(0.01),
+            })
+            .unwrap();
+        kernel
+            .execute(&GeometryOp::Box {
+                width: Value::length(0.1),
+                height: Value::length(0.1),
+                depth: Value::length(0.1),
+            })
+            .unwrap();
+
+        let last = kernel.last_op().unwrap();
+        assert!(matches!(last.op, GeometryOp::Box { .. }));
+        assert_eq!(last.result_handle, GeometryHandleId(2));
+    }
+
+    #[test]
+    fn mock_op_count_tracks_operations() {
+        let mut kernel = MockGeometryKernel::new();
+        assert_eq!(kernel.op_count(), 0);
+
+        kernel
+            .execute(&GeometryOp::Sphere {
+                radius: Value::length(0.01),
+            })
+            .unwrap();
+        assert_eq!(kernel.op_count(), 1);
+
+        kernel
+            .execute(&GeometryOp::Sphere {
+                radius: Value::length(0.02),
+            })
+            .unwrap();
+        assert_eq!(kernel.op_count(), 2);
+    }
+
+    #[test]
+    fn mock_find_ops_filters_by_predicate() {
+        let mut kernel = MockGeometryKernel::new();
+        kernel
+            .execute(&GeometryOp::Sphere {
+                radius: Value::length(0.01),
+            })
+            .unwrap();
+        kernel
+            .execute(&GeometryOp::Box {
+                width: Value::length(0.1),
+                height: Value::length(0.1),
+                depth: Value::length(0.1),
+            })
+            .unwrap();
+        kernel
+            .execute(&GeometryOp::Sphere {
+                radius: Value::length(0.05),
+            })
+            .unwrap();
+
+        let spheres = kernel.find_ops(|op| matches!(op, GeometryOp::Sphere { .. }));
+        assert_eq!(spheres.len(), 2);
+        assert_eq!(spheres[0].result_handle, GeometryHandleId(1));
+        assert_eq!(spheres[1].result_handle, GeometryHandleId(3));
+    }
+
+    #[test]
+    fn mock_has_op_returns_true_when_match_exists() {
+        let mut kernel = MockGeometryKernel::new();
+        kernel
+            .execute(&GeometryOp::Sphere {
+                radius: Value::length(0.01),
+            })
+            .unwrap();
+
+        assert!(kernel.has_op(|op| matches!(op, GeometryOp::Sphere { .. })));
+        assert!(!kernel.has_op(|op| matches!(op, GeometryOp::Box { .. })));
     }
 
     #[test]
