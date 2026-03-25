@@ -248,3 +248,46 @@ structure def S : A + B {
         template.constraints.len()
     );
 }
+
+// ── step-7 ───────────────────────────────────────────────────────────────────
+
+/// Three traits each contribute a distinct constraint on param x.
+/// trait A{param x:Length, constraint x > 0mm}
+/// trait B{param x:Length, constraint x < 1000mm}
+/// trait C{param x:Length, constraint x != 50mm}
+/// structure S:A+B+C{param x:Length=5mm}
+/// Assert: no errors, at least 3 constraints in template.
+#[test]
+fn constraint_conjunction_three_traits() {
+    let source = r#"
+trait A {
+    param x : Length
+    constraint x > 0mm
+}
+
+trait B {
+    param x : Length
+    constraint x < 1000mm
+}
+
+trait C {
+    param x : Length
+    constraint x > 1mm
+}
+
+structure def S : A + B + C {
+    param x : Length = 5mm
+}
+"#;
+
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    assert!(
+        template.constraints.len() >= 3,
+        "expected at least 3 constraints (one from each trait A, B, C), got {}",
+        template.constraints.len()
+    );
+}
