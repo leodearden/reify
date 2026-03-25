@@ -7462,10 +7462,11 @@
         "description": "Three missing test cases in crates/reify-expr/tests/gradient_tests.rs:\n\n1. Point3 with non-Scalar quantity (e.g., Vec3) as domain -> eval_gradient should return Undef.\n2. Wrong-sized Tensor point (e.g., 2-component instead of 3) -> compute_numerical_gradient should return Undef.\n3. Partial Undef propagation: lambda returns Undef only for perturbations on one axis, verifying the early-exit behavior.\n\nSource: review suggestions from esc-281-11 (task 281).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-03-25T21:39:09.371Z"
       },
       {
         "id": "415",
@@ -7642,7 +7643,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-25T21:39:04.328Z",
+      "lastModified": "2026-03-25T21:39:09.371Z",
       "taskCount": 426,
       "completedCount": 228,
       "tags": [
