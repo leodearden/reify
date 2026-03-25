@@ -311,4 +311,19 @@ mod tests {
         assert_ne!(h1, h3);
         assert_ne!(h2, h3);
     }
+
+    #[test]
+    fn geometry_op_sweep_variant_exists() {
+        let op = GeometryOp::Sweep {
+            profile: GeometryHandleId(1),
+            path: GeometryHandleId(2),
+        };
+        match &op {
+            GeometryOp::Sweep { profile, path } => {
+                assert_eq!(*profile, GeometryHandleId(1));
+                assert_eq!(*path, GeometryHandleId(2));
+            }
+            _ => panic!("expected Sweep variant"),
+        }
+    }
 }
