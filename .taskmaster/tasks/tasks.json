@@ -6723,11 +6723,11 @@
         "description": "The `real`/`imag` (and `re`/`im`) match arms in eval_builtin return extracted components without calling `sanitize_value`. If a Complex with NaN/Inf components were constructed (e.g., via future deserialization or FFI), `real(z)` would return `Value::Real(NaN)` instead of `Value::Undef`. Other functions (`phase`, `complex_magnitude`, `complex_add`, `complex_mul`) all sanitize their outputs. Wrap returned values in `sanitize_value(...)` for consistency.\n\nMemory hints: search \"sanitize_value eval_builtin real imag\", entities: eval_builtin, sanitize_value",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-03-25T20:59:18.827Z"
+        "updatedAt": "2026-03-25T21:48:13.110Z"
       },
       {
         "id": "359",
@@ -7713,7 +7713,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-25T21:48:13.059Z",
+      "lastModified": "2026-03-25T21:48:13.110Z",
       "taskCount": 432,
       "completedCount": 228,
       "tags": [
