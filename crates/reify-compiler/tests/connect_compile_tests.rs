@@ -417,6 +417,48 @@ structure def S2 {
     );
 }
 
+// ── step-3: auto_match_multiple_members ──────────────────────────────
+
+#[test]
+fn auto_match_multiple_members() {
+    // Both ports have same trait with 3 params (d, length, angle), no explicit mapping.
+    // Assert all 3 are auto-mapped as identity pairs, sorted alphabetically.
+    let source = r#"
+trait MechPort {
+    param d : Length
+    param length : Length
+    param angle : Real
+}
+structure def S {
+    port a : out MechPort {
+        param d : Length = 5mm
+        param length : Length = 10mm
+        param angle : Real = 0.0
+    }
+    port b : in MechPort {
+        param d : Length = 5mm
+        param length : Length = 10mm
+        param angle : Real = 0.0
+    }
+    connect a -> b
+}
+"#;
+    let (template, diagnostics) = compile_first_template(source);
+    let errors: Vec<_> = diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    assert_eq!(template.connections.len(), 1);
+    // Auto-generated mappings should be sorted alphabetically: angle, d, length
+    assert_eq!(
+        template.connections[0].port_mappings,
+        vec![
+            ("angle".to_string(), "angle".to_string()),
+            ("d".to_string(), "d".to_string()),
+            ("length".to_string(), "length".to_string()),
+        ],
+        "expected 3 auto-generated identity mappings sorted alphabetically"
+    );
+}
+
 // ── step-1: auto_match_ports_same_trait_same_members ─────────────────
 
 #[test]
