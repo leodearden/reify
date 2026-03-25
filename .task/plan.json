@@ -115,6 +115,27 @@
       "description": "Retry fast-forward merge to main. If FF merge still fails (main advanced again during rebase), repeat rebase cycle from step-13.",
       "status": "done",
       "commit": "e6c5f493"
+    },
+    {
+      "id": "step-16",
+      "type": "impl",
+      "description": "Second rebase onto latest main to resolve merge_ff_failed (main advanced again during step-15 conflict resolution with task-status auto-commits and task-364 code changes). The task branch has only one commit on top of the merge base (a0a60de0, touching only .task/plan.json). Main's changes since the merge base (.taskmaster/tasks/tasks.json, lib.rs, value.rs, types.rs) do not overlap with .task/plan.json, so the rebase should be conflict-free. Run: `git rebase main`.",
+      "status": "done",
+      "commit": "b87f1c4a"
+    },
+    {
+      "id": "step-17",
+      "type": "impl",
+      "description": "Verify all tests pass after second rebase: run `cargo test -p reify-compiler` to confirm recursive_detection_tests and termination_check_tests pass. Also run `cargo clippy -p reify-compiler` to ensure no warnings introduced by main's changes (task-364 touched lib.rs).",
+      "status": "done",
+      "commit": "b87f1c4a"
+    },
+    {
+      "id": "step-18",
+      "type": "impl",
+      "description": "Retry fast-forward merge to main. Run `git checkout main && git merge --ff-only task/351`. If FF merge fails again (main advanced during rebase), repeat rebase from step-16.",
+      "status": "pending",
+      "commit": null
     }
   ],
   "design_decisions": [
@@ -137,6 +158,10 @@
     {
       "decision": "Rebase onto main rather than merge to maintain linear history",
       "rationale": "The merge_ff_failed issue is caused by task-status auto-commits on main diverging from the branch point. Main did NOT change any of the code files this task touches (mocks.rs, values.rs, lib.rs), so the rebase will be conflict-free on code. Only auto-generated files (.taskmaster/tasks/tasks.json, orchestrator DBs) need resolution, where main's version is authoritative."
+    },
+    {
+      "decision": "Second rebase cycle uses same strategy as first",
+      "rationale": "Main advanced again during the first rebase/merge window (race condition with orchestrator auto-commits and task-364). The task branch now has only one commit diverging from the merge base (a0a60de0 touching .task/plan.json), and main's new changes (tasks.json, lib.rs, value.rs, types.rs) have zero overlap with .task/plan.json, making the rebase trivially conflict-free."
     }
   ],
   "reuse": [
@@ -162,6 +187,6 @@
     }
   ],
   "_session_id": "351-fef2cc1d",
-  "_created_at": "2026-03-25T22:09:21.059217+00:00",
+  "_created_at": "2026-03-25T22:26:16.733909+00:00",
   "_schema_version": 1
 }
