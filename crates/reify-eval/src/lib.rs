@@ -3193,7 +3193,7 @@ fn compile_geometry_op(
                 }
             }
         }
-        CompiledGeometryOp::Sweep { kind, profiles, args } => {
+        CompiledGeometryOp::Sweep { kind, profiles, args: _ } => {
             match kind {
                 reify_compiler::SweepKind::Loft => {
                     // Resolve each profile GeomRef to a handle via step_handles
