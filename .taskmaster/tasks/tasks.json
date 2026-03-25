@@ -4414,7 +4414,7 @@
         "testStrategy": "Parser tests: @face(name), @point(coords), @edge(name), chained with connect.",
         "priority": "high",
         "dependencies": [],
-        "status": "blocked",
+        "status": "pending",
         "metadata": {
           "modules": [
             "crates/reify-syntax"
@@ -4422,7 +4422,7 @@
           "milestone": "M10"
         },
         "subtasks": [],
-        "updatedAt": "2026-03-25T22:55:09.909Z"
+        "updatedAt": "2026-03-25T23:00:10.026Z"
       },
       {
         "id": "249",
@@ -7820,7 +7820,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-25T22:57:50.856Z",
+      "lastModified": "2026-03-25T23:00:10.026Z",
       "taskCount": 441,
       "completedCount": 231,
       "tags": [
