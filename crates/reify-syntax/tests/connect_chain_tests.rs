@@ -266,6 +266,13 @@ fn parse_connect_mixed_multiple_entries() {
         other => panic!("expected NumberLiteral(8.8), got {:?}", other),
     }
     assert_eq!(connect.params[1].0, "thickness");
+    match &connect.params[1].1.kind {
+        ExprKind::QuantityLiteral { value, unit } => {
+            assert!((value - 2.0).abs() < f64::EPSILON, "expected value 2.0, got {}", value);
+            assert_eq!(unit, "mm");
+        }
+        other => panic!("expected QuantityLiteral {{ value: 2.0, unit: \"mm\" }}, got {:?}", other),
+    }
 
     assert_eq!(connect.port_mappings.len(), 2, "expected 2 port_mappings, got {:?}", connect.port_mappings);
     assert_eq!(connect.port_mappings[0].0, "shaft");
