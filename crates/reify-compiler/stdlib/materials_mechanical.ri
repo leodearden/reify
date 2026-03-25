@@ -9,3 +9,13 @@ trait Material {
     param density : Real
     param name : String
 }
+
+// ── Elasticity ───────────────────────────────────────────────────────────────
+
+// Young's modulus (Pa), Poisson's ratio (dimensionless), shear modulus (Pa).
+// All use Real pending Pressure type introduction.
+trait Elastic {
+    param youngs_modulus : Real
+    param poissons_ratio : Real
+    param shear_modulus : Real
+}
