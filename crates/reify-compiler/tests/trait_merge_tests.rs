@@ -23,3 +23,35 @@ fn compile_first_template(source: &str) -> (TopologyTemplate, Vec<Diagnostic>) {
     let template = module.templates.into_iter().next().expect("expected at least 1 template");
     (template, module.diagnostics)
 }
+
+// ── step-1 ───────────────────────────────────────────────────────────────────
+
+/// Two traits with distinct params — structure S:A+B must satisfy both.
+/// Assert: no errors, template contains value cells for both 'a' and 'b'.
+#[test]
+fn two_trait_merge_distinct_params() {
+    let source = r#"
+trait A {
+    param a : Length
+}
+
+trait B {
+    param b : Length
+}
+
+structure def S : A + B {
+    param a : Length = 1mm
+    param b : Length = 2mm
+}
+"#;
+
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    let has_a = template.value_cells.iter().any(|vc| vc.id.member == "a");
+    let has_b = template.value_cells.iter().any(|vc| vc.id.member == "b");
+    assert!(has_a, "expected value cell 'a' from trait A");
+    assert!(has_b, "expected value cell 'b' from trait B");
+}

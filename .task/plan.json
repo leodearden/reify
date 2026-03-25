@@ -1,146 +1,184 @@
 {
-  "task_id": "189",
-  "title": "Trait member merging: diamond hierarchy",
+  "task_id": "190",
+  "title": "Trait member merging: tests",
   "files": [
-    "crates/reify-compiler/tests/trait_conformance_tests.rs",
+    "crates/reify-compiler/tests/trait_merge_tests.rs",
+    "crates/reify-eval/tests/trait_merge_eval.rs",
     "crates/reify-compiler/src/lib.rs"
   ],
   "modules": [
-    "crates/reify-compiler"
+    "crates/reify-compiler",
+    "crates/reify-eval"
   ],
-  "analysis": "Task 189 requires comprehensive test coverage for diamond inheritance deduplication in trait member merging. The core topology is: structure S implements trait A, A refines B+C, B and C both refine D — D's members must appear exactly once.\n\nThe implementation already exists in `collect_all_requirements` (lib.rs:4268-4372) via a `visited: HashSet<String>` that prevents re-walking already-visited traits (line 4282-4284). The existing test `diamond_inheritance_deduplication` covers the simpler topology (X : A+B, A:C, B:C) but NOT the deeper single-bound pattern described in this task (S:A, A:B+C, B:D, C:D).\n\nKey behaviors to verify:\n1. Requirements from D collected exactly once (visited set prevents re-traversal)\n2. Defaults from D injected exactly once (seen_defaults dedup by name+type)\n3. Missing member in diamond produces exactly one error (not duplicated)\n4. Conflicts detected correctly even in diamond\n5. Members at every level of the hierarchy merge correctly\n6. Let binding defaults from root deduplicated\n7. Sub-component requirements from root deduplicated\n\nThe implementation is believed to be complete from task 188's work. The primary deliverable is proving correctness through targeted test cases for the specific diamond pattern.",
-  "prerequisites": [],
+  "analysis": "Task 190 requires >=12 tests covering trait member merging behavior. Tasks 188 (implementation) and 189 (diamond hierarchy) are both merged to main. Existing tests in trait_conformance_tests.rs (24 tests) cover individual scenarios from tasks 188/189 but lack a focused, cohesive test suite for member merging. Key areas to test:\n\n1. COMPILER-SIDE (trait_merge_tests.rs): Two-trait merge with distinct params, shared params (same type dedup), diamond hierarchy dedup for both params and defaults, conflict detection (same name different type), constraint conjunction from multiple traits, let binding merge (same expr dedup) and conflict (different expr error), and let injection from trait.\n\n2. EVAL-SIDE (trait_merge_eval.rs): Full pipeline parse->compile->eval->check verifying merged trait constraints are actually enforced during evaluation, including satisfied/violated states, multi-trait constraint conjunction enforcement, and let binding evaluation from trait defaults.\n\nCRITICAL FINDING: The current collect_all_requirements function in lib.rs uses Type::Real as a sentinel for ALL let bindings (line 4348), meaning two let bindings with different expressions but same name are silently deduped rather than producing a conflict error. Task 188's description specifies 'Let bindings with same name and same expression -> merge; different expressions -> error.' This requires a fix: compare LetDecl content_hashes rather than using a uniform sentinel type. The fix adds a seen_let_hashes HashMap<String, ContentHash> tracker and emits a 'conflicting trait let bindings' diagnostic when hashes differ.\n\nFor eval tests, SimpleConstraintChecker (the real checker, not mocks) is used through the full parse->compile->Engine::check() pipeline, matching the pattern from m5_integration.rs and incremental.rs.",
+  "prerequisites": [
+    {
+      "id": "pre-1",
+      "description": "Create crates/reify-compiler/tests/trait_merge_tests.rs with module imports (reify_compiler::*, reify_types::*) and helper functions compile_module() and compile_first_template() matching the pattern in trait_conformance_tests.rs.",
+      "status": "done",
+      "commit": "98c4021a",
+      "tests": []
+    },
+    {
+      "id": "pre-2",
+      "description": "Create crates/reify-eval/tests/trait_merge_eval.rs with imports (reify_compiler, reify_syntax, reify_eval::Engine, reify_constraints::SimpleConstraintChecker, reify_types::{Satisfaction, Severity, ModulePath, ValueCellId}) and a parse_compile_check() helper that runs the full pipeline: parse -> compile (assert no errors) -> Engine::check().",
+      "status": "done",
+      "commit": "98c4021a",
+      "tests": []
+    }
+  ],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing test `diamond_single_bound_satisfied`: S:A, A:B+C, B:D, C:D, D has `param x : Length`, S provides x. Verify no errors — D's requirement collected once.",
-      "status": "done",
-      "commit": "77da7c4f12bd7b155b731f48892c2c5cea38c4fc"
+      "description": "Write test `two_trait_merge_distinct_params`: trait A{param a:Length}, trait B{param b:Length}, structure S:A+B provides both. Assert: no errors, template has value cells for both 'a' and 'b'.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-2",
-      "type": "impl",
-      "description": "Verify step-1 passes with existing visited-set implementation. If it fails, fix `collect_all_requirements` to handle single-bound deep diamond recursion.",
-      "status": "done",
-      "commit": "77da7c4f12bd7b155b731f48892c2c5cea38c4fc"
+      "type": "test",
+      "description": "Write test `two_trait_merge_shared_param_deduped`: trait A{param x:Length}, trait B{param x:Length}, structure S:A+B provides x once. Assert: no errors, exactly 1 'x' value cell (requirement deduped, not duplicated).",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing test `diamond_missing_member_single_error`: Same hierarchy but S omits x. Assert exactly 1 'missing required member' error (not 2 from B-path and C-path).",
-      "status": "done",
-      "commit": "77da7c4f12bd7b155b731f48892c2c5cea38c4fc"
+      "description": "Write test `diamond_hierarchy_params_deduped`: traits D->B+C->A with D{param x:Length}, structure S:A provides x. Assert: no errors, exactly 1 'x' value cell (diamond dedup via visited set).",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-4",
-      "type": "impl",
-      "description": "Verify step-3 passes. If duplicate errors appear, the visited set is not shared correctly across refinement recursion within a single trait bound.",
-      "status": "done",
-      "commit": "77da7c4f12bd7b155b731f48892c2c5cea38c4fc"
+      "type": "test",
+      "description": "Write test `diamond_hierarchy_default_deduped`: traits D->B+C->A with D{param x:Length=10mm}, structure S:A (no override). Assert: no errors, exactly 1 injected 'x' value cell with default expression.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing test `diamond_default_injected_once`: D provides `param x : Length = 10mm` (default), S:A with no override. Assert exactly 1 'x' value cell injected.",
-      "status": "done",
-      "commit": "77da7c4f12bd7b155b731f48892c2c5cea38c4fc"
+      "description": "Write test `conflict_same_name_different_type`: trait A{param size:Length}, trait B{param size:Mass}, structure S:A+B. Assert: error diagnostic containing 'conflicting' and 'size'.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-6",
-      "type": "impl",
-      "description": "Verify step-5 passes. If duplicate value cells appear, fix default deduplication in `seen_defaults` within diamond recursion.",
-      "status": "done",
-      "commit": "77da7c4f12bd7b155b731f48892c2c5cea38c4fc"
+      "type": "test",
+      "description": "Write test `constraint_conjunction_from_two_traits`: trait A{param x:Length, constraint x > 0mm}, trait B{param x:Length, constraint x < 100mm}, structure S:A+B{param x:Length=5mm}. Assert: no errors, at least 2 constraints in template (both injected conjunctively).",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing test `diamond_constraint_from_root`: D has `param x : Length` and `constraint x > 0mm`, S:A provides x. Verify constraint is injected and no errors.",
-      "status": "done",
-      "commit": "77da7c4f12bd7b155b731f48892c2c5cea38c4fc"
+      "description": "Write test `constraint_conjunction_three_traits`: traits A, B, C each with distinct constraint on x, structure S:A+B+C{param x:Length=5mm}. Assert: no errors, at least 3 constraints (one from each trait).",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-8",
-      "type": "impl",
-      "description": "Verify step-7 passes. Unlabeled constraints from D should be injected once via the visited set preventing re-traversal of D.",
-      "status": "done",
-      "commit": "77da7c4f12bd7b155b731f48892c2c5cea38c4fc"
+      "type": "test",
+      "description": "Write test `let_merge_same_expr`: trait A{let y=42}, trait B{let y=42}, structure S:A+B. Assert: no errors, exactly 1 'y' value cell with kind Let (same expression deduped).",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write failing test `diamond_members_at_every_level`: D has param d, B has param b, C has param c, A has param a. S:A provides all four. Verify no errors and all 4 members satisfied.",
-      "status": "done",
-      "commit": "77da7c4f12bd7b155b731f48892c2c5cea38c4fc"
+      "description": "Write test `let_conflict_different_expr`: trait A{let y=42}, trait B{let y=99}, structure S:A+B. Assert: error diagnostic about conflicting let bindings for 'y'. This test will FAIL against current code because collect_all_requirements uses Type::Real sentinel for all lets without comparing expressions.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Verify step-9 passes. Each level's unique members should be collected once via depth-first traversal.",
-      "status": "done",
-      "commit": "77da7c4f12bd7b155b731f48892c2c5cea38c4fc"
+      "description": "Fix let binding conflict detection in collect_all_requirements (lib.rs). Add seen_let_hashes: &mut HashMap<String, ContentHash> parameter. For DefaultKind::Let(let_decl), compare content_hash of the let expression with previously seen hash for same name. Same hash -> dedup (skip). Different hash -> emit 'conflicting trait let bindings' diagnostic. Update the call site in check_trait_conformance to pass the new HashMap. This makes step-9 pass while step-8 continues to pass.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write failing test `diamond_let_default_deduped`: D provides `let y = 42`, S:A. Verify exactly 1 'y' value cell injected (let default dedup in diamond).",
-      "status": "done",
-      "commit": "77da7c4f12bd7b155b731f48892c2c5cea38c4fc"
+      "description": "Write test `let_from_trait_injected`: trait A{let y=42}, structure S:A (no y member). Assert: no errors, 'y' value cell exists with kind Let and default_expr.is_some().",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-12",
-      "type": "impl",
-      "description": "Verify step-11 passes. Let defaults use DefaultKind::Let and are deduped by name in seen_defaults.",
-      "status": "done",
-      "commit": "77da7c4f12bd7b155b731f48892c2c5cea38c4fc"
+      "type": "test",
+      "description": "Write eval test `merged_trait_constraint_satisfied`: source with trait Safe{param x:Length, constraint x > 0mm}, structure S:Safe{param x:Length=5mm}. Full pipeline parse->compile->check. Assert: constraint result is Satisfied.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-13",
       "type": "test",
-      "description": "Write failing test `diamond_deep_five_level`: E:D, B:E, C:D, A:B+C, S:A — 5 levels. D has param x, E has param y. S provides both. Verify no errors and no duplication.",
-      "status": "done",
-      "commit": "77da7c4f12bd7b155b731f48892c2c5cea38c4fc"
+      "description": "Write eval test `merged_trait_constraint_violated`: source with trait Bounded{param x:Length, constraint x > 10mm}, structure S:Bounded{param x:Length=5mm}. Full pipeline parse->compile->check. Assert: constraint result is Violated (5mm < 10mm).",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-14",
-      "type": "impl",
-      "description": "Verify step-13 passes. Deep hierarchies should work identically since visited set is shared across the entire recursive traversal.",
-      "status": "done",
-      "commit": "77da7c4f12bd7b155b731f48892c2c5cea38c4fc"
+      "type": "test",
+      "description": "Write eval test `multi_trait_constraints_all_enforced`: source with trait A{param x:Length, constraint x > 0mm}, trait B{param x:Length, constraint x < 100mm}, structure S:A+B{param x:Length=5mm}. Full pipeline check. Assert: 2+ constraints, all Satisfied.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-15",
+      "type": "test",
+      "description": "Write eval test `let_from_trait_evaluated`: source with trait WithComputed{let y=42}, structure S:WithComputed{}. Full pipeline eval. Assert: ValueCellId('S','y') evaluates to Value::Int(42) or Value::Real(42.0).",
+      "status": "pending",
+      "commit": null
     }
   ],
   "design_decisions": [
     {
-      "decision": "Test the single-bound deep diamond (S:A, A:B+C, B:D, C:D) as distinct from the existing multi-bound diamond (X:A+B, A:C, B:C)",
-      "rationale": "The existing diamond_inheritance_deduplication test uses two direct trait bounds on the structure. Task 189 specifically describes a single bound with deeper refinement hierarchy. The visited set behavior is exercised differently: via recursion within a single collect_all_requirements call vs. shared across multiple top-level calls."
+      "decision": "Create two separate test files rather than extending existing trait_conformance_tests.rs",
+      "rationale": "The existing file has 24 tests from tasks 188/189 mixed with general conformance tests. A dedicated trait_merge_tests.rs for compiler-side and trait_merge_eval.rs for eval-side provides cleaner organization and makes the task-190 test suite self-contained."
     },
     {
-      "decision": "Verify single-error semantics for missing members in diamond",
-      "rationale": "A key correctness property: if D requires param x and it's missing, the user should see exactly 1 error, not 2 (one per path to D). The visited set prevents this, but we must explicitly test it."
+      "decision": "Fix let binding conflict detection by comparing LetDecl content_hash values instead of using a uniform Type::Real sentinel",
+      "rationale": "Task 188 specifies 'Let bindings with same name and same expression -> merge; different expressions -> error.' The current code (line 4348) maps all lets to Type::Real, which silently dedupes them regardless of expression content. Using content_hash gives exact structural equality comparison that correctly distinguishes same vs different expressions."
     },
     {
-      "decision": "Implementation likely already complete — focus on test coverage",
-      "rationale": "The collect_all_requirements function (lib.rs:4268-4372) already has the visited HashSet with diamond early-return (line 4282-4284), seen_names for requirement dedup, and seen_defaults for default dedup. Task 188 (dependency, done) implemented this. Task 189's value is proving correctness for the specific deep diamond topology."
+      "decision": "Use SimpleConstraintChecker (real checker) for eval tests rather than MockConstraintChecker",
+      "rationale": "The goal is to verify that merged trait constraints are actually enforced during evaluation end-to-end. Using the real checker ensures the full pipeline is tested: parse -> compile (constraint injection) -> eval (expression evaluation) -> check (constraint satisfaction). Mocks would not test the actual enforcement path."
+    },
+    {
+      "decision": "Use full parse->compile->eval pipeline for eval tests rather than TopologyTemplateBuilder",
+      "rationale": "Builder-based tests would only exercise the eval engine, not the trait merging logic in the compiler. Since the goal is to verify that merged constraints are enforced during evaluation, we need the complete pipeline to ensure trait constraints survive compilation and reach the evaluator."
     }
   ],
   "reuse": [
     {
-      "what": "compile_module / compile_first_template helpers",
-      "where": "crates/reify-compiler/tests/trait_conformance_tests.rs:10-21",
-      "how": "Reuse existing test helpers for parsing and compiling test source, returning CompiledModule or (TopologyTemplate, Vec<Diagnostic>)."
+      "what": "compile_module() and compile_first_template() helper functions",
+      "where": "crates/reify-compiler/tests/trait_conformance_tests.rs lines 10-21",
+      "how": "Copy the same helper pattern into the new trait_merge_tests.rs. Uses reify_syntax::parse() + reify_compiler::compile()."
     },
     {
-      "what": "collect_all_requirements visited-set pattern",
-      "where": "crates/reify-compiler/src/lib.rs:4268-4372",
-      "how": "The existing implementation with HashSet<String> visited set and early return on re-visit already handles diamond deduplication. Tests verify this behavior."
+      "what": "parse_and_compile() helper and Engine::check() eval pattern",
+      "where": "crates/reify-eval/tests/m5_integration.rs lines 16-33 and lines 47-111",
+      "how": "Adapt for trait_merge_eval.rs. Pattern: parse -> compile (assert no compile errors) -> Engine::new(Box::new(SimpleConstraintChecker), None) -> check(&module) -> assert on constraint_results."
     },
     {
-      "what": "Error filtering pattern from existing tests",
-      "where": "crates/reify-compiler/tests/trait_conformance_tests.rs (throughout)",
-      "how": "Use the established pattern: filter diagnostics by Severity::Error, assert count and message content."
+      "what": "SimpleConstraintChecker for real constraint evaluation",
+      "where": "crates/reify-constraints (re-exported)",
+      "how": "Import and instantiate for eval tests. Used in incremental.rs and interactive_edit_loop.rs for real constraint satisfaction testing."
+    },
+    {
+      "what": "collect_all_requirements() dedup infrastructure (visited, seen_names, seen_defaults)",
+      "where": "crates/reify-compiler/src/lib.rs lines 4270-4372",
+      "how": "Extend with seen_let_hashes HashMap for the let binding conflict fix. Follows the existing pattern of name-keyed dedup maps."
+    },
+    {
+      "what": "Reify language syntax for trait/structure definitions",
+      "where": "examples/m5_trait_structure.ri and existing test sources in trait_conformance_tests.rs",
+      "how": "Use inline source strings with the same syntax patterns: trait Name { param x : Length constraint ... let y = ... }, structure def S : TraitA + TraitB { ... }"
     }
   ],
-  "_session_id": "189-796bdbd2",
-  "_created_at": "2026-03-25T07:12:49.220832+00:00"
+  "_session_id": "190-2dc4593b",
+  "_created_at": "2026-03-25T07:28:06.839318+00:00"
 }
