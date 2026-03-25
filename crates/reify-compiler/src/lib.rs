@@ -577,6 +577,18 @@ pub fn implicitly_converts_to(from: &Type, to: &Type) -> bool {
             Type::Vector { n: vn, quantity: vq },
         ) => tn == vn && tq == vq,
 
+        // Rule 2a: Q -> Tensor<0,_,Q>  (N is irrelevant for rank-0)
+        (
+            from_ty,
+            Type::Tensor { rank: 0, quantity: tq, .. },
+        ) => from_ty == tq.as_ref(),
+
+        // Rule 2b: Tensor<0,_,Q> -> Q  (N is irrelevant for rank-0)
+        (
+            Type::Tensor { rank: 0, quantity: tq, .. },
+            to_ty,
+        ) => tq.as_ref() == to_ty,
+
         _ => false,
     }
 }
