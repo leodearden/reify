@@ -1,196 +1,214 @@
 {
-  "task_id": "186",
-  "title": "Trait conformance: refinement chains",
+  "task_id": "265",
+  "title": "Annotation framework: types and compiler",
   "files": [
+    "crates/reify-types/src/annotation.rs",
+    "crates/reify-types/src/lib.rs",
+    "crates/reify-types/src/expr.rs",
+    "crates/reify-types/tests/exports.rs",
     "crates/reify-compiler/src/lib.rs",
-    "crates/reify-compiler/tests/trait_conformance_tests.rs"
+    "crates/reify-compiler/tests/annotation_compile_tests.rs",
+    "crates/reify-compiler/tests/trait_conformance_tests.rs",
+    "crates/reify-test-support/src/builders.rs",
+    "crates/reify-expr/src/lib.rs",
+    "crates/reify-expr/tests/collection_eval_tests.rs",
+    "crates/reify-expr/tests/lambda_eval_tests.rs"
   ],
   "modules": [
-    "crates/reify-compiler"
+    "crates/reify-types",
+    "crates/reify-compiler",
+    "crates/reify-test-support",
+    "crates/reify-expr"
   ],
-  "analysis": "The public `check_trait_conformance()` (from task 182) checks a single `CompiledTrait` against a structure's members \u2014 its doc explicitly states 'Refinement hierarchy walking remains the caller's responsibility.' The private `collect_all_requirements()` already walks refinement chains recursively with dedup/conflict detection, but it's tightly coupled to `check_and_apply_trait_conformance()` which produces `Diagnostic`s and injects defaults. Task 186 creates a new public function `check_trait_conformance_chain()` that walks refinement chains and returns structured `Vec<ConformanceError>` \u2014 bridging the pure validation API (task 182) with chain-aware semantics. Two new `ConformanceError` variants are needed: `ConflictingRequirement` (same member name, different types across chain) and `UnresolvedTrait` (refinement references unknown trait). The function reuses `check_trait_conformance` for per-requirement checking after collecting/deduplicating requirements from the chain.",
-  "prerequisites": [],
+  "analysis": "Task 264 (dependency) added parsed Annotation { name: String, args: Vec<Expr>, span: SourceSpan } to reify-syntax and the annotations: Vec<Annotation> field to all 10 declaration AST types (StructureDef, OccurrenceDef, FnDef, TraitDecl, FieldDef, PurposeDef, EnumDecl, ImportDecl, ConstraintDef, UnitDecl). Task 265 must: (1) define a compiled Annotation type in reify-types with AnnotationArg enum for resolved argument values, (2) add annotations fields to all 5 compiled output types (TopologyTemplate, CompiledFunction, CompiledTrait, CompiledField, CompiledPurpose), (3) implement compiler lowering from parsed syntax::Annotation to compiled types::Annotation by converting Expr args to AnnotationArg values, (4) validate known annotations against valid contexts. Adding the annotations field to CompiledFunction (in reify-types) and TopologyTemplate/CompiledTrait/etc. (in reify-compiler) requires mechanical updates to all struct construction sites across reify-compiler, reify-test-support, reify-expr, and reify-compiler tests. The trait_conformance_tests.rs file alone has ~30 direct CompiledTrait {} constructions and reify-expr has ~10 direct CompiledFunction {} constructions that all need annotations: vec![].",
+  "prerequisites": [
+    {
+      "id": "pre-1",
+      "description": "Create crates/reify-types/src/annotation.rs with Annotation struct and AnnotationArg enum. Annotation has fields: name (String), args (Vec<AnnotationArg>), span (SourceSpan). AnnotationArg is an enum with variants: String(String), Int(i64), Real(f64), Bool(bool), Ident(String). Derive Debug, Clone on Annotation; derive Debug, Clone, PartialEq on AnnotationArg.",
+      "status": "done",
+      "commit": "52afdce2",
+      "tests": []
+    },
+    {
+      "id": "pre-2",
+      "description": "Add `pub mod annotation;` to crates/reify-types/src/lib.rs and add re-exports: `pub use annotation::{Annotation, AnnotationArg};`",
+      "status": "done",
+      "commit": "52afdce2",
+      "tests": []
+    },
+    {
+      "id": "pre-3",
+      "description": "Add `pub annotations: Vec<crate::annotation::Annotation>` field to CompiledFunction in crates/reify-types/src/expr.rs (after content_hash). Then fix ALL downstream CompiledFunction {} construction sites by adding `annotations: vec![]`: (a) crates/reify-compiler/src/lib.rs line ~5293, (b) crates/reify-expr/src/lib.rs (~6 sites in test helpers make_double_fn, make_fn_with_let, make_factorial_fn, make_infinite_fn, area_fn in eval_user_fn_dimension_args, process1+process2 in eval_user_fn_overload_by_arity), (c) crates/reify-expr/tests/collection_eval_tests.rs (~4 sites: double_fn, is_even_fn, add_fn, is_even_fn), (d) crates/reify-expr/tests/lambda_eval_tests.rs (~2 sites: double_fn instances).",
+      "status": "done",
+      "commit": "52afdce2",
+      "tests": []
+    },
+    {
+      "id": "pre-4",
+      "description": "Add `pub annotations: Vec<reify_types::Annotation>` field to TopologyTemplate, CompiledTrait, CompiledField, CompiledPurpose in crates/reify-compiler/src/lib.rs. Then fix ALL construction sites in this file: (a) TopologyTemplate {} in compile_entity (~line 3850): add annotations: vec![], (b) CompiledTrait {} in compile_trait (~line 1999) and check_trait_conformance_chain flat_trait (~line 267): add annotations: vec![], (c) CompiledField {} in compile_field (~line 5390): add annotations: vec![], (d) CompiledPurpose {} in compile_purpose (~line 2189): add annotations: vec![].",
+      "status": "done",
+      "commit": "52afdce2",
+      "tests": []
+    },
+    {
+      "id": "pre-5",
+      "description": "Fix CompiledTrait {} construction sites in crates/reify-compiler/tests/trait_conformance_tests.rs (~30 instances including empty_trait() helper, individual test functions, make_sub_trait() helper, make_port_trait-style helpers). Add `annotations: vec![]` to every CompiledTrait struct literal.",
+      "status": "done",
+      "commit": "52afdce2",
+      "tests": []
+    },
+    {
+      "id": "pre-6",
+      "description": "Fix construction sites in crates/reify-test-support/src/builders.rs: (a) TopologyTemplateBuilder field + build() (~line 678), (b) Two CompiledTraitBuilder::build() methods (~lines 1138 and 1660), (c) CompiledField {} constructions in field builders, (d) CompiledPurpose {} constructions in purpose builders. Add `annotations: vec![]` to each struct literal. Also add an `annotations(Vec<Annotation>)` builder method to TopologyTemplateBuilder for setting annotations in test fixtures.",
+      "status": "done",
+      "commit": "52afdce2",
+      "tests": []
+    }
+  ],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing test `chain_single_trait_no_refinement`: call `check_trait_conformance_chain` on a trait with no refinements and a structure missing a param \u2192 expect MissingParam. Fails because function does not exist yet.",
-      "status": "done",
-      "commit": "c1b2b2bb303eb5833fedd4ec51fb96b34f8aaacd"
+      "description": "Write test in crates/reify-types/tests/exports.rs: new test fn `annotation_types_exported` that constructs Annotation { name: \"test\".into(), args: vec![AnnotationArg::String(\"msg\".into())], span: SourceSpan::new(0,0) } and exercises all AnnotationArg variants (String, Int, Real, Bool, Ident). Verifies types are accessible from crate root via `reify_types::Annotation` and `reify_types::AnnotationArg`.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Add `check_trait_conformance_chain(structure_members, trait_name, trait_registry, ports, subs) -> Vec<ConformanceError>` to lib.rs. For the base case: look up trait_name in registry, delegate to existing `check_trait_conformance`. Test passes.",
-      "status": "done",
-      "commit": "c1b2b2bb303eb5833fedd4ec51fb96b34f8aaacd"
+      "description": "Verify prerequisites pre-1 through pre-6 make the project compile. Run `cargo check -p reify-types -p reify-compiler -p reify-expr -p reify-test-support` and fix any compilation errors. The exports test from step-1 should pass.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing test `chain_two_level_walks_parent`: trait B requires `width : Length`, trait A refines B and requires `height : Length`. Call chain fn on trait A; structure has `height` but not `width` \u2192 MissingParam for `width`. Fails because chain walking not implemented.",
-      "status": "done",
-      "commit": "788ba1598ac47b3c9d97a0b11a7171d385bd7ee8"
+      "description": "Write failing test in crates/reify-compiler/tests/annotation_compile_tests.rs: `annotation_on_structure_propagates`. Parse `@test structure S { param x : Real }` via compile_module helper (parse + compile pattern from other test files). Assert module has no error-level diagnostics, templates[0].annotations.len() == 1, annotations[0].name == \"test\", annotations[0].args.is_empty().",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Implement recursive refinement walking in `check_trait_conformance_chain`: before checking the current trait, recurse into each refinement. Collect all requirements into a Vec with a `visited: HashSet<String>` and `seen_names: HashMap<String, RequirementKind>` for dedup. Check all collected requirements against structure members. Test passes.",
-      "status": "done",
-      "commit": "c1b2b2bb303eb5833fedd4ec51fb96b34f8aaacd"
+      "description": "Implement annotation lowering for structures/occurrences: (1) Add `annotations: &'a [reify_syntax::Annotation]` field to EntityDefRef struct (~line 2850), update From<StructureDef> and From<OccurrenceDef> impls to pass &s.annotations / &o.annotations. (2) Write standalone fn `lower_annotations(parsed: &[reify_syntax::Annotation], diagnostics: &mut Vec<Diagnostic>) -> Vec<reify_types::Annotation>` that maps each parsed annotation: name passes through, args are lowered from Expr to AnnotationArg (NumberLiteral with value==floor and fits i64\u2192Int else\u2192Real, StringLiteral\u2192String, BoolLiteral\u2192Bool, Ident\u2192Ident, other\u2192diagnostic warning and skip arg). (3) In compile_entity, call lower_annotations(structure.annotations, diagnostics) and set TopologyTemplate.annotations field.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write test `chain_three_level_all_satisfied`: C requires `x`, B : C requires `y`, A : B requires `z`. Structure provides all three \u2192 no errors. Verifies multi-level recursive walking works.",
-      "status": "done",
-      "commit": "788ba1598ac47b3c9d97a0b11a7171d385bd7ee8"
+      "description": "Write test: `annotation_with_args_on_function_propagates`. Parse `@deprecated(\"use new_calc\") fn old_calc(x: Real) -> Real { x }`. Assert functions[0].annotations[0].name == \"deprecated\", annotations[0].args.len() == 1, annotations[0].args[0] == AnnotationArg::String(\"use new_calc\".into()).",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Verify test passes with existing recursive implementation from step-4. No code changes expected \u2014 commit confirms multi-level chains work.",
-      "status": "done",
-      "commit": "788ba1598ac47b3c9d97a0b11a7171d385bd7ee8"
+      "description": "In compile_function(), add annotation lowering: call lower_annotations(&fn_def.annotations, diagnostics) and set annotations field in the CompiledFunction return struct literal (~line 5293).",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write test `chain_missing_deep_ancestor_member`: A : B : C, C requires `base : Length`, structure provides A's and B's members but not `base` \u2192 exactly 1 MissingParam error for `base`.",
-      "status": "done",
-      "commit": "788ba1598ac47b3c9d97a0b11a7171d385bd7ee8"
+      "description": "Write three tests: (a) `annotation_on_trait_propagates`: parse `@deprecated trait Measurable { param width : Length }`, assert trait_defs[0].annotations[0].name == \"deprecated\". (b) `annotation_on_field_propagates`: parse `@deprecated field temp_field : Point3 -> Real = analytical { 0.0 }`, assert fields[0].annotations[0].name == \"deprecated\". (c) `annotation_on_purpose_propagates`: parse a structure S + `@deprecated purpose P(subject: S) { minimize subject.x }`, assert compiled_purposes[0].annotations[0].name == \"deprecated\".",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Verify test passes with existing recursive implementation. No code changes expected \u2014 commit confirms deep ancestor error propagation.",
-      "status": "done",
-      "commit": "788ba1598ac47b3c9d97a0b11a7171d385bd7ee8"
+      "description": "Add annotation lowering in compile_trait (call lower_annotations(&trait_decl.annotations, diagnostics), set CompiledTrait.annotations), compile_field (call lower_annotations(&field_def.annotations, diagnostics), set CompiledField.annotations), and compile_purpose (call lower_annotations(&purpose_def.annotations, diagnostics), set CompiledPurpose.annotations).",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write test `chain_diamond_dedup_satisfied`: C requires `x : Length`. A : C, B : C. Call chain fn with both A and B via `check_trait_conformance_multi` helper (simulating `structure : A + B`). Structure has `x` \u2192 no errors, requirement from C not checked twice.",
-      "status": "done",
-      "commit": "788ba1598ac47b3c9d97a0b11a7171d385bd7ee8"
+      "description": "Write validation tests: (a) `known_annotation_valid_context_no_warning`: `@test structure S { param x : Real }` produces no warning-level diagnostics about annotations. (b) `known_annotation_invalid_context_produces_warning`: `@test field f : Point3 -> Real = analytical { 0.0 }` produces a warning diagnostic containing '@test' and 'field'. (c) `deprecated_valid_on_any_context`: `@deprecated fn f(x: Real) -> Real { x }` and `@deprecated structure S { param x : Real }` produce no annotation warnings. (d) `unknown_annotation_produces_warning`: `@foobar structure S { param x : Real }` produces a warning diagnostic containing 'foobar' and 'unknown'.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Add `check_trait_conformance_multi(structure_members, trait_names, trait_registry, ports, subs) -> Vec<ConformanceError>` that iterates over multiple trait bounds sharing a visited set, preventing duplicate chain walks. Test passes.",
-      "status": "done",
-      "commit": "c1b2b2bb303eb5833fedd4ec51fb96b34f8aaacd"
+      "description": "Add annotation context validation. Define fn `validate_annotations(annotations: &[reify_types::Annotation], context: &str, span: SourceSpan, diagnostics: &mut Vec<Diagnostic>)` where context is one of \"structure\", \"occurrence\", \"function\", \"trait\", \"field\", \"purpose\". Known annotation rules: @test valid on [structure, occurrence, function]; @optimized valid on [structure, occurrence]; @solver_hint valid on [structure, occurrence]; @deprecated valid on any context. Misplaced known annotations emit Diagnostic::warning. Unknown annotation names emit Diagnostic::warning with 'unknown annotation' message. Call validate_annotations at each lowering site (compile_entity, compile_function, compile_trait, compile_field, compile_purpose) after lower_annotations.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write test `chain_diamond_missing_exactly_one_error`: same diamond (A : C, B : C, C requires `x`), but structure lacks `x` \u2192 exactly 1 MissingParam error (not 2 from walking C via both A and B).",
-      "status": "done",
-      "commit": "788ba1598ac47b3c9d97a0b11a7171d385bd7ee8"
+      "description": "Write comprehensive edge-case tests: (a) `multiple_annotations_all_preserved`: `@test @deprecated(\"old\") structure S { param x : Real }` has 2 annotations, first.name==\"test\" and second has String arg. (b) `annotation_arg_types_lowered`: `@config(\"name\", 42, 3.14, true, mechanical) structure S { param x : Real }` has 5 args: String, Int(42), Real(3.14), Bool(true), Ident(\"mechanical\"). (c) `annotation_on_occurrence_propagates`: `@test occurrence Heat { param temp : Real }` propagates to template with entity_kind == Occurrence.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "Dedup in visited set ensures C's requirement added only once. Verify test passes \u2014 no additional code changes expected.",
-      "status": "done",
-      "commit": "788ba1598ac47b3c9d97a0b11a7171d385bd7ee8"
-    },
-    {
-      "id": "step-13",
-      "type": "test",
-      "description": "Write failing test `chain_conflicting_requirements`: C requires `x : Length`, D requires `x : Mass`. Trait A refines both C and D. Call chain fn \u2192 expect ConflictingRequirement { name: 'x', type_a: Length, type_b: Mass }. Fails because variant does not exist.",
-      "status": "done",
-      "commit": "4583c3eb"
-    },
-    {
-      "id": "step-14",
-      "type": "impl",
-      "description": "Add `ConflictingRequirement { name: String, type_a: Type, type_b: Type }` variant to ConformanceError. In chain walker, when collecting requirements, detect same name with different type via `seen_names` map and emit ConflictingRequirement. Test passes.",
-      "status": "done",
-      "commit": "4583c3eb"
-    },
-    {
-      "id": "step-15",
-      "type": "test",
-      "description": "Write failing test `chain_unresolved_trait`: trait A has refinement 'Nonexistent' (not in registry). Call chain fn \u2192 expect UnresolvedTrait { name: 'Nonexistent' }. Fails because variant does not exist.",
-      "status": "done",
-      "commit": "b251ebe7"
-    },
-    {
-      "id": "step-16",
-      "type": "impl",
-      "description": "Add `UnresolvedTrait { name: String }` variant to ConformanceError. In chain walker, when trait_name is not found in trait_registry, push UnresolvedTrait error and return early. Test passes.",
-      "status": "done",
-      "commit": "b251ebe7"
-    },
-    {
-      "id": "step-17",
-      "type": "test",
-      "description": "Write integration test `integration_deep_chain_defaults_no_duplicate_injection`: C has default `size : Length = 10mm`, A : C, B : C. `structure def X : A + B {}` \u2192 compile_first_template, expect exactly 1 'size' value cell (not 2). Verifies no duplicate default injection from shared ancestors in the full compilation pipeline.",
-      "status": "done",
-      "commit": "0b745132442012607d7e0d1bb4fbe1e6ad97ce23"
-    },
-    {
-      "id": "step-18",
-      "type": "impl",
-      "description": "Verify existing `collect_all_requirements` dedup logic handles diamond defaults correctly. Test should pass based on existing visited-set logic. If not, fix the dedup in collect_all_requirements. Commit confirms end-to-end chain default injection is correct.",
-      "status": "done",
-      "commit": "0b745132442012607d7e0d1bb4fbe1e6ad97ce23"
+      "description": "Verify all tests pass. Fix any issues with annotation argument lowering (ensure NumberLiteral distinguishes Int from Real: if value == value.floor() && value.abs() < i64::MAX as f64, use AnnotationArg::Int(value as i64), else AnnotationArg::Real(value)). Ensure occurrence annotations flow through EntityDefRef correctly. Run full test suite: `cargo test -p reify-types -p reify-compiler -p reify-expr -p reify-test-support`.",
+      "status": "pending",
+      "commit": null
     }
   ],
   "design_decisions": [
     {
-      "decision": "New function `check_trait_conformance_chain` rather than modifying `check_trait_conformance`",
-      "rationale": "The existing function has a clean single-trait contract (documented: 'Refinement hierarchy walking remains the caller's responsibility'). Adding registry/chain parameters would break existing callers and conflate two responsibilities. A separate chain-aware function composes with the single-trait checker."
+      "decision": "AnnotationArg is a simple enum of literal values (String, Int, Real, Bool, Ident) rather than reusing CompiledExpr",
+      "rationale": "Annotations are compile-time metadata, not runtime expressions. Using a simple value enum keeps the API clean, prevents misuse, and avoids pulling in the full expression tree for what should be constant data. Complex expressions in annotation positions emit a diagnostic and are skipped."
     },
     {
-      "decision": "Also add `check_trait_conformance_multi` for multiple trait bounds with shared dedup state",
-      "rationale": "Diamond patterns (structure : A + B where A : C and B : C) require shared visited/seen state across multiple top-level trait bounds. A multi-trait entry point shares dedup state, preventing duplicate requirement collection from shared ancestors."
+      "decision": "Include SourceSpan on compiled Annotation",
+      "rationale": "Downstream consumers (LSP hover, deprecation warnings, test discovery) need to point back to the annotation source location. While validation happens in the compiler, the span enables richer downstream tooling."
     },
     {
-      "decision": "Return `Vec<ConformanceError>` (same return type as single-trait checker) with new variants for chain-specific errors",
-      "rationale": "Keeps the error type unified. Callers can handle all conformance errors with one match. ConflictingRequirement and UnresolvedTrait are legitimate conformance errors that only arise in chain contexts."
+      "decision": "Validation uses warnings (not errors) for context violations and unknown annotations",
+      "rationale": "Forward compatibility: new annotations may be added in the future, and third-party annotations may be valid. Warnings inform the user without blocking compilation. This matches the pragmas pattern already in use."
     },
     {
-      "decision": "Function takes `trait_name: &str` + `trait_registry: &HashMap<String, &CompiledTrait>` instead of `&CompiledTrait`",
-      "rationale": "Chain walking requires looking up parent traits by name, which needs the registry. The entry point is a trait name, and the function resolves it internally."
+      "decision": "Annotation lowering is a standalone function reused across all compile_X functions rather than per-type logic",
+      "rationale": "The lowering logic (Expr to AnnotationArg conversion) is identical regardless of declaration type. A single lower_annotations() function eliminates duplication and ensures consistent behavior."
     },
     {
-      "decision": "Internal chain walker collects all requirements first, then checks \u2014 rather than checking each trait independently",
-      "rationale": "Collect-then-check enables deduplication of requirements from diamond patterns. Checking independently would produce duplicate errors for shared ancestors."
+      "decision": "NumberLiteral args are classified as Int when value == floor(value) and fits in i64, else Real",
+      "rationale": "The parser produces f64 for all numbers. Integer annotation args (e.g., @solver_hint(max_iterations, 100)) are common and downstream consumers will want to match on Int without lossy conversion."
     },
     {
-      "decision": "Keep `collect_all_requirements` private; new public function has its own chain-walking logic",
-      "rationale": "collect_all_requirements is tightly coupled to the internal Diagnostic/default-injection pipeline. The new public function has its own simpler chain-walking logic that returns ConformanceError variants, avoiding coupling to the internal compilation flow."
+      "decision": "annotations: Vec<Annotation> field added to CompiledFunction in reify-types rather than a wrapper in reify-compiler",
+      "rationale": "CompiledFunction is the canonical compiled function type shared across all crates. Adding annotations here keeps the single-source-of-truth principle. The cost is mechanical updates to ~15 construction sites across reify-expr and reify-compiler, but these are trivial (annotations: vec![])."
     }
   ],
   "reuse": [
     {
-      "what": "`check_trait_conformance()` single-trait checker",
-      "where": "lib.rs lines 144-224",
-      "how": "After collecting all requirements from the chain into a temporary CompiledTrait (or inline Vec), delegate to this function for the actual member-by-member checking against structure members, ports, and subs."
+      "what": "Existing Diagnostic infrastructure (Diagnostic::warning, DiagnosticLabel, SourceSpan)",
+      "where": "crates/reify-types/src/diagnostics.rs",
+      "how": "Use for all annotation validation diagnostics: wrong context warnings and unknown annotation warnings"
     },
     {
-      "what": "Chain-walking pattern from `collect_all_requirements()`",
-      "where": "lib.rs lines 4945-5063",
-      "how": "The new chain walker follows the same algorithmic pattern: visited set for diamond dedup, seen_names map for conflict detection, depth-first parent-first recursion. Adapted to emit ConformanceError instead of Diagnostic."
+      "what": "compile_module() test helper pattern",
+      "where": "crates/reify-compiler/tests/*.rs (e.g., visibility_compile_tests.rs)",
+      "how": "New annotation_compile_tests.rs follows the same pattern: parse source string, call reify_compiler::compile(), assert on compiled output"
     },
     {
-      "what": "Test helpers: `empty_trait()`, `test_span()`, `compile_module()`, `compile_first_template()`",
-      "where": "trait_conformance_tests.rs lines 10-279",
-      "how": "Reuse all four helpers. Unit tests construct CompiledTraits directly (using empty_trait + modifications). Integration tests use compile_first_template to exercise the full pipeline."
+      "what": "ContentHash combining pattern",
+      "where": "crates/reify-types/src/hash.rs, used throughout compiler",
+      "how": "Annotation hashes should be included in parent type content_hash computation at each compile_X function for incremental build correctness"
     },
     {
-      "what": "Existing ConformanceError variants (MissingParam, TypeMismatch, etc.)",
-      "where": "lib.rs lines 111-138",
-      "how": "Chain function returns the same error variants for per-member failures. Only adds ConflictingRequirement and UnresolvedTrait as new chain-specific variants."
+      "what": "EntityDefRef adapter pattern",
+      "where": "crates/reify-compiler/src/lib.rs (~line 2850)",
+      "how": "Extend EntityDefRef with annotations: &'a [reify_syntax::Annotation] field, update From impls to pass through from StructureDef/OccurrenceDef"
     },
     {
-      "what": "Diamond dedup algorithm from `collect_all_requirements`",
-      "where": "lib.rs lines 4957-4958, 4994-5008",
-      "how": "Same pattern: `visited.insert(trait_name)` for cycle/diamond prevention, `seen_names.get()` for requirement conflict detection."
+      "what": "TopologyTemplateBuilder in test-support",
+      "where": "crates/reify-test-support/src/builders.rs",
+      "how": "Add .annotations() builder method so test fixtures can set annotations on templates"
+    },
+    {
+      "what": "errors_only() / warnings filtering test pattern",
+      "where": "crates/reify-compiler/tests/visibility_compile_tests.rs and similar",
+      "how": "Use to filter diagnostics in annotation validation tests, checking for warning-level diagnostics on invalid contexts"
     }
   ],
-  "_session_id": "186-215f216d",
-  "_created_at": "2026-03-25T02:48:03.976820+00:00"
+  "_session_id": "265-ce58e0d4",
+  "_created_at": "2026-03-25T03:24:30.567674+00:00"
 }
