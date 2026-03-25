@@ -301,58 +301,40 @@ async fn claude_send_message(
     text: String,
     context: Option<reify_gui::claude_bridge::MessageContext>,
 ) -> Result<String, String> {
-    // Lazy-spawn the sidecar if it isn't running yet, then wait for ready.
-    let ready_notify = {
-        let mut sidecar_guard = state.sidecar.lock().await;
-        if sidecar_guard.is_none() {
-            use std::sync::Arc;
+    use std::sync::Arc;
 
-            // Resolve the sidecar binary path relative to the app bundle.
-            // In development, the sidecar is in the adjacent sidecar/ directory.
-            let sidecar_path = app
-                .path()
-                .resource_dir()
-                .map(|p| p.join("sidecar").join("reify-sidecar"))
-                .unwrap_or_else(|_| std::path::PathBuf::from("sidecar/reify-sidecar"));
+    // Resolve the sidecar binary path relative to the app bundle.
+    // In development, the sidecar is in the adjacent sidecar/ directory.
+    let sidecar_path = app
+        .path()
+        .resource_dir()
+        .map(|p| p.join("sidecar").join("reify-sidecar"))
+        .unwrap_or_else(|_| std::path::PathBuf::from("sidecar/reify-sidecar"));
 
-            let app_for_events = app.clone();
-            let engine = Arc::clone(&state.engine);
-            let handle = reify_gui::claude_bridge::spawn_sidecar_impl(
-                &sidecar_path,
-                engine,
-                move |name, payload| {
-                    app_for_events.emit(&name, payload).ok();
-                },
-            )
-            .await?;
+    let app_for_events = app.clone();
+    let engine = Arc::clone(&state.engine);
 
-            // Subscribe to the ready notification BEFORE storing the handle and
-            // releasing the lock. This ensures we don't miss a notify_waiters()
-            // call that fires between the lock drop and the await.
-            let notify = std::sync::Arc::clone(handle.ready_notify());
-            let notified = notify.notified();
-            *sidecar_guard = Some(handle);
-            Some(notified)
-        } else {
-            // Sidecar already running — no need to wait for ready again.
-            None
-        }
-        // sidecar_guard is dropped here, releasing the lock.
-    };
-
-    // If we just spawned a new sidecar, wait for the "ready" signal with a 10s
-    // timeout before sending the message. We do this *outside* the sidecar lock
-    // so other commands (abort, clear_session) remain responsive during startup.
-    // The Notified future was created before the lock was released, so we won't
-    // miss a notification that fires between the lock drop and the await.
-    if let Some(notified) = ready_notify {
-        tokio::time::timeout(
-            std::time::Duration::from_secs(10),
-            notified,
-        )
-        .await
-        .map_err(|_| "Sidecar did not become ready within 10 seconds".to_string())?;
-    }
+    // Lazily spawn the sidecar (if not running) and wait for it to become ready.
+    reify_gui::claude_bridge::ensure_sidecar_ready(
+        &state.sidecar,
+        move || {
+            let path = sidecar_path;
+            let app_c = app_for_events;
+            let eng = engine;
+            async move {
+                reify_gui::claude_bridge::spawn_sidecar_impl(
+                    &path,
+                    eng,
+                    move |name, payload| {
+                        app_c.emit(&name, payload).ok();
+                    },
+                )
+                .await
+            }
+        },
+        std::time::Duration::from_secs(10),
+    )
+    .await?;
 
     reify_gui::claude_bridge::claude_send_message_impl(&state.sidecar, &text, context).await
 }
