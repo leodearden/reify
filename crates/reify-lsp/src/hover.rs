@@ -405,6 +405,35 @@ mod tests {
         assert!(md.contains("Flow direction."), "should contain doc comment, got: {md}");
     }
 
+    // --- edge cases ---
+
+    #[test]
+    fn hover_multiline_doc_renders_all_lines() {
+        let source = "/// First line.\n/// Second line.\nstructure Bracket {\n    param width: Scalar = 80mm\n}";
+        let position = Position::new(2, 12); // on 'Bracket'
+        let md = hover_markdown(source, position).expect("hover should return info");
+        assert!(md.contains("First line."), "should contain first line, got: {md}");
+        assert!(md.contains("Second line."), "should contain second line, got: {md}");
+    }
+
+    #[test]
+    fn hover_doc_with_blank_line_paragraph() {
+        let source = "/// First paragraph.\n///\n/// Second paragraph.\nstructure Bracket {\n    param width: Scalar = 80mm\n}";
+        let position = Position::new(3, 12); // on 'Bracket'
+        let md = hover_markdown(source, position).expect("hover should return info");
+        assert!(md.contains("First paragraph."), "should contain first para, got: {md}");
+        assert!(md.contains("Second paragraph."), "should contain second para, got: {md}");
+    }
+
+    #[test]
+    fn hover_on_documented_param_reference_in_expr_shows_doc() {
+        // Hover on 'width' used in a let expression, not at the declaration site
+        let source = "structure Bracket {\n    /// The width.\n    param width: Scalar = 80mm\n    let doubled = width * 2\n}";
+        let position = Position::new(3, 18); // on 'width' in 'width * 2'
+        let md = hover_markdown(source, position).expect("hover should return info");
+        assert!(md.contains("The width."), "should show doc for referenced param, got: {md}");
+    }
+
     #[test]
     fn hover_on_empty_source_returns_none() {
         let result = compute_hover("", &test_uri(), Position::new(0, 0));
