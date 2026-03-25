@@ -2,8 +2,12 @@
 //!
 //! Tests for Engine::activate_purpose and Engine::deactivate_purpose.
 
+use reify_eval::cache::NodeId;
 use reify_test_support::mocks::MockConstraintChecker;
-use reify_types::{ModulePath, Severity};
+use reify_test_support::{CompiledModuleBuilder, CompiledPurposeBuilder, TopologyTemplateBuilder};
+use reify_test_support::builders::{gt, literal, value_ref};
+use reify_test_support::values::mm;
+use reify_types::{ConstraintNodeId, ModulePath, Severity, Type, ValueCellId};
 
 // ── Helper ──────────────────────────────────────────────────────────
 
@@ -278,5 +282,256 @@ purpose mfg_ready(subject : Structure) {
     assert!(
         engine.is_purpose_active("mfg_ready"),
         "purpose should be re-activatable after fresh eval()"
+    );
+}
+
+// ── Helpers for demand/eval-set tests ─────────────────────────────
+
+/// Build a module with a Bracket template (width param) and a purpose
+/// `mfg_ready` whose constraint references `mfg_ready.width` — after
+/// remap_entity("mfg_ready", "Bracket") this becomes Bracket.width.
+fn bracket_with_purpose_module() -> reify_compiler::CompiledModule {
+    let template = TopologyTemplateBuilder::new("Bracket")
+        .param("Bracket", "width", Type::length(), Some(literal(mm(80.0))))
+        .build();
+
+    // Purpose constraint: mfg_ready.width > 50mm
+    // After remap_entity("mfg_ready", "Bracket") → Bracket.width > 50mm
+    let purpose = CompiledPurposeBuilder::new("mfg_ready")
+        .param("subject", "Structure")
+        .constraint(
+            "mfg_ready",
+            0,
+            None,
+            gt(value_ref("mfg_ready", "width"), literal(mm(50.0))),
+        )
+        .build();
+
+    CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .compiled_purpose(purpose)
+        .build()
+}
+
+// ── Step 1: purpose constraint appears in eval_set after activate+edit ─
+
+/// After activating a purpose whose constraint references an entity param,
+/// editing that param should include the purpose constraint in last_eval_set.
+///
+/// This test FAILS before step-2 because activate_purpose does not update
+/// demand/reverse_index/trace_map after injecting constraints.
+#[test]
+fn purpose_constraint_in_eval_set_after_activate_and_edit() {
+    let module = bracket_with_purpose_module();
+    let checker = MockConstraintChecker::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+
+    // Cold-start eval establishes baseline state
+    engine.eval(&module);
+
+    // Activate purpose: injects constraint with entity "purpose:mfg_ready@Bracket"
+    engine.activate_purpose("mfg_ready", "Bracket");
+
+    // Edit Bracket.width — this should dirty the purpose constraint
+    let width_id = ValueCellId::new("Bracket", "width");
+    engine.edit_param(width_id, mm(100.0)).expect("edit_param should succeed");
+
+    let eval_set = engine.last_eval_set();
+
+    // The purpose constraint NodeId
+    let purpose_constraint = NodeId::Constraint(
+        ConstraintNodeId::new("purpose:mfg_ready@Bracket", 0),
+    );
+
+    assert!(
+        eval_set.contains(&purpose_constraint),
+        "purpose constraint should be in eval_set after activate+edit_param; \
+        eval_set = {:?}",
+        eval_set
+    );
+}
+
+// ── Step 3: purpose constraint removed from eval_set after deactivate ─
+
+/// After deactivating a purpose, editing a param the purpose constraint
+/// depended on should NOT include the purpose constraint in last_eval_set.
+///
+/// This test FAILS before step-4 because deactivate_purpose does not update
+/// demand/reverse_index/trace_map after removing constraints.
+#[test]
+fn purpose_constraint_removed_from_eval_set_after_deactivate() {
+    let module = bracket_with_purpose_module();
+    let checker = MockConstraintChecker::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+
+    let width_id = ValueCellId::new("Bracket", "width");
+    let purpose_constraint = NodeId::Constraint(
+        ConstraintNodeId::new("purpose:mfg_ready@Bracket", 0),
+    );
+
+    // eval → activate → edit: verify constraint IS in eval_set
+    engine.eval(&module);
+    engine.activate_purpose("mfg_ready", "Bracket");
+    engine.edit_param(width_id.clone(), mm(100.0)).expect("edit_param should succeed");
+    assert!(
+        engine.last_eval_set().contains(&purpose_constraint),
+        "purpose constraint should be in eval_set after activation"
+    );
+
+    // deactivate → edit: verify constraint is NOT in eval_set
+    engine.deactivate_purpose("mfg_ready");
+    engine.edit_param(width_id.clone(), mm(90.0)).expect("edit_param should succeed after deactivate");
+    assert!(
+        !engine.last_eval_set().contains(&purpose_constraint),
+        "purpose constraint should NOT be in eval_set after deactivation; \
+        eval_set = {:?}",
+        engine.last_eval_set()
+    );
+}
+
+// ── Step 5: full activate/deactivate/reactivate cycle ─────────────
+
+/// Full cycle: activate → edit (in set) → deactivate → edit (not in set)
+/// → reactivate → edit (in set again).
+///
+/// Should pass once steps 2+4 are implemented.
+#[test]
+fn activate_deactivate_reactivate_eval_set_cycle() {
+    let module = bracket_with_purpose_module();
+    let checker = MockConstraintChecker::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+
+    let width_id = ValueCellId::new("Bracket", "width");
+    let purpose_constraint = NodeId::Constraint(
+        ConstraintNodeId::new("purpose:mfg_ready@Bracket", 0),
+    );
+
+    engine.eval(&module);
+
+    // Round 1: activate
+    engine.activate_purpose("mfg_ready", "Bracket");
+    engine.edit_param(width_id.clone(), mm(100.0)).unwrap();
+    assert!(
+        engine.last_eval_set().contains(&purpose_constraint),
+        "cycle round 1: constraint should be in eval_set after activation"
+    );
+
+    // Round 2: deactivate
+    engine.deactivate_purpose("mfg_ready");
+    engine.edit_param(width_id.clone(), mm(90.0)).unwrap();
+    assert!(
+        !engine.last_eval_set().contains(&purpose_constraint),
+        "cycle round 2: constraint should NOT be in eval_set after deactivation"
+    );
+
+    // Round 3: reactivate
+    engine.activate_purpose("mfg_ready", "Bracket");
+    engine.edit_param(width_id.clone(), mm(80.0)).unwrap();
+    assert!(
+        engine.last_eval_set().contains(&purpose_constraint),
+        "cycle round 3: constraint should be in eval_set after re-activation"
+    );
+}
+
+// ── Step 7: activate_purpose before eval is safe ──────────────────
+
+/// Activating a purpose before any eval() call should be a no-op,
+/// not a panic. The existing early-return guard on eval_state == None
+/// should handle this.
+#[test]
+fn activate_purpose_before_eval_is_safe() {
+    let module = bracket_with_purpose_module();
+    let checker = MockConstraintChecker::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+
+    // Must store module to ensure purposes are known — but engine has no
+    // compiled_purposes until eval() is called. Activate before eval.
+    // This should not panic (early-return on eval_state == None).
+    engine.activate_purpose("mfg_ready", "Bracket");
+
+    // No eval state: snapshot is None
+    assert!(
+        engine.snapshot().is_none(),
+        "snapshot should be None before eval()"
+    );
+
+    // Purpose is not active (no eval state, activation was silently skipped)
+    assert!(
+        !engine.is_purpose_active("mfg_ready"),
+        "purpose should not be active before eval()"
+    );
+
+    // After eval, activation should work normally
+    engine.eval(&module);
+    engine.activate_purpose("mfg_ready", "Bracket");
+    assert!(
+        engine.is_purpose_active("mfg_ready"),
+        "purpose should be active after eval() + activate()"
+    );
+}
+
+// ── Step 8: activate unknown purpose is noop ─────────────────────
+
+/// Activating a purpose whose name doesn't exist in compiled_purposes
+/// should be a silent no-op.
+#[test]
+fn activate_unknown_purpose_is_noop() {
+    let module = bracket_with_purpose_module();
+    let checker = MockConstraintChecker::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+
+    engine.eval(&module);
+
+    let snapshot_before = engine.snapshot().expect("snapshot should exist after eval");
+    let count_before = snapshot_before.graph.constraints.len();
+
+    // Activate with an unknown purpose name
+    engine.activate_purpose("nonexistent_purpose", "Bracket");
+
+    // Constraint count should be unchanged
+    let snapshot_after = engine.snapshot().expect("snapshot should exist after noop activate");
+    let count_after = snapshot_after.graph.constraints.len();
+    assert_eq!(
+        count_before, count_after,
+        "activating unknown purpose should not change constraint count"
+    );
+
+    // Purpose should not be marked active
+    assert!(
+        !engine.is_purpose_active("nonexistent_purpose"),
+        "unknown purpose should not be marked active"
+    );
+}
+
+// ── Step 9: deactivate inactive purpose is noop ───────────────────
+
+/// Deactivating a purpose that was never activated should be a silent
+/// no-op (no panic, constraint count unchanged, no active objectives).
+#[test]
+fn deactivate_inactive_purpose_is_noop() {
+    let module = bracket_with_purpose_module();
+    let checker = MockConstraintChecker::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+
+    engine.eval(&module);
+
+    let snapshot_before = engine.snapshot().expect("snapshot should exist after eval");
+    let count_before = snapshot_before.graph.constraints.len();
+
+    // Deactivate a purpose that was never activated — should be a no-op
+    engine.deactivate_purpose("mfg_ready");
+
+    // Constraint count should be unchanged
+    let snapshot_after = engine.snapshot().expect("snapshot should exist after noop deactivate");
+    let count_after = snapshot_after.graph.constraints.len();
+    assert_eq!(
+        count_before, count_after,
+        "deactivating inactive purpose should not change constraint count"
+    );
+
+    // No active objectives
+    assert!(
+        engine.active_objectives().is_empty(),
+        "no objectives should be active after noop deactivate"
     );
 }

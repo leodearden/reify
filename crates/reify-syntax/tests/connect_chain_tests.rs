@@ -205,6 +205,228 @@ fn parse_connect_with_member_access() {
     }
 }
 
+// ── parse_connect_mixed_body ──────────────────────────────────────
+
+#[test]
+fn parse_connect_mixed_body() {
+    let (decls, errors) = parse_decls(
+        "structure S { port a : out T  port b : in T  connect a -> b : BoltSet { grade = 8.8  shaft -> input_bore } }",
+    );
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+
+    let structure = match &decls[0] {
+        Declaration::Structure(s) => s,
+        other => panic!("expected Structure, got {:?}", other),
+    };
+
+    let connect = match &structure.members[2] {
+        MemberDecl::Connect(c) => c,
+        other => panic!("expected Connect, got {:?}", other),
+    };
+
+    assert_eq!(connect.connector_type.as_deref(), Some("BoltSet"));
+
+    assert_eq!(connect.params.len(), 1, "expected 1 param, got {:?}", connect.params);
+    assert_eq!(connect.params[0].0, "grade");
+    match &connect.params[0].1.kind {
+        ExprKind::NumberLiteral(n) => assert!((*n - 8.8).abs() < 1e-10),
+        other => panic!("expected NumberLiteral(8.8), got {:?}", other),
+    }
+
+    assert_eq!(connect.port_mappings.len(), 1, "expected 1 port mapping, got {:?}", connect.port_mappings);
+    assert_eq!(connect.port_mappings[0].0, "shaft");
+    assert_eq!(connect.port_mappings[0].1, "input_bore");
+}
+
+// ── parse_connect_multiple_params ─────────────────────────────────
+
+#[test]
+fn parse_connect_multiple_params() {
+    let (decls, errors) = parse_decls(
+        "structure S { port a : out T  port b : in T  connect a -> b : BoltSet { grade = 8.8  count = 4 } }",
+    );
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+
+    let structure = match &decls[0] {
+        Declaration::Structure(s) => s,
+        other => panic!("expected Structure, got {:?}", other),
+    };
+
+    let connect = match &structure.members[2] {
+        MemberDecl::Connect(c) => c,
+        other => panic!("expected Connect, got {:?}", other),
+    };
+
+    assert_eq!(connect.params.len(), 2, "expected 2 params, got {:?}", connect.params);
+    assert_eq!(connect.params[0].0, "grade");
+    match &connect.params[0].1.kind {
+        ExprKind::NumberLiteral(n) => assert!((*n - 8.8).abs() < 1e-10),
+        other => panic!("expected NumberLiteral(8.8), got {:?}", other),
+    }
+    assert_eq!(connect.params[1].0, "count");
+    match &connect.params[1].1.kind {
+        ExprKind::NumberLiteral(n) => assert!((*n - 4.0).abs() < 1e-10),
+        other => panic!("expected NumberLiteral(4.0), got {:?}", other),
+    }
+    assert!(connect.port_mappings.is_empty(), "expected empty port_mappings, got {:?}", connect.port_mappings);
+}
+
+// ── parse_connect_type_only ────────────────────────────────────────
+
+#[test]
+fn parse_connect_type_only() {
+    let (decls, errors) = parse_decls(
+        "structure S { port a : out T  port b : in T  connect a -> b : BoltSet }",
+    );
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+
+    let structure = match &decls[0] {
+        Declaration::Structure(s) => s,
+        other => panic!("expected Structure, got {:?}", other),
+    };
+
+    let connect = match &structure.members[2] {
+        MemberDecl::Connect(c) => c,
+        other => panic!("expected Connect, got {:?}", other),
+    };
+
+    assert_eq!(connect.connector_type.as_deref(), Some("BoltSet"));
+    assert!(connect.params.is_empty(), "expected empty params, got {:?}", connect.params);
+    assert!(connect.port_mappings.is_empty(), "expected empty port_mappings, got {:?}", connect.port_mappings);
+}
+
+// ── parse_connect_type_with_port_mappings_only ────────────────────
+
+#[test]
+fn parse_connect_type_with_port_mappings_only() {
+    let (decls, errors) = parse_decls(
+        "structure S { port a : out T  port b : in T  connect a -> b : Adapter { shaft -> bore  flange -> face } }",
+    );
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+
+    let structure = match &decls[0] {
+        Declaration::Structure(s) => s,
+        other => panic!("expected Structure, got {:?}", other),
+    };
+
+    let connect = match &structure.members[2] {
+        MemberDecl::Connect(c) => c,
+        other => panic!("expected Connect, got {:?}", other),
+    };
+
+    assert_eq!(connect.connector_type.as_deref(), Some("Adapter"));
+    assert!(connect.params.is_empty(), "expected empty params, got {:?}", connect.params);
+    assert_eq!(connect.port_mappings.len(), 2, "expected 2 port mappings, got {:?}", connect.port_mappings);
+    assert_eq!(connect.port_mappings[0].0, "shaft");
+    assert_eq!(connect.port_mappings[0].1, "bore");
+    assert_eq!(connect.port_mappings[1].0, "flange");
+    assert_eq!(connect.port_mappings[1].1, "face");
+}
+
+// ── parse_connect_complex_param_expr ──────────────────────────────
+
+#[test]
+fn parse_connect_complex_param_expr() {
+    let (decls, errors) = parse_decls(
+        "structure S { port a : out T  port b : in T  connect a -> b : Spring { stiffness = k * 2.0 } }",
+    );
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+
+    let structure = match &decls[0] {
+        Declaration::Structure(s) => s,
+        other => panic!("expected Structure, got {:?}", other),
+    };
+
+    let connect = match &structure.members[2] {
+        MemberDecl::Connect(c) => c,
+        other => panic!("expected Connect, got {:?}", other),
+    };
+
+    assert_eq!(connect.params.len(), 1, "expected 1 param, got {:?}", connect.params);
+    assert_eq!(connect.params[0].0, "stiffness");
+    match &connect.params[0].1.kind {
+        ExprKind::BinOp { op, left, right } => {
+            assert_eq!(op, "*");
+            match &left.kind {
+                ExprKind::Ident(name) => assert_eq!(name, "k"),
+                other => panic!("expected Ident('k'), got {:?}", other),
+            }
+            match &right.kind {
+                ExprKind::NumberLiteral(n) => assert!((*n - 2.0).abs() < 1e-10),
+                other => panic!("expected NumberLiteral(2.0), got {:?}", other),
+            }
+        }
+        other => panic!("expected BinOp(*), got {:?}", other),
+    }
+}
+
+// ── parse_connect_rich_mixed_body ──────────────────────────────────
+
+#[test]
+fn parse_connect_rich_mixed_body() {
+    let (decls, errors) = parse_decls(
+        "structure S { sub m = Motor()  sub c = Coupling()  connect m.shaft -> c.driver : BoltSet { grade = 8.8  count = 4  shaft -> bore  flange -> face } }",
+    );
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+
+    let structure = match &decls[0] {
+        Declaration::Structure(s) => s,
+        other => panic!("expected Structure, got {:?}", other),
+    };
+
+    let connect = match &structure.members[2] {
+        MemberDecl::Connect(c) => c,
+        other => panic!("expected Connect, got {:?}", other),
+    };
+
+    // Verify member-access left port ref
+    match &connect.left.expr.kind {
+        ExprKind::MemberAccess { object, member } => {
+            match &object.kind {
+                ExprKind::Ident(name) => assert_eq!(name, "m"),
+                other => panic!("expected Ident('m'), got {:?}", other),
+            }
+            assert_eq!(member, "shaft");
+        }
+        other => panic!("expected MemberAccess, got {:?}", other),
+    }
+
+    // Verify member-access right port ref
+    match &connect.right.expr.kind {
+        ExprKind::MemberAccess { object, member } => {
+            match &object.kind {
+                ExprKind::Ident(name) => assert_eq!(name, "c"),
+                other => panic!("expected Ident('c'), got {:?}", other),
+            }
+            assert_eq!(member, "driver");
+        }
+        other => panic!("expected MemberAccess, got {:?}", other),
+    }
+
+    // Verify connector type
+    assert_eq!(connect.connector_type.as_deref(), Some("BoltSet"));
+
+    // Verify 2 params
+    assert_eq!(connect.params.len(), 2, "expected 2 params, got {:?}", connect.params);
+    assert_eq!(connect.params[0].0, "grade");
+    match &connect.params[0].1.kind {
+        ExprKind::NumberLiteral(n) => assert!((*n - 8.8).abs() < 1e-10),
+        other => panic!("expected NumberLiteral(8.8), got {:?}", other),
+    }
+    assert_eq!(connect.params[1].0, "count");
+    match &connect.params[1].1.kind {
+        ExprKind::NumberLiteral(n) => assert!((*n - 4.0).abs() < 1e-10),
+        other => panic!("expected NumberLiteral(4.0), got {:?}", other),
+    }
+
+    // Verify 2 port mappings
+    assert_eq!(connect.port_mappings.len(), 2, "expected 2 port mappings, got {:?}", connect.port_mappings);
+    assert_eq!(connect.port_mappings[0].0, "shaft");
+    assert_eq!(connect.port_mappings[0].1, "bore");
+    assert_eq!(connect.port_mappings[1].0, "flange");
+    assert_eq!(connect.port_mappings[1].1, "face");
+}
+
 // ── parse_connect_reverse ─────────────────────────────────────────
 
 #[test]

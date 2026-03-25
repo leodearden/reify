@@ -50,8 +50,38 @@ pub enum Value {
     },
     /// Rank-r tensor: recursive nesting of Vec<Value> (innermost elements are scalars).
     Tensor(Vec<Value>),
+    /// Geometric point with n components (all sharing the same dimension).
+    Point(Vec<Value>),
+    /// Geometric vector with n components (all sharing the same dimension).
+    Vector(Vec<Value>),
     /// Complex number: re and im share one dimension (e.g., complex impedance in ohms).
     Complex { re: f64, im: f64, dimension: DimensionVector },
+    /// Orientation as a unit quaternion (w + xi + yj + zk).
+    Orientation { w: f64, x: f64, y: f64, z: f64 },
+    /// Coordinate frame: an origin point and a basis orientation.
+    Frame { origin: Box<Value>, basis: Box<Value> },
+    /// Rigid-body transformation: a rotation (Orientation) and a translation (Vector).
+    Transform { rotation: Box<Value>, translation: Box<Value> },
+    /// 3D plane: an origin Point3 and a unit normal Vector3 (dimensionless).
+    Plane { origin: Box<Value>, normal: Box<Value> },
+    /// 3D axis (ray): an origin Point3 and a unit direction Vector3 (dimensionless).
+    Axis { origin: Box<Value>, direction: Box<Value> },
+    /// 3D axis-aligned bounding box: min and max corner Point3 values.
+    BoundingBox { min: Box<Value>, max: Box<Value> },
+    /// Range with optional inclusive/exclusive bounds.
+    Range {
+        lower: Option<Box<Value>>,
+        upper: Option<Box<Value>>,
+        lower_inclusive: bool,
+        upper_inclusive: bool,
+    },
+    /// User-facing matrix literal (m rows × n cols).
+    ///
+    /// Before arithmetic evaluation, canonicalized to nested [`Value::Tensor`] (rank-2
+    /// Tensor where each element is a Tensor row) via [`Value::canonicalize_matrix()`].
+    /// The evaluator in `reify-expr` operates exclusively on the nested-Tensor
+    /// representation for matrix arithmetic.
+    Matrix(Vec<Vec<Value>>),
     /// Undefined — not yet determined or computation failed.
     Undef,
 }
@@ -73,8 +103,67 @@ impl Value {
         }
     }
 
+    /// Create a Range value with normalized inclusivity flags.
+    ///
+    /// When a bound is `None` (unbounded), the corresponding inclusive flag is forced to
+    /// `false` — infinity is never "included". This ensures that two logically identical
+    /// ranges compare as equal and produce the same content hash regardless of which
+    /// inclusive flag the caller passed.
+    pub fn range(
+        lower: Option<Value>,
+        upper: Option<Value>,
+        lower_inclusive: bool,
+        upper_inclusive: bool,
+    ) -> Value {
+        let lower_inclusive = lower_inclusive && lower.is_some();
+        let upper_inclusive = upper_inclusive && upper.is_some();
+        Value::Range {
+            lower: lower.map(Box::new),
+            upper: upper.map(Box::new),
+            lower_inclusive,
+            upper_inclusive,
+        }
+    }
+
     pub fn is_undef(&self) -> bool {
         matches!(self, Value::Undef)
+    }
+
+    /// Convert a `Value::Matrix` to nested `Value::Tensor` (rank-2 Tensor where each
+    /// element is a Tensor row).  All other variants are returned unchanged.
+    ///
+    /// This is used by the evaluator in `reify-expr` to canonicalize matrix literals
+    /// before dispatching to the arithmetic engine, which operates exclusively on the
+    /// nested-Tensor representation.
+    pub fn canonicalize_matrix(self) -> Self {
+        match self {
+            Value::Matrix(rows) => {
+                Value::Tensor(rows.into_iter().map(Value::Tensor).collect())
+            }
+            other => other,
+        }
+    }
+
+    /// Convert a rank-2 nested `Value::Tensor` back to a `Value::Matrix`.
+    ///
+    /// Returns `Some(Matrix(...))` if `self` is a `Tensor` with at least one element
+    /// and every element is itself a `Tensor`.  Returns `None` otherwise.
+    pub fn try_into_matrix(self) -> Option<Self> {
+        match self {
+            Value::Tensor(rows)
+                if !rows.is_empty() && rows.iter().all(|r| matches!(r, Value::Tensor(_))) =>
+            {
+                let matrix_rows: Vec<Vec<Value>> = rows
+                    .into_iter()
+                    .map(|r| match r {
+                        Value::Tensor(elems) => elems,
+                        _ => unreachable!("checked above"),
+                    })
+                    .collect();
+                Some(Value::Matrix(matrix_rows))
+            }
+            _ => None,
+        }
     }
 
     /// Get the f64 value if this is a numeric type.
@@ -92,6 +181,10 @@ impl Value {
         match self {
             Value::Scalar { dimension, .. } => *dimension,
             Value::Complex { dimension, .. } => *dimension,
+            // Point/Vector: dimension derives from the first component (all components share one dimension).
+            Value::Point(items) | Value::Vector(items) => {
+                items.first().map(|v| v.dimension()).unwrap_or(DimensionVector::DIMENSIONLESS)
+            }
             _ => DimensionVector::DIMENSIONLESS,
         }
     }
@@ -195,6 +288,22 @@ impl Value {
                 }
                 h
             }
+            Value::Point(items) => {
+                let mut h = ContentHash::of(&[18]);
+                h = h.combine(ContentHash::of(&(items.len() as u64).to_le_bytes()));
+                for item in items {
+                    h = h.combine(item.content_hash());
+                }
+                h
+            }
+            Value::Vector(items) => {
+                let mut h = ContentHash::of(&[19]);
+                h = h.combine(ContentHash::of(&(items.len() as u64).to_le_bytes()));
+                for item in items {
+                    h = h.combine(item.content_hash());
+                }
+                h
+            }
             Value::Complex { re, im, dimension } => {
                 // tag=15; NaN canonicalization for both re and im; combine with dimension hash
                 let re_bits = if re.is_nan() { f64::NAN.to_bits() } else { re.to_bits() };
@@ -204,6 +313,72 @@ impl Value {
                 buf[1..9].copy_from_slice(&re_bits.to_le_bytes());
                 buf[9..17].copy_from_slice(&im_bits.to_le_bytes());
                 ContentHash::of(&buf).combine(dimension.content_hash())
+            }
+            Value::Orientation { w, x, y, z } => {
+                // tag=16; NaN canonicalization for all 4 components
+                let canon = |v: &f64| -> u64 {
+                    if v.is_nan() { f64::NAN.to_bits() } else { v.to_bits() }
+                };
+                let mut buf = [0u8; 33];
+                buf[0] = 16;
+                buf[1..9].copy_from_slice(&canon(w).to_le_bytes());
+                buf[9..17].copy_from_slice(&canon(x).to_le_bytes());
+                buf[17..25].copy_from_slice(&canon(y).to_le_bytes());
+                buf[25..33].copy_from_slice(&canon(z).to_le_bytes());
+                ContentHash::of(&buf)
+            }
+            Value::Frame { origin, basis } => {
+                // tag=20; combine origin and basis content hashes
+                ContentHash::of(&[20]).combine(origin.content_hash()).combine(basis.content_hash())
+            }
+            Value::Transform { rotation, translation } => {
+                // tag=21; combine rotation and translation content hashes
+                ContentHash::of(&[21]).combine(rotation.content_hash()).combine(translation.content_hash())
+            }
+            Value::Plane { origin, normal } => {
+                // tag=22; combine origin and normal content hashes
+                ContentHash::of(&[22]).combine(origin.content_hash()).combine(normal.content_hash())
+            }
+            Value::Axis { origin, direction } => {
+                // tag=23; combine origin and direction content hashes
+                ContentHash::of(&[23]).combine(origin.content_hash()).combine(direction.content_hash())
+            }
+            Value::BoundingBox { min, max } => {
+                // tag=24; combine min and max content hashes
+                ContentHash::of(&[24]).combine(min.content_hash()).combine(max.content_hash())
+            }
+            Value::Range { lower, upper, lower_inclusive, upper_inclusive } => {
+                debug_assert!(
+                    lower.is_some() || !lower_inclusive,
+                    "Range invariant violated: lower_inclusive must be false when lower is None"
+                );
+                debug_assert!(
+                    upper.is_some() || !upper_inclusive,
+                    "Range invariant violated: upper_inclusive must be false when upper is None"
+                );
+                // tag=17; flags then optional bounds
+                let mut h = ContentHash::of(&[17, *lower_inclusive as u8, *upper_inclusive as u8]);
+                match lower {
+                    None => h = h.combine(ContentHash::of(&[0])),
+                    Some(v) => h = h.combine(ContentHash::of(&[1])).combine(v.content_hash()),
+                }
+                match upper {
+                    None => h = h.combine(ContentHash::of(&[0])),
+                    Some(v) => h = h.combine(ContentHash::of(&[1])).combine(v.content_hash()),
+                }
+                h
+            }
+            Value::Matrix(rows) => {
+                // tag=18; hash row count, then per-row col count + element hashes
+                let mut h = ContentHash::of(&[18]);
+                h = h.combine(ContentHash::of(&(rows.len() as u64).to_le_bytes()));
+                for row in rows {
+                    h = h.combine(ContentHash::of(&(row.len() as u64).to_le_bytes()));
+                    for elem in row {
+                        h = h.combine(elem.content_hash());
+                    }
+                }
+                h
             }
             Value::Undef => ContentHash::of(&[5]),
         }
@@ -225,6 +400,8 @@ impl PartialEq for Value {
             }
             (Value::List(a), Value::List(b)) => a == b,
             (Value::Tensor(a), Value::Tensor(b)) => a == b,
+            (Value::Point(a), Value::Point(b)) => a == b,
+            (Value::Vector(a), Value::Vector(b)) => a == b,
             (Value::Set(a), Value::Set(b)) => a == b,
             (Value::Map(a), Value::Map(b)) => a == b,
             (Value::Option(a), Value::Option(b)) => a == b,
@@ -249,6 +426,58 @@ impl PartialEq for Value {
                 Value::Complex { re: ar, im: ai, dimension: ad },
                 Value::Complex { re: br, im: bi, dimension: bd },
             ) => ar.to_bits() == br.to_bits() && ai.to_bits() == bi.to_bits() && ad == bd,
+            (
+                Value::Orientation { w: aw, x: ax, y: ay, z: az },
+                Value::Orientation { w: bw, x: bx, y: by, z: bz },
+            ) => {
+                aw.to_bits() == bw.to_bits()
+                    && ax.to_bits() == bx.to_bits()
+                    && ay.to_bits() == by.to_bits()
+                    && az.to_bits() == bz.to_bits()
+            }
+            (
+                Value::Frame { origin: ao, basis: ab },
+                Value::Frame { origin: bo, basis: bb },
+            ) => ao == bo && ab == bb,
+            (
+                Value::Transform { rotation: ar, translation: at },
+                Value::Transform { rotation: br, translation: bt },
+            ) => ar == br && at == bt,
+            (
+                Value::Plane { origin: ao, normal: an },
+                Value::Plane { origin: bo, normal: bn },
+            ) => ao == bo && an == bn,
+            (
+                Value::Axis { origin: ao, direction: ad },
+                Value::Axis { origin: bo, direction: bd },
+            ) => ao == bo && ad == bd,
+            (
+                Value::BoundingBox { min: amin, max: amax },
+                Value::BoundingBox { min: bmin, max: bmax },
+            ) => amin == bmin && amax == bmax,
+            (
+                Value::Range { lower: al, upper: au, lower_inclusive: ali, upper_inclusive: aui },
+                Value::Range { lower: bl, upper: bu, lower_inclusive: bli, upper_inclusive: bui },
+            ) => {
+                debug_assert!(
+                    al.is_some() || !ali,
+                    "Range invariant violated: lower_inclusive must be false when lower is None"
+                );
+                debug_assert!(
+                    au.is_some() || !aui,
+                    "Range invariant violated: upper_inclusive must be false when upper is None"
+                );
+                debug_assert!(
+                    bl.is_some() || !bli,
+                    "Range invariant violated: lower_inclusive must be false when lower is None"
+                );
+                debug_assert!(
+                    bu.is_some() || !bui,
+                    "Range invariant violated: upper_inclusive must be false when upper is None"
+                );
+                al == bl && au == bu && ali == bli && aui == bui
+            }
+            (Value::Matrix(a), Value::Matrix(b)) => a == b,
             (Value::Undef, Value::Undef) => true,
             _ => false,
         }
@@ -268,7 +497,7 @@ impl Ord for Value {
         use std::cmp::Ordering;
 
         // Type-tag discriminant for cross-type ordering:
-        // Undef=0, Bool=1, Int=2, Real=3, Scalar=4, String=5, Enum=6, List=7, Set=8, Map=9, Option=10, Field=11, Lambda=12, Tensor=13, Complex=14
+        // Undef=0, Bool=1, Int=2, Real=3, Scalar=4, String=5, Enum=6, List=7, Set=8, Map=9, Option=10, Field=11, Lambda=12, Tensor=13, Complex=14, Orientation=15, Range=16, Point=17, Vector=18, Matrix=19, Frame=20, Transform=21, Plane=22, Axis=23, BoundingBox=24
         fn type_tag(v: &Value) -> u8 {
             match v {
                 Value::Undef => 0,
@@ -286,6 +515,16 @@ impl Ord for Value {
                 Value::Lambda { .. } => 12,
                 Value::Tensor(_) => 13,
                 Value::Complex { .. } => 14,
+                Value::Orientation { .. } => 15,
+                Value::Range { .. } => 16,
+                Value::Point(_) => 17,
+                Value::Vector(_) => 18,
+                Value::Matrix(_) => 19,
+                Value::Frame { .. } => 20,
+                Value::Transform { .. } => 21,
+                Value::Plane { .. } => 22,
+                Value::Axis { .. } => 23,
+                Value::BoundingBox { .. } => 24,
             }
         }
 
@@ -315,6 +554,8 @@ impl Ord for Value {
             }
             (Value::List(a), Value::List(b)) => a.cmp(b),
             (Value::Tensor(a), Value::Tensor(b)) => a.cmp(b),
+            (Value::Point(a), Value::Point(b)) => a.cmp(b),
+            (Value::Vector(a), Value::Vector(b)) => a.cmp(b),
             (Value::Set(a), Value::Set(b)) => a.cmp(b),
             (Value::Map(a), Value::Map(b)) => {
                 // Lexicographic on (key, value) pairs in sorted key order
@@ -348,6 +589,61 @@ impl Ord for Value {
                     .then_with(|| ar.to_bits().cmp(&br.to_bits()))
                     .then_with(|| ai.to_bits().cmp(&bi.to_bits()))
             }
+            (
+                Value::Orientation { w: aw, x: ax, y: ay, z: az },
+                Value::Orientation { w: bw, x: bx, y: by, z: bz },
+            ) => {
+                aw.to_bits().cmp(&bw.to_bits())
+                    .then_with(|| ax.to_bits().cmp(&bx.to_bits()))
+                    .then_with(|| ay.to_bits().cmp(&by.to_bits()))
+                    .then_with(|| az.to_bits().cmp(&bz.to_bits()))
+            }
+            (
+                Value::Range { lower: al, upper: au, lower_inclusive: ali, upper_inclusive: aui },
+                Value::Range { lower: bl, upper: bu, lower_inclusive: bli, upper_inclusive: bui },
+            ) => {
+                debug_assert!(
+                    al.is_some() || !ali,
+                    "Range invariant violated: lower_inclusive must be false when lower is None"
+                );
+                debug_assert!(
+                    au.is_some() || !aui,
+                    "Range invariant violated: upper_inclusive must be false when upper is None"
+                );
+                debug_assert!(
+                    bl.is_some() || !bli,
+                    "Range invariant violated: lower_inclusive must be false when lower is None"
+                );
+                debug_assert!(
+                    bu.is_some() || !bui,
+                    "Range invariant violated: upper_inclusive must be false when upper is None"
+                );
+                ali.cmp(bli)
+                    .then_with(|| al.cmp(bl))
+                    .then_with(|| aui.cmp(bui))
+                    .then_with(|| au.cmp(bu))
+            }
+            (Value::Matrix(a), Value::Matrix(b)) => a.cmp(b),
+            (
+                Value::Frame { origin: ao, basis: ab },
+                Value::Frame { origin: bo, basis: bb },
+            ) => ao.cmp(bo).then_with(|| ab.cmp(bb)),
+            (
+                Value::Transform { rotation: ar, translation: at },
+                Value::Transform { rotation: br, translation: bt },
+            ) => ar.cmp(br).then_with(|| at.cmp(bt)),
+            (
+                Value::Plane { origin: ao, normal: an },
+                Value::Plane { origin: bo, normal: bn },
+            ) => ao.cmp(bo).then_with(|| an.cmp(bn)),
+            (
+                Value::Axis { origin: ao, direction: ad },
+                Value::Axis { origin: bo, direction: bd },
+            ) => ao.cmp(bo).then_with(|| ad.cmp(bd)),
+            (
+                Value::BoundingBox { min: amin, max: amax },
+                Value::BoundingBox { min: bmin, max: bmax },
+            ) => amin.cmp(bmin).then_with(|| amax.cmp(bmax)),
             _ => unreachable!("same type tag but different variants"),
         }
     }
@@ -392,6 +688,26 @@ impl std::fmt::Display for Value {
                     write!(f, "{}", item)?;
                 }
                 write!(f, "]")
+            }
+            Value::Point(items) => {
+                write!(f, "point(")?;
+                for (i, item) in items.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", item)?;
+                }
+                write!(f, ")")
+            }
+            Value::Vector(items) => {
+                write!(f, "vec(")?;
+                for (i, item) in items.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", item)?;
+                }
+                write!(f, ")")
             }
             Value::Set(items) => {
                 write!(f, "{{")?;
@@ -446,6 +762,70 @@ impl std::fmt::Display for Value {
                 } else {
                     write!(f, "({}{}{}i) {}", re_str, sign, im_abs_str, dimension)
                 }
+            }
+            Value::Orientation { w, x, y, z } => {
+                // Format quaternion components using same whole-number convention as Real
+                let fmt_f64 = |v: f64| -> String {
+                    if v == v.trunc() && v.is_finite() {
+                        format!("{:.0}", v)
+                    } else {
+                        format!("{}", v)
+                    }
+                };
+                write!(f, "[{}, {}, {}, {}]q", fmt_f64(*w), fmt_f64(*x), fmt_f64(*y), fmt_f64(*z))
+            }
+            Value::Frame { origin, basis } => {
+                write!(f, "frame({}, {})", origin, basis)
+            }
+            Value::Transform { rotation, translation } => {
+                write!(f, "transform({}, {})", rotation, translation)
+            }
+            Value::Plane { origin, normal } => {
+                write!(f, "plane({}, {})", origin, normal)
+            }
+            Value::Axis { origin, direction } => {
+                write!(f, "axis({}, {})", origin, direction)
+            }
+            Value::BoundingBox { min, max } => {
+                write!(f, "bbox({}, {})", min, max)
+            }
+            Value::Range { lower, upper, lower_inclusive, upper_inclusive } => {
+                debug_assert!(
+                    lower.is_some() || !lower_inclusive,
+                    "Range invariant violated: lower_inclusive must be false when lower is None"
+                );
+                debug_assert!(
+                    upper.is_some() || !upper_inclusive,
+                    "Range invariant violated: upper_inclusive must be false when upper is None"
+                );
+                let lb = if *lower_inclusive { '[' } else { '(' };
+                let ub = if *upper_inclusive { ']' } else { ')' };
+                let lower_str = match lower {
+                    None => "-inf".to_string(),
+                    Some(v) => format!("{}", v),
+                };
+                let upper_str = match upper {
+                    None => "inf".to_string(),
+                    Some(v) => format!("{}", v),
+                };
+                write!(f, "{}{}..{}{}", lb, lower_str, upper_str, ub)
+            }
+            Value::Matrix(rows) => {
+                write!(f, "[")?;
+                for (i, row) in rows.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "[")?;
+                    for (j, elem) in row.iter().enumerate() {
+                        if j > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{}", elem)?;
+                    }
+                    write!(f, "]")?;
+                }
+                write!(f, "]")
             }
             Value::Undef => write!(f, "undef"),
         }
@@ -1734,5 +2114,1261 @@ mod tests {
     fn value_complex_dimensionless_returns_dimensionless() {
         let v = Value::Complex { re: 1.0, im: 2.0, dimension: DimensionVector::DIMENSIONLESS };
         assert_eq!(v.dimension(), DimensionVector::DIMENSIONLESS);
+    }
+
+    // ── Value::Orientation tests (step-3) ────────────────────────────────────
+
+    #[test]
+    fn value_orientation_construction() {
+        let o = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+        // Should not be undef
+        assert!(!o.is_undef());
+    }
+
+    #[test]
+    fn value_orientation_eq_same() {
+        let a = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+        let b = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn value_orientation_eq_different() {
+        let a = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+        let b = Value::Orientation { w: 0.0, x: 1.0, y: 0.0, z: 0.0 };
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn value_orientation_eq_nan_bitwise() {
+        // NaN == NaN via to_bits (bitwise equality)
+        let a = Value::Orientation { w: f64::NAN, x: 0.0, y: 0.0, z: 0.0 };
+        let b = Value::Orientation { w: f64::NAN, x: 0.0, y: 0.0, z: 0.0 };
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn value_orientation_eq_neg_zero() {
+        // -0.0 != 0.0 via to_bits
+        let a = Value::Orientation { w: -0.0, x: 0.0, y: 0.0, z: 0.0 };
+        let b = Value::Orientation { w: 0.0, x: 0.0, y: 0.0, z: 0.0 };
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn value_orientation_ord_cross_type() {
+        // Orientation should sort after Complex (tag 14), so Orientation tag = 15
+        let complex = Value::Complex { re: 0.0, im: 0.0, dimension: DimensionVector::DIMENSIONLESS };
+        let orient = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+        assert!(complex < orient);
+    }
+
+    #[test]
+    fn value_orientation_ord_within_type() {
+        // Lexicographic on w, x, y, z via to_bits
+        let a = Value::Orientation { w: 0.0, x: 0.0, y: 0.0, z: 0.0 };
+        let b = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+        assert!(a < b);
+
+        // Same w, different x
+        let c = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+        let d = Value::Orientation { w: 1.0, x: 1.0, y: 0.0, z: 0.0 };
+        assert!(c < d);
+    }
+
+    #[test]
+    fn value_orientation_display() {
+        let o = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+        assert_eq!(format!("{}", o), "[1, 0, 0, 0]q");
+    }
+
+    #[test]
+    fn value_orientation_display_fractional() {
+        let s = std::f64::consts::FRAC_1_SQRT_2;
+        let o = Value::Orientation { w: s, x: 0.0, y: 0.0, z: s };
+        let display = format!("{}", o);
+        assert!(display.starts_with('['));
+        assert!(display.ends_with("]q"));
+    }
+
+    #[test]
+    fn value_orientation_content_hash_deterministic() {
+        let a = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+        let b = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+        assert_eq!(a.content_hash(), b.content_hash());
+    }
+
+    #[test]
+    fn value_orientation_content_hash_nan_canonical() {
+        let a = Value::Orientation { w: f64::NAN, x: 0.0, y: 0.0, z: 0.0 };
+        let b = Value::Orientation { w: f64::NAN, x: 0.0, y: 0.0, z: 0.0 };
+        assert_eq!(a.content_hash(), b.content_hash());
+    }
+
+    #[test]
+    fn value_orientation_content_hash_distinct_from_complex() {
+        // Tag 16 for Orientation vs tag 15 for Complex
+        let o = Value::Orientation { w: 0.0, x: 0.0, y: 0.0, z: 0.0 };
+        let c = Value::Complex { re: 0.0, im: 0.0, dimension: DimensionVector::DIMENSIONLESS };
+        assert_ne!(o.content_hash(), c.content_hash());
+    }
+
+    #[test]
+    fn value_orientation_content_hash_neg_zero() {
+        let a = Value::Orientation { w: -0.0, x: 0.0, y: 0.0, z: 0.0 };
+        let b = Value::Orientation { w: 0.0, x: 0.0, y: 0.0, z: 0.0 };
+        assert_ne!(a.content_hash(), b.content_hash());
+    }
+
+    #[test]
+    fn value_orientation_as_f64_none() {
+        let o = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+        assert_eq!(o.as_f64(), None);
+    }
+
+    #[test]
+    fn value_orientation_dimension_dimensionless() {
+        let o = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+        assert_eq!(o.dimension(), DimensionVector::DIMENSIONLESS);
+    }
+
+    // ── Range Display tests (step-9) ─────────────────────────────────────────
+
+    #[test]
+    fn value_range_display_closed_inclusive() {
+        let r = make_range(Some(Value::Int(0)), Some(Value::Int(10)), true, true);
+        assert_eq!(format!("{}", r), "[0..10]");
+    }
+
+    #[test]
+    fn value_range_display_open_exclusive() {
+        let r = make_range(Some(Value::Int(0)), Some(Value::Int(10)), false, false);
+        assert_eq!(format!("{}", r), "(0..10)");
+    }
+
+    #[test]
+    fn value_range_display_half_open_lower_inclusive() {
+        let r = make_range(Some(Value::Int(0)), Some(Value::Int(10)), true, false);
+        assert_eq!(format!("{}", r), "[0..10)");
+    }
+
+    #[test]
+    fn value_range_display_half_open_upper_inclusive() {
+        let r = make_range(Some(Value::Int(0)), Some(Value::Int(10)), false, true);
+        assert_eq!(format!("{}", r), "(0..10]");
+    }
+
+    #[test]
+    fn value_range_display_unbounded_lower() {
+        let r = make_range(None, Some(Value::Int(10)), false, true);
+        assert_eq!(format!("{}", r), "(-inf..10]");
+    }
+
+    #[test]
+    fn value_range_display_unbounded_upper() {
+        let r = make_range(Some(Value::Int(0)), None, true, false);
+        assert_eq!(format!("{}", r), "[0..inf)");
+    }
+
+    #[test]
+    fn value_range_display_fully_unbounded() {
+        let r = make_range(None, None, false, false);
+        assert_eq!(format!("{}", r), "(-inf..inf)");
+    }
+
+    #[test]
+    fn value_range_display_real_bounds() {
+        let r = make_range(Some(Value::Real(1.5)), Some(Value::Real(3.5)), true, false);
+        assert_eq!(format!("{}", r), "[1.5..3.5)");
+    }
+
+    // ── Range content_hash tests (step-7) ───────────────────────────────────
+
+    #[test]
+    fn value_range_content_hash_deterministic() {
+        let r1 = make_range(Some(Value::Int(0)), Some(Value::Int(10)), true, false);
+        let r2 = make_range(Some(Value::Int(0)), Some(Value::Int(10)), true, false);
+        assert_eq!(r1.content_hash(), r2.content_hash());
+    }
+
+    #[test]
+    fn value_range_content_hash_different_bounds_differ() {
+        let r1 = make_range(Some(Value::Int(0)), Some(Value::Int(10)), true, false);
+        let r2 = make_range(Some(Value::Int(1)), Some(Value::Int(10)), true, false);
+        assert_ne!(r1.content_hash(), r2.content_hash());
+    }
+
+    #[test]
+    fn value_range_content_hash_none_vs_some_differ() {
+        let r_none = make_range(None, Some(Value::Int(10)), false, true);
+        let r_some = make_range(Some(Value::Int(0)), Some(Value::Int(10)), false, true);
+        assert_ne!(r_none.content_hash(), r_some.content_hash());
+    }
+
+    #[test]
+    fn value_range_content_hash_inclusivity_differs() {
+        let r_open = make_range(Some(Value::Int(0)), Some(Value::Int(10)), false, false);
+        let r_half = make_range(Some(Value::Int(0)), Some(Value::Int(10)), true, false);
+        let r_closed = make_range(Some(Value::Int(0)), Some(Value::Int(10)), true, true);
+        assert_ne!(r_open.content_hash(), r_half.content_hash());
+        assert_ne!(r_half.content_hash(), r_closed.content_hash());
+        assert_ne!(r_open.content_hash(), r_closed.content_hash());
+    }
+
+    #[test]
+    fn value_range_content_hash_no_collision_with_orientation() {
+        // Range tag=17 should not collide with Orientation tag=16
+        let range = make_range(None, None, false, false);
+        let orient = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+        assert_ne!(range.content_hash(), orient.content_hash());
+    }
+
+    #[test]
+    fn value_range_content_hash_both_none_deterministic() {
+        let r1 = make_range(None, None, false, false);
+        let r2 = make_range(None, None, false, false);
+        assert_eq!(r1.content_hash(), r2.content_hash());
+    }
+
+    // ── Range Ord tests (step-5) ─────────────────────────────────────────────
+
+    #[test]
+    fn value_range_ord_cross_type_after_orientation() {
+        // Range has type_tag=16, Orientation=15 → Range > Orientation
+        let range = make_range(None, None, false, false);
+        let orient = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+        assert!(range > orient);
+        assert!(orient < range);
+    }
+
+    #[test]
+    fn value_range_ord_cross_type_before_undef() {
+        // Range has type_tag=16, Undef=0 → Range > Undef
+        let range = make_range(None, None, false, false);
+        assert!(range > Value::Undef);
+    }
+
+    #[test]
+    fn value_range_ord_within_type_lower_inclusive_first() {
+        // lower_inclusive=false < lower_inclusive=true (false=0 < true=1)
+        let r_open = make_range(Some(Value::Int(0)), Some(Value::Int(10)), false, true);
+        let r_closed = make_range(Some(Value::Int(0)), Some(Value::Int(10)), true, true);
+        assert!(r_open < r_closed);
+    }
+
+    #[test]
+    fn value_range_ord_within_type_lower_bound_none_before_some() {
+        // None lower < Some lower (Option ordering: None < Some)
+        let r_unbounded = make_range(None, Some(Value::Int(10)), false, true);
+        let r_bounded = make_range(Some(Value::Int(0)), Some(Value::Int(10)), false, true);
+        assert!(r_unbounded < r_bounded);
+    }
+
+    #[test]
+    fn value_range_ord_within_type_upper_inclusive_after_lower() {
+        // When lower_inclusive and lower are equal, compare upper_inclusive
+        let r_open_upper = make_range(Some(Value::Int(0)), Some(Value::Int(10)), true, false);
+        let r_closed_upper = make_range(Some(Value::Int(0)), Some(Value::Int(10)), true, true);
+        assert!(r_open_upper < r_closed_upper);
+    }
+
+    #[test]
+    fn value_range_ord_within_type_upper_bound_none_before_some() {
+        // None upper < Some upper
+        let r_unbounded = make_range(Some(Value::Int(0)), None, true, false);
+        let r_bounded = make_range(Some(Value::Int(0)), Some(Value::Int(10)), true, false);
+        assert!(r_unbounded < r_bounded);
+    }
+
+    #[test]
+    fn value_range_ord_equal_ranges() {
+        use std::cmp::Ordering;
+        let r1 = make_range(Some(Value::Int(0)), Some(Value::Int(10)), true, false);
+        let r2 = make_range(Some(Value::Int(0)), Some(Value::Int(10)), true, false);
+        assert_eq!(r1.cmp(&r2), Ordering::Equal);
+    }
+
+    // ── Range PartialEq tests (step-3) ───────────────────────────────────────
+
+    fn make_range(
+        lower: Option<Value>,
+        upper: Option<Value>,
+        lower_inclusive: bool,
+        upper_inclusive: bool,
+    ) -> Value {
+        Value::range(lower, upper, lower_inclusive, upper_inclusive)
+    }
+
+    #[test]
+    fn value_range_equal_ranges_are_equal() {
+        let r1 = make_range(Some(Value::Int(0)), Some(Value::Int(10)), true, false);
+        let r2 = make_range(Some(Value::Int(0)), Some(Value::Int(10)), true, false);
+        assert_eq!(r1, r2);
+    }
+
+    #[test]
+    fn value_range_different_lower_not_equal() {
+        let r1 = make_range(Some(Value::Int(0)), Some(Value::Int(10)), true, true);
+        let r2 = make_range(Some(Value::Int(1)), Some(Value::Int(10)), true, true);
+        assert_ne!(r1, r2);
+    }
+
+    #[test]
+    fn value_range_different_upper_not_equal() {
+        let r1 = make_range(Some(Value::Int(0)), Some(Value::Int(10)), true, true);
+        let r2 = make_range(Some(Value::Int(0)), Some(Value::Int(20)), true, true);
+        assert_ne!(r1, r2);
+    }
+
+    #[test]
+    fn value_range_different_lower_inclusive_not_equal() {
+        let r1 = make_range(Some(Value::Int(0)), Some(Value::Int(10)), true, true);
+        let r2 = make_range(Some(Value::Int(0)), Some(Value::Int(10)), false, true);
+        assert_ne!(r1, r2);
+    }
+
+    #[test]
+    fn value_range_different_upper_inclusive_not_equal() {
+        let r1 = make_range(Some(Value::Int(0)), Some(Value::Int(10)), true, true);
+        let r2 = make_range(Some(Value::Int(0)), Some(Value::Int(10)), true, false);
+        assert_ne!(r1, r2);
+    }
+
+    #[test]
+    fn value_range_none_vs_some_lower_not_equal() {
+        let r1 = make_range(None, Some(Value::Int(10)), false, true);
+        let r2 = make_range(Some(Value::Int(0)), Some(Value::Int(10)), false, true);
+        assert_ne!(r1, r2);
+    }
+
+    #[test]
+    fn value_range_none_vs_some_upper_not_equal() {
+        let r1 = make_range(Some(Value::Int(0)), None, true, false);
+        let r2 = make_range(Some(Value::Int(0)), Some(Value::Int(10)), true, false);
+        assert_ne!(r1, r2);
+    }
+
+    #[test]
+    fn value_range_both_none_equal() {
+        let r1 = make_range(None, None, false, false);
+        let r2 = make_range(None, None, false, false);
+        assert_eq!(r1, r2);
+    }
+
+    #[test]
+    fn value_range_not_equal_to_other_variants() {
+        let r = make_range(Some(Value::Int(0)), Some(Value::Int(10)), true, false);
+        assert_ne!(r, Value::Int(0));
+        assert_ne!(r, Value::Undef);
+        assert_ne!(r, Value::Bool(true));
+    }
+
+    // ── Range inclusivity normalization tests (task-364) ─────────────────────
+
+    #[test]
+    fn value_range_normalize_lower_inclusive_when_none() {
+        let r = Value::range(None, Some(Value::Int(10)), true, true);
+        match r {
+            Value::Range { lower_inclusive, .. } => assert!(!lower_inclusive),
+            _ => panic!("expected Range"),
+        }
+    }
+
+    #[test]
+    fn value_range_normalize_upper_inclusive_when_none() {
+        let r = Value::range(Some(Value::Int(0)), None, true, true);
+        match r {
+            Value::Range { upper_inclusive, .. } => assert!(!upper_inclusive),
+            _ => panic!("expected Range"),
+        }
+    }
+
+    #[test]
+    fn value_range_normalize_both_when_none() {
+        let r = Value::range(None, None, true, true);
+        match r {
+            Value::Range { lower_inclusive, upper_inclusive, .. } => {
+                assert!(!lower_inclusive);
+                assert!(!upper_inclusive);
+            }
+            _ => panic!("expected Range"),
+        }
+    }
+
+    #[test]
+    fn value_range_no_normalize_when_some() {
+        let r = Value::range(Some(Value::Int(0)), Some(Value::Int(10)), true, true);
+        match r {
+            Value::Range { lower_inclusive, upper_inclusive, .. } => {
+                assert!(lower_inclusive);
+                assert!(upper_inclusive);
+            }
+            _ => panic!("expected Range"),
+        }
+    }
+
+    // ── Range equality/hash equivalence with differing flags (task-364 step-3) ─
+
+    #[test]
+    fn value_range_eq_none_lower_ignores_inclusive() {
+        let r1 = Value::range(None, Some(Value::Int(10)), true, true);
+        let r2 = Value::range(None, Some(Value::Int(10)), false, true);
+        assert_eq!(r1, r2);
+    }
+
+    #[test]
+    fn value_range_eq_none_upper_ignores_inclusive() {
+        let r1 = Value::range(Some(Value::Int(0)), None, true, true);
+        let r2 = Value::range(Some(Value::Int(0)), None, true, false);
+        assert_eq!(r1, r2);
+    }
+
+    #[test]
+    fn value_range_eq_both_none_ignores_inclusive() {
+        let r1 = Value::range(None, None, true, true);
+        let r2 = Value::range(None, None, false, false);
+        assert_eq!(r1, r2);
+    }
+
+    #[test]
+    fn value_range_hash_none_lower_ignores_inclusive() {
+        let r1 = Value::range(None, Some(Value::Int(10)), true, true);
+        let r2 = Value::range(None, Some(Value::Int(10)), false, true);
+        assert_eq!(r1.content_hash(), r2.content_hash());
+    }
+
+    #[test]
+    fn value_range_hash_none_upper_ignores_inclusive() {
+        let r1 = Value::range(Some(Value::Int(0)), None, true, true);
+        let r2 = Value::range(Some(Value::Int(0)), None, true, false);
+        assert_eq!(r1.content_hash(), r2.content_hash());
+    }
+
+    // ── Range Display with inclusive+None edge cases (task-364 step-4) ─────────
+
+    #[test]
+    fn value_range_display_none_lower_with_inclusive_true() {
+        let r = Value::range(None, Some(Value::Int(10)), true, true);
+        assert_eq!(format!("{}", r), "(-inf..10]");
+    }
+
+    #[test]
+    fn value_range_display_none_upper_with_inclusive_true() {
+        let r = Value::range(Some(Value::Int(0)), None, true, true);
+        assert_eq!(format!("{}", r), "[0..inf)");
+    }
+
+    #[test]
+    fn value_range_display_both_none_with_inclusive_true() {
+        let r = Value::range(None, None, true, true);
+        assert_eq!(format!("{}", r), "(-inf..inf)");
+    }
+
+    // ── Range invariant enforcement tests (step-9) ───────────────────────────
+    // These tests bypass Value::range() factory and directly construct Value::Range
+    // with an invariant violation (lower/upper_inclusive=true when bound is None).
+    // Each impl (content_hash, PartialEq, Ord, Display) must panic via debug_assert!.
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "Range invariant violated")]
+    fn value_range_invariant_bypass_lower_none_inclusive_content_hash() {
+        let r = Value::Range {
+            lower: None,
+            lower_inclusive: true,
+            upper: Some(Box::new(Value::Int(10))),
+            upper_inclusive: false,
+        };
+        let _ = r.content_hash();
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "Range invariant violated")]
+    fn value_range_invariant_bypass_lower_none_inclusive_eq() {
+        let bad = Value::Range {
+            lower: None,
+            lower_inclusive: true,
+            upper: Some(Box::new(Value::Int(10))),
+            upper_inclusive: false,
+        };
+        let good = Value::range(None, Some(Value::Int(10)), false, false);
+        let _ = bad == good;
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "Range invariant violated")]
+    fn value_range_invariant_bypass_lower_none_inclusive_cmp() {
+        let bad = Value::Range {
+            lower: None,
+            lower_inclusive: true,
+            upper: Some(Box::new(Value::Int(10))),
+            upper_inclusive: false,
+        };
+        let good = Value::range(None, Some(Value::Int(10)), false, false);
+        let _ = bad.cmp(&good);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "Range invariant violated")]
+    fn value_range_invariant_bypass_lower_none_inclusive_display() {
+        let r = Value::Range {
+            lower: None,
+            lower_inclusive: true,
+            upper: Some(Box::new(Value::Int(10))),
+            upper_inclusive: false,
+        };
+        let _ = format!("{}", r);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "Range invariant violated")]
+    fn value_range_invariant_bypass_upper_none_inclusive_content_hash() {
+        let r = Value::Range {
+            lower: Some(Box::new(Value::Int(0))),
+            lower_inclusive: true,
+            upper: None,
+            upper_inclusive: true,
+        };
+        let _ = r.content_hash();
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "Range invariant violated")]
+    fn value_range_invariant_bypass_upper_none_inclusive_display() {
+        let r = Value::Range {
+            lower: Some(Box::new(Value::Int(0))),
+            lower_inclusive: true,
+            upper: None,
+            upper_inclusive: true,
+        };
+        let _ = format!("{}", r);
+    }
+
+    // ── Value::Matrix Ord tests (step-7) ─────────────────────────────────────
+
+    #[test]
+    fn value_matrix_ord_cross_type_after_range() {
+        // (a) Matrix (tag 17) > Range (tag 16)
+        let matrix = Value::Matrix(vec![vec![Value::Int(1)]]);
+        let range = Value::range(Some(Value::Int(0)), Some(Value::Int(10)), true, true);
+        assert!(matrix > range);
+    }
+
+    #[test]
+    fn value_matrix_ord_within_type_lexicographic() {
+        // (b) lexicographic ordering on rows: [[1,2],[3,4]] < [[1,2],[3,5]]
+        let m1 = Value::Matrix(vec![
+            vec![Value::Int(1), Value::Int(2)],
+            vec![Value::Int(3), Value::Int(4)],
+        ]);
+        let m2 = Value::Matrix(vec![
+            vec![Value::Int(1), Value::Int(2)],
+            vec![Value::Int(3), Value::Int(5)],
+        ]);
+        assert!(m1 < m2);
+        assert!(m2 > m1);
+        // Equal matrices compare equal
+        let m3 = Value::Matrix(vec![
+            vec![Value::Int(1), Value::Int(2)],
+            vec![Value::Int(3), Value::Int(4)],
+        ]);
+        assert_eq!(m1.cmp(&m3), std::cmp::Ordering::Equal);
+    }
+
+    // ── Value::Matrix content_hash tests (step-5) ────────────────────────────
+
+    #[test]
+    fn value_matrix_content_hash_determinism() {
+        // (a) same matrix produces same hash
+        let m1 = Value::Matrix(vec![
+            vec![Value::Int(1), Value::Int(2)],
+            vec![Value::Int(3), Value::Int(4)],
+        ]);
+        let m2 = Value::Matrix(vec![
+            vec![Value::Int(1), Value::Int(2)],
+            vec![Value::Int(3), Value::Int(4)],
+        ]);
+        assert_eq!(m1.content_hash(), m2.content_hash());
+    }
+
+    #[test]
+    fn value_matrix_content_hash_transposed_differs() {
+        // (b) transposed matrix has different hash
+        let m_normal = Value::Matrix(vec![
+            vec![Value::Int(1), Value::Int(2)],
+            vec![Value::Int(3), Value::Int(4)],
+        ]);
+        let m_transposed = Value::Matrix(vec![
+            vec![Value::Int(1), Value::Int(3)],
+            vec![Value::Int(2), Value::Int(4)],
+        ]);
+        assert_ne!(m_normal.content_hash(), m_transposed.content_hash());
+    }
+
+    #[test]
+    fn value_matrix_content_hash_distinct_from_tensor() {
+        // (c) same elements as Tensor produce different hash (different tag)
+        let matrix = Value::Matrix(vec![vec![Value::Int(1), Value::Int(2)]]);
+        let tensor = Value::Tensor(vec![Value::Int(1), Value::Int(2)]);
+        assert_ne!(matrix.content_hash(), tensor.content_hash());
+    }
+
+    // ── Value::Matrix tests (step-3) ─────────────────────────────────────────
+
+    #[test]
+    fn value_matrix_construction_and_partial_eq() {
+        // (a) same rows equal
+        let m1 = Value::Matrix(vec![
+            vec![Value::Int(1), Value::Int(2), Value::Int(3)],
+            vec![Value::Int(4), Value::Int(5), Value::Int(6)],
+        ]);
+        let m2 = Value::Matrix(vec![
+            vec![Value::Int(1), Value::Int(2), Value::Int(3)],
+            vec![Value::Int(4), Value::Int(5), Value::Int(6)],
+        ]);
+        assert_eq!(m1, m2);
+
+        // different element — not equal
+        let m3 = Value::Matrix(vec![
+            vec![Value::Int(1), Value::Int(2), Value::Int(3)],
+            vec![Value::Int(4), Value::Int(5), Value::Int(7)],
+        ]);
+        assert_ne!(m1, m3);
+
+        // different shape — not equal
+        let m4 = Value::Matrix(vec![
+            vec![Value::Int(1), Value::Int(2)],
+            vec![Value::Int(3), Value::Int(4)],
+        ]);
+        assert_ne!(m1, m4);
+
+        // cross-variant: Matrix != List
+        let list = Value::List(vec![Value::Int(1), Value::Int(2)]);
+        assert_ne!(Value::Matrix(vec![vec![Value::Int(1), Value::Int(2)]]), list);
+
+        // cross-variant: Matrix != Tensor
+        let tensor = Value::Tensor(vec![Value::Int(1), Value::Int(2)]);
+        assert_ne!(Value::Matrix(vec![vec![Value::Int(1), Value::Int(2)]]), tensor);
+    }
+
+    #[test]
+    fn value_matrix_display_2x3() {
+        // (b) 2x3 matrix: [[1, 2, 3], [4, 5, 6]]
+        let m = Value::Matrix(vec![
+            vec![Value::Int(1), Value::Int(2), Value::Int(3)],
+            vec![Value::Int(4), Value::Int(5), Value::Int(6)],
+        ]);
+        assert_eq!(format!("{}", m), "[[1, 2, 3], [4, 5, 6]]");
+    }
+
+    #[test]
+    fn value_matrix_display_1x1() {
+        // (b) 1x1 matrix: [[1]]
+        let m = Value::Matrix(vec![vec![Value::Int(1)]]);
+        assert_eq!(format!("{}", m), "[[1]]");
+    }
+
+    // ── Value::Matrix canonicalize_matrix / try_into_matrix tests (step-11) ─
+
+    #[test]
+    fn canonicalize_matrix_converts_to_nested_tensor() {
+        // (a) Matrix([[1,2],[3,4]]) → Tensor([Tensor([1,2]), Tensor([3,4])])
+        let matrix = Value::Matrix(vec![
+            vec![Value::Int(1), Value::Int(2)],
+            vec![Value::Int(3), Value::Int(4)],
+        ]);
+        let expected = Value::Tensor(vec![
+            Value::Tensor(vec![Value::Int(1), Value::Int(2)]),
+            Value::Tensor(vec![Value::Int(3), Value::Int(4)]),
+        ]);
+        assert_eq!(matrix.canonicalize_matrix(), expected);
+    }
+
+    #[test]
+    fn canonicalize_matrix_is_identity_for_non_matrix() {
+        // (b) non-Matrix values pass through unchanged
+        assert_eq!(Value::Int(42).canonicalize_matrix(), Value::Int(42));
+        assert_eq!(
+            Value::Tensor(vec![Value::Int(1), Value::Int(2)]).canonicalize_matrix(),
+            Value::Tensor(vec![Value::Int(1), Value::Int(2)])
+        );
+        assert_eq!(Value::Undef.canonicalize_matrix(), Value::Undef);
+    }
+
+    #[test]
+    fn canonicalize_matrix_empty_rows() {
+        // (c) Matrix([[],[]])  → Tensor([Tensor([]), Tensor([])])
+        let matrix = Value::Matrix(vec![vec![], vec![]]);
+        let expected = Value::Tensor(vec![Value::Tensor(vec![]), Value::Tensor(vec![])]);
+        assert_eq!(matrix.canonicalize_matrix(), expected);
+    }
+
+    #[test]
+    fn try_into_matrix_rank2_tensor_converts() {
+        // (d) rank-2 Tensor([Tensor([1,2]), Tensor([3,4])]) → Some(Matrix([[1,2],[3,4]]))
+        let tensor = Value::Tensor(vec![
+            Value::Tensor(vec![Value::Int(1), Value::Int(2)]),
+            Value::Tensor(vec![Value::Int(3), Value::Int(4)]),
+        ]);
+        let expected = Some(Value::Matrix(vec![
+            vec![Value::Int(1), Value::Int(2)],
+            vec![Value::Int(3), Value::Int(4)],
+        ]));
+        assert_eq!(tensor.try_into_matrix(), expected);
+    }
+
+    #[test]
+    fn try_into_matrix_rank1_tensor_returns_none() {
+        // (e) rank-1 Tensor([1,2,3]) → None (not all-Tensor elements)
+        let tensor = Value::Tensor(vec![Value::Int(1), Value::Int(2), Value::Int(3)]);
+        assert_eq!(tensor.try_into_matrix(), None);
+    }
+
+    #[test]
+    fn try_into_matrix_non_tensor_returns_none() {
+        // (f) non-Tensor values return None
+        assert_eq!(Value::Int(42).try_into_matrix(), None);
+        assert_eq!(
+            Value::Matrix(vec![vec![Value::Int(1)]]).try_into_matrix(),
+            None
+        );
+    }
+
+    #[test]
+    fn canonicalize_matrix_round_trip() {
+        // (g) round-trip: matrix.clone().canonicalize_matrix().try_into_matrix() == Some(matrix)
+        let matrix = Value::Matrix(vec![
+            vec![Value::Int(1), Value::Int(2)],
+            vec![Value::Int(3), Value::Int(4)],
+        ]);
+        let round_tripped = matrix.clone().canonicalize_matrix().try_into_matrix();
+        assert_eq!(round_tripped, Some(matrix));
+    }
+
+    // ── Value::Frame tests (step-3) ──────────────────────────────────────────
+
+    fn make_point3_length() -> Value {
+        Value::Point(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ])
+    }
+
+    fn make_orientation_identity() -> Value {
+        Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 }
+    }
+
+    fn make_frame(origin: Value, basis: Value) -> Value {
+        Value::Frame { origin: Box::new(origin), basis: Box::new(basis) }
+    }
+
+    #[test]
+    fn value_frame_construction() {
+        let origin = make_point3_length();
+        let basis = make_orientation_identity();
+        let frame = make_frame(origin.clone(), basis.clone());
+        match frame {
+            Value::Frame { origin: o, basis: b } => {
+                assert_eq!(*o, origin);
+                assert_eq!(*b, basis);
+            }
+            other => panic!("expected Value::Frame, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn value_frame_partial_eq_equal() {
+        let f1 = make_frame(make_point3_length(), make_orientation_identity());
+        let f2 = make_frame(make_point3_length(), make_orientation_identity());
+        assert_eq!(f1, f2);
+    }
+
+    #[test]
+    fn value_frame_partial_eq_different_origin() {
+        let origin_a = Value::Point(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]);
+        let origin_b = Value::Point(vec![Value::length(9.0), Value::length(2.0), Value::length(3.0)]);
+        let basis = make_orientation_identity();
+        let f1 = make_frame(origin_a, basis.clone());
+        let f2 = make_frame(origin_b, basis);
+        assert_ne!(f1, f2);
+    }
+
+    #[test]
+    fn value_frame_partial_eq_different_basis() {
+        let origin = make_point3_length();
+        let basis_a = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+        let basis_b = Value::Orientation { w: 0.0, x: 1.0, y: 0.0, z: 0.0 };
+        let f1 = make_frame(origin.clone(), basis_a);
+        let f2 = make_frame(origin, basis_b);
+        assert_ne!(f1, f2);
+    }
+
+    #[test]
+    fn value_frame_display() {
+        let origin = Value::Point(vec![
+            Value::length(0.0),
+            Value::length(0.0),
+            Value::length(0.0),
+        ]);
+        let basis = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+        let frame = make_frame(origin, basis);
+        let s = format!("{}", frame);
+        assert_eq!(s, "frame(point(0 m, 0 m, 0 m), [1, 0, 0, 0]q)");
+    }
+
+    #[test]
+    fn value_frame_dimension_is_dimensionless() {
+        let frame = make_frame(make_point3_length(), make_orientation_identity());
+        assert_eq!(frame.dimension(), DimensionVector::DIMENSIONLESS);
+    }
+
+    #[test]
+    fn value_frame_content_hash_determinism() {
+        let f1 = make_frame(make_point3_length(), make_orientation_identity());
+        let f2 = make_frame(make_point3_length(), make_orientation_identity());
+        assert_eq!(f1.content_hash(), f2.content_hash());
+    }
+
+    #[test]
+    fn value_frame_content_hash_distinct_from_orientation() {
+        let frame = make_frame(make_point3_length(), make_orientation_identity());
+        let orientation = make_orientation_identity();
+        assert_ne!(frame.content_hash(), orientation.content_hash());
+    }
+
+    #[test]
+    fn value_frame_content_hash_distinct_from_point() {
+        let frame = make_frame(make_point3_length(), make_orientation_identity());
+        let point = make_point3_length();
+        assert_ne!(frame.content_hash(), point.content_hash());
+    }
+
+    #[test]
+    fn value_frame_ord_type_tag_gt_matrix() {
+        // Frame type_tag=20 > Matrix type_tag=19
+        let frame = make_frame(make_point3_length(), make_orientation_identity());
+        let matrix = Value::Matrix(vec![vec![Value::Int(1)]]);
+        assert!(frame > matrix);
+    }
+
+    #[test]
+    fn value_frame_ord_same_type_compare_origin_first() {
+        // Two frames with same basis but different origin should order by origin
+        let origin_a = Value::Point(vec![Value::length(1.0), Value::length(0.0), Value::length(0.0)]);
+        let origin_b = Value::Point(vec![Value::length(2.0), Value::length(0.0), Value::length(0.0)]);
+        let basis = make_orientation_identity();
+        let f1 = make_frame(origin_a, basis.clone());
+        let f2 = make_frame(origin_b, basis);
+        assert!(f1 < f2);
+    }
+
+    #[test]
+    fn value_frame_ord_same_origin_compare_basis() {
+        // Same origin, different basis: order by basis quaternion
+        let origin = make_point3_length();
+        // Orientation {w:0} < {w:1} by to_bits ordering (0.0 < 1.0)
+        let basis_a = Value::Orientation { w: 0.0, x: 0.0, y: 0.0, z: 0.0 };
+        let basis_b = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+        let f1 = make_frame(origin.clone(), basis_a);
+        let f2 = make_frame(origin, basis_b);
+        assert!(f1 < f2);
+    }
+
+    #[test]
+    fn value_frame_content_hash_neg_zero_origin_differs() {
+        // neg-zero and pos-zero in origin produce different hashes
+        let origin_pos = Value::Point(vec![Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH }, Value::length(0.0), Value::length(0.0)]);
+        let origin_neg = Value::Point(vec![Value::Scalar { si_value: -0.0, dimension: DimensionVector::LENGTH }, Value::length(0.0), Value::length(0.0)]);
+        let basis = make_orientation_identity();
+        let f1 = make_frame(origin_pos, basis.clone());
+        let f2 = make_frame(origin_neg, basis);
+        assert_ne!(f1.content_hash(), f2.content_hash());
+    }
+
+    // ── Value::Transform tests (step-3) ──────────────────────────────────────
+
+    fn make_vector3_length() -> Value {
+        Value::Vector(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ])
+    }
+
+    fn make_transform(rotation: Value, translation: Value) -> Value {
+        Value::Transform { rotation: Box::new(rotation), translation: Box::new(translation) }
+    }
+
+    #[test]
+    fn value_transform_construction() {
+        let rotation = make_orientation_identity();
+        let translation = make_vector3_length();
+        let transform = make_transform(rotation.clone(), translation.clone());
+        match transform {
+            Value::Transform { rotation: r, translation: t } => {
+                assert_eq!(*r, rotation);
+                assert_eq!(*t, translation);
+            }
+            other => panic!("expected Value::Transform, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn value_transform_partial_eq_equal() {
+        let t1 = make_transform(make_orientation_identity(), make_vector3_length());
+        let t2 = make_transform(make_orientation_identity(), make_vector3_length());
+        assert_eq!(t1, t2);
+    }
+
+    #[test]
+    fn value_transform_partial_eq_different_rotation() {
+        let rot_a = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+        let rot_b = Value::Orientation { w: 0.0, x: 1.0, y: 0.0, z: 0.0 };
+        let translation = make_vector3_length();
+        let t1 = make_transform(rot_a, translation.clone());
+        let t2 = make_transform(rot_b, translation);
+        assert_ne!(t1, t2);
+    }
+
+    #[test]
+    fn value_transform_partial_eq_different_translation() {
+        let rotation = make_orientation_identity();
+        let trans_a = Value::Vector(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]);
+        let trans_b = Value::Vector(vec![Value::length(9.0), Value::length(2.0), Value::length(3.0)]);
+        let t1 = make_transform(rotation.clone(), trans_a);
+        let t2 = make_transform(rotation, trans_b);
+        assert_ne!(t1, t2);
+    }
+
+    #[test]
+    fn value_transform_display() {
+        let rotation = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+        let translation = Value::Vector(vec![
+            Value::length(0.0),
+            Value::length(0.0),
+            Value::length(0.0),
+        ]);
+        let transform = make_transform(rotation, translation);
+        let s = format!("{}", transform);
+        // Expected: transform([1, 0, 0, 0]q, vec(0 m, 0 m, 0 m))
+        assert!(s.starts_with("transform("), "display should start with 'transform(', got: {}", s);
+        assert!(s.contains("[1, 0, 0, 0]q"), "display should contain rotation, got: {}", s);
+    }
+
+    #[test]
+    fn value_transform_dimension_is_dimensionless() {
+        let transform = make_transform(make_orientation_identity(), make_vector3_length());
+        assert_eq!(transform.dimension(), DimensionVector::DIMENSIONLESS);
+    }
+
+    #[test]
+    fn value_transform_content_hash_determinism() {
+        let t1 = make_transform(make_orientation_identity(), make_vector3_length());
+        let t2 = make_transform(make_orientation_identity(), make_vector3_length());
+        assert_eq!(t1.content_hash(), t2.content_hash());
+    }
+
+    #[test]
+    fn value_transform_content_hash_distinct_from_frame() {
+        let transform = make_transform(make_orientation_identity(), make_vector3_length());
+        let frame = make_frame(make_point3_length(), make_orientation_identity());
+        assert_ne!(transform.content_hash(), frame.content_hash());
+    }
+
+    #[test]
+    fn value_transform_content_hash_distinct_from_orientation() {
+        let transform = make_transform(make_orientation_identity(), make_vector3_length());
+        let orientation = make_orientation_identity();
+        assert_ne!(transform.content_hash(), orientation.content_hash());
+    }
+
+    #[test]
+    fn value_transform_content_hash_distinct_from_vector() {
+        let transform = make_transform(make_orientation_identity(), make_vector3_length());
+        let vector = make_vector3_length();
+        assert_ne!(transform.content_hash(), vector.content_hash());
+    }
+
+    #[test]
+    fn value_transform_ord_type_tag_gt_frame() {
+        // Transform type_tag=21 > Frame type_tag=20
+        let transform = make_transform(make_orientation_identity(), make_vector3_length());
+        let frame = make_frame(make_point3_length(), make_orientation_identity());
+        assert!(transform > frame);
+    }
+
+    #[test]
+    fn value_transform_ord_same_type_compare_rotation_first() {
+        // Two transforms with same translation but different rotation: order by rotation
+        let rot_a = Value::Orientation { w: 0.0, x: 0.0, y: 0.0, z: 0.0 };
+        let rot_b = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+        let translation = make_vector3_length();
+        let t1 = make_transform(rot_a, translation.clone());
+        let t2 = make_transform(rot_b, translation);
+        assert!(t1 < t2);
+    }
+
+    #[test]
+    fn value_transform_ord_same_rotation_compare_translation() {
+        // Same rotation, different translation: order by translation
+        let rotation = make_orientation_identity();
+        let trans_a = Value::Vector(vec![Value::length(1.0), Value::length(0.0), Value::length(0.0)]);
+        let trans_b = Value::Vector(vec![Value::length(2.0), Value::length(0.0), Value::length(0.0)]);
+        let t1 = make_transform(rotation.clone(), trans_a);
+        let t2 = make_transform(rotation, trans_b);
+        assert!(t1 < t2);
+    }
+
+    #[test]
+    fn value_transform_content_hash_neg_zero_translation_differs() {
+        // neg-zero and pos-zero in translation produce different hashes
+        let trans_pos = Value::Vector(vec![Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH }, Value::length(0.0), Value::length(0.0)]);
+        let trans_neg = Value::Vector(vec![Value::Scalar { si_value: -0.0, dimension: DimensionVector::LENGTH }, Value::length(0.0), Value::length(0.0)]);
+        let rotation = make_orientation_identity();
+        let t1 = make_transform(rotation.clone(), trans_pos);
+        let t2 = make_transform(rotation, trans_neg);
+        assert_ne!(t1.content_hash(), t2.content_hash());
+    }
+
+    // ── Value::Plane tests (pre-2) ────────────────────────────────────────────
+
+    fn make_plane(origin: Value, normal: Value) -> Value {
+        Value::Plane { origin: Box::new(origin), normal: Box::new(normal) }
+    }
+
+    fn make_point3_origin() -> Value {
+        Value::Point(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)])
+    }
+
+    fn make_normal_z() -> Value {
+        Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)])
+    }
+
+    #[test]
+    fn value_plane_construction() {
+        let origin = make_point3_origin();
+        let normal = make_normal_z();
+        let plane = make_plane(origin.clone(), normal.clone());
+        match plane {
+            Value::Plane { origin: o, normal: n } => {
+                assert_eq!(*o, origin);
+                assert_eq!(*n, normal);
+            }
+            other => panic!("expected Value::Plane, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn value_plane_partial_eq_same() {
+        let p1 = make_plane(make_point3_origin(), make_normal_z());
+        let p2 = make_plane(make_point3_origin(), make_normal_z());
+        assert_eq!(p1, p2);
+    }
+
+    #[test]
+    fn value_plane_partial_eq_different() {
+        let p1 = make_plane(make_point3_origin(), make_normal_z());
+        let normal_x = Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
+        let p2 = make_plane(make_point3_origin(), normal_x);
+        assert_ne!(p1, p2);
+    }
+
+    #[test]
+    fn value_plane_display() {
+        let origin = Value::Point(vec![Value::length(0.0), Value::length(0.0), Value::length(0.0)]);
+        let normal = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
+        let plane = make_plane(origin, normal);
+        let s = format!("{}", plane);
+        assert!(s.starts_with("plane("), "display should start with 'plane(', got: {}", s);
+    }
+
+    #[test]
+    fn value_plane_content_hash_deterministic() {
+        let p1 = make_plane(make_point3_origin(), make_normal_z());
+        let p2 = make_plane(make_point3_origin(), make_normal_z());
+        assert_eq!(p1.content_hash(), p2.content_hash());
+    }
+
+    #[test]
+    fn value_plane_content_hash_no_collision_with_transform() {
+        let plane = make_plane(make_point3_origin(), make_normal_z());
+        let transform = make_transform(make_orientation_identity(), make_vector3_length());
+        assert_ne!(plane.content_hash(), transform.content_hash());
+    }
+
+    #[test]
+    fn value_plane_ord_cross_type() {
+        // Plane type_tag=22 > Transform type_tag=21
+        let plane = make_plane(make_point3_origin(), make_normal_z());
+        let transform = make_transform(make_orientation_identity(), make_vector3_length());
+        assert!(plane > transform);
+    }
+
+    #[test]
+    fn value_plane_dimension_dimensionless() {
+        let plane = make_plane(make_point3_origin(), make_normal_z());
+        assert_eq!(plane.dimension(), DimensionVector::DIMENSIONLESS);
+    }
+
+    // ── Value::Axis tests (pre-3) ─────────────────────────────────────────────
+
+    fn make_axis(origin: Value, direction: Value) -> Value {
+        Value::Axis { origin: Box::new(origin), direction: Box::new(direction) }
+    }
+
+    fn make_direction_z() -> Value {
+        Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)])
+    }
+
+    #[test]
+    fn value_axis_construction() {
+        let origin = make_point3_origin();
+        let direction = make_direction_z();
+        let axis = make_axis(origin.clone(), direction.clone());
+        match axis {
+            Value::Axis { origin: o, direction: d } => {
+                assert_eq!(*o, origin);
+                assert_eq!(*d, direction);
+            }
+            other => panic!("expected Value::Axis, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn value_axis_partial_eq_same() {
+        let a1 = make_axis(make_point3_origin(), make_direction_z());
+        let a2 = make_axis(make_point3_origin(), make_direction_z());
+        assert_eq!(a1, a2);
+    }
+
+    #[test]
+    fn value_axis_partial_eq_different() {
+        let a1 = make_axis(make_point3_origin(), make_direction_z());
+        let dir_x = Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
+        let a2 = make_axis(make_point3_origin(), dir_x);
+        assert_ne!(a1, a2);
+    }
+
+    #[test]
+    fn value_axis_display() {
+        let origin = Value::Point(vec![Value::length(0.0), Value::length(0.0), Value::length(0.0)]);
+        let direction = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
+        let axis = make_axis(origin, direction);
+        let s = format!("{}", axis);
+        assert!(s.starts_with("axis("), "display should start with 'axis(', got: {}", s);
+    }
+
+    #[test]
+    fn value_axis_content_hash_deterministic() {
+        let a1 = make_axis(make_point3_origin(), make_direction_z());
+        let a2 = make_axis(make_point3_origin(), make_direction_z());
+        assert_eq!(a1.content_hash(), a2.content_hash());
+    }
+
+    #[test]
+    fn value_axis_content_hash_no_collision_with_plane() {
+        let axis = make_axis(make_point3_origin(), make_direction_z());
+        let plane = make_plane(make_point3_origin(), make_normal_z());
+        // Plane tag=22, Axis tag=23 — distinct even if fields match
+        assert_ne!(axis.content_hash(), plane.content_hash());
+    }
+
+    #[test]
+    fn value_axis_ord_cross_type() {
+        // Axis type_tag=23 > Plane type_tag=22
+        let axis = make_axis(make_point3_origin(), make_direction_z());
+        let plane = make_plane(make_point3_origin(), make_normal_z());
+        assert!(axis > plane);
+    }
+
+    #[test]
+    fn value_axis_dimension_dimensionless() {
+        let axis = make_axis(make_point3_origin(), make_direction_z());
+        assert_eq!(axis.dimension(), DimensionVector::DIMENSIONLESS);
+    }
+
+    // ── Value::BoundingBox tests (pre-4) ──────────────────────────────────────
+
+    fn make_bbox(min: Value, max: Value) -> Value {
+        Value::BoundingBox { min: Box::new(min), max: Box::new(max) }
+    }
+
+    fn make_point3_min() -> Value {
+        Value::Point(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)])
+    }
+
+    fn make_point3_max() -> Value {
+        Value::Point(vec![Value::length(4.0), Value::length(6.0), Value::length(9.0)])
+    }
+
+    #[test]
+    fn value_bbox_construction() {
+        let min = make_point3_min();
+        let max = make_point3_max();
+        let bbox = make_bbox(min.clone(), max.clone());
+        match bbox {
+            Value::BoundingBox { min: mn, max: mx } => {
+                assert_eq!(*mn, min);
+                assert_eq!(*mx, max);
+            }
+            other => panic!("expected Value::BoundingBox, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn value_bbox_partial_eq_same() {
+        let b1 = make_bbox(make_point3_min(), make_point3_max());
+        let b2 = make_bbox(make_point3_min(), make_point3_max());
+        assert_eq!(b1, b2);
+    }
+
+    #[test]
+    fn value_bbox_partial_eq_different() {
+        let b1 = make_bbox(make_point3_min(), make_point3_max());
+        let max2 = Value::Point(vec![Value::length(5.0), Value::length(6.0), Value::length(9.0)]);
+        let b2 = make_bbox(make_point3_min(), max2);
+        assert_ne!(b1, b2);
+    }
+
+    #[test]
+    fn value_bbox_display() {
+        let bbox = make_bbox(make_point3_min(), make_point3_max());
+        let s = format!("{}", bbox);
+        assert!(s.starts_with("bbox("), "display should start with 'bbox(', got: {}", s);
+    }
+
+    #[test]
+    fn value_bbox_content_hash_deterministic() {
+        let b1 = make_bbox(make_point3_min(), make_point3_max());
+        let b2 = make_bbox(make_point3_min(), make_point3_max());
+        assert_eq!(b1.content_hash(), b2.content_hash());
+    }
+
+    #[test]
+    fn value_bbox_content_hash_no_collision_with_axis() {
+        let bbox = make_bbox(make_point3_min(), make_point3_max());
+        let axis = make_axis(make_point3_origin(), make_direction_z());
+        // BoundingBox tag=24, Axis tag=23 — distinct
+        assert_ne!(bbox.content_hash(), axis.content_hash());
+    }
+
+    #[test]
+    fn value_bbox_ord_cross_type() {
+        // BoundingBox type_tag=24 > Axis type_tag=23
+        let bbox = make_bbox(make_point3_min(), make_point3_max());
+        let axis = make_axis(make_point3_origin(), make_direction_z());
+        assert!(bbox > axis);
+    }
+
+    #[test]
+    fn value_bbox_dimension_dimensionless() {
+        let bbox = make_bbox(make_point3_min(), make_point3_max());
+        assert_eq!(bbox.dimension(), DimensionVector::DIMENSIONLESS);
     }
 }

@@ -152,12 +152,13 @@ type SharedStdin = Arc<Mutex<Box<dyn AsyncWrite + Unpin + Send>>>;
 
 /// Handle to a running sidecar process.
 ///
-/// Uses `tokio::sync::Mutex` because operations (send, abort) are async
-/// and the lock must be held across await points.
+/// State uses `std::sync::Mutex` (not tokio) because state transitions
+/// are instantaneous assignments — no await points inside the lock.
+/// `stdin` uses `tokio::sync::Mutex` because writes span await points.
 pub struct SidecarHandle {
     stdin: SharedStdin,
     reader_handle: JoinHandle<()>,
-    state: Arc<Mutex<SidecarState>>,
+    state: Arc<std::sync::Mutex<SidecarState>>,
     /// Notified when the sidecar sends the "ready" message.
     ready_notify: Arc<Notify>,
     /// The OS child process, if started via `set_child`.
@@ -168,13 +169,15 @@ impl SidecarHandle {
     /// Construct a SidecarHandle from pre-existing I/O parts.
     /// The reader task handles Ready state transitions and crash detection.
     /// Use [`from_parts_with_mcp`] to also wire up event emission and MCP interception.
-    pub fn from_parts<W, R>(writer: W, reader: R, state: Arc<Mutex<SidecarState>>) -> Self
+    pub fn from_parts<W, R>(writer: W, reader: R, state: Arc<std::sync::Mutex<SidecarState>>) -> Self
     where
         W: AsyncWrite + Unpin + Send + 'static,
         R: AsyncBufRead + Unpin + Send + 'static,
     {
         let stdin: SharedStdin = Arc::new(Mutex::new(Box::new(writer)));
-        Self::new_inner::<R, fn(String, Value)>(stdin, reader, state, None)
+        Self::new_inner::<R, fn(String, Value) -> Result<Value, String>, fn(&str, Value)>(
+            stdin, reader, state, None,
+        )
     }
 
     /// Construct a SidecarHandle with full event and MCP wiring.
@@ -182,34 +185,38 @@ impl SidecarHandle {
     /// The reader task will:
     /// - Transition state to Ready on ready message
     /// - Emit all outbound messages to `event_sink` via [`outbound_to_event`]
-    /// - For `tool_call` messages with a `reify_` prefix, call [`crate::mcp_context::mcp_tool_call_impl`]
-    ///   and write the result back to the sidecar as a `tool_result` inbound message
-    pub fn from_parts_with_mcp<W, R, F>(
+    /// - For `tool_call` messages with a `reify_` prefix, call `tool_dispatch` synchronously
+    ///   and write the result back to the sidecar as a `tool_result` inbound message.
+    ///   `tool_dispatch` receives the tool name and input; the engine dependency lives
+    ///   at the call site (e.g. `main.rs`), not inside this module.
+    pub fn from_parts_with_mcp<W, R, D, F>(
         writer: W,
         reader: R,
-        state: Arc<Mutex<SidecarState>>,
-        engine: Arc<std::sync::Mutex<crate::engine::EngineSession>>,
+        state: Arc<std::sync::Mutex<SidecarState>>,
+        tool_dispatch: D,
         event_sink: F,
     ) -> Self
     where
         W: AsyncWrite + Unpin + Send + 'static,
         R: AsyncBufRead + Unpin + Send + 'static,
-        F: Fn(String, Value) + Send + Sync + 'static,
+        D: Fn(String, Value) -> Result<Value, String> + Send + Sync + 'static,
+        F: Fn(&str, Value) + Send + Sync + 'static,
     {
         let stdin: SharedStdin = Arc::new(Mutex::new(Box::new(writer)));
-        Self::new_inner(stdin, reader, state, Some((engine, event_sink)))
+        Self::new_inner(stdin, reader, state, Some((tool_dispatch, event_sink)))
     }
 
     /// Internal constructor shared by `from_parts` and `from_parts_with_mcp`.
-    fn new_inner<R, F>(
+    fn new_inner<R, D, F>(
         stdin: SharedStdin,
         reader: R,
-        state: Arc<Mutex<SidecarState>>,
-        mcp_config: Option<(Arc<std::sync::Mutex<crate::engine::EngineSession>>, F)>,
+        state: Arc<std::sync::Mutex<SidecarState>>,
+        mcp_config: Option<(D, F)>,
     ) -> Self
     where
         R: AsyncBufRead + Unpin + Send + 'static,
-        F: Fn(String, Value) + Send + Sync + 'static,
+        D: Fn(String, Value) -> Result<Value, String> + Send + Sync + 'static,
+        F: Fn(&str, Value) + Send + Sync + 'static,
     {
         let ready_notify = Arc::new(Notify::new());
         let state_for_ready = Arc::clone(&state);
@@ -224,16 +231,17 @@ impl SidecarHandle {
                 move |msg| {
                     // 1. State transition: Ready message
                     if let OutboundMessage::Ready = &msg {
-                        let state_inner = Arc::clone(&state_for_ready);
-                        let notify_inner = Arc::clone(&notify_for_reader);
-                        tokio::spawn(async move {
-                            *state_inner.lock().await = SidecarState::Ready;
-                            notify_inner.notify_waiters();
-                        });
+                        *state_for_ready.lock().unwrap() = SidecarState::Ready;
+                        // Use notify_one() rather than notify_waiters() so that a
+                        // permit is stored when no waiter is currently registered.
+                        // subscribe_ready() defers notified() to first poll, so the
+                        // notification may fire before the future is polled — a race
+                        // window where notify_waiters() would silently lose the signal.
+                        notify_for_reader.notify_one();
                     }
 
                     // 2. Event emission and MCP interception
-                    if let Some((ref engine, ref sink)) = mcp_config {
+                    if let Some((ref dispatch, ref sink)) = mcp_config {
                         let (event_name, payload) = outbound_to_event(&msg);
                         sink(event_name, payload);
 
@@ -243,24 +251,19 @@ impl SidecarHandle {
                                 let id = id.clone();
                                 let tool_name = tool_name.clone();
                                 let tool_input = tool_input.clone();
-                                let engine_clone = Arc::clone(engine);
+                                // tool_dispatch is synchronous — call it directly here,
+                                // then spawn only for the async stdin write.
+                                let result_val = match dispatch(tool_name.clone(), tool_input) {
+                                    Ok(v) => v,
+                                    Err(e) => serde_json::json!({ "error": e }),
+                                };
+                                let response = InboundMessage::ToolResult {
+                                    id,
+                                    tool_name,
+                                    result: result_val,
+                                };
                                 let stdin_clone = Arc::clone(&stdin_for_reader);
                                 tokio::spawn(async move {
-                                    let ctx = crate::mcp_context::TauriToolContext::new(engine_clone);
-                                    let result = crate::mcp_context::mcp_tool_call_impl(
-                                        &tool_name,
-                                        tool_input,
-                                        &ctx,
-                                    );
-                                    let result_val = match result {
-                                        Ok(v) => v,
-                                        Err(e) => serde_json::json!({ "error": e }),
-                                    };
-                                    let response = InboundMessage::ToolResult {
-                                        id,
-                                        tool_name,
-                                        result: result_val,
-                                    };
                                     let mut writer = stdin_clone.lock().await;
                                     write_to_sidecar(&mut *writer, &response).await.ok();
                                 });
@@ -271,15 +274,16 @@ impl SidecarHandle {
                     // on_exit: set state to Crashed unless we're already NotStarted (killed).
                     // Also notify waiters so anyone blocked in wait_ready wakes immediately
                     // instead of hanging for the full timeout.
-                    let state_inner = state_for_crash;
-                    let notify_inner = notify_for_crash;
-                    tokio::spawn(async move {
-                        let mut s = state_inner.lock().await;
+                    {
+                        let mut s = state_for_crash.lock().unwrap();
                         if !matches!(*s, SidecarState::NotStarted) {
                             *s = SidecarState::Crashed("sidecar exited unexpectedly".to_string());
                         }
-                        notify_inner.notify_waiters();
-                    });
+                    } // guard dropped before notify_one
+                    // Same reasoning as the Ready case above: notify_one() stores a
+                    // permit so subscribe_ready() callers that haven't polled yet
+                    // still see the crash signal immediately when first polled.
+                    notify_for_crash.notify_one();
                 },
             )
             .await;
@@ -289,14 +293,25 @@ impl SidecarHandle {
     }
 
     /// Get a reference to the state mutex.
-    pub fn state(&self) -> &Arc<Mutex<SidecarState>> {
+    pub fn state(&self) -> &Arc<std::sync::Mutex<SidecarState>> {
         &self.state
     }
 
-    /// Get a reference to the ready notify so callers can await it without
-    /// holding the outer sidecar lock.
-    pub fn ready_notify(&self) -> &Arc<Notify> {
-        &self.ready_notify
+    /// Subscribe to the ready notification.
+    ///
+    /// Returns an owned `'static` future that resolves when the sidecar sends
+    /// the "ready" message (i.e. when [`Notify::notify_one`] is called).
+    /// The future clones the `Arc<Notify>` internally, so it is safe to hold
+    /// across lock boundaries without keeping a reference to the handle.
+    ///
+    /// `notify_one` is used (not `notify_waiters`) so that a permit is stored
+    /// when no waiter is currently registered.  The returned future defers
+    /// calling `notified()` to first poll, so if the "ready" message arrives
+    /// before the caller first polls the future the notification must be
+    /// preserved — `notify_one` guarantees this.
+    pub fn subscribe_ready(&self) -> impl std::future::Future<Output = ()> + Send + 'static {
+        let notify = Arc::clone(&self.ready_notify);
+        async move { notify.notified().await }
     }
 
     /// Wait until the sidecar transitions to the Ready state or the timeout expires.
@@ -305,7 +320,7 @@ impl SidecarHandle {
     /// Slow path: awaits `ready_notify` with the given timeout.
     pub async fn wait_ready(&self, timeout: Duration) -> Result<(), String> {
         // Fast path: already Ready
-        if matches!(*self.state.lock().await, SidecarState::Ready) {
+        if matches!(*self.state.lock().unwrap(), SidecarState::Ready) {
             return Ok(());
         }
 
@@ -314,7 +329,7 @@ impl SidecarHandle {
         let notified = self.ready_notify.notified();
         // Re-check under the subscription to avoid missing a notification that
         // arrived between the fast-path check and the subscribe.
-        if matches!(*self.state.lock().await, SidecarState::Ready) {
+        if matches!(*self.state.lock().unwrap(), SidecarState::Ready) {
             return Ok(());
         }
 
@@ -323,7 +338,7 @@ impl SidecarHandle {
             .map_err(|_| format!("Timeout waiting for sidecar ready after {}ms", timeout.as_millis()))?;
 
         // Re-check state: notification may have been triggered by a crash, not Ready.
-        let state = self.state.lock().await;
+        let state = self.state.lock().unwrap();
         match &*state {
             SidecarState::Ready => Ok(()),
             SidecarState::Crashed(msg) => Err(format!("sidecar crashed: {}", msg)),
@@ -355,7 +370,7 @@ impl SidecarHandle {
         // 2. Abort the reader task.
         self.reader_handle.abort();
         // 3. Mark as not started.
-        *self.state.lock().await = SidecarState::NotStarted;
+        *self.state.lock().unwrap() = SidecarState::NotStarted;
     }
 
     /// Send an abort signal to the sidecar (cancels the current message).
@@ -378,7 +393,7 @@ impl SidecarHandle {
         text: &str,
         context: Option<MessageContext>,
     ) -> Result<String, String> {
-        let n = MSG_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let n = MSG_COUNTER.fetch_add(1, Ordering::Relaxed);
         let id = format!("msg-{}", n);
         let msg = InboundMessage::SendMessage {
             id: id.clone(),
@@ -393,6 +408,30 @@ impl SidecarHandle {
 
 // --- High-level command implementations ---
 
+/// Lock the sidecar mutex, check that a handle is present, and run `f` on it.
+///
+/// Returns `Err("sidecar not started")` if the slot is `None`.
+/// Otherwise awaits `f(handle)` and returns its result.
+///
+/// The closure must return a `Pin<Box<dyn Future + Send + 'a>>` where `'a` is
+/// the lifetime of the `&mut SidecarHandle` borrow. Use `Box::pin(...)` at
+/// the call site:
+/// ```rust,ignore
+/// with_handle(&sidecar, |h| Box::pin(h.abort())).await
+/// ```
+async fn with_handle<T, F>(sidecar: &Mutex<Option<SidecarHandle>>, f: F) -> Result<T, String>
+where
+    F: for<'a> FnOnce(
+        &'a mut SidecarHandle,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<T, String>> + Send + 'a>>,
+{
+    let mut guard = sidecar.lock().await;
+    match guard.as_mut() {
+        None => Err("sidecar not started".to_string()),
+        Some(handle) => f(handle).await,
+    }
+}
+
 /// Send a message to the sidecar. Returns the generated message ID.
 ///
 /// Returns an error if the sidecar is not started or not in the Ready state.
@@ -401,30 +440,26 @@ pub async fn claude_send_message_impl(
     text: &str,
     context: Option<MessageContext>,
 ) -> Result<String, String> {
-    let mut guard = sidecar.lock().await;
-    match guard.as_mut() {
-        None => Err("sidecar not started".to_string()),
-        Some(handle) => {
-            let state = handle.state().lock().await.clone();
+    let text = text.to_string();
+    with_handle(sidecar, move |handle| {
+        Box::pin(async move {
+            let state = handle.state().lock().unwrap().clone();
             match state {
-                SidecarState::Ready => handle.send_message(text, context).await,
+                SidecarState::Ready => handle.send_message(&text, context).await,
                 SidecarState::Crashed(msg) => Err(format!("sidecar crashed: {}", msg)),
                 SidecarState::NotStarted => Err("sidecar not started".to_string()),
                 SidecarState::Starting => Err("sidecar not ready (still starting)".to_string()),
             }
-        }
-    }
+        })
+    })
+    .await
 }
 
 /// Send an abort signal to the sidecar.
 ///
 /// Returns an error if the sidecar is not started.
 pub async fn claude_abort_impl(sidecar: &Mutex<Option<SidecarHandle>>) -> Result<(), String> {
-    let mut guard = sidecar.lock().await;
-    match guard.as_mut() {
-        None => Err("sidecar not started".to_string()),
-        Some(handle) => handle.abort().await,
-    }
+    with_handle(sidecar, |h| Box::pin(h.abort())).await
 }
 
 /// Clear the conversation session in the sidecar.
@@ -433,11 +468,7 @@ pub async fn claude_abort_impl(sidecar: &Mutex<Option<SidecarHandle>>) -> Result
 pub async fn claude_clear_session_impl(
     sidecar: &Mutex<Option<SidecarHandle>>,
 ) -> Result<(), String> {
-    let mut guard = sidecar.lock().await;
-    match guard.as_mut() {
-        None => Err("sidecar not started".to_string()),
-        Some(handle) => handle.clear_session().await,
-    }
+    with_handle(sidecar, |h| Box::pin(h.clear_session())).await
 }
 
 /// Spawn the Claude sidecar process and return a ready-to-use [`SidecarHandle`].
@@ -448,13 +479,14 @@ pub async fn claude_clear_session_impl(
 /// the returned handle in the shared sidecar slot.
 ///
 /// Returns `Err` if the process cannot be spawned or if stdin/stdout are unavailable.
-pub async fn spawn_sidecar_impl<F>(
+pub async fn spawn_sidecar_impl<D, F>(
     path: &Path,
-    engine: Arc<std::sync::Mutex<crate::engine::EngineSession>>,
+    tool_dispatch: D,
     event_sink: F,
 ) -> Result<SidecarHandle, String>
 where
-    F: Fn(String, Value) + Send + Sync + 'static,
+    D: Fn(String, Value) -> Result<Value, String> + Send + Sync + 'static,
+    F: Fn(&str, Value) + Send + Sync + 'static,
 {
     let mut proc = tokio::process::Command::new(path)
         .stdin(std::process::Stdio::piped())
@@ -479,8 +511,8 @@ where
     };
 
     let reader = BufReader::new(stdout);
-    let sidecar_state = Arc::new(Mutex::new(SidecarState::Starting));
-    let mut handle = SidecarHandle::from_parts_with_mcp(stdin, reader, sidecar_state, engine, event_sink);
+    let sidecar_state = Arc::new(std::sync::Mutex::new(SidecarState::Starting));
+    let mut handle = SidecarHandle::from_parts_with_mcp(stdin, reader, sidecar_state, tool_dispatch, event_sink);
     handle.set_child(proc);
     Ok(handle)
 }
@@ -497,34 +529,34 @@ pub async fn shutdown_sidecar(sidecar: &Mutex<Option<SidecarHandle>>) {
 }
 
 /// Map an OutboundMessage to a Tauri event name and JSON payload.
-pub fn outbound_to_event(msg: &OutboundMessage) -> (String, Value) {
+pub fn outbound_to_event(msg: &OutboundMessage) -> (&'static str, Value) {
     match msg {
         OutboundMessage::TextDelta { id, content } => (
-            "claude-text-delta".to_string(),
+            "claude-text-delta",
             serde_json::json!({ "id": id, "content": content }),
         ),
         OutboundMessage::ThinkingDelta { id, content } => (
-            "claude-thinking-delta".to_string(),
+            "claude-thinking-delta",
             serde_json::json!({ "id": id, "content": content }),
         ),
         OutboundMessage::ToolCall { id, tool_name, tool_input } => (
-            "claude-tool-call".to_string(),
+            "claude-tool-call",
             serde_json::json!({ "id": id, "tool_name": tool_name, "tool_input": tool_input }),
         ),
         OutboundMessage::ToolResult { id, tool_name, result } => (
-            "claude-tool-result".to_string(),
+            "claude-tool-result",
             serde_json::json!({ "id": id, "tool_name": tool_name, "result": result }),
         ),
         OutboundMessage::Done { id } => (
-            "claude-done".to_string(),
+            "claude-done",
             serde_json::json!({ "id": id }),
         ),
         OutboundMessage::ErrorMessage { id, message } => (
-            "claude-error".to_string(),
+            "claude-error",
             serde_json::json!({ "id": id, "message": message }),
         ),
         OutboundMessage::Ready => (
-            "claude-ready".to_string(),
+            "claude-ready",
             serde_json::json!({}),
         ),
     }
