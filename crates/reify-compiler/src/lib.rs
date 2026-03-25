@@ -373,6 +373,7 @@ pub enum PatternKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SweepKind {
     Loft,
+    Sweep,
 }
 
 /// Reference to a geometry result within a realization.
@@ -403,6 +404,7 @@ fn is_geometry_function(name: &str) -> bool {
             | "difference"
             | "union_all"
             | "intersection_all"
+            | "sweep"
     )
 }
 
@@ -4906,6 +4908,27 @@ fn compile_geometry_call(
                 .collect();
             Some(vec![CompiledGeometryOp::Sweep {
                 kind: SweepKind::Loft,
+                profiles,
+                args,
+            }])
+        }
+        // sweep(profile, path)
+        "sweep" => {
+            if compiled_args.len() != 2 {
+                diagnostics.push(Diagnostic::error(format!(
+                    "sweep() expects exactly 2 arguments (profile, path), got {}",
+                    compiled_args.len()
+                )));
+                return None;
+            }
+            let profiles: Vec<GeomRef> = vec![GeomRef::Step(0), GeomRef::Step(1)];
+            let mut it = compiled_args.into_iter();
+            let args: Vec<(String, CompiledExpr)> = vec![
+                ("profile".to_string(), it.next().unwrap()),
+                ("path".to_string(), it.next().unwrap()),
+            ];
+            Some(vec![CompiledGeometryOp::Sweep {
+                kind: SweepKind::Sweep,
                 profiles,
                 args,
             }])
