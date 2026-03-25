@@ -198,6 +198,114 @@ impl Default for SnapshotValuesBuilder {
     }
 }
 
+// --- Approximate value comparison macro ---
+
+/// Compare two `Value` instances with floating-point tolerance.
+///
+/// Handles `Scalar` (compares `si_value`), `Real` (compares directly), `Int`/`Bool`/`String`
+/// (exact match), `Point`/`Vector` (component-wise recursive). Panics with a descriptive
+/// message on mismatch.
+///
+/// # Usage
+/// ```ignore
+/// assert_value_approx!(actual, expected);          // default tolerance 1e-9
+/// assert_value_approx!(actual, expected, 1e-6);    // custom tolerance
+/// ```
+#[macro_export]
+macro_rules! assert_value_approx {
+    ($left:expr, $right:expr) => {
+        $crate::assert_value_approx!($left, $right, 1e-9)
+    };
+    ($left:expr, $right:expr, $tol:expr) => {
+        $crate::values::assert_value_approx_impl(&$left, &$right, $tol, file!(), line!())
+    };
+}
+
+/// Implementation function for `assert_value_approx!`. Not intended for direct use.
+pub fn assert_value_approx_impl(left: &Value, right: &Value, tol: f64, file: &str, line: u32) {
+    fn check(left: &Value, right: &Value, tol: f64, path: &str) -> Result<(), String> {
+        match (left, right) {
+            (
+                Value::Scalar {
+                    si_value: a,
+                    dimension: da,
+                },
+                Value::Scalar {
+                    si_value: b,
+                    dimension: db,
+                },
+            ) => {
+                if da != db {
+                    return Err(format!(
+                        "{path}: dimension mismatch: {:?} vs {:?}",
+                        da, db
+                    ));
+                }
+                if (a - b).abs() > tol {
+                    return Err(format!(
+                        "{path}: values differ: {a} vs {b} (diff={}, tol={tol})",
+                        (a - b).abs()
+                    ));
+                }
+                Ok(())
+            }
+            (Value::Real(a), Value::Real(b)) => {
+                if (a - b).abs() > tol {
+                    return Err(format!(
+                        "{path}: values differ: {a} vs {b} (diff={}, tol={tol})",
+                        (a - b).abs()
+                    ));
+                }
+                Ok(())
+            }
+            (Value::Int(a), Value::Int(b)) => {
+                if a != b {
+                    return Err(format!("{path}: values differ: Int({a}) vs Int({b})"));
+                }
+                Ok(())
+            }
+            (Value::Bool(a), Value::Bool(b)) => {
+                if a != b {
+                    return Err(format!("{path}: values differ: Bool({a}) vs Bool({b})"));
+                }
+                Ok(())
+            }
+            (Value::String(a), Value::String(b)) => {
+                if a != b {
+                    return Err(format!(
+                        "{path}: values differ: String({a:?}) vs String({b:?})"
+                    ));
+                }
+                Ok(())
+            }
+            (Value::Point(a), Value::Point(b)) | (Value::Vector(a), Value::Vector(b)) => {
+                if a.len() != b.len() {
+                    return Err(format!(
+                        "{path}: length mismatch: {} vs {}",
+                        a.len(),
+                        b.len()
+                    ));
+                }
+                for (i, (ai, bi)) in a.iter().zip(b.iter()).enumerate() {
+                    check(ai, bi, tol, &format!("{path}[{i}]"))?;
+                }
+                Ok(())
+            }
+            _ => {
+                if left != right {
+                    return Err(format!(
+                        "{path}: values differ: {left:?} vs {right:?}"
+                    ));
+                }
+                Ok(())
+            }
+        }
+    }
+    if let Err(msg) = check(left, right, tol, "root") {
+        panic!("assert_value_approx failed at {file}:{line}: {msg}");
+    }
+}
+
 // --- Point/Vector/Matrix constructors ---
 
 /// Create a `Value::Point` with three length-dimensioned components (in meters).
@@ -811,6 +919,75 @@ mod tests {
             }
             other => panic!("expected Value::Matrix, got {:?}", other),
         }
+    }
+
+    // step-3: failing tests for assert_value_approx macro
+    #[test]
+    fn assert_value_approx_equal_scalars_pass() {
+        let a = mm(10.0);
+        let b = mm(10.0);
+        assert_value_approx!(a, b);
+    }
+
+    #[test]
+    fn assert_value_approx_scalars_within_tolerance_pass() {
+        let a = meters(1.0);
+        let b = Value::Scalar {
+            si_value: 1.0 + 1e-10,
+            dimension: DimensionVector::LENGTH,
+        };
+        assert_value_approx!(a, b, 1e-9);
+    }
+
+    #[test]
+    #[should_panic(expected = "values differ")]
+    fn assert_value_approx_scalars_beyond_tolerance_panics() {
+        let a = meters(1.0);
+        let b = meters(2.0);
+        assert_value_approx!(a, b, 1e-9);
+    }
+
+    #[test]
+    fn assert_value_approx_reals_pass() {
+        assert_value_approx!(Value::Real(3.14), Value::Real(3.14));
+    }
+
+    #[test]
+    fn assert_value_approx_ints_pass() {
+        assert_value_approx!(Value::Int(42), Value::Int(42));
+    }
+
+    #[test]
+    #[should_panic(expected = "values differ")]
+    fn assert_value_approx_ints_mismatch_panics() {
+        assert_value_approx!(Value::Int(1), Value::Int(2));
+    }
+
+    #[test]
+    fn assert_value_approx_bools_pass() {
+        assert_value_approx!(Value::Bool(true), Value::Bool(true));
+    }
+
+    #[test]
+    fn assert_value_approx_point_components_pass() {
+        let a = point3(1.0, 2.0, 3.0);
+        let b = point3(1.0, 2.0, 3.0);
+        assert_value_approx!(a, b);
+    }
+
+    #[test]
+    fn assert_value_approx_vector_components_pass() {
+        let a = vec3(1.0, 0.0, 0.0);
+        let b = vec3(1.0 + 1e-11, 0.0, 0.0);
+        assert_value_approx!(a, b, 1e-9);
+    }
+
+    #[test]
+    #[should_panic(expected = "values differ")]
+    fn assert_value_approx_point_mismatch_panics() {
+        let a = point3(1.0, 2.0, 3.0);
+        let b = point3(1.0, 2.0, 4.0);
+        assert_value_approx!(a, b, 1e-9);
     }
 
     #[test]
