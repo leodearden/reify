@@ -4328,6 +4328,20 @@ fn check_trait_conformance(
         );
     }
 
+    // Build O(1) lookup map for sub-component requirements.
+    // Maps sub_name -> structure_name for all Sub members in the structure.
+    let sub_lookup: HashMap<&str, &str> = structure
+        .members
+        .iter()
+        .filter_map(|m| {
+            if let reify_syntax::MemberDecl::Sub(s) = m {
+                Some((s.name.as_str(), s.structure_name.as_str()))
+            } else {
+                None
+            }
+        })
+        .collect();
+
     // Check each requirement against structure members.
     for req in &all_requirements {
         match &req.kind {
@@ -4362,13 +4376,9 @@ fn check_trait_conformance(
                 }
             }
             RequirementKind::Sub(structure_name) => {
-                let has_sub = structure.members.iter().any(|m| {
-                    if let reify_syntax::MemberDecl::Sub(s) = m {
-                        s.name == req.name && s.structure_name == *structure_name
-                    } else {
-                        false
-                    }
-                });
+                let has_sub = sub_lookup
+                    .get(req.name.as_str())
+                    .map_or(false, |actual| *actual == structure_name.as_str());
                 if !has_sub {
                     diagnostics.push(
                         Diagnostic::error(format!(
