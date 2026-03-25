@@ -500,23 +500,28 @@ pub async fn shutdown_sidecar(sidecar: &Mutex<Option<SidecarHandle>>) {
 ///
 /// **Fast path**: if the slot contains a handle in `SidecarState::Ready`,
 /// returns `Ok(())` immediately. If the handle exists but is **not** ready
-/// (e.g. `Crashed` or `Starting`), the slot is cleared and the sidecar is
-/// re-spawned — enabling automatic recovery without an explicit
+/// (e.g. `Crashed` or `Starting`), the stale handle is killed and the sidecar
+/// is re-spawned — enabling automatic recovery without an explicit
 /// `shutdown_sidecar` call.
 ///
-/// **Spawn path**: calls `spawn_fn` to create a new handle, subscribes to the
-/// ready notification **inside** the lock scope (before the guard is dropped),
-/// stores the handle, then releases the lock and awaits the notification with
-/// the given timeout.
+/// **Spawn path**: calls `spawn_fn` **outside** the sidecar lock so that
+/// `shutdown_sidecar` can run concurrently during slow OS process creation
+/// (the previous implementation held the lock for the entire spawn duration,
+/// which blocked the `CloseRequested` shutdown handler). The `Notified` future
+/// is subscribed immediately after spawn (before re-locking) so the reader
+/// task cannot fire `notify_waiters()` between spawn and subscription.
 ///
-/// **Race-safety**: subscribing inside the lock scope ensures that even on a
-/// multi-threaded executor the reader task cannot call `notify_waiters()` before
-/// the waiter is registered — eliminating the lost-wakeup race that would cause
-/// a spurious timeout.
+/// **Concurrent-caller guard**: after re-locking to store the handle, if a
+/// concurrent caller already stored a Ready handle, our redundant handle is
+/// killed and `Ok(())` is returned immediately.
+///
+/// **Resource safety**: all eviction and error-cleanup paths call
+/// `handle.kill().await` (not just `*guard = None`) so the OS child process
+/// is terminated and the reader task is aborted on every code path.
 ///
 /// **Error recovery**: on any error after the handle has been stored (timeout,
-/// crash, or unexpected state), the sidecar slot is cleared so the next call
-/// can re-enter the spawn path.
+/// crash, or unexpected state), the handle is killed and the slot is cleared
+/// so the next call can re-enter the spawn path.
 ///
 /// Returns `Err` if:
 /// - `spawn_fn` returns an error
@@ -531,20 +536,14 @@ where
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = Result<SidecarHandle, String>>,
 {
-    // Phase 1: check existing handle, spawn if needed, subscribe to
-    // ready_notify INSIDE the lock, then release the lock.
-    //
-    // `notify_arc` is declared before the block so that `notified` (which
-    // borrows it) can be used after the block while the Arc remains alive.
-    let notify_arc: Arc<Notify>;
-    let (notified, state) = {
+    // Phase 1: check existing handle; kill stale ones; release lock before spawning.
+    // The lock is released here so `shutdown_sidecar` can proceed concurrently
+    // while Phase 2 (spawn_fn) is in progress.
+    {
         let mut guard = sidecar.lock().await;
-
-        // Fast path: handle exists — check its readiness.
         if let Some(handle) = guard.as_ref() {
             let state_val = handle.state().lock().await.clone();
             if matches!(state_val, SidecarState::Ready) {
-                // Already ready — nothing to do.
                 return Ok(());
             }
             // Not ready (Crashed, Starting, …) — kill the stale handle to release
@@ -553,23 +552,51 @@ where
                 h.kill().await;
             }
         }
+        // Lock released here.
+    }
 
-        // Spawn the sidecar process via the caller-supplied closure.
-        let handle = spawn_fn().await?;
-        notify_arc = Arc::clone(handle.ready_notify());
-        let state = Arc::clone(handle.state());
+    // Phase 2: spawn OUTSIDE the lock so `shutdown_sidecar` can acquire the lock
+    // concurrently during slow OS process creation.
+    let mut handle = spawn_fn().await?;
+    let notify_arc = Arc::clone(handle.ready_notify());
+    let state = Arc::clone(handle.state());
 
-        // Subscribe BEFORE the guard is dropped so the reader task (which may
-        // run immediately on another thread) cannot call notify_waiters() before
-        // we register as a waiter.
-        let notified = notify_arc.notified();
+    // Subscribe to the ready notification BEFORE re-locking.  On a multi-thread
+    // executor the reader task can call `notify_waiters()` immediately after
+    // spawn_fn returns and before Phase 3 re-acquires the lock.  Creating the
+    // `Notified` future here pre-registers us as a potential waiter so we don't
+    // miss the wakeup.
+    let notified = notify_arc.notified();
 
+    // Phase 3: re-lock, double-check for concurrent callers, then store handle.
+    {
+        let mut guard = sidecar.lock().await;
+
+        // Clone the state Arc from any existing handle to avoid holding a borrow
+        // on `guard` across the await point below.
+        let existing_state_arc = guard.as_ref().map(|h| Arc::clone(h.state()));
+        if let Some(state_arc) = existing_state_arc {
+            let existing_val = state_arc.lock().await.clone();
+            if matches!(existing_val, SidecarState::Ready) {
+                // A concurrent caller already spawned and is ready — our handle
+                // is redundant.  Kill it to prevent an orphan process and return Ok.
+                drop(guard); // Release lock before async kill.
+                handle.kill().await;
+                return Ok(());
+            }
+            // Concurrent non-ready handle: evict it (fall through to take+kill below).
+        }
+
+        // Evict any existing non-ready handle (from a concurrent caller or a
+        // stale handle placed between Phase 1 and Phase 3).
+        if let Some(mut h) = guard.take() {
+            h.kill().await;
+        }
         *guard = Some(handle);
-        (notified, state)
-        // guard dropped here — sidecar lock released, but we are already subscribed
-    };
+        // Guard dropped here — lock released.
+    }
 
-    // Phase 2: wait for the ready notification with timeout.
+    // Phase 4: wait for the ready notification with timeout.
     let wait_result = tokio::time::timeout(ready_timeout, notified).await.map_err(|_| {
         format!("Sidecar did not become ready within {}ms", ready_timeout.as_millis())
     });
@@ -591,7 +618,7 @@ where
         return Err(e);
     }
 
-    // Phase 3: check state after notification — the notify may have been
+    // Phase 5: check state after notification — the notify may have been
     // triggered by a crash rather than the Ready message.
     let state_val = state.lock().await.clone();
     match state_val {
