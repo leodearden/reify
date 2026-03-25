@@ -126,15 +126,15 @@
       "id": "step-9",
       "type": "test",
       "description": "Write validation tests: (a) `known_annotation_valid_context_no_warning`: `@test structure S { param x : Real }` produces no warning-level diagnostics about annotations. (b) `known_annotation_invalid_context_produces_warning`: `@test field f : Point3 -> Real = analytical { 0.0 }` produces a warning diagnostic containing '@test' and 'field'. (c) `deprecated_valid_on_any_context`: `@deprecated fn f(x: Real) -> Real { x }` and `@deprecated structure S { param x : Real }` produce no annotation warnings. (d) `unknown_annotation_produces_warning`: `@foobar structure S { param x : Real }` produces a warning diagnostic containing 'foobar' and 'unknown'.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "5ecb0b84"
     },
     {
       "id": "step-10",
       "type": "impl",
       "description": "Add annotation context validation. Define fn `validate_annotations(annotations: &[reify_types::Annotation], context: &str, span: SourceSpan, diagnostics: &mut Vec<Diagnostic>)` where context is one of \"structure\", \"occurrence\", \"function\", \"trait\", \"field\", \"purpose\". Known annotation rules: @test valid on [structure, occurrence, function]; @optimized valid on [structure, occurrence]; @solver_hint valid on [structure, occurrence]; @deprecated valid on any context. Misplaced known annotations emit Diagnostic::warning. Unknown annotation names emit Diagnostic::warning with 'unknown annotation' message. Call validate_annotations at each lowering site (compile_entity, compile_function, compile_trait, compile_field, compile_purpose) after lower_annotations.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "d2c93a3d"
     },
     {
       "id": "step-11",
