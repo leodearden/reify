@@ -382,9 +382,9 @@ pub enum PatternKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SweepKind {
     Loft,
-    Sweep,
     Extrude,
     Revolve,
+    Sweep,
 }
 
 /// Reference to a geometry result within a realization.
