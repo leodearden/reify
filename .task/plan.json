@@ -1,178 +1,210 @@
 {
-  "task_id": "216",
-  "title": "Doc comments: LSP hover exposure",
+  "task_id": "203",
+  "title": "Recursive structures: detection",
   "files": [
-    "crates/reify-lsp/src/analysis.rs",
-    "crates/reify-lsp/src/hover.rs",
-    "crates/reify-lsp/tests/in_process_bridge.rs",
-    "crates/reify-eval/tests/m9_trait_conformance.rs"
+    "crates/reify-compiler/tests/recursive_detection_tests.rs",
+    "crates/reify-compiler/src/lib.rs"
   ],
   "modules": [
-    "crates/reify-lsp",
-    "crates/reify-eval"
+    "crates/reify-compiler"
   ],
-  "analysis": "Task 216 wires doc comment text (extracted by Task 215 in reify-syntax) into LSP hover responses. The hover infrastructure already exists in reify-lsp/src/hover.rs with a 4-level lookup: members \u2192 structures \u2192 fn/trait/enum \u2192 keywords. The AnalysisContext in analysis.rs already provides find_member_decl() returning MemberInfo and structure_names(). The changes needed are: (1) add a doc field to MemberInfo sourced from the parsed AST's ParamDecl.doc/LetDecl.doc, (2) add find_entity_doc() to look up doc comments on top-level declarations (Structure, Function, Trait, Enum), (3) modify compute_hover() to append doc text as a markdown paragraph after signatures for all entity types, and (4) add an integration test through InProcessLsp bridge. The parsed module already carries doc: Option<String> on all declaration types from Task 215, so this task is purely about plumbing those docs into hover responses.\n\nPost-review addendum: Two blocking issues identified \u2014 (a) fragile relative path in m9_trait_conformance.rs tests (pre-existing from task 194, but flagged by reviewer), and (b) main advanced 17 commits during conflict resolution, requiring a fresh rebase.",
+  "analysis": "Task 203 requires detecting self-referential structure definitions during compilation: building a reference graph among structure defs, identifying direct and indirect cycles, and tagging recursive structures for special handling.\n\nThe core implementation already exists in lib.rs (lines 2404-2639):\n- `detect_recursive_structures()` builds an adjacency list from sub_components, runs iterative Tarjan's SCC algorithm, identifies cyclic SCCs, tags templates with `is_recursive = true`, and emits warning diagnostics with reconstructed cycle paths.\n- `tarjan_scc_visit()` is an iterative (non-recursive) Tarjan implementation using an explicit call stack.\n- `reconstruct_scc_cycle()` and `find_cycle_back_to()` produce human-readable cycle path strings.\n- `TopologyTemplate.is_recursive: bool` is the tag field (line 182), initialized to `false` in `compile_entity()` (line 3782) and set to `true` in the post-pass.\n\nThe adjacency building (lines 2417-2425) handles both instantiation form (`sub x = A()`) and collection form (`sub items : List<A>`) since both populate `SubComponentDecl.structure_name`.\n\nExisting test coverage is in `termination_check_tests.rs` (Task 204) which tests detection indirectly through termination error scenarios. There are NO dedicated tests for the detection behavior itself — specifically:\n- No tests verify `is_recursive` is correctly set/unset for various graph topologies\n- No tests verify the warning diagnostic is emitted with correct cycle path format\n- No tests for complex graph patterns (diamonds, multiple independent cycles, long chains)\n- No tests for collection sub form creating reference edges\n- No tests isolating detection from termination checking\n\nThis plan creates a dedicated test file for recursive detection with comprehensive coverage of all graph topologies and edge cases.",
   "prerequisites": [],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing tests in analysis.rs: find_entity_doc_returns_doc_for_documented_structure, find_entity_doc_returns_none_for_undocumented, member_info_includes_doc_for_documented_param \u2014 these test doc retrieval from the analysis layer before hover consumes it",
+      "description": "Create recursive_detection_tests.rs with helpers (compile_all, find_template) and write test `direct_self_reference_sets_is_recursive`: structure S with `sub child = S(n: n - 1) where n > 0` should have `is_recursive == true`. Also write test `no_subs_not_recursive`: structure with only params/lets should have `is_recursive == false`.",
       "status": "done",
-      "commit": "73cc9b89"
+      "commit": "b49135a4"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Add doc: Option<&'a str> field to MemberInfo in analysis.rs, populate it from parsed AST via find_parsed_member_span_and_doc(). Add find_entity_doc(name) method that searches parsed declarations (Structure, Function, Trait, Enum) for matching doc comment",
+      "description": "Verify step-1 tests pass against existing detect_recursive_structures() implementation. No code changes expected — implementation exists at lib.rs lines 2404-2491.",
       "status": "done",
-      "commit": "b63bf7de"
+      "commit": "b49135a4"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing tests in hover.rs for structure doc hover: hover_on_documented_structure_shows_doc (asserts markdown contains doc text), hover_on_undocumented_structure_no_doc_section (asserts no triple-newline artifacts)",
+      "description": "Write test `indirect_two_node_cycle_both_recursive`: structures A (sub b = B()) and B (sub a = A()) with where-clause guards — both should have `is_recursive == true`. Write test `indirect_three_node_cycle_all_recursive`: A→B→C→A chain — all three should be tagged recursive.",
       "status": "done",
-      "commit": "dcc55350"
+      "commit": "fa1ee848"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "In compute_hover() structure-name branch, call ctx.find_entity_doc(name) and append doc text as '\\n\\n{doc}' after the param/let/constraint summary line",
+      "description": "Verify step-3 tests pass. Multi-node SCC detection is handled by Tarjan's algorithm which finds all strongly-connected components regardless of cycle length.",
       "status": "done",
-      "commit": "afe8f718"
+      "commit": "fa1ee848"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing tests in hover.rs for member doc hover: hover_on_documented_param_shows_doc, hover_on_documented_let_shows_doc, hover_on_undocumented_param_no_doc_section \u2014 verifying doc text appears after param/let signatures",
+      "description": "Write test `linear_chain_no_cycle`: A→B→C with no back-edges — none should be recursive. Write test `diamond_no_cycle`: A→B, A→C, B→D, C→D (shared leaf, no back-edge) — none should be recursive. These verify non-cyclic graph patterns are correctly excluded.",
       "status": "done",
-      "commit": "13d859c5"
+      "commit": "fa1ee848"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "In compute_hover() member-lookup branch, check info.doc and append '\\n\\n{doc}' to the markdown string after the code-fenced signature",
+      "description": "Verify step-5 tests pass. Non-cyclic SCCs (single-node without self-edge) are correctly excluded by the `is_cycle` check at lines 2448-2454.",
       "status": "done",
-      "commit": "37836d78"
+      "commit": "fa1ee848"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing tests in hover.rs for fn/trait/enum doc hover: hover_on_fn_name_shows_signature_and_doc, hover_on_fn_name_without_doc_shows_signature, hover_on_trait_name_shows_doc, hover_on_enum_name_shows_doc",
+      "description": "Write test `multiple_independent_cycles`: two separate cycles ({A↔B} and {C↔D}) in the same module — all four should be `is_recursive == true` and two separate warning diagnostics should be emitted. Write test `mixed_recursive_and_non_recursive`: cycle A↔B plus non-cycling structure C that references A — A and B should be recursive, C should not.",
       "status": "done",
-      "commit": "e6d431c9"
+      "commit": "fa1ee848"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "In compute_hover() fn/trait/enum branches, call ctx.find_entity_doc(word) and append '\\n\\n{doc}' to each entity's hover markdown after the signature code block",
+      "description": "Verify step-7 tests pass. Tarjan processes all SCCs independently, so multiple disjoint cycles and mixed topologies are handled correctly.",
       "status": "done",
-      "commit": "93287b80"
+      "commit": "fa1ee848"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write edge case tests: hover_multiline_doc_renders_all_lines (multi-line /// comments joined), hover_doc_with_blank_line_paragraph (/// then blank ///), hover_on_documented_param_reference_in_expr_shows_doc (doc shown when hovering on usage, not just declaration)",
+      "description": "Write test `warning_diagnostic_emitted_for_cycle`: verify that a cycle produces exactly one warning-level diagnostic containing 'recursive structure cycle detected' and the cycle path string (e.g., 'S -> S' for self-ref, or 'A -> B -> A' for mutual). Write test `warning_diagnostic_count_matches_scc_count`: two independent cycles should produce exactly two warning diagnostics.",
       "status": "done",
-      "commit": "c787b4c1"
+      "commit": "fa1ee848"
     },
     {
       "id": "step-10",
-      "type": "test",
-      "description": "Write integration test in in_process_bridge.rs: hover_on_documented_structure_shows_doc_via_bridge \u2014 full roundtrip through InProcessLsp verifying doc text appears in JSON hover response",
+      "type": "impl",
+      "description": "Verify step-9 tests pass. Warning emission happens at lines 2461-2464 with `reconstruct_scc_cycle()` providing the path string.",
       "status": "done",
-      "commit": "a127caf0"
+      "commit": "fa1ee848"
     },
     {
       "id": "step-11",
-      "type": "impl",
-      "description": "Rebase task/216 onto current main (38 commits ahead). No file overlap detected \u2014 main did not modify any files in crates/reify-lsp/ or crates/reify-syntax/. Resolve any conflicts in tasks.json or other non-code files if they arise.",
+      "type": "test",
+      "description": "Write test `collection_sub_creates_reference_edge`: structure S with `sub items : List<S>` (collection form) should have `is_recursive == true`, verifying that collection subs are included in the reference graph. Write test `sub_referencing_unknown_structure_not_recursive`: structure S with `sub x = Unknown()` where Unknown is not defined in the module — should not crash and S should not be recursive (the reference is filtered out by name_to_idx lookup).",
       "status": "done",
-      "commit": "eedc1da2"
+      "commit": "fa1ee848"
     },
     {
       "id": "step-12",
-      "type": "test",
-      "description": "Run full test suite for reify-lsp crate after rebase to verify no regressions from main's changes (cargo test -p reify-lsp). Confirm all 10 prior steps' tests still pass against rebased code.",
+      "type": "impl",
+      "description": "Verify step-11 tests pass. Collection subs use the same `structure_name` field (line 2422). Unknown structure references are filtered by the `filter_map` on name_to_idx (line 2422), producing no edge.",
       "status": "done",
-      "commit": "eedc1da2"
+      "commit": "fa1ee848"
     },
     {
       "id": "step-13",
       "type": "impl",
-      "description": "Fix fragile test paths in crates/reify-eval/tests/m9_trait_conformance.rs: (1) Add a module-level const EXAMPLE_PATH using concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/../../examples/m9_trait_conformance.ri\") for compile-time resolution independent of working directory, (2) Replace all 8 occurrences of std::fs::read_to_string(\"../../examples/m9_trait_conformance.ri\") with std::fs::read_to_string(EXAMPLE_PATH). This fixes the reviewer-flagged fragility where paths break under non-standard CWD (e.g. cargo test --manifest-path, CI).",
+      "description": "Rebase task branch onto latest main to resolve merge_ff_failed. Main advanced with task-status auto-commits (.taskmaster/tasks/tasks.json, .task/*, orchestrator DB files, .gitignore, orchestrator.yaml). No code-file conflicts expected — main did NOT change mocks.rs, values.rs, or lib.rs since the branch point. For auto-generated file conflicts: accept main's version of .taskmaster/tasks/tasks.json and orchestrator files, keep task branch's .task/iterations.jsonl content.",
       "status": "done",
-      "commit": "7e9f8b19"
+      "commit": "e6c5f493"
     },
     {
       "id": "step-14",
       "type": "impl",
-      "description": "Rebase task/216 onto current main (17 commits ahead since step-11 rebase). Main advanced during conflict resolution. No file overlap detected \u2014 main's 17 new commits are task-status auto-commits and unrelated crate changes. Resolve any conflicts in tasks.json if they arise.",
+      "description": "Verify all tests pass after rebase: run `cargo test` for reify-compiler crate (recursive_detection_tests and termination_check_tests) to confirm detection behavior is intact on the rebased branch. Also run `cargo clippy` to ensure no new warnings.",
       "status": "done",
-      "commit": "7e9f8b19"
+      "commit": "e6c5f493"
     },
     {
       "id": "step-15",
-      "type": "test",
-      "description": "Run full test suite after rebase: (1) cargo test -p reify-lsp to verify all LSP hover doc tests pass, (2) cargo test -p reify-eval --test m9_trait_conformance to verify the CARGO_MANIFEST_DIR fix works correctly. Confirm no regressions from the rebase.",
+      "type": "impl",
+      "description": "Retry fast-forward merge to main. If FF merge still fails (main advanced again during rebase), repeat rebase cycle from step-13.",
       "status": "done",
-      "commit": "7e9f8b19"
+      "commit": "e6c5f493"
+    },
+    {
+      "id": "step-16",
+      "type": "impl",
+      "description": "Second rebase onto latest main to resolve merge_ff_failed (main advanced again during step-15 conflict resolution with task-status auto-commits and task-364 code changes). The task branch has only one commit on top of the merge base (a0a60de0, touching only .task/plan.json). Main's changes since the merge base (.taskmaster/tasks/tasks.json, lib.rs, value.rs, types.rs) do not overlap with .task/plan.json, so the rebase should be conflict-free. Run: `git rebase main`.",
+      "status": "done",
+      "commit": "b87f1c4a"
+    },
+    {
+      "id": "step-17",
+      "type": "impl",
+      "description": "Verify all tests pass after second rebase: run `cargo test -p reify-compiler` to confirm recursive_detection_tests and termination_check_tests pass. Also run `cargo clippy -p reify-compiler` to ensure no warnings introduced by main's changes (task-364 touched lib.rs).",
+      "status": "done",
+      "commit": "b87f1c4a"
+    },
+    {
+      "id": "step-18",
+      "type": "impl",
+      "description": "Retry fast-forward merge to main. Run `git checkout main && git merge --ff-only task/351`. If FF merge fails again (main advanced during rebase), repeat rebase from step-16.",
+      "status": "done",
+      "commit": "118bc901"
+    },
+    {
+      "id": "step-19",
+      "type": "impl",
+      "description": "Resolve merge_ff_failed review issue. Verify task/351 is already an ancestor of main (merge from step-18 succeeded, main then advanced with task-status auto-commits). Fast-forward task/351 branch pointer to main HEAD so branch is synchronized. Run: `git merge-base --is-ancestor task/351 main` to confirm, then `git checkout task/351 && git merge --ff-only main` to sync.",
+      "status": "done",
+      "commit": "6fd99340"
+    },
+    {
+      "id": "step-20",
+      "type": "impl",
+      "description": "Verify recursive detection tests pass on synchronized branch: run `cargo test -p reify-compiler recursive_detection` to confirm all 12 detection tests pass. This validates that no intervening main commits broke the detection behavior.",
+      "status": "done",
+      "commit": "6fd99340"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Doc comments are appended as a plain markdown paragraph after the code-fenced signature, separated by \\n\\n",
-      "rationale": "Follows standard LSP conventions (e.g., rust-analyzer, TypeScript LSP) where signature appears in a code block and documentation follows as prose. Clean rendering in all editors."
+      "decision": "Create a dedicated test file (recursive_detection_tests.rs) separate from termination_check_tests.rs",
+      "rationale": "Task 203 (detection) and Task 204 (termination verification) are distinct concerns. The termination tests already exist and test detection only indirectly through error scenarios. Detection tests need to verify the is_recursive flag, warning diagnostics, and graph topology handling independent of termination checking behavior."
     },
     {
-      "decision": "Doc text is accessed via parsed module, not compiled module",
-      "rationale": "The compiler strips doc comments during compilation. The ParsedModule preserves them on StructureDef, FnDef, TraitDecl, EnumDecl, ParamDecl, and LetDecl. AnalysisContext already holds the parsed module, so no new data flow needed."
+      "decision": "Tests verify existing implementation rather than driving new code",
+      "rationale": "The detect_recursive_structures() implementation (Tarjan SCC, cycle reconstruction, is_recursive tagging) was implemented as part of the compiler post-pass infrastructure. This task's value is in providing comprehensive, dedicated test coverage and regression protection for the detection behavior across diverse graph topologies."
     },
     {
-      "decision": "No doc text when doc is None \u2014 no trailing whitespace or empty sections",
-      "rationale": "Clean output for undocumented entities. Tests explicitly verify no trailing \\n\\n or triple-newlines when doc is absent."
+      "decision": "Use where-clause guards on recursive subs in test sources to avoid termination check errors polluting detection tests",
+      "rationale": "Without guards, the termination check (Task 204) emits errors that could obscure detection test assertions. Adding `where n > 0` guards with `n: n - 1` args produces clean compilation where only detection warnings appear, isolating the behavior under test."
     },
     {
-      "decision": "find_entity_doc returns first match across all declarations",
-      "rationale": "Reify modules typically have unique top-level names. Linear scan through declarations is sufficient for the small declaration counts in typical files. Matches the existing pattern in structure_names() and member_names()."
+      "decision": "Test graph topologies comprehensively: self-loop, 2-node, 3-node cycles, linear chains, diamonds, multiple independent cycles, mixed",
+      "rationale": "Tarjan's SCC algorithm has distinct code paths for single-node SCCs with self-edges vs multi-node SCCs. Diamond patterns test that convergent (but non-cyclic) references are correctly excluded. Multiple independent cycles test that the algorithm processes all SCCs. Mixed topologies test that non-participating structures are not falsely tagged."
     },
     {
-      "decision": "Rebase (not merge) to resolve main advancement",
-      "rationale": "Rebase produces a linear history suitable for fast-forward merge. No file overlap between main's new commits and this task's changes in crates/reify-lsp/ and crates/reify-syntax/, so rebase should be conflict-free on code files."
+      "decision": "Rebase onto main rather than merge to maintain linear history",
+      "rationale": "The merge_ff_failed issue is caused by task-status auto-commits on main diverging from the branch point. Main did NOT change any of the code files this task touches (mocks.rs, values.rs, lib.rs), so the rebase will be conflict-free on code. Only auto-generated files (.taskmaster/tasks/tasks.json, orchestrator DBs) need resolution, where main's version is authoritative."
     },
     {
-      "decision": "Use CARGO_MANIFEST_DIR const for test fixture paths instead of runtime-relative paths",
-      "rationale": "concat!(env!(\"CARGO_MANIFEST_DIR\"), ...) resolves at compile time to an absolute path anchored to the crate root, making tests robust against different working directories (CI, --manifest-path invocations). A single const eliminates duplication across 8 call sites."
+      "decision": "Second rebase cycle uses same strategy as first",
+      "rationale": "Main advanced again during the first rebase/merge window (race condition with orchestrator auto-commits and task-364). The task branch now has only one commit diverging from the merge base (a0a60de0 touching .task/plan.json), and main's new changes (tasks.json, lib.rs, value.rs, types.rs) have zero overlap with .task/plan.json, making the rebase trivially conflict-free."
+    },
+    {
+      "decision": "Fast-forward task branch to main instead of re-rebasing for third merge_ff_failed",
+      "rationale": "task/351 is already an ancestor of main (confirmed via git merge-base --is-ancestor). The code changes are fully merged. Main advanced only with task-status auto-commits (no code conflicts). The correct resolution is to fast-forward the task branch pointer to main's HEAD, which is a no-conflict operation that synchronizes the branch without any rebase."
     }
   ],
   "reuse": [
     {
-      "what": "AnalysisContext pipeline (parse \u2192 compile \u2192 check)",
-      "where": "crates/reify-lsp/src/analysis.rs",
-      "how": "Already builds ParsedModule which carries doc: Option<String> on all declaration types. Just need to expose doc in MemberInfo and add find_entity_doc()."
+      "what": "Test helper pattern (compile_all, compile_first_template)",
+      "where": "crates/reify-compiler/tests/termination_check_tests.rs",
+      "how": "Copy the same helper functions into the new test file — parse source, assert no parse errors, compile, return templates + diagnostics. This is the standard pattern across all compiler test files."
     },
     {
-      "what": "compute_hover() 4-level lookup and make_hover_markdown()",
-      "where": "crates/reify-lsp/src/hover.rs",
-      "how": "Existing hover branches for members, structures, fn/trait/enum \u2014 append doc text at each branch point. No structural changes needed."
+      "what": "detect_recursive_structures() implementation",
+      "where": "crates/reify-compiler/src/lib.rs lines 2404-2491",
+      "how": "Existing implementation handles all detection scenarios: adjacency building, Tarjan SCC, cycle identification, is_recursive tagging, and warning diagnostic emission. No new implementation code needed."
     },
     {
-      "what": "InProcessLsp bridge for integration testing",
-      "where": "crates/reify-lsp/tests/in_process_bridge.rs",
-      "how": "Existing test pattern: initialize \u2192 didOpen \u2192 hover request \u2192 assert JSON contents. Add one new test for doc hover."
+      "what": "Tarjan SCC + cycle reconstruction helpers",
+      "where": "crates/reify-compiler/src/lib.rs lines 2493-2639",
+      "how": "TarjanState, tarjan_scc_visit(), reconstruct_scc_cycle(), find_cycle_back_to() — all internal helpers used by detect_recursive_structures(). Tested indirectly through the public compile() entry point."
     },
     {
-      "what": "hover_markdown() test helper",
-      "where": "crates/reify-lsp/src/hover.rs (test module)",
-      "how": "Extracts markdown string from Hover result. Reuse for all new doc-hover tests."
-    },
-    {
-      "what": "ParsedModule doc fields from Task 215",
-      "where": "crates/reify-syntax/src/lib.rs",
-      "how": "StructureDef.doc, FnDef.doc, TraitDecl.doc, EnumDecl.doc, ParamDecl.doc, LetDecl.doc \u2014 all Option<String>, populated by tree-sitter parser's extract_doc_comment()."
+      "what": "Reify source language syntax for structures and subs",
+      "where": "crates/reify-syntax/src/lib.rs (SubDecl, MemberDecl::Sub)",
+      "how": "Test sources use the Reify language syntax: `structure S { param n : Int = 5; sub child = S(n: n - 1) where n > 0 }` for instantiation form, `sub items : List<S>` for collection form."
     }
   ],
-  "_session_id": "216-4b8b75a0",
-  "_created_at": "2026-03-25T22:36:02.084188+00:00"
+  "_session_id": "351-fef2cc1d",
+  "_created_at": "2026-03-25T22:44:14.292666+00:00",
+  "_schema_version": 1
 }
