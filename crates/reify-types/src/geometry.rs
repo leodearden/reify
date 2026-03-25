@@ -132,6 +132,13 @@ pub enum GeometryOp {
         profile: GeometryHandleId,
         distance: Value,
     },
+    /// Create a revolved solid by rotating a profile around an axis.
+    Revolve {
+        profile: GeometryHandleId,
+        axis_origin: [f64; 3],
+        axis_dir: [f64; 3],
+        angle_rad: f64,
+    },
     /// Apply draft angle to faces.
     Draft {
         target: GeometryHandleId,
