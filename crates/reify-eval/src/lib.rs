@@ -3901,4 +3901,75 @@ mod tests {
         let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
         assert!(result.is_none(), "zero-length rotation axis should return None");
     }
+
+    #[test]
+    fn compile_geometry_op_revolve_produces_revolve_variant() {
+        let step_handles = vec![GeometryHandleId(55)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Sweep {
+            kind: SweepKind::Revolve,
+            profiles: vec![GeomRef::Step(0)],
+            args: vec![
+                ("ox".into(), literal_f64(0.0)),
+                ("oy".into(), literal_f64(0.0)),
+                ("oz".into(), literal_f64(0.0)),
+                ("ax".into(), literal_f64(0.0)),
+                ("ay".into(), literal_f64(0.0)),
+                ("az".into(), literal_f64(1.0)),
+                ("angle".into(), literal_f64(std::f64::consts::TAU)),
+            ],
+        };
+
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = result.expect("compile_geometry_op should return Some for Revolve with valid axis");
+
+        match result {
+            reify_types::GeometryOp::Revolve {
+                profile,
+                axis_origin,
+                axis_dir,
+                angle_rad,
+            } => {
+                assert_eq!(profile, GeometryHandleId(55));
+                assert!((axis_origin[0]).abs() < 1e-12);
+                assert!((axis_origin[1]).abs() < 1e-12);
+                assert!((axis_origin[2]).abs() < 1e-12);
+                assert!((axis_dir[0]).abs() < 1e-12);
+                assert!((axis_dir[1]).abs() < 1e-12);
+                assert!((axis_dir[2] - 1.0).abs() < 1e-12);
+                assert!((angle_rad - std::f64::consts::TAU).abs() < 1e-12);
+            }
+            other => panic!("expected GeometryOp::Revolve, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn compile_geometry_op_extrude_produces_extrude_variant() {
+        let step_handles = vec![GeometryHandleId(77)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Sweep {
+            kind: SweepKind::Extrude,
+            profiles: vec![GeomRef::Step(0)],
+            args: vec![("distance".into(), literal_length(0.03))],
+        };
+
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = result.expect("compile_geometry_op should return Some for Extrude");
+
+        match result {
+            reify_types::GeometryOp::Extrude { profile, distance } => {
+                assert_eq!(profile, GeometryHandleId(77));
+                match distance {
+                    reify_types::Value::Scalar { si_value, dimension } => {
+                        assert!((si_value - 0.03).abs() < 1e-12, "SI value should be 0.03m (30mm)");
+                        assert_eq!(dimension, reify_types::DimensionVector::LENGTH);
+                    }
+                    other => panic!("expected Value::Scalar for distance, got {:?}", other),
+                }
+            }
+            other => panic!("expected GeometryOp::Extrude, got {:?}", other),
+        }
+    }
 }
