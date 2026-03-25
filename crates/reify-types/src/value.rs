@@ -95,6 +95,26 @@ impl Value {
         }
     }
 
+    /// Convert a rank-2 nested Value::Tensor back to Value::Matrix.
+    /// Returns Some(Matrix(...)) if self is a non-empty Tensor where every element is a Tensor.
+    /// Returns None otherwise. Note: the round-trip invariant canonicalize_matrix().try_into_matrix()
+    /// holds only for non-empty matrices. Empty Matrix canonicalizes to Tensor([]) which returns None here.
+    /// Currently used in tests for round-trip verification; retained for future LSP/format use.
+    pub fn try_into_matrix(self) -> Option<Self> {
+        match self {
+            Value::Tensor(rows) if !rows.is_empty() => {
+                rows.into_iter()
+                    .map(|r| match r {
+                        Value::Tensor(elems) => Some(elems),
+                        _ => None,
+                    })
+                    .collect::<Option<Vec<_>>>()
+                    .map(Value::Matrix)
+            }
+            _ => None,
+        }
+    }
+
     /// Get the f64 value if this is a numeric type.
     pub fn as_f64(&self) -> Option<f64> {
         match self {
