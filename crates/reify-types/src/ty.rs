@@ -47,6 +47,8 @@ pub enum Type {
     Orientation(usize),
     /// Coordinate frame in N-dimensional space: an origin point + a basis orientation.
     Frame(usize),
+    /// Rigid-body transformation in N-dimensional space: a rotation (Orientation) + translation (Vector).
+    Transform(usize),
     /// Range over a comparable element type (e.g., Range<Int>, Range<Scalar[m]>).
     Range(Box<Type>),
     /// User-facing m×n matrix type (e.g., Matrix3x2<Scalar[m]>).
@@ -117,6 +119,11 @@ impl Type {
     /// Shorthand for a coordinate frame in N-dimensional space.
     pub fn frame(n: usize) -> Self {
         Type::Frame(n)
+    }
+
+    /// Shorthand for a rigid-body transformation in N-dimensional space.
+    pub fn transform(n: usize) -> Self {
+        Type::Transform(n)
     }
 
     /// Shorthand for a range over a given element type.
@@ -773,6 +780,73 @@ mod tests {
         // Frame(3) and Orientation(3) are distinct types
         assert_ne!(Type::Frame(3), Type::Orientation(3));
     }
+
+    // ── Transform tests (step-1) ─────────────────────────────────────────────
+
+    #[test]
+    fn type_transform_construction() {
+        let t3 = Type::Transform(3);
+        let t2 = Type::Transform(2);
+        // Same dimension equal
+        assert_eq!(Type::Transform(3), Type::Transform(3));
+        // Distinct dimensions not equal
+        assert_ne!(t3, t2);
+    }
+
+    #[test]
+    fn type_transform_display() {
+        assert_eq!(format!("{}", Type::Transform(3)), "Transform3");
+        assert_eq!(format!("{}", Type::Transform(2)), "Transform2");
+    }
+
+    #[test]
+    fn type_transform_factory() {
+        assert_eq!(Type::transform(3), Type::Transform(3));
+        assert_eq!(Type::transform(2), Type::Transform(2));
+    }
+
+    #[test]
+    fn type_transform_eq_and_hash() {
+        use std::collections::HashMap;
+
+        let t3a = Type::Transform(3);
+        let t3b = Type::Transform(3);
+        let t2 = Type::Transform(2);
+
+        assert_eq!(t3a, t3b);
+        assert_ne!(t3a, t2);
+        // Transform != other types
+        assert_ne!(t3a, Type::Real);
+
+        // Hash consistency
+        let mut map: HashMap<Type, &str> = HashMap::new();
+        map.insert(t3a.clone(), "t3");
+        assert_eq!(map.get(&t3b), Some(&"t3"));
+        assert_eq!(map.get(&t2), None);
+    }
+
+    #[test]
+    fn type_transform_not_numeric() {
+        assert!(!Type::Transform(3).is_numeric());
+        assert!(!Type::Transform(2).is_numeric());
+    }
+
+    #[test]
+    fn type_transform_as_name_none() {
+        assert_eq!(Type::Transform(3).as_name(), None);
+    }
+
+    #[test]
+    fn type_transform_ne_frame() {
+        // Transform(3) and Frame(3) are distinct types
+        assert_ne!(Type::Transform(3), Type::Frame(3));
+    }
+
+    #[test]
+    fn type_transform_ne_orientation() {
+        // Transform(3) and Orientation(3) are distinct types
+        assert_ne!(Type::Transform(3), Type::Orientation(3));
+    }
 }
 
 impl std::fmt::Display for Type {
@@ -808,6 +882,7 @@ impl std::fmt::Display for Type {
             Type::Complex(inner) => write!(f, "Complex<{}>", inner),
             Type::Orientation(n) => write!(f, "Orientation{}", n),
             Type::Frame(n) => write!(f, "Frame{}", n),
+            Type::Transform(n) => write!(f, "Transform{}", n),
             Type::Range(inner) => write!(f, "Range<{}>", inner),
             Type::Matrix { m, n, quantity } => write!(f, "Matrix{}x{}<{}>", m, n, quantity),
         }
