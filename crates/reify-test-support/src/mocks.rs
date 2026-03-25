@@ -132,11 +132,59 @@ pub struct GeometryOpRecord {
     pub result_handle: GeometryHandleId,
 }
 
+/// Key for per-query-type result configuration in MockGeometryKernel.
+///
+/// Each variant matches a `GeometryQuery` discriminant plus the relevant handle IDs,
+/// enabling different return values for Volume vs SurfaceArea on the same handle.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum QueryKey {
+    Volume(GeometryHandleId),
+    SurfaceArea(GeometryHandleId),
+    Centroid(GeometryHandleId),
+    BoundingBox(GeometryHandleId),
+    /// Distance keys both handles. Axis floats are converted to ordered bits for hashing.
+    Distance {
+        from: GeometryHandleId,
+        to: GeometryHandleId,
+    },
+    /// MomentOfInertia keys the handle + axis (f64 bits for hashing).
+    MomentOfInertia {
+        handle: GeometryHandleId,
+        axis_bits: [u64; 3],
+    },
+}
+
+impl QueryKey {
+    fn from_query(query: &GeometryQuery) -> Self {
+        match query {
+            GeometryQuery::Volume(id) => QueryKey::Volume(*id),
+            GeometryQuery::SurfaceArea(id) => QueryKey::SurfaceArea(*id),
+            GeometryQuery::Centroid(id) => QueryKey::Centroid(*id),
+            GeometryQuery::BoundingBox(id) => QueryKey::BoundingBox(*id),
+            GeometryQuery::Distance { from, to } => QueryKey::Distance {
+                from: *from,
+                to: *to,
+            },
+            GeometryQuery::MomentOfInertia { handle, axis } => QueryKey::MomentOfInertia {
+                handle: *handle,
+                axis_bits: [
+                    axis[0].to_bits(),
+                    axis[1].to_bits(),
+                    axis[2].to_bits(),
+                ],
+            },
+        }
+    }
+}
+
 /// Mock geometry kernel that tracks operations and returns dummy handles.
 pub struct MockGeometryKernel {
     next_id: u64,
     operations: Arc<Mutex<Vec<GeometryOpRecord>>>,
+    /// Generic handle-only query results (fallback).
     queries: HashMap<GeometryHandleId, Value>,
+    /// Per-query-type results (takes precedence over generic).
+    typed_queries: HashMap<QueryKey, Value>,
 }
 
 impl MockGeometryKernel {
@@ -145,12 +193,74 @@ impl MockGeometryKernel {
             next_id: 1,
             operations: Arc::new(Mutex::new(Vec::new())),
             queries: HashMap::new(),
+            typed_queries: HashMap::new(),
         }
     }
 
-    /// Configure a query response for a specific handle.
+    /// Configure a generic query response for a specific handle (fallback for all query types).
     pub fn with_query_result(mut self, handle: GeometryHandleId, value: Value) -> Self {
         self.queries.insert(handle, value);
+        self
+    }
+
+    /// Configure a Volume query result for a specific handle.
+    pub fn with_volume_result(mut self, handle: GeometryHandleId, value: Value) -> Self {
+        self.typed_queries
+            .insert(QueryKey::Volume(handle), value);
+        self
+    }
+
+    /// Configure a SurfaceArea query result for a specific handle.
+    pub fn with_surface_area_result(mut self, handle: GeometryHandleId, value: Value) -> Self {
+        self.typed_queries
+            .insert(QueryKey::SurfaceArea(handle), value);
+        self
+    }
+
+    /// Configure a Centroid query result for a specific handle.
+    pub fn with_centroid_result(mut self, handle: GeometryHandleId, value: Value) -> Self {
+        self.typed_queries
+            .insert(QueryKey::Centroid(handle), value);
+        self
+    }
+
+    /// Configure a BoundingBox query result for a specific handle.
+    pub fn with_bbox_result(mut self, handle: GeometryHandleId, value: Value) -> Self {
+        self.typed_queries
+            .insert(QueryKey::BoundingBox(handle), value);
+        self
+    }
+
+    /// Configure a Distance query result for a specific pair of handles.
+    pub fn with_distance_result(
+        mut self,
+        from: GeometryHandleId,
+        to: GeometryHandleId,
+        value: Value,
+    ) -> Self {
+        self.typed_queries
+            .insert(QueryKey::Distance { from, to }, value);
+        self
+    }
+
+    /// Configure a MomentOfInertia query result for a specific handle and axis.
+    pub fn with_inertia_result(
+        mut self,
+        handle: GeometryHandleId,
+        axis: [f64; 3],
+        value: Value,
+    ) -> Self {
+        self.typed_queries.insert(
+            QueryKey::MomentOfInertia {
+                handle,
+                axis_bits: [
+                    axis[0].to_bits(),
+                    axis[1].to_bits(),
+                    axis[2].to_bits(),
+                ],
+            },
+            value,
+        );
         self
     }
 
@@ -188,6 +298,13 @@ impl GeometryKernel for MockGeometryKernel {
     }
 
     fn query(&self, query: &GeometryQuery) -> Result<Value, QueryError> {
+        // Check per-query-type map first
+        let key = QueryKey::from_query(query);
+        if let Some(value) = self.typed_queries.get(&key) {
+            return Ok(value.clone());
+        }
+
+        // Fall back to generic handle-only map
         let handle_id = match query {
             GeometryQuery::Volume(id) => id,
             GeometryQuery::SurfaceArea(id) => id,
@@ -265,6 +382,7 @@ impl ConstraintSolver for SpyConstraintSolver {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::values::{meters, mm3, mm2, point3};
     use reify_types::{CompiledExpr, Type, Value, ValueMap};
 
     #[test]
@@ -384,5 +502,107 @@ mod tests {
         let _boxed: Box<dyn ConstraintSolver> = Box::new(
             MockConstraintSolver::new_no_progress("test"),
         );
+    }
+
+    // step-5: failing tests for per-query-type mock configuration
+    #[test]
+    fn mock_with_volume_result_returns_for_volume_query() {
+        let id = GeometryHandleId(1);
+        let kernel = MockGeometryKernel::new()
+            .with_volume_result(id, mm3(1000.0));
+
+        let result = kernel.query(&GeometryQuery::Volume(id)).unwrap();
+        assert_eq!(result, mm3(1000.0));
+    }
+
+    #[test]
+    fn mock_with_surface_area_result_returns_for_surface_area_query() {
+        let id = GeometryHandleId(1);
+        let kernel = MockGeometryKernel::new()
+            .with_surface_area_result(id, mm2(600.0));
+
+        let result = kernel.query(&GeometryQuery::SurfaceArea(id)).unwrap();
+        assert_eq!(result, mm2(600.0));
+    }
+
+    #[test]
+    fn mock_with_centroid_result_returns_for_centroid_query() {
+        let id = GeometryHandleId(1);
+        let centroid = point3(0.5, 0.5, 0.5);
+        let kernel = MockGeometryKernel::new()
+            .with_centroid_result(id, centroid.clone());
+
+        let result = kernel.query(&GeometryQuery::Centroid(id)).unwrap();
+        assert_eq!(result, centroid);
+    }
+
+    #[test]
+    fn mock_with_bbox_result_returns_for_bounding_box_query() {
+        let id = GeometryHandleId(1);
+        let bbox = Value::List(vec![point3(0.0, 0.0, 0.0), point3(1.0, 1.0, 1.0)]);
+        let kernel = MockGeometryKernel::new()
+            .with_bbox_result(id, bbox.clone());
+
+        let result = kernel.query(&GeometryQuery::BoundingBox(id)).unwrap();
+        assert_eq!(result, bbox);
+    }
+
+    #[test]
+    fn mock_with_distance_result_returns_for_distance_query() {
+        let from = GeometryHandleId(1);
+        let to = GeometryHandleId(2);
+        let kernel = MockGeometryKernel::new()
+            .with_distance_result(from, to, meters(5.0));
+
+        let result = kernel.query(&GeometryQuery::Distance { from, to }).unwrap();
+        assert_eq!(result, meters(5.0));
+    }
+
+    #[test]
+    fn mock_with_inertia_result_returns_for_moment_of_inertia_query() {
+        let id = GeometryHandleId(1);
+        let axis = [0.0, 0.0, 1.0];
+        let kernel = MockGeometryKernel::new()
+            .with_inertia_result(id, axis, Value::Real(42.0));
+
+        let result = kernel.query(&GeometryQuery::MomentOfInertia { handle: id, axis }).unwrap();
+        assert_eq!(result, Value::Real(42.0));
+    }
+
+    #[test]
+    fn mock_per_query_type_differentiates_same_handle() {
+        // Configure different values for Volume vs SurfaceArea on the same handle
+        let id = GeometryHandleId(1);
+        let kernel = MockGeometryKernel::new()
+            .with_volume_result(id, mm3(1000.0))
+            .with_surface_area_result(id, mm2(600.0));
+
+        let vol = kernel.query(&GeometryQuery::Volume(id)).unwrap();
+        let area = kernel.query(&GeometryQuery::SurfaceArea(id)).unwrap();
+        assert_eq!(vol, mm3(1000.0));
+        assert_eq!(area, mm2(600.0));
+    }
+
+    #[test]
+    fn mock_per_query_type_falls_back_to_generic() {
+        // with_query_result (generic) should be used when no typed config exists
+        let id = GeometryHandleId(1);
+        let kernel = MockGeometryKernel::new()
+            .with_query_result(id, mm3(500.0));
+
+        let result = kernel.query(&GeometryQuery::Volume(id)).unwrap();
+        assert_eq!(result, mm3(500.0));
+    }
+
+    #[test]
+    fn mock_per_query_type_overrides_generic() {
+        // Typed config should take precedence over generic
+        let id = GeometryHandleId(1);
+        let kernel = MockGeometryKernel::new()
+            .with_query_result(id, mm3(500.0))       // generic
+            .with_volume_result(id, mm3(1000.0));     // typed
+
+        let vol = kernel.query(&GeometryQuery::Volume(id)).unwrap();
+        assert_eq!(vol, mm3(1000.0)); // typed wins
     }
 }
