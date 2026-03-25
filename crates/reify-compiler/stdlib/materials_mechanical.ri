@@ -19,3 +19,14 @@ trait Elastic {
     param poissons_ratio : Real
     param shear_modulus : Real
 }
+
+// ── Strength ─────────────────────────────────────────────────────────────────
+
+// yield_strength, uts (ultimate tensile strength), compressive_strength all
+// in Pa (using Real). The constraint enforces uts >= yield_strength.
+trait Strong {
+    param yield_strength : Real
+    param uts : Real
+    param compressive_strength : Real
+    constraint uts >= yield_strength
+}
