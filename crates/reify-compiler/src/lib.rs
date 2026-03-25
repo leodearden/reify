@@ -690,6 +690,7 @@ pub enum PatternKind {
 pub enum SweepKind {
     Loft,
     Extrude,
+    Revolve,
 }
 
 /// Reference to a geometry result within a realization.
@@ -725,6 +726,8 @@ fn is_geometry_function(name: &str) -> bool {
             | "rotate_around"
             | "scale"
             | "extrude"
+            | "revolve"
+            | "revolve_full"
     )
 }
 
@@ -5939,6 +5942,76 @@ fn compile_geometry_call(
                 ],
             }])
         }
+        // revolve(profile, ox, oy, oz, ax, ay, az, angle)
+        "revolve" => {
+            if compiled_args.len() != 8 {
+                diagnostics.push(Diagnostic::error(format!(
+                    "revolve() expects exactly 8 arguments (profile, ox, oy, oz, ax, ay, az, angle), got {}",
+                    compiled_args.len()
+                )));
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            let profile_expr = it.next().unwrap();
+            let ox = it.next().unwrap();
+            let oy = it.next().unwrap();
+            let oz = it.next().unwrap();
+            let ax = it.next().unwrap();
+            let ay = it.next().unwrap();
+            let az = it.next().unwrap();
+            let angle = it.next().unwrap();
+            Some(vec![CompiledGeometryOp::Sweep {
+                kind: SweepKind::Revolve,
+                profiles: vec![GeomRef::Step(0)],
+                args: vec![
+                    ("profile".to_string(), profile_expr),
+                    ("ox".to_string(), ox),
+                    ("oy".to_string(), oy),
+                    ("oz".to_string(), oz),
+                    ("ax".to_string(), ax),
+                    ("ay".to_string(), ay),
+                    ("az".to_string(), az),
+                    ("angle".to_string(), angle),
+                ],
+            }])
+        }
+        // revolve_full(profile, ox, oy, oz, ax, ay, az) — injects 2π for angle
+        "revolve_full" => {
+            if compiled_args.len() != 7 {
+                diagnostics.push(Diagnostic::error(format!(
+                    "revolve_full() expects exactly 7 arguments (profile, ox, oy, oz, ax, ay, az), got {}",
+                    compiled_args.len()
+                )));
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            let profile_expr = it.next().unwrap();
+            let ox = it.next().unwrap();
+            let oy = it.next().unwrap();
+            let oz = it.next().unwrap();
+            let ax = it.next().unwrap();
+            let ay = it.next().unwrap();
+            let az = it.next().unwrap();
+            // Inject literal 2π for the angle
+            let tau_expr = CompiledExpr::literal(
+                Value::Real(std::f64::consts::TAU),
+                reify_types::Type::Real,
+            );
+            Some(vec![CompiledGeometryOp::Sweep {
+                kind: SweepKind::Revolve,
+                profiles: vec![GeomRef::Step(0)],
+                args: vec![
+                    ("profile".to_string(), profile_expr),
+                    ("ox".to_string(), ox),
+                    ("oy".to_string(), oy),
+                    ("oz".to_string(), oz),
+                    ("ax".to_string(), ax),
+                    ("ay".to_string(), ay),
+                    ("az".to_string(), az),
+                    ("angle".to_string(), tau_expr),
+                ],
+            }])
+        }
         // --- Modify extensions ---
         // shell(target, thickness, ...)
         "shell" => {
@@ -6879,13 +6952,16 @@ mod tests {
                     .iter()
                     .find(|(name, _)| name == "angle")
                     .expect("should have 'angle' arg");
-                let angle_val = angle_arg.1.eval(&reify_types::EvalContext::empty());
-                let angle_f64 = angle_val.as_f64().expect("angle should be f64");
-                assert!(
-                    (angle_f64 - std::f64::consts::TAU).abs() < 1e-10,
-                    "revolve_full angle should be 2π, got {}",
-                    angle_f64
-                );
+                match &angle_arg.1.kind {
+                    CompiledExprKind::Literal(Value::Real(v)) => {
+                        assert!(
+                            (*v - std::f64::consts::TAU).abs() < 1e-10,
+                            "revolve_full angle should be 2π, got {}",
+                            v
+                        );
+                    }
+                    other => panic!("expected Literal(Real), got {:?}", other),
+                }
             }
             _ => panic!("expected Sweep(Revolve), got {:?}", op),
         }
