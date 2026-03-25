@@ -7755,6 +7755,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 437,
+        "title": "LSP: recurse into GuardedGroup members in find_parsed_member_span",
+        "description": "Make find_parsed_member_span in analysis.rs recurse into GuardedGroupDecl.members and else_members so params/lets inside where-guarded blocks are visible to hover and goto-def. Also affects goto_def.rs which has the same flat traversal. (Review followup from task 216)",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -7767,7 +7778,7 @@
       ],
       "created": "2026-03-25T22:11:29.141Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-25T22:11:29.153Z"
+      "updated": "2026-03-25T22:11:30.961Z"
     }
   }
 }
