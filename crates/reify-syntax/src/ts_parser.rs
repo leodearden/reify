@@ -2778,4 +2778,20 @@ mod tests {
             other => panic!("expected AdHocSelector, got {:?}", other),
         }
     }
+
+    #[test]
+    fn parse_ad_hoc_selector_multiple_args() {
+        let kind = parse_let_expr("structure S { let x = port @ point(1, 2, 3) }");
+        match kind {
+            ExprKind::AdHocSelector { base, selector, args } => {
+                assert!(matches!(base.kind, ExprKind::Ident(ref n) if n == "port"));
+                assert_eq!(selector, "point");
+                assert_eq!(args.len(), 3);
+                assert!(matches!(&args[0].kind, ExprKind::NumberLiteral(v) if (*v - 1.0).abs() < f64::EPSILON));
+                assert!(matches!(&args[1].kind, ExprKind::NumberLiteral(v) if (*v - 2.0).abs() < f64::EPSILON));
+                assert!(matches!(&args[2].kind, ExprKind::NumberLiteral(v) if (*v - 3.0).abs() < f64::EPSILON));
+            }
+            other => panic!("expected AdHocSelector, got {:?}", other),
+        }
+    }
 }
