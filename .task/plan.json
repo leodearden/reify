@@ -1,180 +1,115 @@
 {
-  "task_id": "248",
-  "title": "Ad-hoc port selectors: parser",
+  "task_id": "396",
+  "title": "Emit diagnostics for ERROR nodes and silent drops in lower_connect_body",
   "files": [
-    "tree-sitter-reify/grammar.js",
-    "tree-sitter-reify/src/parser.c",
-    "tree-sitter-reify/src/grammar.json",
-    "tree-sitter-reify/src/node-types.json",
-    "tree-sitter-reify/test/corpus/ad_hoc_selector.txt",
-    "crates/reify-syntax/src/lib.rs",
     "crates/reify-syntax/src/ts_parser.rs",
-    "crates/reify-syntax/tests/ad_hoc_selector_tests.rs",
-    "crates/reify-compiler/src/lib.rs",
-    "crates/reify-compiler/tests/ad_hoc_selector_compile_tests.rs"
+    "crates/reify-syntax/tests/connect_chain_tests.rs"
   ],
   "modules": [
-    "tree-sitter-reify",
-    "crates/reify-syntax",
-    "crates/reify-compiler"
+    "crates/reify-syntax"
   ],
-  "analysis": "This task adds parsing support for the ad-hoc port selector operator `@`, used as `expr @ ident(args)`. The operator is a postfix expression that takes a base expression, a selector name (identifier), and a parenthesized argument list. It should bind tighter than indexing (`[]`) but looser than member access (`.`).\n\nThe parser is tree-sitter based: grammar.js defines the CST, then ts_parser.rs lowers CST nodes to AST. The AST types live in lib.rs. Expression precedence is defined numerically in grammar.js (1=lowest to 8=highest for postfix). Currently member_access, function_call, and index_access all share precedence 8.\n\nTo implement the relative precedence (member_access > ad_hoc_selector > index_access), we adjust: member_access and function_call to prec 10, ad_hoc_selector to prec 9, index_access stays at 8. This preserves existing parse behavior for `a.b[0]` while correctly parsing `a.b @ face(\"top\")[0]` as `((a.b) @ face(\"top\"))[0]`.\n\nThe ExprKind enum in lib.rs needs a new `AdHocSelector` variant. Adding this variant will break exhaustive matches in downstream crates (notably compile_expr_guarded in reify-compiler). However, this task is scoped to crates/reify-syntax and tree-sitter-reify only. The compiler support is a separate task. The workspace check can be done with `--package reify-syntax` to verify parser correctness independently.\n\nReview feedback identified a blocking issue: the AdHocSelector arm in compile_expr_guarded (lib.rs:1590) uses panic! instead of following the established error-handling pattern (push Diagnostic::error + return CompiledExpr::literal fallback). This must be fixed to prevent compiler crashes when users write @ expressions. Steps 10-11 address this with a TDD test-then-fix cycle.",
-  "prerequisites": [
-    {
-      "id": "pre-1",
-      "description": "Add `ad_hoc_selector` grammar rule to grammar.js: `expr '@' ident '(' args ')'` at prec.left(9). Bump member_access and function_call to prec 10 (from 8). Update precedence comment. Add `ad_hoc_selector` to `_expression` choice.",
-      "status": "done",
-      "commit": "fde7558f",
-      "tests": []
-    },
-    {
-      "id": "pre-2",
-      "description": "Regenerate tree-sitter parser: run `tree-sitter generate` in tree-sitter-reify/ to produce updated parser.c, grammar.json, and node-types.json.",
-      "status": "done",
-      "commit": "fde7558f",
-      "tests": []
-    },
-    {
-      "id": "pre-3",
-      "description": "Add tree-sitter corpus test file `test/corpus/ad_hoc_selector.txt` with basic parse cases: simple `a @ face(\"top\")`, no-arg `a @ default()`, multi-arg `a @ point(x, y, z)`, chained with member access `a.b @ face(\"top\")`.",
-      "status": "done",
-      "commit": "fde7558f",
-      "tests": []
-    }
-  ],
+  "analysis": "lower_connect_body() at ts_parser.rs:1284-1316 has three silent-failure paths that should emit ParseError diagnostics:\n\n1. **ERROR nodes swallowed by catch-all**: The `_ => {}` catch-all discards ERROR nodes produced by tree-sitter error recovery (e.g. user writes `{ >= }` inside a connect body). Every other match-on-children site in the parser (top-level at line 163, constraint body at line 637, member declarations at line 852) has an explicit \"ERROR\" arm that pushes a ParseError. lower_connect_body must follow suit.\n\n2. **connect_param_assignment silent drops**: When `child_by_field_name(\"name\")` returns None, the entire assignment is silently skipped. When name is present but `child_by_field_name(\"value\")` returns None or `lower_expr` fails, the assignment is silently dropped after computing the name string. These should emit diagnostics.\n\n3. **port_mapping silent drops**: When `child_by_field_name(\"from\")` or `child_by_field_name(\"to\")` returns None, the mapping is silently skipped. This should emit a diagnostic.\n\nThe grammar (grammar.js:496-515) defines connect_body as `{ commaSep(choice(port_mapping, connect_param_assignment)) }`. Anonymous child tokens ({, }, ,) correctly hit the catch-all and should remain silent.\n\nThe fix follows established patterns: (a) add \"ERROR\" arm with contextual message `\"syntax error in connect body: ...\"` matching the constraint body pattern at line 637, (b) add `child.has_error()` guards on param/mapping arms matching the check_and_lower! macro pattern at line 12-23, (c) convert `if let` chains to `let ... else` with diagnostic-emitting else branches.\n\nTest strategy: integration tests in connect_chain_tests.rs that parse malformed connect bodies. For ERROR nodes, use clearly invalid syntax like `{ >= }`. For the has_error() guard paths, use syntax that partially matches but has internal errors. Tests assert at least one error exists with an expected message substring, tolerant of tree-sitter error recovery variations.",
+  "prerequisites": [],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing test `parse_ad_hoc_selector_basic` in ts_parser.rs: parse `structure S { let x = port @ face(\"top\") }` and assert the let expr is `ExprKind::AdHocSelector { base: Ident(\"port\"), selector: \"face\", args: [StringLiteral(\"top\")] }`. This test will fail to compile because ExprKind::AdHocSelector does not exist yet.",
+      "description": "Write failing test `connect_body_error_node_emits_diagnostic`: parse `structure S { port a : out T  port b : in T  connect a -> b { >= } }` and assert errors is non-empty and at least one error message contains 'connect body' or 'syntax error'. Currently the catch-all silently discards ERROR nodes, so the test will fail.",
       "status": "done",
-      "commit": "13242d51"
+      "commit": "1b2e8b4c"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Add `AdHocSelector { base: Box<Expr>, selector: String, args: Vec<Expr> }` variant to `ExprKind` in crates/reify-syntax/src/lib.rs. Test still fails because lowering is not implemented \u2014 parser returns None for ad_hoc_selector nodes.",
+      "description": "Add explicit \"ERROR\" arm to the match in lower_connect_body, before the `_ => {}` catch-all: `\"ERROR\" => { self.errors.push(ParseError { message: format!(\"syntax error in connect body: {}\", self.node_text(child)), span: self.span(child) }); }`. This follows the pattern at lines 637-644. Step-1 test should now pass.",
       "status": "done",
-      "commit": "666425c4"
+      "commit": null
     },
     {
       "id": "step-3",
-      "type": "impl",
-      "description": "Add lowering in ts_parser.rs: (1) Add `\"ad_hoc_selector\" => self.lower_ad_hoc_selector(node)` to `lower_expr` match. (2) Implement `lower_ad_hoc_selector` method that extracts field(\"base\"), field(\"selector\"), and argument_list children, lowering each. Test from step-1 should now pass.",
-      "status": "done",
-      "commit": "866e6b0e"
+      "type": "test",
+      "description": "Write failing test `connect_body_malformed_param_emits_diagnostic`: parse a connect body with a broken parameter assignment (e.g. `{ = 5 }` or other syntax that tree-sitter error recovery produces as a typed node with has_error()). Assert at least one error is emitted. Currently the if-let chains silently skip broken nodes.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-4",
-      "type": "test",
-      "description": "Write test `parse_ad_hoc_selector_no_args` in the integration test file: parse `structure S { let x = port @ default() }` and assert `AdHocSelector { base: Ident(\"port\"), selector: \"default\", args: [] }`. Should pass immediately.",
-      "status": "done",
-      "commit": "169e5247"
+      "type": "impl",
+      "description": "Refactor the connect_param_assignment arm in lower_connect_body: (a) Add a `if child.has_error()` guard at the top that emits `format!(\"invalid connect parameter: {}\", self.node_text(child))` and continues. (b) Convert `if let Some(name_node) = child.child_by_field_name(\"name\")` to `let Some(name_node) = ... else { push error 'connect parameter missing name', continue }`. (c) Convert the value+lower_expr chain: if value_node is None, emit 'connect parameter X missing value'; if lower_expr returns None, emit 'invalid value in connect parameter X'. Step-3 test should now pass.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write test `parse_ad_hoc_selector_multiple_args`: parse `structure S { let x = port @ point(1, 2, 3) }` and assert `AdHocSelector` with 3 `NumberLiteral` args. Should pass immediately.",
-      "status": "done",
-      "commit": "8b819e8d"
+      "description": "Write failing test `connect_body_malformed_mapping_emits_diagnostic`: parse a connect body with a broken port mapping (e.g. syntax that produces an incomplete port_mapping node). Assert at least one error is emitted. Currently the if-let silently drops incomplete mappings.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-6",
-      "type": "test",
-      "description": "Write test `parse_ad_hoc_selector_chained_member_access`: parse `structure S { let x = sub_part.mount @ face(\"top\") }` and assert `AdHocSelector { base: MemberAccess { object: Ident(\"sub_part\"), member: \"mount\" }, ... }`. Verifies member access binds tighter than `@`.",
-      "status": "done",
-      "commit": "eb71e9b2"
+      "type": "impl",
+      "description": "Refactor the port_mapping arm in lower_connect_body: (a) Add a `if child.has_error()` guard at the top that emits `format!(\"invalid port mapping: {}\", self.node_text(child))` and continues. (b) Add an else branch to the `if let (Some(from), Some(to))` destructure that emits `format!(\"incomplete port mapping: {}\", self.node_text(child))`. Step-5 test should now pass.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write test `parse_ad_hoc_selector_in_connect`: parse `structure S { port a : out T  port b : in T  connect a @ face(\"top\") -> b @ face(\"bottom\") }` and verify both connect port refs contain `AdHocSelector` nodes.",
-      "status": "done",
-      "commit": "eb71e9b2"
-    },
-    {
-      "id": "step-8",
-      "type": "test",
-      "description": "Write test `parse_ad_hoc_selector_precedence_over_index`: parse `structure S { let x = port @ face(\"top\")[0] }` and assert the outer expression is `IndexAccess { object: AdHocSelector{...}, index: NumberLiteral(0) }`, verifying @ binds tighter than [].",
-      "status": "done",
-      "commit": "eb71e9b2"
-    },
-    {
-      "id": "step-9",
-      "type": "test",
-      "description": "Write test `parse_ad_hoc_selector_with_expr_args`: parse `structure S { let x = port @ edge(width * 2) }` and assert the arg is a BinOp expression, verifying complex expressions work in selector args.",
-      "status": "done",
-      "commit": "eb71e9b2"
-    },
-    {
-      "id": "step-10",
-      "type": "test",
-      "description": "Write test `compile_ad_hoc_selector_emits_diagnostic` in new file crates/reify-compiler/tests/ad_hoc_selector_compile_tests.rs. Use the `compile_module_with_diagnostics` pattern from purpose_compile_tests.rs: parse `structure S { let x = port @ face(\"top\") }`, compile, assert no panic occurs, assert diagnostics contain a Severity::Error with message containing \"ad-hoc selector (@) is not yet supported\". This test will fail because the current code panics instead of emitting a diagnostic.",
-      "status": "done",
-      "commit": "6f3cb66a"
-    },
-    {
-      "id": "step-11",
-      "type": "impl",
-      "description": "Fix the AdHocSelector arm in compile_expr_guarded (crates/reify-compiler/src/lib.rs:1588-1591). Replace `panic!(\"AdHocSelector is not yet supported in the compiler\")` with the established pattern: push `Diagnostic::error(\"ad-hoc selector (@) is not yet supported in the compiler\").with_label(DiagnosticLabel::new(expr.span, \"not yet supported\"))` to diagnostics, and return `CompiledExpr::literal(Value::Undef, Type::Real)`. Test from step-10 should now pass.",
-      "status": "done",
-      "commit": "055a65a3"
+      "description": "Write regression test `connect_body_valid_no_spurious_errors`: explicitly verify that a well-formed connect body with both params and port mappings (`connect a -> b : BoltSet { grade = 8.8, shaft -> bore }`) produces zero errors. This guards against the refactored code accidentally triggering diagnostics on valid input. (Existing tests already assert errors.is_empty() but this makes the intent explicit for this task.)",
+      "status": "pending",
+      "commit": null
     }
   ],
   "design_decisions": [
     {
-      "decision": "Set ad_hoc_selector at tree-sitter prec.left(9), bump member_access and function_call to prec 10",
-      "rationale": "The task requires @ to bind looser than member access but tighter than indexing. Currently all postfix ops share prec 8. By making member_access/function_call=10, ad_hoc_selector=9, index_access=8, the precedence ladder is explicit. prec.left ensures left-to-right associativity for `a.b @ sel()` \u2192 `(a.b) @ sel()`. Existing behavior is preserved since member_access > index_access was already true via left-associativity."
+      "decision": "Use contextual message prefix 'syntax error in connect body' for ERROR nodes",
+      "rationale": "Matches the constraint body pattern at line 637 which uses 'syntax error in constraint body'. Contextual prefixes help users locate errors. Top-level and member declaration sites use just 'syntax error' but the body-level pattern with context is more descriptive."
     },
     {
-      "decision": "Use standard argument_list (positional) for selector args, not named_argument_list",
-      "rationale": "The syntax `expr @ ident(args)` uses the same positional argument list as function calls. Named arguments can be added later if needed. This mirrors the function_call rule which also uses $.argument_list."
+      "decision": "Add child.has_error() guards before field extraction in param/mapping arms",
+      "rationale": "Follows the check_and_lower! macro pattern (lines 12-23) which checks is_error()||has_error() before lowering. When tree-sitter error recovery produces a typed node (e.g. connect_param_assignment) with internal errors, fields may be missing or corrupt. The has_error() guard catches this early, producing a clear diagnostic instead of falling through to field-level else branches."
     },
     {
-      "decision": "Scope this task to reify-syntax and tree-sitter-reify only, not touching the compiler",
-      "rationale": "The task description specifies modules: crates/reify-syntax. Adding the AdHocSelector variant to ExprKind will cause a non-exhaustive match error in reify-compiler's compile_expr_guarded. However, the syntax crate can be checked independently with `cargo check -p reify-syntax`. Compiler support for the new variant is a separate task."
+      "decision": "Use let-else pattern instead of nested if-let for field extraction",
+      "rationale": "Converting `if let Some(name) = child_by_field_name(\"name\") { ... }` to `let Some(name) = ... else { push_error; continue; }` makes the error path explicit and prevents silent drops. The happy path is unchanged. This is idiomatic Rust for 'required field or bail with error'."
     },
     {
-      "decision": "Place tests in both ts_parser.rs (unit) and a new integration test file ad_hoc_selector_tests.rs",
-      "rationale": "Following the project's test pattern: inline tests in ts_parser.rs for basic parsing validation using the parse_let_expr helper, and a dedicated integration test file for more complex scenarios like connect statements and precedence, matching the pattern of connect_chain_tests.rs, lambda_tests.rs, etc."
+      "decision": "Tests assert errors.iter().any(|e| e.message.contains(...)) rather than exact counts or messages",
+      "rationale": "Tree-sitter error recovery is implementation-defined and may produce different ERROR/MISSING node structures depending on surrounding context. Asserting at least one error with the expected message substring is robust across tree-sitter versions while still verifying diagnostic code is exercised."
     },
     {
-      "decision": "Fix compiler panic in this parser task rather than deferring to a separate compiler task",
-      "rationale": "Review identified the panic! in compile_expr_guarded as a blocking issue: it crashes the entire compiler process when any user source uses @ syntax. Since this task introduced the ExprKind::AdHocSelector variant and the panic! arm, the fix belongs here. The fix is minimal \u2014 replacing panic! with the established diagnostic+fallback pattern used by all other error paths in the same function \u2014 and does not implement actual compiler support for the operator."
+      "decision": "Place all tests in connect_chain_tests.rs rather than creating a new file",
+      "rationale": "The existing connect_chain_tests.rs already contains all connect statement tests and the parse_decls helper. Adding diagnostic tests for connect body errors keeps them co-located with the happy-path tests. No new test file needed."
     }
   ],
   "reuse": [
     {
-      "what": "parse_let_expr helper in ts_parser.rs tests",
-      "where": "crates/reify-syntax/src/ts_parser.rs line 2447",
-      "how": "Use for inline unit tests that parse `structure S { let x = <expr> }` and extract the ExprKind. Same pattern as index_access, member_access, and collection literal tests."
+      "what": "ParseError struct and self.errors.push() pattern",
+      "where": "crates/reify-syntax/src/lib.rs:524, crates/reify-syntax/src/ts_parser.rs:163-168",
+      "how": "Reuse the identical pattern: self.errors.push(ParseError { message: format!(...), span: self.span(child) })"
     },
     {
-      "what": "parse_decls helper pattern from integration tests",
-      "where": "crates/reify-syntax/tests/connect_chain_tests.rs line 8",
-      "how": "Copy the `parse_decls(source) -> (Vec<Declaration>, Vec<ParseError>)` helper for the new integration test file. This is the standard pattern used across all integration test files."
+      "what": "ERROR arm pattern from constraint body",
+      "where": "crates/reify-syntax/src/ts_parser.rs:637-644",
+      "how": "Copy the exact pattern with contextual message prefix changed to 'syntax error in connect body'"
     },
     {
-      "what": "argument_list grammar rule",
-      "where": "tree-sitter-reify/grammar.js line 684",
-      "how": "Reuse the existing $.argument_list rule for ad_hoc_selector args. This gives comma-separated positional expressions with optional trailing comma, identical to function_call syntax."
+      "what": "check_and_lower! has_error() guard concept",
+      "where": "crates/reify-syntax/src/ts_parser.rs:12-23",
+      "how": "Apply the same child.has_error() check concept inline for param/mapping arms. Cannot use the macro directly since it returns Option and we are in a for-loop pushing to vectors."
     },
     {
-      "what": "lower_function_call argument extraction pattern",
-      "where": "crates/reify-syntax/src/ts_parser.rs line 1677",
-      "how": "The lower_ad_hoc_selector method can follow the same pattern as lower_function_call for extracting positional arguments from an argument_list child node."
+      "what": "parse_decls test helper",
+      "where": "crates/reify-syntax/tests/connect_chain_tests.rs:8-11",
+      "how": "Reuse existing parse_decls(source) -> (Vec<Declaration>, Vec<ParseError>) helper for all new diagnostic tests"
     },
     {
-      "what": "Tree-sitter corpus test format",
-      "where": "tree-sitter-reify/test/corpus/minimize_maximize.txt",
-      "how": "Follow the same format for the new corpus test: section headers with ===, source snippet, expected CST structure with ---."
-    },
-    {
-      "what": "compile_module_with_diagnostics helper and diagnostic assertion pattern",
-      "where": "crates/reify-compiler/tests/purpose_compile_tests.rs lines 148-189",
-      "how": "Copy the helper that compiles without asserting no errors, then filter diagnostics by Severity::Error and assert the expected message is present. Same pattern as compile_purpose_rejects_guarded_blocks test."
+      "what": "self.node_text() and self.span() helpers",
+      "where": "crates/reify-syntax/src/ts_parser.rs:69-75",
+      "how": "Used in all new diagnostic messages and spans, same as all existing ERROR arms throughout the file"
     }
   ],
-  "_session_id": "248-9817d3c8",
-  "_created_at": "2026-03-25T17:40:57.380347+00:00"
+  "_session_id": "396-6831415d",
+  "_created_at": "2026-03-25T17:56:00.136575+00:00"
 }

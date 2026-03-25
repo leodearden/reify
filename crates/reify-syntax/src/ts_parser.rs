@@ -843,8 +843,7 @@ impl<'a> Lowering<'a> {
             }
             "port_declaration" => check_and_lower!(self, child, "port",
                 self.lower_port(child).map(MemberDecl::Port)),
-            "connect_statement" => check_and_lower!(self, child, "connect",
-                self.lower_connect(child).map(MemberDecl::Connect)),
+            "connect_statement" => self.lower_connect(child).map(MemberDecl::Connect),
             "chain_statement" => check_and_lower!(self, child, "chain",
                 self.lower_chain(child).map(MemberDecl::Chain)),
             "meta_block" => check_and_lower!(self, child, "meta",
@@ -1307,6 +1306,15 @@ impl<'a> Lowering<'a> {
                         let to = self.node_text(to_node).to_string();
                         port_mappings.push((from, to));
                     }
+                }
+                "ERROR" => {
+                    self.errors.push(ParseError {
+                        message: format!(
+                            "syntax error in connect body: {}",
+                            self.node_text(child)
+                        ),
+                        span: self.span(child),
+                    });
                 }
                 _ => {}
             }
