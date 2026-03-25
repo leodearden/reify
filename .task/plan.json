@@ -1,163 +1,133 @@
 {
-  "task_id": "162",
-  "title": "some/none: parser and compiler",
+  "task_id": "234",
+  "title": "Frame: Type, Value, constructors",
   "files": [
-    "crates/reify-compiler/src/lib.rs",
-    "crates/reify-syntax/tests/option_tests.rs",
-    "crates/reify-compiler/tests/option_compile_tests.rs"
+    "crates/reify-types/src/ty.rs",
+    "crates/reify-types/src/value.rs",
+    "crates/reify-stdlib/src/lib.rs"
   ],
   "modules": [
-    "crates/reify-syntax",
-    "crates/reify-compiler"
+    "crates/reify-types",
+    "crates/reify-stdlib"
   ],
-  "analysis": "## Current State\n\nCompiledExprKind::OptionSome(Box<CompiledExpr>) and CompiledExprKind::OptionNone already exist in reify-types/src/expr.rs (lines 86-90), including constructor methods (CompiledExpr::option_some, CompiledExpr::option_none), walk/traversal, collect_value_refs, remap_entity, and content hashing (tags [14]/[15]). Test support builders (option_some_expr, option_none_expr) also exist in reify-test-support.\n\nType::Option(Box<Type>) variant exists in reify-types/src/ty.rs.\n\nHowever, the parser and compiler do NOT yet handle some(expr) or none expressions:\n- some(expr) currently parses as ExprKind::FunctionCall { name: \"some\", args: [expr] } — correct syntax, no grammar changes needed.\n- none currently parses as ExprKind::Ident(\"none\") — correct syntax, no grammar changes needed.\n- The compiler has NO special handling for either — some(expr) falls through to stdlib FunctionCall, none produces 'unresolved name' error.\n- resolve_type_name() does NOT handle Option<T> parameterized types.\n\n## Approach\n\nNo grammar or AST changes needed — some(expr) and none parse correctly via existing function_call and identifier rules.\n\n**Parser work**: Write tests to verify some(expr) parses as FunctionCall and none parses as Ident. These should all pass immediately.\n\n**Compiler work**:\n1. Intercept ExprKind::Ident(\"none\") before scope lookup in compile_expr_guarded → emit CompiledExprKind::OptionNone with default Type::Option(Box::new(Type::Real)).\n2. Intercept ExprKind::FunctionCall { name: \"some\", .. } before function resolution → validate exactly 1 arg, compile it, emit CompiledExprKind::OptionSome(inner) with Type::Option(Box::new(inner.result_type)).\n3. For none type inference from context: At param/let compilation sites, when default_expr is OptionNone and cell_type is Option<T>, override the OptionNone result_type.\n4. Add Option<T> support to type resolution: When type_expr.name == \"Option\" and has 1 type_arg, resolve inner type and return Type::Option(Box::new(inner)).\n\n## Key Code Locations\n- compile_expr_guarded: lib.rs:880 (main expression compiler)\n- Ident handling: lib.rs:920-948 (where none intercept goes)\n- FunctionCall handling: lib.rs:1071-1175 (where some intercept goes)\n- resolve_type_name: lib.rs:560-574 (needs Option<T> handling)\n- Param type resolution: lib.rs:2644 (resolve_type_with_params call site)\n- Param second pass: lib.rs:2795-2849 (type context for none)\n- Let second pass: lib.rs:2850-2870 (type context for none)",
-  "prerequisites": [
-    {
-      "id": "pre-1",
-      "description": "Add Option<T> support to type resolution in reify-compiler. At param/let type resolution call sites (lib.rs ~2644 and similar), add check: if type_expr.name == 'Option' and type_expr.type_args.len() == 1, recursively resolve the inner type arg and return Type::Option(Box::new(inner)). This is a prerequisite because both some and none compilation tests need Option<T> type annotations to verify correct type inference.",
-      "status": "done",
-      "commit": "2924d8dc",
-      "tests": []
-    }
-  ],
+  "analysis": "Task 234 adds a Frame geometric type to Reify, following the established patterns from Point (task 223) and Orientation (task 233). Frame represents a coordinate frame: an origin point + a basis orientation. The Type variant is `Frame(usize)` parameterized by spatial dimension N (matching Orientation(usize)). The Value variant is `Frame { origin: Box<Value>, basis: Box<Value> }` where origin is a Value::Point and basis is a Value::Orientation. Two constructors are needed: `frame3(origin, basis)` taking a Point3 origin and Orientation3 basis, and `frame3_identity` taking no args and returning origin=(0m,0m,0m) with identity orientation.\n\nKey implementation details:\n- Type::Frame(usize): follows Orientation(usize) pattern exactly. Display: `Frame3`. Factory: `Type::frame(n)`. is_numeric: false.\n- Value::Frame { origin: Box<Value>, basis: Box<Value> }: content_hash tag=20 (next available — tags 0-19 are used by existing variants). type_tag for Ord=20. dimension() returns DIMENSIONLESS (frame itself has no physical dimension). PartialEq compares origin and basis via delegation. Display: `frame({origin}, {basis})` — delegates to inner Display impls.\n- frame3 constructor: validates exactly 2 args, first must be Value::Point with 3 components, second must be Value::Orientation. Returns Value::Undef on any validation failure.\n- frame3_identity: no args, returns Frame with origin=Point([Value::length(0.0) x3]) and basis=Orientation{w:1,x:0,y:0,z:0}.",
+  "prerequisites": [],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write parser tests in crates/reify-syntax/tests/option_tests.rs: verify some(42) parses as FunctionCall{name:\"some\", args:[NumberLiteral(42)]}, some(x + 1) parses with BinOp arg, some(some(x)) nests correctly, none as let value parses as Ident(\"none\"), none as param default parses as Ident(\"none\"), some/none in conditional branches parse correctly. All tests should PASS immediately — no parser changes needed.",
+      "description": "Write failing tests in ty.rs for Type::Frame(usize): construction and equality (Frame(3)==Frame(3), Frame(3)!=Frame(2)), Display ('Frame3', 'Frame2'), factory method Type::frame(n), hash consistency via HashMap, is_numeric returns false, as_name returns None, Frame(3) != Orientation(3)",
       "status": "done",
-      "commit": "511c2a82"
+      "commit": "0dfd6b03"
     },
     {
       "id": "step-2",
-      "type": "test",
-      "description": "Write failing compiler test in crates/reify-compiler/tests/option_compile_tests.rs: compile 'structure S { let x = some(42) }' → expect CompiledExprKind::OptionSome with inner Literal(Int(42)) and result_type Type::Option(Box::new(Type::Int)). Currently fails because some(42) compiles as stdlib FunctionCall.",
+      "type": "impl",
+      "description": "Add Frame(usize) variant to Type enum in ty.rs. Add Display arm writing `Frame{n}`. Add factory method `Type::frame(n: usize) -> Self`. Add is_numeric match arm returning false. All step-1 tests pass.",
       "status": "done",
-      "commit": "dcb9f229"
+      "commit": "0dfd6b03"
     },
     {
       "id": "step-3",
-      "type": "impl",
-      "description": "Implement some(expr) compilation in compile_expr_guarded's FunctionCall arm (lib.rs ~1071). Add early check BEFORE resolve_function_overload: if name == \"some\", validate exactly 1 arg (emit diagnostic if 0 or 2+), compile the single arg, return CompiledExpr::option_some(compiled_inner, Type::Option(Box::new(inner.result_type))).",
+      "type": "test",
+      "description": "Write failing tests in value.rs for Value::Frame { origin, basis }: construction with Point origin and Orientation basis, PartialEq (equal frames equal, different origin differs, different basis differs), Display format `frame(point(...), [w,x,y,z]q)`, dimension() returns DIMENSIONLESS, content_hash determinism (same frame same hash), content_hash distinct from Orientation and Point, Ord type_tag=20 ordering (Frame > Matrix), same-type Ord (compare origin first then basis), content_hash with neg-zero differs",
       "status": "done",
-      "commit": "6d1d2978"
+      "commit": "3a649cf2"
     },
     {
       "id": "step-4",
-      "type": "test",
-      "description": "Write failing compiler test: compile 'structure S { let x = none }' → expect CompiledExprKind::OptionNone with result_type Type::Option(_). Currently fails because none produces 'unresolved name' error.",
+      "type": "impl",
+      "description": "Add `Frame { origin: Box<Value>, basis: Box<Value> }` variant to Value enum. Implement: content_hash (tag=20, combine origin.content_hash() + basis.content_hash()), PartialEq (delegate to origin==origin && basis==basis), Ord (type_tag=20, cmp origin then basis), Display (`frame({origin}, {basis})`), dimension() returns DIMENSIONLESS. All step-3 tests pass.",
       "status": "done",
-      "commit": "dcb9f229"
+      "commit": "3a649cf2"
     },
     {
       "id": "step-5",
-      "type": "impl",
-      "description": "Implement none compilation in compile_expr_guarded's Ident arm (lib.rs ~920). Add early check BEFORE scope.resolve: if name == \"none\", return CompiledExpr::option_none(Type::Option(Box::new(Type::Real))). Default inner type is Real; contextual override comes in step-7.",
+      "type": "test",
+      "description": "Write failing tests in stdlib lib.rs for frame3(origin, basis): valid Point3<Length> origin + Orientation basis returns Frame value, verify origin and basis are stored correctly, wrong arg count (0, 1, 3 args) returns Undef, non-Point first arg (e.g. Real) returns Undef, non-Orientation second arg (e.g. Real) returns Undef, Point2 origin (wrong component count) returns Undef, dimensionless Point3<Real> origin is accepted",
       "status": "done",
-      "commit": "6d1d2978"
+      "commit": "98ae96a8"
     },
     {
       "id": "step-6",
-      "type": "test",
-      "description": "Write failing compiler test: compile 'structure S { param x: Option<Int> = none }' → expect OptionNone with result_type Type::Option(Box::new(Type::Int)). Currently fails because resolve_type_with_params doesn't handle Option<T> and none doesn't get type context from param annotation.",
+      "type": "impl",
+      "description": "Add `frame3` match arm to eval_builtin in lib.rs: validate exactly 2 args, first must be Value::Point with exactly 3 components, second must be Value::Orientation, return Value::Frame { origin: Box::new(args[0].clone()), basis: Box::new(args[1].clone()) }. Return Undef on any validation failure. All step-5 tests pass.",
       "status": "done",
-      "commit": "dcb9f229"
+      "commit": "98ae96a8"
     },
     {
       "id": "step-7",
-      "type": "impl",
-      "description": "Implement Option<T> type resolution and none type context propagation. (a) At param type resolution (lib.rs ~2644), before calling resolve_type_with_params, add check: if type_expr.name == \"Option\" && type_expr.type_args.len() == 1, resolve the inner type arg recursively and return Type::Option(Box::new(inner)). (b) At param compilation (lib.rs ~2818), after compiling default_expr, if it's OptionNone and cell_type is Type::Option(inner), create new CompiledExpr::option_none with the correct Option type. (c) Same for let compilation (lib.rs ~2856): if compiled_expr is OptionNone and let_decl.type_expr resolves to Option<T>, override the result_type.",
+      "type": "test",
+      "description": "Write failing tests in stdlib lib.rs for frame3_identity: no-arg call returns Frame, verify origin equals Point([0m, 0m, 0m]) and basis equals identity Orientation(w:1,x:0,y:0,z:0), call with any args returns Undef",
       "status": "done",
-      "commit": "6d1d2978"
+      "commit": "6f6dd389"
     },
     {
       "id": "step-8",
-      "type": "test",
-      "description": "Write compiler tests for edge cases: (a) some() with 0 args → diagnostic error emitted, (b) some(1, 2) with 2 args → diagnostic error emitted, (c) nested some(some(42)) → OptionSome(OptionSome(Literal(42))) with type Option<Option<Int>>, (d) some(x) where x is a param → OptionSome(ValueRef) with Option<param_type>, (e) let with Option<Length> type annotation and none default → correct scalar type propagation.",
-      "status": "done",
-      "commit": "dcb9f229"
-    },
-    {
-      "id": "step-9",
       "type": "impl",
-      "description": "Fix any edge case test failures from step-8. Expected: (a) Add arity validation with clear diagnostic messages for some() wrong arg count (e.g., 'some() requires exactly 1 argument, got N'). (b) Verify nested some works via recursive compilation. (c) Verify Option<Length> resolves to Type::Option(Box::new(Type::Scalar{dimension:LENGTH})) through type_args resolution.",
+      "description": "Add `frame3_identity` match arm to eval_builtin in lib.rs: if args.is_empty(), return Value::Frame with origin=Value::Point(vec![Value::length(0.0), Value::length(0.0), Value::length(0.0)]) and basis=Value::Orientation{w:1.0,x:0.0,y:0.0,z:0.0}; else return Value::Undef. All step-7 tests pass.",
       "status": "done",
-      "commit": "6d1d2978"
-    },
-    {
-      "id": "step-10",
-      "type": "test",
-      "description": "Write compiler test for no-context none (none used without type annotation): 'structure S { let x = none }' → OptionNone with Type::Option(Box::new(Type::Real)) default, no error diagnostics. Verifies graceful fallback when type cannot be inferred.",
-      "status": "done",
-      "commit": "dcb9f229"
-    },
-    {
-      "id": "step-11",
-      "type": "impl",
-      "description": "Verify step-10 test passes (should work from step-5 implementation). If any adjustment needed for the no-annotation case, fix here.",
-      "status": "done",
-      "commit": "6d1d2978"
+      "commit": "6f6dd389"
     }
   ],
   "design_decisions": [
     {
-      "decision": "No grammar or AST changes — handle some/none as semantic keywords recognized in the compiler",
-      "rationale": "some(expr) already parses naturally as FunctionCall and none as Ident via existing grammar rules. Adding grammar-level keywords would require tree-sitter regeneration and is unnecessary since the compiler can intercept these names before normal resolution. The task description says 'verify...parse correctly' confirming no parser changes are expected."
+      "decision": "Frame(usize) parameterized only by spatial dimension N, not by quantity type",
+      "rationale": "The task spec says Frame(usize), matching Orientation(usize). Unlike Point/Vector which carry a quantity type parameter, Frame's dimensionality is its key parameter. This keeps the type simple and aligned with geometric semantics where a frame is a position + orientation in N-space."
     },
     {
-      "decision": "Intercept some/none BEFORE normal function/identifier resolution in compile_expr_guarded",
-      "rationale": "Placing the check early (before resolve_function_overload for some, before scope.resolve for none) prevents confusing error messages like 'unresolved name: none' or 'no matching overload for some'. These are language keywords, not user-defined functions or variables."
+      "decision": "Value::Frame stores origin and basis as Box<Value> rather than decomposed scalar fields",
+      "rationale": "Storing as Box<Value> reuses existing Point and Orientation value representations, enables delegation for Display/content_hash/comparison, and keeps the Value enum from growing too wide. The Box indirection adds one level of heap allocation but is consistent with how Field and Lambda already use Box<Value>."
     },
     {
-      "decision": "Default none type is Type::Option(Box::new(Type::Real)), with contextual override at param/let compilation sites",
-      "rationale": "compile_expr_guarded has no 'expected type' parameter, so we can't pass context down. Instead, we emit a default-typed OptionNone and fix it up at the call site where type annotations are available. This is minimally invasive — no signature changes to compile_expr or compile_expr_guarded. Type::Real default matches the project's existing fallback convention for unresolved types."
+      "decision": "content_hash tag=20 for Frame",
+      "rationale": "Tags 0-19 are allocated across existing Value variants in content_hash and type_tag. Tag 20 is the next unused value, ensuring no hash collisions."
     },
     {
-      "decision": "Add Option<T> support via inline checks at type resolution call sites rather than modifying resolve_type_name signature",
-      "rationale": "resolve_type_name takes only a &str name, not the full TypeExpr with type_args. Rather than changing its signature (which affects many call sites), we add checks at the specific param/let compilation points where the TypeExpr struct is available. This keeps changes localized to the task scope."
+      "decision": "Frame dimension() returns DIMENSIONLESS",
+      "rationale": "A coordinate frame itself is not a physical quantity — it's a geometric construct. Its origin point carries a dimension (Length), but the frame as a whole is dimensionless, consistent with how Orientation returns DIMENSIONLESS."
     },
     {
-      "decision": "Validate some() arity: exactly 1 argument required, emit diagnostic for wrong count",
-      "rationale": "some(expr) semantically wraps exactly one value. Zero args is meaningless (not the same as none), and multiple args are ambiguous. A clear diagnostic helps users understand the API."
+      "decision": "frame3 accepts any Point3 regardless of inner quantity dimension",
+      "rationale": "While frame3_identity uses LENGTH-dimensioned zero origin, the frame3 constructor should accept any 3-component Point. This avoids over-constraining: users might create frames with dimensionless coordinates for pure geometric operations."
+    },
+    {
+      "decision": "Display format: frame({origin}, {basis}) delegating to inner displays",
+      "rationale": "Consistent with point(...) and vec(...) display conventions. Produces readable output like `frame(point(0 m, 0 m, 0 m), [1, 0, 0, 0]q)` by reusing existing Display implementations."
     }
   ],
   "reuse": [
     {
-      "what": "CompiledExprKind::OptionSome and OptionNone variants",
-      "where": "crates/reify-types/src/expr.rs lines 86-91",
-      "how": "Already defined with full traversal support (walk, collect_value_refs, remap_entity, content_hash tags [14]/[15]). No changes needed in reify-types."
+      "what": "Orientation(usize) type variant pattern",
+      "where": "crates/reify-types/src/ty.rs:47",
+      "how": "Frame(usize) follows the identical pattern — single usize parameter, Display as `Frame{n}`, factory method `Type::frame(n)`, is_numeric returns false, as_name returns None."
     },
     {
-      "what": "CompiledExpr::option_some() and option_none() constructors",
-      "where": "crates/reify-types/src/expr.rs constructor methods",
-      "how": "Use directly: option_some(inner, result_type) and option_none(result_type) to create compiled expressions."
+      "what": "Value::Orientation content_hash, PartialEq, Ord implementation patterns",
+      "where": "crates/reify-types/src/value.rs:307-318, 400-407, 538-545",
+      "how": "Frame's trait impls follow the same structural approach: content_hash uses a unique tag and combines sub-component hashes; PartialEq delegates to inner field equality; Ord compares fields in order."
     },
     {
-      "what": "Type::Option(Box<Type>) variant",
-      "where": "crates/reify-types/src/ty.rs",
-      "how": "Already exists in the type system. Create instances via Type::Option(Box::new(inner_type))."
+      "what": "orient_identity constructor pattern",
+      "where": "crates/reify-stdlib/src/lib.rs:480-486",
+      "how": "frame3_identity follows the exact same pattern — check args.is_empty(), return constructed value, else Undef."
     },
     {
-      "what": "Test helper builders: option_some_expr() and option_none_expr()",
-      "where": "crates/reify-test-support/src/builders.rs",
-      "how": "Available for constructing expected values in compiler test assertions."
+      "what": "construct_point_or_vector validation pattern",
+      "where": "crates/reify-stdlib/src/lib.rs:663-681",
+      "how": "frame3 constructor follows the same validate-args-then-construct pattern, returning Value::Undef on any failure."
     },
     {
-      "what": "collect_body_refs_inner already handles OptionSome/OptionNone",
-      "where": "crates/reify-compiler/src/lib.rs lines 4118-4121",
-      "how": "No changes needed — body ref collection for purposes already has match arms for these variants."
+      "what": "assert_orientation_approx! test macro pattern",
+      "where": "crates/reify-stdlib/src/lib.rs:2567-2584",
+      "how": "Frame tests can use a similar assert_frame macro that matches on Value::Frame and validates inner origin/basis components."
     },
     {
-      "what": "Existing parser test pattern (parse_decls/parse_members helpers)",
-      "where": "crates/reify-syntax/tests/*.rs (all test files)",
-      "how": "Replicate the standard helper functions in option_tests.rs for parsing source and extracting declarations/members with error checking."
-    },
-    {
-      "what": "Existing compiler test pattern (compile_module/get_cell_expr helpers)",
-      "where": "crates/reify-compiler/tests/*.rs (e.g., lambda_compile_tests.rs, match_compile_tests.rs)",
-      "how": "Replicate the standard helpers in option_compile_tests.rs for compiling source and extracting compiled expressions from value cells."
+      "what": "Value::length(0.0) factory method",
+      "where": "crates/reify-types/src/value.rs:81-86",
+      "how": "frame3_identity uses Value::length(0.0) for the zero-length origin components, reusing the existing factory."
     }
   ],
-  "_session_id": "162-2e121aab",
-  "_created_at": "2026-03-25T01:22:12.232530+00:00"
+  "_session_id": "234-1bf39682",
+  "_created_at": "2026-03-25T01:21:35.911599+00:00"
 }
