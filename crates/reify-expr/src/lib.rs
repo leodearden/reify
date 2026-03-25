@@ -974,6 +974,56 @@ fn eval_sub(lv: &Value, rv: &Value) -> Value {
     }
 }
 
+// ── Quaternion math helpers (private, for Transform evaluation) ──────────────
+
+/// Hamilton product of two quaternions (w, x, y, z).
+fn quat_mul_t(a: (f64, f64, f64, f64), b: (f64, f64, f64, f64)) -> (f64, f64, f64, f64) {
+    (
+        a.0 * b.0 - a.1 * b.1 - a.2 * b.2 - a.3 * b.3,
+        a.0 * b.1 + a.1 * b.0 + a.2 * b.3 - a.3 * b.2,
+        a.0 * b.2 - a.1 * b.3 + a.2 * b.0 + a.3 * b.1,
+        a.0 * b.3 + a.1 * b.2 - a.2 * b.1 + a.3 * b.0,
+    )
+}
+
+/// Quaternion conjugate (inverse for unit quaternions).
+fn quat_conj(q: (f64, f64, f64, f64)) -> (f64, f64, f64, f64) {
+    (q.0, -q.1, -q.2, -q.3)
+}
+
+/// Rotate a 3D vector (vx, vy, vz) by unit quaternion q: q * (0,v) * conj(q).
+fn quat_rotate(q: (f64, f64, f64, f64), vx: f64, vy: f64, vz: f64) -> (f64, f64, f64) {
+    let v_quat = (0.0, vx, vy, vz);
+    let result = quat_mul_t(quat_mul_t(q, v_quat), quat_conj(q));
+    (result.1, result.2, result.3)
+}
+
+/// Extract (f64, f64, f64) triple and DimensionVector from a 3-element Value slice.
+/// Returns None if the slice has wrong length or contains non-numeric values.
+fn vec3_components(items: &[Value]) -> Option<(f64, f64, f64, DimensionVector)> {
+    if items.len() != 3 {
+        return None;
+    }
+    let x = items[0].as_f64()?;
+    let y = items[1].as_f64()?;
+    let z = items[2].as_f64()?;
+    let dim = items[0].dimension();
+    Some((x, y, z, dim))
+}
+
+/// Reconstruct a Vec<Value> from a (f64, f64, f64) triple and a DimensionVector.
+fn make_components_3(x: f64, y: f64, z: f64, dim: DimensionVector) -> Vec<Value> {
+    if dim == DimensionVector::DIMENSIONLESS {
+        vec![Value::Real(x), Value::Real(y), Value::Real(z)]
+    } else {
+        vec![
+            Value::Scalar { si_value: x, dimension: dim },
+            Value::Scalar { si_value: y, dimension: dim },
+            Value::Scalar { si_value: z, dimension: dim },
+        ]
+    }
+}
+
 fn eval_mul(lv: &Value, rv: &Value) -> Value {
     match (lv, rv) {
         (Value::Int(a), Value::Int(b)) => Value::Int(a * b),
