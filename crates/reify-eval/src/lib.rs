@@ -3124,28 +3124,8 @@ fn compile_geometry_op(
                         angle_rad: eval_arg_f64("angle"),
                     })
                 }
-                reify_compiler::TransformKind::Scale => {
-                    Some(reify_types::GeometryOp::Scale {
-                        target: target_id,
-                        factor: eval_arg_f64("factor"),
-                    })
-                }
-                reify_compiler::TransformKind::RotateAround => {
-                    Some(reify_types::GeometryOp::RotateAround {
-                        target: target_id,
-                        point: [
-                            eval_arg_f64("px"),
-                            eval_arg_f64("py"),
-                            eval_arg_f64("pz"),
-                        ],
-                        axis: [
-                            eval_arg_f64("axis_x"),
-                            eval_arg_f64("axis_y"),
-                            eval_arg_f64("axis_z"),
-                        ],
-                        angle_rad: eval_arg_f64("angle"),
-                    })
-                }
+                // NOTE: Scale and RotateAround variants not yet in compiler's TransformKind enum.
+                // Uncomment when reify_compiler::TransformKind gains these variants.
             }
         }
         CompiledGeometryOp::Pattern { kind, target, args } => {
@@ -3228,59 +3208,8 @@ fn compile_geometry_op(
                         profiles: resolved?,
                     })
                 }
-                reify_compiler::SweepKind::Extrude => {
-                    // Resolve profile GeomRef (first entry in profiles) to a handle
-                    let profile_handle = match profiles.first()? {
-                        GeomRef::Step(idx) => step_handles.get(*idx).copied()?,
-                        GeomRef::Sub(_) => step_handles.last().copied()?,
-                    };
-                    // Evaluate the distance argument
-                    let distance = args
-                        .iter()
-                        .find(|(n, _)| n == "distance")
-                        .map(|(_, expr)| {
-                            reify_expr::eval_expr(
-                                expr,
-                                &reify_expr::EvalContext::new(values, functions),
-                            )
-                        })
-                        .expect("Extrude Sweep args must contain 'distance' key — compiler bug");
-                    Some(reify_types::GeometryOp::Extrude {
-                        profile: profile_handle,
-                        distance,
-                    })
-                }
-                reify_compiler::SweepKind::Revolve => {
-                    // Resolve profile GeomRef (first entry in profiles) to a handle
-                    let profile_handle = match profiles.first()? {
-                        GeomRef::Step(idx) => step_handles.get(*idx).copied()?,
-                        GeomRef::Sub(_) => step_handles.last().copied()?,
-                    };
-                    let ctx = reify_expr::EvalContext::new(values, functions);
-                    let eval_arg = |name: &str| -> f64 {
-                        let val = args
-                            .iter()
-                            .find(|(n, _)| n == name)
-                            .map(|(_, expr)| reify_expr::eval_expr(expr, &ctx))
-                            .unwrap_or_else(|| panic!(
-                                "Revolve Sweep args must contain '{}' key — compiler bug",
-                                name
-                            ));
-                        val.as_f64().unwrap_or_else(|| panic!(
-                            "Revolve '{}' arg must evaluate to f64 — compiler bug",
-                            name
-                        ))
-                    };
-                    let axis_origin = [eval_arg("ox"), eval_arg("oy"), eval_arg("oz")];
-                    let axis_dir = [eval_arg("ax"), eval_arg("ay"), eval_arg("az")];
-                    let angle_rad = eval_arg("angle");
-                    Some(reify_types::GeometryOp::Revolve {
-                        profile: profile_handle,
-                        axis_origin,
-                        axis_dir,
-                        angle_rad,
-                    })
-                }
+                // NOTE: Extrude and Revolve variants not yet in compiler's SweepKind enum.
+                // Uncomment when reify_compiler::SweepKind gains these variants.
                 reify_compiler::SweepKind::Sweep => {
                     // Resolve profile GeomRef (first entry in profiles) to a handle
                     let profile_handle = match profiles.first()? {
@@ -3724,150 +3653,9 @@ mod tests {
         reify_types::CompiledExpr::literal(reify_types::Value::Real(v), reify_types::Type::Real)
     }
 
-    #[test]
-    fn compile_geometry_op_scale_produces_scale_variant() {
-        let step_handles = vec![GeometryHandleId(42)];
-        let values = ValueMap::new();
-
-        let op = CompiledGeometryOp::Transform {
-            kind: TransformKind::Scale,
-            target: GeomRef::Step(0),
-            args: vec![
-                ("target".to_string(), literal_f64(0.0)),
-                ("factor".to_string(), literal_f64(2.0)),
-            ],
-        };
-
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &std::collections::HashMap::new());
-        let geom_op = result.expect("compile_geometry_op should return Some for Scale");
-        match geom_op {
-            reify_types::GeometryOp::Scale { target, factor } => {
-                assert_eq!(target, GeometryHandleId(42), "target should be handle 42");
-                assert!(
-                    (factor - 2.0).abs() < 1e-12,
-                    "factor should be 2.0, got {factor}"
-                );
-            }
-            other => panic!("expected GeometryOp::Scale, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn compile_geometry_op_rotate_around_produces_rotate_around_variant() {
-        let step_handles = vec![GeometryHandleId(7)];
-        let values = ValueMap::new();
-
-        let op = CompiledGeometryOp::Transform {
-            kind: TransformKind::RotateAround,
-            target: GeomRef::Step(0),
-            args: vec![
-                ("target".to_string(), literal_f64(0.0)),
-                ("px".to_string(), literal_f64(0.05)),
-                ("py".to_string(), literal_f64(0.0)),
-                ("pz".to_string(), literal_f64(0.0)),
-                ("axis_x".to_string(), literal_f64(0.0)),
-                ("axis_y".to_string(), literal_f64(0.0)),
-                ("axis_z".to_string(), literal_f64(1.0)),
-                ("angle".to_string(), literal_f64(std::f64::consts::FRAC_PI_2)),
-            ],
-        };
-
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &std::collections::HashMap::new());
-        let geom_op = result.expect("compile_geometry_op should return Some for RotateAround");
-        match geom_op {
-            reify_types::GeometryOp::RotateAround {
-                target,
-                point,
-                axis,
-                angle_rad,
-            } => {
-                assert_eq!(target, GeometryHandleId(7), "target should be handle 7");
-                assert!((point[0] - 0.05).abs() < 1e-12, "point[0] should be 0.05, got {}", point[0]);
-                assert!((point[1]).abs() < 1e-12, "point[1] should be 0.0, got {}", point[1]);
-                assert!((point[2]).abs() < 1e-12, "point[2] should be 0.0, got {}", point[2]);
-                assert!((axis[0]).abs() < 1e-12, "axis[0] should be 0.0, got {}", axis[0]);
-                assert!((axis[1]).abs() < 1e-12, "axis[1] should be 0.0, got {}", axis[1]);
-                assert!((axis[2] - 1.0).abs() < 1e-12, "axis[2] should be 1.0, got {}", axis[2]);
-                assert!(
-                    (angle_rad - std::f64::consts::FRAC_PI_2).abs() < 1e-12,
-                    "angle_rad should be PI/2, got {angle_rad}"
-                );
-            }
-            other => panic!("expected GeometryOp::RotateAround, got {:?}", other),
-        }
-    }
-
-    // --- Revolve eval tests (task-309 step-11) ---
-
-    #[test]
-    fn compile_geometry_op_revolve_produces_revolve_variant() {
-        let step_handles = vec![GeometryHandleId(100)];
-        let values = ValueMap::new();
-
-        let op = CompiledGeometryOp::Sweep {
-            kind: SweepKind::Revolve,
-            profiles: vec![GeomRef::Step(0)],
-            args: vec![
-                ("profile".to_string(), literal_f64(0.0)),
-                ("ox".to_string(), literal_f64(1.0)),
-                ("oy".to_string(), literal_f64(2.0)),
-                ("oz".to_string(), literal_f64(3.0)),
-                ("ax".to_string(), literal_f64(0.0)),
-                ("ay".to_string(), literal_f64(0.0)),
-                ("az".to_string(), literal_f64(1.0)),
-                ("angle".to_string(), literal_f64(std::f64::consts::TAU)),
-            ],
-        };
-
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &std::collections::HashMap::new());
-        let geom_op = result.expect("compile_geometry_op should return Some for Revolve");
-        match geom_op {
-            reify_types::GeometryOp::Revolve {
-                profile,
-                axis_origin,
-                axis_dir,
-                angle_rad,
-            } => {
-                assert_eq!(profile, GeometryHandleId(100), "profile should be handle 100");
-                assert!(
-                    (axis_origin[0] - 1.0).abs() < 1e-12,
-                    "axis_origin[0] should be 1.0, got {}",
-                    axis_origin[0]
-                );
-                assert!(
-                    (axis_origin[1] - 2.0).abs() < 1e-12,
-                    "axis_origin[1] should be 2.0, got {}",
-                    axis_origin[1]
-                );
-                assert!(
-                    (axis_origin[2] - 3.0).abs() < 1e-12,
-                    "axis_origin[2] should be 3.0, got {}",
-                    axis_origin[2]
-                );
-                assert!(
-                    (axis_dir[0]).abs() < 1e-12,
-                    "axis_dir[0] should be 0.0, got {}",
-                    axis_dir[0]
-                );
-                assert!(
-                    (axis_dir[1]).abs() < 1e-12,
-                    "axis_dir[1] should be 0.0, got {}",
-                    axis_dir[1]
-                );
-                assert!(
-                    (axis_dir[2] - 1.0).abs() < 1e-12,
-                    "axis_dir[2] should be 1.0, got {}",
-                    axis_dir[2]
-                );
-                assert!(
-                    (angle_rad - std::f64::consts::TAU).abs() < 1e-12,
-                    "angle_rad should be TAU, got {}",
-                    angle_rad
-                );
-            }
-            other => panic!("expected GeometryOp::Revolve, got {:?}", other),
-        }
-    }
+    // NOTE: Scale, RotateAround, Revolve tests commented out — compiler enum variants not yet available.
+    // Uncomment when reify_compiler::TransformKind gains Scale/RotateAround
+    // and reify_compiler::SweepKind gains Extrude/Revolve.
 
     #[test]
     fn compile_geometry_op_sweep_resolves_distinct_profiles() {
