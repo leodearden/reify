@@ -60,6 +60,8 @@ pub enum Value {
     Orientation { w: f64, x: f64, y: f64, z: f64 },
     /// Coordinate frame: an origin point and a basis orientation.
     Frame { origin: Box<Value>, basis: Box<Value> },
+    /// Rigid-body transformation: a rotation (Orientation) and a translation (Vector).
+    Transform { rotation: Box<Value>, translation: Box<Value> },
     /// Range with optional inclusive/exclusive bounds.
     Range {
         lower: Option<Box<Value>>,
@@ -323,6 +325,10 @@ impl Value {
                 // tag=20; combine origin and basis content hashes
                 ContentHash::of(&[20]).combine(origin.content_hash()).combine(basis.content_hash())
             }
+            Value::Transform { rotation, translation } => {
+                // tag=21; combine rotation and translation content hashes
+                ContentHash::of(&[21]).combine(rotation.content_hash()).combine(translation.content_hash())
+            }
             Value::Range { lower, upper, lower_inclusive, upper_inclusive } => {
                 debug_assert!(
                     lower.is_some() || !lower_inclusive,
@@ -416,6 +422,10 @@ impl PartialEq for Value {
                 Value::Frame { origin: bo, basis: bb },
             ) => ao == bo && ab == bb,
             (
+                Value::Transform { rotation: ar, translation: at },
+                Value::Transform { rotation: br, translation: bt },
+            ) => ar == br && at == bt,
+            (
                 Value::Range { lower: al, upper: au, lower_inclusive: ali, upper_inclusive: aui },
                 Value::Range { lower: bl, upper: bu, lower_inclusive: bli, upper_inclusive: bui },
             ) => {
@@ -457,7 +467,7 @@ impl Ord for Value {
         use std::cmp::Ordering;
 
         // Type-tag discriminant for cross-type ordering:
-        // Undef=0, Bool=1, Int=2, Real=3, Scalar=4, String=5, Enum=6, List=7, Set=8, Map=9, Option=10, Field=11, Lambda=12, Tensor=13, Complex=14, Orientation=15, Range=16, Point=17, Vector=18, Matrix=19, Frame=20
+        // Undef=0, Bool=1, Int=2, Real=3, Scalar=4, String=5, Enum=6, List=7, Set=8, Map=9, Option=10, Field=11, Lambda=12, Tensor=13, Complex=14, Orientation=15, Range=16, Point=17, Vector=18, Matrix=19, Frame=20, Transform=21
         fn type_tag(v: &Value) -> u8 {
             match v {
                 Value::Undef => 0,
@@ -481,6 +491,7 @@ impl Ord for Value {
                 Value::Vector(_) => 18,
                 Value::Matrix(_) => 19,
                 Value::Frame { .. } => 20,
+                Value::Transform { .. } => 21,
             }
         }
 
@@ -584,6 +595,10 @@ impl Ord for Value {
                 Value::Frame { origin: ao, basis: ab },
                 Value::Frame { origin: bo, basis: bb },
             ) => ao.cmp(bo).then_with(|| ab.cmp(bb)),
+            (
+                Value::Transform { rotation: ar, translation: at },
+                Value::Transform { rotation: br, translation: bt },
+            ) => ar.cmp(br).then_with(|| at.cmp(bt)),
             _ => unreachable!("same type tag but different variants"),
         }
     }
@@ -716,6 +731,9 @@ impl std::fmt::Display for Value {
             }
             Value::Frame { origin, basis } => {
                 write!(f, "frame({}, {})", origin, basis)
+            }
+            Value::Transform { rotation, translation } => {
+                write!(f, "transform({}, {})", rotation, translation)
             }
             Value::Range { lower, upper, lower_inclusive, upper_inclusive } => {
                 debug_assert!(
@@ -2917,5 +2935,150 @@ mod tests {
         let f1 = make_frame(origin_pos, basis.clone());
         let f2 = make_frame(origin_neg, basis);
         assert_ne!(f1.content_hash(), f2.content_hash());
+    }
+
+    // ── Value::Transform tests (step-3) ──────────────────────────────────────
+
+    fn make_vector3_length() -> Value {
+        Value::Vector(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ])
+    }
+
+    fn make_transform(rotation: Value, translation: Value) -> Value {
+        Value::Transform { rotation: Box::new(rotation), translation: Box::new(translation) }
+    }
+
+    #[test]
+    fn value_transform_construction() {
+        let rotation = make_orientation_identity();
+        let translation = make_vector3_length();
+        let transform = make_transform(rotation.clone(), translation.clone());
+        match transform {
+            Value::Transform { rotation: r, translation: t } => {
+                assert_eq!(*r, rotation);
+                assert_eq!(*t, translation);
+            }
+            other => panic!("expected Value::Transform, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn value_transform_partial_eq_equal() {
+        let t1 = make_transform(make_orientation_identity(), make_vector3_length());
+        let t2 = make_transform(make_orientation_identity(), make_vector3_length());
+        assert_eq!(t1, t2);
+    }
+
+    #[test]
+    fn value_transform_partial_eq_different_rotation() {
+        let rot_a = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+        let rot_b = Value::Orientation { w: 0.0, x: 1.0, y: 0.0, z: 0.0 };
+        let translation = make_vector3_length();
+        let t1 = make_transform(rot_a, translation.clone());
+        let t2 = make_transform(rot_b, translation);
+        assert_ne!(t1, t2);
+    }
+
+    #[test]
+    fn value_transform_partial_eq_different_translation() {
+        let rotation = make_orientation_identity();
+        let trans_a = Value::Vector(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]);
+        let trans_b = Value::Vector(vec![Value::length(9.0), Value::length(2.0), Value::length(3.0)]);
+        let t1 = make_transform(rotation.clone(), trans_a);
+        let t2 = make_transform(rotation, trans_b);
+        assert_ne!(t1, t2);
+    }
+
+    #[test]
+    fn value_transform_display() {
+        let rotation = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+        let translation = Value::Vector(vec![
+            Value::length(0.0),
+            Value::length(0.0),
+            Value::length(0.0),
+        ]);
+        let transform = make_transform(rotation, translation);
+        let s = format!("{}", transform);
+        // Expected: transform([1, 0, 0, 0]q, vec(0 m, 0 m, 0 m))
+        assert!(s.starts_with("transform("), "display should start with 'transform(', got: {}", s);
+        assert!(s.contains("[1, 0, 0, 0]q"), "display should contain rotation, got: {}", s);
+    }
+
+    #[test]
+    fn value_transform_dimension_is_dimensionless() {
+        let transform = make_transform(make_orientation_identity(), make_vector3_length());
+        assert_eq!(transform.dimension(), DimensionVector::DIMENSIONLESS);
+    }
+
+    #[test]
+    fn value_transform_content_hash_determinism() {
+        let t1 = make_transform(make_orientation_identity(), make_vector3_length());
+        let t2 = make_transform(make_orientation_identity(), make_vector3_length());
+        assert_eq!(t1.content_hash(), t2.content_hash());
+    }
+
+    #[test]
+    fn value_transform_content_hash_distinct_from_frame() {
+        let transform = make_transform(make_orientation_identity(), make_vector3_length());
+        let frame = make_frame(make_point3_length(), make_orientation_identity());
+        assert_ne!(transform.content_hash(), frame.content_hash());
+    }
+
+    #[test]
+    fn value_transform_content_hash_distinct_from_orientation() {
+        let transform = make_transform(make_orientation_identity(), make_vector3_length());
+        let orientation = make_orientation_identity();
+        assert_ne!(transform.content_hash(), orientation.content_hash());
+    }
+
+    #[test]
+    fn value_transform_content_hash_distinct_from_vector() {
+        let transform = make_transform(make_orientation_identity(), make_vector3_length());
+        let vector = make_vector3_length();
+        assert_ne!(transform.content_hash(), vector.content_hash());
+    }
+
+    #[test]
+    fn value_transform_ord_type_tag_gt_frame() {
+        // Transform type_tag=21 > Frame type_tag=20
+        let transform = make_transform(make_orientation_identity(), make_vector3_length());
+        let frame = make_frame(make_point3_length(), make_orientation_identity());
+        assert!(transform > frame);
+    }
+
+    #[test]
+    fn value_transform_ord_same_type_compare_rotation_first() {
+        // Two transforms with same translation but different rotation: order by rotation
+        let rot_a = Value::Orientation { w: 0.0, x: 0.0, y: 0.0, z: 0.0 };
+        let rot_b = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+        let translation = make_vector3_length();
+        let t1 = make_transform(rot_a, translation.clone());
+        let t2 = make_transform(rot_b, translation);
+        assert!(t1 < t2);
+    }
+
+    #[test]
+    fn value_transform_ord_same_rotation_compare_translation() {
+        // Same rotation, different translation: order by translation
+        let rotation = make_orientation_identity();
+        let trans_a = Value::Vector(vec![Value::length(1.0), Value::length(0.0), Value::length(0.0)]);
+        let trans_b = Value::Vector(vec![Value::length(2.0), Value::length(0.0), Value::length(0.0)]);
+        let t1 = make_transform(rotation.clone(), trans_a);
+        let t2 = make_transform(rotation, trans_b);
+        assert!(t1 < t2);
+    }
+
+    #[test]
+    fn value_transform_content_hash_neg_zero_translation_differs() {
+        // neg-zero and pos-zero in translation produce different hashes
+        let trans_pos = Value::Vector(vec![Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH }, Value::length(0.0), Value::length(0.0)]);
+        let trans_neg = Value::Vector(vec![Value::Scalar { si_value: -0.0, dimension: DimensionVector::LENGTH }, Value::length(0.0), Value::length(0.0)]);
+        let rotation = make_orientation_identity();
+        let t1 = make_transform(rotation.clone(), trans_pos);
+        let t2 = make_transform(rotation, trans_neg);
+        assert_ne!(t1.content_hash(), t2.content_hash());
     }
 }

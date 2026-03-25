@@ -1,96 +1,142 @@
 {
-  "task_id": "163",
-  "title": "some/none: evaluator",
+  "task_id": "235",
+  "title": "Transform: Type, Value, constructors",
   "files": [
-    "crates/reify-expr/src/lib.rs",
-    "crates/reify-expr/tests/option_eval_tests.rs"
+    "crates/reify-types/src/ty.rs",
+    "crates/reify-types/src/value.rs",
+    "crates/reify-stdlib/src/lib.rs"
   ],
   "modules": [
-    "crates/reify-expr"
+    "crates/reify-types",
+    "crates/reify-stdlib"
   ],
-  "analysis": "Task 163 adds evaluation support for some(expr) and none option expressions. The CompiledExprKind::OptionSome(Box<CompiledExpr>) and OptionNone AST nodes were defined in reify-types (task 162 dependency). The evaluator in crates/reify-expr/src/lib.rs needs two match arms in eval_expr: (1) OptionNone maps directly to Value::Option(None), and (2) OptionSome(inner) recursively evaluates the inner expression then wraps in Value::Option(Some(Box::new(val))). Critically, some() must NOT propagate Undef — some(undef) must produce Value::Option(Some(Box::new(Value::Undef))), preserving the three-way distinction between Value::Option(None) (intentional absence), Value::Option(Some(Value::Undef)) (present but undefined), and Value::Undef (evaluation failure). The implementation is minimal (6 lines of evaluator code at lines 222-227) since the AST, type system, compiler, and parser are all handled by task 162. Tests in option_eval_tests.rs cover: none semantics (2 tests), some wrapping literals of int/bool/real types (3 tests), undef non-propagation with three-way inequality checks (3 tests), and nesting/value-ref integration including some(some(x)), some(none), and missing-ref wrapping (4 tests). Both implementation and all 12 tests are already present in this worktree and passing.",
+  "analysis": "Add Transform(usize) to the Type enum and a corresponding Value::Transform { rotation, translation } variant. Transform represents a rigid-body transformation: rotation (Orientation<N>) + translation (Vector<N,Length>). This follows the exact same compound-type pattern as Frame { origin: Box<Value>, basis: Box<Value> }, but with different semantics and fields: Transform stores a rotation (Orientation) and a translation (Vector) rather than an origin (Point) and a basis (Orientation). Two constructors go in reify-stdlib: transform3(rotation, translation) and transform3_identity(). The implementation touches 3 files: ty.rs (Type enum + Display + factory + tests), value.rs (Value enum + PartialEq + Ord + content_hash + Display + dimension + tests), and stdlib lib.rs (eval_builtin match arms + tests). All trait impls follow the Frame pattern exactly. Transform gets type_tag=21 (next after Frame=20) and content_hash tag=21 (next available after Frame's tag=20). The Ord comment on line 460 must be extended to include Transform=21.",
   "prerequisites": [],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing tests for OptionNone evaluation in crates/reify-expr/tests/option_eval_tests.rs: (a) eval_none_produces_option_none — construct CompiledExpr::option_none(Type::Option(Box::new(Type::Int))), evaluate with empty ValueMap, assert result equals Value::Option(None). (b) eval_none_is_not_undef — same setup, assert result does NOT equal Value::Undef. These test the simplest evaluator case with no inner expression.",
+      "description": "Write failing tests for Type::Transform(usize) in ty.rs mod tests: construction and equality (Transform(3)==Transform(3), Transform(3)!=Transform(2)), Display ('Transform3', 'Transform2'), factory method Type::transform(n), Eq/Hash consistency via HashMap, is_numeric()=false, as_name()=None, Transform(3)!=Frame(3), Transform(3)!=Orientation(3)",
       "status": "done",
-      "commit": "79e6d96c5265180b8a23bb39d8be6a508d03c719"
+      "commit": "e4899e1c"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Add match arm in eval_expr (crates/reify-expr/src/lib.rs) for CompiledExprKind::OptionNone => Value::Option(None). Single line addition after the MethodCall arm.",
+      "description": "Add Transform(usize) variant to Type enum in ty.rs (after Frame(usize) on line 49). Add Display arm: 'Transform{n}' (after Frame arm on line 810). Add factory method Type::transform(n: usize) -> Self (after frame factory on line 120). is_numeric already returns false via catch-all, as_name already returns None. All step-1 tests pass.",
       "status": "done",
-      "commit": "79e6d96c5265180b8a23bb39d8be6a508d03c719"
+      "commit": "e4899e1c"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing tests for OptionSome wrapping literal values: (a) eval_some_wraps_int — some(5) → Value::Option(Some(Box::new(Value::Int(5)))), (b) eval_some_wraps_bool — some(true) → wrapped Bool, (c) eval_some_wraps_real — some(3.14) → wrapped Real. Each constructs CompiledExpr::option_some(CompiledExpr::literal(val, ty), Option<ty>) and evaluates with empty ValueMap.",
+      "description": "Write failing tests for Value::Transform in value.rs mod tests: construction with Orientation rotation and Vector translation (verify fields via destructure), PartialEq (equal transforms, different rotation, different translation), Display format 'transform([w,x,y,z]q, vec(...))', dimension() returns DIMENSIONLESS, content_hash determinism (same transform same hash), content_hash distinct from Frame and Orientation and Vector, Ord type_tag=21 > Frame=20, same-type Ord compares rotation first then translation, content_hash with neg-zero in translation differs",
       "status": "done",
-      "commit": "79e6d96c5265180b8a23bb39d8be6a508d03c719"
+      "commit": "3474704e"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Add match arm in eval_expr for CompiledExprKind::OptionSome(inner): recursively eval_expr(inner, ctx), wrap result in Value::Option(Some(Box::new(val))). Three lines in crates/reify-expr/src/lib.rs. Importantly, do NOT add any Undef short-circuiting — the inner value must be wrapped unconditionally.",
+      "description": "Add Value::Transform { rotation: Box<Value>, translation: Box<Value> } variant to Value enum (after Frame on line 62). Implement: content_hash arm (tag=21, combine rotation+translation hashes following Frame's tag=20 pattern on line 322-324), PartialEq arm (rotation==rotation && translation==translation following Frame pattern on lines 414-417), Ord type_tag=21 (update comment on line 460, add tag match on ~line 483), same-variant cmp rotation.cmp then translation.cmp (after Frame arm on line 584-586), Display arm 'transform({rotation}, {translation})' (after Frame arm on line 717-719). Dimension returns DIMENSIONLESS via existing catch-all on line 180. All step-3 tests pass.",
       "status": "done",
-      "commit": "79e6d96c5265180b8a23bb39d8be6a508d03c719"
+      "commit": "3474704e"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write tests validating undef non-propagation semantics (should pass immediately given step-4 implementation): (a) eval_some_undef_produces_option_some_undef — some(undef) must equal Value::Option(Some(Box::new(Value::Undef))), (b) eval_some_undef_not_equal_to_none — Some(Undef) ≠ Option(None), (c) eval_some_undef_not_equal_to_bare_undef — Some(Undef) ≠ Value::Undef. These enforce the critical three-way distinction.",
+      "description": "Write failing tests for transform3(rotation, translation) constructor in stdlib lib.rs: valid Orientation + Vector3<Length> args returns Value::Transform with correct rotation and translation fields, verify fields stored exactly, wrong arg count (0, 1, 3 args) returns Undef, non-Orientation first arg (e.g. Real) returns Undef, non-Vector second arg (e.g. Real, Point3, Orientation) returns Undef, Vector2 translation (wrong component count) returns Undef, dimensionless Vector3 (Real components) is accepted",
       "status": "done",
-      "commit": "79e6d96c5265180b8a23bb39d8be6a508d03c719"
+      "commit": "1ac007a3"
     },
     {
       "id": "step-6",
-      "type": "test",
-      "description": "Write tests for nesting and value-ref integration (should pass given step-4): (a) eval_some_nested_some — some(some(3)) yields doubly-wrapped Option(Some(Option(Some(Int(3))))), (b) eval_some_wraps_none — some(none) yields Option(Some(Option(None))), (c) eval_some_value_ref — some(value_ref(x)) where x=42 in ValueMap yields Option(Some(Int(42))), (d) eval_some_missing_ref_wraps_undef — some(value_ref(x)) where x absent yields Option(Some(Undef)), NOT bare Undef. These validate composition and recursive evaluation correctness.",
+      "type": "impl",
+      "description": "Add 'transform3' match arm to eval_builtin in stdlib lib.rs (after frame3 block around line 513): validate exactly 2 args, first must be Value::Orientation { .. }, second must be Value::Vector with exactly 3 components. Return Value::Transform { rotation: Box::new(args[0].clone()), translation: Box::new(args[1].clone()) }. Return Value::Undef on any validation failure. All step-5 tests pass.",
       "status": "done",
-      "commit": "79e6d96c5265180b8a23bb39d8be6a508d03c719"
+      "commit": "1ac007a3"
+    },
+    {
+      "id": "step-7",
+      "type": "test",
+      "description": "Write failing tests for transform3_identity() constructor in stdlib lib.rs: no-arg call returns Value::Transform, rotation field equals identity Orientation (w:1,x:0,y:0,z:0), translation field equals zero Vector3<Length> vec([0m,0m,0m]), call with any args (1 arg, 2 args) returns Undef",
+      "status": "done",
+      "commit": "1ac007a3"
+    },
+    {
+      "id": "step-8",
+      "type": "impl",
+      "description": "Add 'transform3_identity' match arm to eval_builtin in stdlib lib.rs (after transform3 block): if args.is_empty(), return Value::Transform { rotation: Box::new(Orientation{w:1,x:0,y:0,z:0}), translation: Box::new(Vector([Value::length(0.0) x3])) }; else return Value::Undef. All step-7 tests pass.",
+      "status": "done",
+      "commit": "1ac007a3"
     }
   ],
   "design_decisions": [
     {
-      "decision": "No Undef propagation in some() — evaluate inner expression unconditionally and wrap the result",
-      "rationale": "The task explicitly requires some(undef) to produce Value::Option(Some(Value::Undef)), distinct from both Value::Option(None) and Value::Undef. Unlike arithmetic operators which propagate Undef (e.g., undef + 1 → Undef), some() is a wrapper that intentionally preserves whatever the inner expression produces. This maintains the three-way distinction fundamental to option type semantics."
+      "decision": "Transform stores rotation (Orientation) + translation (Vector), NOT origin (Point) + basis (Orientation) like Frame",
+      "rationale": "Transform represents a rigid-body transformation (how to move/rotate something), while Frame represents a coordinate system (where something is positioned and oriented). The task description specifies rotation + translation, matching standard SE(3) representation where T(x) = R*x + t."
     },
     {
-      "decision": "Step-5 and step-6 tests are test-only steps with no corresponding impl step",
-      "rationale": "The OptionSome implementation from step-4 is naturally correct for all cases because it unconditionally wraps eval(inner). The undef, nesting, and value-ref tests pass without additional code — they validate emergent correctness from the recursive evaluation design. Separating them as distinct test steps documents the design intent and catches future regressions if someone incorrectly adds Undef short-circuiting."
+      "decision": "Value::Transform uses Box<Value> for both fields, following the Frame pattern",
+      "rationale": "Frame already established the compound-type pattern with Box<Value> fields (line 62 of value.rs). Consistency matters more than marginal optimization. Enables delegation for Display/content_hash/comparison."
+    },
+    {
+      "decision": "type_tag=21 and content_hash tag=21 for Transform",
+      "rationale": "Frame uses type_tag=20 and hash tag=20. Next sequential value ensures no hash or ordering collisions. The Ord comment on line 460 documents the full tag mapping and must be extended."
+    },
+    {
+      "decision": "transform3 takes (rotation, translation) not (translation, rotation)",
+      "rationale": "In rigid-body transforms, the mathematical convention is T(x) = R*x + t, with rotation applied first. The rotation comes first both mathematically and in the constructor signature, matching how frame3 takes (origin, basis) in logical order."
+    },
+    {
+      "decision": "transform3_identity uses zero-length Vector3 (0m, 0m, 0m) not dimensionless Vector3",
+      "rationale": "Consistent with frame3_identity which uses Value::length(0.0) for origin components. Translation is inherently a length-dimensioned quantity in the physical world."
+    },
+    {
+      "decision": "Display format is 'transform(rot, trans)' following 'frame(origin, basis)' pattern",
+      "rationale": "Existing compound type Frame uses lowercase function-call notation for Display (line 718). Transform follows the same convention for consistency."
+    },
+    {
+      "decision": "transform3 accepts any Vector3 regardless of inner component dimension",
+      "rationale": "Consistent with frame3 which accepts any Point3 regardless of inner quantity dimension (line 502 just checks component count, not dimension). Users might use dimensionless coordinates for pure geometric operations."
     }
   ],
   "reuse": [
     {
-      "what": "CompiledExpr::option_some() and CompiledExpr::option_none() constructors",
-      "where": "crates/reify-types/src/expr.rs lines 507-526",
-      "how": "Used in tests to construct AST nodes. Defined as part of task 162. option_some(inner, result_type) wraps an inner CompiledExpr; option_none(result_type) creates a bare None."
+      "what": "Frame(usize) type variant pattern",
+      "where": "crates/reify-types/src/ty.rs:49 (variant), 119 (factory), 810 (Display)",
+      "how": "Transform(usize) follows the identical pattern \u2014 single usize parameter, Display as 'Transform{n}', factory method Type::transform(n), is_numeric returns false via catch-all, as_name returns None via catch-all."
     },
     {
-      "what": "CompiledExpr::literal(value, ty) constructor",
-      "where": "crates/reify-types/src/expr.rs",
-      "how": "Used in tests to create inner literal expressions for some() wrapping. Standard pattern across all evaluator tests."
+      "what": "Value::Frame { origin, basis } compound value pattern",
+      "where": "crates/reify-types/src/value.rs:62 (variant), 322-324 (content_hash), 414-417 (PartialEq), 460+483 (Ord tag), 584-586 (Ord cmp), 717-719 (Display)",
+      "how": "Transform's trait impls follow Frame's structure exactly: content_hash uses unique tag and combines sub-hashes; PartialEq delegates to inner field equality; Ord compares fields in order (rotation then translation); Display uses function-call notation."
     },
     {
-      "what": "CompiledExpr::value_ref(cell_id, ty) constructor",
-      "where": "crates/reify-types/src/expr.rs",
-      "how": "Used in step-6 tests for value-ref integration — creates a ValueRef expression that looks up a ValueCellId in the ValueMap."
+      "what": "Frame type tests",
+      "where": "crates/reify-types/src/ty.rs:716-775",
+      "how": "Copy Frame tests, rename Frame\u2192Transform, verify same behavioral properties (construction, Display, factory, Hash, is_numeric, as_name, ne to other types)."
     },
     {
-      "what": "EvalContext::simple(&values) and ValueMap::new()",
-      "where": "crates/reify-expr/src/lib.rs and crates/reify-types/src/value.rs",
-      "how": "Standard test harness pattern used by all evaluator tests: create ValueMap, optionally insert values, evaluate with EvalContext::simple(&values)."
+      "what": "Frame value tests",
+      "where": "crates/reify-types/src/value.rs:2781-2921",
+      "how": "Copy Frame value tests, adapt to Transform fields (rotation+translation instead of origin+basis), adjust expected Display format, update type_tag comparison (21>20 instead of 20>19)."
     },
     {
-      "what": "Recursive eval_expr(inner, ctx) pattern",
-      "where": "crates/reify-expr/src/lib.rs line 54",
-      "how": "OptionSome arm follows the same recursive eval pattern used by UnaryOp, BinOp, If, and other compound expression kinds."
+      "what": "frame3/frame3_identity constructor pattern",
+      "where": "crates/reify-stdlib/src/lib.rs:480-513",
+      "how": "Copy frame3 constructor, change: first arg validates as Orientation (matches! Orientation { .. }), second validates as Vector with 3 components. Identity returns Orientation{1,0,0,0} + Vector([length(0),length(0),length(0)])."
+    },
+    {
+      "what": "frame3 stdlib tests",
+      "where": "crates/reify-stdlib/src/lib.rs:3919-4064",
+      "how": "Copy frame3 test suite, adapt to transform3 argument types (Orientation first, Vector second) and expected Value::Transform output variant."
+    },
+    {
+      "what": "make_identity_orientation() test helper",
+      "where": "crates/reify-stdlib/src/lib.rs:3927-3929",
+      "how": "Reuse directly as the rotation argument for transform3 tests."
     }
   ],
-  "_session_id": "163-ac503362",
-  "_created_at": "2026-03-25T01:46:34.736843+00:00"
+  "_session_id": "235-48da0fd9",
+  "_created_at": "2026-03-25T01:57:44.445856+00:00"
 }

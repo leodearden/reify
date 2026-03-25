@@ -225,6 +225,9 @@ pub fn format_value(value: &Value) -> String {
         Value::Frame { origin, basis } => {
             format!("frame({}, {})", format_value(origin), format_value(basis))
         }
+        Value::Transform { rotation, translation } => {
+            format!("transform({}, {})", format_value(rotation), format_value(translation))
+        }
         Value::Range {
             lower,
             upper,

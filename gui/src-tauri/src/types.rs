@@ -148,6 +148,9 @@ pub fn format_value(v: &Value) -> (String, String) {
         Value::Frame { origin, basis } => {
             (format!("frame({}, {})", format_value(origin).0, format_value(basis).0), String::new())
         }
+        Value::Transform { rotation, translation } => {
+            (format!("transform({}, {})", format_value(rotation).0, format_value(translation).0), String::new())
+        }
         Value::Range { lower, upper, lower_inclusive, upper_inclusive } => {
             let lower_bracket = if *lower_inclusive { "[" } else { "(" };
             let upper_bracket = if *upper_inclusive { "]" } else { ")" };

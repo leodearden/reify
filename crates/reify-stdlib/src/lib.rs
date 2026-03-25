@@ -512,6 +512,42 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
             }
         }
 
+        // --- Transform constructors ---
+        "transform3" => {
+            if args.len() != 2 {
+                return Value::Undef;
+            }
+            let rotation = &args[0];
+            let translation = &args[1];
+            // First arg must be an Orientation
+            if !matches!(rotation, Value::Orientation { .. }) {
+                return Value::Undef;
+            }
+            // Second arg must be a Vector with exactly 3 components
+            match translation {
+                Value::Vector(components) if components.len() == 3 => {}
+                _ => return Value::Undef,
+            }
+            Value::Transform {
+                rotation: Box::new(rotation.clone()),
+                translation: Box::new(translation.clone()),
+            }
+        }
+        "transform3_identity" => {
+            if args.is_empty() {
+                Value::Transform {
+                    rotation: Box::new(Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 }),
+                    translation: Box::new(Value::Vector(vec![
+                        Value::length(0.0),
+                        Value::length(0.0),
+                        Value::length(0.0),
+                    ])),
+                }
+            } else {
+                Value::Undef
+            }
+        }
+
         // --- Orientation constructors ---
         "orient_identity" => {
             if args.is_empty() {
@@ -4060,5 +4096,158 @@ mod tests {
     fn frame3_identity_with_any_args_returns_undef() {
         assert!(eval_builtin("frame3_identity", &[Value::Real(1.0)]).is_undef());
         assert!(eval_builtin("frame3_identity", &[Value::Real(1.0), Value::Real(2.0)]).is_undef());
+    }
+
+    // ── transform3 tests (step-5) ─────────────────────────────────────────────
+
+    fn make_vec3_length() -> Value {
+        Value::Vector(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ])
+    }
+
+    #[test]
+    fn transform3_valid_args_returns_transform() {
+        let rotation = make_identity_orientation();
+        let translation = make_vec3_length();
+        let result = eval_builtin("transform3", &[rotation.clone(), translation.clone()]);
+        match result {
+            Value::Transform { rotation: r, translation: t } => {
+                assert_eq!(*r, rotation);
+                assert_eq!(*t, translation);
+            }
+            other => panic!("expected Value::Transform, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn transform3_stores_rotation_and_translation_correctly() {
+        let rotation = Value::Orientation { w: 0.0, x: 1.0, y: 0.0, z: 0.0 };
+        let translation = Value::Vector(vec![
+            Value::length(5.0),
+            Value::length(6.0),
+            Value::length(7.0),
+        ]);
+        let result = eval_builtin("transform3", &[rotation.clone(), translation.clone()]);
+        match result {
+            Value::Transform { rotation: r, translation: t } => {
+                assert_eq!(*r, rotation, "rotation should be stored exactly");
+                assert_eq!(*t, translation, "translation should be stored exactly");
+            }
+            other => panic!("expected Value::Transform, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn transform3_no_args_returns_undef() {
+        assert!(eval_builtin("transform3", &[]).is_undef());
+    }
+
+    #[test]
+    fn transform3_one_arg_returns_undef() {
+        assert!(eval_builtin("transform3", &[make_identity_orientation()]).is_undef());
+    }
+
+    #[test]
+    fn transform3_three_args_returns_undef() {
+        let r = make_identity_orientation();
+        let t = make_vec3_length();
+        assert!(eval_builtin("transform3", &[r.clone(), t.clone(), Value::Real(0.0)]).is_undef());
+    }
+
+    #[test]
+    fn transform3_non_orientation_first_arg_returns_undef() {
+        // First arg is Real, not Orientation
+        assert!(eval_builtin("transform3", &[Value::Real(1.0), make_vec3_length()]).is_undef());
+    }
+
+    #[test]
+    fn transform3_non_vector_second_arg_returns_undef() {
+        // Second arg is Real, not Vector
+        assert!(eval_builtin("transform3", &[make_identity_orientation(), Value::Real(1.0)]).is_undef());
+    }
+
+    #[test]
+    fn transform3_point3_second_arg_returns_undef() {
+        // Second arg is Point3, not Vector3
+        let pt3 = Value::Point(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]);
+        assert!(eval_builtin("transform3", &[make_identity_orientation(), pt3]).is_undef());
+    }
+
+    #[test]
+    fn transform3_orientation_second_arg_returns_undef() {
+        // Second arg is Orientation, not Vector3
+        assert!(eval_builtin("transform3", &[make_identity_orientation(), make_identity_orientation()]).is_undef());
+    }
+
+    #[test]
+    fn transform3_vector2_translation_returns_undef() {
+        // Vector2 (wrong component count) should be rejected
+        let vec2 = Value::Vector(vec![Value::length(1.0), Value::length(2.0)]);
+        assert!(eval_builtin("transform3", &[make_identity_orientation(), vec2]).is_undef());
+    }
+
+    #[test]
+    fn transform3_dimensionless_vector3_is_accepted() {
+        // Vector3 with dimensionless (Real) components is accepted
+        let translation = Value::Vector(vec![
+            Value::Real(0.0),
+            Value::Real(0.0),
+            Value::Real(0.0),
+        ]);
+        let result = eval_builtin("transform3", &[make_identity_orientation(), translation.clone()]);
+        assert!(
+            matches!(&result, Value::Transform { .. }),
+            "expected Value::Transform for dimensionless Vector3 translation, got {:?}",
+            result
+        );
+    }
+
+    // ── transform3_identity tests (step-7) ────────────────────────────────────
+
+    #[test]
+    fn transform3_identity_no_args_returns_transform() {
+        let result = eval_builtin("transform3_identity", &[]);
+        assert!(
+            matches!(&result, Value::Transform { .. }),
+            "expected Value::Transform, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn transform3_identity_rotation_is_identity_quaternion() {
+        let result = eval_builtin("transform3_identity", &[]);
+        match result {
+            Value::Transform { rotation, .. } => {
+                let expected = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+                assert_eq!(*rotation, expected, "identity rotation should be (w:1,x:0,y:0,z:0)");
+            }
+            other => panic!("expected Value::Transform, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn transform3_identity_translation_is_zero_length_vector3() {
+        let result = eval_builtin("transform3_identity", &[]);
+        match result {
+            Value::Transform { translation, .. } => {
+                let expected = Value::Vector(vec![
+                    Value::length(0.0),
+                    Value::length(0.0),
+                    Value::length(0.0),
+                ]);
+                assert_eq!(*translation, expected, "identity translation should be zero Vector3<Length>");
+            }
+            other => panic!("expected Value::Transform, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn transform3_identity_with_any_args_returns_undef() {
+        assert!(eval_builtin("transform3_identity", &[Value::Real(1.0)]).is_undef());
+        assert!(eval_builtin("transform3_identity", &[Value::Real(1.0), Value::Real(2.0)]).is_undef());
     }
 }
