@@ -144,6 +144,8 @@ pub struct CompiledModule {
     pub fields: Vec<CompiledField>,
     pub compiled_purposes: Vec<CompiledPurpose>,
     pub templates: Vec<TopologyTemplate>,
+    /// Compiled unit declarations from this module.
+    pub units: Vec<CompiledUnit>,
     pub diagnostics: Vec<reify_types::Diagnostic>,
     pub content_hash: ContentHash,
 }
@@ -499,6 +501,249 @@ fn unit_to_scalar(value: f64, unit: &str) -> Option<(Value, DimensionVector)> {
     }
 }
 
+// --- Unit registry ---
+
+/// Internal unit entry — stored in the registry during compilation.
+#[derive(Debug, Clone)]
+pub struct UnitEntry {
+    pub name: String,
+    pub dimension: DimensionVector,
+    /// SI conversion factor: si_value = value * factor.
+    pub factor: f64,
+    /// Additive offset for affine units (e.g., °C→K): si_value = value * factor + offset.
+    pub offset: Option<f64>,
+    pub is_pub: bool,
+    pub span: SourceSpan,
+    pub content_hash: ContentHash,
+}
+
+/// Registry mapping unit names to compiled unit entries.
+/// Built incrementally during the unit pre-pass so later units can reference earlier ones.
+pub struct UnitRegistry {
+    entries: HashMap<String, UnitEntry>,
+}
+
+impl UnitRegistry {
+    /// Create an empty registry.
+    pub fn new() -> Self {
+        UnitRegistry {
+            entries: HashMap::new(),
+        }
+    }
+
+    /// Register a unit entry. Returns `Err(entry)` if the name is already registered.
+    pub fn register(&mut self, entry: UnitEntry) -> Result<(), UnitEntry> {
+        if self.entries.contains_key(&entry.name) {
+            Err(entry)
+        } else {
+            self.entries.insert(entry.name.clone(), entry);
+            Ok(())
+        }
+    }
+
+    /// Look up a unit by name.
+    pub fn lookup(&self, name: &str) -> Option<&UnitEntry> {
+        self.entries.get(name)
+    }
+}
+
+impl Default for UnitRegistry {
+    fn default() -> Self {
+        UnitRegistry::new()
+    }
+}
+
+/// A compiled unit — the public output representation in `CompiledModule`.
+#[derive(Debug, Clone)]
+pub struct CompiledUnit {
+    pub name: String,
+    pub is_pub: bool,
+    pub dimension: DimensionVector,
+    pub factor: f64,
+    pub offset: Option<f64>,
+    pub content_hash: ContentHash,
+}
+
+/// Resolve a `TypeExpr` name to a `DimensionVector`.
+///
+/// Maps dimension type names to their corresponding `DimensionVector` constants.
+/// Returns `None` and emits a diagnostic for unrecognized names.
+fn resolve_dimension_type(
+    type_expr: &reify_syntax::TypeExpr,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<DimensionVector> {
+    match type_expr.name.as_str() {
+        "Length" => Some(DimensionVector::LENGTH),
+        "Mass" => Some(DimensionVector::MASS),
+        "Time" => Some(DimensionVector::TIME),
+        "Current" => Some(DimensionVector::CURRENT),
+        "Temperature" => Some(DimensionVector::TEMPERATURE),
+        "Angle" => Some(DimensionVector::ANGLE),
+        "Area" => Some(DimensionVector::AREA),
+        "Volume" => Some(DimensionVector::VOLUME),
+        "Force" => Some(reify_types::dimension::FORCE),
+        "Dimensionless" => Some(DimensionVector::DIMENSIONLESS),
+        other => {
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "unknown dimension type '{}': expected one of Length, Mass, Time, Current, \
+                     Temperature, Angle, Area, Volume, Force, Dimensionless",
+                    other
+                ))
+                .with_label(DiagnosticLabel::new(
+                    type_expr.span,
+                    "unrecognized dimension type",
+                )),
+            );
+            None
+        }
+    }
+}
+
+/// Evaluate a constant expression to a `f64` value.
+///
+/// Supports: `NumberLiteral`, `BinOp` on constant sub-expressions,
+/// unary negation (`UnOp`), and `QuantityLiteral` (resolved via the registry
+/// first, then the hardcoded fallback table).
+///
+/// Returns `None` and emits a diagnostic for non-constant expressions.
+fn evaluate_const_expr(
+    expr: &reify_syntax::Expr,
+    registry: &UnitRegistry,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<f64> {
+    match &expr.kind {
+        reify_syntax::ExprKind::NumberLiteral(v) => Some(*v),
+        reify_syntax::ExprKind::BinOp { op, left, right } => {
+            let lhs = evaluate_const_expr(left, registry, diagnostics)?;
+            let rhs = evaluate_const_expr(right, registry, diagnostics)?;
+            match op.as_str() {
+                "+" => Some(lhs + rhs),
+                "-" => Some(lhs - rhs),
+                "*" => Some(lhs * rhs),
+                "/" => {
+                    if rhs == 0.0 {
+                        diagnostics.push(
+                            Diagnostic::error("division by zero in unit conversion expression")
+                                .with_label(DiagnosticLabel::new(expr.span, "here")),
+                        );
+                        None
+                    } else {
+                        Some(lhs / rhs)
+                    }
+                }
+                other => {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "unsupported operator '{}' in unit conversion expression",
+                            other
+                        ))
+                        .with_label(DiagnosticLabel::new(expr.span, "here")),
+                    );
+                    None
+                }
+            }
+        }
+        reify_syntax::ExprKind::UnOp { op, operand } => {
+            let val = evaluate_const_expr(operand, registry, diagnostics)?;
+            match op.as_str() {
+                "-" => Some(-val),
+                other => {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "unsupported unary operator '{}' in unit conversion expression",
+                            other
+                        ))
+                        .with_label(DiagnosticLabel::new(expr.span, "here")),
+                    );
+                    None
+                }
+            }
+        }
+        reify_syntax::ExprKind::QuantityLiteral { value, unit } => {
+            // Try registry first, then hardcoded fallback.
+            if let Some(entry) = registry.lookup(unit) {
+                let si = value * entry.factor + entry.offset.unwrap_or(0.0);
+                Some(si)
+            } else if let Some((scalar_val, _dim)) = unit_to_scalar(*value, unit) {
+                if let Value::Scalar { si_value, .. } = scalar_val {
+                    Some(si_value)
+                } else {
+                    None
+                }
+            } else {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "unknown unit '{}' in unit conversion expression",
+                        unit
+                    ))
+                    .with_label(DiagnosticLabel::new(expr.span, "unrecognized unit")),
+                );
+                None
+            }
+        }
+        _ => {
+            diagnostics.push(
+                Diagnostic::error(
+                    "non-constant expression in unit conversion: only numeric literals, \
+                     arithmetic, and quantity literals are allowed",
+                )
+                .with_label(DiagnosticLabel::new(expr.span, "non-constant expression")),
+            );
+            None
+        }
+    }
+}
+
+/// Compile a `UnitDecl` into a `UnitEntry`.
+///
+/// Resolves the dimension type, evaluates conversion and offset expressions,
+/// and computes a content hash. Returns `None` if the dimension type is unknown.
+fn compile_unit(
+    decl: &reify_syntax::UnitDecl,
+    registry: &UnitRegistry,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<UnitEntry> {
+    let dimension = resolve_dimension_type(&decl.dimension_type, diagnostics)?;
+    let factor = decl
+        .conversion
+        .as_ref()
+        .and_then(|expr| evaluate_const_expr(expr, registry, diagnostics))
+        .unwrap_or(1.0);
+    let offset = decl
+        .offset
+        .as_ref()
+        .and_then(|expr| evaluate_const_expr(expr, registry, diagnostics));
+    // Content hash: name + dimension bits + factor + offset
+    let hash = {
+        let dim_bytes: Vec<u8> = dimension
+            .0
+            .iter()
+            .flat_map(|r| {
+                let num = r.num().to_le_bytes();
+                let den = r.den().to_le_bytes();
+                [num[0], num[1], den[0], den[1]]
+            })
+            .collect();
+        let mut h = ContentHash::of_str(&decl.name)
+            .combine(ContentHash::of(&dim_bytes))
+            .combine(ContentHash::of(&factor.to_bits().to_le_bytes()));
+        if let Some(off) = offset {
+            h = h.combine(ContentHash::of(&off.to_bits().to_le_bytes()));
+        }
+        h
+    };
+    Some(UnitEntry {
+        name: decl.name.clone(),
+        dimension,
+        factor,
+        offset,
+        is_pub: decl.is_pub,
+        span: decl.span,
+        content_hash: hash,
+    })
+}
+
 // --- Type resolution ---
 
 /// Resolve a type name to a `Type`.
@@ -514,6 +759,30 @@ fn resolve_type_name(name: &str) -> Option<Type> {
         }),
         "Mass" => Some(Type::Scalar {
             dimension: DimensionVector::MASS,
+        }),
+        "Time" => Some(Type::Scalar {
+            dimension: DimensionVector::TIME,
+        }),
+        "Current" => Some(Type::Scalar {
+            dimension: DimensionVector::CURRENT,
+        }),
+        "Temperature" => Some(Type::Scalar {
+            dimension: DimensionVector::TEMPERATURE,
+        }),
+        "Angle" => Some(Type::Scalar {
+            dimension: DimensionVector::ANGLE,
+        }),
+        "Area" => Some(Type::Scalar {
+            dimension: DimensionVector::AREA,
+        }),
+        "Volume" => Some(Type::Scalar {
+            dimension: DimensionVector::VOLUME,
+        }),
+        "Force" => Some(Type::Scalar {
+            dimension: reify_types::dimension::FORCE,
+        }),
+        "Dimensionless" => Some(Type::Scalar {
+            dimension: DimensionVector::DIMENSIONLESS,
         }),
         _ => None,
     }
@@ -866,6 +1135,10 @@ struct CompilationScope {
     collection_sub_member_types: HashMap<String, HashMap<String, Type>>,
     /// Meta block entries for the current entity: key → value.
     meta_entries: HashMap<String, String>,
+    /// Raw pointer to the active unit registry.
+    /// Set by compile_entity/compile_purpose. Null means no registry (functions, fields).
+    /// SAFETY: always points to a `UnitRegistry` that outlives this scope, or is null.
+    unit_registry_ptr: *const UnitRegistry,
 }
 
 impl CompilationScope {
@@ -877,7 +1150,37 @@ impl CompilationScope {
             collection_sub_names: HashSet::new(),
             collection_sub_member_types: HashMap::new(),
             meta_entries: HashMap::new(),
+            unit_registry_ptr: std::ptr::null(),
         }
+    }
+
+    /// Set the unit registry pointer for this scope.
+    ///
+    /// # Safety
+    /// The caller must ensure `registry` outlives this `CompilationScope`.
+    fn set_unit_registry(&mut self, registry: &UnitRegistry) {
+        self.unit_registry_ptr = registry as *const UnitRegistry;
+    }
+
+    /// Look up a unit by name, applying factor and offset.
+    /// Returns None if the unit is not in the registry.
+    fn lookup_unit_in_registry(&self, value: f64, unit: &str) -> Option<(Value, DimensionVector)> {
+        if self.unit_registry_ptr.is_null() {
+            return None;
+        }
+        // SAFETY: unit_registry_ptr is non-null and points to a valid UnitRegistry
+        // that outlives this scope (set via set_unit_registry with a proper borrow).
+        let registry = unsafe { &*self.unit_registry_ptr };
+        registry.lookup(unit).map(|entry| {
+            let si_value = value * entry.factor + entry.offset.unwrap_or(0.0);
+            (
+                Value::Scalar {
+                    si_value,
+                    dimension: entry.dimension,
+                },
+                entry.dimension,
+            )
+        })
     }
 
     fn register(&mut self, name: &str, ty: Type) {
@@ -941,7 +1244,11 @@ fn compile_expr_guarded(
             }
         }
         reify_syntax::ExprKind::QuantityLiteral { value, unit } => {
-            match unit_to_scalar(*value, unit) {
+            // Check the unit registry first (for user-declared units), then fall back to hardcoded.
+            let resolved = scope
+                .lookup_unit_in_registry(*value, unit)
+                .or_else(|| unit_to_scalar(*value, unit));
+            match resolved {
                 Some((scalar_val, dimension)) => {
                     let ty = Type::Scalar { dimension };
                     CompiledExpr::literal(scalar_val, ty)
@@ -2222,6 +2529,7 @@ pub fn compile_with_prelude(
     let mut fn_refs: Vec<&reify_syntax::FnDef> = Vec::new();
     let mut trait_refs: Vec<&reify_syntax::TraitDecl> = Vec::new();
     let mut field_refs: Vec<&reify_syntax::FieldDef> = Vec::new();
+    let mut unit_refs: Vec<&reify_syntax::UnitDecl> = Vec::new();
     // Unified entity namespace tracker (spec §4.2.1): structures, occurrences,
     // constraints, and fields all share the entity name space.
     // Maps name → (first_span, first_kind_label).
@@ -2326,8 +2634,52 @@ pub fn compile_with_prelude(
                         .insert(constraint.name.clone(), (constraint.span, "constraint"));
                 }
             }
+            reify_syntax::Declaration::Unit(unit_decl) => {
+                unit_refs.push(unit_decl);
+            }
             // Import, Purpose handled in pass 2 / purpose pass
             _ => {}
+        }
+    }
+
+    // Compile unit declarations in source order (so later units can reference earlier ones).
+    // Unit hashes are included in the module content hash.
+    let mut unit_registry = UnitRegistry::new();
+    let mut compiled_units: Vec<CompiledUnit> = Vec::new();
+    for unit_decl in &unit_refs {
+        if let Some(entry) = compile_unit(unit_decl, &unit_registry, &mut diagnostics) {
+            match unit_registry.register(entry) {
+                Ok(()) => {
+                    // Entry was registered; retrieve it to build CompiledUnit
+                    let entry = unit_registry.lookup(&unit_decl.name).unwrap();
+                    compiled_units.push(CompiledUnit {
+                        name: entry.name.clone(),
+                        is_pub: entry.is_pub,
+                        dimension: entry.dimension,
+                        factor: entry.factor,
+                        offset: entry.offset,
+                        content_hash: entry.content_hash,
+                    });
+                }
+                Err(dup_entry) => {
+                    // Duplicate unit name — find the original span for the error label.
+                    let original = unit_registry.lookup(&dup_entry.name).unwrap();
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "duplicate unit declaration '{}'",
+                            dup_entry.name
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            dup_entry.span,
+                            "duplicate declared here",
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            original.span,
+                            "first declared here",
+                        )),
+                    );
+                }
+            }
         }
     }
 
@@ -2401,6 +2753,7 @@ pub fn compile_with_prelude(
                         &functions,
                         &trait_registry,
                         &field_registry,
+                        &unit_registry,
                         &mut pending_bound_checks,
                         &mut diagnostics,
                         &templates,
@@ -2447,6 +2800,7 @@ pub fn compile_with_prelude(
                         &functions,
                         &trait_registry,
                         &field_registry,
+                        &unit_registry,
                         &mut pending_bound_checks,
                         &mut diagnostics,
                         &templates,
@@ -2464,7 +2818,7 @@ pub fn compile_with_prelude(
                 // Constraint definitions: lowering/compilation not yet implemented.
             }
             reify_syntax::Declaration::Unit(_) => {
-                // Unit declarations: compilation not yet implemented (task 208).
+                // Already compiled in unit pre-pass above.
             }
             reify_syntax::Declaration::TypeAlias(_) => {
                 // Type alias declarations: compilation not yet implemented.
@@ -2632,6 +2986,9 @@ pub fn compile_with_prelude(
         // Purpose content hashes
         let purpose_hashes = compiled_purposes.iter().map(|p| p.content_hash);
 
+        // Unit content hashes
+        let unit_hashes = compiled_units.iter().map(|u| u.content_hash);
+
         let all_hashes = std::iter::once(path_hash)
             .chain(template_hashes)
             .chain(import_hashes)
@@ -2639,7 +2996,8 @@ pub fn compile_with_prelude(
             .chain(function_hashes)
             .chain(trait_hashes)
             .chain(field_hashes)
-            .chain(purpose_hashes);
+            .chain(purpose_hashes)
+            .chain(unit_hashes);
 
         ContentHash::combine_all(all_hashes)
     };
@@ -2653,6 +3011,7 @@ pub fn compile_with_prelude(
         fields,
         compiled_purposes,
         templates,
+        units: compiled_units,
         diagnostics,
         content_hash,
     }
@@ -2867,12 +3226,14 @@ fn compile_entity(
     functions: &[CompiledFunction],
     trait_registry: &HashMap<String, &CompiledTrait>,
     field_registry: &HashMap<String, &CompiledField>,
+    unit_registry: &UnitRegistry,
     pending_bound_checks: &mut Vec<PendingBoundCheck>,
     diagnostics: &mut Vec<Diagnostic>,
     compiled_templates: &[TopologyTemplate],
 ) -> TopologyTemplate {
     let entity_name = structure.name;
     let mut scope = CompilationScope::new(entity_name);
+    scope.set_unit_registry(unit_registry);
     let mut value_cells = Vec::new();
     let mut constraints = Vec::new();
     let mut sub_components: Vec<SubComponentDecl> = Vec::new();
