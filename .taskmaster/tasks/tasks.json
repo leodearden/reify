@@ -3747,7 +3747,7 @@
         "dependencies": [
           "215"
         ],
-        "status": "pending",
+        "status": "in-progress",
         "metadata": {
           "modules": [
             "crates/reify-lsp"
@@ -3755,7 +3755,7 @@
           "milestone": "M9"
         },
         "subtasks": [],
-        "updatedAt": "2026-03-24T06:01:46.000Z"
+        "updatedAt": "2026-03-25T21:34:01.378Z"
       },
       {
         "id": "217",
@@ -7638,7 +7638,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-25T21:34:01.289Z",
+      "lastModified": "2026-03-25T21:34:01.378Z",
       "taskCount": 426,
       "completedCount": 228,
       "tags": [
