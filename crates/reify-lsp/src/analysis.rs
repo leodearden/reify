@@ -27,6 +27,8 @@ pub struct MemberInfo<'a> {
     pub cell_type: &'a Type,
     /// Source span from the parsed module (accurate tree-sitter byte offsets).
     pub span: SourceSpan,
+    /// Doc comment text from the parsed AST, if present.
+    pub doc: Option<&'a str>,
 }
 
 /// Shared analysis context that runs the parse → compile → check pipeline once
@@ -59,8 +61,8 @@ impl AnalysisContext {
     ///
     /// Returns `None` if no value cell with that name exists.
     pub fn find_member_decl(&self, name: &str) -> Option<MemberInfo<'_>> {
-        // Get the span from the parsed module (accurate tree-sitter offsets)
-        let span = self.find_parsed_member_span(name)?;
+        // Get the span and doc from the parsed module (accurate tree-sitter offsets)
+        let (span, doc) = self.find_parsed_member_span_and_doc(name)?;
 
         // Find type info from the compiled module
         for template in &self.compiled.templates {
@@ -71,6 +73,7 @@ impl AnalysisContext {
                         kind: vc.kind,
                         cell_type: &vc.cell_type,
                         span,
+                        doc,
                     });
                 }
             }
@@ -79,21 +82,45 @@ impl AnalysisContext {
         None
     }
 
-    /// Find the source span for a named member in the parsed module.
-    fn find_parsed_member_span(&self, name: &str) -> Option<SourceSpan> {
+    /// Find the source span and doc comment for a named member in the parsed module.
+    fn find_parsed_member_span_and_doc(&self, name: &str) -> Option<(SourceSpan, Option<&str>)> {
         for decl in &self.parsed.declarations {
             if let reify_syntax::Declaration::Structure(s) = decl {
                 for member in &s.members {
                     match member {
                         reify_syntax::MemberDecl::Param(p) if p.name == name => {
-                            return Some(p.span)
+                            return Some((p.span, p.doc.as_deref()))
                         }
                         reify_syntax::MemberDecl::Let(l) if l.name == name => {
-                            return Some(l.span)
+                            return Some((l.span, l.doc.as_deref()))
                         }
                         _ => {}
                     }
                 }
+            }
+        }
+        None
+    }
+
+    /// Look up the doc comment for a top-level entity (structure, fn, trait, or enum) by name.
+    ///
+    /// Returns `None` if the entity has no doc comment or doesn't exist.
+    pub fn find_entity_doc(&self, name: &str) -> Option<&str> {
+        for decl in &self.parsed.declarations {
+            match decl {
+                reify_syntax::Declaration::Structure(s) if s.name == name => {
+                    return s.doc.as_deref()
+                }
+                reify_syntax::Declaration::Function(f) if f.name == name => {
+                    return f.doc.as_deref()
+                }
+                reify_syntax::Declaration::Trait(t) if t.name == name => {
+                    return t.doc.as_deref()
+                }
+                reify_syntax::Declaration::Enum(e) if e.name == name => {
+                    return e.doc.as_deref()
+                }
+                _ => {}
             }
         }
         None
