@@ -127,6 +127,39 @@ fn mock_kernel_translate() {
     assert_ne!(handle.id, translated.id, "translation should create new handle");
 }
 
+// --- Revolve mock kernel test (task-309 step-13) ---
+
+#[test]
+fn mock_kernel_revolve() {
+    let mut kernel = MockGeometryKernel::new();
+    let box_handle = kernel
+        .execute(&GeometryOp::Box {
+            width: mm(10.0),
+            height: mm(10.0),
+            depth: mm(10.0),
+        })
+        .unwrap();
+
+    let revolved = kernel
+        .execute(&GeometryOp::Revolve {
+            profile: box_handle.id,
+            axis_origin: [0.0, 0.0, 0.0],
+            axis_dir: [0.0, 0.0, 1.0],
+            angle_rad: std::f64::consts::TAU,
+        })
+        .unwrap();
+
+    assert_ne!(
+        box_handle.id, revolved.id,
+        "revolve should create a new handle"
+    );
+    assert_eq!(
+        revolved.id,
+        GeometryHandleId(box_handle.id.0 + 1),
+        "revolve handle should be incremented"
+    );
+}
+
 /// Tests that will run against the real OCCT kernel — ignored until implemented.
 mod occt_tests {
     use reify_kernel_occt::OcctKernel;
