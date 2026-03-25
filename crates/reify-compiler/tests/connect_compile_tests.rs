@@ -417,6 +417,43 @@ structure def S2 {
     );
 }
 
+// ── step-5: auto_match_unmatched_emits_diagnostic ────────────────────
+
+#[test]
+fn auto_match_unmatched_emits_diagnostic() {
+    // Same trait T, left port a has params {d, l}, right port b has params {d, r}.
+    // Should emit a Warning diagnostic containing 'unmatched', and port_mappings stays empty.
+    let source = r#"
+trait T { param d : Length }
+structure def S {
+    port a : out T {
+        param d : Length = 5mm
+        param l : Length = 1mm
+    }
+    port b : in T {
+        param d : Length = 5mm
+        param r : Length = 1mm
+    }
+    connect a -> b
+}
+"#;
+    let (_template, diagnostics) = compile_first_template(source);
+    let warnings: Vec<_> = diagnostics.iter().filter(|d| d.severity == Severity::Warning).collect();
+    assert!(
+        !warnings.is_empty(),
+        "expected a Warning diagnostic for unmatched members, got: {:?}",
+        diagnostics
+    );
+    let unmatched_warning = warnings.iter().any(|d| d.message.contains("unmatched"));
+    assert!(unmatched_warning, "expected warning message to contain 'unmatched', got: {:?}", warnings);
+    // port_mappings should be empty (no partial auto-match)
+    assert_eq!(
+        _template.connections[0].port_mappings,
+        Vec::<(String, String)>::new(),
+        "expected empty port_mappings when members don't fully match"
+    );
+}
+
 // ── step-3: auto_match_multiple_members ──────────────────────────────
 
 #[test]
