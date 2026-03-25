@@ -39,3 +39,31 @@ fn eval_meta_access_is_not_undef() {
     let result = eval_expr(&expr, &ctx);
     assert_ne!(result, Value::Undef);
 }
+
+// ── step-15: Multiple keys in one entity ────────────────────────────────────
+
+/// Evaluating MetaAccess for each key of a multi-key entity should return the
+/// correct `Value::String` for each key.
+#[test]
+fn eval_meta_access_multiple_keys() {
+    let values = ValueMap::new();
+
+    let mut widget_meta = HashMap::new();
+    widget_meta.insert("name".to_string(), "Gear".to_string());
+    widget_meta.insert("version".to_string(), "2.0".to_string());
+    widget_meta.insert("material".to_string(), "steel".to_string());
+
+    let mut meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
+    meta_map.insert("Widget".to_string(), widget_meta);
+
+    let ctx = EvalContext::simple(&values).with_meta(&meta_map);
+
+    let expr_name = CompiledExpr::meta_access("Widget".into(), "name".into());
+    assert_eq!(eval_expr(&expr_name, &ctx), Value::String("Gear".to_string()));
+
+    let expr_version = CompiledExpr::meta_access("Widget".into(), "version".into());
+    assert_eq!(eval_expr(&expr_version, &ctx), Value::String("2.0".to_string()));
+
+    let expr_material = CompiledExpr::meta_access("Widget".into(), "material".into());
+    assert_eq!(eval_expr(&expr_material, &ctx), Value::String("steel".to_string()));
+}
