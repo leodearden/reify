@@ -2435,6 +2435,11 @@ fn compile_entity(
                     }
                 }
             }
+            reify_syntax::MemberDecl::MetaBlock(meta) => {
+                for (key, value) in &meta.entries {
+                    scope.meta_entries.insert(key.clone(), value.clone());
+                }
+            }
             _ => {}
         }
     }
