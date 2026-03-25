@@ -390,6 +390,7 @@ pub fn check_trait_conformance_multi(
 /// - `seen_default_names`: tracks default names for dedup (prevents duplicate defaults
 ///   from diamond patterns).
 /// - `chain_errors`: accumulates chain-specific errors (unresolved, conflicting).
+#[allow(clippy::too_many_arguments)]
 fn collect_chain_requirements(
     trait_name: &str,
     trait_registry: &HashMap<String, &CompiledTrait>,
