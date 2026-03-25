@@ -332,6 +332,7 @@ pub fn vec3_unit(x: f64, y: f64, z: f64) -> Value {
 /// Create a 3×3 `Value::Matrix` with `Real` entries.
 ///
 /// Arguments are given row-major: `matrix3x3(r0c0, r0c1, r0c2, r1c0, ...)`.
+#[allow(clippy::too_many_arguments)]
 pub fn matrix3x3(
     r0c0: f64, r0c1: f64, r0c2: f64,
     r1c0: f64, r1c1: f64, r1c2: f64,
