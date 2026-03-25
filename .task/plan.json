@@ -3,13 +3,15 @@
   "title": "Qualified trait access: tests",
   "files": [
     "crates/reify-compiler/tests/qualified_access_compile_tests.rs",
-    "crates/reify-eval/tests/qualified_access_eval.rs"
+    "crates/reify-eval/tests/qualified_access_eval.rs",
+    "crates/reify-compiler/src/lib.rs",
+    "crates/reify-compiler/tests/trait_conformance_tests.rs"
   ],
   "modules": [
     "crates/reify-compiler",
     "crates/reify-eval"
   ],
-  "analysis": "Task 193 is a tests-only task for qualified trait access, depending on task 192 (compiler/evaluator implementation) and transitively on task 191 (parser).\n\nTask 191 (done) added grammar rules and parser support:\n- `qualified_access`: `TypeName::ident` (prec 2, left-associative)\n- `instance_qualified_access`: `expr.(TypeName::ident)` (prec 8)\n- ExprKind::QualifiedAccess { qualifier, member } and ExprKind::InstanceQualifiedAccess { object, qualified } in reify-syntax\n\nTask 192 (pending, dependency) will add:\n- CompiledExprKind::QualifiedAccess and InstanceQualifiedAccess variants\n- Compiler resolution: look up trait in trait_registry, resolve member in trait definition\n- Evaluator: resolve qualified access to the correct ValueCell\n- Error diagnostics: trait not found, member not in trait, instance doesn't implement trait\n\nTask 193 must write >=8 tests covering: (1) disambiguation when two traits define same member name, (2) instance-level qualified access, (3) error: trait not found, (4) error: member not in trait, (5) error: instance doesn't implement trait, (6) qualified access in constraint expressions.\n\nTest infrastructure follows established patterns: compile_module()/compile_first_template() helpers for compiler tests, parse_compile_check() + Engine for eval tests, SimpleConstraintChecker for real constraint checking. Two new test files: qualified_access_compile_tests.rs (compiler-level) and qualified_access_eval.rs (full pipeline eval).\n\nKey design consideration: The reify trait system deduplicates same-name/same-type members from multiple traits. When S : A + B and both A and B have `param x : Length`, there's only one `x` value cell. Qualified access (A::x vs B::x) should both resolve to that same cell. The disambiguation value is when the user wants to be explicit about provenance, and for error checking (e.g., ensuring a member really comes from a specific trait).",
+  "analysis": "Task 193 is a tests-only task for qualified trait access, depending on task 192 (compiler/evaluator implementation) and transitively on task 191 (parser).\n\nTask 191 (done) added grammar rules and parser support:\n- `qualified_access`: `TypeName::ident` (prec 2, left-associative)\n- `instance_qualified_access`: `expr.(TypeName::ident)` (prec 8)\n- ExprKind::QualifiedAccess { qualifier, member } and ExprKind::InstanceQualifiedAccess { object, qualified } in reify-syntax\n\nTask 192 (pending, dependency) will add:\n- CompiledExprKind::QualifiedAccess and InstanceQualifiedAccess variants\n- Compiler resolution: look up trait in trait_registry, resolve member in trait definition\n- Evaluator: resolve qualified access to the correct ValueCell\n- Error diagnostics: trait not found, member not in trait, instance doesn't implement trait\n\nTask 193 must write >=8 tests covering: (1) disambiguation when two traits define same member name, (2) instance-level qualified access, (3) error: trait not found, (4) error: member not in trait, (5) error: instance doesn't implement trait, (6) qualified access in constraint expressions.\n\nTest infrastructure follows established patterns: compile_module()/compile_first_template() helpers for compiler tests, parse_compile_check() + Engine for eval tests, SimpleConstraintChecker for real constraint checking. Two new test files: qualified_access_compile_tests.rs (compiler-level) and qualified_access_eval.rs (full pipeline eval).\n\nKey design consideration: The reify trait system deduplicates same-name/same-type members from multiple traits. When S : A + B and both A and B have `param x : Length`, there's only one `x` value cell. Qualified access (A::x vs B::x) should both resolve to that same cell. The disambiguation value is when the user wants to be explicit about provenance, and for error checking (e.g., ensuring a member really comes from a specific trait).\n\n--- Review Fix Analysis ---\n\nIssue 1 (api_contract_violation): The public functions `check_trait_conformance_chain` and `check_trait_conformance_multi` (lines 246-322) use `collect_chain_requirements` (lines 331-385) which only collects `required_members` but NOT `defaults`. The compiler's internal `collect_all_requirements` (line 5426) collects BOTH and performs a cross-check at lines 5174-5185 and 5208: a missing requirement is satisfied if another trait provides a matching default. The public API will emit spurious MissingParam/MissingLet errors for members satisfied by trait defaults. Fix: extend `collect_chain_requirements` to also collect defaults, then add defaults cross-check logic in the chain/multi functions before delegating to `check_trait_conformance`.\n\nIssue 2 (incomplete_type_inference): The `none` keyword at line 1201-1202 produces `CompiledExpr::option_none(Type::Option(Box::new(Type::Real)))` as a placeholder. The param-default path (lines 3444-3450) fixes this up when the declared param type is Option<T>. But the let-binding path (lines 3481-3507) has NO such fixup: `cell_type` is always `compiled_expr.result_type.clone()` and `let_decl.type_expr` is never consulted. So `let y : Option<Length> = none` gets `Option<Real>` instead of `Option<Length>`. Fix: in the let-binding second pass, resolve `let_decl.type_expr` via `resolve_type_expr` when present, use it as `cell_type`, and apply the same OptionNone fixup as the param path.",
   "prerequisites": [
     {
       "id": "pre-1",
@@ -96,6 +98,34 @@
       "description": "Write eval test `instance_qualified_access_basic`: trait A{param x:Length}, structure Inner:A{param x:Length=3mm}, structure Outer{sub part = Inner, let val:Length = part.(A::x)}. Full pipeline parse->compile->eval. Assert: ValueCellId('Outer','val') evaluates to mm(3.0) = 0.003 SI.",
       "status": "done",
       "commit": "7ed4c29a"
+    },
+    {
+      "id": "step-11",
+      "type": "test",
+      "description": "Write failing test `chain_conformance_defaults_satisfy_requirement` in trait_conformance_tests.rs: Build CompiledTrait A with required_members=[TraitRequirement{name:'x', kind:Param(Length)}] and empty defaults. Build CompiledTrait B with empty required_members and defaults=[TraitDefault{name:'x', kind:Param{cell_type:Length, ...}}]. Call `check_trait_conformance_multi(&empty_members, &[\"A\", \"B\"], &registry, &[], &[])`. Currently reports spurious MissingParam for 'x' because collect_chain_requirements ignores defaults. Should report no errors \u2014 B's default satisfies A's requirement, matching the compiler's internal collect_all_requirements semantics.",
+      "status": "done",
+      "commit": "81f6c685"
+    },
+    {
+      "id": "step-12",
+      "type": "impl",
+      "description": "Fix the API contract violation in lib.rs: (1) Add a `defaults` Vec<TraitDefault> output parameter to `collect_chain_requirements` so it collects `compiled_trait.defaults` alongside `required_members`, with dedup on name. (2) In `check_trait_conformance_chain` and `check_trait_conformance_multi`, after calling collect_chain_requirements, build an `available_defaults: HashMap<String, Type>` from collected defaults (mirroring lines 5174-5185). (3) Filter the errors returned by `check_trait_conformance`: remove MissingParam/MissingLet entries whose name+type match an entry in available_defaults. This unifies semantics with the compiler's internal `collect_all_requirements` path without modifying the single-trait checker.",
+      "status": "done",
+      "commit": "84b79614"
+    },
+    {
+      "id": "step-13",
+      "type": "test",
+      "description": "Write failing test `let_none_with_typed_annotation_gets_correct_type` in qualified_access_compile_tests.rs: Source `structure def S { let y : Option<Length> = none }`. Compile, find value cell 'y'. Assert: cell_type is `Type::Option(Box::new(Type::Scalar { dimension: DimensionVector::LENGTH }))` (not Option<Real>). Also assert default_expr is OptionNone with matching result_type. Currently fails because let-binding path at line 3488 uses compiled_expr.result_type (Option<Real> placeholder) instead of the declared type annotation, and has no OptionNone fixup.",
+      "status": "done",
+      "commit": "6161bb18"
+    },
+    {
+      "id": "step-14",
+      "type": "impl",
+      "description": "Fix the incomplete type inference in lib.rs let-binding second pass (~line 3481): After `let compiled_expr = compile_expr(...)`, resolve `let_decl.type_expr` via `resolve_type_expr(type_expr, &type_param_names)` when present. Use the resolved declared type as `cell_type` instead of `compiled_expr.result_type`. Then apply OptionNone fixup: if `compiled_expr.kind` is `OptionNone` and `cell_type` is `Type::Option(_)`, replace `compiled_expr` with `CompiledExpr::option_none(cell_type.clone())`. This mirrors the param-default fixup at lines 3444-3450 and ensures `let y: Option<Length> = none` correctly produces Option<Length>.",
+      "status": "done",
+      "commit": "bd642a62"
     }
   ],
   "design_decisions": [
@@ -118,6 +148,18 @@
     {
       "decision": "Include 10 tests (exceeding the >=8 minimum) to cover all specified categories comprehensively",
       "rationale": "6 compiler tests + 4 eval tests cover all categories: disambiguation (steps 1-2), errors (steps 3-4,6), constraints (step 5), and eval pipeline (steps 7-10). Extra tests provide confidence in both the compile-time resolution and runtime evaluation of qualified access."
+    },
+    {
+      "decision": "Fix conformance API by post-filtering MissingParam/MissingLet errors against collected defaults, rather than modifying check_trait_conformance itself",
+      "rationale": "The existing `check_trait_conformance` function checks a single flat trait against structure members. The defaults cross-check is inherently a multi-trait concern (one trait's default satisfying another trait's requirement). By collecting defaults in `collect_chain_requirements` and filtering the error output in the chain/multi wrappers, we avoid modifying the well-tested single-trait conformance checker while achieving semantic parity with the compiler's internal path."
+    },
+    {
+      "decision": "Fix none type inference at the let-binding compilation site rather than at the none keyword site",
+      "rationale": "The none keyword (line 1201) correctly uses a placeholder type since it has no context at that point. Type resolution belongs at the declaration site where the type annotation is available. The param path already follows this pattern (lines 3444-3450). Adding the same fixup to the let path is the minimal, consistent fix that resolves the type via resolve_type_expr when let_decl.type_expr is present."
+    },
+    {
+      "decision": "Place conformance defaults cross-check test in trait_conformance_tests.rs alongside existing chain/multi tests",
+      "rationale": "The existing file already contains all `check_trait_conformance_chain` and `check_trait_conformance_multi` tests (steps 5-13 from task 186). Adding the defaults cross-check test there maintains test cohesion and makes the regression obvious in context."
     }
   ],
   "reuse": [
@@ -150,8 +192,28 @@
       "what": "Constraint satisfaction assertion pattern",
       "where": "crates/reify-eval/tests/trait_merge_eval.rs lines 36-65 (merged_trait_constraint_satisfied/violated)",
       "how": "Engine::check(), assert constraint_results non-empty, check Satisfaction::Satisfied or Violated. Apply to qualified_access_in_constraint_satisfied/violated tests."
+    },
+    {
+      "what": "Direct check_trait_conformance_multi test pattern with CompiledTrait structs",
+      "where": "crates/reify-compiler/tests/trait_conformance_tests.rs lines 1808-1855 (chain_diamond_dedup_satisfied)",
+      "how": "Build CompiledTrait structs with required_members and defaults fields, insert into registry HashMap, call check_trait_conformance_multi. Apply to conformance defaults cross-check test (step 11)."
+    },
+    {
+      "what": "available_defaults cross-check logic from compiler-internal path",
+      "where": "crates/reify-compiler/src/lib.rs lines 5174-5185 (available_defaults map) and 5206-5211 (satisfaction check)",
+      "how": "Mirror the same pattern in check_trait_conformance_chain/multi: after collecting defaults alongside requirements, build HashMap<String, Type> from defaults, then filter MissingParam/MissingLet errors when a matching default exists."
+    },
+    {
+      "what": "OptionNone fixup pattern from param-default path",
+      "where": "crates/reify-compiler/src/lib.rs lines 3444-3450",
+      "how": "Apply the same pattern in the let-binding path: if matches!(&compiled_expr.kind, CompiledExprKind::OptionNone) && matches!(&cell_type, Type::Option(_)) { compiled_expr = CompiledExpr::option_none(cell_type.clone()); }"
+    },
+    {
+      "what": "resolve_type_expr() for handling Option<T> type annotations",
+      "where": "crates/reify-compiler/src/lib.rs lines 843-852",
+      "how": "Use resolve_type_expr(type_expr, &type_param_names) in the let-binding path to resolve declared type from let_decl.type_expr, handling generic forms like Option<Length>."
     }
   ],
   "_session_id": "193-0914b68b",
-  "_created_at": "2026-03-25T08:01:04.383713+00:00"
+  "_created_at": "2026-03-25T08:58:32.569248+00:00"
 }
