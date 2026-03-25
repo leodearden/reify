@@ -1,0 +1,239 @@
+{
+  "task_id": "204",
+  "title": "Recursive structures: termination check",
+  "files": [
+    "crates/reify-compiler/src/lib.rs",
+    "crates/reify-compiler/tests/termination_check_tests.rs"
+  ],
+  "modules": [
+    "crates/reify-compiler"
+  ],
+  "analysis": "Task 204 adds a post-compilation pass that verifies recursive structures have a valid termination condition. It builds on task 203 (recursive structure detection via Tarjan SCC, which adds `is_recursive: bool` to TopologyTemplate and `detect_recursive_structures()`).\n\nThe termination check operates on templates already tagged `is_recursive == true`. For each such template, we examine its `sub_components` to find self-referencing subs (where `structure_name` matches the template name or another structure in the same SCC). For each recursive sub, we verify:\n\n1. The sub has a `where_clause` guard (currently parsed on SubDecl but NOT compiled into SubComponentDecl \u2014 we must add a `guard_expr` field).\n2. The guard expression references at least one param of type Int or Bool from the parent template.\n3. That same param appears in the sub's argument list with a value that decrements/modifies it toward a base case (heuristic: the arg expression for that param uses BinOp::Sub, BinOp::And/Or/Not, or passes a literal that differs from the param's identity).\n4. `undef` is not used as a non-termination mechanism (no Literal(Value::Undef) in the recursive sub's args).\n\nImplementation approach:\n- Add `guard_expr: Option<CompiledExpr>` to `SubComponentDecl` so where-clauses on subs are compiled and available for analysis.\n- Compile the sub's where_clause during sub compilation (line ~2795 in compile_entity).\n- Add `check_recursive_termination()` as a post-compilation pass in `compile()`, after task 203's `detect_recursive_structures()` call.\n- Use `CompiledExpr::walk()` to collect ValueRef references from guard expressions and sub args.\n- Emit `Diagnostic::error(...)` with labels pointing at the recursive sub declaration span.\n\nKey reuse: CompiledExpr::walk() for expression traversal, existing Diagnostic infrastructure, existing compile_expr() for where_clause compilation, existing scope/type infrastructure for param type resolution.",
+  "prerequisites": [
+    {
+      "id": "pre-1",
+      "description": "Add `guard_expr: Option<CompiledExpr>` field to SubComponentDecl struct so per-sub where-clauses are preserved in the compiled output",
+      "status": "done",
+      "commit": "0fe30fe2",
+      "tests": []
+    },
+    {
+      "id": "pre-2",
+      "description": "Compile the sub's where_clause into SubComponentDecl.guard_expr during sub compilation in compile_entity() (around line 2795). Use compile_expr on sub.where_clause.condition and store the result. Update all SubComponentDecl construction sites (both top-level and inside compile_guarded_members) to include guard_expr.",
+      "status": "done",
+      "commit": "7e38e7fa",
+      "tests": []
+    }
+  ],
+  "steps": [
+    {
+      "id": "step-1",
+      "type": "test",
+      "description": "Write failing test: sub where-clause compiles into SubComponentDecl.guard_expr. Parse `structure S { param n: Int = 5; sub child = S(n: n - 1) where n > 0 }` and assert guard_expr is Some with a BinOp::Gt referencing n.",
+      "status": "done",
+      "commit": "a98fbd90"
+    },
+    {
+      "id": "step-2",
+      "type": "impl",
+      "description": "Implement where_clause compilation for subs: in compile_entity's Sub arm (~line 2795), compile sub.where_clause.condition via compile_expr and store as guard_expr on SubComponentDecl. Do the same in compile_guarded_members' Sub handling. Make test pass.",
+      "status": "done",
+      "commit": "7e38e7fa"
+    },
+    {
+      "id": "step-3",
+      "type": "test",
+      "description": "Write failing test: recursive sub WITHOUT where-clause emits error. Define `structure S { param n: Int = 5; sub child = S(n: n - 1) }` (no where guard). After task 203 tags it recursive, assert an error diagnostic containing 'recursive sub' and 'no termination condition'.",
+      "status": "done",
+      "commit": "a98fbd90"
+    },
+    {
+      "id": "step-4",
+      "type": "impl",
+      "description": "Implement check_recursive_termination() function stub: iterate templates where is_recursive == true, find sub_components whose structure_name matches any template in the same SCC, check for missing guard_expr, emit error diagnostic. Wire into compile() after detect_recursive_structures().",
+      "status": "done",
+      "commit": "7e38e7fa"
+    },
+    {
+      "id": "step-5",
+      "type": "test",
+      "description": "Write failing test: recursive sub WITH valid where-clause and decremented Int param produces NO error. Define `structure S { param n: Int = 5; sub child = S(n: n - 1) where n > 0 }`. Assert zero error diagnostics from termination check.",
+      "status": "done",
+      "commit": "a98fbd90"
+    },
+    {
+      "id": "step-6",
+      "type": "impl",
+      "description": "Implement guard-references-decremented-param heuristic: walk guard_expr to collect ValueRef ids, check each against template's value_cells for Int or Bool type, then verify the same param name appears in the sub's args with a modifying expression (contains BinOp::Sub, BinOp::Add with negative, or BinOp::And/Or/Not for Bool). Suppress error when heuristic passes.",
+      "status": "done",
+      "commit": "7e38e7fa"
+    },
+    {
+      "id": "step-7",
+      "type": "test",
+      "description": "Write failing test: recursive sub with where-clause that does NOT reference any Int/Bool param emits error. Define `structure S { param n: Int = 5; param active: Bool = true; sub child = S(n: n - 1) where 1 > 0 }` (guard uses only literals, no param ref). Assert error about guard not referencing a decremented parameter.",
+      "status": "done",
+      "commit": "a98fbd90"
+    },
+    {
+      "id": "step-8",
+      "type": "impl",
+      "description": "Refine the heuristic to emit a specific error when guard exists but doesn't reference any Int/Bool param from the template. Different error message: 'guard does not reference any Int or Bool parameter'.",
+      "status": "done",
+      "commit": "7e38e7fa"
+    },
+    {
+      "id": "step-9",
+      "type": "test",
+      "description": "Write failing test: recursive sub where guard references an Int param but that param is NOT modified in the recursive instantiation args. Define `structure S { param n: Int = 5; sub child = S(n: n) where n > 0 }` (passes n unchanged). Assert error about parameter not being decremented toward base case.",
+      "status": "done",
+      "commit": "a98fbd90"
+    },
+    {
+      "id": "step-10",
+      "type": "impl",
+      "description": "Implement the arg-modification check: for each guard-referenced Int/Bool param, find the corresponding arg in sub.args by name, walk the arg expression to verify it contains a decrementing operation (Sub for Int, Not for Bool, or a different literal). Emit error if param passed unchanged.",
+      "status": "done",
+      "commit": "7e38e7fa"
+    },
+    {
+      "id": "step-11",
+      "type": "test",
+      "description": "Write failing test: recursive sub with Bool param guard and negation is valid. Define `structure S { param active: Bool = true; sub child = S(active: !active) where active }`. Assert no error \u2014 Bool param referenced in guard and negated in args is a valid termination pattern.",
+      "status": "done",
+      "commit": "a98fbd90"
+    },
+    {
+      "id": "step-12",
+      "type": "impl",
+      "description": "Ensure Bool param support: UnOp::Not on a Bool param in args counts as modification toward base case. Add Not detection to the arg-modification walker.",
+      "status": "done",
+      "commit": "7e38e7fa"
+    },
+    {
+      "id": "step-13",
+      "type": "test",
+      "description": "Write failing test: recursive sub using `undef` in args is explicitly forbidden. Define `structure S { param n: Int = 5; sub child = S(n: undef) where n > 0 }`. Assert error about undef being forbidden as non-termination mechanism.",
+      "status": "done",
+      "commit": "a98fbd90"
+    },
+    {
+      "id": "step-14",
+      "type": "impl",
+      "description": "Add undef detection: walk each recursive sub's arg expressions for Literal(Value::Undef). If found, emit error: 'undef is not allowed as a non-termination mechanism in recursive sub arguments'.",
+      "status": "done",
+      "commit": "7e38e7fa"
+    },
+    {
+      "id": "step-15",
+      "type": "test",
+      "description": "Write failing test: mutual recursion (A references B, B references A) without guards on both sides emits errors for both. Define `structure A { sub b = B() }` and `structure B { sub a = A() }`. Assert two error diagnostics (one per recursive sub).",
+      "status": "done",
+      "commit": "a98fbd90"
+    },
+    {
+      "id": "step-16",
+      "type": "impl",
+      "description": "Ensure mutual recursion support: the SCC set from task 203 identifies all cycle participants. check_recursive_termination checks every sub whose target is ANY member of the same SCC (not just self-references). Build SCC membership set from templates and check sub.structure_name membership.",
+      "status": "done",
+      "commit": "7e38e7fa"
+    },
+    {
+      "id": "step-17",
+      "type": "test",
+      "description": "Write failing test: non-recursive structure with sub is NOT flagged. Define `structure Inner { param x: Int = 1 }` and `structure Outer { sub inner = Inner(x: 5) }`. Assert zero error diagnostics \u2014 non-recursive subs should be ignored entirely.",
+      "status": "done",
+      "commit": "a98fbd90"
+    },
+    {
+      "id": "step-18",
+      "type": "impl",
+      "description": "Verify the non-recursive path works: check_recursive_termination skips templates where is_recursive == false. This should already work from step-4 but this step verifies and adds any needed guards.",
+      "status": "done",
+      "commit": "7e38e7fa"
+    },
+    {
+      "id": "step-19",
+      "type": "test",
+      "description": "Write test: recursive sub inside a guarded group (block guard) without its own where-clause emits error. Define `structure S { param n: Int = 5; when n > 0 { sub child = S(n: n - 1) } }`. The block guard protects the sub but the sub itself has no where-clause \u2014 the heuristic should recognize block-level guards as providing termination if the guard references a decremented param. Assert NO error (the enclosing block guard satisfies the termination requirement).",
+      "status": "done",
+      "commit": "a98fbd90"
+    },
+    {
+      "id": "step-20",
+      "type": "impl",
+      "description": "Handle subs inside guarded groups: when a recursive sub lacks its own guard_expr, check if it's inside a CompiledGuardedGroup whose guard_expr references a decremented Int/Bool param. Collect guarded_group membership for subs and check the enclosing guard as fallback. This requires tracking which subs belong to which guarded_groups during compilation.",
+      "status": "done",
+      "commit": "7e38e7fa"
+    }
+  ],
+  "design_decisions": [
+    {
+      "decision": "Add guard_expr to SubComponentDecl rather than creating a separate data structure",
+      "rationale": "The where_clause is already parsed on SubDecl. Storing the compiled guard expression directly on SubComponentDecl keeps the sub's termination condition co-located with its other metadata, consistent with how other member types handle per-declaration guards."
+    },
+    {
+      "decision": "Post-compilation pass rather than inline check during sub compilation",
+      "rationale": "Recursive structure detection (task 203) requires all templates to be compiled first to build the adjacency graph. The termination check must run after detect_recursive_structures() so is_recursive flags are available. This follows the existing pattern of PendingBoundCheck and other deferred checks."
+    },
+    {
+      "decision": "Heuristic-based termination check rather than formal proof",
+      "rationale": "The task explicitly calls for a heuristic: guard must reference at least one Int/Bool param that is modified in the recursive instantiation. We don't attempt to prove termination formally \u2014 we check structural patterns that strongly suggest convergence (subtraction on Int, negation on Bool). This avoids false negatives on valid programs while catching the common mistake of infinite recursion."
+    },
+    {
+      "decision": "Emit Error severity (not Warning) for missing termination condition",
+      "rationale": "The task description says 'emit error if no reachable termination condition found'. Unbounded recursion would cause infinite instantiation at evaluation time, so this is a hard error. Task 203 uses Warning for cycle detection (informational), but task 204 is enforcement."
+    },
+    {
+      "decision": "Recognize block-level guards (guarded groups) as termination conditions for enclosed subs",
+      "rationale": "A sub inside `when n > 0 { sub child = S(n: n-1) }` is functionally equivalent to `sub child = S(n: n-1) where n > 0`. Failing to recognize block guards would produce false positives on idiomatic code. We check enclosing guarded_group guard_expr as a fallback when sub has no direct guard_expr."
+    },
+    {
+      "decision": "Use CompiledExpr::walk() for expression analysis rather than custom traversal",
+      "rationale": "The walk() method is the canonical traversal documented in CompiledExprKind. It ensures all expression variants are visited and future-proofs against new variants. We collect ValueRef ids and check for specific BinOp/UnOp patterns."
+    },
+    {
+      "decision": "detect_recursive_structures returns cyclic SCCs for termination check",
+      "rationale": "Modified detect_recursive_structures to return Vec<HashSet<String>> (cyclic SCC sets). This allows check_recursive_termination to determine SCC membership without re-running Tarjan. Avoids duplicating the SCC computation."
+    }
+  ],
+  "reuse": [
+    {
+      "what": "CompiledExpr::walk()",
+      "where": "crates/reify-types/src/expr.rs",
+      "how": "Use walk() to collect ValueRef ids from guard expressions and sub arg expressions. Avoids writing custom recursive traversal."
+    },
+    {
+      "what": "Diagnostic::error() + .with_label()",
+      "where": "crates/reify-types/src/diagnostics.rs",
+      "how": "Emit termination check errors using the same pattern as all other compiler diagnostics. Labels point at the sub declaration span."
+    },
+    {
+      "what": "compile_expr()",
+      "where": "crates/reify-compiler/src/lib.rs:858",
+      "how": "Compile sub.where_clause.condition expressions using the existing compile_expr function with the current scope."
+    },
+    {
+      "what": "compile_first_template() test helper pattern",
+      "where": "crates/reify-compiler/tests/guard_compilation.rs:10",
+      "how": "Reuse the parse\u2192compile\u2192extract-template pattern for test setup. Define a local compile_first_template helper in the new test file."
+    },
+    {
+      "what": "ValueCellId, ValueCellKind, Type enums",
+      "where": "crates/reify-types/src/",
+      "how": "Use Type::Int and Type::Bool for param type checking. Use ValueCellKind::Param to identify parameters vs lets. Use ValueCellId for matching guard refs to sub args."
+    },
+    {
+      "what": "TopologyTemplate.value_cells and .sub_components",
+      "where": "crates/reify-compiler/src/lib.rs:159",
+      "how": "Iterate value_cells to find Int/Bool params, iterate sub_components to find recursive subs, cross-reference guard_expr ValueRefs with value_cell ids."
+    },
+    {
+      "what": "Post-compilation pass pattern (deferred checks)",
+      "where": "crates/reify-compiler/src/lib.rs:2158-2204",
+      "how": "Follow the existing pattern of running analysis passes after all templates are compiled. Insert check_recursive_termination() after detect_recursive_structures() in the compile() function."
+    }
+  ],
+  "_session_id": "204-8069abdf",
+  "_created_at": "2026-03-25T17:32:16.457747+00:00"
+}
