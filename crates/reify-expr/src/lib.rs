@@ -243,6 +243,9 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             Value::Option(Some(Box::new(val)))
         }
 
+        // DeterminacyPredicate is engine-level only; eval layer returns Undef.
+        CompiledExprKind::DeterminacyPredicate { .. } => Value::Undef,
+
         CompiledExprKind::Quantifier { kind, variable_id, collection, predicate, .. } => {
             let coll_val = eval_expr(collection, ctx);
             if coll_val.is_undef() {
@@ -291,6 +294,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                 }
             }
         }
+
     }
 }
 
