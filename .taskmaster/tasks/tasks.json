@@ -6628,7 +6628,7 @@
         "testStrategy": "cargo test -p reify-test-support",
         "priority": "high",
         "dependencies": [],
-        "status": "blocked",
+        "status": "pending",
         "metadata": {
           "milestone": "stdlib-infra",
           "modules": [
@@ -6637,7 +6637,7 @@
         },
         "subtasks": [],
         "details": "Update MockGeometryKernel in reify-test-support to handle all new ops (Cone, Torus, Wedge, Extrude, Revolve, Sweep, Scale, etc.) and query types. Add vector/matrix test helpers and assert_value_approx.",
-        "updatedAt": "2026-03-25T21:37:41.801Z"
+        "updatedAt": "2026-03-25T21:39:04.031Z"
       },
       {
         "id": "352",
@@ -7641,7 +7641,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-25T21:38:02.356Z",
+      "lastModified": "2026-03-25T21:39:04.032Z",
       "taskCount": 426,
       "completedCount": 228,
       "tags": [
