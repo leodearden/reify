@@ -278,7 +278,13 @@ impl Engine {
 
     /// Set the maximum depth for recursive sub-component unfolding.
     /// The default is 64. Lower values are useful for tests to keep execution fast.
+    ///
+    /// # Panics
+    /// Panics if `depth == 0`. At depth 0 the guard check fires before any child entity
+    /// is created, so parent let-bindings referencing `child.*` would silently resolve to
+    /// Undef. Only values >= 1 are safe.
     pub fn set_max_unfold_depth(&mut self, depth: usize) {
+        assert!(depth >= 1, "max_unfold_depth must be >= 1");
         self.max_unfold_depth = depth;
     }
 

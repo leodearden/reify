@@ -535,6 +535,20 @@ fn unfold_recursive_default_depth_limit_64() {
     );
 }
 
+// ─── step-27: depth=0 is rejected at the API boundary ────────────────────────
+
+/// `set_max_unfold_depth(0)` must panic because depth=0 means the guard check
+/// `depth >= max_depth` (0 >= 0) fires before any child entity is created,
+/// silently leaving parent let-bindings that reference `child.*` as Undef.
+/// Rejecting 0 at the API boundary prevents this silent data corruption.
+#[test]
+#[should_panic(expected = "max_unfold_depth must be >= 1")]
+fn unfold_recursive_depth_limit_zero_rejected() {
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+    engine.set_max_unfold_depth(0); // must panic
+}
+
 // ─── step-25: cross-level dependency at depth 3 ───────────────────────────────
 
 /// Regression test for leaves-first ordering at greater depth.
