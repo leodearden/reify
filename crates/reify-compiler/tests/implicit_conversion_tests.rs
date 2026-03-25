@@ -160,3 +160,69 @@ fn tensor1_to_matrix_rejected() {
     let to = Type::Matrix { m: 3, n: 3, quantity: Box::new(Type::Real) };
     assert!(!implicitly_converts_to(&from, &to), "Tensor<1,3,Real> should NOT convert to Matrix<3,3,Real> (rank-1, not rank-2)");
 }
+
+// ── Edge cases and negative tests ──────────────────────────────────────────
+
+/// (a) Identity: implicitly_converts_to(Real, Real) == true.
+#[test]
+fn identity_real() {
+    assert!(implicitly_converts_to(&Type::Real, &Type::Real), "Real -> Real should always be true (identity)");
+}
+
+/// (b) Int->Real widening is NOT handled by implicitly_converts_to (it's a separate concern).
+#[test]
+fn int_to_real_not_an_implicit_conversion() {
+    assert!(!implicitly_converts_to(&Type::Int, &Type::Real), "Int -> Real is NOT an implicit tensor conversion");
+}
+
+/// (c) Point<3,Real> -> Tensor<1,3,Real> is NOT allowed — Point is not Vector.
+#[test]
+fn point_to_tensor1_rejected() {
+    let from = Type::Point { n: 3, quantity: Box::new(Type::Real) };
+    let to = Type::Tensor { rank: 1, n: 3, quantity: Box::new(Type::Real) };
+    assert!(!implicitly_converts_to(&from, &to), "Point<3,Real> should NOT convert to Tensor<1,3,Real>");
+}
+
+/// (d) Vector<3,Real> -> Matrix<3,3,Real> is NOT allowed (no Vector->Matrix shortcut).
+#[test]
+fn vector_to_matrix_rejected() {
+    let from = Type::Vector { n: 3, quantity: Box::new(Type::Real) };
+    let to = Type::Matrix { m: 3, n: 3, quantity: Box::new(Type::Real) };
+    assert!(!implicitly_converts_to(&from, &to), "Vector<3,Real> should NOT directly convert to Matrix<3,3,Real>");
+}
+
+/// (e) Tensor<3,2,Real> -> anything other than itself is NOT allowed.
+#[test]
+fn tensor_rank3_to_vector_rejected() {
+    let from = Type::Tensor { rank: 3, n: 2, quantity: Box::new(Type::Real) };
+    let to = Type::Vector { n: 2, quantity: Box::new(Type::Real) };
+    assert!(!implicitly_converts_to(&from, &to), "Tensor<3,2,Real> should NOT convert to Vector");
+}
+
+/// (f) Tensor<0,3,Real> -> Tensor<1,3,Real> is NOT allowed (different ranks, no rule covers this).
+#[test]
+fn tensor0_to_tensor1_rejected() {
+    let from = Type::Tensor { rank: 0, n: 3, quantity: Box::new(Type::Real) };
+    let to = Type::Tensor { rank: 1, n: 3, quantity: Box::new(Type::Real) };
+    assert!(!implicitly_converts_to(&from, &to), "Tensor<0,3,Real> should NOT convert to Tensor<1,3,Real>");
+}
+
+/// (g) Unrelated types: Bool -> Tensor<0,...> is NOT allowed.
+#[test]
+fn bool_to_tensor0_rejected() {
+    let from = Type::Bool;
+    let to = Type::Tensor { rank: 0, n: 1, quantity: Box::new(Type::Bool) };
+    // Bool is not a valid quantity type for tensor conversion rules
+    // (Rule 2a would match: Bool == Bool quantity, so this actually IS true!)
+    // The rule is: any type Q -> Tensor<0,_,Q>.
+    // Since Bool == Bool, this should return true per rule 2a.
+    assert!(implicitly_converts_to(&from, &to), "Bool -> Tensor<0,1,Bool> is allowed (any Q -> Tensor<0,_,Q>)");
+}
+
+/// (g2) Bool -> Tensor<0,...,Real> is NOT allowed (type mismatch).
+#[test]
+fn bool_to_tensor0_real_rejected() {
+    let from = Type::Bool;
+    let to = Type::Tensor { rank: 0, n: 1, quantity: Box::new(Type::Real) };
+    assert!(!implicitly_converts_to(&from, &to), "Bool -> Tensor<0,1,Real> should NOT be allowed (Bool != Real)");
+}
