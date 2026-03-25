@@ -186,6 +186,11 @@ impl<'a> Lowering<'a> {
                         self.declarations.push(Declaration::Unit(decl));
                     }
                 }
+                "type_alias_declaration" => {
+                    if let Some(decl) = self.lower_type_alias(child) {
+                        self.declarations.push(Declaration::TypeAlias(decl));
+                    }
+                }
                 "ERROR" => {
                     self.errors.push(ParseError {
                         message: format!("syntax error: {}", self.node_text(child)),
@@ -717,6 +722,54 @@ impl<'a> Lowering<'a> {
             span: self.span(node),
             content_hash: self.content_hash(node),
         })
+    }
+
+    fn lower_type_alias(&self, node: tree_sitter::Node) -> Option<TypeAliasDecl> {
+        let name_node = node.child_by_field_name("name")?;
+        let name = self.node_text(name_node).to_string();
+
+        let doc = self.extract_doc_comment(node);
+        let is_pub = self.has_pub_keyword(node);
+        let type_params = self.lower_type_parameters(node);
+
+        let type_node = node.child_by_field_name("type")?;
+        let type_expr = self.lower_dimensional_type_expr(type_node);
+
+        Some(TypeAliasDecl {
+            name,
+            doc,
+            is_pub,
+            type_params,
+            type_expr,
+            span: self.span(node),
+            content_hash: self.content_hash(node),
+        })
+    }
+
+    /// Lower a dimensional_type_expr node. Handles binary operations on types
+    /// (e.g., `Force / Area`, `Mass * Length`) and delegates to `lower_type_expr_node`
+    /// for leaf type expressions.
+    fn lower_dimensional_type_expr(&self, node: tree_sitter::Node) -> TypeExpr {
+        if node.kind() == "dimensional_type_expr" {
+            // Check if this is a binary op (has op field) or a passthrough to type_expr
+            if let Some(op_node) = node.child_by_field_name("op") {
+                let op = self.node_text(op_node).to_string();
+                let left_node = node.child_by_field_name("left").unwrap();
+                let right_node = node.child_by_field_name("right").unwrap();
+                let left = self.lower_dimensional_type_expr(left_node);
+                let right = self.lower_dimensional_type_expr(right_node);
+                return TypeExpr {
+                    name: op,
+                    type_args: vec![left, right],
+                    span: self.span(node),
+                };
+            }
+            // Passthrough: dimensional_type_expr -> type_expr
+            let child = node.child(0).unwrap_or(node);
+            return self.lower_type_expr_node(child);
+        }
+        // Fallback: treat as a regular type expression
+        self.lower_type_expr_node(node)
     }
 
     fn lower_purpose_params(&self, node: tree_sitter::Node) -> Vec<PurposeParam> {
