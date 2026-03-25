@@ -26,9 +26,13 @@
 #include <BRepOffsetAPI_MakeThickSolid.hxx>
 #include <TopTools_ListOfShape.hxx>
 
-// OCCT edge/wire construction
+// OCCT pipe (sweep)
+#include <BRepOffsetAPI_MakePipe.hxx>
+
+// OCCT edge/wire/face construction
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
+#include <BRepBuilderAPI_MakeFace.hxx>
 #include <Geom_Circle.hxx>
 #include <Geom_Plane.hxx>
 #include <Geom_Surface.hxx>
@@ -511,47 +515,130 @@ std::unique_ptr<OcctShape> make_circle_wire(double radius, double z_height) {
     }
 }
 
-std::unique_ptr<OcctShape> loft_two_profiles(const OcctShape& wire1, const OcctShape& wire2) {
+std::unique_ptr<OcctShape> make_circle_face(double radius, double z_height) {
     try {
-        // isSolid=true, ruled=false (smooth)
-        BRepOffsetAPI_ThruSections loft(Standard_True, Standard_False);
-        loft.AddWire(TopoDS::Wire(wire1.shape));
-        loft.AddWire(TopoDS::Wire(wire2.shape));
-        loft.Build();
-        if (!loft.IsDone()) {
-            throw std::runtime_error("BRepOffsetAPI_ThruSections (loft 2) failed");
+        if (!(std::isfinite(radius) && radius > 0.0)) {
+            throw std::runtime_error("make_circle_face: radius must be finite and positive");
+        }
+        gp_Ax2 axes(gp_Pnt(0, 0, z_height), gp_Dir(0, 0, 1));
+        Handle(Geom_Circle) circle = new Geom_Circle(axes, radius);
+        BRepBuilderAPI_MakeEdge edgeBuilder(circle);
+        if (!edgeBuilder.IsDone()) {
+            throw std::runtime_error("make_circle_face: MakeEdge failed");
+        }
+        TopoDS_Edge edge = edgeBuilder.Edge();
+        BRepBuilderAPI_MakeWire wireBuilder(edge);
+        if (!wireBuilder.IsDone()) {
+            throw std::runtime_error("make_circle_face: MakeWire failed");
+        }
+        TopoDS_Wire wire = wireBuilder.Wire();
+        BRepBuilderAPI_MakeFace faceBuilder(wire, Standard_True);
+        if (!faceBuilder.IsDone()) {
+            throw std::runtime_error("make_circle_face: MakeFace failed");
         }
         auto result = std::make_unique<OcctShape>();
-        result->shape = loft.Shape();
+        result->shape = faceBuilder.Face();
         return result;
     } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT loft_two_profiles: ") + e.GetMessageString());
+        throw std::runtime_error(std::string("OCCT make_circle_face: ") + e.GetMessageString());
     } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT loft_two_profiles: unexpected: ") + e.what());
+        throw std::runtime_error(std::string("OCCT make_circle_face: unexpected: ") + e.what());
     } catch (...) {
-        throw std::runtime_error("OCCT loft_two_profiles: unknown C++ exception");
+        throw std::runtime_error("OCCT make_circle_face: unknown C++ exception");
     }
 }
 
-std::unique_ptr<OcctShape> loft_three_profiles(const OcctShape& wire1, const OcctShape& wire2, const OcctShape& wire3) {
+// --- OcctShapeVec ---
+
+std::unique_ptr<OcctShapeVec> new_shape_vec() {
+    return std::make_unique<OcctShapeVec>();
+}
+
+void shape_vec_push(OcctShapeVec& vec, const OcctShape& shape) {
+    vec.shapes.push_back(shape.shape);
+}
+
+size_t shape_vec_len(const OcctShapeVec& vec) {
+    return vec.shapes.size();
+}
+
+// --- make_line_wire ---
+
+std::unique_ptr<OcctShape> make_line_wire(double x1, double y1, double z1,
+                                           double x2, double y2, double z2) {
     try {
+        gp_Pnt p1(x1, y1, z1);
+        gp_Pnt p2(x2, y2, z2);
+        double dist_sq = (x2-x1)*(x2-x1) + (y2-y1)*(y2-y1) + (z2-z1)*(z2-z1);
+        if (dist_sq < 1e-30) {
+            throw std::runtime_error("make_line_wire: start and end points must be distinct");
+        }
+        BRepBuilderAPI_MakeEdge edgeBuilder(p1, p2);
+        if (!edgeBuilder.IsDone()) {
+            throw std::runtime_error("make_line_wire: MakeEdge failed");
+        }
+        TopoDS_Edge edge = edgeBuilder.Edge();
+        BRepBuilderAPI_MakeWire wireBuilder(edge);
+        if (!wireBuilder.IsDone()) {
+            throw std::runtime_error("make_line_wire: MakeWire failed");
+        }
+        auto result = std::make_unique<OcctShape>();
+        result->shape = wireBuilder.Wire();
+        return result;
+    } catch (Standard_Failure const& e) {
+        throw std::runtime_error(std::string("OCCT make_line_wire: ") + e.GetMessageString());
+    } catch (std::exception const& e) {
+        throw std::runtime_error(std::string("OCCT make_line_wire: unexpected: ") + e.what());
+    } catch (...) {
+        throw std::runtime_error("OCCT make_line_wire: unknown C++ exception");
+    }
+}
+
+// --- Loft (generic N profiles) ---
+
+std::unique_ptr<OcctShape> loft_profiles(const OcctShapeVec& profiles) {
+    try {
+        if (profiles.shapes.size() < 2) {
+            throw std::runtime_error("loft_profiles: requires at least 2 profiles");
+        }
         BRepOffsetAPI_ThruSections loft(Standard_True, Standard_False);
-        loft.AddWire(TopoDS::Wire(wire1.shape));
-        loft.AddWire(TopoDS::Wire(wire2.shape));
-        loft.AddWire(TopoDS::Wire(wire3.shape));
+        for (const auto& shape : profiles.shapes) {
+            loft.AddWire(TopoDS::Wire(shape));
+        }
         loft.Build();
         if (!loft.IsDone()) {
-            throw std::runtime_error("BRepOffsetAPI_ThruSections (loft 3) failed");
+            throw std::runtime_error("BRepOffsetAPI_ThruSections (loft) failed");
         }
         auto result = std::make_unique<OcctShape>();
         result->shape = loft.Shape();
         return result;
     } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT loft_three_profiles: ") + e.GetMessageString());
+        throw std::runtime_error(std::string("OCCT loft_profiles: ") + e.GetMessageString());
     } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT loft_three_profiles: unexpected: ") + e.what());
+        throw std::runtime_error(std::string("OCCT loft_profiles: unexpected: ") + e.what());
     } catch (...) {
-        throw std::runtime_error("OCCT loft_three_profiles: unknown C++ exception");
+        throw std::runtime_error("OCCT loft_profiles: unknown C++ exception");
+    }
+}
+
+// --- Sweep ---
+
+std::unique_ptr<OcctShape> make_pipe(const OcctShape& profile, const OcctShape& spine) {
+    try {
+        BRepOffsetAPI_MakePipe maker(TopoDS::Wire(spine.shape), profile.shape);
+        maker.Build();
+        if (!maker.IsDone()) {
+            throw std::runtime_error("BRepOffsetAPI_MakePipe failed");
+        }
+        auto result = std::make_unique<OcctShape>();
+        result->shape = maker.Shape();
+        return result;
+    } catch (Standard_Failure const& e) {
+        throw std::runtime_error(std::string("OCCT make_pipe: ") + e.GetMessageString());
+    } catch (std::exception const& e) {
+        throw std::runtime_error(std::string("OCCT make_pipe: unexpected: ") + e.what());
+    } catch (...) {
+        throw std::runtime_error("OCCT make_pipe: unknown C++ exception");
     }
 }
 

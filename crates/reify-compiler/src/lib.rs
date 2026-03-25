@@ -373,6 +373,7 @@ pub enum PatternKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SweepKind {
     Loft,
+    Sweep,
 }
 
 /// Reference to a geometry result within a realization.
@@ -403,6 +404,7 @@ fn is_geometry_function(name: &str) -> bool {
             | "difference"
             | "union_all"
             | "intersection_all"
+            | "sweep"
     )
 }
 
@@ -4910,6 +4912,27 @@ fn compile_geometry_call(
                 args,
             }])
         }
+        // sweep(profile, path)
+        "sweep" => {
+            if compiled_args.len() != 2 {
+                diagnostics.push(Diagnostic::error(format!(
+                    "sweep() expects exactly 2 arguments (profile, path), got {}",
+                    compiled_args.len()
+                )));
+                return None;
+            }
+            let profiles: Vec<GeomRef> = vec![GeomRef::Step(0), GeomRef::Step(1)];
+            let mut it = compiled_args.into_iter();
+            let args: Vec<(String, CompiledExpr)> = vec![
+                ("profile".to_string(), it.next().unwrap()),
+                ("path".to_string(), it.next().unwrap()),
+            ];
+            Some(vec![CompiledGeometryOp::Sweep {
+                kind: SweepKind::Sweep,
+                profiles,
+                args,
+            }])
+        }
         // --- Modify extensions ---
         // shell(target, thickness, ...)
         "shell" => {
@@ -5555,6 +5578,79 @@ mod tests {
             diagnostics.iter().any(|d| d.message.contains("unsupported geometry function")),
             "expected 'unsupported geometry function' diagnostic, got: {:?}",
             diagnostics
+        );
+    }
+
+    // --- Sweep (pipe) compiler tests (task-310 step-13) ---
+
+    #[test]
+    fn is_geometry_function_sweep() {
+        assert!(is_geometry_function("sweep"));
+    }
+
+    #[test]
+    fn compile_sweep_produces_sweep_kind() {
+        // sweep(profile, path) = 2 args, both geometry refs
+        let source = r#"structure S {
+    param p: Scalar = 5mm
+    let result = sweep(p, p)
+}"#;
+        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_sweep"));
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:?}",
+            parsed.errors
+        );
+        let compiled = compile(&parsed);
+        let template = &compiled.templates[0];
+        assert_eq!(
+            template.realizations.len(),
+            1,
+            "expected 1 realization for sweep call"
+        );
+        let op = &template.realizations[0].operations[0];
+        assert!(
+            matches!(
+                op,
+                CompiledGeometryOp::Sweep {
+                    kind: SweepKind::Sweep,
+                    ..
+                }
+            ),
+            "expected Sweep(Sweep), got {:?}",
+            op
+        );
+        // Both profile and path should be in profiles as GeomRefs
+        if let CompiledGeometryOp::Sweep { profiles, .. } = op {
+            assert_eq!(
+                profiles.len(),
+                2,
+                "sweep should have 2 profiles (profile + path), got {}",
+                profiles.len()
+            );
+            assert_eq!(profiles[0], GeomRef::Step(0));
+            assert_eq!(profiles[1], GeomRef::Step(1));
+        }
+    }
+
+    #[test]
+    fn compile_sweep_wrong_arg_count() {
+        // sweep with 1 arg (should need 2)
+        let source = r#"structure S {
+    param p: Scalar = 5mm
+    let result = sweep(p)
+}"#;
+        let parsed =
+            reify_syntax::parse(source, reify_types::ModulePath::single("test_sweep_bad"));
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:?}",
+            parsed.errors
+        );
+        let compiled = compile(&parsed);
+        assert!(
+            !compiled.diagnostics.is_empty(),
+            "expected diagnostics for wrong arg count"
         );
     }
 }

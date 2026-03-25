@@ -329,31 +329,18 @@ impl OcctKernel {
                 .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
             GeometryOp::Loft { profiles } => {
-                match profiles.len() {
-                    0 | 1 => {
-                        return Err(GeometryError::OperationFailed(
-                            "Loft requires at least 2 profiles".into(),
-                        ));
-                    }
-                    2 => {
-                        let w1 = self.get_shape(profiles[0])?;
-                        let w2 = self.get_shape(profiles[1])?;
-                        ffi::ffi::loft_two_profiles(w1, w2)
-                            .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
-                    }
-                    3 => {
-                        let w1 = self.get_shape(profiles[0])?;
-                        let w2 = self.get_shape(profiles[1])?;
-                        let w3 = self.get_shape(profiles[2])?;
-                        ffi::ffi::loft_three_profiles(w1, w2, w3)
-                            .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
-                    }
-                    n => {
-                        return Err(GeometryError::OperationFailed(
-                            format!("Loft with {} profiles not yet supported (max 3)", n),
-                        ));
-                    }
+                if profiles.len() < 2 {
+                    return Err(GeometryError::OperationFailed(
+                        "Loft requires at least 2 profiles".into(),
+                    ));
                 }
+                let mut vec = ffi::ffi::new_shape_vec();
+                for &pid in profiles {
+                    let shape = self.get_shape(pid)?;
+                    ffi::ffi::shape_vec_push(vec.pin_mut(), shape);
+                }
+                ffi::ffi::loft_profiles(&vec)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
             GeometryOp::Draft {
                 target,
@@ -382,6 +369,12 @@ impl OcctKernel {
                 let face_indices: Vec<u32> =
                     faces_to_remove.iter().map(|&i| i as u32).collect();
                 ffi::ffi::shell_shape(shape, th, &face_indices)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+            }
+            GeometryOp::Sweep { profile, path } => {
+                let profile_shape = self.get_shape(*profile)?;
+                let path_shape = self.get_shape(*path)?;
+                ffi::ffi::make_pipe(profile_shape, path_shape)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
         };
@@ -1715,6 +1708,93 @@ mod tests {
         }
     }
 
+    #[test]
+    fn loft_one_profile_returns_error() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let w1 = ffi::ffi::make_circle_wire(10.0, 0.0).expect("wire1");
+        let id1 = kernel.store_raw(w1);
+
+        let result = kernel.execute(&GeometryOp::Loft {
+            profiles: vec![id1],
+        });
+        assert!(result.is_err(), "loft with 1 profile should fail");
+        let err_msg = format!("{:?}", result.unwrap_err());
+        assert!(
+            err_msg.contains("at least 2"),
+            "error should mention 'at least 2', got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn loft_two_different_circles_cone_like() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let w1 = ffi::ffi::make_circle_wire(10.0, 0.0).expect("wire1");
+        let id1 = kernel.store_raw(w1);
+        let w2 = ffi::ffi::make_circle_wire(2.0, 20.0).expect("wire2");
+        let id2 = kernel.store_raw(w2);
+
+        let loft_h = kernel
+            .execute(&GeometryOp::Loft {
+                profiles: vec![id1, id2],
+            })
+            .unwrap();
+
+        let vol = kernel.query(&GeometryQuery::Volume(loft_h.id)).unwrap();
+        match vol {
+            Value::Real(v) => {
+                // Should be between small cylinder (pi*4*20 ~= 251) and
+                // large cylinder (pi*100*20 ~= 6283): a cone-like frustum
+                assert!(
+                    v > 251.0 && v < 6283.0,
+                    "cone-like frustum volume should be between 251 and 6283, got {v}"
+                );
+            }
+            other => panic!("expected Value::Real, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn loft_four_circles_creates_solid() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        // Create 4 circle wire profiles at different heights with decreasing radii
+        let w1 = ffi::ffi::make_circle_wire(10.0, 0.0).expect("wire1");
+        let id1 = kernel.store_raw(w1);
+        let w2 = ffi::ffi::make_circle_wire(8.0, 10.0).expect("wire2");
+        let id2 = kernel.store_raw(w2);
+        let w3 = ffi::ffi::make_circle_wire(6.0, 20.0).expect("wire3");
+        let id3 = kernel.store_raw(w3);
+        let w4 = ffi::ffi::make_circle_wire(4.0, 30.0).expect("wire4");
+        let id4 = kernel.store_raw(w4);
+
+        // Loft through all 4 profiles
+        let loft_h = kernel
+            .execute(&GeometryOp::Loft {
+                profiles: vec![id1, id2, id3, id4],
+            })
+            .unwrap();
+
+        // Query volume — should be positive
+        let vol = kernel.query(&GeometryQuery::Volume(loft_h.id)).unwrap();
+        match vol {
+            Value::Real(v) => {
+                assert!(v > 0.0, "loft volume should be positive, got {v}");
+            }
+            other => panic!("expected Value::Real, got {:?}", other),
+        }
+    }
+
     // --- Thicken / Shell tests ---
 
     #[test]
@@ -2179,6 +2259,73 @@ mod tests {
                     other
                 );
             }
+        }
+    }
+
+    // --- Sweep tests ---
+
+    #[test]
+    fn sweep_solid_path_returns_error() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        // Create a box solid as (invalid) path
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        // Create a circle face as profile
+        let face = ffi::ffi::make_circle_face(2.0, 0.0).expect("circle face");
+        let profile_id = kernel.store_raw(face);
+
+        let result = kernel.execute(&GeometryOp::Sweep {
+            profile: profile_id,
+            path: box_h.id,
+        });
+        assert!(
+            result.is_err(),
+            "sweep with a solid as path should fail"
+        );
+    }
+
+    #[test]
+    fn sweep_circle_along_line_creates_pipe() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        // Circle face profile: r=2.0 at z=0
+        let face = ffi::ffi::make_circle_face(2.0, 0.0).expect("circle face");
+        let profile_id = kernel.store_raw(face);
+        // Line wire path: (0,0,0) to (0,0,10)
+        let wire = ffi::ffi::make_line_wire(0.0, 0.0, 0.0, 0.0, 0.0, 10.0).expect("line wire");
+        let path_id = kernel.store_raw(wire);
+
+        let pipe_h = kernel
+            .execute(&GeometryOp::Sweep {
+                profile: profile_id,
+                path: path_id,
+            })
+            .unwrap();
+
+        // Volume should be approximately pi*r^2*h = pi*4*10 ≈ 125.66
+        let vol = kernel.query(&GeometryQuery::Volume(pipe_h.id)).unwrap();
+        match vol {
+            Value::Real(v) => {
+                let expected = std::f64::consts::PI * 4.0 * 10.0;
+                let rel_err = (v - expected).abs() / expected;
+                assert!(
+                    rel_err < 0.05,
+                    "pipe volume should be ≈ {expected:.2}, got {v:.2} (rel_err={rel_err:.4})"
+                );
+            }
+            other => panic!("expected Value::Real, got {:?}", other),
         }
     }
 }

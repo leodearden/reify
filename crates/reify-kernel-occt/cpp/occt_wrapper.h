@@ -2,6 +2,7 @@
 #include "rust/cxx.h"
 #include <TopoDS_Shape.hxx>
 #include <memory>
+#include <vector>
 
 namespace occt {
 
@@ -9,6 +10,21 @@ namespace occt {
 struct OcctShape {
     TopoDS_Shape shape;
 };
+
+/// Opaque vector of TopoDS_Shape for passing N shapes across the CXX FFI boundary.
+/// Uses push/build semantics: new_shape_vec() creates, shape_vec_push() adds shapes.
+struct OcctShapeVec {
+    std::vector<TopoDS_Shape> shapes;
+};
+
+/// Create an empty OcctShapeVec.
+std::unique_ptr<OcctShapeVec> new_shape_vec();
+
+/// Push a shape into the vector (mutable borrow via Pin).
+void shape_vec_push(OcctShapeVec& vec, const OcctShape& shape);
+
+/// Return the number of shapes in the vector.
+size_t shape_vec_len(const OcctShapeVec& vec);
 
 // Shared types — defined by cxx bridge. Forward-declared here for function signatures.
 struct Point3;
@@ -73,11 +89,20 @@ std::unique_ptr<OcctShape> draft_shape(const OcctShape& shape, double angle_rad,
 /// Create a circular wire profile at a given Z height (for loft profiles).
 std::unique_ptr<OcctShape> make_circle_wire(double radius, double z_height);
 
-/// Loft through two wire profiles to create a solid.
-std::unique_ptr<OcctShape> loft_two_profiles(const OcctShape& wire1, const OcctShape& wire2);
+/// Create a flat circular face (disk) at a given Z height (for sweep/extrude profiles).
+std::unique_ptr<OcctShape> make_circle_face(double radius, double z_height);
 
-/// Loft through three wire profiles to create a solid.
-std::unique_ptr<OcctShape> loft_three_profiles(const OcctShape& wire1, const OcctShape& wire2, const OcctShape& wire3);
+/// Create a straight line wire between two 3D points (for sweep paths).
+std::unique_ptr<OcctShape> make_line_wire(double x1, double y1, double z1,
+    double x2, double y2, double z2);
+
+/// Loft through N wire profiles (N >= 2) to create a solid.
+std::unique_ptr<OcctShape> loft_profiles(const OcctShapeVec& profiles);
+
+// --- Sweep ---
+
+/// Sweep a profile along a wire path (BRepOffsetAPI_MakePipe).
+std::unique_ptr<OcctShape> make_pipe(const OcctShape& profile, const OcctShape& spine);
 
 // --- Queries ---
 

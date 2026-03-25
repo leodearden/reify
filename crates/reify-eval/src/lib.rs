@@ -3062,6 +3062,22 @@ fn compile_geometry_op(
                         profiles: resolved?,
                     })
                 }
+                reify_compiler::SweepKind::Sweep => {
+                    // Resolve profile GeomRef (first entry in profiles) to a handle
+                    let profile_handle = match profiles.first()? {
+                        GeomRef::Step(idx) => step_handles.get(*idx).copied()?,
+                        GeomRef::Sub(_) => step_handles.last().copied()?,
+                    };
+                    // Resolve path GeomRef (second entry in profiles) to a handle
+                    let path_handle = match profiles.get(1)? {
+                        GeomRef::Step(idx) => step_handles.get(*idx).copied()?,
+                        GeomRef::Sub(_) => step_handles.last().copied()?,
+                    };
+                    Some(reify_types::GeometryOp::Sweep {
+                        profile: profile_handle,
+                        path: path_handle,
+                    })
+                }
             }
         }
     }
