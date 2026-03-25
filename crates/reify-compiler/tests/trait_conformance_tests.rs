@@ -1709,3 +1709,44 @@ fn chain_unresolved_trait() {
         errors
     );
 }
+
+/// step-17 (task-186): integration — diamond default no duplicate injection.
+/// C has default `param size : Length = 10mm`. A : C, B : C.
+/// `structure def X : A + B {}` → compile_first_template.
+/// Expect exactly 1 'size' value cell (not 2 from walking C via both A and B).
+#[test]
+fn integration_deep_chain_defaults_no_duplicate_injection() {
+    let source = r#"
+trait C {
+    param size : Length = 10mm
+}
+
+trait A : C {
+}
+
+trait B : C {
+}
+
+structure def X : A + B {
+}
+"#;
+    let (template, diagnostics) = compile_first_template(source);
+
+    // No error-severity diagnostics expected.
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    // Exactly one 'size' value cell should exist (diamond dedup prevents two injections).
+    let size_cells: Vec<_> =
+        template.value_cells.iter().filter(|vc| vc.id.member == "size").collect();
+    assert_eq!(
+        size_cells.len(),
+        1,
+        "expected exactly 1 'size' value cell (diamond dedup), got {}; cells: {:?}",
+        size_cells.len(),
+        size_cells
+    );
+}
