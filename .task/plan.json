@@ -52,7 +52,7 @@
       "type": "impl",
       "description": "Extend implicitly_converts_to() with Scalar<->Tensor<0> rules. Add match arms: (a) from is any type Q, to is Tensor{rank:0, n:_, quantity:Q} where *quantity == *from -> true (any type can be a rank-0 tensor's element). (b) from is Tensor{rank:0, n:_, quantity:Q}, to is any type where *quantity == *to -> true. This handles Scalar, Real, Int as the quantity type. The N parameter is ignored for rank-0 tensors.",
       "status": "done",
-      "commit": "PENDING"
+      "commit": "36e4dc38"
     },
     {
       "id": "step-5",
