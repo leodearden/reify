@@ -60,3 +60,36 @@ fn meta_block_stored_in_template() {
     assert_eq!(template.meta.get("description").unwrap(), "A bracket");
     assert_eq!(template.meta.get("part_number").unwrap(), "BR-001");
 }
+
+// ---------------------------------------------------------------------------
+// step-3: meta.key compiles to MetaAccess with Type::String
+// ---------------------------------------------------------------------------
+
+#[test]
+fn meta_access_compiles_to_string() {
+    let source = r#"
+        structure def Bracket {
+            meta {
+                description = "A bracket"
+            }
+            let desc : String = meta.description
+        }
+    "#;
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    let expr = get_cell_expr(&template, "desc");
+    match &expr.kind {
+        CompiledExprKind::MetaAccess { entity, key } => {
+            assert_eq!(entity, "Bracket");
+            assert_eq!(key, "description");
+        }
+        other => panic!("expected MetaAccess, got {:?}", other),
+    }
+    assert_eq!(expr.result_type, reify_types::Type::String);
+}
