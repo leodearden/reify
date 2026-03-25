@@ -2717,4 +2717,20 @@ mod tests {
         assert_eq!(f2.type_params[0].name, "T");
         assert_eq!(f2.type_params[0].bounds, vec!["Numeric"]);
     }
+
+    // ── Ad-hoc selector tests ─────────────────────────────
+
+    #[test]
+    fn parse_ad_hoc_selector_basic() {
+        let kind = parse_let_expr(r#"structure S { let x = port @ face("top") }"#);
+        match kind {
+            ExprKind::AdHocSelector { base, selector, args } => {
+                assert!(matches!(base.kind, ExprKind::Ident(ref n) if n == "port"));
+                assert_eq!(selector, "face");
+                assert_eq!(args.len(), 1);
+                assert!(matches!(&args[0].kind, ExprKind::StringLiteral(s) if s == "top"));
+            }
+            other => panic!("expected AdHocSelector, got {:?}", other),
+        }
+    }
 }
