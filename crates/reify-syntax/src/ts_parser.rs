@@ -1415,6 +1415,7 @@ impl<'a> Lowering<'a> {
             "list_literal" => self.lower_list_literal(node),
             "set_literal" => self.lower_set_literal(node),
             "map_literal" => self.lower_map_literal(node),
+            "ad_hoc_selector" => self.lower_ad_hoc_selector(node),
             "index_access" => self.lower_index_access(node),
             "member_access" => self.lower_member_access(node),
             "parenthesized_expression" => {
@@ -1753,6 +1754,37 @@ impl<'a> Lowering<'a> {
         let key = self.lower_expr(key_node)?;
         let value = self.lower_expr(value_node)?;
         Some((key, value))
+    }
+
+    fn lower_ad_hoc_selector(&self, node: tree_sitter::Node) -> Option<Expr> {
+        let base_node = node.child_by_field_name("base")?;
+        let selector_node = node.child_by_field_name("selector")?;
+        let base = self.lower_expr(base_node)?;
+        let selector = self.node_text(selector_node).to_string();
+
+        let mut args = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "argument_list" {
+                let mut arg_cursor = child.walk();
+                for arg_child in child.children(&mut arg_cursor) {
+                    if arg_child.is_named()
+                        && let Some(expr) = self.lower_expr(arg_child)
+                    {
+                        args.push(expr);
+                    }
+                }
+            }
+        }
+
+        Some(Expr {
+            kind: ExprKind::AdHocSelector {
+                base: Box::new(base),
+                selector,
+                args,
+            },
+            span: self.span(node),
+        })
     }
 
     fn lower_index_access(&self, node: tree_sitter::Node) -> Option<Expr> {
@@ -2716,5 +2748,50 @@ mod tests {
         assert_eq!(f2.type_params.len(), 1);
         assert_eq!(f2.type_params[0].name, "T");
         assert_eq!(f2.type_params[0].bounds, vec!["Numeric"]);
+    }
+
+    // ── Ad-hoc selector tests ─────────────────────────────
+
+    #[test]
+    fn parse_ad_hoc_selector_basic() {
+        let kind = parse_let_expr(r#"structure S { let x = port @ face("top") }"#);
+        match kind {
+            ExprKind::AdHocSelector { base, selector, args } => {
+                assert!(matches!(base.kind, ExprKind::Ident(ref n) if n == "port"));
+                assert_eq!(selector, "face");
+                assert_eq!(args.len(), 1);
+                assert!(matches!(&args[0].kind, ExprKind::StringLiteral(s) if s == "top"));
+            }
+            other => panic!("expected AdHocSelector, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_ad_hoc_selector_no_args() {
+        let kind = parse_let_expr("structure S { let x = port @ default() }");
+        match kind {
+            ExprKind::AdHocSelector { base, selector, args } => {
+                assert!(matches!(base.kind, ExprKind::Ident(ref n) if n == "port"));
+                assert_eq!(selector, "default");
+                assert_eq!(args.len(), 0);
+            }
+            other => panic!("expected AdHocSelector, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_ad_hoc_selector_multiple_args() {
+        let kind = parse_let_expr("structure S { let x = port @ point(1, 2, 3) }");
+        match kind {
+            ExprKind::AdHocSelector { base, selector, args } => {
+                assert!(matches!(base.kind, ExprKind::Ident(ref n) if n == "port"));
+                assert_eq!(selector, "point");
+                assert_eq!(args.len(), 3);
+                assert!(matches!(&args[0].kind, ExprKind::NumberLiteral(v) if (*v - 1.0).abs() < f64::EPSILON));
+                assert!(matches!(&args[1].kind, ExprKind::NumberLiteral(v) if (*v - 2.0).abs() < f64::EPSILON));
+                assert!(matches!(&args[2].kind, ExprKind::NumberLiteral(v) if (*v - 3.0).abs() < f64::EPSILON));
+            }
+            other => panic!("expected AdHocSelector, got {:?}", other),
+        }
     }
 }

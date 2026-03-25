@@ -1,0 +1,85 @@
+================================================================================
+Simple ad-hoc selector with one string argument
+================================================================================
+
+structure S {
+  let x = port @ face("top")
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (ad_hoc_selector
+        base: (identifier)
+        selector: (identifier)
+        (argument_list
+          (string_literal))))))
+
+================================================================================
+Ad-hoc selector with no arguments
+================================================================================
+
+structure S {
+  let x = port @ default()
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (ad_hoc_selector
+        base: (identifier)
+        selector: (identifier)))))
+
+================================================================================
+Ad-hoc selector with multiple numeric arguments
+================================================================================
+
+structure S {
+  let x = port @ point(1, 2, 3)
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (ad_hoc_selector
+        base: (identifier)
+        selector: (identifier)
+        (argument_list
+          (number_literal)
+          (number_literal)
+          (number_literal))))))
+
+================================================================================
+Ad-hoc selector chained with member access
+================================================================================
+
+structure S {
+  let x = sub_part.mount @ face("top")
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (ad_hoc_selector
+        base: (member_access
+          object: (identifier)
+          member: (identifier))
+        selector: (identifier)
+        (argument_list
+          (string_literal))))))

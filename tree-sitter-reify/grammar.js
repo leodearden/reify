@@ -562,7 +562,9 @@ module.exports = grammar({
     //   5: +, - (additive)
     //   6: *, / (multiplicative)
     //   7: unary -, ! (unary)
-    //   8: postfix (member access, function call)
+    //   8: postfix index access ([])
+    //   9: postfix ad-hoc selector (@)
+    //  10: postfix member access (.), function call
 
     _expression: $ => choice(
       $.binary_expression,
@@ -571,6 +573,7 @@ module.exports = grammar({
       $.match_expression,
       $.lambda_expression,
       $.quantifier_expression,
+      $.ad_hoc_selector,
       $.index_access,
       $._primary_expression,
     ),
@@ -674,7 +677,7 @@ module.exports = grammar({
     // An identifier that must immediately follow the previous token (no whitespace)
     immediate_identifier: $ => token.immediate(/[a-zA-Z_][a-zA-Z0-9_]*/),
 
-    function_call: $ => prec(8, seq(
+    function_call: $ => prec(10, seq(
       field('name', $.identifier),
       '(',
       optional($.argument_list),
@@ -687,7 +690,7 @@ module.exports = grammar({
       optional(','),
     ),
 
-    member_access: $ => prec.left(8, seq(
+    member_access: $ => prec.left(10, seq(
       field('object', $._expression),
       '.',
       field('member', $.identifier),
@@ -707,6 +710,18 @@ module.exports = grammar({
       '=>',
       field('value', $._expression),
     ),
+
+    // ── Ad-hoc port selector ────────────────────────────────
+    // expr @ ident(args) — selects a port on a substructure using a named selector
+    // Binds tighter than index_access (prec 8) but looser than member_access (prec 10)
+    ad_hoc_selector: $ => prec.left(9, seq(
+      field('base', $._expression),
+      '@',
+      field('selector', $.identifier),
+      '(',
+      optional($.argument_list),
+      ')',
+    )),
 
     // ── Index access ────────────────────────────────────────
     index_access: $ => prec.left(8, seq(

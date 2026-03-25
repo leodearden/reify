@@ -1585,6 +1585,14 @@ fn compile_expr_guarded(
                 compiled_predicate,
             )
         }
+        // AdHocSelector compiler support is implemented in a separate task.
+        reify_syntax::ExprKind::AdHocSelector { .. } => {
+            diagnostics.push(
+                Diagnostic::error("ad-hoc selector (@) is not yet supported in the compiler")
+                    .with_label(DiagnosticLabel::new(expr.span, "not yet supported")),
+            );
+            CompiledExpr::literal(Value::Undef, Type::Real)
+        }
     }
 }
 
