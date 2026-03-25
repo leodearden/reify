@@ -1497,6 +1497,77 @@ async fn ensure_sidecar_ready_respawns_starting_stale_handle() {
     );
 }
 
+// --- ensure_sidecar_ready kill-on-eviction test (task-353/step-25) ---
+
+/// Verify that when a stale (non-Ready) handle is evicted from the sidecar slot
+/// during Phase 1, `kill()` is called on it rather than just dropping it.
+///
+/// `SidecarHandle::kill()` sets state to `SidecarState::NotStarted` and aborts
+/// the reader task. A bare drop leaves state unchanged (no `Drop` impl). The test
+/// clones the evicted handle's state Arc before storing the handle, then verifies
+/// the state is `NotStarted` after `ensure_sidecar_ready` returns — proving
+/// `kill()` was called, not just `drop()`.
+#[tokio::test]
+async fn ensure_sidecar_ready_kills_evicted_stale_handle() {
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::io::{AsyncWriteExt, BufReader};
+    use tokio::sync::Mutex;
+
+    // Build a stale Crashed handle. Keep a clone of the state Arc so we can
+    // verify it transitions to NotStarted after eviction.
+    let old_state = Arc::new(Mutex::new(SidecarState::Crashed("pre-crash".to_string())));
+    let (stale_data_writer, stale_data_reader) = tokio::io::duplex(1024);
+    let stale_reader = BufReader::new(stale_data_reader);
+    let (stale_stdin_writer, _stale_stdin_reader) = tokio::io::duplex(1024);
+    let stale_handle =
+        SidecarHandle::from_parts(stale_stdin_writer, stale_reader, Arc::clone(&old_state));
+    // Keep stale_data_writer alive so the reader task does not get EOF and
+    // overwrite state via on_exit.
+    let _stale_writer_keeper = stale_data_writer;
+
+    let sidecar: Mutex<Option<SidecarHandle>> = Mutex::new(Some(stale_handle));
+
+    // Working spawn_fn that produces a Ready handle.
+    let held_writer: Arc<Mutex<Option<tokio::io::DuplexStream>>> = Arc::new(Mutex::new(None));
+    let held_clone = Arc::clone(&held_writer);
+    let spawn_fn = move || {
+        let held = Arc::clone(&held_clone);
+        async move {
+            let state = Arc::new(Mutex::new(SidecarState::Starting));
+            let (mut data_writer, data_reader) = tokio::io::duplex(1024);
+            data_writer
+                .write_all(b"{\"type\":\"ready\"}\n")
+                .await
+                .map_err(|e| e.to_string())?;
+            let reader = BufReader::new(data_reader);
+            let (stdin_writer, _stdin_reader) = tokio::io::duplex(1024);
+            let handle = SidecarHandle::from_parts(stdin_writer, reader, state);
+            *held.lock().await = Some(data_writer);
+            Ok(handle)
+        }
+    };
+
+    let result = ensure_sidecar_ready(&sidecar, spawn_fn, Duration::from_secs(5)).await;
+
+    assert!(
+        result.is_ok(),
+        "ensure_sidecar_ready should succeed after evicting stale handle: {:?}",
+        result
+    );
+
+    // The evicted handle must have been killed (not just dropped).
+    // kill() sets state to NotStarted; a bare drop leaves state as Crashed.
+    let evicted_state = old_state.lock().await.clone();
+    assert!(
+        matches!(evicted_state, SidecarState::NotStarted),
+        "Evicted stale handle must be killed (state = NotStarted), got: {:?}",
+        evicted_state
+    );
+}
+
+// --- multi-thread race regression test (task-353/step-15) ---
+
 /// Reproduce the race condition where `notify.notified()` is called AFTER the
 /// sidecar lock is released, so a multi-thread executor can let the reader task
 /// call `notify_waiters()` before the waiter is registered (lost wakeup →
