@@ -7391,11 +7391,11 @@
         "description": "Three correctness issues in the termination checking pass in crates/reify-compiler/src/lib.rs:\n\n1. BinOp::Add accepted as 'modifying' in termination_is_modifying() (~line 2783) but n+1 with guard n>0 is non-terminating. Either remove Add from the accepted ops or add sign analysis. Add a documenting test either way.\n\n2. termination_args_contain_undef() (~line 2756) checks ALL sub args for undef, not just termination-relevant ones. Scope to guard-referenced params only.\n\n3. When compile_expr fails on a where-clause condition (~line 3209-3213), it returns literal Undef as fallback. The termination check then emits a spurious 'guard doesn't reference params' error. Store None in guard_expr when compilation fails instead of wrapping the Undef.\n\nAdd corresponding tests in crates/reify-compiler/tests/termination_check_tests.rs.\n\nSource: review suggestions from esc-204-20 (task 204).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-03-25T21:25:51.529Z"
+        "updatedAt": "2026-03-25T21:30:16.120Z"
       },
       {
         "id": "409",
@@ -7638,7 +7638,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-25T21:30:08.363Z",
+      "lastModified": "2026-03-25T21:30:16.122Z",
       "taskCount": 426,
       "completedCount": 227,
       "tags": [
