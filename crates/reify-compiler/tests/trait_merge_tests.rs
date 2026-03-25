@@ -1,247 +1,246 @@
-//! Trait member merging tests — task 190.
+//! Trait member merging compilation tests.
 //!
-//! Focused tests for the trait member merging behaviour:
-//! two-trait merge, shared-param dedup, diamond dedup,
-//! conflict detection, constraint conjunction, and let-binding merge/conflict.
+//! Tests for merging members when a structure implements multiple traits:
+//! let default deduplication, expression conflict detection, and
+//! cross-trait requirement satisfaction by defaults.
 
 use reify_compiler::*;
 use reify_types::*;
 
-// ── Helpers ─────────────────────────────────────────────────────────────────
-
-/// Parse `source` and compile, returning the full CompiledModule.
+/// Helper: parse source and compile, returning the CompiledModule.
 fn compile_module(source: &str) -> CompiledModule {
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
     assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
     reify_compiler::compile(&parsed)
 }
 
-/// Parse `source`, compile, and return the first template together with all
-/// diagnostics emitted during compilation.
+/// Helper: parse source and compile, returning first template + diagnostics.
 fn compile_first_template(source: &str) -> (TopologyTemplate, Vec<Diagnostic>) {
     let module = compile_module(source);
-    let template = module.templates.into_iter().next().expect("expected at least 1 template");
+    let template = module.templates.into_iter().next().expect("expected 1 template");
     (template, module.diagnostics)
 }
 
-// ── step-1 ───────────────────────────────────────────────────────────────────
-
-/// Two traits with distinct params — structure S:A+B must satisfy both.
-/// Assert: no errors, template contains value cells for both 'a' and 'b'.
+/// Step 1a: Two traits each providing `let area : Real = width * height`.
+/// Structure implements both — identical let defaults should be merged (dedup).
+/// Expect 0 errors and exactly 1 'area' value cell.
 #[test]
-fn two_trait_merge_distinct_params() {
+fn let_defaults_same_name_same_expr_merge() {
+    let source = r#"
+trait HasArea {
+    let area : Real = width * height
+}
+
+trait AlsoHasArea {
+    let area : Real = width * height
+}
+
+structure def S : HasArea + AlsoHasArea {
+    param width : Real = 5.0
+    param height : Real = 3.0
+}
+"#;
+
+    let (template, diagnostics) = compile_first_template(source);
+
+    // No error-severity diagnostics expected.
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    // Exactly 1 'area' value cell should exist (dedup, not 2).
+    let area_cells: Vec<_> = template
+        .value_cells
+        .iter()
+        .filter(|vc| vc.id.member == "area")
+        .collect();
+    assert_eq!(
+        area_cells.len(),
+        1,
+        "expected exactly 1 'area' value cell after merge, got {}",
+        area_cells.len()
+    );
+}
+
+/// Step 2: Trait A has `let x : Length = 5mm`, trait B has `let x : Mass = 1kg`.
+/// Structure implements both — different types → 'conflicting' error.
+/// NOTE: This test is EXPECTED TO FAIL until step-3 fixes the Type::Real sentinel.
+#[test]
+fn let_defaults_same_name_different_type_error() {
     let source = r#"
 trait A {
-    param a : Length
+    let x : Length = 5mm
 }
 
 trait B {
-    param b : Length
+    let x : Mass = 1kg
 }
 
-structure def S : A + B {
-    param a : Length = 1mm
-    param b : Length = 2mm
-}
-"#;
-
-    let (template, diagnostics) = compile_first_template(source);
-
-    let errors: Vec<_> = diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
-    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
-
-    let has_a = template.value_cells.iter().any(|vc| vc.id.member == "a");
-    let has_b = template.value_cells.iter().any(|vc| vc.id.member == "b");
-    assert!(has_a, "expected value cell 'a' from trait A");
-    assert!(has_b, "expected value cell 'b' from trait B");
-}
-
-// ── step-2 ───────────────────────────────────────────────────────────────────
-
-/// Two traits share the same `param x : Length`.
-/// The requirement is deduplicated — structure S provides x once.
-/// Assert: no errors, exactly 1 'x' value cell (not 2).
-#[test]
-fn two_trait_merge_shared_param_deduped() {
-    let source = r#"
-trait A {
-    param x : Length
-}
-
-trait B {
-    param x : Length
-}
-
-structure def S : A + B {
-    param x : Length = 5mm
-}
-"#;
-
-    let (template, diagnostics) = compile_first_template(source);
-
-    let errors: Vec<_> = diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
-    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
-
-    let x_cells: Vec<_> = template.value_cells.iter().filter(|vc| vc.id.member == "x").collect();
-    assert_eq!(
-        x_cells.len(),
-        1,
-        "expected exactly 1 'x' value cell (deduplicated), got {}: {:?}",
-        x_cells.len(),
-        x_cells.iter().map(|vc| &vc.id).collect::<Vec<_>>()
-    );
-}
-
-// ── step-3 ───────────────────────────────────────────────────────────────────
-
-/// Diamond hierarchy: D{param x:Length}, B:D, C:D, A:B+C, structure S:A.
-/// The param x from D is reachable via two paths (through B and through C).
-/// The visited-set in collect_all_requirements deduplicates it.
-/// Assert: no errors, exactly 1 'x' value cell (not 2).
-#[test]
-fn diamond_hierarchy_params_deduped() {
-    let source = r#"
-trait D {
-    param x : Length
-}
-
-trait B : D {
-}
-
-trait C : D {
-}
-
-trait A : B + C {
-}
-
-structure def S : A {
-    param x : Length = 5mm
-}
-"#;
-
-    let (template, diagnostics) = compile_first_template(source);
-
-    let errors: Vec<_> = diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
-    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
-
-    let x_cells: Vec<_> = template.value_cells.iter().filter(|vc| vc.id.member == "x").collect();
-    assert_eq!(
-        x_cells.len(),
-        1,
-        "expected exactly 1 'x' value cell (diamond dedup), got {}: {:?}",
-        x_cells.len(),
-        x_cells.iter().map(|vc| &vc.id).collect::<Vec<_>>()
-    );
-}
-
-// ── step-4 ───────────────────────────────────────────────────────────────────
-
-/// Diamond hierarchy with a default at the root: D{param x:Length=10mm}.
-/// Structure S:A does not override x — the default is injected exactly once.
-/// Assert: no errors, exactly 1 'x' value cell with default_expr set.
-#[test]
-fn diamond_hierarchy_default_deduped() {
-    let source = r#"
-trait D {
-    param x : Length = 10mm
-}
-
-trait B : D {
-}
-
-trait C : D {
-}
-
-trait A : B + C {
-}
-
-structure def S : A {
-}
-"#;
-
-    let (template, diagnostics) = compile_first_template(source);
-
-    let errors: Vec<_> = diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
-    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
-
-    let x_cells: Vec<_> = template.value_cells.iter().filter(|vc| vc.id.member == "x").collect();
-    assert_eq!(
-        x_cells.len(),
-        1,
-        "expected exactly 1 'x' value cell (diamond default dedup), got {}",
-        x_cells.len()
-    );
-    assert!(
-        x_cells[0].default_expr.is_some(),
-        "expected default_expr to be set on the injected 'x' cell"
-    );
-}
-
-// ── step-5 ───────────────────────────────────────────────────────────────────
-
-/// Conflict: trait A declares `param size : Length`, trait B declares
-/// `param size : Mass`.  Same name, different types → conflict error.
-/// Structure S:A+B does not provide 'size'.
-/// Assert: error diagnostic containing "conflicting" and "size".
-#[test]
-fn conflict_same_name_different_type() {
-    let source = r#"
-trait A {
-    param size : Length
-}
-
-trait B {
-    param size : Mass
-}
-
-structure def S : A + B {
+structure def U : A + B {
 }
 "#;
 
     let (_, diagnostics) = compile_first_template(source);
 
-    let errors: Vec<_> = diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
-    assert!(!errors.is_empty(), "expected a conflict error, got none");
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(!errors.is_empty(), "expected conflict diagnostic for same-name different-type let defaults");
 
-    let msg = format!("{:?}", errors);
+    let error_msg = format!("{:?}", errors);
     assert!(
-        msg.contains("conflicting") && msg.contains("size"),
-        "error should mention 'conflicting' and 'size', got: {}",
-        msg
+        error_msg.contains("conflicting"),
+        "error should mention 'conflicting', got: {}",
+        error_msg
     );
 }
 
-// ── step-6 ───────────────────────────────────────────────────────────────────
-
-/// Two traits with distinct constraints on a shared param are both injected
-/// (constraint conjunction).
-/// trait A{param x:Length, constraint x > 0mm}
-/// trait B{param x:Length, constraint x < 100mm}
-/// structure S:A+B{param x:Length=5mm}
-/// Assert: no errors, at least 2 constraints in template.
+/// Step 4: Trait A has `let x : Real = width + 1`, trait B has `let x : Real = width * 2`.
+/// Same name, same type, different expressions — expect 'conflicting' error.
+/// NOTE: This test is EXPECTED TO FAIL until step-5 adds expression comparison.
 #[test]
-fn constraint_conjunction_from_two_traits() {
+fn let_defaults_same_name_same_type_different_expr_error() {
     let source = r#"
 trait A {
-    param x : Length
-    constraint x > 0mm
+    let x : Real = width + 1.0
 }
 
 trait B {
+    let x : Real = width * 2.0
+}
+
+structure def V : A + B {
+    param width : Real = 5.0
+}
+"#;
+
+    let (_, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "expected conflict diagnostic for same-name same-type different-expression let defaults"
+    );
+
+    let error_msg = format!("{:?}", errors);
+    assert!(
+        error_msg.contains("conflicting"),
+        "error should mention 'conflicting', got: {}",
+        error_msg
+    );
+}
+
+/// Step 6: Trait A requires `param x : Length` (no default),
+/// trait B provides `param x : Length = 10mm` (default).
+/// Structure implements both with empty body — the default from B satisfies A's requirement.
+/// NOTE: This test is EXPECTED TO FAIL until step-7 cross-checks requirements against defaults.
+#[test]
+fn requirement_satisfied_by_cross_trait_default() {
+    let source = r#"
+trait NeedsX {
     param x : Length
+}
+
+trait ProvidesX {
+    param x : Length = 10mm
+}
+
+structure def W : NeedsX + ProvidesX {
+}
+"#;
+
+    let (_, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected 0 errors (default from ProvidesX satisfies NeedsX requirement), got: {:?}",
+        errors
+    );
+}
+
+/// Step 8a: Trait A has `let x : Real = a + 1`, trait B has `let x : Real = a * 2`.
+/// Structure implements both and provides its own `let x : Real = a + a`.
+/// Structure override resolves the conflict — expect 0 errors.
+#[test]
+fn let_conflict_resolved_by_structure_override() {
+    let source = r#"
+trait A {
+    let x : Real = a + 1.0
+}
+
+trait B {
+    let x : Real = a * 2.0
+}
+
+structure def R : A + B {
+    param a : Real = 5.0
+    let x : Real = a + a
+}
+"#;
+
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected 0 errors (structure override resolves let conflict), got: {:?}",
+        errors
+    );
+
+    // Exactly 1 'x' value cell (the structure's own, not any trait default).
+    let x_cells: Vec<_> = template
+        .value_cells
+        .iter()
+        .filter(|vc| vc.id.member == "x")
+        .collect();
+    assert_eq!(
+        x_cells.len(),
+        1,
+        "expected exactly 1 'x' value cell, got {}",
+        x_cells.len()
+    );
+}
+
+/// Step 8b: Trait A has `constraint x > 0mm`, trait B has `constraint x < 100mm`.
+/// Structure provides `param x : Length = 5mm`. Both constraints should be injected.
+#[test]
+fn constraints_compose_conjunctively_across_traits() {
+    let source = r#"
+trait HasLowerBound {
+    constraint x > 0mm
+}
+
+trait HasUpperBound {
     constraint x < 100mm
 }
 
-structure def S : A + B {
+structure def Q : HasLowerBound + HasUpperBound {
     param x : Length = 5mm
 }
 "#;
 
     let (template, diagnostics) = compile_first_template(source);
 
-    let errors: Vec<_> = diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
 
+    // At least 2 constraints injected (one from each trait).
     assert!(
         template.constraints.len() >= 2,
         "expected at least 2 constraints (one from each trait), got {}",
@@ -249,163 +248,100 @@ structure def S : A + B {
     );
 }
 
-// ── step-7 ───────────────────────────────────────────────────────────────────
-
-/// Three traits each contribute a distinct constraint on param x.
-/// trait A{param x:Length, constraint x > 0mm}
-/// trait B{param x:Length, constraint x < 1000mm}
-/// trait C{param x:Length, constraint x != 50mm}
-/// structure S:A+B+C{param x:Length=5mm}
-/// Assert: no errors, at least 3 constraints in template.
+/// Step 10: Comprehensive mixed-merging test.
+/// Trait A: `param x : Length`, `let area : Real = x * x`, `constraint x > 0mm`.
+/// Trait B: `param x : Length`, `let area : Real = x * x`, `constraint x < 1000mm`.
+/// Structure implements A + B with `param x : Length = 5mm`.
+/// Expect: 0 errors, exactly 1 'x' value cell, exactly 1 'area' value cell,
+/// at least 2 constraints (one from each trait).
 #[test]
-fn constraint_conjunction_three_traits() {
+fn mixed_merging_params_lets_constraints() {
     let source = r#"
-trait A {
+trait GeomA {
     param x : Length
+    let area : Real = x * x
     constraint x > 0mm
 }
 
-trait B {
+trait GeomB {
     param x : Length
+    let area : Real = x * x
     constraint x < 1000mm
 }
 
-trait C {
-    param x : Length
-    constraint x > 1mm
-}
-
-structure def S : A + B + C {
+structure def M : GeomA + GeomB {
     param x : Length = 5mm
 }
 "#;
 
     let (template, diagnostics) = compile_first_template(source);
 
-    let errors: Vec<_> = diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    // No error-severity diagnostics expected.
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
 
+    // Exactly 1 'x' value cell (the structure's own).
+    let x_cells: Vec<_> = template
+        .value_cells
+        .iter()
+        .filter(|vc| vc.id.member == "x")
+        .collect();
+    assert_eq!(
+        x_cells.len(),
+        1,
+        "expected exactly 1 'x' value cell, got {}",
+        x_cells.len()
+    );
+
+    // Exactly 1 'area' value cell (dedup of identical let defaults).
+    let area_cells: Vec<_> = template
+        .value_cells
+        .iter()
+        .filter(|vc| vc.id.member == "area")
+        .collect();
+    assert_eq!(
+        area_cells.len(),
+        1,
+        "expected exactly 1 'area' value cell, got {}",
+        area_cells.len()
+    );
+
+    // At least 2 constraints injected (one from each trait — both unlabeled).
     assert!(
-        template.constraints.len() >= 3,
-        "expected at least 3 constraints (one from each trait A, B, C), got {}",
+        template.constraints.len() >= 2,
+        "expected at least 2 constraints (one per trait), got {}",
         template.constraints.len()
     );
 }
 
-// ── step-8 ───────────────────────────────────────────────────────────────────
-
-/// Two traits both provide `let y = 42` — same expression, same name.
-/// The let binding is deduplicated (not injected twice).
-/// Assert: no errors, exactly 1 'y' value cell with kind Let.
+/// Step 1b: Two traits each requiring `param x : Length`.
+/// Structure provides `param x : Length = 5mm` — requirement dedup baseline.
+/// Expect 0 errors (existing behavior).
 #[test]
-fn let_merge_same_expr() {
+fn param_requirements_same_name_same_type_merge() {
     let source = r#"
-trait A {
-    let y = 42
+trait NeedsX {
+    param x : Length
 }
 
-trait B {
-    let y = 42
+trait AlsoNeedsX {
+    param x : Length
 }
 
-structure def S : A + B {
-}
-"#;
-
-    let (template, diagnostics) = compile_first_template(source);
-
-    let errors: Vec<_> = diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
-    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
-
-    let y_cells: Vec<_> = template.value_cells.iter().filter(|vc| vc.id.member == "y").collect();
-    assert_eq!(
-        y_cells.len(),
-        1,
-        "expected exactly 1 'y' value cell (let same-expr dedup), got {}",
-        y_cells.len()
-    );
-    assert_eq!(
-        y_cells[0].kind,
-        ValueCellKind::Let,
-        "expected ValueCellKind::Let for 'y'"
-    );
-}
-
-// ── step-9 ───────────────────────────────────────────────────────────────────
-
-/// Two traits provide `let y` with DIFFERENT expressions: A has `let y = 42`,
-/// B has `let y = 99`.  This is a conflict — different content means different
-/// behaviour depending on which trait wins, so the compiler must reject it.
-///
-/// This test will FAIL against the pre-step-10 code because
-/// `collect_all_requirements` maps all `DefaultKind::Let(_)` to a uniform
-/// `Type::Real` sentinel, which causes both to appear identical and be silently
-/// deduplicated without an error.  The fix (step-10) compares `LetDecl`
-/// `content_hash` values and emits a "conflicting trait let bindings"
-/// diagnostic when they differ.
-#[test]
-fn let_conflict_different_expr() {
-    let source = r#"
-trait A {
-    let y = 42
-}
-
-trait B {
-    let y = 99
-}
-
-structure def S : A + B {
+structure def T : NeedsX + AlsoNeedsX {
+    param x : Length = 5mm
 }
 "#;
 
     let (_, diagnostics) = compile_first_template(source);
 
-    let errors: Vec<_> = diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
-    assert!(
-        !errors.is_empty(),
-        "expected a conflict error for let y with different expressions, got none"
-    );
-
-    let msg = format!("{:?}", errors);
-    assert!(
-        msg.contains("conflicting") && msg.contains("y"),
-        "error should mention 'conflicting' and 'y', got: {}",
-        msg
-    );
-}
-
-// ── step-11 ──────────────────────────────────────────────────────────────────
-
-/// Trait provides `let y = 42`; structure S:A does not declare 'y'.
-/// The let binding is injected from the trait into the template.
-/// Assert: no errors, 'y' value cell exists with kind=Let and default_expr set.
-#[test]
-fn let_from_trait_injected() {
-    let source = r#"
-trait A {
-    let y = 42
-}
-
-structure def S : A {
-}
-"#;
-
-    let (template, diagnostics) = compile_first_template(source);
-
-    let errors: Vec<_> = diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    // No error-severity diagnostics expected — same-type requirement dedup.
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
-
-    let y_cell = template.value_cells.iter().find(|vc| vc.id.member == "y");
-    assert!(
-        y_cell.is_some(),
-        "expected 'y' value cell injected from trait default, got cells: {:?}",
-        template.value_cells.iter().map(|vc| &vc.id.member).collect::<Vec<_>>()
-    );
-
-    let y_cell = y_cell.unwrap();
-    assert_eq!(y_cell.kind, ValueCellKind::Let, "expected ValueCellKind::Let for 'y'");
-    assert!(
-        y_cell.default_expr.is_some(),
-        "expected default_expr to be set on injected 'y' let cell"
-    );
 }

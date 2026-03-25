@@ -26,6 +26,16 @@
 #include <BRepOffsetAPI_MakeThickSolid.hxx>
 #include <TopTools_ListOfShape.hxx>
 
+// OCCT prism (extrude) and revolve
+#include <BRepPrimAPI_MakePrism.hxx>
+#include <BRepPrimAPI_MakeRevol.hxx>
+
+// OCCT edge/wire/face/solid construction
+#include <BRepBuilderAPI_MakeEdge.hxx>
+#include <BRepBuilderAPI_MakeWire.hxx>
+#include <BRepBuilderAPI_MakeFace.hxx>
+#include <BRepBuilderAPI_MakeSolid.hxx>
+
 // OCCT pipe (sweep)
 #include <BRepOffsetAPI_MakePipe.hxx>
 
@@ -37,6 +47,9 @@
 #include <Geom_Plane.hxx>
 #include <Geom_Surface.hxx>
 
+// OCCT shape utilities
+#include <BRepLib.hxx>
+
 // OCCT transforms
 #include <BRepBuilderAPI_Transform.hxx>
 #include <gp_Trsf.hxx>
@@ -46,9 +59,10 @@
 #include <gp_Dir.hxx>
 #include <gp_Pnt.hxx>
 
-// OCCT properties
+// OCCT properties + surface adaptor
 #include <BRepGProp.hxx>
 #include <GProp_GProps.hxx>
+#include <BRepAdaptor_Surface.hxx>
 #include <Bnd_Box.hxx>
 #include <BRepBndLib.hxx>
 
@@ -263,6 +277,55 @@ std::unique_ptr<OcctShape> rotate_shape(const OcctShape& shape, double ax, doubl
         throw std::runtime_error(std::string("OCCT rotate_shape: unexpected: ") + e.what());
     } catch (...) {
         throw std::runtime_error("OCCT rotate_shape: unknown C++ exception");
+    }
+}
+
+std::unique_ptr<OcctShape> scale_shape(const OcctShape& shape, double factor, double cx, double cy, double cz) {
+    try {
+        gp_Trsf trsf;
+        trsf.SetScale(gp_Pnt(cx, cy, cz), factor);
+        BRepBuilderAPI_Transform transform(shape.shape, trsf, true);
+        transform.Build();
+        if (!transform.IsDone()) {
+            throw std::runtime_error("BRepBuilderAPI_Transform (scale) failed");
+        }
+        auto result = std::make_unique<OcctShape>();
+        result->shape = transform.Shape();
+        return result;
+    } catch (Standard_Failure const& e) {
+        throw std::runtime_error(std::string("OCCT scale_shape: ") + e.GetMessageString());
+    } catch (std::exception const& e) {
+        throw std::runtime_error(std::string("OCCT scale_shape: unexpected: ") + e.what());
+    } catch (...) {
+        throw std::runtime_error("OCCT scale_shape: unknown C++ exception");
+    }
+}
+
+std::unique_ptr<OcctShape> rotate_around_shape(const OcctShape& shape,
+    double px, double py, double pz,
+    double ax, double ay, double az,
+    double angle_rad) {
+    try {
+        // gp_Ax1 defines an axis through a point with a direction.
+        // trsf.SetRotation(axis, angle) then rotates around that axis,
+        // correctly handling the non-origin pivot point.
+        gp_Ax1 axis(gp_Pnt(px, py, pz), gp_Dir(ax, ay, az));
+        gp_Trsf trsf;
+        trsf.SetRotation(axis, angle_rad);
+        BRepBuilderAPI_Transform transform(shape.shape, trsf, true);
+        transform.Build();
+        if (!transform.IsDone()) {
+            throw std::runtime_error("BRepBuilderAPI_Transform (rotate_around) failed");
+        }
+        auto result = std::make_unique<OcctShape>();
+        result->shape = transform.Shape();
+        return result;
+    } catch (Standard_Failure const& e) {
+        throw std::runtime_error(std::string("OCCT rotate_around_shape: ") + e.GetMessageString());
+    } catch (std::exception const& e) {
+        throw std::runtime_error(std::string("OCCT rotate_around_shape: unexpected: ") + e.what());
+    } catch (...) {
+        throw std::runtime_error("OCCT rotate_around_shape: unknown C++ exception");
     }
 }
 
@@ -548,6 +611,27 @@ std::unique_ptr<OcctShape> make_circle_face(double radius, double z_height) {
     }
 }
 
+std::unique_ptr<OcctShape> loft_two_profiles(const OcctShape& wire1, const OcctShape& wire2) {
+    try {
+        BRepOffsetAPI_ThruSections loft(Standard_True, Standard_False);
+        loft.AddWire(TopoDS::Wire(wire1.shape));
+        loft.AddWire(TopoDS::Wire(wire2.shape));
+        loft.Build();
+        if (!loft.IsDone()) {
+            throw std::runtime_error("BRepOffsetAPI_ThruSections (loft_two_profiles) failed");
+        }
+        auto result = std::make_unique<OcctShape>();
+        result->shape = loft.Shape();
+        return result;
+    } catch (Standard_Failure const& e) {
+        throw std::runtime_error(std::string("OCCT loft_two_profiles: ") + e.GetMessageString());
+    } catch (std::exception const& e) {
+        throw std::runtime_error(std::string("OCCT loft_two_profiles: unexpected: ") + e.what());
+    } catch (...) {
+        throw std::runtime_error("OCCT loft_two_profiles: unknown C++ exception");
+    }
+}
+
 // --- OcctShapeVec ---
 
 std::unique_ptr<OcctShapeVec> new_shape_vec() {
@@ -642,13 +726,189 @@ std::unique_ptr<OcctShape> make_pipe(const OcctShape& profile, const OcctShape& 
     }
 }
 
+// --- Sweep / Extrude ---
+
+std::unique_ptr<OcctShape> make_prism(const OcctShape& profile, double dx, double dy, double dz) {
+    try {
+        double mag_sq = dx*dx + dy*dy + dz*dz;
+        if (!(std::isfinite(dx) && std::isfinite(dy) && std::isfinite(dz))) {
+            throw std::runtime_error("make_prism: direction vector components must be finite");
+        }
+        if (mag_sq < 1e-30) {
+            throw std::runtime_error("make_prism: direction vector magnitude must be > 0");
+        }
+        gp_Vec vec(dx, dy, dz);
+        BRepPrimAPI_MakePrism maker(profile.shape, vec);
+        if (!maker.IsDone()) {
+            throw std::runtime_error("BRepPrimAPI_MakePrism failed");
+        }
+        auto result = std::make_unique<OcctShape>();
+        result->shape = maker.Shape();
+        return result;
+    } catch (Standard_Failure const& e) {
+        throw std::runtime_error(std::string("OCCT make_prism: ") + e.GetMessageString());
+    } catch (std::exception const& e) {
+        throw std::runtime_error(std::string("OCCT make_prism: unexpected: ") + e.what());
+    } catch (...) {
+        throw std::runtime_error("OCCT make_prism: unknown C++ exception");
+    }
+}
+
+std::unique_ptr<OcctShape> make_revolve(const OcctShape& profile,
+    double ox, double oy, double oz,
+    double ax, double ay, double az,
+    double angle_rad) {
+    try {
+        if (!(std::isfinite(ox) && std::isfinite(oy) && std::isfinite(oz) &&
+              std::isfinite(ax) && std::isfinite(ay) && std::isfinite(az) &&
+              std::isfinite(angle_rad))) {
+            throw std::runtime_error("make_revolve: all parameters must be finite");
+        }
+        double axis_mag_sq = ax*ax + ay*ay + az*az;
+        if (axis_mag_sq < 1e-30) {
+            throw std::runtime_error("make_revolve: axis direction must not be zero-length");
+        }
+        if (std::abs(angle_rad) < 1e-30) {
+            throw std::runtime_error("make_revolve: angle must not be zero");
+        }
+        gp_Pnt origin(ox, oy, oz);
+        gp_Dir dir(ax, ay, az);
+        gp_Ax1 axis(origin, dir);
+        BRepPrimAPI_MakeRevol maker(profile.shape, axis, angle_rad);
+        maker.Build();
+        if (!maker.IsDone()) {
+            throw std::runtime_error("BRepPrimAPI_MakeRevol failed");
+        }
+        TopoDS_Shape rev_shape = maker.Shape();
+        // Some OCCT versions produce a Shell instead of Solid when revolving
+        // a Face. Convert Shell → Solid so volume queries work correctly.
+        if (rev_shape.ShapeType() == TopAbs_SHELL) {
+            BRepBuilderAPI_MakeSolid solidMaker(TopoDS::Shell(rev_shape));
+            if (solidMaker.IsDone()) {
+                rev_shape = solidMaker.Solid();
+            } else {
+                throw std::runtime_error("make_revolve: Shell\xe2\x86\x92Solid conversion failed \xe2\x80\x94 BRepBuilderAPI_MakeSolid did not complete");
+            }
+        }
+        // Fix face orientations so volume computation works correctly.
+        if (rev_shape.ShapeType() == TopAbs_SOLID) {
+            TopoDS_Solid solid = TopoDS::Solid(rev_shape);
+            BRepLib::OrientClosedSolid(solid);
+            rev_shape = solid;
+        }
+        auto result = std::make_unique<OcctShape>();
+        result->shape = rev_shape;
+        return result;
+    } catch (Standard_Failure const& e) {
+        throw std::runtime_error(std::string("OCCT make_revolve: ") + e.GetMessageString());
+    } catch (std::exception const& e) {
+        throw std::runtime_error(std::string("OCCT make_revolve: unexpected: ") + e.what());
+    } catch (...) {
+        throw std::runtime_error("OCCT make_revolve: unknown C++ exception");
+    }
+}
+
+std::unique_ptr<OcctShape> make_rect_face(double width, double height,
+    double cx, double cy, double cz) {
+    try {
+        if (!(std::isfinite(width) && width > 0.0)) {
+            throw std::runtime_error("make_rect_face: width must be finite and positive");
+        }
+        if (!(std::isfinite(height) && height > 0.0)) {
+            throw std::runtime_error("make_rect_face: height must be finite and positive");
+        }
+        if (!(std::isfinite(cx) && std::isfinite(cy) && std::isfinite(cz))) {
+            throw std::runtime_error("make_rect_face: center coordinates must be finite");
+        }
+        double hw = width / 2.0;
+        double hh = height / 2.0;
+        gp_Pnt p1(cx - hw, cy - hh, cz);
+        gp_Pnt p2(cx + hw, cy - hh, cz);
+        gp_Pnt p3(cx + hw, cy + hh, cz);
+        gp_Pnt p4(cx - hw, cy + hh, cz);
+
+        BRepBuilderAPI_MakeEdge e1(p1, p2);
+        BRepBuilderAPI_MakeEdge e2(p2, p3);
+        BRepBuilderAPI_MakeEdge e3(p3, p4);
+        BRepBuilderAPI_MakeEdge e4(p4, p1);
+        if (!e1.IsDone() || !e2.IsDone() || !e3.IsDone() || !e4.IsDone()) {
+            throw std::runtime_error("make_rect_face: MakeEdge failed");
+        }
+        BRepBuilderAPI_MakeWire wireBuilder;
+        wireBuilder.Add(e1.Edge());
+        wireBuilder.Add(e2.Edge());
+        wireBuilder.Add(e3.Edge());
+        wireBuilder.Add(e4.Edge());
+        if (!wireBuilder.IsDone()) {
+            throw std::runtime_error("make_rect_face: MakeWire failed");
+        }
+        BRepBuilderAPI_MakeFace faceBuilder(wireBuilder.Wire(), Standard_True);
+        if (!faceBuilder.IsDone()) {
+            throw std::runtime_error("make_rect_face: MakeFace failed");
+        }
+        auto result = std::make_unique<OcctShape>();
+        result->shape = faceBuilder.Face();
+        return result;
+    } catch (Standard_Failure const& e) {
+        throw std::runtime_error(std::string("OCCT make_rect_face: ") + e.GetMessageString());
+    } catch (std::exception const& e) {
+        throw std::runtime_error(std::string("OCCT make_rect_face: unexpected: ") + e.what());
+    } catch (...) {
+        throw std::runtime_error("OCCT make_rect_face: unknown C++ exception");
+    }
+}
+
 // --- Queries ---
+
+// Compute volume from triangle mesh using surface UV → 3D evaluation.
+// In OCCT 7.6+ Poly_Triangulation may store only UV nodes, so we must
+// evaluate the actual surface to get 3D coordinates.
+static double mesh_based_volume(const TopoDS_Shape& shape, double deflection) {
+    BRepMesh_IncrementalMesh mesher(shape, deflection);
+    double volume = 0.0;
+    for (TopExp_Explorer ex(shape, TopAbs_FACE); ex.More(); ex.Next()) {
+        TopoDS_Face face = TopoDS::Face(ex.Current());
+        TopLoc_Location loc;
+        Handle(Poly_Triangulation) tri = BRep_Tool::Triangulation(face, loc);
+        if (tri.IsNull()) continue;
+        BRepAdaptor_Surface surf(face, Standard_False);
+        bool reversed = (face.Orientation() == TopAbs_REVERSED);
+        // Build 3D node cache by evaluating UV on the surface
+        bool has_uv = tri->HasUVNodes();
+        std::vector<gp_Pnt> nodes3d(tri->NbNodes() + 1);
+        for (int j = 1; j <= tri->NbNodes(); j++) {
+            if (has_uv) {
+                gp_Pnt2d uv = tri->UVNode(j);
+                surf.D0(uv.X(), uv.Y(), nodes3d[j]);
+            } else {
+                nodes3d[j] = tri->Node(j).Transformed(loc.Transformation());
+            }
+        }
+        for (int i = 1; i <= tri->NbTriangles(); i++) {
+            Standard_Integer n1, n2, n3;
+            tri->Triangle(i).Get(n1, n2, n3);
+            const gp_Pnt& p1 = nodes3d[n1];
+            const gp_Pnt& p2 = reversed ? nodes3d[n3] : nodes3d[n2];
+            const gp_Pnt& p3 = reversed ? nodes3d[n2] : nodes3d[n3];
+            volume += (p1.X()*(p2.Y()*p3.Z() - p3.Y()*p2.Z())
+                     - p2.X()*(p1.Y()*p3.Z() - p3.Y()*p1.Z())
+                     + p3.X()*(p1.Y()*p2.Z() - p2.Y()*p1.Z())) / 6.0;
+        }
+    }
+    return std::abs(volume);
+}
 
 double query_volume(const OcctShape& shape) {
     try {
         GProp_GProps props;
         BRepGProp::VolumeProperties(shape.shape, props);
-        return props.Mass();
+        double vol = props.Mass();
+        // BRepGProp::VolumeProperties returns 0 for some parametric surfaces
+        // (e.g. revolution surfaces). Fall back to mesh-based computation.
+        if (vol == 0.0 && shape.shape.ShapeType() <= TopAbs_SOLID) {
+            vol = mesh_based_volume(shape.shape, 0.01);
+        }
+        return vol;
     } catch (Standard_Failure const& e) {
         throw std::runtime_error(std::string("OCCT query_volume: ") + e.GetMessageString());
     } catch (std::exception const& e) {

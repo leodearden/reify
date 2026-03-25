@@ -177,4 +177,97 @@ fn all_m5_types_exported() {
         reify_types::Value::Int(1),
         reify_types::Value::Int(2),
     ]);
+
+    // --- Orientation variants ---
+
+    // Type::Orientation (direct construction)
+    let _to3 = reify_types::Type::Orientation(3);
+
+    // Type::orientation factory method
+    let _to_factory = reify_types::Type::orientation(2);
+
+    // Value::Orientation construction
+    let _vo = reify_types::Value::Orientation {
+        w: 1.0,
+        x: 0.0,
+        y: 0.0,
+        z: 0.0,
+    };
+
+    // --- Range variants (step-11) ---
+
+    // Type::Range (direct construction)
+    let _tr_direct = reify_types::Type::Range(Box::new(reify_types::Type::Int));
+
+    // Type::range factory method
+    let _tr_factory = reify_types::Type::range(reify_types::Type::Real);
+
+    // Value::Range construction (closed interval [0, 10])
+    let _vr_closed = reify_types::Value::range(
+        Some(reify_types::Value::Int(0)),
+        Some(reify_types::Value::Int(10)),
+        true,
+        true,
+    );
+
+    // Value::Range with unbounded ends
+    let _vr_unbounded = reify_types::Value::range(None, None, false, false);
+
+    // --- Matrix variants (step-9) ---
+
+    // Type::Matrix (direct construction)
+    let _tm_direct = reify_types::Type::Matrix {
+        m: 3,
+        n: 2,
+        quantity: Box::new(reify_types::Type::Real),
+    };
+
+    // Type::matrix factory method
+    let _tm_factory = reify_types::Type::matrix(2, 4, reify_types::Type::length());
+
+    // Value::Matrix construction (2×3 integer matrix)
+    let _vm = reify_types::Value::Matrix(vec![
+        vec![reify_types::Value::Int(1), reify_types::Value::Int(2), reify_types::Value::Int(3)],
+        vec![reify_types::Value::Int(4), reify_types::Value::Int(5), reify_types::Value::Int(6)],
+    ]);
+
+    // --- Complex variant ---
+
+    // Type::Complex direct construction
+    let _tc_direct = reify_types::Type::Complex(Box::new(reify_types::Type::Real));
+
+    // Type::complex factory method
+    let _tc_factory = reify_types::Type::complex(reify_types::Type::length());
+
+    // Value::Complex construction
+    let _vc = reify_types::Value::Complex {
+        re: 3.0,
+        im: 4.0,
+        dimension: reify_types::DimensionVector::DIMENSIONLESS,
+    };
+}
+
+#[test]
+fn annotation_types_exported() {
+    // Annotation with all AnnotationArg variants
+    let ann = reify_types::Annotation {
+        name: "test".into(),
+        args: vec![
+            reify_types::AnnotationArg::String("msg".into()),
+            reify_types::AnnotationArg::Int(42),
+            reify_types::AnnotationArg::Real(3.14),
+            reify_types::AnnotationArg::Bool(true),
+            reify_types::AnnotationArg::Ident("mechanical".into()),
+        ],
+        span: reify_types::SourceSpan::new(0, 0),
+    };
+
+    // Verify construction
+    assert_eq!(ann.name, "test");
+    assert_eq!(ann.args.len(), 5);
+    assert_eq!(ann.args[0], reify_types::AnnotationArg::String("msg".into()));
+    assert_eq!(ann.args[1], reify_types::AnnotationArg::Int(42));
+    assert_eq!(ann.args[2], reify_types::AnnotationArg::Real(3.14));
+    assert_eq!(ann.args[3], reify_types::AnnotationArg::Bool(true));
+    assert_eq!(ann.args[4], reify_types::AnnotationArg::Ident("mechanical".into()));
 }
