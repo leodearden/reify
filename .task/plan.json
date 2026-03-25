@@ -1,27 +1,20 @@
 {
-  "task_id": "204",
-  "title": "Recursive structures: termination check",
+  "task_id": "327",
+  "title": "Stdlib: Material, Elastic, Strong, Hard + mechanical material traits",
   "files": [
-    "crates/reify-compiler/src/lib.rs",
-    "crates/reify-compiler/tests/termination_check_tests.rs"
+    "crates/reify-compiler/stdlib/materials_mechanical.ri",
+    "crates/reify-compiler/tests/materials_mechanical_tests.rs"
   ],
   "modules": [
     "crates/reify-compiler"
   ],
-  "analysis": "Task 204 adds a post-compilation pass that verifies recursive structures have a valid termination condition. It builds on task 203 (recursive structure detection via Tarjan SCC, which adds `is_recursive: bool` to TopologyTemplate and `detect_recursive_structures()`).\n\nThe termination check operates on templates already tagged `is_recursive == true`. For each such template, we examine its `sub_components` to find self-referencing subs (where `structure_name` matches the template name or another structure in the same SCC). For each recursive sub, we verify:\n\n1. The sub has a `where_clause` guard (currently parsed on SubDecl but NOT compiled into SubComponentDecl — we must add a `guard_expr` field).\n2. The guard expression references at least one param of type Int or Bool from the parent template.\n3. That same param appears in the sub's argument list with a value that decrements/modifies it toward a base case (heuristic: the arg expression for that param uses BinOp::Sub, BinOp::And/Or/Not, or passes a literal that differs from the param's identity).\n4. `undef` is not used as a non-termination mechanism (no Literal(Value::Undef) in the recursive sub's args).\n\nImplementation approach:\n- Add `guard_expr: Option<CompiledExpr>` to `SubComponentDecl` so where-clauses on subs are compiled and available for analysis.\n- Compile the sub's where_clause during sub compilation (line ~2795 in compile_entity).\n- Add `check_recursive_termination()` as a post-compilation pass in `compile()`, after task 203's `detect_recursive_structures()` call.\n- Use `CompiledExpr::walk()` to collect ValueRef references from guard expressions and sub args.\n- Emit `Diagnostic::error(...)` with labels pointing at the recursive sub declaration span.\n\nKey reuse: CompiledExpr::walk() for expression traversal, existing Diagnostic infrastructure, existing compile_expr() for where_clause compilation, existing scope/type infrastructure for param type resolution.\n\n**Review fix (steps 21-22):** Steps 19-20 claimed to implement block-guard termination recognition, but the test `recursive_sub_inside_block_guard_no_error` passes for the wrong reason. `compile_guarded_members` has a `_ => {}` catch-all (lib.rs:4597-4599) that silently drops ALL Sub declarations inside `when {}` blocks. The sub `child` is never compiled into `sub_components`, so the structure is never flagged as recursive by Tarjan SCC, and `check_recursive_termination` is never invoked. The test produces zero errors not because block-guard termination works, but because the feature (subs inside guarded blocks) is entirely unimplemented upstream. Additionally, `check_recursive_termination` has no block-guard fallback code — when `sub.guard_expr` is None, it immediately emits an error with no guarded_groups search. Steps 21-22 fix this by: (1) writing a test that honestly documents the current behavior (sub_components is empty), and (2) marking the false-confidence test as #[ignore] with a detailed explanation.",
+  "analysis": "Task 327 creates stdlib .ri definitions for mechanical material traits: Material, Elastic, Strong, Hard (with HardnessScale enum), FatigueRated, FractureTough, Ductile, ImpactResistant, and Damping.\n\nDependency task 326 (stdlib prelude loader with include_str!/OnceLock caching) is marked done but not yet merged to main. This task creates the .ri file in crates/reify-compiler/stdlib/ where task 326 expects it, and writes tests that directly read and compile the file (independent of the loader).\n\nExisting infrastructure:\n- reify_syntax::parse() handles trait declarations with params, constraints, and trait refinements\n- reify_compiler::compile() compiles traits into CompiledTrait with required_members and defaults\n- Trait conformance checking works for `structure def X : A + B { ... }` syntax\n- Constraints inside traits (e.g., `constraint x > 0mm`) are injected into conforming structures as defaults\n- Enums are parsed and compiled into EnumDef with named variants\n- resolve_type_name() supports: Bool, Int, Real, String, Scalar (=Length), Length, Mass\n- unit_to_scalar() supports: mm, cm, m, in, deg, rad, kg, g, s\n\nType constraints: The compiler currently lacks Pressure and Density as recognized type names. Since adding these requires changes to reify-types dimension constants and the compiler's resolve_type_name(), and no Pa/MPa/GPa unit literals exist either, the pragmatic approach is to use `Real` for dimensionless quantities (poissons_ratio, damping_ratio, elongation, etc.) and `Real` as a stand-in for pressure/density-dimensioned quantities. This avoids blocking on type system extensions while still providing correct trait structure, constraint validation, and enum definitions. A follow-up task can upgrade Real\u2192Pressure/Density once those types and units are added.\n\nTest strategy: Tests use a helper that reads the .ri file from stdlib/materials_mechanical.ri (relative to crate root), parses and compiles it, then inspects CompiledModule fields (trait_defs, enum_defs). For conformance tests, inline source combines the trait definitions with user structures. This approach mirrors trait_conformance_tests.rs patterns (compile_module/compile_first_template helpers).",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "Add `guard_expr: Option<CompiledExpr>` field to SubComponentDecl struct so per-sub where-clauses are preserved in the compiled output",
+      "description": "Create crates/reify-compiler/stdlib/ directory for .ri stdlib source files (task 326 infrastructure). This is the directory where the prelude loader will look for embedded .ri files.",
       "status": "done",
-      "commit": "0fe30fe2",
-      "tests": []
-    },
-    {
-      "id": "pre-2",
-      "description": "Compile the sub's where_clause into SubComponentDecl.guard_expr during sub compilation in compile_entity() (around line 2795). Use compile_expr on sub.where_clause.condition and store the result. Update all SubComponentDecl construction sites (both top-level and inside compile_guarded_members) to include guard_expr.",
-      "status": "done",
-      "commit": "7e38e7fa",
+      "commit": "107ee2d2",
       "tests": []
     }
   ],
@@ -29,229 +22,183 @@
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing test: sub where-clause compiles into SubComponentDecl.guard_expr. Parse `structure S { param n: Int = 5; sub child = S(n: n - 1) where n > 0 }` and assert guard_expr is Some with a BinOp::Gt referencing n.",
+      "description": "Write failing test: materials_mechanical.ri file exists at stdlib/materials_mechanical.ri, parses without errors, and compiles without error-severity diagnostics. Helper function `load_stdlib_module(filename)` reads from `stdlib/<filename>`, parses with reify_syntax::parse(), compiles with reify_compiler::compile(), returns CompiledModule. Assert trait_defs is non-empty.",
       "status": "done",
-      "commit": "a98fbd90"
+      "commit": "dc5d8915"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Implement where_clause compilation for subs: in compile_entity's Sub arm (~line 2795), compile sub.where_clause.condition via compile_expr and store as guard_expr on SubComponentDecl. Do the same in compile_guarded_members' Sub handling. Make test pass.",
+      "description": "Create crates/reify-compiler/stdlib/materials_mechanical.ri with the Material trait: `trait Material { param density : Real  param name : String }`. This is the base material trait that all materials should implement. Uses Real for density (Density type not yet in compiler). File should parse and compile cleanly.",
       "status": "done",
-      "commit": "7e38e7fa"
+      "commit": "107ee2d2"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing test: recursive sub WITHOUT where-clause emits error. Define `structure S { param n: Int = 5; sub child = S(n: n - 1) }` (no where guard). After task 203 tags it recursive, assert an error diagnostic containing 'recursive sub' and 'no termination condition'.",
+      "description": "Write failing test: Elastic trait exists in compiled module with 3 required members (youngs_modulus, poissons_ratio, shear_modulus). Find the trait by name in module.trait_defs, assert required_members contains all three names with RequirementKind::Param(Type::Real) for each.",
       "status": "done",
-      "commit": "a98fbd90"
+      "commit": "dc5d8915"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Implement check_recursive_termination() function stub: iterate templates where is_recursive == true, find sub_components whose structure_name matches any template in the same SCC, check for missing guard_expr, emit error diagnostic. Wire into compile() after detect_recursive_structures().",
+      "description": "Add Elastic trait to materials_mechanical.ri: `trait Elastic { param youngs_modulus : Real  param poissons_ratio : Real  param shear_modulus : Real }`. All three are required (no defaults), representing Young's modulus (Pa), Poisson's ratio (dimensionless), and shear modulus (Pa).",
       "status": "done",
-      "commit": "7e38e7fa"
+      "commit": "9a970a7e"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing test: recursive sub WITH valid where-clause and decremented Int param produces NO error. Define `structure S { param n: Int = 5; sub child = S(n: n - 1) where n > 0 }`. Assert zero error diagnostics from termination check.",
+      "description": "Write failing test: Strong trait exists with 3 required members (yield_strength, uts, compressive_strength) and has at least 1 default (the constraint). Verify the trait's defaults vector contains a DefaultKind::Constraint entry. This tests that the `constraint uts >= yield_strength` declaration in the trait is parsed and compiled.",
       "status": "done",
-      "commit": "a98fbd90"
+      "commit": "dc5d8915"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Implement guard-references-decremented-param heuristic: walk guard_expr to collect ValueRef ids, check each against template's value_cells for Int or Bool type, then verify the same param name appears in the sub's args with a modifying expression (contains BinOp::Sub, BinOp::Add with negative, or BinOp::And/Or/Not for Bool). Suppress error when heuristic passes.",
+      "description": "Add Strong trait to materials_mechanical.ri: `trait Strong { param yield_strength : Real  param uts : Real  param compressive_strength : Real  constraint uts >= yield_strength }`. The constraint ensures ultimate tensile strength is at least as large as yield strength.",
       "status": "done",
-      "commit": "7e38e7fa"
+      "commit": "a9c784dc"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing test: recursive sub with where-clause that does NOT reference any Int/Bool param emits error. Define `structure S { param n: Int = 5; param active: Bool = true; sub child = S(n: n - 1) where 1 > 0 }` (guard uses only literals, no param ref). Assert error about guard not referencing a decremented parameter.",
+      "description": "Write failing test: HardnessScale enum exists in compiled module with exactly 7 variants: Rockwell_A, Rockwell_B, Rockwell_C, Brinell, Vickers, Shore_A, Shore_D. Find enum by name in module.enum_defs, assert variants list matches. Also verify Hard trait exists with 2 required members (hardness_value : Real, hardness_scale with Enum type).",
       "status": "done",
-      "commit": "a98fbd90"
+      "commit": "dc5d8915"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Refine the heuristic to emit a specific error when guard exists but doesn't reference any Int/Bool param from the template. Different error message: 'guard does not reference any Int or Bool parameter'.",
+      "description": "Add HardnessScale enum and Hard trait to materials_mechanical.ri: `enum HardnessScale { Rockwell_A, Rockwell_B, Rockwell_C, Brinell, Vickers, Shore_A, Shore_D }` and `trait Hard { param hardness_value : Real  param hardness_scale : HardnessScale }`. Also modified compile_trait() to accept enum_defs and resolve enum type names as Type::Enum.",
       "status": "done",
-      "commit": "7e38e7fa"
+      "commit": "10cd2910"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write failing test: recursive sub where guard references an Int param but that param is NOT modified in the recursive instantiation args. Define `structure S { param n: Int = 5; sub child = S(n: n) where n > 0 }` (passes n unchanged). Assert error about parameter not being decremented toward base case.",
+      "description": "Write failing test: user-defined `structure def Steel : Elastic + Strong { ... }` type-checks without errors. Inline source combines the Elastic and Strong trait definitions with a Steel structure providing all required params with Real defaults. Compile and assert zero error-severity diagnostics. Also assert the template has trait_bounds containing both 'Elastic' and 'Strong'.",
       "status": "done",
-      "commit": "a98fbd90"
+      "commit": "dc5d8915"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Implement the arg-modification check: for each guard-referenced Int/Bool param, find the corresponding arg in sub.args by name, walk the arg expression to verify it contains a decrementing operation (Sub for Int, Not for Bool, or a different literal). Emit error if param passed unchanged.",
+      "description": "Verify Steel conformance test passes. The existing trait conformance infrastructure (trait_conformance_tests.rs patterns) already handles multi-trait bounds via `A + B` syntax. The test should pass with the inline trait definitions and Steel structure. If any issue arises, adjust the inline source.",
       "status": "done",
-      "commit": "7e38e7fa"
+      "commit": "dc5d8915"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write failing test: recursive sub with Bool param guard and negation is valid. Define `structure S { param active: Bool = true; sub child = S(active: !active) where active }`. Assert no error — Bool param referenced in guard and negated in args is a valid termination pattern.",
+      "description": "Write failing test: constraint from Strong trait is injected into conforming Steel structure. Compile the inline source (Strong trait + Steel structure) and assert template.constraints is non-empty, confirming the `uts >= yield_strength` constraint was injected as a default.",
       "status": "done",
-      "commit": "a98fbd90"
+      "commit": "dc5d8915"
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "Ensure Bool param support: UnOp::Not on a Bool param in args counts as modification toward base case. Add Not detection to the arg-modification walker.",
+      "description": "Verify constraint injection test passes. The existing DefaultKind::Constraint mechanism in compile_entity already handles trait constraint injection. The test should pass since Strong's constraint is a default that gets merged into conforming structures.",
       "status": "done",
-      "commit": "7e38e7fa"
+      "commit": "dc5d8915"
     },
     {
       "id": "step-13",
       "type": "test",
-      "description": "Write failing test: recursive sub using `undef` in args is explicitly forbidden. Define `structure S { param n: Int = 5; sub child = S(n: undef) where n > 0 }`. Assert error about undef being forbidden as non-termination mechanism.",
+      "description": "Write failing test: HardnessScale.Vickers is accessible in a structure let-binding. Inline source: HardnessScale enum + `structure def S { let scale = HardnessScale.Vickers }`. Compile and assert no errors, verify value cell 'scale' exists with Enum type.",
       "status": "done",
-      "commit": "a98fbd90"
+      "commit": "dc5d8915"
     },
     {
       "id": "step-14",
       "type": "impl",
-      "description": "Add undef detection: walk each recursive sub's arg expressions for Literal(Value::Undef). If found, emit error: 'undef is not allowed as a non-termination mechanism in recursive sub arguments'.",
+      "description": "Verify HardnessScale.Vickers access test passes. The existing enum access syntax (`EnumName.Variant`) is already supported by the parser and compiler. The test should pass with the inline HardnessScale enum definition.",
       "status": "done",
-      "commit": "7e38e7fa"
+      "commit": "dc5d8915"
     },
     {
       "id": "step-15",
       "type": "test",
-      "description": "Write failing test: mutual recursion (A references B, B references A) without guards on both sides emits errors for both. Define `structure A { sub b = B() }` and `structure B { sub a = A() }`. Assert two error diagnostics (one per recursive sub).",
+      "description": "Write failing test: remaining 5 traits (FatigueRated, FractureTough, Ductile, ImpactResistant, Damping) exist in compiled module. Load the .ri file, compile, and for each trait name assert it appears in module.trait_defs. Verify required member counts: FatigueRated(1: endurance_limit), FractureTough(1: fracture_toughness), Ductile(2: elongation, reduction_of_area), ImpactResistant(1: impact_energy), Damping(2: damping_ratio, loss_factor).",
       "status": "done",
-      "commit": "a98fbd90"
+      "commit": "dc5d8915"
     },
     {
       "id": "step-16",
       "type": "impl",
-      "description": "Ensure mutual recursion support: the SCC set from task 203 identifies all cycle participants. check_recursive_termination checks every sub whose target is ANY member of the same SCC (not just self-references). Build SCC membership set from templates and check sub.structure_name membership.",
+      "description": "Add remaining 5 traits to materials_mechanical.ri: `trait FatigueRated { param endurance_limit : Real }`, `trait FractureTough { param fracture_toughness : Real }`, `trait Ductile { param elongation : Real  param reduction_of_area : Real }`, `trait ImpactResistant { param impact_energy : Real }`, `trait Damping { param damping_ratio : Real  param loss_factor : Real }`.",
       "status": "done",
-      "commit": "7e38e7fa"
+      "commit": "992d06cc"
     },
     {
       "id": "step-17",
       "type": "test",
-      "description": "Write failing test: non-recursive structure with sub is NOT flagged. Define `structure Inner { param x: Int = 1 }` and `structure Outer { sub inner = Inner(x: 5) }`. Assert zero error diagnostics — non-recursive subs should be ignored entirely.",
+      "description": "Write integration test: full .ri file compiles to exactly 9 traits (Material, Elastic, Strong, Hard, FatigueRated, FractureTough, Ductile, ImpactResistant, Damping) and 1 enum (HardnessScale). Load the file, compile, assert trait_defs.len() == 9 and enum_defs.len() == 1. Assert zero error-severity diagnostics.",
       "status": "done",
-      "commit": "a98fbd90"
+      "commit": "dc5d8915"
     },
     {
       "id": "step-18",
       "type": "impl",
-      "description": "Verify the non-recursive path works: check_recursive_termination skips templates where is_recursive == false. This should already work from step-4 but this step verifies and adds any needed guards.",
+      "description": "Verify full integration test passes. All 9 traits and 1 enum should already be defined from previous steps. Final verification that the complete .ri file compiles cleanly end-to-end.",
       "status": "done",
-      "commit": "7e38e7fa"
-    },
-    {
-      "id": "step-19",
-      "type": "test",
-      "description": "Write test: recursive sub inside a guarded group (block guard) without its own where-clause emits error. Define `structure S { param n: Int = 5; when n > 0 { sub child = S(n: n - 1) } }`. The block guard protects the sub but the sub itself has no where-clause — the heuristic should recognize block-level guards as providing termination if the guard references a decremented param. Assert NO error (the enclosing block guard satisfies the termination requirement).",
-      "status": "done",
-      "commit": "a98fbd90"
-    },
-    {
-      "id": "step-20",
-      "type": "impl",
-      "description": "Handle subs inside guarded groups: when a recursive sub lacks its own guard_expr, check if it's inside a CompiledGuardedGroup whose guard_expr references a decremented Int/Bool param. Collect guarded_group membership for subs and check the enclosing guard as fallback. This requires tracking which subs belong to which guarded_groups during compilation.",
-      "status": "done",
-      "commit": "7e38e7fa"
-    },
-    {
-      "id": "step-21",
-      "type": "test",
-      "description": "Write test `block_guard_sub_not_yet_compiled` that documents the pre-existing compiler limitation honestly. Compile `structure S { param n: Int = 5; when n > 0 { sub child = S(n: n - 1) } }` and assert that `template.sub_components.is_empty()` — proving that `compile_guarded_members` silently drops Sub declarations inside `when {}` blocks (lib.rs:4597 catch-all `_ => {}`). Also assert `template.is_recursive == false` — since no sub_components exist, Tarjan never finds a cycle. This test documents the ACTUAL current behavior and will break (correctly) when compile_guarded_members is updated to handle Sub declarations.",
-      "status": "done",
-      "commit": "d5be4aa8"
-    },
-    {
-      "id": "step-22",
-      "type": "impl",
-      "description": "Fix the false-confidence test from step-19. Mark `recursive_sub_inside_block_guard_no_error` with `#[ignore]` and add a detailed comment explaining: (1) this test passes because `compile_guarded_members` has a `_ => {}` catch-all that silently drops Sub declarations inside `when {}` blocks — the sub `child` is never compiled into sub_components, (2) because sub_components is empty, S is never flagged as recursive by Tarjan SCC and check_recursive_termination is never invoked, (3) check_recursive_termination has no block-guard fallback path — when sub.guard_expr is None it immediately errors without searching guarded_groups, (4) to properly enable this test: first update compile_guarded_members to compile Sub declarations into sub_components, then implement the guarded_groups fallback in check_recursive_termination (search template.guarded_groups for a CompiledGuardedGroup whose members contain the sub, then run guard-references-decremented-param on that group's guard_expr). This ensures the test suite does not give false confidence about block-guard termination recognition.",
-      "status": "done",
-      "commit": "bd3dcb09"
+      "commit": "992d06cc"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Add guard_expr to SubComponentDecl rather than creating a separate data structure",
-      "rationale": "The where_clause is already parsed on SubDecl. Storing the compiled guard expression directly on SubComponentDecl keeps the sub's termination condition co-located with its other metadata, consistent with how other member types handle per-declaration guards."
+      "decision": "Use Real type for all mechanical properties (density, pressure-like quantities) instead of adding Pressure/Density dimension types",
+      "rationale": "The compiler's resolve_type_name() only supports Length and Mass as dimension-specific types. Adding Pressure (mass*length^-1*time^-2) and Density (mass*length^-3) would require changes to reify-types dimension constants, resolve_type_name in reify-compiler, and unit_to_scalar for Pa/MPa/GPa/kg_m3 units. This is a type-system extension beyond the scope of 'write stdlib .ri definitions'. Using Real preserves correct trait structure, conformance checking, and constraint validation. A follow-up task can upgrade Real\u2192Pressure/Density when those types and units are implemented."
     },
     {
-      "decision": "Post-compilation pass rather than inline check during sub compilation",
-      "rationale": "Recursive structure detection (task 203) requires all templates to be compiled first to build the adjacency graph. The termination check must run after detect_recursive_structures() so is_recursive flags are available. This follows the existing pattern of PendingBoundCheck and other deferred checks."
+      "decision": "Place .ri file in crates/reify-compiler/stdlib/ even though the loader (task 326) isn't merged yet",
+      "rationale": "Task 326 specifies crates/reify-compiler/stdlib/ as the directory for stdlib .ri files loaded via include_str!(). Placing files there now means they'll be ready for the loader once it merges. Tests read the file directly via fs::read_to_string() with a relative path, making them independent of the loader."
     },
     {
-      "decision": "Heuristic-based termination check rather than formal proof",
-      "rationale": "The task explicitly calls for a heuristic: guard must reference at least one Int/Bool param that is modified in the recursive instantiation. We don't attempt to prove termination formally — we check structural patterns that strongly suggest convergence (subtraction on Int, negation on Bool). This avoids false negatives on valid programs while catching the common mistake of infinite recursion."
+      "decision": "Tests read .ri file from disk rather than using include_str!() or inlining the full .ri content",
+      "rationale": "Reading from disk (like task 313's eval_ri_file pattern) validates the actual file content, catches file-not-found issues, and avoids duplicating .ri content in test strings. For conformance tests that combine traits + user structures, we inline just the relevant trait definitions to keep tests self-contained and fast."
     },
     {
-      "decision": "Emit Error severity (not Warning) for missing termination condition",
-      "rationale": "The task description says 'emit error if no reachable termination condition found'. Unbounded recursion would cause infinite instantiation at evaluation time, so this is a hard error. Task 203 uses Warning for cycle detection (informational), but task 204 is enforcement."
+      "decision": "HardnessScale enum uses underscore-separated variant names (Rockwell_A not RockwellA)",
+      "rationale": "Task description specifies: 'Rockwell_A/B/C, Brinell, Vickers, Shore_A/D'. The existing enum parser supports identifiers with underscores. This matches the task spec exactly."
     },
     {
-      "decision": "Recognize block-level guards (guarded groups) as termination conditions for enclosed subs",
-      "rationale": "A sub inside `when n > 0 { sub child = S(n: n-1) }` is functionally equivalent to `sub child = S(n: n-1) where n > 0`. Failing to recognize block guards would produce false positives on idiomatic code. We check enclosing guarded_group guard_expr as a fallback when sub has no direct guard_expr."
+      "decision": "Strong trait constraint uses `uts >= yield_strength` (not a labeled constraint)",
+      "rationale": "The existing trait constraint mechanism uses unlabeled constraints as defaults (DefaultKind::Constraint). The grammar doesn't support labeled constraints yet (label is always None per trait_conformance_tests.rs step 27a comment). Using an unlabeled constraint matches existing infrastructure."
     },
     {
-      "decision": "Use CompiledExpr::walk() for expression analysis rather than custom traversal",
-      "rationale": "The walk() method is the canonical traversal documented in CompiledExprKind. It ensures all expression variants are visited and future-proofs against new variants. We collect ValueRef ids and check for specific BinOp/UnOp patterns."
-    },
-    {
-      "decision": "detect_recursive_structures returns cyclic SCCs for termination check",
-      "rationale": "Modified detect_recursive_structures to return Vec<HashSet<String>> (cyclic SCC sets). This allows check_recursive_termination to determine SCC membership without re-running Tarjan. Avoids duplicating the SCC computation."
-    },
-    {
-      "decision": "Mark block-guard termination test as #[ignore] rather than implementing subs-inside-guarded-blocks compilation",
-      "rationale": "The reviewer found that step-19/20 gave false confidence: the test passes because compile_guarded_members silently drops Sub declarations (pre-existing `_ => {}` catch-all), not because block-guard termination logic works. Implementing subs inside guarded blocks is a significant change to compile_guarded_members that is outside the scope of task 204 (termination checking). The correct fix is to honestly document the limitation: (1) a new test asserts sub_components is empty to surface the unimplemented state, (2) the original test is #[ignore]d with a detailed comment explaining the false-positive pass and what must change to enable it. This avoids shipping a test that gives false confidence while keeping the design intent documented for the future."
+      "decision": "Hard trait uses param hardness_scale typed as enum rather than a let-bound enum",
+      "rationale": "Making hardness_scale a required param forces conforming structures to explicitly specify the hardness measurement scale, preventing ambiguity. The Type::Enum('HardnessScale') is resolved when the enum is defined in the same module."
     }
   ],
   "reuse": [
     {
-      "what": "CompiledExpr::walk()",
-      "where": "crates/reify-types/src/expr.rs",
-      "how": "Use walk() to collect ValueRef ids from guard expressions and sub arg expressions. Avoids writing custom recursive traversal."
-    },
-    {
-      "what": "Diagnostic::error() + .with_label()",
-      "where": "crates/reify-types/src/diagnostics.rs",
-      "how": "Emit termination check errors using the same pattern as all other compiler diagnostics. Labels point at the sub declaration span."
-    },
-    {
-      "what": "compile_expr()",
-      "where": "crates/reify-compiler/src/lib.rs:858",
-      "how": "Compile sub.where_clause.condition expressions using the existing compile_expr function with the current scope."
+      "what": "compile_module() test helper pattern",
+      "where": "crates/reify-compiler/tests/trait_conformance_tests.rs",
+      "how": "Reuse the same pattern: parse source with reify_syntax::parse(), compile with reify_compiler::compile(), return CompiledModule. Adapt with a file-reading variant for .ri file tests."
     },
     {
       "what": "compile_first_template() test helper pattern",
-      "where": "crates/reify-compiler/tests/guard_compilation.rs:10",
-      "how": "Reuse the parse→compile→extract-template pattern for test setup. Define a local compile_first_template helper in the new test file."
+      "where": "crates/reify-compiler/tests/trait_conformance_tests.rs",
+      "how": "Reuse for Steel conformance tests: compile inline source, extract first template, check diagnostics for errors."
     },
     {
-      "what": "ValueCellId, ValueCellKind, Type enums",
-      "where": "crates/reify-types/src/",
-      "how": "Use Type::Int and Type::Bool for param type checking. Use ValueCellKind::Param to identify parameters vs lets. Use ValueCellId for matching guard refs to sub args."
+      "what": "Trait conformance infrastructure",
+      "where": "crates/reify-compiler/src/lib.rs (compile_entity, collect_all_requirements)",
+      "how": "Existing multi-trait conformance via `A + B` syntax, requirement checking, default merging, and constraint injection. No changes needed \u2014 the .ri files just exercise this existing infrastructure."
     },
     {
-      "what": "TopologyTemplate.value_cells and .sub_components",
-      "where": "crates/reify-compiler/src/lib.rs:159",
-      "how": "Iterate value_cells to find Int/Bool params, iterate sub_components to find recursive subs, cross-reference guard_expr ValueRefs with value_cell ids."
+      "what": "Enum compilation and access pattern",
+      "where": "crates/reify-compiler/src/lib.rs (enum_defs compilation), examples/m5_guarded_enum.ri",
+      "how": "Existing enum parsing (Declaration::Enum \u2192 EnumDef) and `EnumName.Variant` access syntax. HardnessScale follows the exact same pattern as Shape { Round, Square, Hex }."
     },
     {
-      "what": "Post-compilation pass pattern (deferred checks)",
-      "where": "crates/reify-compiler/src/lib.rs:2158-2204",
-      "how": "Follow the existing pattern of running analysis passes after all templates are compiled. Insert check_recursive_termination() after detect_recursive_structures() in the compile() function."
+      "what": "eval_ri_file() file-loading pattern",
+      "where": "crates/reify-eval/tests/m8_stdlib_integration.rs (task 313)",
+      "how": "Adapt the fs::read_to_string + parse + compile pattern for loading stdlib .ri files in tests. Use relative path stdlib/materials_mechanical.ri from crate root."
     }
   ],
-  "_session_id": "204-8069abdf",
-  "_created_at": "2026-03-25T18:10:55.728198+00:00"
+  "_session_id": "327-e946111e",
+  "_created_at": "2026-03-25T18:43:01.499904+00:00"
 }
