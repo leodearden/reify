@@ -2006,17 +2006,17 @@ fn compile_expr_guarded(
             }
 
             // Optionally validate the member exists in the trait.
-            if let Some(members) = scope.trait_members.get(&trait_name) {
-                if !members.contains(member.as_str()) {
-                    diagnostics.push(
-                        Diagnostic::error(format!(
-                            "member '{}' not defined in trait '{}'",
-                            member, trait_name
-                        ))
-                        .with_label(DiagnosticLabel::new(expr.span, "not in trait")),
-                    );
-                    return CompiledExpr::literal(Value::Undef, Type::Real);
-                }
+            if let Some(members) = scope.trait_members.get(&trait_name)
+                && !members.contains(member.as_str())
+            {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "member '{}' not defined in trait '{}'",
+                        member, trait_name
+                    ))
+                    .with_label(DiagnosticLabel::new(expr.span, "not in trait")),
+                );
+                return CompiledExpr::literal(Value::Undef, Type::Real);
             }
 
             // Generate ValueCellId for the sub-component's member.
