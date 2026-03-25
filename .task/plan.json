@@ -1,196 +1,230 @@
 {
-  "task_id": "186",
-  "title": "Trait conformance: refinement chains",
+  "task_id": "346",
+  "title": "Stress test: dimensional_chains.ri + query_consistency.ri",
   "files": [
-    "crates/reify-compiler/src/lib.rs",
-    "crates/reify-compiler/tests/trait_conformance_tests.rs"
+    "examples/dimensional_chains.ri",
+    "crates/reify-eval/tests/stress_dimensional_chains.rs",
+    "crates/reify-eval/tests/stress_query_consistency.rs"
   ],
   "modules": [
-    "crates/reify-compiler"
+    "examples",
+    "crates/reify-eval/tests"
   ],
-  "analysis": "The public `check_trait_conformance()` (from task 182) checks a single `CompiledTrait` against a structure's members \u2014 its doc explicitly states 'Refinement hierarchy walking remains the caller's responsibility.' The private `collect_all_requirements()` already walks refinement chains recursively with dedup/conflict detection, but it's tightly coupled to `check_and_apply_trait_conformance()` which produces `Diagnostic`s and injects defaults. Task 186 creates a new public function `check_trait_conformance_chain()` that walks refinement chains and returns structured `Vec<ConformanceError>` \u2014 bridging the pure validation API (task 182) with chain-aware semantics. Two new `ConformanceError` variants are needed: `ConflictingRequirement` (same member name, different types across chain) and `UnresolvedTrait` (refinement references unknown trait). The function reuses `check_trait_conformance` for per-requirement checking after collecting/deduplicating requirements from the chain.",
-  "prerequisites": [],
+  "analysis": "This task creates two stress test suites exercising (1) the dimensional type system through complex unit chains, sqrt/root round-trips, and engineering formulas, and (2) geometric query consistency verifying mathematical relationships between query results.\n\nPart 1 (dimensional_chains): The .ri language supports unit literals (mm, m, kg, s), dimensional arithmetic (mul/div add/sub exponents), and dimension-aware stdlib functions (sqrt halves exponents). The existing dimensional_consistency.ri + m8_stdlib_integration.rs tests prove this pattern works. This test will push deeper: 10-step chains (L→A→V→...→L), sqrt(area)→length round-trips, and complex engineering formulas (Reynolds number, moment of inertia, pressure, etc.).\n\nPart 2 (query_consistency): The OCCT kernel provides Volume, SurfaceArea, Centroid, BoundingBox, Distance, and MomentOfInertia queries via GeometryKernel::query(). Spatial queries (contains, intersects) are NOT yet in the FFI layer. Tests will use real OCCT (guarded by OCCT_AVAILABLE) to verify mathematical relationships: sphere V≈4/3πr³, sphere A≈4πr², centroid of centered box at origin, centroid of translated box shifts correctly, and dimensional relationships between volume/area/length. For contains(solid, centroid(solid)) — since the contains FFI doesn't exist yet, mock-based tests will validate the expected eval flow.\n\nKey patterns to follow: m8_stdlib_integration.rs for .ri-based eval tests (eval_ri_file helper), boundary4_geometry.rs for OCCT kernel tests (OCCT_AVAILABLE guard, OcctKernel::new()).",
+  "prerequisites": [
+    {
+      "id": "pre-1",
+      "description": "Create examples/dimensional_chains.ri fixture with 10-step unit chains, sqrt(area)->length round-trips, and complex engineering formulas (Reynolds number Re=ρvL/μ, moment of inertia I=mr², pressure P=F/A, power P=Fv, kinematic viscosity ν=μ/ρ, gravitational PE mgh, spring energy ½kx²)",
+      "status": "done",
+      "commit": "6908fcd6",
+      "tests": []
+    }
+  ],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing test `chain_single_trait_no_refinement`: call `check_trait_conformance_chain` on a trait with no refinements and a structure missing a param \u2192 expect MissingParam. Fails because function does not exist yet.",
+      "description": "Write failing test: stress_dimensional_chains.rs — smoke test that dimensional_chains.ri parses, compiles, and evaluates without errors, producing non-empty values",
       "status": "done",
-      "commit": "c1b2b2bb303eb5833fedd4ec51fb96b34f8aaacd"
+      "commit": "6908fcd6"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Add `check_trait_conformance_chain(structure_members, trait_name, trait_registry, ports, subs) -> Vec<ConformanceError>` to lib.rs. For the base case: look up trait_name in registry, delegate to existing `check_trait_conformance`. Test passes.",
+      "description": "Ensure dimensional_chains.ri fixture is correct and all expressions evaluate. Fix any parse/compile/eval errors in the .ri file until the smoke test passes",
       "status": "done",
-      "commit": "c1b2b2bb303eb5833fedd4ec51fb96b34f8aaacd"
+      "commit": "6908fcd6"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing test `chain_two_level_walks_parent`: trait B requires `width : Length`, trait A refines B and requires `height : Length`. Call chain fn on trait A; structure has `height` but not `width` \u2192 MissingParam for `width`. Fails because chain walking not implemented.",
+      "description": "Write failing tests for 10-step unit chain assertions: verify each chain step produces the correct dimension (LENGTH→AREA via L*L, AREA→VOLUME via A*L, VOLUME→LENGTH via cbrt-equivalent, chain of force*distance=energy, energy/time=power, etc.) and that final values are numerically correct",
       "status": "done",
-      "commit": "788ba1598ac47b3c9d97a0b11a7171d385bd7ee8"
+      "commit": "6908fcd6"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Implement recursive refinement walking in `check_trait_conformance_chain`: before checking the current trait, recurse into each refinement. Collect all requirements into a Vec with a `visited: HashSet<String>` and `seen_names: HashMap<String, RequirementKind>` for dedup. Check all collected requirements against structure members. Test passes.",
+      "description": "Update dimensional_chains.ri if needed to ensure all 10-step chain computations produce expected dimensions and values. Tests should pass",
       "status": "done",
-      "commit": "c1b2b2bb303eb5833fedd4ec51fb96b34f8aaacd"
+      "commit": "6908fcd6"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write test `chain_three_level_all_satisfied`: C requires `x`, B : C requires `y`, A : B requires `z`. Structure provides all three \u2192 no errors. Verifies multi-level recursive walking works.",
+      "description": "Write failing tests for sqrt(area)→length round-trips: verify sqrt(w*h) has LENGTH dimension, sqrt(VOLUME*LENGTH) has AREA dimension, and sqrt(sqrt(L^4)) returns LENGTH. Also test that fractional dimension exponents work (sqrt of LENGTH gives LENGTH^(1/2))",
       "status": "done",
-      "commit": "788ba1598ac47b3c9d97a0b11a7171d385bd7ee8"
+      "commit": "6908fcd6"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Verify test passes with existing recursive implementation from step-4. No code changes expected \u2014 commit confirms multi-level chains work.",
+      "description": "Ensure .ri fixture has the sqrt round-trip expressions and they evaluate correctly. Fix any issues to make tests pass",
       "status": "done",
-      "commit": "788ba1598ac47b3c9d97a0b11a7171d385bd7ee8"
+      "commit": "6908fcd6"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write test `chain_missing_deep_ancestor_member`: A : B : C, C requires `base : Length`, structure provides A's and B's members but not `base` \u2192 exactly 1 MissingParam error for `base`.",
+      "description": "Write failing tests for complex engineering formula dimensions: Reynolds number (dimensionless), moment of inertia (kg·m²), pressure (kg·m⁻¹·s⁻²), power (kg·m²·s⁻³), gravitational PE (kg·m²·s⁻²), and spring energy (kg·m²·s⁻²). Verify both dimension vectors and numerical values",
       "status": "done",
-      "commit": "788ba1598ac47b3c9d97a0b11a7171d385bd7ee8"
+      "commit": "6908fcd6"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Verify test passes with existing recursive implementation. No code changes expected \u2014 commit confirms deep ancestor error propagation.",
+      "description": "Ensure .ri fixture engineering formulas produce correct dimensions and values. Fix any issues to make tests pass",
       "status": "done",
-      "commit": "788ba1598ac47b3c9d97a0b11a7171d385bd7ee8"
+      "commit": "6908fcd6"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write test `chain_diamond_dedup_satisfied`: C requires `x : Length`. A : C, B : C. Call chain fn with both A and B via `check_trait_conformance_multi` helper (simulating `structure : A + B`). Structure has `x` \u2192 no errors, requirement from C not checked twice.",
+      "description": "Write failing test: stress_query_consistency.rs — sphere volume consistency: create sphere(r=0.05m) via OcctKernel, query volume, assert |V - 4/3·π·r³| < 1e-9. Guarded by OCCT_AVAILABLE",
       "status": "done",
-      "commit": "788ba1598ac47b3c9d97a0b11a7171d385bd7ee8"
+      "commit": "6908fcd6"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Add `check_trait_conformance_multi(structure_members, trait_names, trait_registry, ports, subs) -> Vec<ConformanceError>` that iterates over multiple trait bounds sharing a visited set, preventing duplicate chain walks. Test passes.",
+      "description": "Implement sphere volume consistency test using OCCT kernel. Should pass immediately since it only queries existing kernel functionality",
       "status": "done",
-      "commit": "c1b2b2bb303eb5833fedd4ec51fb96b34f8aaacd"
+      "commit": "6908fcd6"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write test `chain_diamond_missing_exactly_one_error`: same diamond (A : C, B : C, C requires `x`), but structure lacks `x` \u2192 exactly 1 MissingParam error (not 2 from walking C via both A and B).",
+      "description": "Write failing test: sphere surface area consistency — create sphere(r=0.05m), query SurfaceArea, assert |A - 4·π·r²| < tolerance. Verify A/V ratio ≈ 3/r",
       "status": "done",
-      "commit": "788ba1598ac47b3c9d97a0b11a7171d385bd7ee8"
+      "commit": "6908fcd6"
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "Dedup in visited set ensures C's requirement added only once. Verify test passes \u2014 no additional code changes expected.",
+      "description": "Implement sphere surface area test. Should pass with existing OCCT queries",
       "status": "done",
-      "commit": "788ba1598ac47b3c9d97a0b11a7171d385bd7ee8"
+      "commit": "6908fcd6"
     },
     {
       "id": "step-13",
       "type": "test",
-      "description": "Write failing test `chain_conflicting_requirements`: C requires `x : Length`, D requires `x : Mass`. Trait A refines both C and D. Call chain fn \u2192 expect ConflictingRequirement { name: 'x', type_a: Length, type_b: Mass }. Fails because variant does not exist.",
+      "description": "Write failing test: centroid symmetry — create box(10mm,10mm,10mm) centered at origin, query centroid, assert centroid ≈ (0,0,0). Then translate box by (50mm,0,0), query centroid, assert centroid ≈ (0.055,0.005,0.005) shifted correctly",
       "status": "done",
-      "commit": "4583c3eb"
+      "commit": "6908fcd6"
     },
     {
       "id": "step-14",
       "type": "impl",
-      "description": "Add `ConflictingRequirement { name: String, type_a: Type, type_b: Type }` variant to ConformanceError. In chain walker, when collecting requirements, detect same name with different type via `seen_names` map and emit ConflictingRequirement. Test passes.",
+      "description": "Implement centroid symmetry tests. Parse centroid JSON response and verify coordinates. Should pass with existing OCCT queries",
       "status": "done",
-      "commit": "4583c3eb"
+      "commit": "6908fcd6"
     },
     {
       "id": "step-15",
       "type": "test",
-      "description": "Write failing test `chain_unresolved_trait`: trait A has refinement 'Nonexistent' (not in registry). Call chain fn \u2192 expect UnresolvedTrait { name: 'Nonexistent' }. Fails because variant does not exist.",
+      "description": "Write failing test: Pappus-style volume/area relationships — for a box(w,h,d), verify V=w·h·d and A=2(wh+wd+hd) using Volume and SurfaceArea queries. Test with multiple box sizes to stress numerical precision",
       "status": "done",
-      "commit": "b251ebe7"
+      "commit": "6908fcd6"
     },
     {
       "id": "step-16",
       "type": "impl",
-      "description": "Add `UnresolvedTrait { name: String }` variant to ConformanceError. In chain walker, when trait_name is not found in trait_registry, push UnresolvedTrait error and return early. Test passes.",
+      "description": "Implement Pappus-style box consistency tests. Should pass with existing OCCT queries",
       "status": "done",
-      "commit": "b251ebe7"
+      "commit": "6908fcd6"
     },
     {
       "id": "step-17",
       "type": "test",
-      "description": "Write integration test `integration_deep_chain_defaults_no_duplicate_injection`: C has default `size : Length = 10mm`, A : C, B : C. `structure def X : A + B {}` \u2192 compile_first_template, expect exactly 1 'size' value cell (not 2). Verifies no duplicate default injection from shared ancestors in the full compilation pipeline.",
+      "description": "Write failing test: contains(solid, centroid(solid))=true using MockGeometryKernel — configure mock to return centroid inside bounding box, verify the eval pipeline handles query dispatch correctly. Also test distance(solid, solid)=0 for overlapping shapes",
       "status": "done",
-      "commit": "0b745132442012607d7e0d1bb4fbe1e6ad97ce23"
+      "commit": "6908fcd6"
     },
     {
       "id": "step-18",
       "type": "impl",
-      "description": "Verify existing `collect_all_requirements` dedup logic handles diamond defaults correctly. Test should pass based on existing visited-set logic. If not, fix the dedup in collect_all_requirements. Commit confirms end-to-end chain default injection is correct.",
+      "description": "Implement mock-based contains/distance consistency tests. Configure mock geometry kernel with appropriate query results and verify correct dispatch",
       "status": "done",
-      "commit": "0b745132442012607d7e0d1bb4fbe1e6ad97ce23"
+      "commit": "6908fcd6"
+    },
+    {
+      "id": "step-19",
+      "type": "test",
+      "description": "Fix review finding [precision_tolerance]: In box_volume_multiple_sizes (lines 305-312, 323-330), replace absolute tolerance 1e-15 with relative tolerance assertion: assert!((v - expected).abs() / expected < 1e-10). The 1e-15 absolute tolerance demands relative error <8e-9 for a 5mm cube (V=1.25e-7 m³), which is below the precision floor of double-precision floating-point operations accumulated through OCCT's BRep geometry pipeline and mm→m unit conversions. Relative tolerance 1e-10 is robust across all volume magnitudes and consistent with the project's tolerance conventions (1e-9 to 1e-12 used elsewhere in the file).",
+      "status": "done",
+      "commit": "58c43d91"
+    },
+    {
+      "id": "step-20",
+      "type": "impl",
+      "description": "Verify the updated box_volume_multiple_sizes test compiles and passes with the new relative tolerance assertions. Run the full stress_query_consistency test suite to confirm no regressions.",
+      "status": "done",
+      "commit": "58c43d91"
     }
   ],
   "design_decisions": [
     {
-      "decision": "New function `check_trait_conformance_chain` rather than modifying `check_trait_conformance`",
-      "rationale": "The existing function has a clean single-trait contract (documented: 'Refinement hierarchy walking remains the caller's responsibility'). Adding registry/chain parameters would break existing callers and conflate two responsibilities. A separate chain-aware function composes with the single-trait checker."
+      "decision": "Split dimensional_chains into .ri fixture + Rust harness, query_consistency as pure Rust kernel tests",
+      "rationale": "Dimensional chains exercise the .ri language's type system and are best tested as .ri source through the full parse→compile→eval pipeline (matching m8_stdlib_integration.rs pattern). Query consistency tests exercise geometry kernel API directly since measurement functions aren't yet .ri-callable stdlib entries — they operate through GeometryKernel::query() at the Rust level."
     },
     {
-      "decision": "Also add `check_trait_conformance_multi` for multiple trait bounds with shared dedup state",
-      "rationale": "Diamond patterns (structure : A + B where A : C and B : C) require shared visited/seen state across multiple top-level trait bounds. A multi-trait entry point shares dedup state, preventing duplicate requirement collection from shared ancestors."
+      "decision": "Use real OCCT kernel for geometry query tests (guarded by OCCT_AVAILABLE)",
+      "rationale": "Mock-based geometry tests don't verify mathematical relationships since we control the mock outputs. Real OCCT gives us genuine mathematical consistency checks (V=4/3πr³ for spheres, centroid at center of symmetric shapes, etc.). The OCCT_AVAILABLE guard ensures tests skip gracefully on systems without OCCT."
     },
     {
-      "decision": "Return `Vec<ConformanceError>` (same return type as single-trait checker) with new variants for chain-specific errors",
-      "rationale": "Keeps the error type unified. Callers can handle all conformance errors with one match. ConflictingRequirement and UnresolvedTrait are legitimate conformance errors that only arise in chain contexts."
+      "decision": "Use mock kernel for contains(solid, centroid(solid)) test",
+      "rationale": "The FFI layer doesn't have point_in_solid/contains yet (task 319's spatial queries aren't in the OCCT FFI bindings). We use MockGeometryKernel with configured query results to validate the eval pipeline's query dispatch flow, providing a scaffold for when the real contains FFI is wired."
     },
     {
-      "decision": "Function takes `trait_name: &str` + `trait_registry: &HashMap<String, &CompiledTrait>` instead of `&CompiledTrait`",
-      "rationale": "Chain walking requires looking up parent traits by name, which needs the registry. The entry point is a trait name, and the function resolves it internally."
+      "decision": "Engineering formulas expressed using unit arithmetic rather than user-defined type aliases",
+      "rationale": "The .ri language constructs derived units via arithmetic: `let n_unit = 1kg * 1m / (1s * 1s)` for Newton. This matches the existing pattern in math_linalg.ri and dimensional_consistency.ri, and exercises the dimension multiplication/division logic directly rather than relying on type alias infrastructure."
     },
     {
-      "decision": "Internal chain walker collects all requirements first, then checks \u2014 rather than checking each trait independently",
-      "rationale": "Collect-then-check enables deduplication of requirements from diamond patterns. Checking independently would produce duplicate errors for shared ancestors."
+      "decision": "10-step chain uses a single structure with progressive let-bindings",
+      "rationale": "Each chain step builds on the previous via let-bindings, creating a dependency chain that exercises both the dimensional type system and the eval engine's topological ordering. This is a more realistic stress test than isolated expressions."
     },
     {
-      "decision": "Keep `collect_all_requirements` private; new public function has its own chain-walking logic",
-      "rationale": "collect_all_requirements is tightly coupled to the internal Diagnostic/default-injection pipeline. The new public function has its own simpler chain-walking logic that returns ConformanceError variants, avoiding coupling to the internal compilation flow."
+      "decision": "Use relative tolerance for OCCT volume assertions on small geometries",
+      "rationale": "Absolute tolerance 1e-15 for volumes ~1e-7 m³ demands relative error <8e-9, below the precision floor of double-precision floats after BRep pipeline and mm→m conversions. Relative tolerance (v - expected).abs() / expected < 1e-10 scales correctly across all volume magnitudes and avoids false failures from accumulated ULP rounding errors."
     }
   ],
   "reuse": [
     {
-      "what": "`check_trait_conformance()` single-trait checker",
-      "where": "lib.rs lines 144-224",
-      "how": "After collecting all requirements from the chain into a temporary CompiledTrait (or inline Vec), delegate to this function for the actual member-by-member checking against structure members, ports, and subs."
+      "what": "eval_ri_file() helper pattern from m8_stdlib_integration.rs",
+      "where": "crates/reify-eval/tests/stress_dimensional_chains.rs",
+      "how": "Copy the helper that loads a .ri file, parses, compiles (asserting no errors), evaluates with MockConstraintChecker, and returns EvalResult. Same pattern: fs::read_to_string → parse → compile → Engine::new(checker, None) → eval."
     },
     {
-      "what": "Chain-walking pattern from `collect_all_requirements()`",
-      "where": "lib.rs lines 4945-5063",
-      "how": "The new chain walker follows the same algorithmic pattern: visited set for diamond dedup, seen_names map for conflict detection, depth-first parent-first recursion. Adapted to emit ConformanceError instead of Diagnostic."
+      "what": "OCCT_AVAILABLE guard pattern from boundary4_geometry.rs",
+      "where": "crates/reify-eval/tests/stress_query_consistency.rs",
+      "how": "Each test starts with `if !reify_kernel_occt::OCCT_AVAILABLE { eprintln!(\"skipping...\"); return; }` and then creates OcctKernel::new() directly."
     },
     {
-      "what": "Test helpers: `empty_trait()`, `test_span()`, `compile_module()`, `compile_first_template()`",
-      "where": "trait_conformance_tests.rs lines 10-279",
-      "how": "Reuse all four helpers. Unit tests construct CompiledTraits directly (using empty_trait + modifications). Integration tests use compile_first_template to exercise the full pipeline."
+      "what": "MockGeometryKernel with_query_result from reify-test-support",
+      "where": "crates/reify-eval/tests/stress_query_consistency.rs (contains test)",
+      "how": "Use MockGeometryKernel::new().with_query_result(handle_id, expected_value) to configure mock responses for query dispatch testing."
     },
     {
-      "what": "Existing ConformanceError variants (MissingParam, TypeMismatch, etc.)",
-      "where": "lib.rs lines 111-138",
-      "how": "Chain function returns the same error variants for per-member failures. Only adds ConflictingRequirement and UnresolvedTrait as new chain-specific variants."
+      "what": "Value constructors from reify-test-support/values.rs (mm, meters, mm2, mm3)",
+      "where": "Both test files",
+      "how": "Use mm(), meters(), mm2(), mm3() for constructing test values with correct SI conversions and dimension vectors."
     },
     {
-      "what": "Diamond dedup algorithm from `collect_all_requirements`",
-      "where": "lib.rs lines 4957-4958, 4994-5008",
-      "how": "Same pattern: `visited.insert(trait_name)` for cycle/diamond prevention, `seen_names.get()` for requirement conflict detection."
+      "what": "DimensionVector constants and operations from reify-types",
+      "where": "crates/reify-eval/tests/stress_dimensional_chains.rs",
+      "how": "Use LENGTH, AREA, VOLUME, MASS, TIME, FORCE constants and .mul()/.div()/.root()/.pow() methods to construct expected dimension vectors for assertion comparisons."
+    },
+    {
+      "what": "dimensional_consistency.ri fixture pattern",
+      "where": "examples/dimensional_chains.ri",
+      "how": "Follow same .ri structure: single `structure def` with let-bindings for computed values, unit helpers like `let n_unit = 1kg * 1m / (1s * 1s)`, and inline comments explaining expected results."
+    },
+    {
+      "what": "Centroid JSON parsing from boundary4_geometry.rs translate_centroid test",
+      "where": "crates/reify-eval/tests/stress_query_consistency.rs",
+      "how": "Centroid returns Value::String with JSON {\"x\":f64,\"y\":f64,\"z\":f64}. Parse with string matching or minimal JSON parsing to extract coordinates."
     }
   ],
-  "_session_id": "186-215f216d",
-  "_created_at": "2026-03-25T02:48:03.976820+00:00"
+  "_session_id": "346-f611453b",
+  "_created_at": "2026-03-25T03:17:51.583308+00:00"
 }
