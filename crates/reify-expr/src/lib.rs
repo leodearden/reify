@@ -1128,6 +1128,34 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
                 Value::Undef
             }
         }
+        // Transform * Point: apply rotation then add translation
+        (
+            Value::Transform { rotation, translation },
+            Value::Point(components),
+        ) => {
+            if let Value::Orientation { w, x, y, z } = rotation.as_ref() {
+                if let Some((px, py, pz, p_dim)) = vec3_components(components) {
+                    if let Value::Vector(t_items) = translation.as_ref() {
+                        if let Some((tx, ty, tz, t_dim)) = vec3_components(t_items) {
+                            // Dimension check: point and translation must share dimension
+                            if p_dim != t_dim {
+                                return Value::Undef;
+                            }
+                            let (rx, ry, rz) = quat_rotate((*w, *x, *y, *z), px, py, pz);
+                            Value::Point(make_components_3(rx + tx, ry + ty, rz + tz, p_dim))
+                        } else {
+                            Value::Undef
+                        }
+                    } else {
+                        Value::Undef
+                    }
+                } else {
+                    Value::Undef
+                }
+            } else {
+                Value::Undef
+            }
+        }
         _ => Value::Undef,
     }
 }
