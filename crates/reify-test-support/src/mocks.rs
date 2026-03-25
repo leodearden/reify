@@ -280,14 +280,12 @@ impl MockGeometryKernel {
     }
 
     /// Return all operations matching a predicate on the `GeometryOp`.
+    ///
+    /// The lock is released before running the predicate to avoid mutex
+    /// poisoning if the closure panics (e.g. from a test assertion failure).
     pub fn find_ops<F: Fn(&GeometryOp) -> bool>(&self, f: F) -> Vec<GeometryOpRecord> {
-        self.operations
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|rec| f(&rec.op))
-            .cloned()
-            .collect()
+        let ops = self.operations.lock().unwrap().clone();
+        ops.iter().filter(|rec| f(&rec.op)).cloned().collect()
     }
 
     /// Return the total number of operations recorded.
@@ -296,12 +294,12 @@ impl MockGeometryKernel {
     }
 
     /// Return `true` if any recorded operation matches the predicate.
+    ///
+    /// The lock is released before running the predicate to avoid mutex
+    /// poisoning if the closure panics (e.g. from a test assertion failure).
     pub fn has_op<F: Fn(&GeometryOp) -> bool>(&self, f: F) -> bool {
-        self.operations
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|rec| f(&rec.op))
+        let ops = self.operations.lock().unwrap().clone();
+        ops.iter().any(|rec| f(&rec.op))
     }
 }
 
