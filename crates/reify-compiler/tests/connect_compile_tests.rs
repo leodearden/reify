@@ -416,3 +416,278 @@ structure def S2 {
         "same connector type with different param values must produce different hashes"
     );
 }
+
+// ── step-15: auto_match_chain_desugared ───────────────────────────────
+
+#[test]
+fn auto_match_chain_desugared() {
+    // Chain a -> b -> c where all three ports have same trait T and matching param `d`.
+    // Assert both desugared connections have auto-generated port_mappings [("d", "d")].
+    let source = r#"
+trait T { param d : Length }
+structure def S {
+    port a : out T { param d : Length = 1mm }
+    port b : bidi T { param d : Length = 2mm }
+    port c : in T { param d : Length = 3mm }
+    chain a -> b -> c
+}
+"#;
+    let (template, diagnostics) = compile_first_template(source);
+    let errors: Vec<_> = diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    assert_eq!(template.connections.len(), 2, "expected 2 desugared connections");
+    // Both connections should have auto-generated identity mapping for 'd'
+    assert_eq!(
+        template.connections[0].port_mappings,
+        vec![("d".to_string(), "d".to_string())],
+        "expected auto-mapping for first desugared connection (a->b)"
+    );
+    assert_eq!(
+        template.connections[1].port_mappings,
+        vec![("d".to_string(), "d".to_string())],
+        "expected auto-mapping for second desugared connection (b->c)"
+    );
+}
+
+// ── step-13: auto_match_empty_members ────────────────────────────────
+
+#[test]
+fn auto_match_empty_members() {
+    // Both ports have same trait but no params/auto members.
+    // Assert port_mappings is empty and no diagnostic is emitted (vacuous match).
+    let source = r#"
+trait EmptyPort {}
+structure def S {
+    port a : out EmptyPort {}
+    port b : in EmptyPort {}
+    connect a -> b
+}
+"#;
+    let (template, diagnostics) = compile_first_template(source);
+    let errors: Vec<_> = diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    assert_eq!(template.connections.len(), 1);
+    // Empty members — vacuous match, port_mappings is empty
+    assert_eq!(
+        template.connections[0].port_mappings,
+        Vec::<(String, String)>::new(),
+        "expected empty port_mappings for ports with no members"
+    );
+    // No warnings
+    let warnings: Vec<_> = diagnostics.iter().filter(|d| d.severity == Severity::Warning).collect();
+    assert!(warnings.is_empty(), "expected no warnings for empty-member ports, got: {:?}", warnings);
+}
+
+// ── step-11: no_auto_match_dotted_ports ───────────────────────────────
+
+#[test]
+fn no_auto_match_dotted_ports() {
+    // Connect via dotted sub-component port refs: motor.shaft -> gear.input.
+    // These are MemberAccess expressions that resolve to strings with '.'.
+    // Auto-matching must be skipped — port_mappings should be empty.
+    let source = r#"
+trait RotaryPort { param d : Length }
+structure def Motor {
+    port shaft : out RotaryPort { param d : Length = 10mm }
+}
+structure def Gear {
+    port input : in RotaryPort { param d : Length = 10mm }
+}
+structure def Assembly {
+    sub motor = Motor()
+    sub gear = Gear()
+    connect motor.shaft -> gear.input
+}
+"#;
+    let module = compile_module(source);
+    let asm = module.templates.iter().find(|t| t.name == "Assembly").expect("Assembly");
+    let errors: Vec<_> = module.diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    assert_eq!(asm.connections.len(), 1);
+    assert_eq!(asm.connections[0].left_port, "motor.shaft");
+    assert_eq!(asm.connections[0].right_port, "gear.input");
+    // Dotted ports — auto-matching skipped, port_mappings stays empty
+    assert_eq!(
+        asm.connections[0].port_mappings,
+        Vec::<(String, String)>::new(),
+        "expected empty port_mappings for dotted port references"
+    );
+    // No unmatched-member warnings
+    let unmatched_warnings: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning && d.message.contains("unmatched"))
+        .collect();
+    assert!(
+        unmatched_warnings.is_empty(),
+        "expected no 'unmatched' warnings for dotted ports, got: {:?}",
+        unmatched_warnings
+    );
+}
+
+// ── step-9: explicit_mapping_skips_auto_match ─────────────────────────
+
+#[test]
+fn explicit_mapping_skips_auto_match() {
+    // Same trait, same member names, but explicit mapping `{ d -> d }` provided.
+    // Assert the explicit mapping is preserved and no auto-match logic runs.
+    let source = r#"
+trait T { param d : Length }
+structure def S {
+    port a : out T { param d : Length = 5mm }
+    port b : in T { param d : Length = 5mm }
+    connect a -> b { d -> d }
+}
+"#;
+    let (template, diagnostics) = compile_first_template(source);
+    let errors: Vec<_> = diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    assert_eq!(template.connections.len(), 1);
+    // Explicit mapping should be preserved exactly as specified
+    assert_eq!(
+        template.connections[0].port_mappings,
+        vec![("d".to_string(), "d".to_string())],
+        "expected explicit mapping to be preserved"
+    );
+    // No warnings about unmatched members
+    let warnings: Vec<_> = diagnostics.iter().filter(|d| d.severity == Severity::Warning).collect();
+    assert!(warnings.is_empty(), "expected no warnings with explicit mapping, got: {:?}", warnings);
+}
+
+// ── step-7: no_auto_match_different_traits ────────────────────────────
+
+#[test]
+fn no_auto_match_different_traits() {
+    // Left port has trait MechPort, right port has trait RotaryPort, both with param `d`.
+    // Assert port_mappings is empty and no auto-match or unmatched diagnostic is emitted.
+    let source = r#"
+trait MechPort { param d : Length }
+trait RotaryPort { param d : Length }
+structure def S {
+    port a : out MechPort { param d : Length = 5mm }
+    port b : in RotaryPort { param d : Length = 5mm }
+    connect a -> b
+}
+"#;
+    let (template, diagnostics) = compile_first_template(source);
+    // No unmatched-member warnings
+    let unmatched_warnings: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning && d.message.contains("unmatched"))
+        .collect();
+    assert!(
+        unmatched_warnings.is_empty(),
+        "expected no 'unmatched' warnings for different-trait ports, got: {:?}",
+        unmatched_warnings
+    );
+    // port_mappings should be empty (no auto-match)
+    assert_eq!(
+        template.connections[0].port_mappings,
+        Vec::<(String, String)>::new(),
+        "expected empty port_mappings for different-trait ports"
+    );
+}
+
+// ── step-5: auto_match_unmatched_emits_diagnostic ────────────────────
+
+#[test]
+fn auto_match_unmatched_emits_diagnostic() {
+    // Same trait T, left port a has params {d, l}, right port b has params {d, r}.
+    // Should emit a Warning diagnostic containing 'unmatched', and port_mappings stays empty.
+    let source = r#"
+trait T { param d : Length }
+structure def S {
+    port a : out T {
+        param d : Length = 5mm
+        param l : Length = 1mm
+    }
+    port b : in T {
+        param d : Length = 5mm
+        param r : Length = 1mm
+    }
+    connect a -> b
+}
+"#;
+    let (_template, diagnostics) = compile_first_template(source);
+    let warnings: Vec<_> = diagnostics.iter().filter(|d| d.severity == Severity::Warning).collect();
+    assert!(
+        !warnings.is_empty(),
+        "expected a Warning diagnostic for unmatched members, got: {:?}",
+        diagnostics
+    );
+    let unmatched_warning = warnings.iter().any(|d| d.message.contains("unmatched"));
+    assert!(unmatched_warning, "expected warning message to contain 'unmatched', got: {:?}", warnings);
+    // port_mappings should be empty (no partial auto-match)
+    assert_eq!(
+        _template.connections[0].port_mappings,
+        Vec::<(String, String)>::new(),
+        "expected empty port_mappings when members don't fully match"
+    );
+}
+
+// ── step-3: auto_match_multiple_members ──────────────────────────────
+
+#[test]
+fn auto_match_multiple_members() {
+    // Both ports have same trait with 3 params (d, length, angle), no explicit mapping.
+    // Assert all 3 are auto-mapped as identity pairs, sorted alphabetically.
+    let source = r#"
+trait MechPort {
+    param d : Length
+    param length : Length
+    param angle : Real
+}
+structure def S {
+    port a : out MechPort {
+        param d : Length = 5mm
+        param length : Length = 10mm
+        param angle : Real = 0.0
+    }
+    port b : in MechPort {
+        param d : Length = 5mm
+        param length : Length = 10mm
+        param angle : Real = 0.0
+    }
+    connect a -> b
+}
+"#;
+    let (template, diagnostics) = compile_first_template(source);
+    let errors: Vec<_> = diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    assert_eq!(template.connections.len(), 1);
+    // Auto-generated mappings should be sorted alphabetically: angle, d, length
+    assert_eq!(
+        template.connections[0].port_mappings,
+        vec![
+            ("angle".to_string(), "angle".to_string()),
+            ("d".to_string(), "d".to_string()),
+            ("length".to_string(), "length".to_string()),
+        ],
+        "expected 3 auto-generated identity mappings sorted alphabetically"
+    );
+}
+
+// ── step-1: auto_match_ports_same_trait_same_members ─────────────────
+
+#[test]
+fn auto_match_ports_same_trait_same_members() {
+    // Two ports of same trait T with identical param name `d`, no explicit mapping.
+    // After auto-matching, port_mappings should contain [("d", "d")].
+    let source = r#"
+trait T { param d : Length }
+structure def S {
+    port a : out T { param d : Length = 5mm }
+    port b : in T { param d : Length = 5mm }
+    connect a -> b
+}
+"#;
+    let (template, diagnostics) = compile_first_template(source);
+    let errors: Vec<_> = diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    assert_eq!(template.connections.len(), 1);
+    assert_eq!(
+        template.connections[0].port_mappings,
+        vec![("d".to_string(), "d".to_string())],
+        "expected auto-generated identity mapping for param 'd'"
+    );
+}
