@@ -347,6 +347,165 @@ fn parse_connect_mapping_before_param() {
     assert_eq!(connect.port_mappings[0].1, "input_bore");
 }
 
+// ── task-396 step-7: valid connect body produces no spurious errors ────
+
+#[test]
+fn connect_body_valid_no_spurious_errors() {
+    // A well-formed connect body with both params and port mappings must
+    // produce zero parse errors even after the diagnostic refactoring.
+    // This guards against the refactored code accidentally triggering
+    // diagnostics on valid input.
+    let (decls, errors) = parse_decls(
+        "structure S { port a : out T  port b : in T  connect a -> b : BoltSet { grade = 8.8, shaft -> bore } }",
+    );
+    assert!(errors.is_empty(), "expected no parse errors for valid connect body, got: {:?}", errors);
+
+    let structure = match &decls[0] {
+        Declaration::Structure(s) => s,
+        other => panic!("expected Structure, got {:?}", other),
+    };
+    let connect = match &structure.members[2] {
+        MemberDecl::Connect(c) => c,
+        other => panic!("expected Connect, got {:?}", other),
+    };
+    assert_eq!(connect.connector_type.as_deref(), Some("BoltSet"));
+    assert_eq!(connect.params.len(), 1, "expected 1 param, got {:?}", connect.params);
+    assert_eq!(connect.params[0].0, "grade");
+    assert_eq!(connect.port_mappings.len(), 1, "expected 1 port_mapping, got {:?}", connect.port_mappings);
+    assert_eq!(connect.port_mappings[0].0, "shaft");
+    assert_eq!(connect.port_mappings[0].1, "bore");
+}
+
+// ── task-396 step-5: malformed port mapping caught by check_and_lower! ──
+
+#[test]
+fn connect_body_malformed_mapping_emits_diagnostic() {
+    // `{ shaft -> }` has a "from" but no "to"; tree-sitter error recovery
+    // sets has_error() on the connect_statement (has_error propagates from
+    // descendants). check_and_lower! catches this before lower_connect_body
+    // is reached, emitting "invalid connect: ...".
+    // Body-level diagnostics are tested directly in ts_parser::tests.
+    let (_decls, errors) = parse_decls(
+        "structure S { port a : out T  port b : in T  connect a -> b { shaft -> } }",
+    );
+    assert!(
+        !errors.is_empty(),
+        "expected at least one parse error for malformed port mapping, got none"
+    );
+    assert!(
+        errors.iter().any(|e| e.message.contains("invalid connect")),
+        "expected check_and_lower! to emit 'invalid connect', got: {:?}",
+        errors
+    );
+}
+
+// ── task-396 step-3: malformed param caught by check_and_lower! ─
+
+#[test]
+fn connect_body_malformed_param_emits_diagnostic() {
+    // `{ grade = }` has a name but no value expression; tree-sitter error
+    // recovery sets has_error() on the connect_statement (has_error propagates
+    // from descendants). check_and_lower! catches this before lower_connect_body
+    // is reached, emitting "invalid connect: ...".
+    // Body-level diagnostics are tested directly in ts_parser::tests.
+    let (_decls, errors) = parse_decls(
+        "structure S { port a : out T  port b : in T  connect a -> b : BoltSet { grade = } }",
+    );
+    assert!(
+        !errors.is_empty(),
+        "expected at least one parse error for malformed connect parameter, got none"
+    );
+    assert!(
+        errors.iter().any(|e| e.message.contains("invalid connect")),
+        "expected check_and_lower! to emit 'invalid connect', got: {:?}",
+        errors
+    );
+}
+
+// ── task-396 step-1: ERROR node in connect body caught by check_and_lower! ───
+
+#[test]
+fn connect_body_error_node_emits_diagnostic() {
+    // `{ >= }` is clearly invalid syntax inside a connect body; tree-sitter
+    // error recovery sets has_error() on the connect_statement (has_error
+    // propagates from descendants). check_and_lower! catches this before
+    // lower_connect_body is reached, emitting "invalid connect: ...".
+    // Body-level diagnostics are tested directly in ts_parser::tests.
+    let (_decls, errors) = parse_decls(
+        "structure S { port a : out T  port b : in T  connect a -> b { >= } }",
+    );
+    assert!(
+        !errors.is_empty(),
+        "expected at least one parse error for invalid connect body syntax, got none"
+    );
+    assert!(
+        errors.iter().any(|e| e.message.contains("invalid connect")),
+        "expected check_and_lower! to emit 'invalid connect', got: {:?}",
+        errors
+    );
+}
+
+// ── task-396 step-8: malformed outer connect_statement emits diagnostic ─
+
+#[test]
+fn connect_statement_malformed_outer_emits_diagnostic() {
+    // `connect a ->` is missing the right endpoint; tree-sitter produces a
+    // connect_statement node with has_error() == true (MISSING "right" field).
+    // Without check_and_lower!, lower_member calls lower_connect which silently
+    // returns None via `?` on the missing right field — no diagnostic is emitted.
+    let (_decls, errors) = parse_decls(
+        "structure S { port a : out T  connect a -> }",
+    );
+    assert!(
+        !errors.is_empty(),
+        "expected at least one parse error for malformed connect statement (missing right endpoint), got none"
+    );
+    assert!(
+        errors.iter().any(|e| {
+            e.message.contains("invalid connect")
+                || e.message.contains("syntax error")
+                || e.message.contains("connect")
+        }),
+        "expected an error mentioning 'invalid connect' or 'syntax error', got: {:?}",
+        errors
+    );
+}
+
+// ── task-396 step-10: valid outer connect statement produces no spurious errors ─
+
+#[test]
+fn connect_statement_valid_outer_no_spurious_errors() {
+    // A simple well-formed connect must produce zero parse errors even after
+    // wrapping the connect_statement arm with check_and_lower!. This guards
+    // against check_and_lower! accidentally triggering false positives on
+    // valid connect statements where has_error() is false.
+    let (decls, errors) = parse_decls(
+        "structure S { port a : out T  port b : in T  connect a -> b }",
+    );
+    assert!(
+        errors.is_empty(),
+        "expected no parse errors for valid connect statement, got: {:?}",
+        errors
+    );
+    let structure = match &decls[0] {
+        Declaration::Structure(s) => s,
+        other => panic!("expected Structure, got {:?}", other),
+    };
+    let connect = match &structure.members[2] {
+        MemberDecl::Connect(c) => c,
+        other => panic!("expected Connect member, got {:?}", other),
+    };
+    assert_eq!(connect.operator, ConnectOp::Forward);
+    match &connect.left.expr.kind {
+        ExprKind::Ident(name) => assert_eq!(name, "a"),
+        other => panic!("expected Ident('a'), got {:?}", other),
+    }
+    match &connect.right.expr.kind {
+        ExprKind::Ident(name) => assert_eq!(name, "b"),
+        other => panic!("expected Ident('b'), got {:?}", other),
+    }
+}
+
 // ── parse_connect_reverse ─────────────────────────────────────────
 
 #[test]
@@ -377,3 +536,4 @@ fn parse_connect_reverse() {
         other => panic!("expected Ident('b'), got {:?}", other),
     }
 }
+

@@ -1,257 +1,145 @@
 {
-  "task_id": "204",
-  "title": "Recursive structures: termination check",
+  "task_id": "396",
+  "title": "Emit diagnostics for ERROR nodes and silent drops in lower_connect_body",
   "files": [
-    "crates/reify-compiler/src/lib.rs",
-    "crates/reify-compiler/tests/termination_check_tests.rs"
+    "crates/reify-syntax/src/ts_parser.rs",
+    "crates/reify-syntax/tests/connect_chain_tests.rs"
   ],
   "modules": [
-    "crates/reify-compiler"
+    "crates/reify-syntax"
   ],
-  "analysis": "Task 204 adds a post-compilation pass that verifies recursive structures have a valid termination condition. It builds on task 203 (recursive structure detection via Tarjan SCC, which adds `is_recursive: bool` to TopologyTemplate and `detect_recursive_structures()`).\n\nThe termination check operates on templates already tagged `is_recursive == true`. For each such template, we examine its `sub_components` to find self-referencing subs (where `structure_name` matches the template name or another structure in the same SCC). For each recursive sub, we verify:\n\n1. The sub has a `where_clause` guard (currently parsed on SubDecl but NOT compiled into SubComponentDecl — we must add a `guard_expr` field).\n2. The guard expression references at least one param of type Int or Bool from the parent template.\n3. That same param appears in the sub's argument list with a value that decrements/modifies it toward a base case (heuristic: the arg expression for that param uses BinOp::Sub, BinOp::And/Or/Not, or passes a literal that differs from the param's identity).\n4. `undef` is not used as a non-termination mechanism (no Literal(Value::Undef) in the recursive sub's args).\n\nImplementation approach:\n- Add `guard_expr: Option<CompiledExpr>` to `SubComponentDecl` so where-clauses on subs are compiled and available for analysis.\n- Compile the sub's where_clause during sub compilation (line ~2795 in compile_entity).\n- Add `check_recursive_termination()` as a post-compilation pass in `compile()`, after task 203's `detect_recursive_structures()` call.\n- Use `CompiledExpr::walk()` to collect ValueRef references from guard expressions and sub args.\n- Emit `Diagnostic::error(...)` with labels pointing at the recursive sub declaration span.\n\nKey reuse: CompiledExpr::walk() for expression traversal, existing Diagnostic infrastructure, existing compile_expr() for where_clause compilation, existing scope/type infrastructure for param type resolution.\n\n**Review fix (steps 21-22):** Steps 19-20 claimed to implement block-guard termination recognition, but the test `recursive_sub_inside_block_guard_no_error` passes for the wrong reason. `compile_guarded_members` has a `_ => {}` catch-all (lib.rs:4597-4599) that silently drops ALL Sub declarations inside `when {}` blocks. The sub `child` is never compiled into `sub_components`, so the structure is never flagged as recursive by Tarjan SCC, and `check_recursive_termination` is never invoked. The test produces zero errors not because block-guard termination works, but because the feature (subs inside guarded blocks) is entirely unimplemented upstream. Additionally, `check_recursive_termination` has no block-guard fallback code — when `sub.guard_expr` is None, it immediately emits an error with no guarded_groups search. Steps 21-22 fix this by: (1) writing a test that honestly documents the current behavior (sub_components is empty), and (2) marking the false-confidence test as #[ignore] with a detailed explanation.",
-  "prerequisites": [
-    {
-      "id": "pre-1",
-      "description": "Add `guard_expr: Option<CompiledExpr>` field to SubComponentDecl struct so per-sub where-clauses are preserved in the compiled output",
-      "status": "done",
-      "commit": "0fe30fe2",
-      "tests": []
-    },
-    {
-      "id": "pre-2",
-      "description": "Compile the sub's where_clause into SubComponentDecl.guard_expr during sub compilation in compile_entity() (around line 2795). Use compile_expr on sub.where_clause.condition and store the result. Update all SubComponentDecl construction sites (both top-level and inside compile_guarded_members) to include guard_expr.",
-      "status": "done",
-      "commit": "7e38e7fa",
-      "tests": []
-    }
-  ],
+  "analysis": "lower_connect_body() at ts_parser.rs:1284-1316 has three silent-failure paths that should emit ParseError diagnostics:\n\n1. **ERROR nodes swallowed by catch-all**: The `_ => {}` catch-all discards ERROR nodes produced by tree-sitter error recovery (e.g. user writes `{ >= }` inside a connect body). Every other match-on-children site in the parser (top-level at line 163, constraint body at line 637, member declarations at line 852) has an explicit \"ERROR\" arm that pushes a ParseError. lower_connect_body must follow suit.\n\n2. **connect_param_assignment silent drops**: When `child_by_field_name(\"name\")` returns None, the entire assignment is silently skipped. When name is present but `child_by_field_name(\"value\")` returns None or `lower_expr` fails, the assignment is silently dropped after computing the name string. These should emit diagnostics.\n\n3. **port_mapping silent drops**: When `child_by_field_name(\"from\")` or `child_by_field_name(\"to\")` returns None, the mapping is silently skipped. This should emit a diagnostic.\n\n4. **[REVIEWER BLOCKER] Outer connect_statement missing check_and_lower!**: At ts_parser.rs:846, `lower_member` calls `self.lower_connect(child).map(MemberDecl::Connect)` directly, without the `check_and_lower!` guard that every other member type uses. When the connect_statement node itself is malformed at the outer level (e.g. `connect >= b` \u2014 missing left endpoint, broken operator), `lower_connect` returns `None` via `?` operators on `child_by_field_name(\"left\")`, `child_by_field_name(\"operator\")`, or `child_by_field_name(\"right\")`, silently discarding the error with no diagnostic. Previously `check_and_lower!` would catch `has_error()` on the node and emit `\"invalid connect: ...\"`. This is a regression.\n\nThe grammar (grammar.js:496-515) defines connect_body as `{ commaSep(choice(port_mapping, connect_param_assignment)) }`. Anonymous child tokens ({, }, ,) correctly hit the catch-all and should remain silent.\n\nThe fix follows established patterns: (a) add \"ERROR\" arm with contextual message `\"syntax error in connect body: ...\"` matching the constraint body pattern at line 637, (b) add `child.has_error()` guards on param/mapping arms matching the check_and_lower! macro pattern at line 12-23, (c) convert `if let` chains to `let ... else` with diagnostic-emitting else branches, (d) wrap the connect_statement arm in lower_member with check_and_lower! to match all other member type arms.\n\nTest strategy: integration tests in connect_chain_tests.rs that parse malformed connect bodies. For ERROR nodes, use clearly invalid syntax like `{ >= }`. For the has_error() guard paths, use syntax that partially matches but has internal errors. Tests assert at least one error exists with an expected message substring, tolerant of tree-sitter error recovery variations.",
+  "prerequisites": [],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing test: sub where-clause compiles into SubComponentDecl.guard_expr. Parse `structure S { param n: Int = 5; sub child = S(n: n - 1) where n > 0 }` and assert guard_expr is Some with a BinOp::Gt referencing n.",
+      "description": "Write failing test `connect_body_error_node_emits_diagnostic`: parse `structure S { port a : out T  port b : in T  connect a -> b { >= } }` and assert errors is non-empty and at least one error message contains 'connect body' or 'syntax error'. Currently the catch-all silently discards ERROR nodes, so the test will fail.",
       "status": "done",
-      "commit": "a98fbd90"
+      "commit": "1b2e8b4c"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Implement where_clause compilation for subs: in compile_entity's Sub arm (~line 2795), compile sub.where_clause.condition via compile_expr and store as guard_expr on SubComponentDecl. Do the same in compile_guarded_members' Sub handling. Make test pass.",
+      "description": "Add explicit \"ERROR\" arm to the match in lower_connect_body, before the `_ => {}` catch-all: `\"ERROR\" => { self.errors.push(ParseError { message: format!(\"syntax error in connect body: {}\", self.node_text(child)), span: self.span(child) }); }`. This follows the pattern at lines 637-644. Step-1 test should now pass.",
       "status": "done",
-      "commit": "7e38e7fa"
+      "commit": "a519be49"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing test: recursive sub WITHOUT where-clause emits error. Define `structure S { param n: Int = 5; sub child = S(n: n - 1) }` (no where guard). After task 203 tags it recursive, assert an error diagnostic containing 'recursive sub' and 'no termination condition'.",
+      "description": "Write failing test `connect_body_malformed_param_emits_diagnostic`: parse a connect body with a broken parameter assignment (e.g. `{ = 5 }` or other syntax that tree-sitter error recovery produces as a typed node with has_error()). Assert at least one error is emitted. Currently the if-let chains silently skip broken nodes.",
       "status": "done",
-      "commit": "a98fbd90"
+      "commit": "bc0c2d43"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Implement check_recursive_termination() function stub: iterate templates where is_recursive == true, find sub_components whose structure_name matches any template in the same SCC, check for missing guard_expr, emit error diagnostic. Wire into compile() after detect_recursive_structures().",
+      "description": "Refactor the connect_param_assignment arm in lower_connect_body: (a) Add a `if child.has_error()` guard at the top that emits `format!(\"invalid connect parameter: {}\", self.node_text(child))` and continues. (b) Convert `if let Some(name_node) = child.child_by_field_name(\"name\")` to `let Some(name_node) = ... else { push error 'connect parameter missing name', continue }`. (c) Convert the value+lower_expr chain: if value_node is None, emit 'connect parameter X missing value'; if lower_expr returns None, emit 'invalid value in connect parameter X'. Step-3 test should now pass.",
       "status": "done",
-      "commit": "7e38e7fa"
+      "commit": "26765f06"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing test: recursive sub WITH valid where-clause and decremented Int param produces NO error. Define `structure S { param n: Int = 5; sub child = S(n: n - 1) where n > 0 }`. Assert zero error diagnostics from termination check.",
+      "description": "Write failing test `connect_body_malformed_mapping_emits_diagnostic`: parse a connect body with a broken port mapping (e.g. syntax that produces an incomplete port_mapping node). Assert at least one error is emitted. Currently the if-let silently drops incomplete mappings.",
       "status": "done",
-      "commit": "a98fbd90"
+      "commit": "3feb7ae6"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Implement guard-references-decremented-param heuristic: walk guard_expr to collect ValueRef ids, check each against template's value_cells for Int or Bool type, then verify the same param name appears in the sub's args with a modifying expression (contains BinOp::Sub, BinOp::Add with negative, or BinOp::And/Or/Not for Bool). Suppress error when heuristic passes.",
+      "description": "Refactor the port_mapping arm in lower_connect_body: (a) Add a `if child.has_error()` guard at the top that emits `format!(\"invalid port mapping: {}\", self.node_text(child))` and continues. (b) Add an else branch to the `if let (Some(from), Some(to))` destructure that emits `format!(\"incomplete port mapping: {}\", self.node_text(child))`. Step-5 test should now pass.",
       "status": "done",
-      "commit": "7e38e7fa"
+      "commit": "39412649"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing test: recursive sub with where-clause that does NOT reference any Int/Bool param emits error. Define `structure S { param n: Int = 5; param active: Bool = true; sub child = S(n: n - 1) where 1 > 0 }` (guard uses only literals, no param ref). Assert error about guard not referencing a decremented parameter.",
+      "description": "Write regression test `connect_body_valid_no_spurious_errors`: explicitly verify that a well-formed connect body with both params and port mappings (`connect a -> b : BoltSet { grade = 8.8, shaft -> bore }`) produces zero errors. This guards against the refactored code accidentally triggering diagnostics on valid input. (Existing tests already assert errors.is_empty() but this makes the intent explicit for this task.)",
       "status": "done",
-      "commit": "a98fbd90"
+      "commit": "231e1732"
     },
     {
       "id": "step-8",
-      "type": "impl",
-      "description": "Refine the heuristic to emit a specific error when guard exists but doesn't reference any Int/Bool param from the template. Different error message: 'guard does not reference any Int or Bool parameter'.",
+      "type": "test",
+      "description": "Write failing test `connect_statement_malformed_outer_emits_diagnostic`: parse `structure S { port a : out T  connect >= b }` and assert `!errors.is_empty()` and at least one error message contains 'invalid connect' or 'syntax error'. This tests the reviewer-identified regression: line 846 in lower_member calls `self.lower_connect(child).map(MemberDecl::Connect)` without `check_and_lower!`, so when the outer connect_statement node is malformed (has_error() is true because left endpoint is missing and operator is broken), lower_connect silently returns None via `?` with no diagnostic. The test should currently fail because no diagnostic is emitted.",
       "status": "done",
-      "commit": "7e38e7fa"
+      "commit": "f47bf6da"
     },
     {
       "id": "step-9",
-      "type": "test",
-      "description": "Write failing test: recursive sub where guard references an Int param but that param is NOT modified in the recursive instantiation args. Define `structure S { param n: Int = 5; sub child = S(n: n) where n > 0 }` (passes n unchanged). Assert error about parameter not being decremented toward base case.",
+      "type": "impl",
+      "description": "Wrap the connect_statement arm in lower_member (line 846) with check_and_lower!, matching all other member type arms: change `\"connect_statement\" => self.lower_connect(child).map(MemberDecl::Connect),` to `\"connect_statement\" => check_and_lower!(self, child, \"connect\", self.lower_connect(child).map(MemberDecl::Connect)),`. This restores the is_error()||has_error() guard that emits `\"invalid connect: <text>\"` before returning None. Step-8 test should now pass.",
       "status": "done",
-      "commit": "a98fbd90"
+      "commit": "da9dbd1e"
     },
     {
       "id": "step-10",
-      "type": "impl",
-      "description": "Implement the arg-modification check: for each guard-referenced Int/Bool param, find the corresponding arg in sub.args by name, walk the arg expression to verify it contains a decrementing operation (Sub for Int, Not for Bool, or a different literal). Emit error if param passed unchanged.",
-      "status": "done",
-      "commit": "7e38e7fa"
-    },
-    {
-      "id": "step-11",
       "type": "test",
-      "description": "Write failing test: recursive sub with Bool param guard and negation is valid. Define `structure S { param active: Bool = true; sub child = S(active: !active) where active }`. Assert no error — Bool param referenced in guard and negated in args is a valid termination pattern.",
+      "description": "Write regression test `connect_statement_valid_outer_no_spurious_errors`: parse a simple well-formed connect `structure S { port a : out T  port b : in T  connect a -> b }` and assert errors.is_empty(). This guards against the check_and_lower! addition accidentally triggering false positives on valid connect statements. (Overlaps with existing parse_connect_simple but makes the intent explicit for this fix.)",
       "status": "done",
-      "commit": "a98fbd90"
-    },
-    {
-      "id": "step-12",
-      "type": "impl",
-      "description": "Ensure Bool param support: UnOp::Not on a Bool param in args counts as modification toward base case. Add Not detection to the arg-modification walker.",
-      "status": "done",
-      "commit": "7e38e7fa"
-    },
-    {
-      "id": "step-13",
-      "type": "test",
-      "description": "Write failing test: recursive sub using `undef` in args is explicitly forbidden. Define `structure S { param n: Int = 5; sub child = S(n: undef) where n > 0 }`. Assert error about undef being forbidden as non-termination mechanism.",
-      "status": "done",
-      "commit": "a98fbd90"
-    },
-    {
-      "id": "step-14",
-      "type": "impl",
-      "description": "Add undef detection: walk each recursive sub's arg expressions for Literal(Value::Undef). If found, emit error: 'undef is not allowed as a non-termination mechanism in recursive sub arguments'.",
-      "status": "done",
-      "commit": "7e38e7fa"
-    },
-    {
-      "id": "step-15",
-      "type": "test",
-      "description": "Write failing test: mutual recursion (A references B, B references A) without guards on both sides emits errors for both. Define `structure A { sub b = B() }` and `structure B { sub a = A() }`. Assert two error diagnostics (one per recursive sub).",
-      "status": "done",
-      "commit": "a98fbd90"
-    },
-    {
-      "id": "step-16",
-      "type": "impl",
-      "description": "Ensure mutual recursion support: the SCC set from task 203 identifies all cycle participants. check_recursive_termination checks every sub whose target is ANY member of the same SCC (not just self-references). Build SCC membership set from templates and check sub.structure_name membership.",
-      "status": "done",
-      "commit": "7e38e7fa"
-    },
-    {
-      "id": "step-17",
-      "type": "test",
-      "description": "Write failing test: non-recursive structure with sub is NOT flagged. Define `structure Inner { param x: Int = 1 }` and `structure Outer { sub inner = Inner(x: 5) }`. Assert zero error diagnostics — non-recursive subs should be ignored entirely.",
-      "status": "done",
-      "commit": "a98fbd90"
-    },
-    {
-      "id": "step-18",
-      "type": "impl",
-      "description": "Verify the non-recursive path works: check_recursive_termination skips templates where is_recursive == false. This should already work from step-4 but this step verifies and adds any needed guards.",
-      "status": "done",
-      "commit": "7e38e7fa"
-    },
-    {
-      "id": "step-19",
-      "type": "test",
-      "description": "Write test: recursive sub inside a guarded group (block guard) without its own where-clause emits error. Define `structure S { param n: Int = 5; when n > 0 { sub child = S(n: n - 1) } }`. The block guard protects the sub but the sub itself has no where-clause — the heuristic should recognize block-level guards as providing termination if the guard references a decremented param. Assert NO error (the enclosing block guard satisfies the termination requirement).",
-      "status": "done",
-      "commit": "a98fbd90"
-    },
-    {
-      "id": "step-20",
-      "type": "impl",
-      "description": "Handle subs inside guarded groups: when a recursive sub lacks its own guard_expr, check if it's inside a CompiledGuardedGroup whose guard_expr references a decremented Int/Bool param. Collect guarded_group membership for subs and check the enclosing guard as fallback. This requires tracking which subs belong to which guarded_groups during compilation.",
-      "status": "done",
-      "commit": "7e38e7fa"
-    },
-    {
-      "id": "step-21",
-      "type": "test",
-      "description": "Write test `block_guard_sub_not_yet_compiled` that documents the pre-existing compiler limitation honestly. Compile `structure S { param n: Int = 5; when n > 0 { sub child = S(n: n - 1) } }` and assert that `template.sub_components.is_empty()` — proving that `compile_guarded_members` silently drops Sub declarations inside `when {}` blocks (lib.rs:4597 catch-all `_ => {}`). Also assert `template.is_recursive == false` — since no sub_components exist, Tarjan never finds a cycle. This test documents the ACTUAL current behavior and will break (correctly) when compile_guarded_members is updated to handle Sub declarations.",
-      "status": "done",
-      "commit": "d5be4aa8"
-    },
-    {
-      "id": "step-22",
-      "type": "impl",
-      "description": "Fix the false-confidence test from step-19. Mark `recursive_sub_inside_block_guard_no_error` with `#[ignore]` and add a detailed comment explaining: (1) this test passes because `compile_guarded_members` has a `_ => {}` catch-all that silently drops Sub declarations inside `when {}` blocks — the sub `child` is never compiled into sub_components, (2) because sub_components is empty, S is never flagged as recursive by Tarjan SCC and check_recursive_termination is never invoked, (3) check_recursive_termination has no block-guard fallback path — when sub.guard_expr is None it immediately errors without searching guarded_groups, (4) to properly enable this test: first update compile_guarded_members to compile Sub declarations into sub_components, then implement the guarded_groups fallback in check_recursive_termination (search template.guarded_groups for a CompiledGuardedGroup whose members contain the sub, then run guard-references-decremented-param on that group's guard_expr). This ensures the test suite does not give false confidence about block-guard termination recognition.",
-      "status": "done",
-      "commit": "bd3dcb09"
+      "commit": "0cdfb9eb"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Add guard_expr to SubComponentDecl rather than creating a separate data structure",
-      "rationale": "The where_clause is already parsed on SubDecl. Storing the compiled guard expression directly on SubComponentDecl keeps the sub's termination condition co-located with its other metadata, consistent with how other member types handle per-declaration guards."
+      "decision": "Use contextual message prefix 'syntax error in connect body' for ERROR nodes",
+      "rationale": "Matches the constraint body pattern at line 637 which uses 'syntax error in constraint body'. Contextual prefixes help users locate errors. Top-level and member declaration sites use just 'syntax error' but the body-level pattern with context is more descriptive."
     },
     {
-      "decision": "Post-compilation pass rather than inline check during sub compilation",
-      "rationale": "Recursive structure detection (task 203) requires all templates to be compiled first to build the adjacency graph. The termination check must run after detect_recursive_structures() so is_recursive flags are available. This follows the existing pattern of PendingBoundCheck and other deferred checks."
+      "decision": "Add child.has_error() guards before field extraction in param/mapping arms",
+      "rationale": "Follows the check_and_lower! macro pattern (lines 12-23) which checks is_error()||has_error() before lowering. When tree-sitter error recovery produces a typed node (e.g. connect_param_assignment) with internal errors, fields may be missing or corrupt. The has_error() guard catches this early, producing a clear diagnostic instead of falling through to field-level else branches."
     },
     {
-      "decision": "Heuristic-based termination check rather than formal proof",
-      "rationale": "The task explicitly calls for a heuristic: guard must reference at least one Int/Bool param that is modified in the recursive instantiation. We don't attempt to prove termination formally — we check structural patterns that strongly suggest convergence (subtraction on Int, negation on Bool). This avoids false negatives on valid programs while catching the common mistake of infinite recursion."
+      "decision": "Use let-else pattern instead of nested if-let for field extraction",
+      "rationale": "Converting `if let Some(name) = child_by_field_name(\"name\") { ... }` to `let Some(name) = ... else { push_error; continue; }` makes the error path explicit and prevents silent drops. The happy path is unchanged. This is idiomatic Rust for 'required field or bail with error'."
     },
     {
-      "decision": "Emit Error severity (not Warning) for missing termination condition",
-      "rationale": "The task description says 'emit error if no reachable termination condition found'. Unbounded recursion would cause infinite instantiation at evaluation time, so this is a hard error. Task 203 uses Warning for cycle detection (informational), but task 204 is enforcement."
+      "decision": "Tests assert errors.iter().any(|e| e.message.contains(...)) rather than exact counts or messages",
+      "rationale": "Tree-sitter error recovery is implementation-defined and may produce different ERROR/MISSING node structures depending on surrounding context. Asserting at least one error with the expected message substring is robust across tree-sitter versions while still verifying diagnostic code is exercised."
     },
     {
-      "decision": "Recognize block-level guards (guarded groups) as termination conditions for enclosed subs",
-      "rationale": "A sub inside `when n > 0 { sub child = S(n: n-1) }` is functionally equivalent to `sub child = S(n: n-1) where n > 0`. Failing to recognize block guards would produce false positives on idiomatic code. We check enclosing guarded_group guard_expr as a fallback when sub has no direct guard_expr."
+      "decision": "Place all tests in connect_chain_tests.rs rather than creating a new file",
+      "rationale": "The existing connect_chain_tests.rs already contains all connect statement tests and the parse_decls helper. Adding diagnostic tests for connect body errors keeps them co-located with the happy-path tests. No new test file needed."
     },
     {
-      "decision": "Use CompiledExpr::walk() for expression analysis rather than custom traversal",
-      "rationale": "The walk() method is the canonical traversal documented in CompiledExprKind. It ensures all expression variants are visited and future-proofs against new variants. We collect ValueRef ids and check for specific BinOp/UnOp patterns."
-    },
-    {
-      "decision": "detect_recursive_structures returns cyclic SCCs for termination check",
-      "rationale": "Modified detect_recursive_structures to return Vec<HashSet<String>> (cyclic SCC sets). This allows check_recursive_termination to determine SCC membership without re-running Tarjan. Avoids duplicating the SCC computation."
-    },
-    {
-      "decision": "Mark block-guard termination test as #[ignore] rather than implementing subs-inside-guarded-blocks compilation",
-      "rationale": "The reviewer found that step-19/20 gave false confidence: the test passes because compile_guarded_members silently drops Sub declarations (pre-existing `_ => {}` catch-all), not because block-guard termination logic works. Implementing subs inside guarded blocks is a significant change to compile_guarded_members that is outside the scope of task 204 (termination checking). The correct fix is to honestly document the limitation: (1) a new test asserts sub_components is empty to surface the unimplemented state, (2) the original test is #[ignore]d with a detailed comment explaining the false-positive pass and what must change to enable it. This avoids shipping a test that gives false confidence while keeping the design intent documented for the future."
+      "decision": "Wrap connect_statement with check_and_lower! in lower_member to fix outer-level silent drop",
+      "rationale": "The reviewer identified that line 846 calls lower_connect directly without the check_and_lower! guard that every other member type arm uses. This is the simplest and most consistent fix: it follows the established pattern exactly, emitting 'invalid connect: <text>' when the node has is_error()||has_error(). The alternative (adding guards inside lower_connect itself) would work but breaks consistency with how all other member types handle this."
     }
   ],
   "reuse": [
     {
-      "what": "CompiledExpr::walk()",
-      "where": "crates/reify-types/src/expr.rs",
-      "how": "Use walk() to collect ValueRef ids from guard expressions and sub arg expressions. Avoids writing custom recursive traversal."
+      "what": "ParseError struct and self.errors.push() pattern",
+      "where": "crates/reify-syntax/src/lib.rs:524, crates/reify-syntax/src/ts_parser.rs:163-168",
+      "how": "Reuse the identical pattern: self.errors.push(ParseError { message: format!(...), span: self.span(child) })"
     },
     {
-      "what": "Diagnostic::error() + .with_label()",
-      "where": "crates/reify-types/src/diagnostics.rs",
-      "how": "Emit termination check errors using the same pattern as all other compiler diagnostics. Labels point at the sub declaration span."
+      "what": "ERROR arm pattern from constraint body",
+      "where": "crates/reify-syntax/src/ts_parser.rs:637-644",
+      "how": "Copy the exact pattern with contextual message prefix changed to 'syntax error in connect body'"
     },
     {
-      "what": "compile_expr()",
-      "where": "crates/reify-compiler/src/lib.rs:858",
-      "how": "Compile sub.where_clause.condition expressions using the existing compile_expr function with the current scope."
+      "what": "check_and_lower! macro for outer connect_statement guard",
+      "where": "crates/reify-syntax/src/ts_parser.rs:12-23",
+      "how": "Wrap the connect_statement arm in lower_member with check_and_lower!(self, child, \"connect\", ...) \u2014 identical usage to all other member type arms (lines 828-850)"
     },
     {
-      "what": "compile_first_template() test helper pattern",
-      "where": "crates/reify-compiler/tests/guard_compilation.rs:10",
-      "how": "Reuse the parse→compile→extract-template pattern for test setup. Define a local compile_first_template helper in the new test file."
+      "what": "check_and_lower! has_error() guard concept",
+      "where": "crates/reify-syntax/src/ts_parser.rs:12-23",
+      "how": "Apply the same child.has_error() check concept inline for param/mapping arms. Cannot use the macro directly since it returns Option and we are in a for-loop pushing to vectors."
     },
     {
-      "what": "ValueCellId, ValueCellKind, Type enums",
-      "where": "crates/reify-types/src/",
-      "how": "Use Type::Int and Type::Bool for param type checking. Use ValueCellKind::Param to identify parameters vs lets. Use ValueCellId for matching guard refs to sub args."
+      "what": "parse_decls test helper",
+      "where": "crates/reify-syntax/tests/connect_chain_tests.rs:8-11",
+      "how": "Reuse existing parse_decls(source) -> (Vec<Declaration>, Vec<ParseError>) helper for all new diagnostic tests"
     },
     {
-      "what": "TopologyTemplate.value_cells and .sub_components",
-      "where": "crates/reify-compiler/src/lib.rs:159",
-      "how": "Iterate value_cells to find Int/Bool params, iterate sub_components to find recursive subs, cross-reference guard_expr ValueRefs with value_cell ids."
-    },
-    {
-      "what": "Post-compilation pass pattern (deferred checks)",
-      "where": "crates/reify-compiler/src/lib.rs:2158-2204",
-      "how": "Follow the existing pattern of running analysis passes after all templates are compiled. Insert check_recursive_termination() after detect_recursive_structures() in the compile() function."
+      "what": "self.node_text() and self.span() helpers",
+      "where": "crates/reify-syntax/src/ts_parser.rs:69-75",
+      "how": "Used in all new diagnostic messages and spans, same as all existing ERROR arms throughout the file"
     }
   ],
-  "_session_id": "204-8069abdf",
-  "_created_at": "2026-03-25T18:10:55.728198+00:00"
+  "_session_id": "396-6831415d",
+  "_created_at": "2026-03-25T18:12:56.728209+00:00"
 }
