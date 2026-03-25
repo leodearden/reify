@@ -291,3 +291,42 @@ structure def S : A + B + C {
         template.constraints.len()
     );
 }
+
+// ── step-8 ───────────────────────────────────────────────────────────────────
+
+/// Two traits both provide `let y = 42` — same expression, same name.
+/// The let binding is deduplicated (not injected twice).
+/// Assert: no errors, exactly 1 'y' value cell with kind Let.
+#[test]
+fn let_merge_same_expr() {
+    let source = r#"
+trait A {
+    let y = 42
+}
+
+trait B {
+    let y = 42
+}
+
+structure def S : A + B {
+}
+"#;
+
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    let y_cells: Vec<_> = template.value_cells.iter().filter(|vc| vc.id.member == "y").collect();
+    assert_eq!(
+        y_cells.len(),
+        1,
+        "expected exactly 1 'y' value cell (let same-expr dedup), got {}",
+        y_cells.len()
+    );
+    assert_eq!(
+        y_cells[0].kind,
+        ValueCellKind::Let,
+        "expected ValueCellKind::Let for 'y'"
+    );
+}
