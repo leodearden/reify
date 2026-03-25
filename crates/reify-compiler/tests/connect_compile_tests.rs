@@ -417,6 +417,53 @@ structure def S2 {
     );
 }
 
+// ── step-11: no_auto_match_dotted_ports ───────────────────────────────
+
+#[test]
+fn no_auto_match_dotted_ports() {
+    // Connect via dotted sub-component port refs: motor.shaft -> gear.input.
+    // These are MemberAccess expressions that resolve to strings with '.'.
+    // Auto-matching must be skipped — port_mappings should be empty.
+    let source = r#"
+trait RotaryPort { param d : Length }
+structure def Motor {
+    port shaft : out RotaryPort { param d : Length = 10mm }
+}
+structure def Gear {
+    port input : in RotaryPort { param d : Length = 10mm }
+}
+structure def Assembly {
+    sub motor = Motor()
+    sub gear = Gear()
+    connect motor.shaft -> gear.input
+}
+"#;
+    let module = compile_module(source);
+    let asm = module.templates.iter().find(|t| t.name == "Assembly").expect("Assembly");
+    let errors: Vec<_> = module.diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    assert_eq!(asm.connections.len(), 1);
+    assert_eq!(asm.connections[0].left_port, "motor.shaft");
+    assert_eq!(asm.connections[0].right_port, "gear.input");
+    // Dotted ports — auto-matching skipped, port_mappings stays empty
+    assert_eq!(
+        asm.connections[0].port_mappings,
+        Vec::<(String, String)>::new(),
+        "expected empty port_mappings for dotted port references"
+    );
+    // No unmatched-member warnings
+    let unmatched_warnings: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning && d.message.contains("unmatched"))
+        .collect();
+    assert!(
+        unmatched_warnings.is_empty(),
+        "expected no 'unmatched' warnings for dotted ports, got: {:?}",
+        unmatched_warnings
+    );
+}
+
 // ── step-9: explicit_mapping_skips_auto_match ─────────────────────────
 
 #[test]
