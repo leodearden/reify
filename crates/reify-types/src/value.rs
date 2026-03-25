@@ -2639,43 +2639,35 @@ mod tests {
         let _ = bad.cmp(&good);
     }
 
-    #[cfg(debug_assertions)]
+    // ── Bypass normalization-verifying tests (task-364) ─────────────────────
+    // These construct Value::Range directly (bypassing Value::range()), setting
+    // invariant-violating flags. Each impl must silently re-normalize so the
+    // output is correct.
+
     #[test]
-    #[should_panic(expected = "Range invariant violated")]
-    fn value_range_invariant_bypass_lower_none_inclusive_display() {
+    fn value_range_bypass_display_renormalizes_lower() {
+        // lower=None + lower_inclusive=true → Display must output '(' not '['
         let r = Value::Range {
             lower: None,
             lower_inclusive: true,
             upper: Some(Box::new(Value::Int(10))),
             upper_inclusive: false,
         };
-        let _ = format!("{}", r);
+        let s = format!("{}", r);
+        assert!(s.starts_with('('), "expected '(' but got: {}", s);
     }
 
-    #[cfg(debug_assertions)]
     #[test]
-    #[should_panic(expected = "Range invariant violated")]
-    fn value_range_invariant_bypass_upper_none_inclusive_content_hash() {
+    fn value_range_bypass_display_renormalizes_upper() {
+        // upper=None + upper_inclusive=true → Display must output ')' not ']'
         let r = Value::Range {
             lower: Some(Box::new(Value::Int(0))),
             lower_inclusive: true,
             upper: None,
             upper_inclusive: true,
         };
-        let _ = r.content_hash();
-    }
-
-    #[cfg(debug_assertions)]
-    #[test]
-    #[should_panic(expected = "Range invariant violated")]
-    fn value_range_invariant_bypass_upper_none_inclusive_display() {
-        let r = Value::Range {
-            lower: Some(Box::new(Value::Int(0))),
-            lower_inclusive: true,
-            upper: None,
-            upper_inclusive: true,
-        };
-        let _ = format!("{}", r);
+        let s = format!("{}", r);
+        assert!(s.ends_with(')'), "expected ')' but got: {}", s);
     }
 
     // ── Value::Matrix Ord tests (step-7) ─────────────────────────────────────
