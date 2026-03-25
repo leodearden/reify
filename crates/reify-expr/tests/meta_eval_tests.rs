@@ -67,3 +67,16 @@ fn eval_meta_access_multiple_keys() {
     let expr_material = CompiledExpr::meta_access("Widget".into(), "material".into());
     assert_eq!(eval_expr(&expr_material, &ctx), Value::String("steel".to_string()));
 }
+
+// ── step-17: No meta context panics (silent-defaults convention) ────────────
+
+/// Evaluating MetaAccess without meta context should panic — not silently
+/// return Undef. Enforces the 'silent defaults should be noisy' convention.
+#[test]
+#[should_panic(expected = "MetaAccess evaluation requires meta context")]
+fn eval_meta_access_no_context_panics() {
+    let expr = CompiledExpr::meta_access("Bracket".into(), "description".into());
+    let values = ValueMap::new();
+    let ctx = EvalContext::simple(&values); // meta defaults to None
+    let _ = eval_expr(&expr, &ctx);
+}
