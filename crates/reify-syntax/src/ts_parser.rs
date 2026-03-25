@@ -2765,4 +2765,17 @@ mod tests {
             other => panic!("expected AdHocSelector, got {:?}", other),
         }
     }
+
+    #[test]
+    fn parse_ad_hoc_selector_no_args() {
+        let kind = parse_let_expr("structure S { let x = port @ default() }");
+        match kind {
+            ExprKind::AdHocSelector { base, selector, args } => {
+                assert!(matches!(base.kind, ExprKind::Ident(ref n) if n == "port"));
+                assert_eq!(selector, "default");
+                assert_eq!(args.len(), 0);
+            }
+            other => panic!("expected AdHocSelector, got {:?}", other),
+        }
+    }
 }
