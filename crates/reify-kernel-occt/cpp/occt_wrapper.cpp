@@ -707,12 +707,9 @@ std::unique_ptr<OcctShape> make_revolve(const OcctShape& profile,
             BRepBuilderAPI_MakeSolid solidMaker(TopoDS::Shell(rev_shape));
             if (solidMaker.IsDone()) {
                 rev_shape = solidMaker.Solid();
+            } else {
+                throw std::runtime_error("make_revolve: Shell\xe2\x86\x92Solid conversion failed \xe2\x80\x94 BRepBuilderAPI_MakeSolid did not complete");
             }
-        }
-        // Fix face orientations so volume computation works correctly.
-        // BRepPrimAPI_MakeRevol can produce solids with inconsistent normals.
-        if (rev_shape.ShapeType() == TopAbs_SOLID) {
-            BRepLib::OrientClosedSolid(TopoDS::Solid(rev_shape));
         }
         // Fix face orientations so volume computation works correctly.
         if (rev_shape.ShapeType() == TopAbs_SOLID) {
