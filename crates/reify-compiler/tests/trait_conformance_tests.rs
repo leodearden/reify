@@ -2057,3 +2057,77 @@ structure def X : A + B {
         size_cells
     );
 }
+
+/// step-11 (task-193): check_trait_conformance_multi — B's default satisfies A's requirement.
+///
+/// Trait A requires `x : Length` (no default).
+/// Trait B provides `x : Length` as a default (no requirement).
+/// Structure has empty members — 'x' is not provided directly.
+///
+/// Multi-check with ["A", "B"] should return no errors because B's default
+/// satisfies A's requirement, matching the compiler's internal collect_all_requirements
+/// semantics.
+///
+/// Currently fails with spurious MissingParam for 'x' because collect_chain_requirements
+/// ignores defaults.
+#[test]
+fn chain_conformance_defaults_satisfy_requirement() {
+    let length = || Type::Scalar { dimension: DimensionVector::LENGTH };
+    let span = SourceSpan { start: 0, end: 0 };
+
+    // Trait A: requires 'x : Length', no defaults.
+    let trait_a = CompiledTrait {
+        name: "A".to_string(),
+        is_pub: true,
+        type_params: vec![],
+        refinements: vec![],
+        required_members: vec![TraitRequirement {
+            name: "x".to_string(),
+            kind: RequirementKind::Param(length()),
+            span,
+        }],
+        defaults: vec![],
+        content_hash: ContentHash::of_str("A_def_test"),
+        annotations: vec![],
+    };
+
+    // Trait B: no requirements, has default 'x : Length'.
+    let trait_b = CompiledTrait {
+        name: "B".to_string(),
+        is_pub: true,
+        type_params: vec![],
+        refinements: vec![],
+        required_members: vec![],
+        defaults: vec![TraitDefault {
+            name: Some("x".to_string()),
+            kind: DefaultKind::Param {
+                cell_type: length(),
+                default_decl: reify_syntax::ParamDecl {
+                    name: "x".to_string(),
+                    type_expr: None,
+                    default: None,
+                    where_clause: None,
+                    span,
+                    content_hash: ContentHash::of_str("x_default"),
+                },
+            },
+            span,
+        }],
+        content_hash: ContentHash::of_str("B_def_test"),
+        annotations: vec![],
+    };
+
+    let mut registry = std::collections::HashMap::new();
+    registry.insert("A".to_string(), &trait_a);
+    registry.insert("B".to_string(), &trait_b);
+
+    // Empty structure members — 'x' is not provided by the structure itself.
+    let members = std::collections::HashMap::new();
+
+    let errors = check_trait_conformance_multi(&members, &["A", "B"], &registry, &[], &[]);
+    assert!(
+        errors.is_empty(),
+        "expected no errors: B's default satisfies A's requirement for 'x', got: {:?}",
+        errors
+    );
+}
