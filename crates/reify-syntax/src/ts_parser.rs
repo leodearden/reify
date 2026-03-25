@@ -1326,13 +1326,34 @@ impl<'a> Lowering<'a> {
                     params.push((name, value));
                 }
                 "port_mapping" => {
-                    if let (Some(from_node), Some(to_node)) = (
+                    if child.has_error() {
+                        self.errors.push(ParseError {
+                            message: format!(
+                                "invalid port mapping: {}",
+                                self.node_text(child)
+                            ),
+                            span: self.span(child),
+                        });
+                        continue;
+                    }
+                    match (
                         child.child_by_field_name("from"),
                         child.child_by_field_name("to"),
                     ) {
-                        let from = self.node_text(from_node).to_string();
-                        let to = self.node_text(to_node).to_string();
-                        port_mappings.push((from, to));
+                        (Some(from_node), Some(to_node)) => {
+                            let from = self.node_text(from_node).to_string();
+                            let to = self.node_text(to_node).to_string();
+                            port_mappings.push((from, to));
+                        }
+                        _ => {
+                            self.errors.push(ParseError {
+                                message: format!(
+                                    "incomplete port mapping: {}",
+                                    self.node_text(child)
+                                ),
+                                span: self.span(child),
+                            });
+                        }
                     }
                 }
                 "ERROR" => {

@@ -37,20 +37,20 @@
       "type": "impl",
       "description": "Refactor the connect_param_assignment arm in lower_connect_body: (a) Add a `if child.has_error()` guard at the top that emits `format!(\"invalid connect parameter: {}\", self.node_text(child))` and continues. (b) Convert `if let Some(name_node) = child.child_by_field_name(\"name\")` to `let Some(name_node) = ... else { push error 'connect parameter missing name', continue }`. (c) Convert the value+lower_expr chain: if value_node is None, emit 'connect parameter X missing value'; if lower_expr returns None, emit 'invalid value in connect parameter X'. Step-3 test should now pass.",
       "status": "done",
-      "commit": null
+      "commit": "26765f06"
     },
     {
       "id": "step-5",
       "type": "test",
       "description": "Write failing test `connect_body_malformed_mapping_emits_diagnostic`: parse a connect body with a broken port mapping (e.g. syntax that produces an incomplete port_mapping node). Assert at least one error is emitted. Currently the if-let silently drops incomplete mappings.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "3feb7ae6"
     },
     {
       "id": "step-6",
       "type": "impl",
       "description": "Refactor the port_mapping arm in lower_connect_body: (a) Add a `if child.has_error()` guard at the top that emits `format!(\"invalid port mapping: {}\", self.node_text(child))` and continues. (b) Add an else branch to the `if let (Some(from), Some(to))` destructure that emits `format!(\"incomplete port mapping: {}\", self.node_text(child))`. Step-5 test should now pass.",
-      "status": "pending",
+      "status": "done",
       "commit": null
     },
     {
