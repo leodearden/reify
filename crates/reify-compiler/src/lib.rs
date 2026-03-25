@@ -2333,6 +2333,7 @@ fn compile_entity(
     let mut structure_controlling: HashSet<ValueCellId> = HashSet::new();
     let mut connections: Vec<CompiledConnection> = Vec::new();
     let mut objective: Option<OptimizationObjective> = None;
+    let mut first_meta_span: Option<SourceSpan> = None;
     let mut constraint_index: u32 = 0;
     let mut guard_index: u32 = 0;
     let mut connector_index: u32 = 0;
@@ -2461,8 +2462,17 @@ fn compile_entity(
                 }
             }
             reify_syntax::MemberDecl::MetaBlock(meta) => {
-                for (key, value) in &meta.entries {
-                    scope.meta_entries.insert(key.clone(), value.clone());
+                if let Some(first_span) = first_meta_span {
+                    diagnostics.push(
+                        Diagnostic::error("duplicate meta block".to_string())
+                            .with_label(DiagnosticLabel::new(meta.span, "duplicate defined here"))
+                            .with_label(DiagnosticLabel::new(first_span, "first defined here")),
+                    );
+                } else {
+                    first_meta_span = Some(meta.span);
+                    for (key, value) in &meta.entries {
+                        scope.meta_entries.insert(key.clone(), value.clone());
+                    }
                 }
             }
             _ => {}
