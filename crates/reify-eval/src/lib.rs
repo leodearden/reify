@@ -774,6 +774,14 @@ impl Engine {
         // snapshot discards all purpose-injected constraints/objectives.
         self.active_purposes.clear();
         self.active_objective_map.clear();
+        // Build meta_map: template name → meta key/value pairs.
+        // Only includes templates with non-empty meta blocks.
+        self.meta_map = module
+            .templates
+            .iter()
+            .filter(|t| !t.meta.is_empty())
+            .map(|t| (t.name.clone(), t.meta.clone()))
+            .collect();
         let functions = &module.functions;
 
         let mut values = ValueMap::new();
@@ -813,12 +821,14 @@ impl Engine {
         for field in &module.fields {
             let lambda_value = match &field.source {
                 reify_compiler::CompiledFieldSource::Analytical { expr } => {
-                    let ctx = reify_expr::EvalContext::new(&values, functions);
+                    let ctx = reify_expr::EvalContext::new(&values, functions)
+                        .with_meta(&self.meta_map);
                     let val = reify_expr::eval_expr(expr, &ctx);
                     Box::new(val)
                 }
                 reify_compiler::CompiledFieldSource::Composed { expr } => {
-                    let ctx = reify_expr::EvalContext::new(&values, functions);
+                    let ctx = reify_expr::EvalContext::new(&values, functions)
+                        .with_meta(&self.meta_map);
                     let val = reify_expr::eval_expr(expr, &ctx);
                     Box::new(val)
                 }
@@ -911,7 +921,7 @@ impl Engine {
                         payload: None,
                     });
 
-                    let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, functions));
+                    let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, functions).with_meta(&self.meta_map));
                     values.insert(cell.id.clone(), val.clone());
 
                     // Update snapshot values
@@ -944,14 +954,17 @@ impl Engine {
             // Second pass: evaluate Let bindings in topological order
             // (handles forward references where a let declared earlier
             //  depends on a let declared later)
-            self.evaluate_let_bindings(template, &mut values, &mut snapshot, version_id, functions);
+            {
+                let meta_map = self.meta_map.clone();
+                self.evaluate_let_bindings(template, &mut values, &mut snapshot, version_id, functions, &meta_map);
+            }
 
             // Third pass: evaluate guarded groups.
             // Guard cells are Let-kind synthetic cells — evaluate their expressions,
             // then conditionally evaluate members based on guard truth value.
             for group in &template.guarded_groups {
                 // Evaluate the guard cell expression
-                let guard_val = reify_expr::eval_expr(&group.guard_expr, &reify_expr::EvalContext::new(&values, functions));
+                let guard_val = reify_expr::eval_expr(&group.guard_expr, &reify_expr::EvalContext::new(&values, functions).with_meta(&self.meta_map));
                 values.insert(group.guard_value_cell.clone(), guard_val.clone());
 
                 let guard_determinacy = match &guard_val {
@@ -974,7 +987,7 @@ impl Engine {
                             || cell.kind == ValueCellKind::Let
                         {
                             if let Some(ref expr) = cell.default_expr {
-                                let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, functions));
+                                let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, functions).with_meta(&self.meta_map));
                                 values.insert(cell.id.clone(), val.clone());
                                 snapshot.values.insert(
                                     cell.id.clone(),
@@ -1011,7 +1024,7 @@ impl Engine {
                             || cell.kind == ValueCellKind::Let
                         {
                             if let Some(ref expr) = cell.default_expr {
-                                let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, functions));
+                                let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, functions).with_meta(&self.meta_map));
                                 values.insert(cell.id.clone(), val.clone());
                                 snapshot.values.insert(
                                     cell.id.clone(),
@@ -1134,7 +1147,8 @@ impl Engine {
             // (created during collection sub-component elaboration above)
             let has_collection_subs = template.sub_components.iter().any(|s| s.is_collection);
             if has_collection_subs {
-                self.evaluate_let_bindings(template, &mut values, &mut snapshot, version_id, functions);
+                let meta_map = self.meta_map.clone();
+                self.evaluate_let_bindings(template, &mut values, &mut snapshot, version_id, functions, &meta_map);
             }
         }
 
@@ -1263,7 +1277,8 @@ impl Engine {
                         };
 
                         // Re-run let binding evaluation in topological order
-                        self.evaluate_let_bindings(template, &mut values, &mut snapshot, res_version_id, &module.functions);
+                        let meta_map = self.meta_map.clone();
+                        self.evaluate_let_bindings(template, &mut values, &mut snapshot, res_version_id, &module.functions, &meta_map);
                     }
                     SolveResult::Infeasible { diagnostics: solver_diags } => {
                         diagnostics.extend(solver_diags);
@@ -2780,6 +2795,7 @@ impl Engine {
         snapshot: &mut Snapshot,
         version_id: u64,
         functions: &[CompiledFunction],
+        meta_map: &HashMap<String, HashMap<String, String>>,
     ) {
         let let_cells: HashMap<NodeId, &reify_types::CompiledExpr> = template
             .value_cells
@@ -2812,7 +2828,7 @@ impl Engine {
                 payload: None,
             });
 
-            let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions));
+            let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions).with_meta(meta_map));
             values.insert(cell_id.clone(), val.clone());
 
             snapshot.values.insert(
