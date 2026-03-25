@@ -6819,11 +6819,11 @@
         "description": "Type::Real used as sentinel for \"no annotation\" in DefaultKind::Let (lib.rs:4271-4277). Explicitly-annotated `: Real` is indistinguishable from unannotated. Change cell_type to Option&lt;Type&gt; to disambiguate.\n\nMemory hints: search \"DefaultKind Let cell_type Type::Real sentinel\", entities: DefaultKind, compile_traits",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-25T21:26:13.779Z"
+        "updatedAt": "2026-03-25T21:30:39.233Z"
       },
       {
         "id": "367",
@@ -7638,7 +7638,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-25T21:30:36.499Z",
+      "lastModified": "2026-03-25T21:30:39.233Z",
       "taskCount": 426,
       "completedCount": 227,
       "tags": [
