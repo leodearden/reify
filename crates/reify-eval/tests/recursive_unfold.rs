@@ -535,6 +535,33 @@ fn unfold_recursive_default_depth_limit_64() {
     );
 }
 
+// ─── step-29: depth-limit truncation emits an Error-severity diagnostic ───────
+
+/// When the depth limit truncates unfolding (guard is still true but depth >= max),
+/// the evaluator must emit a Severity::Error diagnostic (not warning) so callers
+/// know the result is potentially unsound — child references beyond the limit
+/// resolve to Undef.
+#[test]
+fn unfold_recursive_depth_limit_emits_error_diagnostic() {
+    let template = build_recursive_s(100);
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+    engine.set_max_unfold_depth(3);
+    let result = engine.eval(&module);
+
+    let has_error = result.diagnostics.iter().any(|d| {
+        d.severity == Severity::Error && d.message.contains("truncated at depth limit")
+    });
+    assert!(
+        has_error,
+        "Expected an Error-severity diagnostic about depth truncation, got: {:?}",
+        result.diagnostics
+    );
+}
+
 // ─── step-27: depth=0 is rejected at the API boundary ────────────────────────
 
 /// `set_max_unfold_depth(0)` must panic because depth=0 means the guard check

@@ -3217,7 +3217,9 @@ fn unfold_recursive_sub(
     match &guard_val {
         Value::Bool(true) => {
             if depth >= max_depth {
-                diagnostics.push(Diagnostic::warning(format!(
+                // Use Error (not Warning) so callers know the result is potentially unsound:
+                // child references beyond the truncated depth resolve to Undef.
+                diagnostics.push(Diagnostic::error(format!(
                     "recursive unfolding of '{}' truncated at depth limit {} (guard still true)",
                     parent_entity, max_depth,
                 )));
