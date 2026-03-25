@@ -417,6 +417,35 @@ structure def S2 {
     );
 }
 
+// ── step-9: explicit_mapping_skips_auto_match ─────────────────────────
+
+#[test]
+fn explicit_mapping_skips_auto_match() {
+    // Same trait, same member names, but explicit mapping `{ d -> d }` provided.
+    // Assert the explicit mapping is preserved and no auto-match logic runs.
+    let source = r#"
+trait T { param d : Length }
+structure def S {
+    port a : out T { param d : Length = 5mm }
+    port b : in T { param d : Length = 5mm }
+    connect a -> b { d -> d }
+}
+"#;
+    let (template, diagnostics) = compile_first_template(source);
+    let errors: Vec<_> = diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    assert_eq!(template.connections.len(), 1);
+    // Explicit mapping should be preserved exactly as specified
+    assert_eq!(
+        template.connections[0].port_mappings,
+        vec![("d".to_string(), "d".to_string())],
+        "expected explicit mapping to be preserved"
+    );
+    // No warnings about unmatched members
+    let warnings: Vec<_> = diagnostics.iter().filter(|d| d.severity == Severity::Warning).collect();
+    assert!(warnings.is_empty(), "expected no warnings with explicit mapping, got: {:?}", warnings);
+}
+
 // ── step-7: no_auto_match_different_traits ────────────────────────────
 
 #[test]
