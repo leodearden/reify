@@ -1,210 +1,170 @@
 {
-  "task_id": "233",
-  "title": "Orientation: Type, Value, constructors",
+  "task_id": "313",
+  "title": "Stdlib M8.1 integration: math_linalg.ri + dimensional_consistency.ri",
   "files": [
-    "crates/reify-types/src/ty.rs",
-    "crates/reify-types/src/value.rs",
-    "crates/reify-types/tests/exports.rs",
-    "crates/reify-stdlib/src/lib.rs"
+    "examples/math_linalg.ri",
+    "examples/dimensional_consistency.ri",
+    "crates/reify-eval/tests/m8_stdlib_integration.rs"
   ],
   "modules": [
-    "crates/reify-types",
-    "crates/reify-stdlib"
+    "crates/reify-eval/tests",
+    "examples"
   ],
-  "analysis": "Task 233 adds Orientation as a first-class type in Reify. ALREADY FULLY IMPLEMENTED ON MAIN: Type::Orientation(usize) exists in ty.rs (line 47) with Display (Orientation{N}), Eq/Hash, and a Type::orientation(n) factory method. Value::Orientation { w, x, y, z } exists in value.rs (line 60) with Display, Ord, Hash, content_hash, and dimension() returning DIMENSIONLESS. All 5 constructors exist in reify-stdlib: orient_identity (no-arg, returns identity quaternion), orient_quaternion(w,x,y,z) (normalizes via normalize_quaternion helper), orient_axis_angle(axis_vec, angle) (extracts 3D vector + trig_input angle, normalizes axis, computes half-angle), orient_euler(convention, a, b, c) (12 convention strings, uses elementary_rotation_quat + quat_mul composition), orient_basis(x,y,z) (validates 3D vectors, checks orthonormality within 1e-6, rejects left-handed bases via determinant, uses Shepperd's method for rotation matrix to quaternion). Export tests exist in exports.rs. 23 tests pass in reify-types, 34 tests pass in reify-stdlib (57 total). No compiler or expr evaluator changes needed since orientation constructors dispatch through the standard eval_builtin path.",
+  "analysis": "Task 313 creates two .ri fixture files and a Rust integration test that exercises stdlib math/linalg builtins (from tasks 300+301) through the full parse->compile->eval pipeline. Key constraints discovered during analysis: (1) .ri list literals [a,b,c] produce Value::List, not Value::Tensor/Vector -- must use vec3() stdlib constructor for linalg operations; (2) No Newton unit literal exists -- compound dimensions must be built via arithmetic (e.g., 1kg * 1m / (1s * 1s) for FORCE); (3) No prelude constants (pi, g, e) -- must use numeric literals (9.81 for gravity); (4) tensor_components_f64() requires Value::Tensor|Point|Vector (not List) for dot/cross/normalize/magnitude; (5) vec3() constructor requires all args to share the same physical dimension, so zero-valued dimensioned scalars (0.0 * n_unit) are needed for zero components. The test file follows the established chained_comparison_eval.rs pattern: helper fn loads .ri file, parses, compiles, evaluates; individual #[test] functions assert on specific ValueCellId entries. All stdlib functions (dot, cross, normalize, magnitude, clamp, lerp, acos, mod, vec3) already exist from dependencies 300-301; this task verifies they work correctly end-to-end through the .ri language pipeline.",
   "prerequisites": [],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing tests for Type::Orientation(usize) variant: construction, Display ('Orientation3', 'Orientation2'), Eq/Hash behavior, Type::orientation(n) factory, is_numeric() returns false",
+      "description": "Create crates/reify-eval/tests/m8_stdlib_integration.rs with eval_ri_file(path) helper (read_to_string -> parse -> compile -> eval with MockConstraintChecker) and math_linalg_parses_and_compiles test that loads ../../examples/math_linalg.ri and asserts parse+compile have no errors and eval produces non-empty values. Test fails because .ri file does not exist.",
       "status": "done",
-      "commit": "5136510b"
+      "commit": "fc3fa007"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Add Orientation(usize) variant to Type enum in ty.rs with Display impl ('Orientation{n}'), Type::orientation(n) factory method, ensure Eq/Hash derive covers it",
+      "description": "Create examples/math_linalg.ri with structure MathLinalg containing: unit helpers (n_unit=1kg*1m/(1s*1s), zero_n=0.0*n_unit, zero_m=0.0*1m, v_unit=1m/1s, zero_v=0.0*v_unit), force=vec3(10.0*n_unit, zero_n, zero_n), displacement=vec3(5.0*1m, zero_m, zero_m), work=dot(force, displacement), r_arm=vec3(zero_m, 2.0*1m, zero_m), f_applied=vec3(3.0*n_unit, zero_n, zero_n), torque=cross(r_arm, f_applied), velocity=vec3(3.0*v_unit, 4.0*v_unit, zero_v), speed=magnitude(velocity), direction=normalize(velocity), unit_x=vec3(1.0, 0.0, 0.0), unit_y=vec3(0.0, 1.0, 0.0), angle_between=acos(dot(normalize(unit_x), normalize(unit_y))), chained=clamp(lerp(1mm, 10mm, 0.3), 2mm, 8mm).",
       "status": "done",
-      "commit": "280585ae"
+      "commit": "55fdce76"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing tests for Value::Orientation { w, x, y, z }: construction, Display ('orientation(w, x, y, z)'), PartialEq/Ord with NaN/neg-zero edge cases, content_hash determinism, type_tag ordering (tag 15), dimension() returns DIMENSIONLESS",
+      "description": "Write math_linalg_dot_product_work test: extract ValueCellId(MathLinalg, work), assert Value::Scalar with si_value approx 50.0 and dimension == FORCE.mul(&DimensionVector::LENGTH) (energy: m^2*kg*s^-2). Write math_linalg_cross_product_torque test: extract torque, assert it is Vector/Tensor with 3 components, z-component is Scalar with si_value approx -6.0 and dimension == DimensionVector::LENGTH.mul(&FORCE), x and y components have si_value approx 0.0.",
       "status": "done",
-      "commit": "a3aaf2f5"
+      "commit": "fc3fa007"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Add Orientation { w: f64, x: f64, y: f64, z: f64 } variant to Value enum in value.rs with Display, PartialEq, Ord (bitwise f64 comparison), content_hash, type_tag=15, dimension()=DIMENSIONLESS",
+      "description": "Run cargo test -p reify-eval --test m8_stdlib_integration. Verify dot product and cross product tests pass. If vec3 dimension consistency fails (e.g., zero components not matching), fix math_linalg.ri to ensure all vec3 args share dimensions.",
       "status": "done",
-      "commit": "10fb1be1"
+      "commit": "55fdce76"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write export test in exports.rs verifying Type::Orientation(3), Type::orientation(3), and Value::Orientation { w, x, y, z } are publicly accessible from reify_types crate",
+      "description": "Write math_linalg_normalize_and_magnitude test: assert speed is Scalar with si_value approx 5.0 and dimension == LENGTH.div(&DimensionVector::TIME) (velocity). Assert direction is Vector with 3 Real (dimensionless) components approximately [0.6, 0.8, 0.0]. Write math_linalg_angle_and_chained test: assert angle_between is Scalar with si_value approx PI/2 and dimension == DimensionVector::ANGLE. Assert chained is Scalar with si_value approx 0.0037 (3.7mm in SI metres) and dimension == DimensionVector::LENGTH.",
       "status": "done",
-      "commit": "44e50715"
+      "commit": "fc3fa007"
     },
     {
       "id": "step-6",
-      "type": "test",
-      "description": "Write failing test for orient_identity: no-arg returns Value::Orientation { w:1, x:0, y:0, z:0 }, with-args returns Undef",
+      "type": "impl",
+      "description": "Run cargo test -p reify-eval --test m8_stdlib_integration. Verify normalize, magnitude, angle, and clamp+lerp tests pass. Fix math_linalg.ri if any edge cases arise (e.g., acos domain issue, lerp t parameter not recognized as dimensionless).",
       "status": "done",
-      "commit": "79778f91"
+      "commit": "55fdce76"
     },
     {
       "id": "step-7",
-      "type": "impl",
-      "description": "Implement orient_identity in eval_builtin match: check args.is_empty(), return identity quaternion or Undef",
+      "type": "test",
+      "description": "Add dimensional_consistency_parses_and_compiles test that loads ../../examples/dimensional_consistency.ri and asserts parse+compile have no errors and eval produces non-empty values. Test fails because .ri file does not exist.",
       "status": "done",
-      "commit": "9e2587ad"
+      "commit": "fc3fa007"
     },
     {
       "id": "step-8",
-      "type": "test",
-      "description": "Write failing tests for orient_quaternion(w,x,y,z): normalizes unnormalized input, preserves already-normalized, arbitrary values normalize correctly, zero-vector returns Undef, NaN/Inf returns Undef, wrong arg count returns Undef",
+      "type": "impl",
+      "description": "Create examples/dimensional_consistency.ri with structure DimensionalConsistency containing: n_unit=1kg*1m/(1s*1s), lerp_mm=lerp(5mm, 15mm, 0.5), m_vec=vec3(2.0*1m, 1.0*1m, 0.0*1m), n_vec=vec3(3.0*n_unit, 0.0*n_unit, 0.0*n_unit), dot_result=dot(m_vec, n_vec), cross_result=cross(m_vec, n_vec), g_accel=9.81*1m/(1s*1s), weight=g_accel*1kg, mod_result=mod(7, 3), norm_result=normalize(vec3(3.0*1m, 4.0*1m, 0.0*1m)), mag_result=magnitude(vec3(3.0*1m, 4.0*1m, 0.0*1m)), clamped_dim=clamp(3mm, 1mm, 10mm).",
       "status": "done",
-      "commit": "1edde1c7"
+      "commit": "8517c47e"
     },
     {
       "id": "step-9",
-      "type": "impl",
-      "description": "Implement orient_quaternion in eval_builtin with normalize_quaternion(w,x,y,z) helper: extract 4 f64 args, validate finiteness, compute L2 norm, reject zero norm, divide by norm to produce unit quaternion",
+      "type": "test",
+      "description": "Write dimension assertion tests: (1) dim_lerp_preserves_length: lerp_mm has si_value approx 0.010 (10mm) and dimension==LENGTH; (2) dim_dot_energy: dot_result has si_value approx 6.0 and dimension==LENGTH.mul(&FORCE); (3) dim_cross_torque: cross_result z-component has si_value approx -3.0 and dimension==LENGTH.mul(&FORCE); (4) dim_gravity_force: weight has si_value approx 9.81 and dimension==FORCE; (5) dim_mod_integer: mod_result is Value::Int(1); (6) dim_normalize_dimensionless: norm_result components are Value::Real (not Scalar); (7) dim_magnitude_preserves: mag_result has si_value approx 5.0 and dimension==LENGTH; (8) dim_clamp_preserves: clamped_dim has si_value approx 0.003 and dimension==LENGTH.",
       "status": "done",
-      "commit": "8e11d458"
+      "commit": "fc3fa007"
     },
     {
       "id": "step-10",
-      "type": "test",
-      "description": "Write failing tests for orient_axis_angle(axis, angle): 90deg around Z axis, 180deg around X axis, accepts Angle scalar for angle arg, zero axis returns Undef, non-3D axis returns Undef, wrong arg count returns Undef",
+      "type": "impl",
+      "description": "Run full test suite: cargo test -p reify-eval --test m8_stdlib_integration. Verify all dimensional consistency tests pass. Fix dimensional_consistency.ri if any dimension mismatches or evaluation ordering issues arise.",
       "status": "done",
-      "commit": "70075b53"
+      "commit": "8517c47e"
     },
     {
       "id": "step-11",
-      "type": "impl",
-      "description": "Implement orient_axis_angle in eval_builtin: extract 3D vector via tensor_components_f64, extract angle via trig_input, validate axis non-zero, normalize axis, compute half-angle quaternion (cos(a/2), sin(a/2)*axis), normalize result",
+      "type": "test",
+      "description": "Add eval-time error boundary to eval_ri_file helper: after `let result = engine.eval(&compiled)`, add `let eval_errors: Vec<_> = result.diagnostics.iter().filter(|d| d.severity == Severity::Error).collect(); assert!(eval_errors.is_empty(), \"eval errors in {}: {:?}\", path, eval_errors);` \u2014 mirroring the compile-error check pattern already at lines 30-40. This ensures runtime failures (type mismatches, Undef propagation, dimension errors) surface their actual Diagnostic::error() messages instead of producing misleading 'not found in eval result' panics in downstream per-value tests. Verify all existing tests still pass \u2014 if any eval diagnostics are now caught, those are real runtime regressions that must be investigated.",
       "status": "done",
-      "commit": "da6eb5cd"
+      "commit": "78225d7a"
     },
     {
       "id": "step-12",
-      "type": "test",
-      "description": "Write failing tests for orient_euler(convention, a, b, c): xyz single-axis rotation, zyx single-axis, zero angles = identity, invalid convention returns Undef, non-string convention returns Undef, accepts Angle scalars, wrong arg count returns Undef",
-      "status": "done",
-      "commit": "92ed969d"
-    },
-    {
-      "id": "step-13",
       "type": "impl",
-      "description": "Implement orient_euler in eval_builtin: match convention string against 12 valid conventions (xyz/xzy/yxz/yzx/zxy/zyx/xyx/xzx/yxy/yzy/zxz/zyz), extract 3 angles via trig_input, implement elementary_rotation_quat + quat_mul helpers, compose rotations in convention order, normalize result",
+      "description": "Run cargo test -p reify-eval --test m8_stdlib_integration to confirm all tests pass with the new eval-error boundary. If the new assertion catches previously-silent eval diagnostics, investigate and fix the root cause in the .ri fixtures (e.g., type mismatches, missing bindings, dimension errors). The error messages from the diagnostics will now clearly identify the problem.",
       "status": "done",
-      "commit": "1bab91e2"
-    },
-    {
-      "id": "step-14",
-      "type": "test",
-      "description": "Write failing tests for orient_basis(x_vec, y_vec, z_vec): identity basis, 90deg-rotated basis, non-orthogonal returns Undef, non-3D returns Undef, zero-length returns Undef, wrong arg count returns Undef",
-      "status": "done",
-      "commit": "557258cf"
-    },
-    {
-      "id": "step-15",
-      "type": "impl",
-      "description": "Implement orient_basis in eval_builtin: extract 3x3D vectors via tensor_components_f64, validate lengths non-zero, normalize basis vectors, check mutual orthogonality (dot products < 1e-6), check right-handedness (determinant ~ 1.0), convert rotation matrix to quaternion via Shepperd's method, normalize result",
-      "status": "done",
-      "commit": "8128684f"
-    },
-    {
-      "id": "step-16",
-      "type": "test",
-      "description": "Write compound rotation tests for orient_euler: xyz with two nonzero angles, zyx with three nonzero angles, xzx proper Euler compound - verify quaternion components against known reference values within 1e-9 tolerance",
-      "status": "done",
-      "commit": "f6f42ca8"
-    },
-    {
-      "id": "step-17",
-      "type": "test",
-      "description": "Write left-handed basis rejection tests for orient_basis: reflected XY plane basis returns Undef, swapped Y/Z basis returns Undef, near-tolerance right-handed basis passes",
-      "status": "done",
-      "commit": "c6a14f34"
+      "commit": "78225d7a"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Orientation(usize) parameterized by spatial dimension N rather than fixed to 3D",
-      "rationale": "Allows future 2D orientation support (N=2, stored as angle) while N=3 uses unit quaternion. Consistent with Point { n } and Vector { n } patterns."
+      "decision": "Use vec3() stdlib constructor for vectors instead of list literals [a,b,c]",
+      "rationale": ".ri list literals compile to CompiledExprKind::ListLiteral which evaluates to Value::List. The stdlib linalg functions (dot, cross, normalize, magnitude) use tensor_components_f64() which only accepts Value::Tensor|Point|Vector. The vec3() constructor creates Value::Vector, making it compatible with all linalg operations."
     },
     {
-      "decision": "Value::Orientation stores quaternion as { w, x, y, z } named fields rather than [f64; 4]",
-      "rationale": "Named fields are self-documenting (w is scalar part), prevent ordering bugs, and match the codebase pattern (Complex uses { re, im })."
+      "decision": "Build compound dimensions via Scalar arithmetic instead of N/J unit literals",
+      "rationale": "The compiler's unit_to_scalar only supports mm, cm, m, in, deg, rad, kg, g, s. There is no Newton (N) or Joule (J) unit literal. Force dimension is constructed as 1kg * 1m / (1s * 1s), which correctly produces Scalar with FORCE dimension through eval_mul's Scalar*Scalar path (si_value multiplication, dimension exponent addition)."
     },
     {
-      "decision": "Normalize quaternion on construction in all constructors",
-      "rationale": "Guarantees unit quaternion invariant. Downstream operations (rotation composition, SLERP) can assume |q|=1 without re-checking."
+      "decision": "Use numeric literal 9.81 for gravitational acceleration instead of a prelude constant",
+      "rationale": "The stdlib.md documents constants (pi, g, e, etc.) but they are not yet implemented as evaluatable prelude values in the compiler or expression evaluator. The 'g' unit suffix in the compiler means grams (mass), not gravitational acceleration. let g_accel = 9.81 * 1m / (1s * 1s) produces Scalar(9.81, FORCE/MASS) = acceleration."
     },
     {
-      "decision": "Return Value::Undef on all validation failures rather than panicking",
-      "rationale": "Follows project convention (feedback_silent_defaults_pattern): logic errors should be noisy at the evaluation layer, not crash the engine. Undef propagates through dependent expressions."
+      "decision": "Create .ri files as example fixtures loaded by a Rust test harness",
+      "rationale": "Following the established pattern from m5_integration.rs and e2e_bracket.rs: .ri files live in examples/, Rust tests load them via fs::read_to_string('../../examples/...'), then parse->compile->eval->assert. The .ri language has no assertion mechanism, so value and dimension checking must be done in Rust."
     },
     {
-      "decision": "orient_euler supports 12 conventions (6 Tait-Bryan + 6 proper Euler) via string parameter",
-      "rationale": "Covers all standard aerospace/robotics conventions. String parameter avoids enum proliferation and matches reify's dynamic evaluation model."
+      "decision": "Use zero-valued dimension helpers (zero_n, zero_m, zero_v) for vec3 zero components",
+      "rationale": "vec3() (construct_point_or_vector) requires all 3 components to share the same physical dimension. A bare 0.0 is Real (dimensionless) which would fail dimension consistency checks against Scalar components. Using 0.0 * n_unit produces Scalar(0.0, FORCE) matching other FORCE-dimensioned components."
     },
     {
-      "decision": "orient_basis validates right-handedness via determinant check (det ~ 1.0)",
-      "rationale": "Left-handed bases represent reflections, not rotations. Quaternions can only represent proper rotations (SO(3)), so left-handed input is semantically invalid."
+      "decision": "Single Rust test file (m8_stdlib_integration.rs) for both .ri fixtures",
+      "rationale": "Both .ri files test the same stdlib feature set (math + linalg builtins from M8.1). Grouping them in one test module with clear section comments follows the pattern of m5_integration.rs. The eval_ri_file helper is shared across all tests."
     },
     {
-      "decision": "Use Shepperd's method for rotation matrix to quaternion conversion in orient_basis",
-      "rationale": "Numerically stable for all rotation angles, avoids the singularities of the naive trace-based method near 180-degree rotations."
-    },
-    {
-      "decision": "Orientation dimension() returns DIMENSIONLESS",
-      "rationale": "Orientations are pure rotations with no physical dimension. Angles are consumed during construction (via trig_input) but the resulting quaternion is dimensionless."
+      "decision": "Add eval-time diagnostic error boundary in eval_ri_file helper",
+      "rationale": "The eval engine emits Diagnostic::error() for runtime failures (type mismatches, Undef propagation, dimension errors) via EvalResult.diagnostics. Without checking these, eval silently produces partial results and downstream per-value tests panic with misleading 'not found in eval result' messages instead of surfacing the actual root cause. The error boundary mirrors the existing compile-error check pattern and catches an entire class of runtime regressions early."
     }
   ],
   "reuse": [
     {
-      "what": "tensor_components_f64() helper",
-      "where": "crates/reify-stdlib/src/lib.rs",
-      "how": "Extracts f64 components from Vector/Point/Tensor values for axis and basis vector arguments"
+      "what": "eval_source / parse-compile-eval helper pattern",
+      "where": "crates/reify-eval/tests/chained_comparison_eval.rs:13-27, crates/reify-eval/tests/field_eval_tests.rs:10-26",
+      "how": "Reuse the identical pattern: load source, reify_syntax::parse(source, ModulePath::single(name)), reify_compiler::compile(&parsed), Engine::new(MockConstraintChecker, None).eval(&compiled). Adapted to read from file instead of string literal."
     },
     {
-      "what": "trig_input() helper",
-      "where": "crates/reify-stdlib/src/lib.rs",
-      "how": "Extracts angle in radians from either ANGLE Scalar or bare Real, used for orient_axis_angle and orient_euler angle arguments"
+      "what": "MockConstraintChecker from reify-test-support",
+      "where": "crates/reify-test-support/src/mocks.rs",
+      "how": "Import reify_test_support::mocks::MockConstraintChecker for Engine construction. No geometry kernel needed (pass None) since tests are pure math/linalg evaluation."
     },
     {
-      "what": "normalize_quaternion() helper pattern",
-      "where": "crates/reify-stdlib/src/lib.rs",
-      "how": "Shared helper validates finiteness and normalizes quaternion, reused by orient_quaternion, orient_axis_angle, orient_euler, and orient_basis"
+      "what": "ValueCellId for value extraction from EvalResult",
+      "where": "crates/reify-types: ValueCellId::new(entity, member)",
+      "how": "Use ValueCellId::new('MathLinalg', 'work') etc. to index into result.values HashMap. Same pattern used in all existing integration tests (m5_integration.rs, boundary5_engine.rs, chained_comparison_eval.rs)."
     },
     {
-      "what": "Value::as_f64() method",
-      "where": "crates/reify-types/src/value.rs",
-      "how": "Used by orient_quaternion to extract numeric components from any numeric Value variant"
+      "what": "DimensionVector constants and arithmetic for assertions",
+      "where": "crates/reify-types/src/dimension.rs: DimensionVector::LENGTH, FORCE, ANGLE, TIME, MASS",
+      "how": "Use .mul() and .div() to compute expected compound dimensions: FORCE.mul(&LENGTH) for energy/torque, LENGTH.div(&TIME) for velocity. Use DimensionVector::DIMENSIONLESS for normalize checks."
     },
     {
-      "what": "assert_orientation_approx! test macro",
-      "where": "crates/reify-stdlib/src/lib.rs (test module)",
-      "how": "Macro for comparing Orientation values within floating-point tolerance, reused across all orient_* test functions"
+      "what": "vec3() stdlib constructor for .ri vector creation",
+      "where": "crates/reify-stdlib/src/lib.rs:638 (construct_point_or_vector)",
+      "how": "Call vec3(x, y, z) in .ri source to create Value::Vector. All 3 args must be numeric with matching dimension. Compatible with dot/cross/normalize/magnitude via tensor_components_f64()."
     },
     {
-      "what": "Content hash / Ord / Display patterns from Complex variant",
-      "where": "crates/reify-types/src/value.rs",
-      "how": "Orientation follows same implementation patterns as Complex for PartialEq (bitwise f64), Ord (component-wise), content_hash (hash each f64 as bits), Display"
+      "what": "Example .ri file structure patterns",
+      "where": "examples/bracket.ri, examples/m5_trait_structure.ri, examples/m5_collection_ops.ri",
+      "how": "Follow the structure definition pattern: 'structure Name { let binding = expr ... }'. Use unit literals (mm, m, kg, s) for dimensioned scalar values. Use function call syntax fn_name(args) for stdlib builtins."
     },
     {
-      "what": "elementary_rotation_quat() and quat_mul() helpers",
-      "where": "crates/reify-stdlib/src/lib.rs",
-      "how": "Elementary single-axis rotation quaternion and Hamilton product, composed by orient_euler for arbitrary Euler angle sequences"
+      "what": "Compile-error diagnostic check pattern for reuse in eval-error boundary",
+      "where": "crates/reify-eval/tests/m8_stdlib_integration.rs:30-40 (existing compile-error check)",
+      "how": "Mirror the exact pattern: filter diagnostics by Severity::Error, collect into Vec, assert empty with descriptive message including path and diagnostic details. Applied to EvalResult.diagnostics instead of compiled.diagnostics."
     }
   ],
-  "_session_id": "233-af70d415",
-  "_created_at": "2026-03-24T23:41:32.583435+00:00"
+  "_session_id": "313-d283e0dc",
+  "_created_at": "2026-03-25T01:17:45.208132+00:00"
 }
