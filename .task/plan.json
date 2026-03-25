@@ -1,0 +1,154 @@
+{
+  "task_id": "248",
+  "title": "Ad-hoc port selectors: parser",
+  "files": [
+    "tree-sitter-reify/grammar.js",
+    "tree-sitter-reify/src/parser.c",
+    "tree-sitter-reify/src/grammar.json",
+    "tree-sitter-reify/src/node-types.json",
+    "tree-sitter-reify/test/corpus/ad_hoc_selector.txt",
+    "crates/reify-syntax/src/lib.rs",
+    "crates/reify-syntax/src/ts_parser.rs",
+    "crates/reify-syntax/tests/ad_hoc_selector_tests.rs"
+  ],
+  "modules": [
+    "tree-sitter-reify",
+    "crates/reify-syntax"
+  ],
+  "analysis": "This task adds parsing support for the ad-hoc port selector operator `@`, used as `expr @ ident(args)`. The operator is a postfix expression that takes a base expression, a selector name (identifier), and a parenthesized argument list. It should bind tighter than indexing (`[]`) but looser than member access (`.`).\n\nThe parser is tree-sitter based: grammar.js defines the CST, then ts_parser.rs lowers CST nodes to AST. The AST types live in lib.rs. Expression precedence is defined numerically in grammar.js (1=lowest to 8=highest for postfix). Currently member_access, function_call, and index_access all share precedence 8.\n\nTo implement the relative precedence (member_access > ad_hoc_selector > index_access), we adjust: member_access and function_call to prec 10, ad_hoc_selector to prec 9, index_access stays at 8. This preserves existing parse behavior for `a.b[0]` while correctly parsing `a.b @ face(\"top\")[0]` as `((a.b) @ face(\"top\"))[0]`.\n\nThe ExprKind enum in lib.rs needs a new `AdHocSelector` variant. Adding this variant will break exhaustive matches in downstream crates (notably compile_expr_guarded in reify-compiler). However, this task is scoped to crates/reify-syntax and tree-sitter-reify only. The compiler support is a separate task. The workspace check can be done with `--package reify-syntax` to verify parser correctness independently.",
+  "prerequisites": [
+    {
+      "id": "pre-1",
+      "description": "Add `ad_hoc_selector` grammar rule to grammar.js: `expr '@' ident '(' args ')'` at prec.left(9). Bump member_access and function_call to prec 10 (from 8). Update precedence comment. Add `ad_hoc_selector` to `_expression` choice.",
+      "status": "done",
+      "commit": "fde7558f",
+      "tests": []
+    },
+    {
+      "id": "pre-2",
+      "description": "Regenerate tree-sitter parser: run `tree-sitter generate` in tree-sitter-reify/ to produce updated parser.c, grammar.json, and node-types.json.",
+      "status": "done",
+      "commit": "fde7558f",
+      "tests": []
+    },
+    {
+      "id": "pre-3",
+      "description": "Add tree-sitter corpus test file `test/corpus/ad_hoc_selector.txt` with basic parse cases: simple `a @ face(\"top\")`, no-arg `a @ default()`, multi-arg `a @ point(x, y, z)`, chained with member access `a.b @ face(\"top\")`.",
+      "status": "done",
+      "commit": "fde7558f",
+      "tests": []
+    }
+  ],
+  "steps": [
+    {
+      "id": "step-1",
+      "type": "test",
+      "description": "Write failing test `parse_ad_hoc_selector_basic` in ts_parser.rs: parse `structure S { let x = port @ face(\"top\") }` and assert the let expr is `ExprKind::AdHocSelector { base: Ident(\"port\"), selector: \"face\", args: [StringLiteral(\"top\")] }`. This test will fail to compile because ExprKind::AdHocSelector does not exist yet.",
+      "status": "done",
+      "commit": "13242d51"
+    },
+    {
+      "id": "step-2",
+      "type": "impl",
+      "description": "Add `AdHocSelector { base: Box<Expr>, selector: String, args: Vec<Expr> }` variant to `ExprKind` in crates/reify-syntax/src/lib.rs. Test still fails because lowering is not implemented \u2014 parser returns None for ad_hoc_selector nodes.",
+      "status": "done",
+      "commit": "666425c4"
+    },
+    {
+      "id": "step-3",
+      "type": "impl",
+      "description": "Add lowering in ts_parser.rs: (1) Add `\"ad_hoc_selector\" => self.lower_ad_hoc_selector(node)` to `lower_expr` match. (2) Implement `lower_ad_hoc_selector` method that extracts field(\"base\"), field(\"selector\"), and argument_list children, lowering each. Test from step-1 should now pass.",
+      "status": "done",
+      "commit": "866e6b0e"
+    },
+    {
+      "id": "step-4",
+      "type": "test",
+      "description": "Write test `parse_ad_hoc_selector_no_args` in the integration test file: parse `structure S { let x = port @ default() }` and assert `AdHocSelector { base: Ident(\"port\"), selector: \"default\", args: [] }`. Should pass immediately.",
+      "status": "done",
+      "commit": "169e5247"
+    },
+    {
+      "id": "step-5",
+      "type": "test",
+      "description": "Write test `parse_ad_hoc_selector_multiple_args`: parse `structure S { let x = port @ point(1, 2, 3) }` and assert `AdHocSelector` with 3 `NumberLiteral` args. Should pass immediately.",
+      "status": "done",
+      "commit": "8b819e8d"
+    },
+    {
+      "id": "step-6",
+      "type": "test",
+      "description": "Write test `parse_ad_hoc_selector_chained_member_access`: parse `structure S { let x = sub_part.mount @ face(\"top\") }` and assert `AdHocSelector { base: MemberAccess { object: Ident(\"sub_part\"), member: \"mount\" }, ... }`. Verifies member access binds tighter than `@`.",
+      "status": "done",
+      "commit": "eb71e9b2"
+    },
+    {
+      "id": "step-7",
+      "type": "test",
+      "description": "Write test `parse_ad_hoc_selector_in_connect`: parse `structure S { port a : out T  port b : in T  connect a @ face(\"top\") -> b @ face(\"bottom\") }` and verify both connect port refs contain `AdHocSelector` nodes.",
+      "status": "done",
+      "commit": "eb71e9b2"
+    },
+    {
+      "id": "step-8",
+      "type": "test",
+      "description": "Write test `parse_ad_hoc_selector_precedence_over_index`: parse `structure S { let x = port @ face(\"top\")[0] }` and assert the outer expression is `IndexAccess { object: AdHocSelector{...}, index: NumberLiteral(0) }`, verifying @ binds tighter than [].",
+      "status": "done",
+      "commit": "eb71e9b2"
+    },
+    {
+      "id": "step-9",
+      "type": "test",
+      "description": "Write test `parse_ad_hoc_selector_with_expr_args`: parse `structure S { let x = port @ edge(width * 2) }` and assert the arg is a BinOp expression, verifying complex expressions work in selector args.",
+      "status": "done",
+      "commit": "eb71e9b2"
+    }
+  ],
+  "design_decisions": [
+    {
+      "decision": "Set ad_hoc_selector at tree-sitter prec.left(9), bump member_access and function_call to prec 10",
+      "rationale": "The task requires @ to bind looser than member access but tighter than indexing. Currently all postfix ops share prec 8. By making member_access/function_call=10, ad_hoc_selector=9, index_access=8, the precedence ladder is explicit. prec.left ensures left-to-right associativity for `a.b @ sel()` \u2192 `(a.b) @ sel()`. Existing behavior is preserved since member_access > index_access was already true via left-associativity."
+    },
+    {
+      "decision": "Use standard argument_list (positional) for selector args, not named_argument_list",
+      "rationale": "The syntax `expr @ ident(args)` uses the same positional argument list as function calls. Named arguments can be added later if needed. This mirrors the function_call rule which also uses $.argument_list."
+    },
+    {
+      "decision": "Scope this task to reify-syntax and tree-sitter-reify only, not touching the compiler",
+      "rationale": "The task description specifies modules: crates/reify-syntax. Adding the AdHocSelector variant to ExprKind will cause a non-exhaustive match error in reify-compiler's compile_expr_guarded. However, the syntax crate can be checked independently with `cargo check -p reify-syntax`. Compiler support for the new variant is a separate task."
+    },
+    {
+      "decision": "Place tests in both ts_parser.rs (unit) and a new integration test file ad_hoc_selector_tests.rs",
+      "rationale": "Following the project's test pattern: inline tests in ts_parser.rs for basic parsing validation using the parse_let_expr helper, and a dedicated integration test file for more complex scenarios like connect statements and precedence, matching the pattern of connect_chain_tests.rs, lambda_tests.rs, etc."
+    }
+  ],
+  "reuse": [
+    {
+      "what": "parse_let_expr helper in ts_parser.rs tests",
+      "where": "crates/reify-syntax/src/ts_parser.rs line 2447",
+      "how": "Use for inline unit tests that parse `structure S { let x = <expr> }` and extract the ExprKind. Same pattern as index_access, member_access, and collection literal tests."
+    },
+    {
+      "what": "parse_decls helper pattern from integration tests",
+      "where": "crates/reify-syntax/tests/connect_chain_tests.rs line 8",
+      "how": "Copy the `parse_decls(source) -> (Vec<Declaration>, Vec<ParseError>)` helper for the new integration test file. This is the standard pattern used across all integration test files."
+    },
+    {
+      "what": "argument_list grammar rule",
+      "where": "tree-sitter-reify/grammar.js line 684",
+      "how": "Reuse the existing $.argument_list rule for ad_hoc_selector args. This gives comma-separated positional expressions with optional trailing comma, identical to function_call syntax."
+    },
+    {
+      "what": "lower_function_call argument extraction pattern",
+      "where": "crates/reify-syntax/src/ts_parser.rs line 1677",
+      "how": "The lower_ad_hoc_selector method can follow the same pattern as lower_function_call for extracting positional arguments from an argument_list child node."
+    },
+    {
+      "what": "Tree-sitter corpus test format",
+      "where": "tree-sitter-reify/test/corpus/minimize_maximize.txt",
+      "how": "Follow the same format for the new corpus test: section headers with ===, source snippet, expected CST structure with ---."
+    }
+  ],
+  "_session_id": "248-9817d3c8",
+  "_created_at": "2026-03-25T17:26:58.081653+00:00"
+}
