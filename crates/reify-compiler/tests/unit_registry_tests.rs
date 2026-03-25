@@ -435,6 +435,28 @@ fn offset_unit_quantity_literal_applies_offset() {
     }
 }
 
+// ─── step-27: compile_unit returns None for broken conversion expression ──────
+
+#[test]
+fn compile_unit_broken_conversion_not_registered() {
+    // 'some_var' is an identifier — evaluate_const_expr() returns None for
+    // non-constant expressions. compile_unit() should return None, so the unit
+    // is NOT added to module.units.
+    let module = parse_and_compile("unit broken : Length = some_var");
+    // The unit should NOT appear in compiled units
+    assert!(
+        !module.units.iter().any(|u| u.name == "broken"),
+        "unit with broken conversion should NOT be registered; got: {:?}",
+        module.units.iter().map(|u| &u.name).collect::<Vec<_>>()
+    );
+    // An error diagnostic should be present
+    let errors = errors_only(&module);
+    assert!(
+        !errors.is_empty(),
+        "expected error diagnostic for non-constant conversion expression"
+    );
+}
+
 // ─── step-23: regression test — hardcoded units still work ────────────────────
 
 #[test]
