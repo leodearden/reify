@@ -18,24 +18,24 @@
     "crates/reify-compiler",
     "crates/reify-eval"
   ],
-  "analysis": "Implement revolve(profile, axis, angle) and revolve_full(profile, axis) using OCCT BRepPrimAPI_MakeRevol. This follows the exact same bottom-up pattern as extrude (task 308), which is the direct dependency.\n\nThe pipeline mirrors extrude across 5 layers:\n1. **C++ FFI** — new make_revolve() using BRepPrimAPI_MakeRevol, plus make_rect_face() helper for tests\n2. **Types** — GeometryOp::Revolve { profile, axis_origin, axis_dir, angle_rad } variant\n3. **Kernel** — OcctKernel::execute() match arm with validation (finite params, non-zero angle, non-zero axis)\n4. **Compiler** — SweepKind::Revolve, 'revolve'/'revolve_full' in is_geometry_function, compile_geometry_call arms\n5. **Eval** — SweepKind::Revolve arm in compile_geometry_op resolving profile handle + evaluating axis/angle args\n\nKey differences from extrude:\n- Revolve has 8 args (profile + 3 axis_origin + 3 axis_dir + angle) vs extrude's 2 (profile + distance)\n- revolve_full is compiler sugar that injects literal 2π for the angle\n- Axis params use [f64; 3] arrays matching CircularPattern's convention (not Value)\n- Zero angle is an error (no geometry produced), negative angles are valid (reverse rotation)\n\nVolume tests use Pappus' centroid theorem: V = 2πR × A where R is centroid-to-axis distance and A is profile area. A circle face of radius r offset by R from the axis, revolved 360°, produces torus volume 2π²Rr². Half-angle (180°) should produce half volume.\n\nBRepPrimAPI_MakeRevol is in TKPrim which is already linked. The gp_Ax1 type needed for the axis is already included via existing headers.",
+  "analysis": "Implement revolve(profile, axis, angle) and revolve_full(profile, axis) using OCCT BRepPrimAPI_MakeRevol. This follows the exact same bottom-up pattern as extrude (task 308), which is the direct dependency.\n\nThe pipeline mirrors extrude across 5 layers:\n1. **C++ FFI** \u2014 new make_revolve() using BRepPrimAPI_MakeRevol, plus make_rect_face() helper for tests\n2. **Types** \u2014 GeometryOp::Revolve { profile, axis_origin, axis_dir, angle_rad } variant\n3. **Kernel** \u2014 OcctKernel::execute() match arm with validation (finite params, non-zero angle, non-zero axis)\n4. **Compiler** \u2014 SweepKind::Revolve, 'revolve'/'revolve_full' in is_geometry_function, compile_geometry_call arms\n5. **Eval** \u2014 SweepKind::Revolve arm in compile_geometry_op resolving profile handle + evaluating axis/angle args\n\nKey differences from extrude:\n- Revolve has 8 args (profile + 3 axis_origin + 3 axis_dir + angle) vs extrude's 2 (profile + distance)\n- revolve_full is compiler sugar that injects literal 2\u03c0 for the angle\n- Axis params use [f64; 3] arrays matching CircularPattern's convention (not Value)\n- Zero angle is an error (no geometry produced), negative angles are valid (reverse rotation)\n\nVolume tests use Pappus' centroid theorem: V = 2\u03c0R \u00d7 A where R is centroid-to-axis distance and A is profile area. A circle face of radius r offset by R from the axis, revolved 360\u00b0, produces torus volume 2\u03c0\u00b2Rr\u00b2. Half-angle (180\u00b0) should produce half volume.\n\nBRepPrimAPI_MakeRevol is in TKPrim which is already linked. The gp_Ax1 type needed for the axis is already included via existing headers.",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "Add make_rect_face C++ helper function for creating rectangular face profiles in tests. Creates a planar rectangular face centered at (cx, cy, cz) with given width (X) and height (Y) in the XY plane. Uses BRepBuilderAPI_MakeEdge (4 line edges) → MakeWire → MakeFace. Add to occt_wrapper.h, occt_wrapper.cpp, and ffi.rs. Signature: make_rect_face(width: f64, height: f64, cx: f64, cy: f64, cz: f64) → UniquePtr<OcctShape>.",
+      "description": "Add make_rect_face C++ helper function for creating rectangular face profiles in tests. Creates a planar rectangular face centered at (cx, cy, cz) with given width (X) and height (Y) in the XY plane. Uses BRepBuilderAPI_MakeEdge (4 line edges) \u2192 MakeWire \u2192 MakeFace. Add to occt_wrapper.h, occt_wrapper.cpp, and ffi.rs. Signature: make_rect_face(width: f64, height: f64, cx: f64, cy: f64, cz: f64) \u2192 UniquePtr<OcctShape>.",
       "status": "done",
       "commit": "0babe507905483610fef6dc1033008fd5391b04d",
       "tests": [
-        "Compile check — make_rect_face callable from Rust FFI"
+        "Compile check \u2014 make_rect_face callable from Rust FFI"
       ]
     },
     {
       "id": "pre-2",
-      "description": "Add make_revolve C++ implementation using BRepPrimAPI_MakeRevol. Add #include <BRepPrimAPI_MakeRevol.hxx> to occt_wrapper.cpp. Create gp_Ax1 from origin point + direction, call BRepPrimAPI_MakeRevol(profile.shape, axis, angle_rad), check IsDone(). Add declarations to occt_wrapper.h and ffi.rs. Signature: make_revolve(profile: &OcctShape, ox, oy, oz, ax, ay, az, angle_rad: f64) → UniquePtr<OcctShape>.",
+      "description": "Add make_revolve C++ implementation using BRepPrimAPI_MakeRevol. Add #include <BRepPrimAPI_MakeRevol.hxx> to occt_wrapper.cpp. Create gp_Ax1 from origin point + direction, call BRepPrimAPI_MakeRevol(profile.shape, axis, angle_rad), check IsDone(). Add declarations to occt_wrapper.h and ffi.rs. Signature: make_revolve(profile: &OcctShape, ox, oy, oz, ax, ay, az, angle_rad: f64) \u2192 UniquePtr<OcctShape>.",
       "status": "done",
       "commit": "0babe507905483610fef6dc1033008fd5391b04d",
       "tests": [
-        "Compile check — make_revolve callable from Rust FFI"
+        "Compile check \u2014 make_revolve callable from Rust FFI"
       ]
     }
   ],
@@ -43,7 +43,7 @@
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing FFI-level tests in crates/reify-kernel-occt/src/lib.rs #[cfg(all(test, has_occt))] block: (a) revolve_ffi_circle_face_full_rotation — make_circle_face(r=5, z=0), translate it 20 units on X via translate_shape, then make_revolve around Z axis (origin 0,0,0 dir 0,0,1) by 2π, assert shape is non-null and query_volume > 0. (b) make_rect_face_creates_valid_face — make_rect_face(10, 5, 20, 0, 0), query_area ≈ 50. Tests fail because make_revolve and make_rect_face don't exist in FFI.",
+      "description": "Write failing FFI-level tests in crates/reify-kernel-occt/src/lib.rs #[cfg(all(test, has_occt))] block: (a) revolve_ffi_circle_face_full_rotation \u2014 make_circle_face(r=5, z=0), translate it 20 units on X via translate_shape, then make_revolve around Z axis (origin 0,0,0 dir 0,0,1) by 2\u03c0, assert shape is non-null and query_volume > 0. (b) make_rect_face_creates_valid_face \u2014 make_rect_face(10, 5, 20, 0, 0), query_area \u2248 50. Tests fail because make_revolve and make_rect_face don't exist in FFI.",
       "status": "done",
       "commit": "71122c6302939e58d903798f55d7b635fb3c72e4"
     },
@@ -71,7 +71,7 @@
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing kernel error tests in crates/reify-kernel-occt/src/lib.rs #[cfg(all(test, has_occt))] block: (a) revolve_zero_angle_returns_error — execute Revolve with angle_rad=0.0, assert Err(OperationFailed) containing 'zero'. (b) revolve_nan_params_returns_error — test with NaN angle, assert Err containing 'finite'. (c) revolve_zero_axis_dir_returns_error — test with axis_dir=[0,0,0], assert Err containing 'zero'. Fail because Revolve match arm missing in execute().",
+      "description": "Write failing kernel error tests in crates/reify-kernel-occt/src/lib.rs #[cfg(all(test, has_occt))] block: (a) revolve_zero_angle_returns_error \u2014 execute Revolve with angle_rad=0.0, assert Err(OperationFailed) containing 'zero'. (b) revolve_nan_params_returns_error \u2014 test with NaN angle, assert Err containing 'finite'. (c) revolve_zero_axis_dir_returns_error \u2014 test with axis_dir=[0,0,0], assert Err containing 'zero'. Fail because Revolve match arm missing in execute().",
       "status": "done",
       "commit": "57853ff1a90225c6e93b626d9476cb76a8fcf0f6"
     },
@@ -85,7 +85,7 @@
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write kernel volume tests in crates/reify-kernel-occt/src/lib.rs: (a) revolve_circle_face_full_volume — store_raw(make_circle_face(r=5, z=0)), translate_shape by (20,0,0), store_raw the translated face, execute Revolve around Z axis by 2π, query volume, assert ≈ 2π²×20×25 (Pappus: V=2πR×A where R=20, A=π×25). (b) revolve_half_angle_half_volume — same setup but angle=π, assert volume ≈ half of full. (c) revolve_rect_face_torus_volume — store_raw(make_rect_face(w=4,h=2,cx=10,cy=0,cz=0)), revolve around Z by 2π, assert volume ≈ 2π×10×(4×2) = 160π (Pappus).",
+      "description": "Write kernel volume tests in crates/reify-kernel-occt/src/lib.rs: (a) revolve_circle_face_full_volume \u2014 store_raw(make_circle_face(r=5, z=0)), translate_shape by (20,0,0), store_raw the translated face, execute Revolve around Z axis by 2\u03c0, query volume, assert \u2248 2\u03c0\u00b2\u00d720\u00d725 (Pappus: V=2\u03c0R\u00d7A where R=20, A=\u03c0\u00d725). (b) revolve_half_angle_half_volume \u2014 same setup but angle=\u03c0, assert volume \u2248 half of full. (c) revolve_rect_face_torus_volume \u2014 store_raw(make_rect_face(w=4,h=2,cx=10,cy=0,cz=0)), revolve around Z by 2\u03c0, assert volume \u2248 2\u03c0\u00d710\u00d7(4\u00d72) = 160\u03c0 (Pappus).",
       "status": "done",
       "commit": "db9127f4"
     },
@@ -99,21 +99,21 @@
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write failing compiler tests in crates/reify-compiler/src/lib.rs #[cfg(test)] block: (a) is_geometry_function_revolve — assert is_geometry_function('revolve') returns true. (b) is_geometry_function_revolve_full — assert is_geometry_function('revolve_full') returns true. (c) compile_revolve_produces_sweep — compile 'revolve(profile, 0, 0, 0, 0, 0, 1, 3.14)' with 8 args, assert produces CompiledGeometryOp::Sweep { kind: SweepKind::Revolve }. (d) compile_revolve_full_produces_sweep — compile 'revolve_full(profile, 0, 0, 0, 0, 0, 1)' with 7 args, assert produces Sweep(Revolve) with angle arg ≈ 2π. (e) compile_revolve_wrong_arg_count — revolve with 5 args, assert diagnostic error. Fail because SweepKind::Revolve doesn't exist.",
+      "description": "Write failing compiler tests in crates/reify-compiler/src/lib.rs #[cfg(test)] block: (a) is_geometry_function_revolve \u2014 assert is_geometry_function('revolve') returns true. (b) is_geometry_function_revolve_full \u2014 assert is_geometry_function('revolve_full') returns true. (c) compile_revolve_produces_sweep \u2014 compile 'revolve(profile, 0, 0, 0, 0, 0, 1, 3.14)' with 8 args, assert produces CompiledGeometryOp::Sweep { kind: SweepKind::Revolve }. (d) compile_revolve_full_produces_sweep \u2014 compile 'revolve_full(profile, 0, 0, 0, 0, 0, 1)' with 7 args, assert produces Sweep(Revolve) with angle arg \u2248 2\u03c0. (e) compile_revolve_wrong_arg_count \u2014 revolve with 5 args, assert diagnostic error. Fail because SweepKind::Revolve doesn't exist.",
       "status": "done",
       "commit": "eb3c935b"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Add SweepKind::Revolve to enum in crates/reify-compiler/src/lib.rs. Add 'revolve' | 'revolve_full' to is_geometry_function() matches! macro. Add match arms in compile_geometry_call(): revolve expects 8 args (profile, ox, oy, oz, ax, ay, az, angle), revolve_full expects 7 args (same without angle). Both produce CompiledGeometryOp::Sweep { kind: SweepKind::Revolve, profiles: vec![GeomRef::Step(0)], args }. revolve_full injects a literal CompiledExpr for 2π as the angle arg. Make step-9 pass.",
+      "description": "Add SweepKind::Revolve to enum in crates/reify-compiler/src/lib.rs. Add 'revolve' | 'revolve_full' to is_geometry_function() matches! macro. Add match arms in compile_geometry_call(): revolve expects 8 args (profile, ox, oy, oz, ax, ay, az, angle), revolve_full expects 7 args (same without angle). Both produce CompiledGeometryOp::Sweep { kind: SweepKind::Revolve, profiles: vec![GeomRef::Step(0)], args }. revolve_full injects a literal CompiledExpr for 2\u03c0 as the angle arg. Make step-9 pass.",
       "status": "done",
       "commit": "c2ba7cb1"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write failing eval test in crates/reify-eval/src/lib.rs #[cfg(test)] block: compile_geometry_op_revolve_produces_revolve_variant — create CompiledGeometryOp::Sweep { kind: SweepKind::Revolve } with profile at Step(0) and axis/angle args, call compile_geometry_op with step_handles=[GeometryHandleId(100)], assert result is Some(GeometryOp::Revolve { profile: GeometryHandleId(100), axis_origin: [expected], axis_dir: [expected], angle_rad: expected }). Fails because SweepKind::Revolve arm missing in compile_geometry_op.",
+      "description": "Write failing eval test in crates/reify-eval/src/lib.rs #[cfg(test)] block: compile_geometry_op_revolve_produces_revolve_variant \u2014 create CompiledGeometryOp::Sweep { kind: SweepKind::Revolve } with profile at Step(0) and axis/angle args, call compile_geometry_op with step_handles=[GeometryHandleId(100)], assert result is Some(GeometryOp::Revolve { profile: GeometryHandleId(100), axis_origin: [expected], axis_dir: [expected], angle_rad: expected }). Fails because SweepKind::Revolve arm missing in compile_geometry_op.",
       "status": "done",
       "commit": "b3269cd3"
     },
@@ -127,7 +127,7 @@
     {
       "id": "step-13",
       "type": "test",
-      "description": "Write mock kernel test in crates/reify-eval/tests/boundary4_geometry.rs: mock_kernel_revolve — create a box handle via MockGeometryKernel, then execute GeometryOp::Revolve { profile: box_handle.id, axis_origin: [0,0,0], axis_dir: [0,0,1], angle_rad: TAU }, assert new handle returned with incremented id.",
+      "description": "Write mock kernel test in crates/reify-eval/tests/boundary4_geometry.rs: mock_kernel_revolve \u2014 create a box handle via MockGeometryKernel, then execute GeometryOp::Revolve { profile: box_handle.id, axis_origin: [0,0,0], axis_dir: [0,0,1], angle_rad: TAU }, assert new handle returned with incremented id.",
       "status": "done",
       "commit": "25a4ac73"
     },
@@ -137,6 +137,20 @@
       "description": "Verify mock kernel test passes (MockGeometryKernel handles all GeometryOp variants via catch-all). Run full test suite (cargo test --workspace) to confirm no regressions across all crates.",
       "status": "done",
       "commit": "c104eee2"
+    },
+    {
+      "id": "step-15",
+      "type": "test",
+      "description": "Write FFI-level regression test in crates/reify-kernel-occt/src/lib.rs #[cfg(all(test, has_occt))] block: revolve_result_is_solid_not_shell \u2014 make_rect_face(w=4,h=2,cx=10,cy=0,cz=0), make_revolve around Z axis by 2\u03c0, then query_volume and assert volume > 0. A Shell shape returns 0 or near-0 for volume, so this test guards the contract that make_revolve always returns a volumetric Solid. Additionally, assert the volume matches the Pappus expectation (\u2248160\u03c0) with reasonable tolerance, proving the result is geometrically correct. This test passes with current code (the happy path works), serving as a regression guard for the Shell\u2192Solid conversion path.",
+      "status": "done",
+      "commit": "4606b50a"
+    },
+    {
+      "id": "step-16",
+      "type": "impl",
+      "description": "Fix silent failure in make_revolve Shell\u2192Solid conversion (occt_wrapper.cpp lines 706-711). Change the conditional block so that when BRepBuilderAPI_MakeSolid IsDone() returns false, an error is thrown instead of silently continuing with the Shell: add `else { throw std::runtime_error(\"make_revolve: Shell\u2192Solid conversion failed \u2014 BRepBuilderAPI_MakeSolid did not complete\"); }` after the existing `if (solidMaker.IsDone())` block. Also remove the dead-code duplicate OrientClosedSolid block (lines 714-716) which operates on a temporary and has no effect \u2014 the correct version on lines 718-721 already handles this. Run full test suite to verify no regressions.",
+      "status": "done",
+      "commit": "13703640"
     }
   ],
   "design_decisions": [
@@ -149,16 +163,16 @@
       "rationale": "Task spec says 'Axis passed as two f64[3] arrays extracted from Vector or Axis value'. Using 6 separate f64 args for axis_origin and axis_dir (3+3) matches the FFI calling convention and avoids needing compound type extraction at compile time. This mirrors circular_pattern's parameter style."
     },
     {
-      "decision": "revolve_full is pure compiler sugar — injects literal 2π angle",
-      "rationale": "revolve_full(profile, ox, oy, oz, ax, ay, az) is just revolve with angle=2π. Handling this entirely in the compiler (injecting a literal CompiledExpr for 2π) avoids a separate GeometryOp variant and keeps the kernel/eval layers simple. No new SweepKind needed."
+      "decision": "revolve_full is pure compiler sugar \u2014 injects literal 2\u03c0 angle",
+      "rationale": "revolve_full(profile, ox, oy, oz, ax, ay, az) is just revolve with angle=2\u03c0. Handling this entirely in the compiler (injecting a literal CompiledExpr for 2\u03c0) avoids a separate GeometryOp variant and keeps the kernel/eval layers simple. No new SweepKind needed."
     },
     {
       "decision": "Add make_rect_face C++ FFI helper for test profiles",
-      "rationale": "Revolve tests need a rectangular face profile to validate Pappus' theorem (V=2πR×A for known area A). make_circle_face exists but a rectangle at a controllable offset from the axis is cleaner for torus volume validation. Follows the established make_circle_face/make_circle_wire helper pattern."
+      "rationale": "Revolve tests need a rectangular face profile to validate Pappus' theorem (V=2\u03c0R\u00d7A for known area A). make_circle_face exists but a rectangle at a controllable offset from the axis is cleaner for torus volume validation. Follows the established make_circle_face/make_circle_wire helper pattern."
     },
     {
       "decision": "Zero angle returns error, not a no-op",
-      "rationale": "Task spec explicitly lists 'Zero angle → error'. A zero-angle revolve produces no geometry, so erroring is the correct behavior rather than silently returning an empty or degenerate shape."
+      "rationale": "Task spec explicitly lists 'Zero angle \u2192 error'. A zero-angle revolve produces no geometry, so erroring is the correct behavior rather than silently returning an empty or degenerate shape."
     },
     {
       "decision": "GeometryOp::Revolve uses f64 fields (not Value) for axis and angle",
@@ -167,18 +181,22 @@
     {
       "decision": "Translate circle face for revolve volume tests rather than creating offset profiles",
       "rationale": "make_circle_face creates at origin. To test revolve around Z axis at offset R, translate the face by (R,0,0) first using existing translate_shape FFI. This reuses existing infrastructure rather than parameterizing make_circle_face with offset."
+    },
+    {
+      "decision": "Promote Shell\u2192Solid conversion failure to hard error instead of silent fallthrough",
+      "rationale": "Review finding [silent_failure_on_error_path]: when BRepPrimAPI_MakeRevol produces a Shell and BRepBuilderAPI_MakeSolid fails, silently returning the Shell violates the caller's contract that revolve produces a volumetric Solid. Volume queries on a Shell return 0 or incorrect results with no error indication. Throwing an explicit error ensures callers always receive either a verified Solid or a clear error, following the project norm of noisy failures on logic errors (feedback_silent_defaults_pattern)."
     }
   ],
   "reuse": [
     {
       "what": "SweepKind enum + CompiledGeometryOp::Sweep variant",
       "where": "crates/reify-compiler/src/lib.rs (lines 688-693, 636-643)",
-      "how": "Add Revolve variant to existing SweepKind enum. Reuse the Sweep { kind, profiles, args } compiled op structure — profiles[0] is the revolve profile, args carry ox/oy/oz/ax/ay/az/angle parameters."
+      "how": "Add Revolve variant to existing SweepKind enum. Reuse the Sweep { kind, profiles, args } compiled op structure \u2014 profiles[0] is the revolve profile, args carry ox/oy/oz/ax/ay/az/angle parameters."
     },
     {
       "what": "Extrude compile_geometry_call pattern",
       "where": "crates/reify-compiler/src/lib.rs (lines 5922-5941)",
-      "how": "Follow identical structure for revolve: validate arg count, decompose compiled_args via iterator, produce CompiledGeometryOp::Sweep with named arg pairs. revolve_full adds an extra literal arg for 2π."
+      "how": "Follow identical structure for revolve: validate arg count, decompose compiled_args via iterator, produce CompiledGeometryOp::Sweep with named arg pairs. revolve_full adds an extra literal arg for 2\u03c0."
     },
     {
       "what": "SweepKind::Extrude eval resolution pattern",
@@ -217,5 +235,5 @@
     }
   ],
   "_session_id": "309-dfbaa32a",
-  "_created_at": "2026-03-25T04:56:58.546433+00:00"
+  "_created_at": "2026-03-25T05:40:25.046235+00:00"
 }
