@@ -385,6 +385,10 @@ pub fn apply_lambda(lambda: &Value, args: &[Value], ctx: &EvalContext) -> Value 
 }
 
 /// Evaluate a method call on a collection value.
+// Note: only .sum() dispatches to eval_add on raw values within this function.
+// Other methods (count, contains, fold, map, filter, etc.) do not perform direct
+// arithmetic on their elements. If adding new arithmetic methods, add canonicalization.
+// eval_binop handles canonicalization for all operator-based arithmetic paths.
 fn eval_method_call(obj: &Value, method: &str, args: &[Value], result_type: &Type, ctx: &EvalContext) -> Value {
     match method {
         "count" => match obj {
@@ -475,15 +479,30 @@ fn eval_method_call(obj: &Value, method: &str, args: &[Value], result_type: &Typ
                         _ => Value::Undef,
                     };
                 }
-                let mut acc = items[0].clone();
+                // DO NOW #5: Guard clone+canonicalize on Matrix variant only.
+                // Non-Matrix items avoid the clone+canonicalize overhead.
+                let mut acc = if matches!(items[0], Value::Matrix(_)) {
+                    items[0].clone().canonicalize_matrix()
+                } else {
+                    items[0].clone()
+                };
                 if acc.is_undef() {
                     return Value::Undef;
                 }
                 for item in &items[1..] {
-                    if item.is_undef() {
-                        return Value::Undef;
+                    // DO NOW #16: canonicalize Matrix before undef check
+                    if matches!(item, Value::Matrix(_)) {
+                        let canon = item.clone().canonicalize_matrix();
+                        if canon.is_undef() {
+                            return Value::Undef;
+                        }
+                        acc = eval_add(&acc, &canon);
+                    } else {
+                        if item.is_undef() {
+                            return Value::Undef;
+                        }
+                        acc = eval_add(&acc, item);
                     }
-                    acc = eval_add(&acc, item);
                     if acc.is_undef() {
                         return Value::Undef;
                     }

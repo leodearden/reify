@@ -35,6 +35,28 @@ fn matrix_literal_times_tensor_vector() {
     assert_eq!(result, expected);
 }
 
+// ── step-14: List.sum() with Matrix elements (DO NOW #11) ──────────────────
+
+#[test]
+fn list_sum_matrix_elements() {
+    // List([matrix_2x2(1,0,0,1), matrix_2x2(2,3,4,5)]).sum() => Tensor sum after canonicalization
+    let list = Value::List(vec![matrix_2x2(1.0, 0.0, 0.0, 1.0), matrix_2x2(2.0, 3.0, 4.0, 5.0)]);
+    let obj_expr = CompiledExpr::literal(list, Type::List(Box::new(Type::matrix(2, 2, Type::Real))));
+    let expr = CompiledExpr::method_call(
+        obj_expr,
+        "sum".to_string(),
+        vec![],
+        Type::tensor(2, 2, Type::Real),
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    let expected = Value::Tensor(vec![
+        Value::Tensor(vec![Value::Real(3.0), Value::Real(3.0)]),
+        Value::Tensor(vec![Value::Real(4.0), Value::Real(6.0)]),
+    ]);
+    assert_eq!(result, expected);
+}
+
 // ── step-11: Matrix canonicalization through eval_binop and eval_unop ──────
 
 #[test]
