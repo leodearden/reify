@@ -3262,7 +3262,7 @@ fn compile_geometry_op(
                         eval_arg_f64("az"),
                     ];
                     let mag = axis_dir.iter().map(|x| x * x).sum::<f64>().sqrt();
-                    if mag < 1e-12 {
+                    if !mag.is_finite() || mag < 1e-12 {
                         return None;
                     }
                     Some(reify_types::GeometryOp::Revolve {
