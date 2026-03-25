@@ -698,7 +698,8 @@ fn evaluate_const_expr(
 /// Compile a `UnitDecl` into a `UnitEntry`.
 ///
 /// Resolves the dimension type, evaluates conversion and offset expressions,
-/// and computes a content hash. Returns `None` if the dimension type is unknown.
+/// and computes a content hash. Returns `None` if the dimension type is unknown
+/// or if a conversion/offset expression fails to evaluate as a constant.
 fn compile_unit(
     decl: &reify_syntax::UnitDecl,
     registry: &UnitRegistry,
@@ -713,10 +714,14 @@ fn compile_unit(
     } else {
         1.0 // base unit with no conversion expression
     };
-    let offset = decl
-        .offset
-        .as_ref()
-        .and_then(|expr| evaluate_const_expr(expr, registry, diagnostics));
+    let offset = if let Some(expr) = &decl.offset {
+        match evaluate_const_expr(expr, registry, diagnostics) {
+            Some(v) => Some(v),
+            None => return None, // evaluation failed; diagnostic already emitted
+        }
+    } else {
+        None // non-affine unit with no offset
+    };
     // Content hash: name + dimension bits + factor + offset
     let hash = {
         let dim_bytes: Vec<u8> = dimension
