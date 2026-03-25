@@ -55,6 +55,56 @@ pub fn compute_hover(source: &str, uri: &Url, position: Position) -> Option<Hove
         }
     }
 
+    // Try fn/trait/enum names
+    for decl in &ctx.parsed.declarations {
+        match decl {
+            reify_syntax::Declaration::Function(f) if f.name == word => {
+                let params_str: Vec<String> = f
+                    .params
+                    .iter()
+                    .map(|p| format!("{}: {}", p.name, p.type_expr.name))
+                    .collect();
+                let ret = f
+                    .return_type
+                    .as_ref()
+                    .map(|t| format!(" -> {}", t.name))
+                    .unwrap_or_default();
+                let mut md =
+                    format!("```reify\nfn {}({}){}\n```", f.name, params_str.join(", "), ret);
+                if let Some(doc) = ctx.find_entity_doc(word) {
+                    md.push_str("\n\n");
+                    md.push_str(doc);
+                }
+                return Some(make_hover_markdown(md));
+            }
+            reify_syntax::Declaration::Trait(t) if t.name == word => {
+                let mut md = format!("```reify\ntrait {}\n```", t.name);
+                if !t.refinements.is_empty() {
+                    md = format!(
+                        "```reify\ntrait {} : {}\n```",
+                        t.name,
+                        t.refinements.join(" + ")
+                    );
+                }
+                if let Some(doc) = ctx.find_entity_doc(word) {
+                    md.push_str("\n\n");
+                    md.push_str(doc);
+                }
+                return Some(make_hover_markdown(md));
+            }
+            reify_syntax::Declaration::Enum(e) if e.name == word => {
+                let mut md = format!("```reify\nenum {}\n```", e.name);
+                md.push_str(&format!("\n\n{} variants", e.variants.len()));
+                if let Some(doc) = ctx.find_entity_doc(word) {
+                    md.push_str("\n\n");
+                    md.push_str(doc);
+                }
+                return Some(make_hover_markdown(md));
+            }
+            _ => {}
+        }
+    }
+
     // Try keyword
     if let Some(desc) = keyword_description(word) {
         let md = format!("**{word}** — {desc}");
