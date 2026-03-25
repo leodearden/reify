@@ -6659,13 +6659,13 @@
         "description": "Address review suggestions from task 139 reviews in main.rs:\n\n1. **WindowEvent::Destroyed for shutdown (S6)**: Change sidecar shutdown hook from `WindowEvent::Destroyed` to `WindowEvent::CloseRequested` for more reliable graceful shutdown while Tauri runtime is still operational.\n\n2. **Untestable spawn logic in command handler (S7)**: Extract the ~55-line lazy-spawn block from claude_send_message into `pub fn spawn_sidecar_impl(path: &Path, engine: Arc<Mutex<EngineSession>>, event_sink: impl Fn(&str, Value)) -> Result<SidecarHandle, String>` in claude_bridge.rs. The Tauri command keeps only path resolution (requires AppHandle) and plumbing.\n\nFiles: gui/src-tauri/src/main.rs, gui/src-tauri/src/claude_bridge.rs\n\nMemory hints:\n- Search: \"Tauri sidecar shutdown\", \"spawn_sidecar_impl\", \"WindowEvent\"\n- Entities: claude_send_message, SidecarHandle, AppState",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [
           "139"
         ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-25T21:34:22.899Z"
+        "updatedAt": "2026-03-25T22:01:41.072Z"
       },
       {
         "id": "354",
@@ -6735,11 +6735,11 @@
         "description": "Fix NaN bypassing ALL validation in orient_basis (IEEE 754 comparisons always false) by adding explicit finiteness check. Add !value.is_finite() guard in trig_input as defense-in-depth. Extract vec3_norm() helper to deduplicate inline 3D vector magnitude computation across orient_basis/orient_axis_angle.\n\nMissing tests to add:\n- Axis normalization with non-unit vector (e.g. [2,0,0])\n- Dimensioned Scalar input to orient_quaternion (as_f64 silently strips dimension)\n- NaN/Inf angle values through trig_input\n- Uppercase convention 'XYZ' for orient_euler (documents case-sensitivity)\n\nMemory hints: search \"orient_basis orient_axis_angle trig_input NaN validation\", entities: eval_builtin, orient_basis, orient_euler",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-03-25T20:59:21.912Z"
+        "updatedAt": "2026-03-25T22:01:41.101Z"
       },
       {
         "id": "360",
@@ -7748,7 +7748,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-25T22:01:41.037Z",
+      "lastModified": "2026-03-25T22:01:41.101Z",
       "taskCount": 435,
       "completedCount": 229,
       "tags": [
