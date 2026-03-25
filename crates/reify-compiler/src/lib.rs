@@ -1768,6 +1768,18 @@ fn compile_purpose(
                     )),
                 );
             }
+            reify_syntax::MemberDecl::MetaBlock(m) => {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "meta blocks in purpose bodies are not supported"
+                            .to_string(),
+                    )
+                    .with_label(DiagnosticLabel::new(
+                        m.span,
+                        "unsupported in purpose".to_string(),
+                    )),
+                );
+            }
         }
     }
 
@@ -2898,6 +2910,9 @@ fn compile_entity(
                         &mut acc,
                     );
                 }
+            }
+            reify_syntax::MemberDecl::MetaBlock(_) => {
+                // Meta blocks are collected in the first pass; skip in second pass.
             }
         }
     }
