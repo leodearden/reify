@@ -2010,7 +2010,11 @@ fn compile_trait(
         required_members,
         defaults,
         content_hash,
-        annotations: vec![],
+        annotations: {
+            let anns = lower_annotations(&trait_decl.annotations, diagnostics);
+            validate_annotations(&anns, "trait", diagnostics);
+            anns
+        },
     }
 }
 
@@ -2201,7 +2205,11 @@ fn compile_purpose(
         objective,
         resolved_queries,
         content_hash: purpose_def.content_hash,
-        annotations: vec![],
+        annotations: {
+            let anns = lower_annotations(&purpose_def.annotations, diagnostics);
+            validate_annotations(&anns, "purpose", diagnostics);
+            anns
+        },
     }
 }
 
@@ -2952,6 +2960,67 @@ fn lower_annotations(
             }
         })
         .collect()
+}
+
+/// Validate annotations against known annotation rules and context.
+///
+/// Known annotations and their valid contexts:
+/// - `@test`: valid on structure, occurrence, function
+/// - `@optimized`: valid on structure, occurrence
+/// - `@solver_hint`: valid on structure, occurrence
+/// - `@deprecated`: valid on any context
+///
+/// Unknown annotations emit a warning. Known annotations in wrong contexts emit a warning.
+fn validate_annotations(
+    annotations: &[reify_types::Annotation],
+    context: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    for ann in annotations {
+        match ann.name.as_str() {
+            "deprecated" => {
+                // Valid on any context — no warning.
+            }
+            "test" => {
+                if !matches!(context, "structure" | "occurrence" | "function") {
+                    diagnostics.push(
+                        Diagnostic::warning(format!(
+                            "annotation @test is not valid on {context} declarations"
+                        ))
+                        .with_label(DiagnosticLabel::new(ann.span, "@test")),
+                    );
+                }
+            }
+            "optimized" => {
+                if !matches!(context, "structure" | "occurrence") {
+                    diagnostics.push(
+                        Diagnostic::warning(format!(
+                            "annotation @optimized is not valid on {context} declarations"
+                        ))
+                        .with_label(DiagnosticLabel::new(ann.span, "@optimized")),
+                    );
+                }
+            }
+            "solver_hint" => {
+                if !matches!(context, "structure" | "occurrence") {
+                    diagnostics.push(
+                        Diagnostic::warning(format!(
+                            "annotation @solver_hint is not valid on {context} declarations"
+                        ))
+                        .with_label(DiagnosticLabel::new(ann.span, "@solver_hint")),
+                    );
+                }
+            }
+            other => {
+                diagnostics.push(
+                    Diagnostic::warning(format!(
+                        "unknown annotation @{other}"
+                    ))
+                    .with_label(DiagnosticLabel::new(ann.span, "unknown annotation")),
+                );
+            }
+        }
+    }
 }
 
 /// Compile a single entity definition (structure or occurrence) into a topology template.
@@ -3932,7 +4001,12 @@ fn compile_entity(
         objective,
         content_hash,
         is_recursive: false,
-        annotations: lower_annotations(structure.annotations, diagnostics),
+        annotations: {
+            let anns = lower_annotations(structure.annotations, diagnostics);
+            let context = if entity_kind == EntityKind::Occurrence { "occurrence" } else { "structure" };
+            validate_annotations(&anns, context, diagnostics);
+            anns
+        },
     }
 }
 
@@ -5369,7 +5443,11 @@ fn compile_function(
             result_expr,
         },
         content_hash,
-        annotations: lower_annotations(&fn_def.annotations, diagnostics),
+        annotations: {
+            let anns = lower_annotations(&fn_def.annotations, diagnostics);
+            validate_annotations(&anns, "function", diagnostics);
+            anns
+        },
     })
 }
 
@@ -5464,7 +5542,11 @@ fn compile_field(
         codomain_type,
         source,
         content_hash,
-        annotations: vec![],
+        annotations: {
+            let anns = lower_annotations(&field_def.annotations, diagnostics);
+            validate_annotations(&anns, "field", diagnostics);
+            anns
+        },
     }
 }
 
