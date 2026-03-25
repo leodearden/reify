@@ -1143,6 +1143,25 @@ impl Engine {
                     continue;
                 }
 
+                // Recursive sub: evaluate guard before elaborating, then unfold recursively.
+                if template.is_recursive && sub.guard_expr.is_some() {
+                    unfold_recursive_sub(
+                        &mut values,
+                        &mut snapshot,
+                        functions,
+                        &mut self.journal,
+                        &mut self.cache,
+                        version_id,
+                        child_template,
+                        sub,
+                        &template.name,
+                        0,
+                        self.max_unfold_depth,
+                        &self.meta_map,
+                    );
+                    continue;
+                }
+
                 // Build scoped entity prefix: "ParentName.sub_name"
                 let scoped_entity = format!("{}.{}", template.name, sub.name);
 
@@ -3135,6 +3154,107 @@ fn compile_geometry_op(
             }
         }
     }
+}
+
+/// Recursively unfold a recursive sub-component until the guard evaluates to false
+/// or the depth limit is reached.
+///
+/// The guard expression in `sub.guard_expr` uses the template's own entity name (e.g., "S.n").
+/// To correctly evaluate the guard at each recursion level, we build a "local" values context
+/// by remapping the current parent entity's values to the template's namespace before evaluation.
+///
+/// # Parameters
+/// - `parent_entity`: the entity currently being processed (e.g., "S" at depth 0, "S.child" at depth 1)
+/// - `depth`: current recursion depth (0 = processing the top-level template)
+/// - `max_depth`: maximum allowed depth before stopping
+#[allow(clippy::too_many_arguments)]
+fn unfold_recursive_sub(
+    values: &mut ValueMap,
+    snapshot: &mut Snapshot,
+    functions: &[CompiledFunction],
+    journal: &mut EventJournal,
+    cache: &mut CacheStore,
+    version_id: u64,
+    child_template: &reify_compiler::TopologyTemplate,
+    sub: &reify_compiler::SubComponentDecl,
+    parent_entity: &str,
+    depth: usize,
+    max_depth: usize,
+    meta_map: &HashMap<String, HashMap<String, String>>,
+) {
+    let guard_expr = match &sub.guard_expr {
+        Some(g) => g,
+        None => return,
+    };
+
+    // Build a local values context that maps template-scoped names to the current entity's values.
+    // This allows the guard and args (which reference e.g. "S.n") to use the current level's values.
+    let mut local_values = values.clone();
+    for cell in &child_template.value_cells {
+        let scoped_id = ValueCellId::new(parent_entity, &cell.id.member);
+        if let Some(v) = values.get(&scoped_id) {
+            local_values.insert(cell.id.clone(), v.clone());
+        }
+    }
+
+    // Evaluate the guard in the local context.
+    let guard_val = reify_expr::eval_expr(
+        guard_expr,
+        &reify_expr::EvalContext::new(&local_values, functions).with_meta(meta_map),
+    );
+
+    // Only unfold if guard is explicitly Bool(true) and depth limit not exceeded.
+    if guard_val != Value::Bool(true) || depth >= max_depth {
+        return;
+    }
+
+    // Pre-evaluate args in the local context (so child uses current level's param values, not top-level).
+    // Use the arg expression's declared result_type for the literal wrapper.
+    let concrete_args: Vec<(String, reify_types::CompiledExpr)> = sub
+        .args
+        .iter()
+        .map(|(name, arg_expr)| {
+            let v = reify_expr::eval_expr(
+                arg_expr,
+                &reify_expr::EvalContext::new(&local_values, functions).with_meta(meta_map),
+            );
+            let ty = arg_expr.result_type.clone();
+            (name.clone(), reify_types::CompiledExpr::literal(v, ty))
+        })
+        .collect();
+
+    // Construct the next child's scoped entity name: parent_entity.sub_name
+    let next_entity = format!("{}.{}", parent_entity, sub.name);
+
+    // Elaborate the child instance with the pre-computed args.
+    elaborate_child_instance(
+        values,
+        snapshot,
+        functions,
+        journal,
+        cache,
+        version_id,
+        child_template,
+        &next_entity,
+        &concrete_args,
+        meta_map,
+    );
+
+    // Recurse to unfold the next level.
+    unfold_recursive_sub(
+        values,
+        snapshot,
+        functions,
+        journal,
+        cache,
+        version_id,
+        child_template,
+        sub,
+        &next_entity,
+        depth + 1,
+        max_depth,
+        meta_map,
+    );
 }
 
 /// Elaborate a single child instance into the values/snapshot maps.
