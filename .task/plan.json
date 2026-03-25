@@ -1,391 +1,141 @@
 {
-  "task_id": "205",
-  "title": "Recursive structures: unfolding",
+  "task_id": "203",
+  "title": "Recursive structures: detection",
   "files": [
-    "crates/reify-eval/src/lib.rs",
-    "crates/reify-eval/src/graph.rs",
-    "crates/reify-eval/tests/recursive_unfold.rs",
-    "crates/reify-test-support/src/builders.rs"
+    "crates/reify-compiler/tests/recursive_detection_tests.rs",
+    "crates/reify-compiler/src/lib.rs"
   ],
   "modules": [
-    "crates/reify-eval",
-    "crates/reify-test-support"
+    "crates/reify-compiler"
   ],
-  "analysis": "Task 205 implements eager structural unfolding of recursive structures in the evaluator. Dependencies 203 and 204 already provide: (1) `TopologyTemplate.is_recursive: bool` flag set by Tarjan SCC detection, and (2) `SubComponentDecl.guard_expr: Option<CompiledExpr>` for termination guards.\n\nThe current sub-component elaboration flow (lib.rs:1063-1159) iterates over each template's sub_components, finds the child template, and calls `elaborate_child_instance()` for each. For non-recursive subs this is a single-level expansion. For recursive subs (where `template.is_recursive == true` and `sub.guard_expr.is_some()`), the evaluator must now: (a) evaluate the sub's `guard_expr` in the current value context, (b) if true, create a child instance with the provided args (which decrement the recursion param), (c) recursively unfold the child, repeating until the guard evaluates to false or depth limit is hit.\n\nREVIEW FINDINGS (blocking):\n1. The `unfold_recursive_leaves_first_order` test (step-11) uses `let doubled = n * 2` which has no cross-level data dependency \u2014 it passes identically whether elaboration is top-down or bottom-up. Must be rewritten to use a cross-level reference like `let total = if n > 0 then n + child.total else n`.\n2. The implementation (step-12) in `unfold_recursive_sub` (lines 3229-3257) calls `elaborate_child_instance` BEFORE recursing \u2014 this is top-down (elaborate-then-recurse), NOT leaves-first (recurse-then-elaborate). Any let-binding referencing a child's computed value silently resolves to Undef. Must be fixed to use two-phase approach: set params top-down (for guard evaluation), recurse, then evaluate lets bottom-up.\n3. Additionally, `child_values` in `elaborate_child_instance` (line 3356) only includes template-scoped params \u2014 sub-component values from deeper levels are not mapped in. The let evaluation context must be enriched with sub-component values projected from the global values map after recursion.\n\nREVIEW ROUND 2 FINDINGS (blocking):\n4. [silent_data_corruption_at_boundary] When `max_unfold_depth = 0`, the depth check `depth >= max_depth` fires at depth 0 before Phase 1 or Phase 3 runs. The child entity is never written to `values`, so any parent-level let binding referencing `child.*` silently evaluates to Undef. Only a warning (not error) is emitted, breaking the API contract that a warning-clean eval produces a sound result. Fix: reject depth=0 in `set_max_unfold_depth` and escalate the truncation diagnostic from warning to error so callers know the result is unsound.\n5. [incomplete_cross_level_projection_for_multiple_recursive_subs] `elaborate_child_lets_only` only walks the chain for a single sub name (`recursive_sub_name`). For a template with two recursive subs (e.g., `sub left` and `sub right`), values under the other sub's chain are not projected into `child_values`. Additionally, `unfold_recursive_sub` only recurses on the same sub \u2014 a child instance of a template with multiple recursive subs only gets ONE sub chain unfolded, not all of them. Fix: (a) pass all recursive subs into `unfold_recursive_sub` and unfold all of them at each child level, (b) change `recursive_sub_name: Option<&str>` to `recursive_sub_names: &[&str]` in `elaborate_child_lets_only` and iterate over all sub names in the chain walk.\n\nKey architectural decisions:\n- The unfolding happens during eval() in the sub-component elaboration phase, AFTER params and lets are evaluated (so recursion-controlling params have values).\n- A new function `unfold_recursive_sub()` handles the recursive unfolding loop.\n- Each level gets a scoped entity name like `Parent.child.child.child...` (nested dot-separated).\n- The depth limit is configurable on Engine (default 64), stored as a field.\n- If the recursion param is Undef, the sub remains as a placeholder (no unfolding).\n- Resolution order is leaves-first: we recurse to the bottom first, then elaborate back up. This means we unfold eagerly to find the bottom, then call elaborate_child_instance from the deepest level upward.\n- The graph.rs `from_templates()` method does NOT need recursive unfolding \u2014 it only creates static graph structure. The dynamic unfolding happens in eval() where values are known.\n- TopologyTemplateBuilder needs `is_recursive(bool)` and `sub_component_with_guard()` builder methods for test construction.",
-  "prerequisites": [
-    {
-      "id": "pre-1",
-      "description": "Add `is_recursive(bool)` setter to TopologyTemplateBuilder in test-support builders.rs, so tests can mark templates as recursive.",
-      "status": "done",
-      "commit": "08a30759",
-      "tests": []
-    },
-    {
-      "id": "pre-2",
-      "description": "Add `sub_component_with_guard(name, structure_name, args, guard_expr)` builder method to TopologyTemplateBuilder, creating SubComponentDecl with guard_expr set. This enables constructing recursive sub-component test fixtures.",
-      "status": "done",
-      "commit": "08a30759",
-      "tests": []
-    },
-    {
-      "id": "pre-3",
-      "description": "Add `max_unfold_depth: usize` field to Engine (default 64) with a `set_max_unfold_depth(&mut self, depth: usize)` setter. This is the configurable depth limit for recursive unfolding.",
-      "status": "done",
-      "commit": "08a30759",
-      "tests": []
-    }
-  ],
+  "analysis": "Task 203 requires detecting self-referential structure definitions during compilation: building a reference graph among structure defs, identifying direct and indirect cycles, and tagging recursive structures for special handling.\n\nThe core implementation already exists in lib.rs (lines 2404-2639):\n- `detect_recursive_structures()` builds an adjacency list from sub_components, runs iterative Tarjan's SCC algorithm, identifies cyclic SCCs, tags templates with `is_recursive = true`, and emits warning diagnostics with reconstructed cycle paths.\n- `tarjan_scc_visit()` is an iterative (non-recursive) Tarjan implementation using an explicit call stack.\n- `reconstruct_scc_cycle()` and `find_cycle_back_to()` produce human-readable cycle path strings.\n- `TopologyTemplate.is_recursive: bool` is the tag field (line 182), initialized to `false` in `compile_entity()` (line 3782) and set to `true` in the post-pass.\n\nThe adjacency building (lines 2417-2425) handles both instantiation form (`sub x = A()`) and collection form (`sub items : List<A>`) since both populate `SubComponentDecl.structure_name`.\n\nExisting test coverage is in `termination_check_tests.rs` (Task 204) which tests detection indirectly through termination error scenarios. There are NO dedicated tests for the detection behavior itself \u2014 specifically:\n- No tests verify `is_recursive` is correctly set/unset for various graph topologies\n- No tests verify the warning diagnostic is emitted with correct cycle path format\n- No tests for complex graph patterns (diamonds, multiple independent cycles, long chains)\n- No tests for collection sub form creating reference edges\n- No tests isolating detection from termination checking\n\nThis plan creates a dedicated test file for recursive detection with comprehensive coverage of all graph topologies and edge cases.",
+  "prerequisites": [],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing test `unfold_recursive_depth_zero_no_children`: Create a recursive structure S with param `n: Int = 0` and sub `child = S(n: n-1) where n > 0`. Template is_recursive=true. After eval(), guard should be false (0 > 0 is false), so no child instances should be created \u2014 no scoped values for `S.child.*` should exist.",
+      "description": "Create recursive_detection_tests.rs with helpers (compile_all, find_template) and write test `direct_self_reference_sets_is_recursive`: structure S with `sub child = S(n: n - 1) where n > 0` should have `is_recursive == true`. Also write test `no_subs_not_recursive`: structure with only params/lets should have `is_recursive == false`.",
       "status": "done",
-      "commit": "5d0718f8"
+      "commit": "b49135a4"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Implement the core recursive unfolding logic in lib.rs. Add function `unfold_recursive_sub()` that: (1) evaluates the sub's guard_expr in the current values context, (2) if guard is Bool(true) and depth < max_depth, creates a child instance via `elaborate_child_instance()`, then recursively processes that child's own recursive subs, (3) if guard is Bool(false) or Undef, stops. Modify the sub-component elaboration loop in eval() to detect recursive subs (template.is_recursive && sub.guard_expr.is_some()) and call unfold_recursive_sub() instead of the direct elaborate_child_instance() path. Pass step-1 test.",
+      "description": "Verify step-1 tests pass against existing detect_recursive_structures() implementation. No code changes expected \u2014 implementation exists at lib.rs lines 2404-2491.",
       "status": "done",
-      "commit": "5d0718f8"
+      "commit": "b49135a4"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing test `unfold_recursive_depth_one_creates_child`: S(n=1) with sub child = S(n: n-1) where n > 0. After eval(): S.child.n should be 0, S.child.child.* should NOT exist (guard false at depth 1). Verify scoped entity naming.",
+      "description": "Write test `indirect_two_node_cycle_both_recursive`: structures A (sub b = B()) and B (sub a = A()) with where-clause guards \u2014 both should have `is_recursive == true`. Write test `indirect_three_node_cycle_all_recursive`: A\u2192B\u2192C\u2192A chain \u2014 all three should be tagged recursive.",
       "status": "done",
-      "commit": "3438f265"
+      "commit": "fa1ee848"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Fix any issues to pass the depth-1 test. Ensure scoped entity naming uses dot-separated nesting: S.child, S.child.child, etc. Ensure child params are evaluated with decremented args.",
+      "description": "Verify step-3 tests pass. Multi-node SCC detection is handled by Tarjan's algorithm which finds all strongly-connected components regardless of cycle length.",
       "status": "done",
-      "commit": "5d0718f8"
+      "commit": "fa1ee848"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing test `unfold_recursive_depth_three_creates_tree`: S(n=3) with sub child = S(n: n-1) where n > 0. After eval(): S.child.n=2, S.child.child.n=1, S.child.child.child.n=0, S.child.child.child.child.* should NOT exist. Verify all 4 levels exist with correct decremented params.",
+      "description": "Write test `linear_chain_no_cycle`: A\u2192B\u2192C with no back-edges \u2014 none should be recursive. Write test `diamond_no_cycle`: A\u2192B, A\u2192C, B\u2192D, C\u2192D (shared leaf, no back-edge) \u2014 none should be recursive. These verify non-cyclic graph patterns are correctly excluded.",
       "status": "done",
-      "commit": "3438f265"
+      "commit": "fa1ee848"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Fix any issues to pass the depth-3 test. Ensure the recursive loop correctly chains scoped entities and decrements params at each level.",
+      "description": "Verify step-5 tests pass. Non-cyclic SCCs (single-node without self-edge) are correctly excluded by the `is_cycle` check at lines 2448-2454.",
       "status": "done",
-      "commit": "5d0718f8"
+      "commit": "fa1ee848"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing test `unfold_recursive_undef_param_no_unfold`: S with param n: Int (no default, so Undef), sub child = S(n: n-1) where n > 0. After eval(): guard evaluates with Undef input, should NOT unfold. S.child.* should not exist (sub remains placeholder).",
+      "description": "Write test `multiple_independent_cycles`: two separate cycles ({A\u2194B} and {C\u2194D}) in the same module \u2014 all four should be `is_recursive == true` and two separate warning diagnostics should be emitted. Write test `mixed_recursive_and_non_recursive`: cycle A\u2194B plus non-cycling structure C that references A \u2014 A and B should be recursive, C should not.",
       "status": "done",
-      "commit": "3438f265"
+      "commit": "fa1ee848"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Ensure the unfolding logic checks that guard_expr evaluates to Bool(true) specifically \u2014 Undef, Int, or any non-Bool result skips unfolding. Pass the undef-param test.",
+      "description": "Verify step-7 tests pass. Tarjan processes all SCCs independently, so multiple disjoint cycles and mixed topologies are handled correctly.",
       "status": "done",
-      "commit": "5d0718f8"
+      "commit": "fa1ee848"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write failing test `unfold_recursive_depth_limit_stops_unfolding`: S(n=100) with sub child = S(n: n-1) where n > 0, engine max_unfold_depth=5. After eval(): only 5 levels of children should be created (S.child through S.child.child.child.child.child). The 6th level should NOT exist even though guard would be true.",
+      "description": "Write test `warning_diagnostic_emitted_for_cycle`: verify that a cycle produces exactly one warning-level diagnostic containing 'recursive structure cycle detected' and the cycle path string (e.g., 'S -> S' for self-ref, or 'A -> B -> A' for mutual). Write test `warning_diagnostic_count_matches_scc_count`: two independent cycles should produce exactly two warning diagnostics.",
       "status": "done",
-      "commit": "3438f265"
+      "commit": "fa1ee848"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Ensure unfold_recursive_sub() tracks current depth and stops at max_unfold_depth. Pass the depth-limit test.",
+      "description": "Verify step-9 tests pass. Warning emission happens at lines 2461-2464 with `reconstruct_scc_cycle()` providing the path string.",
       "status": "done",
-      "commit": "5d0718f8"
+      "commit": "fa1ee848"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write failing test `unfold_recursive_leaves_first_order`: S(n=2) with param n and let sum (default: n + child.sum or n when n=0). Verify that leaf values are evaluated before parent values \u2014 the child at depth 2 (n=0) should be evaluated first, then depth 1, then depth 0. Verify by checking that let bindings referencing child values produce correct results.",
+      "description": "Write test `collection_sub_creates_reference_edge`: structure S with `sub items : List<S>` (collection form) should have `is_recursive == true`, verifying that collection subs are included in the reference graph. Write test `sub_referencing_unknown_structure_not_recursive`: structure S with `sub x = Unknown()` where Unknown is not defined in the module \u2014 should not crash and S should not be recursive (the reference is filtered out by name_to_idx lookup).",
       "status": "done",
-      "commit": "3438f265"
+      "commit": "fa1ee848"
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "Implement leaves-first resolution order: unfold_recursive_sub() first recurses to find the deepest level (where guard is false), then elaborates instances bottom-up. This ensures child values are in the values map before parent let-bindings that reference them are evaluated. Pass the leaves-first test.",
+      "description": "Verify step-11 tests pass. Collection subs use the same `structure_name` field (line 2422). Unknown structure references are filtered by the `filter_map` on name_to_idx (line 2422), producing no edge.",
       "status": "done",
-      "commit": "5d0718f8"
-    },
-    {
-      "id": "step-13",
-      "type": "test",
-      "description": "Write failing test `unfold_recursive_with_let_bindings`: S with param n: Int = 3, let doubled: Int = n * 2, sub child = S(n: n-1) where n > 0. After eval(): S.child.doubled should be 4 (2*2), S.child.child.doubled should be 2 (1*2), S.child.child.child.doubled should be 0 (0*2). Verifies that let bindings in child instances are correctly evaluated.",
-      "status": "done",
-      "commit": "3438f265"
-    },
-    {
-      "id": "step-14",
-      "type": "impl",
-      "description": "Ensure elaborate_child_instance() correctly evaluates let bindings for each unfolded level. The child_values context must use the scoped values, not the parent's. Pass the let-bindings test.",
-      "status": "done",
-      "commit": "5d0718f8"
-    },
-    {
-      "id": "step-15",
-      "type": "test",
-      "description": "Write failing test `unfold_recursive_non_recursive_sub_unchanged`: Template A (non-recursive) with sub b = B(). Template B (non-recursive) with param x: Int = 5. After eval(): A.b.x should be 5. Verify that the existing non-recursive sub elaboration path is not broken by the new recursive unfolding logic.",
-      "status": "done",
-      "commit": "3438f265"
-    },
-    {
-      "id": "step-16",
-      "type": "impl",
-      "description": "Verify the non-recursive path remains unchanged. The check for is_recursive && guard_expr.is_some() should cleanly separate recursive from non-recursive subs. Pass the regression test.",
-      "status": "done",
-      "commit": "5d0718f8"
-    },
-    {
-      "id": "step-17",
-      "type": "test",
-      "description": "Write failing test `unfold_recursive_multiple_params`: S with param n: Int = 2 and param width: Real = 10.0, sub child = S(n: n-1, width: width * 0.5) where n > 0. After eval(): S.child.width=5.0, S.child.child.width=2.5. Verifies that non-recursion-controlling params are correctly propagated through unfolding.",
-      "status": "done",
-      "commit": "3438f265"
-    },
-    {
-      "id": "step-18",
-      "type": "impl",
-      "description": "Ensure all args from SubComponentDecl.args are passed through to each child instance during unfolding. The args are evaluated in the parent's value context (which includes the current level's param values). Pass the multiple-params test.",
-      "status": "done",
-      "commit": "5d0718f8"
-    },
-    {
-      "id": "step-19",
-      "type": "test",
-      "description": "Write failing test `unfold_recursive_bool_guard`: S with param active: Bool = true, sub child = S(active: !active) where active == true (equivalently: active). After eval(): S.child should exist with active=false, S.child.child should NOT exist (guard false). Tests boolean-type recursion control.",
-      "status": "done",
-      "commit": "3438f265"
-    },
-    {
-      "id": "step-20",
-      "type": "impl",
-      "description": "Ensure boolean guard expressions work correctly. The guard evaluation should handle Bool(true)/Bool(false) for any expression shape. Pass the bool-guard test.",
-      "status": "done",
-      "commit": "5d0718f8"
-    },
-    {
-      "id": "step-21",
-      "type": "test",
-      "description": "Write failing test `unfold_recursive_default_depth_limit_64`: S(n=200) with sub child = S(n: n-1) where n > 0, using default Engine (no set_max_unfold_depth). Verify that exactly 64 levels are created (default limit). Check that S.child^64 exists but S.child^65 does not.",
-      "status": "done",
-      "commit": "3438f265"
-    },
-    {
-      "id": "step-22",
-      "type": "impl",
-      "description": "Verify default depth limit of 64 works correctly. Pass the default-depth-limit test.",
-      "status": "done",
-      "commit": "5d0718f8"
-    },
-    {
-      "id": "step-23",
-      "type": "test",
-      "description": "Rewrite `unfold_recursive_leaves_first_order` test to validate genuine cross-level data dependency (fixes reviewer finding: test_does_not_test_what_it_claims). Replace the `let doubled = n * 2` expression with a `CompiledExprKind::Conditional` expression: `let total = if n > 0 then n + S.child.total else n`. With S(n=2), this creates an actual data dependency chain: S.child.child (n=0) has total=0 (base case, else branch); S.child (n=1) has total=1+child.total=1+0=1 (then branch, references child's computed value). Assert S.child.total==1 (Int) and S.child.child.total==0 (Int). This test MUST FAIL with the current top-down implementation because when S.child's let-bindings are evaluated inside elaborate_child_instance, S.child.child does not yet exist \u2014 S.child.total resolves to Undef instead of 1. The expression references use value_ref_typed('S.child', 'total', Type::Int) for the cross-level reference and value_ref_typed('S', 'n', Type::Int) for the current level's param, matching template-scoped naming conventions used by elaborate_child_instance's child_values context.",
-      "status": "done",
-      "commit": "53ea8eec"
-    },
-    {
-      "id": "step-24",
-      "type": "impl",
-      "description": "Fix `unfold_recursive_sub` to use leaves-first (recurse-then-elaborate) ordering, fixing the correctness_violation_of_design_contract finding. The current code (lines 3229-3257) calls elaborate_child_instance BEFORE recursing \u2014 swap to two-phase approach:\n\nPhase 1 (top-down, within unfold_recursive_sub): After guard passes and args are pre-evaluated, set only the child's PARAMS in the values/snapshot/journal/cache maps (extract the first-pass param logic from elaborate_child_instance into a helper, or inline it). This is needed so the next recursion level can evaluate its guard using the child's param values.\n\nPhase 2 (recurse): Call unfold_recursive_sub for the next depth level. This recurses all the way to the leaf before returning.\n\nPhase 3 (bottom-up, on recursion return): Evaluate the child's LET-BINDINGS. Before evaluating, build child_values that includes BOTH (a) template-scoped params (as before: ValueCellId('S','n') -> current level's n) AND (b) sub-component values projected from the global values map. The projection maps scoped sub-values back to template-scoped names: for each value in the global map with entity prefix matching '{scoped_entity}.{sub_name}', map it to the template-scoped equivalent (e.g., global values[ValueCellId('S.child.child','total')] -> child_values[ValueCellId('S.child','total')] when evaluating at scoped_entity='S.child' with template_name='S'). This ensures cross-level references like 'S.child.total' resolve to the already-computed deeper-level value.\n\nKeep elaborate_child_instance unchanged for non-recursive subs (it still does both passes atomically). All 22 existing tests plus the step-23 test must pass.",
-      "status": "done",
-      "commit": "40bb1b3c"
-    },
-    {
-      "id": "step-25",
-      "type": "test",
-      "description": "Add regression test `unfold_recursive_cross_level_three_deep` to validate leaves-first ordering at greater depth. S(n=3) with same conditional total pattern: `let total = if n > 0 then n + S.child.total else n`. Expected values: S.child.child.child.total=0 (leaf, n=0), S.child.child.total=1+0=1 (n=1), S.child.total=2+1=3 (n=2). This tests two levels of cascading cross-level dependency (S.child depends on S.child.child which depends on S.child.child.child). All three assertions must produce Int values (not Undef), confirming the full bottom-up evaluation chain works.",
-      "status": "done",
-      "commit": "21c1542c"
-    },
-    {
-      "id": "step-26",
-      "type": "impl",
-      "description": "Verify step-25 test passes with the leaves-first implementation from step-24. If any issues arise with deeper chains (e.g., projection not handling multi-level sub-component nesting), fix them. All tests must pass.",
-      "status": "done",
-      "commit": "21c1542c"
-    },
-    {
-      "id": "step-27",
-      "type": "test",
-      "description": "Write failing test `unfold_recursive_depth_limit_zero_rejected` (fixes reviewer finding: silent_data_corruption_at_boundary). Verify that `set_max_unfold_depth(0)` panics with a clear message. Use `#[should_panic(expected = ...)]`. Rationale: depth=0 means the depth check `depth >= max_depth` (0 >= 0) fires immediately before Phase 1 or Phase 3 runs, so no child entity is ever created \u2014 any parent-level let binding referencing `child.*` silently evaluates to Undef. Since the only safe depth values are >= 1 (and the default is 64), rejecting 0 at the API boundary prevents this silent corruption scenario entirely.",
-      "status": "done",
-      "commit": "9b58cc20"
-    },
-    {
-      "id": "step-28",
-      "type": "impl",
-      "description": "Add validation to `set_max_unfold_depth()` in Engine (lib.rs line ~281) to panic if `depth == 0` with message \"max_unfold_depth must be >= 1\". This prevents the depth=0 boundary case where no child entities are created but no error is raised. Pass the step-27 test. All existing tests must also pass (none set depth to 0).",
-      "status": "done",
-      "commit": "9b58cc20"
-    },
-    {
-      "id": "step-29",
-      "type": "test",
-      "description": "Write failing test `unfold_recursive_depth_limit_emits_error_diagnostic` (second part of silent_data_corruption_at_boundary fix). S(n=100) with sub child = S(n: n-1) where n > 0, engine max_unfold_depth=3. After eval(): verify that `result.diagnostics` contains at least one diagnostic with `severity == Severity::Error` and message containing 'truncated at depth limit'. The current implementation emits `Diagnostic::warning` for truncation \u2014 it must be `Diagnostic::error` so callers know the result may be unsound (child references beyond the depth limit resolve to Undef).",
-      "status": "done",
-      "commit": "faf1fffa"
-    },
-    {
-      "id": "step-30",
-      "type": "impl",
-      "description": "In `unfold_recursive_sub()` (lib.rs line ~3214), change `Diagnostic::warning(...)` to `Diagnostic::error(...)` in the depth-limit truncation branch (`depth >= max_depth` when guard is `Bool(true)`). This ensures callers are informed via error-level severity that the result is potentially unsound \u2014 child references beyond the truncated depth resolve to Undef. Pass step-29 test. Update the existing `unfold_recursive_depth_limit_stops_unfolding` test (step-9) if it asserts on diagnostics (it does not \u2014 it only checks values, so no change needed). All existing tests must pass.",
-      "status": "done",
-      "commit": "faf1fffa"
-    },
-    {
-      "id": "step-31",
-      "type": "test",
-      "description": "Write failing test `unfold_recursive_multiple_subs_all_children_created` (fixes reviewer finding: incomplete_cross_level_projection_for_multiple_recursive_subs). Template S with param n: Int = 2, TWO recursive subs: `sub left = S(n: n-1) where n > 0` and `sub right = S(n: n-1) where n > 0`. Both subs reference the same template S and use the same guard/args pattern. After eval() with S(n=2): verify that CROSS-sub children exist at each level \u2014 specifically S.left.right (n=0) and S.right.left (n=0) must exist in the values map. The current implementation only recurses on the SAME sub chain (left\u2192left\u2192left... or right\u2192right\u2192right...), so S.left.right and S.right.left are never created. Assert: S.left.n=1, S.right.n=1, S.left.left.n=0, S.left.right.n=0, S.right.left.n=0, S.right.right.n=0. Also assert S.left.left.left does NOT exist (guard false at n=0) and S.left.right.left does NOT exist.",
-      "status": "done",
-      "commit": "ec3ca973"
-    },
-    {
-      "id": "step-32",
-      "type": "impl",
-      "description": "Fix `unfold_recursive_sub` to unfold ALL recursive subs at each child level, not just the spawning sub. Changes:\n\n1. Add parameter `all_recursive_subs: &[&reify_compiler::SubComponentDecl]` to `unfold_recursive_sub()`. This is the list of ALL recursive subs of the template (those with guard_expr.is_some()).\n\n2. In Phase 2 (recurse), replace the single recursive call with a loop over `all_recursive_subs`: for each recursive sub, call `unfold_recursive_sub(sub=X, parent=next_entity, all_recursive_subs, depth+1, ...)`. This naturally creates the full tree: S.left.left, S.left.right, S.right.left, S.right.right, etc.\n\n3. Update the call site in eval() (lib.rs ~line 1147): collect all recursive subs for the template into a Vec<&SubComponentDecl>, then for each recursive sub call `unfold_recursive_sub` passing the full list. Non-recursive subs of a recursive template continue through the normal `elaborate_child_instance` path.\n\nPass step-31 test. All existing single-sub tests must also pass (they pass an `all_recursive_subs` slice of length 1, which degenerates to the current behavior).",
-      "status": "done",
-      "commit": "ec3ca973"
-    },
-    {
-      "id": "step-33",
-      "type": "test",
-      "description": "Write failing test `unfold_recursive_multiple_subs_cross_sub_let_reference` to verify cross-sub let projection works. Template S with param n: Int = 1, two recursive subs: `sub left = S(n: n-1) where n > 0` and `sub right = S(n: n-1) where n > 0`. Add `let sum: Int = left.val + right.val` where `val` is another let `let val: Int = n * 10`. With S(n=1): S.left (n=0) and S.right (n=0) each have val=0. The top-level S should see S.left.val=0 and S.right.val=0, so S.sum=0+0=0. But more importantly, at the S level where n=1, S.val=10, and S.sum should reference S.left.val and S.right.val (both 0) giving S.sum=0. The key assertion: at each child level, the let evaluation context must include values from BOTH sub chains (left and right), not just one. The current `elaborate_child_lets_only` with `recursive_sub_name: Option<&str>` only projects one chain \u2014 it must project all. Assert S.left.val=0 (Int, not Undef) and S.right.val=0 (Int, not Undef). Also verify the parent-level S does see both sub values.",
-      "status": "done",
-      "commit": "af5d7edf"
-    },
-    {
-      "id": "step-34",
-      "type": "impl",
-      "description": "Fix `elaborate_child_lets_only` to project values from ALL recursive sub chains, not just one. Changes:\n\n1. Change parameter `recursive_sub_name: Option<&str>` to `recursive_sub_names: &[&str]`.\n\n2. Replace the single-chain walk loop (lines 3439-3462) with a nested loop: for each sub_name in `recursive_sub_names`, walk that sub's entity chain (`scoped_entity.sub_name`, `scoped_entity.sub_name.sub_name`, ...) and project all found values into `child_values`. This handles the tree structure: when evaluating lets for S.left, we project from S.left.left.* AND S.left.right.* chains.\n\n3. Update all call sites:\n   - In `unfold_recursive_sub`: change `Some(&sub.name)` to a slice of all recursive sub names (derived from `all_recursive_subs.iter().map(|s| s.name.as_str()).collect()`).\n   - In `elaborate_child_instance` (non-recursive path): pass `&[]` (empty slice, no projection needed).\n\n4. Additionally, the projection walk for multiple subs must handle branching trees, not just linear chains. For sub names [left, right], walk: scoped_entity.left, scoped_entity.left.left, scoped_entity.left.right, scoped_entity.right, scoped_entity.right.left, scoped_entity.right.right, etc. Use a BFS/DFS queue starting from each immediate sub, appending all sub_names at each level.\n\nPass step-33 test. All existing tests must pass (single-sub tests pass a slice of length 1, which degenerates to the current single-chain walk).",
-      "status": "done",
-      "commit": "af5d7edf"
+      "commit": "fa1ee848"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Unfolding happens in eval() sub-component elaboration phase, not in from_templates()",
-      "rationale": "from_templates() builds static graph structure from template declarations \u2014 it doesn't have runtime values. Recursive unfolding requires evaluating guard expressions against actual param values, which are only available during eval(). The graph is extended dynamically as instances are created."
+      "decision": "Create a dedicated test file (recursive_detection_tests.rs) separate from termination_check_tests.rs",
+      "rationale": "Task 203 (detection) and Task 204 (termination verification) are distinct concerns. The termination tests already exist and test detection only indirectly through error scenarios. Detection tests need to verify the is_recursive flag, warning diagnostics, and graph topology handling independent of termination checking behavior."
     },
     {
-      "decision": "Scoped entity names use nested dot notation: S.child.child.child",
-      "rationale": "Consistent with existing sub-component naming (Parent.sub_name). Each level appends .sub_name, giving unique identifiers at each recursion depth. This also makes depth visible in the entity name."
+      "decision": "Tests verify existing implementation rather than driving new code",
+      "rationale": "The detect_recursive_structures() implementation (Tarjan SCC, cycle reconstruction, is_recursive tagging) was implemented as part of the compiler post-pass infrastructure. This task's value is in providing comprehensive, dedicated test coverage and regression protection for the detection behavior across diverse graph topologies."
     },
     {
-      "decision": "Depth limit is on Engine, not per-template",
-      "rationale": "A global engine-level limit is simpler, safer (prevents runaway in any template), and configurable without modifying the language or compiler. Per-template limits could be added later as an enhancement."
+      "decision": "Use where-clause guards on recursive subs in test sources to avoid termination check errors polluting detection tests",
+      "rationale": "Without guards, the termination check (Task 204) emits errors that could obscure detection test assertions. Adding `where n > 0` guards with `n: n - 1` args produces clean compilation where only detection warnings appear, isolating the behavior under test."
     },
     {
-      "decision": "Leaves-first resolution order via recurse-then-elaborate",
-      "rationale": "The task specifies 'resolution order: leaves first'. We achieve this by first recursing to find the bottom of the tree (where guard is false), then elaborating instances on the way back up. This ensures child values are available when parent let-bindings that reference them are evaluated."
-    },
-    {
-      "decision": "Non-Bool guard results treated as 'do not unfold' (same as Undef)",
-      "rationale": "Consistent with existing guard evaluation semantics where only Bool(true) activates members. If guard_expr evaluates to Undef (param undetermined) or any non-Bool, the sub stays as a placeholder \u2014 no partial unfolding."
-    },
-    {
-      "decision": "Recursive detection uses template.is_recursive && sub.guard_expr.is_some()",
-      "rationale": "A sub is only recursively unfolded if (a) the parent template is marked recursive by the compiler's SCC pass, and (b) the sub has a guard expression. This cleanly separates recursive from non-recursive code paths and relies on the compiler's validation (task 204) that all recursive subs have guards."
-    },
-    {
-      "decision": "Builder methods added to TopologyTemplateBuilder for is_recursive and guarded subs",
-      "rationale": "Test-support builders must be extended to construct recursive template fixtures. is_recursive(bool) setter and sub_component_with_guard() method are needed since the current builder always sets is_recursive=false and guard_expr=None."
-    },
-    {
-      "decision": "Two-phase recursive elaboration: params top-down, lets bottom-up (review fix)",
-      "rationale": "Guard evaluation at each level requires the current level's params to already exist in the values map. But let-bindings may reference sub-component values from deeper levels (e.g., 'let total = n + child.total'). Splitting into two phases \u2014 set params top-down (enabling guard evaluation at the next depth), recurse to the bottom, then evaluate let-bindings bottom-up \u2014 satisfies both requirements. This is the corrected implementation of the 'leaves-first' design decision."
-    },
-    {
-      "decision": "Enrich child_values with sub-component values projected from global values map (review fix)",
-      "rationale": "Template let expressions reference sub-component values using template-scoped names (e.g., ValueCellId('S.child', 'total')). After recursion, deeper-level values exist in the global values map under scoped names (e.g., ValueCellId('S.child.child', 'total')). The projection strips the current scoped_entity prefix and replaces it with the template name prefix, making these values visible in the child_values evaluation context. Without this projection, cross-level references silently resolve to Undef."
-    },
-    {
-      "decision": "Reject max_unfold_depth=0 at the API boundary (review round 2 fix)",
-      "rationale": "When max_unfold_depth=0, the depth check fires at depth 0 before any child entity is created, but only a warning is emitted. Parent-level let-bindings referencing child.* silently evaluate to Undef. Since depth=0 has no valid use case (the template wouldn't be marked recursive if no unfolding is intended), rejecting it in set_max_unfold_depth prevents silent data corruption. The default of 64 is always safe."
-    },
-    {
-      "decision": "Depth-limit truncation emits Diagnostic::error, not Diagnostic::warning (review round 2 fix)",
-      "rationale": "When the depth limit truncates a still-true guard, child references beyond that depth resolve to Undef. A warning-clean eval should produce a sound result \u2014 but truncation may make the result unsound. Emitting an error-level diagnostic ensures callers can distinguish between 'eval completed soundly' and 'eval completed but with truncation that may affect correctness'."
-    },
-    {
-      "decision": "Unfold ALL recursive subs at each child level, not just the spawning sub (review round 2 fix)",
-      "rationale": "A child instance of a recursive template is itself an instance of that template, so it has ALL the template's recursive subs \u2014 not just the one that created it. For a template with subs left and right, S.left must also get its right sub unfolded (creating S.left.right), and S.right must get its left sub (S.right.left). The unfold function receives all_recursive_subs and iterates over all of them at each depth level."
-    },
-    {
-      "decision": "Tree-walk projection in elaborate_child_lets_only for multiple subs (review round 2 fix)",
-      "rationale": "With multiple recursive subs, the entity structure is a tree (not a linear chain). Projection must walk all branches: for sub names [left, right], walk S.left, S.left.left, S.left.right, S.right, S.right.left, S.right.right, etc. Using a BFS queue that appends all sub_names at each level ensures complete projection. This replaces the single-chain walk that only followed one sub name."
+      "decision": "Test graph topologies comprehensively: self-loop, 2-node, 3-node cycles, linear chains, diamonds, multiple independent cycles, mixed",
+      "rationale": "Tarjan's SCC algorithm has distinct code paths for single-node SCCs with self-edges vs multi-node SCCs. Diamond patterns test that convergent (but non-cyclic) references are correctly excluded. Multiple independent cycles test that the algorithm processes all SCCs. Mixed topologies test that non-participating structures are not falsely tagged."
     }
   ],
   "reuse": [
     {
-      "what": "elaborate_child_instance() function",
-      "where": "crates/reify-eval/src/lib.rs:3134",
-      "how": "Reuse directly for each unfolded level \u2014 it already handles param evaluation, let-binding topological sort, caching, and journaling for a single child instance."
+      "what": "Test helper pattern (compile_all, compile_first_template)",
+      "where": "crates/reify-compiler/tests/termination_check_tests.rs",
+      "how": "Copy the same helper functions into the new test file \u2014 parse source, assert no parse errors, compile, return templates + diagnostics. This is the standard pattern across all compiler test files."
     },
     {
-      "what": "reify_expr::eval_expr() for guard evaluation",
-      "where": "crates/reify-expr/src/lib.rs:69",
-      "how": "Use to evaluate SubComponentDecl.guard_expr against the current values map to determine whether to continue unfolding."
+      "what": "detect_recursive_structures() implementation",
+      "where": "crates/reify-compiler/src/lib.rs lines 2404-2491",
+      "how": "Existing implementation handles all detection scenarios: adjacency building, Tarjan SCC, cycle identification, is_recursive tagging, and warning diagnostic emission. No new implementation code needed."
     },
     {
-      "what": "TopologyTemplateBuilder and CompiledModuleBuilder",
-      "where": "crates/reify-test-support/src/builders.rs",
-      "how": "Extend with is_recursive() and sub_component_with_guard() for test fixture construction. Existing param/let_binding/sub_component methods reused as-is."
+      "what": "Tarjan SCC + cycle reconstruction helpers",
+      "where": "crates/reify-compiler/src/lib.rs lines 2493-2639",
+      "how": "TarjanState, tarjan_scc_visit(), reconstruct_scc_cycle(), find_cycle_back_to() \u2014 all internal helpers used by detect_recursive_structures(). Tested indirectly through the public compile() entry point."
     },
     {
-      "what": "Existing sub-component elaboration loop pattern",
-      "where": "crates/reify-eval/src/lib.rs:1065-1150",
-      "how": "The new recursive path branches off from the same loop. Non-recursive subs continue through the existing code unchanged."
-    },
-    {
-      "what": "reify_expr::EvalContext for expression evaluation context",
-      "where": "crates/reify-expr/src/lib.rs",
-      "how": "Create EvalContext with current values and functions for guard expression evaluation, same pattern as used throughout eval()."
-    },
-    {
-      "what": "ValueCellId::new() for scoped entity naming",
-      "where": "crates/reify-types/src/identity.rs",
-      "how": "Construct scoped IDs for each recursion level: ValueCellId::new(&scoped_entity, &member)."
-    },
-    {
-      "what": "Guard evaluation test patterns from guard_eval.rs",
-      "where": "crates/reify-eval/tests/guard_eval.rs",
-      "how": "Follow the same test structure: build template with builder, create module, eval with Engine, assert on values map."
-    },
-    {
-      "what": "Collection sub elaboration test pattern from collection_sub_eval.rs",
-      "where": "crates/reify-eval/tests/collection_sub_eval.rs",
-      "how": "Similar pattern of verifying scoped entity existence and values after elaboration \u2014 adapt for recursive depth verification."
-    },
-    {
-      "what": "CompiledExprKind::Conditional for cross-level test expressions",
-      "where": "crates/reify-types/src/expr.rs:38-43",
-      "how": "Use Conditional { condition, then_branch, else_branch } to build 'if n > 0 then n + child.total else n' expressions for the leaves-first ordering test. The condition, then, and else branches are CompiledExpr, constructed using existing helpers (gt, binop, value_ref_typed, literal)."
-    },
-    {
-      "what": "elaborate_child_instance first-pass param logic",
-      "where": "crates/reify-eval/src/lib.rs:3279-3330",
-      "how": "Extract or duplicate the param-setting logic (lines 3279-3330) for use in the recursive two-phase flow. The let-binding logic (lines 3332-3391) becomes the post-recursion phase with enriched child_values."
-    },
-    {
-      "what": "Diagnostic::error() and Severity::Error for truncation diagnostics",
-      "where": "crates/reify-types/src/diagnostics.rs:72-77",
-      "how": "Replace Diagnostic::warning with Diagnostic::error in the depth-limit truncation branch. EvalResult.diagnostics already carries Vec<Diagnostic> so callers can filter by severity."
+      "what": "Reify source language syntax for structures and subs",
+      "where": "crates/reify-syntax/src/lib.rs (SubDecl, MemberDecl::Sub)",
+      "how": "Test sources use the Reify language syntax: `structure S { param n : Int = 5; sub child = S(n: n - 1) where n > 0 }` for instantiation form, `sub items : List<S>` for collection form."
     }
   ],
-  "_session_id": "205-8b74fe70",
-  "_created_at": "2026-03-25T19:41:47.197333+00:00"
+  "_session_id": "203-152abbec",
+  "_created_at": "2026-03-25T21:08:24.887994+00:00"
 }

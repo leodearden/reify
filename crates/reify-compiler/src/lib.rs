@@ -366,6 +366,8 @@ pub enum ModifyKind {
 pub enum TransformKind {
     Translate,
     Rotate,
+    Scale,
+    RotateAround,
 }
 
 /// Pattern operations.
@@ -381,6 +383,8 @@ pub enum PatternKind {
 pub enum SweepKind {
     Loft,
     Sweep,
+    Extrude,
+    Revolve,
 }
 
 /// Reference to a geometry result within a realization.
