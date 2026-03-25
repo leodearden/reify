@@ -7405,10 +7405,11 @@
         "description": "Two structural improvements to crates/reify-compiler/src/lib.rs:\n\n1. In detect_recursive_structures(), merge the two loops over st.sccs that both compute is_cycle identically (one for in_cycle tagging + diagnostics, one for building cyclic_sccs). Single pass that does both.\n\n2. Extract ~250 lines of Tarjan SCC code (detect_recursive_structures, TarjanState, tarjan_scc_visit, reconstruct_scc_cycle, find_cycle_back_to) into a new crates/reify-compiler/src/scc.rs module. Precedent: module_dag is already extracted.\n\nSource: review suggestions from esc-204-20 (task 204).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-03-25T21:38:02.356Z"
       },
       {
         "id": "410",
@@ -7640,7 +7641,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-25T21:38:02.274Z",
+      "lastModified": "2026-03-25T21:38:02.356Z",
       "taskCount": 426,
       "completedCount": 228,
       "tags": [
