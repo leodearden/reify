@@ -4308,6 +4308,8 @@ fn check_trait_conformance(
     let mut visited_traits: HashSet<String> = HashSet::new();
     let mut seen_requirement_names: HashMap<String, Type> = HashMap::new();
     let mut seen_default_names: HashMap<String, Type> = HashMap::new();
+    // Tracks (sub_name, structure_name) pairs for Sub requirement deduplication.
+    let mut seen_sub_names: HashSet<(String, String)> = HashSet::new();
 
     for trait_bound in structure.trait_bounds {
         collect_all_requirements(
@@ -4318,6 +4320,7 @@ fn check_trait_conformance(
             &mut visited_traits,
             &mut seen_requirement_names,
             &mut seen_default_names,
+            &mut seen_sub_names,
             &structure_members,
             structure.span,
             diagnostics,
@@ -4489,6 +4492,7 @@ fn collect_all_requirements(
     visited: &mut HashSet<String>,
     seen_names: &mut HashMap<String, Type>,
     seen_defaults: &mut HashMap<String, Type>,
+    seen_sub_names: &mut HashSet<(String, String)>,
     structure_members: &HashMap<String, Type>,
     span: SourceSpan,
     diagnostics: &mut Vec<Diagnostic>,
@@ -4518,6 +4522,7 @@ fn collect_all_requirements(
             visited,
             seen_names,
             seen_defaults,
+            seen_sub_names,
             structure_members,
             span,
             diagnostics,
@@ -4545,6 +4550,16 @@ fn collect_all_requirements(
                 continue; // Deduplicated
             }
             seen_names.insert(req.name.clone(), expected_type.clone());
+        }
+
+        // Deduplicate Sub requirements by (name, structure_name).
+        // Two traits requiring the same sub-component are satisfied by one matching sub.
+        if let RequirementKind::Sub(structure_name) = &req.kind {
+            let key = (req.name.clone(), structure_name.clone());
+            if seen_sub_names.contains(&key) {
+                continue; // Duplicate sub requirement — already collected
+            }
+            seen_sub_names.insert(key);
         }
 
         requirements.push(req.clone());
