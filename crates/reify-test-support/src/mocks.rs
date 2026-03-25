@@ -412,6 +412,7 @@ impl ConstraintSolver for SpyConstraintSolver {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::assert_value_approx;
     use crate::values::{meters, mm3, mm2, point3};
     use reify_types::{CompiledExpr, Type, Value, ValueMap};
 
@@ -712,6 +713,646 @@ mod tests {
         assert!(!kernel.has_op(|op| matches!(op, GeometryOp::Box { .. })));
     }
 
+    // step-9: tests exercising all transform ops
+    #[test]
+    fn mock_execute_translate_records_op() {
+        let mut kernel = MockGeometryKernel::new();
+        let base = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::length(0.1),
+                height: Value::length(0.1),
+                depth: Value::length(0.1),
+            })
+            .unwrap();
+
+        let handle = kernel
+            .execute(&GeometryOp::Translate {
+                target: base.id,
+                dx: 1.0,
+                dy: 2.0,
+                dz: 3.0,
+            })
+            .unwrap();
+
+        assert_eq!(handle.id, GeometryHandleId(2));
+        let ops = kernel.operations();
+        assert_eq!(ops.len(), 2);
+        match &ops[1].op {
+            GeometryOp::Translate {
+                target,
+                dx,
+                dy,
+                dz,
+            } => {
+                assert_eq!(*target, GeometryHandleId(1));
+                assert!((dx - 1.0).abs() < 1e-12);
+                assert!((dy - 2.0).abs() < 1e-12);
+                assert!((dz - 3.0).abs() < 1e-12);
+            }
+            other => panic!("expected Translate, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn mock_execute_rotate_records_op() {
+        let mut kernel = MockGeometryKernel::new();
+        let base = kernel
+            .execute(&GeometryOp::Sphere {
+                radius: Value::length(0.05),
+            })
+            .unwrap();
+
+        let handle = kernel
+            .execute(&GeometryOp::Rotate {
+                target: base.id,
+                axis: [0.0, 0.0, 1.0],
+                angle_rad: std::f64::consts::FRAC_PI_2,
+            })
+            .unwrap();
+
+        assert_eq!(handle.id, GeometryHandleId(2));
+        match &kernel.operations()[1].op {
+            GeometryOp::Rotate {
+                target,
+                axis,
+                angle_rad,
+            } => {
+                assert_eq!(*target, GeometryHandleId(1));
+                assert_eq!(*axis, [0.0, 0.0, 1.0]);
+                assert!((angle_rad - std::f64::consts::FRAC_PI_2).abs() < 1e-12);
+            }
+            other => panic!("expected Rotate, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn mock_execute_scale_records_op() {
+        let mut kernel = MockGeometryKernel::new();
+        let base = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::length(0.1),
+                height: Value::length(0.1),
+                depth: Value::length(0.1),
+            })
+            .unwrap();
+
+        let handle = kernel
+            .execute(&GeometryOp::Scale {
+                target: base.id,
+                factor: 2.5,
+            })
+            .unwrap();
+
+        assert_eq!(handle.id, GeometryHandleId(2));
+        match &kernel.operations()[1].op {
+            GeometryOp::Scale { target, factor } => {
+                assert_eq!(*target, GeometryHandleId(1));
+                assert!((factor - 2.5).abs() < 1e-12);
+            }
+            other => panic!("expected Scale, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn mock_execute_rotate_around_records_op() {
+        let mut kernel = MockGeometryKernel::new();
+        let base = kernel
+            .execute(&GeometryOp::Cylinder {
+                radius: Value::length(0.02),
+                height: Value::length(0.1),
+            })
+            .unwrap();
+
+        let handle = kernel
+            .execute(&GeometryOp::RotateAround {
+                target: base.id,
+                point: [1.0, 0.0, 0.0],
+                axis: [0.0, 1.0, 0.0],
+                angle_rad: std::f64::consts::PI,
+            })
+            .unwrap();
+
+        assert_eq!(handle.id, GeometryHandleId(2));
+        match &kernel.operations()[1].op {
+            GeometryOp::RotateAround {
+                target,
+                point,
+                axis,
+                angle_rad,
+            } => {
+                assert_eq!(*target, GeometryHandleId(1));
+                assert_eq!(*point, [1.0, 0.0, 0.0]);
+                assert_eq!(*axis, [0.0, 1.0, 0.0]);
+                assert!((angle_rad - std::f64::consts::PI).abs() < 1e-12);
+            }
+            other => panic!("expected RotateAround, got {:?}", other),
+        }
+    }
+
+    // step-9 continued: tests exercising boolean ops
+    #[test]
+    fn mock_execute_union_records_op() {
+        let mut kernel = MockGeometryKernel::new();
+        let left = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::length(0.1),
+                height: Value::length(0.1),
+                depth: Value::length(0.1),
+            })
+            .unwrap();
+        let right = kernel
+            .execute(&GeometryOp::Sphere {
+                radius: Value::length(0.05),
+            })
+            .unwrap();
+
+        let handle = kernel
+            .execute(&GeometryOp::Union {
+                left: left.id,
+                right: right.id,
+            })
+            .unwrap();
+
+        assert_eq!(handle.id, GeometryHandleId(3));
+        match &kernel.operations()[2].op {
+            GeometryOp::Union { left, right } => {
+                assert_eq!(*left, GeometryHandleId(1));
+                assert_eq!(*right, GeometryHandleId(2));
+            }
+            other => panic!("expected Union, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn mock_execute_difference_records_op() {
+        let mut kernel = MockGeometryKernel::new();
+        let left = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::length(0.1),
+                height: Value::length(0.1),
+                depth: Value::length(0.1),
+            })
+            .unwrap();
+        let right = kernel
+            .execute(&GeometryOp::Cylinder {
+                radius: Value::length(0.02),
+                height: Value::length(0.2),
+            })
+            .unwrap();
+
+        let handle = kernel
+            .execute(&GeometryOp::Difference {
+                left: left.id,
+                right: right.id,
+            })
+            .unwrap();
+
+        assert_eq!(handle.id, GeometryHandleId(3));
+        match &kernel.operations()[2].op {
+            GeometryOp::Difference { left, right } => {
+                assert_eq!(*left, GeometryHandleId(1));
+                assert_eq!(*right, GeometryHandleId(2));
+            }
+            other => panic!("expected Difference, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn mock_execute_intersection_records_op() {
+        let mut kernel = MockGeometryKernel::new();
+        let left = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::length(0.1),
+                height: Value::length(0.1),
+                depth: Value::length(0.1),
+            })
+            .unwrap();
+        let right = kernel
+            .execute(&GeometryOp::Sphere {
+                radius: Value::length(0.08),
+            })
+            .unwrap();
+
+        let handle = kernel
+            .execute(&GeometryOp::Intersection {
+                left: left.id,
+                right: right.id,
+            })
+            .unwrap();
+
+        assert_eq!(handle.id, GeometryHandleId(3));
+        match &kernel.operations()[2].op {
+            GeometryOp::Intersection { left, right } => {
+                assert_eq!(*left, GeometryHandleId(1));
+                assert_eq!(*right, GeometryHandleId(2));
+            }
+            other => panic!("expected Intersection, got {:?}", other),
+        }
+    }
+
+    // step-11: tests exercising shape and manufacturing ops
+    #[test]
+    fn mock_execute_extrude_records_op() {
+        let mut kernel = MockGeometryKernel::new();
+        let profile = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::length(0.1),
+                height: Value::length(0.1),
+                depth: Value::length(0.001),
+            })
+            .unwrap();
+
+        let handle = kernel
+            .execute(&GeometryOp::Extrude {
+                profile: profile.id,
+                distance: Value::length(0.05),
+            })
+            .unwrap();
+
+        assert_eq!(handle.id, GeometryHandleId(2));
+        match &kernel.operations()[1].op {
+            GeometryOp::Extrude { profile, distance } => {
+                assert_eq!(*profile, GeometryHandleId(1));
+                assert_eq!(*distance, Value::length(0.05));
+            }
+            other => panic!("expected Extrude, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn mock_execute_revolve_records_op() {
+        let mut kernel = MockGeometryKernel::new();
+        let profile = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::length(0.1),
+                height: Value::length(0.05),
+                depth: Value::length(0.001),
+            })
+            .unwrap();
+
+        let handle = kernel
+            .execute(&GeometryOp::Revolve {
+                profile: profile.id,
+                axis_origin: [0.0, 0.0, 0.0],
+                axis_dir: [0.0, 0.0, 1.0],
+                angle_rad: std::f64::consts::TAU,
+            })
+            .unwrap();
+
+        assert_eq!(handle.id, GeometryHandleId(2));
+        match &kernel.operations()[1].op {
+            GeometryOp::Revolve {
+                profile,
+                axis_origin,
+                axis_dir,
+                angle_rad,
+            } => {
+                assert_eq!(*profile, GeometryHandleId(1));
+                assert_eq!(*axis_origin, [0.0, 0.0, 0.0]);
+                assert_eq!(*axis_dir, [0.0, 0.0, 1.0]);
+                assert!((angle_rad - std::f64::consts::TAU).abs() < 1e-12);
+            }
+            other => panic!("expected Revolve, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn mock_execute_sweep_records_op() {
+        let mut kernel = MockGeometryKernel::new();
+        let profile = kernel
+            .execute(&GeometryOp::Sphere {
+                radius: Value::length(0.01),
+            })
+            .unwrap();
+        let path = kernel
+            .execute(&GeometryOp::Cylinder {
+                radius: Value::length(0.005),
+                height: Value::length(0.1),
+            })
+            .unwrap();
+
+        let handle = kernel
+            .execute(&GeometryOp::Sweep {
+                profile: profile.id,
+                path: path.id,
+            })
+            .unwrap();
+
+        assert_eq!(handle.id, GeometryHandleId(3));
+        match &kernel.operations()[2].op {
+            GeometryOp::Sweep { profile, path } => {
+                assert_eq!(*profile, GeometryHandleId(1));
+                assert_eq!(*path, GeometryHandleId(2));
+            }
+            other => panic!("expected Sweep, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn mock_execute_loft_records_op() {
+        let mut kernel = MockGeometryKernel::new();
+        let p1 = kernel
+            .execute(&GeometryOp::Sphere {
+                radius: Value::length(0.05),
+            })
+            .unwrap();
+        let p2 = kernel
+            .execute(&GeometryOp::Sphere {
+                radius: Value::length(0.03),
+            })
+            .unwrap();
+        let p3 = kernel
+            .execute(&GeometryOp::Sphere {
+                radius: Value::length(0.01),
+            })
+            .unwrap();
+
+        let handle = kernel
+            .execute(&GeometryOp::Loft {
+                profiles: vec![p1.id, p2.id, p3.id],
+            })
+            .unwrap();
+
+        assert_eq!(handle.id, GeometryHandleId(4));
+        match &kernel.operations()[3].op {
+            GeometryOp::Loft { profiles } => {
+                assert_eq!(
+                    *profiles,
+                    vec![GeometryHandleId(1), GeometryHandleId(2), GeometryHandleId(3)]
+                );
+            }
+            other => panic!("expected Loft, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn mock_execute_draft_records_op() {
+        let mut kernel = MockGeometryKernel::new();
+        let target = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::length(0.1),
+                height: Value::length(0.1),
+                depth: Value::length(0.05),
+            })
+            .unwrap();
+        let plane = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::length(1.0),
+                height: Value::length(1.0),
+                depth: Value::length(0.001),
+            })
+            .unwrap();
+
+        let handle = kernel
+            .execute(&GeometryOp::Draft {
+                target: target.id,
+                angle: Value::Real(0.05),
+                plane: plane.id,
+            })
+            .unwrap();
+
+        assert_eq!(handle.id, GeometryHandleId(3));
+        match &kernel.operations()[2].op {
+            GeometryOp::Draft {
+                target,
+                angle,
+                plane,
+            } => {
+                assert_eq!(*target, GeometryHandleId(1));
+                assert_eq!(*angle, Value::Real(0.05));
+                assert_eq!(*plane, GeometryHandleId(2));
+            }
+            other => panic!("expected Draft, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn mock_execute_thicken_records_op() {
+        let mut kernel = MockGeometryKernel::new();
+        let target = kernel
+            .execute(&GeometryOp::Sphere {
+                radius: Value::length(0.05),
+            })
+            .unwrap();
+
+        let handle = kernel
+            .execute(&GeometryOp::Thicken {
+                target: target.id,
+                offset: Value::length(0.002),
+            })
+            .unwrap();
+
+        assert_eq!(handle.id, GeometryHandleId(2));
+        match &kernel.operations()[1].op {
+            GeometryOp::Thicken { target, offset } => {
+                assert_eq!(*target, GeometryHandleId(1));
+                assert_eq!(*offset, Value::length(0.002));
+            }
+            other => panic!("expected Thicken, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn mock_execute_shell_records_op() {
+        let mut kernel = MockGeometryKernel::new();
+        let target = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::length(0.1),
+                height: Value::length(0.1),
+                depth: Value::length(0.1),
+            })
+            .unwrap();
+
+        let handle = kernel
+            .execute(&GeometryOp::Shell {
+                target: target.id,
+                thickness: Value::length(0.003),
+                faces_to_remove: vec![0, 3],
+            })
+            .unwrap();
+
+        assert_eq!(handle.id, GeometryHandleId(2));
+        match &kernel.operations()[1].op {
+            GeometryOp::Shell {
+                target,
+                thickness,
+                faces_to_remove,
+            } => {
+                assert_eq!(*target, GeometryHandleId(1));
+                assert_eq!(*thickness, Value::length(0.003));
+                assert_eq!(*faces_to_remove, vec![0, 3]);
+            }
+            other => panic!("expected Shell, got {:?}", other),
+        }
+    }
+
+    // step-13: tests exercising pattern and edge ops
+    #[test]
+    fn mock_execute_linear_pattern_records_op() {
+        let mut kernel = MockGeometryKernel::new();
+        let target = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::length(0.01),
+                height: Value::length(0.01),
+                depth: Value::length(0.01),
+            })
+            .unwrap();
+
+        let handle = kernel
+            .execute(&GeometryOp::LinearPattern {
+                target: target.id,
+                direction: [1.0, 0.0, 0.0],
+                count: 5,
+                spacing: Value::length(0.02),
+            })
+            .unwrap();
+
+        assert_eq!(handle.id, GeometryHandleId(2));
+        match &kernel.operations()[1].op {
+            GeometryOp::LinearPattern {
+                target,
+                direction,
+                count,
+                spacing,
+            } => {
+                assert_eq!(*target, GeometryHandleId(1));
+                assert_eq!(*direction, [1.0, 0.0, 0.0]);
+                assert_eq!(*count, 5);
+                assert_eq!(*spacing, Value::length(0.02));
+            }
+            other => panic!("expected LinearPattern, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn mock_execute_circular_pattern_records_op() {
+        let mut kernel = MockGeometryKernel::new();
+        let target = kernel
+            .execute(&GeometryOp::Cylinder {
+                radius: Value::length(0.005),
+                height: Value::length(0.02),
+            })
+            .unwrap();
+
+        let handle = kernel
+            .execute(&GeometryOp::CircularPattern {
+                target: target.id,
+                axis_origin: [0.0, 0.0, 0.0],
+                axis_dir: [0.0, 0.0, 1.0],
+                count: 6,
+                angle: Value::Real(std::f64::consts::TAU),
+            })
+            .unwrap();
+
+        assert_eq!(handle.id, GeometryHandleId(2));
+        match &kernel.operations()[1].op {
+            GeometryOp::CircularPattern {
+                target,
+                axis_origin,
+                axis_dir,
+                count,
+                angle,
+            } => {
+                assert_eq!(*target, GeometryHandleId(1));
+                assert_eq!(*axis_origin, [0.0, 0.0, 0.0]);
+                assert_eq!(*axis_dir, [0.0, 0.0, 1.0]);
+                assert_eq!(*count, 6);
+                assert_eq!(*angle, Value::Real(std::f64::consts::TAU));
+            }
+            other => panic!("expected CircularPattern, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn mock_execute_mirror_records_op() {
+        let mut kernel = MockGeometryKernel::new();
+        let target = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::length(0.05),
+                height: Value::length(0.05),
+                depth: Value::length(0.05),
+            })
+            .unwrap();
+
+        let handle = kernel
+            .execute(&GeometryOp::Mirror {
+                target: target.id,
+                plane_origin: [0.0, 0.0, 0.0],
+                plane_normal: [1.0, 0.0, 0.0],
+            })
+            .unwrap();
+
+        assert_eq!(handle.id, GeometryHandleId(2));
+        match &kernel.operations()[1].op {
+            GeometryOp::Mirror {
+                target,
+                plane_origin,
+                plane_normal,
+            } => {
+                assert_eq!(*target, GeometryHandleId(1));
+                assert_eq!(*plane_origin, [0.0, 0.0, 0.0]);
+                assert_eq!(*plane_normal, [1.0, 0.0, 0.0]);
+            }
+            other => panic!("expected Mirror, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn mock_execute_fillet_records_op() {
+        let mut kernel = MockGeometryKernel::new();
+        let target = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::length(0.1),
+                height: Value::length(0.1),
+                depth: Value::length(0.1),
+            })
+            .unwrap();
+
+        let handle = kernel
+            .execute(&GeometryOp::Fillet {
+                target: target.id,
+                radius: Value::length(0.005),
+            })
+            .unwrap();
+
+        assert_eq!(handle.id, GeometryHandleId(2));
+        match &kernel.operations()[1].op {
+            GeometryOp::Fillet { target, radius } => {
+                assert_eq!(*target, GeometryHandleId(1));
+                assert_eq!(*radius, Value::length(0.005));
+            }
+            other => panic!("expected Fillet, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn mock_execute_chamfer_records_op() {
+        let mut kernel = MockGeometryKernel::new();
+        let target = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::length(0.1),
+                height: Value::length(0.1),
+                depth: Value::length(0.1),
+            })
+            .unwrap();
+
+        let handle = kernel
+            .execute(&GeometryOp::Chamfer {
+                target: target.id,
+                distance: Value::length(0.003),
+            })
+            .unwrap();
+
+        assert_eq!(handle.id, GeometryHandleId(2));
+        match &kernel.operations()[1].op {
+            GeometryOp::Chamfer { target, distance } => {
+                assert_eq!(*target, GeometryHandleId(1));
+                assert_eq!(*distance, Value::length(0.003));
+            }
+            other => panic!("expected Chamfer, got {:?}", other),
+        }
+    }
+
     #[test]
     fn mock_per_query_type_overrides_generic() {
         // Typed config should take precedence over generic
@@ -722,5 +1363,111 @@ mod tests {
 
         let vol = kernel.query(&GeometryQuery::Volume(id)).unwrap();
         assert_eq!(vol, mm3(1000.0)); // typed wins
+    }
+
+    // step-15: integration test — multi-op workflow with queries + inspection
+    #[test]
+    fn mock_multi_op_workflow_with_queries_and_inspection() {
+        let mut kernel = MockGeometryKernel::new();
+
+        // Create a box
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::length(0.1),
+                height: Value::length(0.2),
+                depth: Value::length(0.05),
+            })
+            .unwrap();
+        assert_eq!(box_h.id, GeometryHandleId(1));
+
+        // Scale the box
+        let scaled_h = kernel
+            .execute(&GeometryOp::Scale {
+                target: box_h.id,
+                factor: 2.0,
+            })
+            .unwrap();
+        assert_eq!(scaled_h.id, GeometryHandleId(2));
+
+        // Translate the scaled box
+        let translated_h = kernel
+            .execute(&GeometryOp::Translate {
+                target: scaled_h.id,
+                dx: 0.5,
+                dy: 0.0,
+                dz: 0.0,
+            })
+            .unwrap();
+        assert_eq!(translated_h.id, GeometryHandleId(3));
+
+        // Create a linear pattern
+        let pattern_h = kernel
+            .execute(&GeometryOp::LinearPattern {
+                target: translated_h.id,
+                direction: [1.0, 0.0, 0.0],
+                count: 3,
+                spacing: Value::length(0.3),
+            })
+            .unwrap();
+        assert_eq!(pattern_h.id, GeometryHandleId(4));
+
+        // Verify operation count
+        assert_eq!(kernel.op_count(), 4);
+
+        // Verify inspection helpers
+        assert!(kernel.has_op(|op| matches!(op, GeometryOp::Scale { .. })));
+        assert!(kernel.has_op(|op| matches!(op, GeometryOp::LinearPattern { .. })));
+        assert!(!kernel.has_op(|op| matches!(op, GeometryOp::Fillet { .. })));
+
+        let last = kernel.last_op().unwrap();
+        assert!(matches!(last.op, GeometryOp::LinearPattern { .. }));
+        assert_eq!(last.result_handle, GeometryHandleId(4));
+
+        let boxes = kernel.find_ops(|op| matches!(op, GeometryOp::Box { .. }));
+        assert_eq!(boxes.len(), 1);
+
+        // Configure per-query-type results and verify queries
+        // Note: kernel needs to be rebuilt since it was consumed by execute (mut)
+        // But with_*_result consumes self, so we build a new kernel for query tests.
+        let query_kernel = MockGeometryKernel::new()
+            .with_volume_result(pattern_h.id, mm3(8000.0))
+            .with_bbox_result(
+                pattern_h.id,
+                Value::List(vec![point3(0.0, 0.0, 0.0), point3(1.0, 0.4, 0.1)]),
+            );
+
+        let volume = query_kernel
+            .query(&GeometryQuery::Volume(pattern_h.id))
+            .unwrap();
+        assert_eq!(volume, mm3(8000.0));
+
+        let bbox = query_kernel
+            .query(&GeometryQuery::BoundingBox(pattern_h.id))
+            .unwrap();
+        match bbox {
+            Value::List(items) => {
+                assert_eq!(items.len(), 2);
+                assert_value_approx!(items[0], point3(0.0, 0.0, 0.0));
+                assert_value_approx!(items[1], point3(1.0, 0.4, 0.1));
+            }
+            other => panic!("expected List, got {:?}", other),
+        }
+
+        // Verify that querying an unconfigured query type falls back correctly
+        let fallback_kernel = MockGeometryKernel::new()
+            .with_query_result(GeometryHandleId(1), meters(42.0))
+            .with_volume_result(GeometryHandleId(1), mm3(100.0));
+
+        // Volume uses typed result
+        let vol = fallback_kernel
+            .query(&GeometryQuery::Volume(GeometryHandleId(1)))
+            .unwrap();
+        assert_eq!(vol, mm3(100.0));
+
+        // SurfaceArea falls back to generic
+        let area = fallback_kernel
+            .query(&GeometryQuery::SurfaceArea(GeometryHandleId(1)))
+            .unwrap();
+        assert_eq!(area, meters(42.0));
     }
 }
