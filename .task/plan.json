@@ -1,146 +1,212 @@
 {
-  "task_id": "189",
-  "title": "Trait member merging: diamond hierarchy",
+  "task_id": "211",
+  "title": "Meta block access: compiler",
   "files": [
-    "crates/reify-compiler/tests/trait_conformance_tests.rs",
-    "crates/reify-compiler/src/lib.rs"
+    "tree-sitter-reify/grammar.js",
+    "tree-sitter-reify/src/parser.c",
+    "tree-sitter-reify/src/grammar.json",
+    "tree-sitter-reify/src/node-types.json",
+    "crates/reify-syntax/src/lib.rs",
+    "crates/reify-syntax/src/ts_parser.rs",
+    "crates/reify-types/src/expr.rs",
+    "crates/reify-compiler/src/lib.rs",
+    "crates/reify-compiler/tests/meta_compile_tests.rs"
   ],
   "modules": [
+    "tree-sitter-reify",
+    "crates/reify-syntax",
+    "crates/reify-types",
     "crates/reify-compiler"
   ],
-  "analysis": "Task 189 requires comprehensive test coverage for diamond inheritance deduplication in trait member merging. The core topology is: structure S implements trait A, A refines B+C, B and C both refine D — D's members must appear exactly once.\n\nThe implementation already exists in `collect_all_requirements` (lib.rs:4268-4372) via a `visited: HashSet<String>` that prevents re-walking already-visited traits (line 4282-4284). The existing test `diamond_inheritance_deduplication` covers the simpler topology (X : A+B, A:C, B:C) but NOT the deeper single-bound pattern described in this task (S:A, A:B+C, B:D, C:D).\n\nKey behaviors to verify:\n1. Requirements from D collected exactly once (visited set prevents re-traversal)\n2. Defaults from D injected exactly once (seen_defaults dedup by name+type)\n3. Missing member in diamond produces exactly one error (not duplicated)\n4. Conflicts detected correctly even in diamond\n5. Members at every level of the hierarchy merge correctly\n6. Let binding defaults from root deduplicated\n7. Sub-component requirements from root deduplicated\n\nThe implementation is believed to be complete from task 188's work. The primary deliverable is proving correctness through targeted test cases for the specific diamond pattern.",
-  "prerequisites": [],
+  "analysis": "The task requires implementing `expr.meta.key` access in the compiler, producing a MetaAccess compiled expression. Currently, NO meta block support exists anywhere: not in the tree-sitter grammar, the parser, the AST types, the compiled expression types, or the compiler itself. The language spec (Section 4.8) defines meta blocks as `meta { key = \"value\", ... }` with string-keyed, string-valued entries accessible via dot notation.\n\nThe implementation requires changes across 4 modules:\n1. **tree-sitter-reify**: Add `meta_block` grammar rule as a new `_member` choice\n2. **reify-syntax**: Add `MetaBlockDecl` struct and `MemberDecl::MetaBlock` variant, plus `lower_meta_block()` parser method\n3. **reify-types**: Add `CompiledExprKind::MetaAccess { entity, key }` variant with walk/collect/remap support\n4. **reify-compiler**: Add `meta: HashMap<String, String>` to TopologyTemplate, `meta_entries` to CompilationScope, handle `meta.key` pattern in MemberAccess compilation, validate keys at compile time\n\nThe access pattern `meta.key` within an entity body appears as `MemberAccess { object: Ident(\"meta\"), member: \"key\" }` in the AST. The compiler detects `Ident(\"meta\")` as the object of a MemberAccess, looks up the key in the entity's collected meta entries, and produces a `MetaAccess { entity, key }` expression with result type `Type::String`. Nonexistent keys produce compile-time errors.\n\nExisting compiler tests all use the pattern: parse source -> compile -> inspect template/diagnostics. This requires the full grammar->parser->AST->compiler pipeline to work. The grammar/parser/AST changes are therefore mandatory prerequisites.",
+  "prerequisites": [
+    {
+      "id": "pre-1",
+      "description": "Add `meta_block` and `meta_entry` rules to tree-sitter grammar. meta_block = 'meta' '{' commaSep(meta_entry) '}'. meta_entry = field('key', $.identifier) '=' field('value', $.string_literal). Add meta_block to the `_member` choice. Add 'meta' to the `word` conflicts list if needed.",
+      "status": "done",
+      "commit": "236ccef94d4c8b31fbaa60faaa110d0c72473b8f",
+      "tests": []
+    },
+    {
+      "id": "pre-2",
+      "description": "Regenerate tree-sitter parser: run `tree-sitter generate` in tree-sitter-reify/ to produce updated parser.c, grammar.json, node-types.json.",
+      "status": "done",
+      "commit": "236ccef94d4c8b31fbaa60faaa110d0c72473b8f",
+      "tests": []
+    },
+    {
+      "id": "pre-3",
+      "description": "Add MetaBlockDecl struct to reify-syntax/src/lib.rs: `pub struct MetaBlockDecl { pub entries: Vec<(String, String)>, pub span: SourceSpan }`. Add `MetaBlock(MetaBlockDecl)` variant to the `MemberDecl` enum.",
+      "status": "done",
+      "commit": "766cfe56c1afd378548742050877045d66caf8b8",
+      "tests": []
+    },
+    {
+      "id": "pre-4",
+      "description": "Add `lower_meta_block()` to reify-syntax/src/ts_parser.rs. Handle 'meta_block' in `lower_member()` match. Iterate meta_entry children, extract identifier key and string_literal value (strip quotes). Return `MemberDecl::MetaBlock(MetaBlockDecl { entries, span })`.",
+      "status": "done",
+      "commit": "42d1c60f77bf4f9b3d75ddbd0f554841498ff58b",
+      "tests": []
+    },
+    {
+      "id": "pre-5",
+      "description": "Add `MetaAccess { entity: String, key: String }` variant to `CompiledExprKind` enum in reify-types/src/expr.rs. Add the variant to `walk()` (leaf node, no children), `collect_value_refs_inner()` (no refs), and `remap_entity()` (update entity if it matches from_entity). Add `meta_access(entity, key)` constructor on `CompiledExpr` with tag byte 16, result_type Type::String, content_hash from entity+key.",
+      "status": "done",
+      "commit": "c255c34569f8ce4bc4deb5f9b2a0ba1efd2ea2ab",
+      "tests": []
+    },
+    {
+      "id": "pre-6",
+      "description": "Add `pub meta: HashMap<String, String>` field to `TopologyTemplate` struct in reify-compiler/src/lib.rs. Update the TopologyTemplate construction at the end of compile_entity to include `meta`. Add `meta_entries: HashMap<String, String>` field to `CompilationScope` struct and initialize it as empty in `CompilationScope::new()`.",
+      "status": "done",
+      "commit": "c255c34569f8ce4bc4deb5f9b2a0ba1efd2ea2ab",
+      "tests": []
+    }
+  ],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing test `diamond_single_bound_satisfied`: S:A, A:B+C, B:D, C:D, D has `param x : Length`, S provides x. Verify no errors — D's requirement collected once.",
+      "description": "Write failing test `meta_block_stored_in_template`: compile a structure with `meta { description = \"A bracket\", part_number = \"BR-001\" }` and assert `template.meta` contains both key-value pairs.",
       "status": "done",
-      "commit": "77da7c4f12bd7b155b731f48892c2c5cea38c4fc"
+      "commit": "86b9cba2"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Verify step-1 passes with existing visited-set implementation. If it fails, fix `collect_all_requirements` to handle single-bound deep diamond recursion.",
+      "description": "In compile_entity's first pass (member registration loop), handle `MemberDecl::MetaBlock`: collect entries into a local `meta_entries: HashMap<String, String>` and populate `scope.meta_entries`. In the second pass, skip MetaBlock (already collected). Pass `meta: meta_entries` to the TopologyTemplate construction.",
       "status": "done",
-      "commit": "77da7c4f12bd7b155b731f48892c2c5cea38c4fc"
+      "commit": "0723dd45"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing test `diamond_missing_member_single_error`: Same hierarchy but S omits x. Assert exactly 1 'missing required member' error (not 2 from B-path and C-path).",
+      "description": "Write failing test `meta_access_compiles_to_string`: compile a structure with a meta block and `let desc : String = meta.description`. Assert the compiled let's default_expr is `CompiledExprKind::MetaAccess { entity: \"Bracket\", key: \"description\" }` and result_type is `Type::String`.",
       "status": "done",
-      "commit": "77da7c4f12bd7b155b731f48892c2c5cea38c4fc"
+      "commit": "684fa715"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Verify step-3 passes. If duplicate errors appear, the visited set is not shared correctly across refinement recursion within a single trait bound.",
+      "description": "In compile_expr_guarded's MemberAccess handler, add a check before the final else-error branch: if object is `Ident(\"meta\")`, look up `member` in `scope.meta_entries`. If found, return `CompiledExpr::meta_access(scope.entity_name.clone(), member.clone())`. If scope.meta_entries is empty, emit error 'entity has no meta block'. If key not found, emit error 'meta block has no key: <key>'.",
       "status": "done",
-      "commit": "77da7c4f12bd7b155b731f48892c2c5cea38c4fc"
+      "commit": "284b605b"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing test `diamond_default_injected_once`: D provides `param x : Length = 10mm` (default), S:A with no override. Assert exactly 1 'x' value cell injected.",
+      "description": "Write failing test `meta_access_nonexistent_key_error`: compile a structure with `meta { a = \"1\" }` and `let x : String = meta.nonexistent`. Assert an error diagnostic containing 'no key' is emitted.",
       "status": "done",
-      "commit": "77da7c4f12bd7b155b731f48892c2c5cea38c4fc"
+      "commit": "09c49888"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Verify step-5 passes. If duplicate value cells appear, fix default deduplication in `seen_defaults` within diamond recursion.",
+      "description": "Verify step-4 implementation handles the nonexistent key case correctly (error diagnostic + Undef fallback). Adjust error message if test reveals mismatch.",
       "status": "done",
-      "commit": "77da7c4f12bd7b155b731f48892c2c5cea38c4fc"
+      "commit": "09c49888"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing test `diamond_constraint_from_root`: D has `param x : Length` and `constraint x > 0mm`, S:A provides x. Verify constraint is injected and no errors.",
+      "description": "Write failing test `meta_access_no_meta_block_error`: compile a structure WITHOUT a meta block that uses `let x : String = meta.foo`. Assert an error diagnostic containing 'no meta block' is emitted.",
       "status": "done",
-      "commit": "77da7c4f12bd7b155b731f48892c2c5cea38c4fc"
+      "commit": "466f7269"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Verify step-7 passes. Unlabeled constraints from D should be injected once via the visited set preventing re-traversal of D.",
+      "description": "Verify step-4 implementation handles the no-meta-block case (empty meta_entries). Adjust if needed.",
       "status": "done",
-      "commit": "77da7c4f12bd7b155b731f48892c2c5cea38c4fc"
+      "commit": "466f7269"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write failing test `diamond_members_at_every_level`: D has param d, B has param b, C has param c, A has param a. S:A provides all four. Verify no errors and all 4 members satisfied.",
+      "description": "Write failing test `duplicate_meta_block_error`: compile a structure with two meta blocks. Assert an error diagnostic about duplicate meta blocks is emitted.",
       "status": "done",
-      "commit": "77da7c4f12bd7b155b731f48892c2c5cea38c4fc"
+      "commit": "18e8d4f1"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Verify step-9 passes. Each level's unique members should be collected once via depth-first traversal.",
+      "description": "In compile_entity's first pass, track whether a meta block has been seen (bool flag + span). If a second MetaBlock is encountered, emit error 'duplicate meta block' with spans pointing to both. Still collect entries from the first block only.",
       "status": "done",
-      "commit": "77da7c4f12bd7b155b731f48892c2c5cea38c4fc"
+      "commit": "3da02b41"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write failing test `diamond_let_default_deduped`: D provides `let y = 42`, S:A. Verify exactly 1 'y' value cell injected (let default dedup in diamond).",
+      "description": "Write test `meta_access_in_constraint_context`: compile a structure with meta block and a constraint `require meta.tag == \"valid\"`. Assert compilation succeeds with no errors and the constraint expr contains a MetaAccess node with type String.",
       "status": "done",
-      "commit": "77da7c4f12bd7b155b731f48892c2c5cea38c4fc"
+      "commit": "c6228bf7"
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "Verify step-11 passes. Let defaults use DefaultKind::Let and are deduped by name in seen_defaults.",
+      "description": "No new implementation expected -- step-4's MemberAccess handler already works for any expression context. This step verifies correctness and adjusts if the test reveals issues.",
       "status": "done",
-      "commit": "77da7c4f12bd7b155b731f48892c2c5cea38c4fc"
-    },
-    {
-      "id": "step-13",
-      "type": "test",
-      "description": "Write failing test `diamond_deep_five_level`: E:D, B:E, C:D, A:B+C, S:A — 5 levels. D has param x, E has param y. S provides both. Verify no errors and no duplication.",
-      "status": "done",
-      "commit": "77da7c4f12bd7b155b731f48892c2c5cea38c4fc"
-    },
-    {
-      "id": "step-14",
-      "type": "impl",
-      "description": "Verify step-13 passes. Deep hierarchies should work identically since visited set is shared across the entire recursive traversal.",
-      "status": "done",
-      "commit": "77da7c4f12bd7b155b731f48892c2c5cea38c4fc"
+      "commit": "c6228bf7"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Test the single-bound deep diamond (S:A, A:B+C, B:D, C:D) as distinct from the existing multi-bound diamond (X:A+B, A:C, B:C)",
-      "rationale": "The existing diamond_inheritance_deduplication test uses two direct trait bounds on the structure. Task 189 specifically describes a single bound with deeper refinement hierarchy. The visited set behavior is exercised differently: via recursion within a single collect_all_requirements call vs. shared across multiple top-level calls."
+      "decision": "MetaAccess as a dedicated CompiledExprKind variant (not a Literal)",
+      "rationale": "The task explicitly says 'resolve to a MetaAccess compiled expression' and 'store meta block contents in TopologyTemplate for runtime access'. Using a dedicated variant allows the evaluator (future task) to resolve meta values from the TopologyTemplate at runtime, which is needed for cross-entity meta access (e.g., sub.meta.key)."
     },
     {
-      "decision": "Verify single-error semantics for missing members in diamond",
-      "rationale": "A key correctness property: if D requires param x and it's missing, the user should see exactly 1 error, not 2 (one per path to D). The visited set prevents this, but we must explicitly test it."
+      "decision": "Meta entries stored in CompilationScope rather than passed as a separate parameter",
+      "rationale": "Consistent with how port_names, collection_sub_names, and collection_sub_member_types are stored in CompilationScope. The scope is already threaded through compile_expr_guarded, so no signature changes needed."
     },
     {
-      "decision": "Implementation likely already complete — focus on test coverage",
-      "rationale": "The collect_all_requirements function (lib.rs:4268-4372) already has the visited HashSet with diamond early-return (line 4282-4284), seen_names for requirement dedup, and seen_defaults for default dedup. Task 188 (dependency, done) implemented this. Task 189's value is proving correctness for the specific deep diamond topology."
+      "decision": "Grammar/parser/AST changes included as prerequisites despite module scope being crates/reify-compiler",
+      "rationale": "All compiler tests parse source code through reify_syntax::parse(). Without grammar+parser support for meta blocks, no compiler tests can be written. These are minimal, mechanical changes that enable the core compiler work."
+    },
+    {
+      "decision": "Single-level meta access pattern: Ident(\"meta\") as MemberAccess object",
+      "rationale": "Within an entity body, `meta.key` is the natural access pattern. The AST represents this as MemberAccess { object: Ident(\"meta\"), member: key }. Cross-entity access (sub.meta.key) is a nested MemberAccess pattern that can be added later when sub-component member access is fully supported."
+    },
+    {
+      "decision": "MetaAccess stores entity name as String, not ValueCellId",
+      "rationale": "Meta access is not a value cell reference -- it accesses the TopologyTemplate's meta HashMap at runtime. The entity name identifies which template to look up. This avoids conflating meta access with the value cell dependency graph."
+    },
+    {
+      "decision": "Meta block check positioned after port/collection checks but before generic method/error path in MemberAccess handler",
+      "rationale": "Port and collection checks are more common and should short-circuit first. The meta check uses Ident(\"meta\") detection which won't conflict with ports/collections since 'meta' is a language keyword."
     }
   ],
   "reuse": [
     {
-      "what": "compile_module / compile_first_template helpers",
-      "where": "crates/reify-compiler/tests/trait_conformance_tests.rs:10-21",
-      "how": "Reuse existing test helpers for parsing and compiling test source, returning CompiledModule or (TopologyTemplate, Vec<Diagnostic>)."
+      "what": "compile_module() / compile_first_template() test helpers",
+      "where": "crates/reify-compiler/tests/occurrence_compile_tests.rs",
+      "how": "Copy the helper pattern: parse source with reify_syntax::parse(), compile with reify_compiler::compile(), extract first template and diagnostics."
     },
     {
-      "what": "collect_all_requirements visited-set pattern",
-      "where": "crates/reify-compiler/src/lib.rs:4268-4372",
-      "how": "The existing implementation with HashSet<String> visited set and early return on re-visit already handles diamond deduplication. Tests verify this behavior."
+      "what": "MemberAccess compilation pattern",
+      "where": "crates/reify-compiler/src/lib.rs lines 1103-1221",
+      "how": "Follow the existing if-let chain pattern for detecting access patterns (port, collection, method). Add meta detection as another branch before the final else-error."
     },
     {
-      "what": "Error filtering pattern from existing tests",
-      "where": "crates/reify-compiler/tests/trait_conformance_tests.rs (throughout)",
-      "how": "Use the established pattern: filter diagnostics by Severity::Error, assert count and message content."
+      "what": "CompiledExpr constructor pattern",
+      "where": "crates/reify-types/src/expr.rs (literal, value_ref, binop, etc.)",
+      "how": "Follow the pattern: unique tag byte (16), combine content hashes of fields, return CompiledExpr { kind, result_type, content_hash }."
+    },
+    {
+      "what": "walk()/collect_value_refs_inner()/remap_entity() leaf node pattern",
+      "where": "crates/reify-types/src/expr.rs (Literal, OptionNone)",
+      "how": "MetaAccess is a leaf node (no sub-expressions), so walk/collect are no-ops. remap_entity needs to update the entity field, following the ValueRef pattern."
+    },
+    {
+      "what": "lower_member() dispatch pattern",
+      "where": "crates/reify-syntax/src/ts_parser.rs line 825",
+      "how": "Add 'meta_block' case to the match, following the check_and_lower! macro pattern used by other member types."
+    },
+    {
+      "what": "Diagnostic error pattern with span labels",
+      "where": "crates/reify-compiler/src/lib.rs (port member errors, type errors)",
+      "how": "Use Diagnostic::error(message).with_label(DiagnosticLabel::new(span, hint)) followed by returning CompiledExpr::literal(Value::Undef, Type::String) as fallback."
     }
   ],
-  "_session_id": "189-796bdbd2",
-  "_created_at": "2026-03-25T07:12:49.220832+00:00"
+  "_session_id": "211-2be81429",
+  "_created_at": "2026-03-25T10:40:41.183193+00:00"
 }
