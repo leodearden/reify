@@ -916,3 +916,42 @@ structure def Connector : HasHole + HasPlug {
         conflict_errors
     );
 }
+
+/// Pathologically deep (but acyclic) trait refinement chain — 200 levels.
+///
+/// Without a depth limit, `collect_all_requirements` will recurse 200 frames deep,
+/// which on pathological inputs can overflow the stack.  With the fix, compilation
+/// should produce a "trait refinement chain too deep" diagnostic instead of panicking.
+///
+/// This test verifies two things:
+/// 1. The compilation does NOT panic or stack-overflow.
+/// 2. At least one diagnostic mentions "too deep" (or "depth").
+#[test]
+fn deep_chain_recursion_depth_limit() {
+    // Build 200-level chain: Trait0 <- Trait1 <- ... <- Trait199
+    // Each trait refines the previous one.
+    let mut source = String::new();
+    // Trait0 has no refinements
+    source.push_str("trait Trait0 {\n    param x : Length\n}\n");
+    for i in 1..200usize {
+        source.push_str(&format!("trait Trait{} : Trait{} {{}}\n", i, i - 1));
+    }
+    // Structure implements the deepest trait
+    source.push_str("structure def S : Trait199 {\n    param x : Length = 1mm\n}\n");
+
+    // Must not panic — assert we get a diagnostic about depth
+    let module = compile_module(&source);
+    let depth_errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.message.contains("deep") || d.message.contains("depth") || d.message.contains("too deep")
+        })
+        .collect();
+
+    assert!(
+        !depth_errors.is_empty(),
+        "expected a 'too deep' diagnostic for 200-level trait chain, got: {:?}",
+        module.diagnostics
+    );
+}
