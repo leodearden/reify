@@ -311,7 +311,10 @@ impl SidecarHandle {
 
         // Slow path: subscribe before checking again to avoid the race between
         // checking state and the notification being fired.
-        let notified = self.ready_notify.notified();
+        let mut notified = std::pin::pin!(self.ready_notify.notified());
+        // Eagerly register interest so that a `notify_waiters()` call on another
+        // thread between now and the first poll of `notified` is not lost.
+        notified.as_mut().enable();
         // Re-check under the subscription to avoid missing a notification that
         // arrived between the fast-path check and the subscribe.
         if matches!(*self.state.lock().await, SidecarState::Ready) {

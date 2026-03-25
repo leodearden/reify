@@ -1129,22 +1129,25 @@ async fn wait_ready_returns_err_on_crash_during_wait() {
     use tokio::sync::Mutex;
 
     let state = Arc::new(Mutex::new(SidecarState::Starting));
-    let data: &[u8] = b"";
-    let empty_reader = BufReader::new(data);
+    // Use duplex instead of b"" to prevent the reader task from seeing
+    // immediate EOF and firing on_exit with "sidecar exited unexpectedly".
+    // Keeping _data_writer alive means the reader blocks on read, not EOF.
+    let (_data_writer, data_reader) = tokio::io::duplex(1024);
+    let reader = BufReader::new(data_reader);
     let (writer, _writer_end) = tokio::io::duplex(1024);
 
-    let handle = SidecarHandle::from_parts(writer, empty_reader, state.clone());
+    let handle = SidecarHandle::from_parts(writer, reader, state.clone());
 
     // Clone notify and state so a spawned task can trigger a crash.
     let notify = Arc::clone(handle.ready_notify());
     let state_for_crash = Arc::clone(handle.state());
 
     // Spawn a task that simulates a crash after wait_ready has subscribed.
-    // In #[tokio::test] (single-threaded current_thread), wait_ready yields at
-    // its timeout/await point before this task runs, ensuring it is already
-    // subscribed when notify_waiters() fires.
+    // In #[tokio::test] (single-threaded current_thread runtime), yield_now
+    // enqueues this task at the back of the run queue — a single deterministic
+    // scheduling order where wait_ready reaches its notified.await first.
     tokio::spawn(async move {
-        // Yield a few times — wait_ready reaches its notified.await before us.
+        // Yield enough times for wait_ready to reach its notified.await.
         for _ in 0..20 {
             tokio::task::yield_now().await;
         }
@@ -1156,8 +1159,9 @@ async fn wait_ready_returns_err_on_crash_during_wait() {
     assert!(result.is_err(), "wait_ready should return Err when sidecar crashes during wait");
     let msg = result.unwrap_err();
     assert!(
-        msg.contains("crashed"),
-        "Error should mention crash: {}",
+        msg.contains("test crash"),
+        "Error should contain the exact crash reason from the test task, \
+         not the reader's on_exit handler: {}",
         msg
     );
 }
@@ -1738,15 +1742,63 @@ async fn shutdown_not_blocked_during_ensure_sidecar_ready_spawn() {
     let _ = ensure_handle.await;
 }
 
+// --- multi-thread race regression test for wait_ready (task-363/step-1) ---
+
+/// Regression test for the wait_ready() subscribe-before-check pattern.
+///
+/// On a multi-thread runtime, the reader task can process `{"type":"ready"}`
+/// and call `notify_waiters()` on a different worker thread during the window
+/// between `notified()` creation and the first poll of the Notified future.
+/// With `enable()` called eagerly, the waiter is registered before re-check
+/// and the notification is never lost.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn wait_ready_notified_race_on_multithread() {
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::io::{AsyncWriteExt, BufReader};
+    use tokio::sync::Mutex;
+
+    // Run 20 iterations to increase probability of hitting timing-dependent races.
+    for i in 0..20 {
+        let held_writer: Arc<Mutex<Option<tokio::io::DuplexStream>>> =
+            Arc::new(Mutex::new(None));
+        let held_clone = Arc::clone(&held_writer);
+
+        let state = Arc::new(Mutex::new(SidecarState::Starting));
+        let (mut data_writer, data_reader) = tokio::io::duplex(1024);
+
+        // Write ready BEFORE creating the handle so the reader task can
+        // process it immediately when scheduled on the second thread.
+        data_writer
+            .write_all(b"{\"type\":\"ready\"}\n")
+            .await
+            .unwrap();
+        let reader = BufReader::new(data_reader);
+        let (stdin_writer, _stdin_reader) = tokio::io::duplex(1024);
+        let handle = SidecarHandle::from_parts(stdin_writer, reader, state);
+
+        // Hold the writer alive so the reader doesn't see EOF.
+        *held_clone.lock().await = Some(data_writer);
+
+        let result = handle.wait_ready(Duration::from_millis(500)).await;
+        assert!(
+            result.is_ok(),
+            "iteration {}: wait_ready should return Ok \
+             (race condition causes spurious timeout without enable()): {:?}",
+            i,
+            result
+        );
+    }
+}
+
 // --- multi-thread race regression test (task-353/step-15) ---
 
-/// Reproduce the race condition where `notify.notified()` is called AFTER the
-/// sidecar lock is released, so a multi-thread executor can let the reader task
-/// call `notify_waiters()` before the waiter is registered (lost wakeup →
-/// spurious timeout).
+/// Regression guard for the subscribe-before-check pattern in ensure_sidecar_ready().
 ///
-/// With the current (buggy) code this test will intermittently fail.
-/// After step-16 (move `notified()` inside the lock scope) it must always pass.
+/// On a multi-thread executor, the reader task can call `notify_waiters()` in
+/// the window between `notified()` creation and its first poll. This test
+/// writes `{"type":"ready"}` before handle construction so the reader can
+/// process it immediately on a second worker thread, exercising that window.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ensure_sidecar_ready_notified_race_on_multithread() {
     use std::sync::Arc;
