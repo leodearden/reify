@@ -692,6 +692,7 @@ impl TopologyTemplateBuilder {
             objective: self.objective,
             content_hash,
             is_recursive: false,
+            annotations: vec![],
         }
     }
 }
@@ -1143,6 +1144,7 @@ impl TraitDefBuilder {
             required_members: self.required_members,
             defaults: self.defaults,
             content_hash,
+            annotations: vec![],
         }
     }
 }
@@ -1488,6 +1490,7 @@ impl CompiledFieldBuilder {
             codomain_type: self.codomain_type,
             source,
             content_hash,
+            annotations: vec![],
         }
     }
 }
@@ -1585,6 +1588,7 @@ impl CompiledPurposeBuilder {
             objective: self.objective,
             resolved_queries: self.resolved_queries,
             content_hash,
+            annotations: vec![],
         }
     }
 }
@@ -1665,6 +1669,7 @@ impl CompiledTraitBuilder {
             required_members: self.required_members,
             defaults: self.defaults,
             content_hash,
+            annotations: vec![],
         }
     }
 }

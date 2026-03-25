@@ -33,6 +33,7 @@ pub struct CompiledTrait {
     /// Members with defaults that are injected if the structure doesn't override.
     pub defaults: Vec<TraitDefault>,
     pub content_hash: ContentHash,
+    pub annotations: Vec<reify_types::Annotation>,
 }
 
 /// A required member in a trait — conforming structures must provide this.
@@ -272,6 +273,7 @@ pub fn check_trait_conformance_chain(
         required_members: requirements,
         defaults: vec![],
         content_hash: ContentHash::of_str(trait_name),
+        annotations: vec![],
     };
 
     chain_errors.extend(check_trait_conformance(structure_members, &flat_trait, ports, subs));
@@ -312,6 +314,7 @@ pub fn check_trait_conformance_multi(
         required_members: requirements,
         defaults: vec![],
         content_hash: ContentHash::of_str("__multi__"),
+        annotations: vec![],
     };
 
     chain_errors.extend(check_trait_conformance(structure_members, &flat_trait, ports, subs));
@@ -403,6 +406,7 @@ pub struct CompiledField {
     pub codomain_type: Type,
     pub source: CompiledFieldSource,
     pub content_hash: ContentHash,
+    pub annotations: Vec<reify_types::Annotation>,
 }
 
 /// A compiled purpose parameter — binds an entity reference.
@@ -434,6 +438,7 @@ pub struct CompiledPurpose {
     /// Reflective schema queries resolved at compile time.
     pub resolved_queries: Vec<ResolvedSchemaQuery>,
     pub content_hash: ContentHash,
+    pub annotations: Vec<reify_types::Annotation>,
 }
 
 /// A compiled module — the output of the compiler.
@@ -483,6 +488,7 @@ pub struct TopologyTemplate {
     /// True if this template participates in a recursive sub-component cycle.
     /// Set by the post-compilation recursive structure detection pass.
     pub is_recursive: bool,
+    pub annotations: Vec<reify_types::Annotation>,
 }
 
 /// A compiled connection between ports — compiled from a ConnectDecl or desugared from a ChainDecl.
@@ -2004,6 +2010,7 @@ fn compile_trait(
         required_members,
         defaults,
         content_hash,
+        annotations: vec![],
     }
 }
 
@@ -2194,6 +2201,7 @@ fn compile_purpose(
         objective,
         resolved_queries,
         content_hash: purpose_def.content_hash,
+        annotations: vec![],
     }
 }
 
@@ -3864,6 +3872,7 @@ fn compile_entity(
         objective,
         content_hash,
         is_recursive: false,
+        annotations: vec![],
     }
 }
 
@@ -5300,6 +5309,7 @@ fn compile_function(
             result_expr,
         },
         content_hash,
+        annotations: vec![],
     })
 }
 
@@ -5394,6 +5404,7 @@ fn compile_field(
         codomain_type,
         source,
         content_hash,
+        annotations: vec![],
     }
 }
 
