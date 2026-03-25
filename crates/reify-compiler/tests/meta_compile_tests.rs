@@ -93,3 +93,31 @@ fn meta_access_compiles_to_string() {
     }
     assert_eq!(expr.result_type, reify_types::Type::String);
 }
+
+// ---------------------------------------------------------------------------
+// step-5: nonexistent meta key produces compile-time error
+// ---------------------------------------------------------------------------
+
+#[test]
+fn meta_access_nonexistent_key_error() {
+    let source = r#"
+        structure def Bracket {
+            meta {
+                a = "1"
+            }
+            let x : String = meta.nonexistent
+        }
+    "#;
+    let (_, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(!errors.is_empty(), "expected at least one error");
+    assert!(
+        errors.iter().any(|d| d.message.contains("no key")),
+        "expected 'no key' error, got: {:?}",
+        errors
+    );
+}
