@@ -535,6 +535,81 @@ fn unfold_recursive_default_depth_limit_64() {
     );
 }
 
+// ─── step-31: multiple recursive subs — all cross-sub children are created ────
+
+/// Template S with TWO recursive subs (left and right), both with same guard/args.
+/// With S(n=2), the full tree should be:
+///   S.left (n=1), S.right (n=1)
+///   S.left.left (n=0), S.left.right (n=0), S.right.left (n=0), S.right.right (n=0)
+/// All leaves (n=0) stop unfolding (guard false).
+///
+/// The current implementation only recurses on the SAME sub chain, so S.left.right
+/// and S.right.left are never created. This test verifies the fix.
+#[test]
+fn unfold_recursive_multiple_subs_all_children_created() {
+    // guard: n > 0
+    let guard_left = gt(
+        value_ref_typed("S", "n", Type::Int),
+        literal(Value::Int(0)),
+    );
+    let guard_right = gt(
+        value_ref_typed("S", "n", Type::Int),
+        literal(Value::Int(0)),
+    );
+    // arg: n = n - 1
+    let n_minus_1_left = binop(
+        BinOp::Sub,
+        value_ref_typed("S", "n", Type::Int),
+        literal(Value::Int(1)),
+    );
+    let n_minus_1_right = binop(
+        BinOp::Sub,
+        value_ref_typed("S", "n", Type::Int),
+        literal(Value::Int(1)),
+    );
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param("S", "n", Type::Int, Some(CompiledExpr::literal(Value::Int(2), Type::Int)))
+        .is_recursive(true)
+        .sub_component_with_guard("left", "S", vec![("n".to_string(), n_minus_1_left)], guard_left)
+        .sub_component_with_guard("right", "S", vec![("n".to_string(), n_minus_1_right)], guard_right)
+        .build();
+
+    let result = eval_single_template(template);
+
+    // Level 1: both direct children should have n=1
+    assert_eq!(
+        result.values.get(&ValueCellId::new("S.left", "n")),
+        Some(&Value::Int(1)),
+        "S.left.n should be 1"
+    );
+    assert_eq!(
+        result.values.get(&ValueCellId::new("S.right", "n")),
+        Some(&Value::Int(1)),
+        "S.right.n should be 1"
+    );
+
+    // Level 2: all 4 cross-sub children should have n=0
+    for entity in &["S.left.left", "S.left.right", "S.right.left", "S.right.right"] {
+        assert_eq!(
+            result.values.get(&ValueCellId::new(*entity, "n")),
+            Some(&Value::Int(0)),
+            "{}.n should be 0 (cross-sub child must be created)",
+            entity
+        );
+    }
+
+    // Level 3: nothing should exist — guard is false at n=0
+    assert!(
+        !result.values.contains(&ValueCellId::new("S.left.left.left", "n")),
+        "S.left.left.left.n should not exist (guard false at n=0)"
+    );
+    assert!(
+        !result.values.contains(&ValueCellId::new("S.left.right.left", "n")),
+        "S.left.right.left.n should not exist (guard false at n=0)"
+    );
+}
+
 // ─── step-29: depth-limit truncation emits an Error-severity diagnostic ───────
 
 /// When the depth limit truncates unfolding (guard is still true but depth >= max),

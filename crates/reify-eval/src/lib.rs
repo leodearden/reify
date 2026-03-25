@@ -1151,6 +1151,13 @@ impl Engine {
 
                 // Recursive sub: evaluate guard before elaborating, then unfold recursively.
                 if template.is_recursive && sub.guard_expr.is_some() {
+                    // Collect ALL recursive subs of this template so that unfold_recursive_sub
+                    // can create the full tree (all cross-sub children, not just same-sub chains).
+                    let all_recursive_subs: Vec<&reify_compiler::SubComponentDecl> = template
+                        .sub_components
+                        .iter()
+                        .filter(|s| s.guard_expr.is_some())
+                        .collect();
                     unfold_recursive_sub(
                         &mut values,
                         &mut snapshot,
@@ -1165,6 +1172,7 @@ impl Engine {
                         self.max_unfold_depth,
                         &self.meta_map,
                         &mut diagnostics,
+                        &all_recursive_subs,
                     );
                     continue;
                 }
@@ -3174,21 +3182,24 @@ fn compile_geometry_op(
 /// - `parent_entity`: the entity currently being processed (e.g., "S" at depth 0, "S.child" at depth 1)
 /// - `depth`: current recursion depth (0 = processing the top-level template)
 /// - `max_depth`: maximum allowed depth before stopping
+/// - `all_recursive_subs`: ALL recursive subs of the template (those with guard_expr.is_some()).
+///   Used in Phase 2 to unfold all sub chains at each child level, not just the spawning sub.
 #[allow(clippy::too_many_arguments)]
-fn unfold_recursive_sub(
+fn unfold_recursive_sub<'t>(
     values: &mut ValueMap,
     snapshot: &mut Snapshot,
     functions: &[CompiledFunction],
     journal: &mut EventJournal,
     cache: &mut CacheStore,
     version_id: u64,
-    child_template: &reify_compiler::TopologyTemplate,
+    child_template: &'t reify_compiler::TopologyTemplate,
     sub: &reify_compiler::SubComponentDecl,
     parent_entity: &str,
     depth: usize,
     max_depth: usize,
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
+    all_recursive_subs: &[&'t reify_compiler::SubComponentDecl],
 ) {
     let guard_expr = match &sub.guard_expr {
         Some(g) => g,
@@ -3270,23 +3281,28 @@ fn unfold_recursive_sub(
         meta_map,
     );
 
-    // Phase 2 (recurse): Unfold the next level first (leaves-first ordering).
-    // This ensures all deeper levels are elaborated before we evaluate our lets.
-    unfold_recursive_sub(
-        values,
-        snapshot,
-        functions,
-        journal,
-        cache,
-        version_id,
-        child_template,
-        sub,
-        &next_entity,
-        depth + 1,
-        max_depth,
-        meta_map,
-        diagnostics,
-    );
+    // Phase 2 (recurse): Unfold ALL recursive subs at the next level first (leaves-first
+    // ordering). Iterating over all_recursive_subs (not just `sub`) ensures that for
+    // templates with multiple recursive subs (e.g., `left` and `right`), cross-sub
+    // children like S.left.right and S.right.left are also created.
+    for next_sub in all_recursive_subs {
+        unfold_recursive_sub(
+            values,
+            snapshot,
+            functions,
+            journal,
+            cache,
+            version_id,
+            child_template,
+            next_sub,
+            &next_entity,
+            depth + 1,
+            max_depth,
+            meta_map,
+            diagnostics,
+            all_recursive_subs,
+        );
+    }
 
     // Phase 3 (bottom-up): Evaluate let-bindings for next_entity.
     // child_values is enriched inside elaborate_child_lets_only with sub-component
