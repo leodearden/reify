@@ -2788,6 +2788,145 @@ mod tests {
 
     // --- Revolve kernel error tests (task-309 step-5) ---
 
+    // --- Revolve kernel volume tests (task-309 step-7) ---
+
+    #[test]
+    fn revolve_circle_face_full_volume() {
+        // Pappus' theorem: V = 2πR × A where R = centroid-to-axis distance, A = profile area.
+        // Circle face r=5 at origin in XY plane, rotate 90° around X to XZ plane,
+        // translate 20 on X → centroid at (20, 0, 0), R=20, A=π*25.
+        // Revolve around Z axis by 2π → torus volume = 2π²×20×25 ≈ 9869.6
+        let mut kernel = OcctKernel::new();
+        let face = ffi::ffi::make_circle_face(5.0, 0.0)
+            .expect("make_circle_face should succeed");
+        let rotated = ffi::ffi::rotate_shape(&face, 1.0, 0.0, 0.0, std::f64::consts::FRAC_PI_2)
+            .expect("rotate_shape should succeed");
+        let translated = ffi::ffi::translate_shape(&rotated, 20.0, 0.0, 0.0)
+            .expect("translate_shape should succeed");
+        let face_id = kernel.store_raw(translated);
+
+        let result = kernel
+            .execute(&GeometryOp::Revolve {
+                profile: face_id,
+                axis_origin: [0.0, 0.0, 0.0],
+                axis_dir: [0.0, 0.0, 1.0],
+                angle_rad: std::f64::consts::TAU,
+            })
+            .expect("Revolve full should succeed");
+        let vol = kernel
+            .query(&GeometryQuery::Volume(result.id))
+            .expect("Volume query should succeed")
+            .as_f64()
+            .expect("Volume should be numeric");
+        let expected = 2.0 * std::f64::consts::PI.powi(2) * 20.0 * 25.0; // 2π²Rr²
+        let rel_err = (vol - expected).abs() / expected;
+        assert!(
+            rel_err < 0.02,
+            "expected torus volume ≈ {:.2}, got {:.2} (rel_err={:.4})",
+            expected,
+            vol,
+            rel_err
+        );
+    }
+
+    #[test]
+    fn revolve_half_angle_half_volume() {
+        // Same setup as full volume but angle=π → half torus.
+        let mut kernel = OcctKernel::new();
+        let face = ffi::ffi::make_circle_face(5.0, 0.0)
+            .expect("make_circle_face should succeed");
+        let rotated = ffi::ffi::rotate_shape(&face, 1.0, 0.0, 0.0, std::f64::consts::FRAC_PI_2)
+            .expect("rotate_shape should succeed");
+        let translated = ffi::ffi::translate_shape(&rotated, 20.0, 0.0, 0.0)
+            .expect("translate_shape should succeed");
+        let face_id = kernel.store_raw(translated);
+
+        let full = kernel
+            .execute(&GeometryOp::Revolve {
+                profile: face_id,
+                axis_origin: [0.0, 0.0, 0.0],
+                axis_dir: [0.0, 0.0, 1.0],
+                angle_rad: std::f64::consts::TAU,
+            })
+            .expect("Revolve full should succeed");
+        let vol_full = kernel
+            .query(&GeometryQuery::Volume(full.id))
+            .expect("Volume query should succeed")
+            .as_f64()
+            .expect("Volume should be numeric");
+
+        // Create another face for half revolution
+        let face2 = ffi::ffi::make_circle_face(5.0, 0.0)
+            .expect("make_circle_face should succeed");
+        let rotated2 =
+            ffi::ffi::rotate_shape(&face2, 1.0, 0.0, 0.0, std::f64::consts::FRAC_PI_2)
+                .expect("rotate_shape should succeed");
+        let translated2 = ffi::ffi::translate_shape(&rotated2, 20.0, 0.0, 0.0)
+            .expect("translate_shape should succeed");
+        let face2_id = kernel.store_raw(translated2);
+
+        let half = kernel
+            .execute(&GeometryOp::Revolve {
+                profile: face2_id,
+                axis_origin: [0.0, 0.0, 0.0],
+                axis_dir: [0.0, 0.0, 1.0],
+                angle_rad: std::f64::consts::PI,
+            })
+            .expect("Revolve half should succeed");
+        let vol_half = kernel
+            .query(&GeometryQuery::Volume(half.id))
+            .expect("Volume query should succeed")
+            .as_f64()
+            .expect("Volume should be numeric");
+
+        let ratio = vol_half / vol_full;
+        assert!(
+            (ratio - 0.5).abs() < 0.02,
+            "half-angle volume should be ~50% of full, got ratio {:.4} (full={:.2}, half={:.2})",
+            ratio,
+            vol_full,
+            vol_half
+        );
+    }
+
+    #[test]
+    fn revolve_rect_face_torus_volume() {
+        // Rect face w=4, h=2, centered at (10, 0, 0) in XZ plane.
+        // Pappus: V = 2π × R × A = 2π × 10 × (4×2) = 160π ≈ 502.65
+        // make_rect_face creates in XY plane, so rotate 90° around X to get XZ plane.
+        let mut kernel = OcctKernel::new();
+        let face = ffi::ffi::make_rect_face(4.0, 2.0, 0.0, 0.0, 0.0)
+            .expect("make_rect_face should succeed");
+        let rotated = ffi::ffi::rotate_shape(&face, 1.0, 0.0, 0.0, std::f64::consts::FRAC_PI_2)
+            .expect("rotate_shape should succeed");
+        let translated = ffi::ffi::translate_shape(&rotated, 10.0, 0.0, 0.0)
+            .expect("translate_shape should succeed");
+        let face_id = kernel.store_raw(translated);
+
+        let result = kernel
+            .execute(&GeometryOp::Revolve {
+                profile: face_id,
+                axis_origin: [0.0, 0.0, 0.0],
+                axis_dir: [0.0, 0.0, 1.0],
+                angle_rad: std::f64::consts::TAU,
+            })
+            .expect("Revolve rect should succeed");
+        let vol = kernel
+            .query(&GeometryQuery::Volume(result.id))
+            .expect("Volume query should succeed")
+            .as_f64()
+            .expect("Volume should be numeric");
+        let expected = 2.0 * std::f64::consts::PI * 10.0 * (4.0 * 2.0); // 2πR×A = 160π
+        let rel_err = (vol - expected).abs() / expected;
+        assert!(
+            rel_err < 0.02,
+            "expected rect torus volume ≈ {:.2}, got {:.2} (rel_err={:.4})",
+            expected,
+            vol,
+            rel_err
+        );
+    }
+
     #[test]
     fn revolve_zero_angle_returns_error() {
         if !crate::OCCT_AVAILABLE {
