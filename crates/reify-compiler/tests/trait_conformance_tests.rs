@@ -1674,3 +1674,38 @@ fn chain_conflicting_requirements() {
         other => panic!("expected ConflictingRequirement, got: {:?}", other),
     }
 }
+
+/// step-15 (task-186): unresolved trait reference.
+/// Trait A has refinement 'Nonexistent' (not in registry) → UnresolvedTrait { name: "Nonexistent" }.
+/// Fails until UnresolvedTrait variant is added.
+#[test]
+fn chain_unresolved_trait() {
+    let length = || Type::Scalar { dimension: DimensionVector::LENGTH };
+    let trait_a = CompiledTrait {
+        name: "A".to_string(),
+        is_pub: true,
+        type_params: vec![],
+        refinements: vec!["Nonexistent".to_string()],
+        required_members: vec![TraitRequirement {
+            name: "x".to_string(),
+            kind: RequirementKind::Param(length()),
+            span: test_span(),
+        }],
+        defaults: vec![],
+        content_hash: ContentHash::of_str("A_unresolved"),
+    };
+    let mut registry = std::collections::HashMap::new();
+    registry.insert("A".to_string(), &trait_a);
+    // Registry does NOT contain "Nonexistent".
+    let mut members = std::collections::HashMap::new();
+    members.insert("x".to_string(), length());
+    let errors = check_trait_conformance_chain(&members, "A", &registry, &[], &[]);
+    let unresolved = errors
+        .iter()
+        .find(|e| matches!(e, ConformanceError::UnresolvedTrait { name } if name == "Nonexistent"));
+    assert!(
+        unresolved.is_some(),
+        "expected UnresolvedTrait for 'Nonexistent', got: {:?}",
+        errors
+    );
+}

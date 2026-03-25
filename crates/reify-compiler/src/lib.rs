@@ -137,6 +137,8 @@ pub enum ConformanceError {
     SubStructureMismatch { name: String, expected_structure: String, actual_structure: String },
     /// Two traits in the refinement chain require the same member name with different types.
     ConflictingRequirement { name: String, type_a: Type, type_b: Type },
+    /// A refinement references a trait name not present in the trait registry.
+    UnresolvedTrait { name: String },
 }
 
 /// Pure conformance check: given a flat member map, port list, sub list, and a
@@ -336,8 +338,7 @@ fn collect_chain_requirements(
     }
 
     let Some(compiled_trait) = trait_registry.get(trait_name) else {
-        // Trait not found; UnresolvedTrait variant added in a later step.
-        let _ = chain_errors; // suppress unused-warning placeholder
+        chain_errors.push(ConformanceError::UnresolvedTrait { name: trait_name.to_string() });
         return;
     };
 
