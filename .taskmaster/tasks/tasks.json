@@ -6867,11 +6867,11 @@
         "description": "No warning when only one port satisfies LocatedPort (asymmetric frame mismatch) — likely user error goes unreported. Extract `const LOCATED_PORT_TRAIT` to replace hardcoded \"LocatedPort\" magic string (lib.rs:3931-3932). Fix HashSet iteration order in error message (lib.rs:3862-3866) — sort before join for deterministic output.\n\nMissing tests:\n- Asymmetric LocatedPort (one located, one not)\n- Forward-ref connector type (design decision: best-effort skip)\n- Dotted-port connections not emitting false type warnings\n- Dead OR branch in test assertion (line 497 — `port type mismatch` never matches)\n\nMemory hints: search \"LocatedPort frame_alignment connect_compile HashSet\", entities: compile_connections, LocatedPort",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-24T22:15:31.053Z"
+        "updatedAt": "2026-03-25T21:30:36.499Z"
       },
       {
         "id": "371",
@@ -7638,7 +7638,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-25T21:30:36.445Z",
+      "lastModified": "2026-03-25T21:30:36.499Z",
       "taskCount": 426,
       "completedCount": 227,
       "tags": [
