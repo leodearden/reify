@@ -351,6 +351,7 @@ fn bracket_backward_compat_no_guards() {
             MemberDecl::Port(p) => p.content_hash,
             MemberDecl::Connect(c) => c.content_hash,
             MemberDecl::Chain(c) => c.content_hash,
+            MemberDecl::MetaBlock(m) => m.content_hash,
         };
         let h2 = match m2 {
             MemberDecl::Param(p) => p.content_hash,
@@ -364,6 +365,7 @@ fn bracket_backward_compat_no_guards() {
             MemberDecl::Port(p) => p.content_hash,
             MemberDecl::Connect(c) => c.content_hash,
             MemberDecl::Chain(c) => c.content_hash,
+            MemberDecl::MetaBlock(m) => m.content_hash,
         };
         assert_eq!(h1, h2);
     }
