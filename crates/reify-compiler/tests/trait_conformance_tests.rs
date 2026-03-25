@@ -1310,3 +1310,37 @@ trait HasBolt {
         other => panic!("expected SubStructureMismatch, got: {:?}", other),
     }
 }
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Task 186 — Trait conformance: refinement chains
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// step-1 (task-186): chain with no refinements, structure missing param → MissingParam.
+/// Fails until check_trait_conformance_chain is defined.
+#[test]
+fn chain_single_trait_no_refinement() {
+    let trait_def = CompiledTrait {
+        name: "HasWidth".to_string(),
+        is_pub: true,
+        type_params: vec![],
+        refinements: vec![],
+        required_members: vec![TraitRequirement {
+            name: "width".to_string(),
+            kind: RequirementKind::Param(Type::Scalar { dimension: DimensionVector::LENGTH }),
+            span: test_span(),
+        }],
+        defaults: vec![],
+        content_hash: ContentHash::of_str("HasWidthChain"),
+    };
+    let mut registry = std::collections::HashMap::new();
+    registry.insert("HasWidth".to_string(), &trait_def);
+    let structure_members: std::collections::HashMap<String, Type> =
+        std::collections::HashMap::new();
+    let errors =
+        check_trait_conformance_chain(&structure_members, "HasWidth", &registry, &[], &[]);
+    assert_eq!(errors.len(), 1, "expected 1 error, got: {:?}", errors);
+    match &errors[0] {
+        ConformanceError::MissingParam { name, .. } => assert_eq!(name, "width"),
+        other => panic!("expected MissingParam, got: {:?}", other),
+    }
+}

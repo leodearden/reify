@@ -227,6 +227,149 @@ pub fn check_trait_conformance(
     errors
 }
 
+/// Chain-aware conformance check: walk the refinement hierarchy of `trait_name` and check
+/// all collected requirements (including those from parent traits) against `structure_members`.
+///
+/// This is the chain-walking entry point that complements [`check_trait_conformance`].
+/// It performs depth-first, parent-first refinement walking with diamond deduplication,
+/// then delegates per-requirement checking to [`check_trait_conformance`].
+///
+/// Returns a flat [`Vec<ConformanceError>`] covering the full chain.
+/// Additional chain-specific variants are added incrementally:
+/// [`ConformanceError::ConflictingRequirement`] (same name, different types across traits)
+/// and [`ConformanceError::UnresolvedTrait`] (trait not in registry).
+pub fn check_trait_conformance_chain(
+    structure_members: &HashMap<String, Type>,
+    trait_name: &str,
+    trait_registry: &HashMap<String, &CompiledTrait>,
+    ports: &[PortInfo],
+    subs: &[SubInfo],
+) -> Vec<ConformanceError> {
+    let mut requirements: Vec<TraitRequirement> = Vec::new();
+    let mut visited: HashSet<String> = HashSet::new();
+    let mut seen_names: HashMap<String, Type> = HashMap::new();
+    let mut chain_errors: Vec<ConformanceError> = Vec::new();
+
+    collect_chain_requirements(
+        trait_name,
+        trait_registry,
+        &mut requirements,
+        &mut visited,
+        &mut seen_names,
+        &mut chain_errors,
+    );
+
+    // Build a temporary flat trait for member-by-member checking.
+    let flat_trait = CompiledTrait {
+        name: trait_name.to_string(),
+        is_pub: true,
+        type_params: vec![],
+        refinements: vec![],
+        required_members: requirements,
+        defaults: vec![],
+        content_hash: ContentHash::of_str(trait_name),
+    };
+
+    chain_errors.extend(check_trait_conformance(structure_members, &flat_trait, ports, subs));
+    chain_errors
+}
+
+/// Multi-trait chain conformance: check multiple top-level trait bounds sharing a single
+/// visited/seen state.  This prevents duplicate requirement collection from shared ancestors
+/// (diamond patterns such as `structure : A + B` where both A and B refine C).
+pub fn check_trait_conformance_multi(
+    structure_members: &HashMap<String, Type>,
+    trait_names: &[&str],
+    trait_registry: &HashMap<String, &CompiledTrait>,
+    ports: &[PortInfo],
+    subs: &[SubInfo],
+) -> Vec<ConformanceError> {
+    let mut requirements: Vec<TraitRequirement> = Vec::new();
+    let mut visited: HashSet<String> = HashSet::new();
+    let mut seen_names: HashMap<String, Type> = HashMap::new();
+    let mut chain_errors: Vec<ConformanceError> = Vec::new();
+
+    for &name in trait_names {
+        collect_chain_requirements(
+            name,
+            trait_registry,
+            &mut requirements,
+            &mut visited,
+            &mut seen_names,
+            &mut chain_errors,
+        );
+    }
+
+    let flat_trait = CompiledTrait {
+        name: "__multi__".to_string(),
+        is_pub: false,
+        type_params: vec![],
+        refinements: vec![],
+        required_members: requirements,
+        defaults: vec![],
+        content_hash: ContentHash::of_str("__multi__"),
+    };
+
+    chain_errors.extend(check_trait_conformance(structure_members, &flat_trait, ports, subs));
+    chain_errors
+}
+
+/// Internal recursive helper: depth-first, parent-first collection of all requirements
+/// from `trait_name` and its refinement ancestors.
+///
+/// - `visited`: prevents revisiting traits in diamond patterns (diamond dedup).
+/// - `seen_names`: tracks (name → type) for Param/Let requirements; used for dedup and
+///   later for conflict detection once [`ConformanceError::ConflictingRequirement`] is added.
+/// - `chain_errors`: accumulates chain-specific errors (unresolved, conflicting).
+fn collect_chain_requirements(
+    trait_name: &str,
+    trait_registry: &HashMap<String, &CompiledTrait>,
+    requirements: &mut Vec<TraitRequirement>,
+    visited: &mut HashSet<String>,
+    seen_names: &mut HashMap<String, Type>,
+    chain_errors: &mut Vec<ConformanceError>,
+) {
+    if !visited.insert(trait_name.to_string()) {
+        return; // Already visited (diamond dedup).
+    }
+
+    let Some(compiled_trait) = trait_registry.get(trait_name) else {
+        // Trait not found; UnresolvedTrait variant added in a later step.
+        let _ = chain_errors; // suppress unused-warning placeholder
+        return;
+    };
+
+    // Walk refinements first (parents before self).
+    for refinement in &compiled_trait.refinements {
+        collect_chain_requirements(
+            refinement,
+            trait_registry,
+            requirements,
+            visited,
+            seen_names,
+            chain_errors,
+        );
+    }
+
+    // Collect requirements with dedup on Param/Let names.
+    for req in &compiled_trait.required_members {
+        let maybe_type = match &req.kind {
+            RequirementKind::Param(ty) | RequirementKind::Let(ty) => Some(ty.clone()),
+            _ => None,
+        };
+
+        if let Some(expected_type) = maybe_type {
+            if seen_names.contains_key(&req.name) {
+                // Duplicate (same or conflicting) — conflict detection added in a later step.
+                continue;
+            }
+            seen_names.insert(req.name.clone(), expected_type);
+        }
+
+        requirements.push(req.clone());
+    }
+}
+
 /// The compiled source of a field.
 #[derive(Debug, Clone)]
 pub enum CompiledFieldSource {
