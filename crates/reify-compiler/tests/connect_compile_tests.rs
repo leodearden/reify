@@ -417,6 +417,35 @@ structure def S2 {
     );
 }
 
+// ── step-13: auto_match_empty_members ────────────────────────────────
+
+#[test]
+fn auto_match_empty_members() {
+    // Both ports have same trait but no params/auto members.
+    // Assert port_mappings is empty and no diagnostic is emitted (vacuous match).
+    let source = r#"
+trait EmptyPort {}
+structure def S {
+    port a : out EmptyPort {}
+    port b : in EmptyPort {}
+    connect a -> b
+}
+"#;
+    let (template, diagnostics) = compile_first_template(source);
+    let errors: Vec<_> = diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    assert_eq!(template.connections.len(), 1);
+    // Empty members — vacuous match, port_mappings is empty
+    assert_eq!(
+        template.connections[0].port_mappings,
+        Vec::<(String, String)>::new(),
+        "expected empty port_mappings for ports with no members"
+    );
+    // No warnings
+    let warnings: Vec<_> = diagnostics.iter().filter(|d| d.severity == Severity::Warning).collect();
+    assert!(warnings.is_empty(), "expected no warnings for empty-member ports, got: {:?}", warnings);
+}
+
 // ── step-11: no_auto_match_dotted_ports ───────────────────────────────
 
 #[test]
