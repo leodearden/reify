@@ -373,3 +373,39 @@ structure def S : A + B {
         msg
     );
 }
+
+// ── step-11 ──────────────────────────────────────────────────────────────────
+
+/// Trait provides `let y = 42`; structure S:A does not declare 'y'.
+/// The let binding is injected from the trait into the template.
+/// Assert: no errors, 'y' value cell exists with kind=Let and default_expr set.
+#[test]
+fn let_from_trait_injected() {
+    let source = r#"
+trait A {
+    let y = 42
+}
+
+structure def S : A {
+}
+"#;
+
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    let y_cell = template.value_cells.iter().find(|vc| vc.id.member == "y");
+    assert!(
+        y_cell.is_some(),
+        "expected 'y' value cell injected from trait default, got cells: {:?}",
+        template.value_cells.iter().map(|vc| &vc.id.member).collect::<Vec<_>>()
+    );
+
+    let y_cell = y_cell.unwrap();
+    assert_eq!(y_cell.kind, ValueCellKind::Let, "expected ValueCellKind::Let for 'y'");
+    assert!(
+        y_cell.default_expr.is_some(),
+        "expected default_expr to be set on injected 'y' let cell"
+    );
+}
