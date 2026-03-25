@@ -176,3 +176,37 @@ structure def S : A {
         "expected default_expr to be set on the injected 'x' cell"
     );
 }
+
+// ── step-5 ───────────────────────────────────────────────────────────────────
+
+/// Conflict: trait A declares `param size : Length`, trait B declares
+/// `param size : Mass`.  Same name, different types → conflict error.
+/// Structure S:A+B does not provide 'size'.
+/// Assert: error diagnostic containing "conflicting" and "size".
+#[test]
+fn conflict_same_name_different_type() {
+    let source = r#"
+trait A {
+    param size : Length
+}
+
+trait B {
+    param size : Mass
+}
+
+structure def S : A + B {
+}
+"#;
+
+    let (_, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    assert!(!errors.is_empty(), "expected a conflict error, got none");
+
+    let msg = format!("{:?}", errors);
+    assert!(
+        msg.contains("conflicting") && msg.contains("size"),
+        "error should mention 'conflicting' and 'size', got: {}",
+        msg
+    );
+}
