@@ -55,7 +55,7 @@
       "type": "test",
       "description": "Write failing test `unfold_recursive_depth_one_creates_child`: S(n=1) with sub child = S(n: n-1) where n > 0. After eval(): S.child.n should be 0, S.child.child.* should NOT exist (guard false at depth 1). Verify scoped entity naming.",
       "status": "done",
-      "commit": "PENDING_COMMIT"
+      "commit": "3438f265"
     },
     {
       "id": "step-4",
@@ -69,7 +69,7 @@
       "type": "test",
       "description": "Write failing test `unfold_recursive_depth_three_creates_tree`: S(n=3) with sub child = S(n: n-1) where n > 0. After eval(): S.child.n=2, S.child.child.n=1, S.child.child.child.n=0, S.child.child.child.child.* should NOT exist. Verify all 4 levels exist with correct decremented params.",
       "status": "done",
-      "commit": "PENDING_COMMIT"
+      "commit": "3438f265"
     },
     {
       "id": "step-6",
@@ -83,7 +83,7 @@
       "type": "test",
       "description": "Write failing test `unfold_recursive_undef_param_no_unfold`: S with param n: Int (no default, so Undef), sub child = S(n: n-1) where n > 0. After eval(): guard evaluates with Undef input, should NOT unfold. S.child.* should not exist (sub remains placeholder).",
       "status": "done",
-      "commit": "PENDING_COMMIT"
+      "commit": "3438f265"
     },
     {
       "id": "step-8",
@@ -97,7 +97,7 @@
       "type": "test",
       "description": "Write failing test `unfold_recursive_depth_limit_stops_unfolding`: S(n=100) with sub child = S(n: n-1) where n > 0, engine max_unfold_depth=5. After eval(): only 5 levels of children should be created (S.child through S.child.child.child.child.child). The 6th level should NOT exist even though guard would be true.",
       "status": "done",
-      "commit": "PENDING_COMMIT"
+      "commit": "3438f265"
     },
     {
       "id": "step-10",
@@ -111,7 +111,7 @@
       "type": "test",
       "description": "Write failing test `unfold_recursive_leaves_first_order`: S(n=2) with param n and let sum (default: n + child.sum or n when n=0). Verify that leaf values are evaluated before parent values \u2014 the child at depth 2 (n=0) should be evaluated first, then depth 1, then depth 0. Verify by checking that let bindings referencing child values produce correct results.",
       "status": "done",
-      "commit": "PENDING_COMMIT"
+      "commit": "3438f265"
     },
     {
       "id": "step-12",
@@ -125,7 +125,7 @@
       "type": "test",
       "description": "Write failing test `unfold_recursive_with_let_bindings`: S with param n: Int = 3, let doubled: Int = n * 2, sub child = S(n: n-1) where n > 0. After eval(): S.child.doubled should be 4 (2*2), S.child.child.doubled should be 2 (1*2), S.child.child.child.doubled should be 0 (0*2). Verifies that let bindings in child instances are correctly evaluated.",
       "status": "done",
-      "commit": "PENDING_COMMIT"
+      "commit": "3438f265"
     },
     {
       "id": "step-14",
@@ -139,7 +139,7 @@
       "type": "test",
       "description": "Write failing test `unfold_recursive_non_recursive_sub_unchanged`: Template A (non-recursive) with sub b = B(). Template B (non-recursive) with param x: Int = 5. After eval(): A.b.x should be 5. Verify that the existing non-recursive sub elaboration path is not broken by the new recursive unfolding logic.",
       "status": "done",
-      "commit": "PENDING_COMMIT"
+      "commit": "3438f265"
     },
     {
       "id": "step-16",
@@ -153,7 +153,7 @@
       "type": "test",
       "description": "Write failing test `unfold_recursive_multiple_params`: S with param n: Int = 2 and param width: Real = 10.0, sub child = S(n: n-1, width: width * 0.5) where n > 0. After eval(): S.child.width=5.0, S.child.child.width=2.5. Verifies that non-recursion-controlling params are correctly propagated through unfolding.",
       "status": "done",
-      "commit": "PENDING_COMMIT"
+      "commit": "3438f265"
     },
     {
       "id": "step-18",
@@ -167,7 +167,7 @@
       "type": "test",
       "description": "Write failing test `unfold_recursive_bool_guard`: S with param active: Bool = true, sub child = S(active: !active) where active == true (equivalently: active). After eval(): S.child should exist with active=false, S.child.child should NOT exist (guard false). Tests boolean-type recursion control.",
       "status": "done",
-      "commit": "PENDING_COMMIT"
+      "commit": "3438f265"
     },
     {
       "id": "step-20",
@@ -181,7 +181,7 @@
       "type": "test",
       "description": "Write failing test `unfold_recursive_default_depth_limit_64`: S(n=200) with sub child = S(n: n-1) where n > 0, using default Engine (no set_max_unfold_depth). Verify that exactly 64 levels are created (default limit). Check that S.child^64 exists but S.child^65 does not.",
       "status": "done",
-      "commit": "PENDING_COMMIT"
+      "commit": "3438f265"
     },
     {
       "id": "step-22",
