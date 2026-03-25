@@ -110,3 +110,53 @@ fn tensor0_to_real() {
     let to = Type::Real;
     assert!(implicitly_converts_to(&from, &to), "Tensor<0,2,Real> should convert to Real");
 }
+
+// ── Rule 3: Tensor<2,N,Q> -> Matrix<N,N,Q> (one-way only) ──────────────────
+
+/// (a) Tensor<2,3,Real> -> Matrix<3,3,Real> is allowed (square, matching N).
+#[test]
+fn tensor2_to_square_matrix_real() {
+    let from = Type::Tensor { rank: 2, n: 3, quantity: Box::new(Type::Real) };
+    let to = Type::Matrix { m: 3, n: 3, quantity: Box::new(Type::Real) };
+    assert!(implicitly_converts_to(&from, &to), "Tensor<2,3,Real> should convert to Matrix<3,3,Real>");
+}
+
+/// (b) Tensor<2,3,Scalar[m]> -> Matrix<3,3,Scalar[m]> is allowed.
+#[test]
+fn tensor2_to_square_matrix_length() {
+    let from = Type::Tensor { rank: 2, n: 3, quantity: Box::new(length_scalar()) };
+    let to = Type::Matrix { m: 3, n: 3, quantity: Box::new(length_scalar()) };
+    assert!(implicitly_converts_to(&from, &to), "Tensor<2,3,Scalar[m]> should convert to Matrix<3,3,Scalar[m]>");
+}
+
+/// (c) Matrix<3,3,Real> -> Tensor<2,3,Real> is NOT allowed (Matrix->Tensor is rejected).
+#[test]
+fn matrix_to_tensor2_rejected() {
+    let from = Type::Matrix { m: 3, n: 3, quantity: Box::new(Type::Real) };
+    let to = Type::Tensor { rank: 2, n: 3, quantity: Box::new(Type::Real) };
+    assert!(!implicitly_converts_to(&from, &to), "Matrix<3,3,Real> should NOT convert to Tensor<2,3,Real> (one-way rule)");
+}
+
+/// (d) Tensor<2,3,Real> -> Matrix<3,4,Real> is NOT allowed (non-square matrix).
+#[test]
+fn tensor2_to_non_square_matrix_rejected() {
+    let from = Type::Tensor { rank: 2, n: 3, quantity: Box::new(Type::Real) };
+    let to = Type::Matrix { m: 3, n: 4, quantity: Box::new(Type::Real) };
+    assert!(!implicitly_converts_to(&from, &to), "Tensor<2,3,Real> should NOT convert to Matrix<3,4,Real> (non-square)");
+}
+
+/// (e) Tensor<2,3,Real> -> Matrix<4,4,Real> is NOT allowed (N mismatch).
+#[test]
+fn tensor2_to_matrix_n_mismatch() {
+    let from = Type::Tensor { rank: 2, n: 3, quantity: Box::new(Type::Real) };
+    let to = Type::Matrix { m: 4, n: 4, quantity: Box::new(Type::Real) };
+    assert!(!implicitly_converts_to(&from, &to), "Tensor<2,3,Real> should NOT convert to Matrix<4,4,Real> (N mismatch)");
+}
+
+/// (f) Tensor<1,3,Real> -> Matrix<3,3,Real> is NOT allowed (wrong rank, rank-1 not rank-2).
+#[test]
+fn tensor1_to_matrix_rejected() {
+    let from = Type::Tensor { rank: 1, n: 3, quantity: Box::new(Type::Real) };
+    let to = Type::Matrix { m: 3, n: 3, quantity: Box::new(Type::Real) };
+    assert!(!implicitly_converts_to(&from, &to), "Tensor<1,3,Real> should NOT convert to Matrix<3,3,Real> (rank-1, not rank-2)");
+}
