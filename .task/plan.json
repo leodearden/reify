@@ -1,68 +1,27 @@
 {
-  "task_id": "211",
-  "title": "Meta block access: compiler",
+  "task_id": "231",
+  "title": "Tensor/Matrix: implicit conversions",
   "files": [
-    "tree-sitter-reify/grammar.js",
-    "tree-sitter-reify/src/parser.c",
-    "tree-sitter-reify/src/grammar.json",
-    "tree-sitter-reify/src/node-types.json",
-    "crates/reify-syntax/src/lib.rs",
-    "crates/reify-syntax/src/ts_parser.rs",
-    "crates/reify-types/src/expr.rs",
     "crates/reify-compiler/src/lib.rs",
-    "crates/reify-compiler/tests/meta_compile_tests.rs",
-    "crates/reify-expr/src/lib.rs",
-    "crates/reify-expr/tests/meta_eval_tests.rs"
+    "crates/reify-compiler/tests/implicit_conversion_tests.rs"
   ],
   "modules": [
-    "tree-sitter-reify",
-    "crates/reify-syntax",
-    "crates/reify-types",
-    "crates/reify-compiler",
-    "crates/reify-expr"
+    "crates/reify-compiler"
   ],
-  "analysis": "The task requires implementing `expr.meta.key` access in the compiler, producing a MetaAccess compiled expression. Currently, NO meta block support exists anywhere: not in the tree-sitter grammar, the parser, the AST types, the compiled expression types, or the compiler itself. The language spec (Section 4.8) defines meta blocks as `meta { key = \"value\", ... }` with string-keyed, string-valued entries accessible via dot notation.\n\nThe implementation requires changes across 4 modules:\n1. **tree-sitter-reify**: Add `meta_block` grammar rule as a new `_member` choice\n2. **reify-syntax**: Add `MetaBlockDecl` struct and `MemberDecl::MetaBlock` variant, plus `lower_meta_block()` parser method\n3. **reify-types**: Add `CompiledExprKind::MetaAccess { entity, key }` variant with walk/collect/remap support\n4. **reify-compiler**: Add `meta: HashMap<String, String>` to TopologyTemplate, `meta_entries` to CompilationScope, handle `meta.key` pattern in MemberAccess compilation, validate keys at compile time\n\nThe access pattern `meta.key` within an entity body appears as `MemberAccess { object: Ident(\"meta\"), member: \"key\" }` in the AST. The compiler detects `Ident(\"meta\")` as the object of a MemberAccess, looks up the key in the entity's collected meta entries, and produces a `MetaAccess { entity, key }` expression with result type `Type::String`. Nonexistent keys produce compile-time errors.\n\nExisting compiler tests all use the pattern: parse source -> compile -> inspect template/diagnostics. This requires the full grammar->parser->AST->compiler pipeline to work. The grammar/parser/AST changes are therefore mandatory prerequisites.\n\n**Review fix (steps 13-18):** The MetaAccess evaluator in reify-expr was a stub that always returned Value::Undef via synthetic ValueCellId lookup. This violates the project's 'silent defaults' convention (feedback_silent_defaults_pattern.md). The fix adds an `meta: Option<&HashMap<String, HashMap<String, String>>>` field to EvalContext (entity name \u2192 key \u2192 value), updates the MetaAccess eval arm to look up values from this map, and panics when meta context is missing or key is not found. The EvalContext constructors default meta to None for backward compatibility (40+ existing call sites unchanged); callers that need meta resolution use the new `with_meta()` builder. The reify-eval/reify-runtime wiring to populate meta from TopologyTemplate at runtime is a natural follow-up outside this task's compiler scope.",
+  "analysis": "Task 231 adds implicit type conversion rules to the compiler's type checking infrastructure. The type system already has Type::Tensor { rank, n, quantity } (from task 228) and Type::Matrix { m, n, quantity } will exist after task 229 is merged. Currently, type checking uses strict equality (==) everywhere: overload resolution (line 605), trait conformance (line 4183), and field composition (line 4640). The only soft rule is the dead-code `type_compatible()` function (line 554) which handles Int->Real widening.\n\nThe task requires four conversion rules:\n1. Vector<N,Q> <-> Tensor<1,N,Q>: A rank-1 tensor with matching N and quantity is interchangeable with a Vector.\n2. Scalar<Q> <-> Tensor<0,N,Q> for any N: A rank-0 tensor (scalar) with matching quantity is interchangeable with a Scalar, regardless of N (N is meaningless for rank-0).\n3. Tensor<2,N,Q> -> Matrix<N,N,Q>: A rank-2 square tensor implicitly promotes to an NxN matrix (one-way only).\n4. Matrix -> Tensor: NOT implicit (must produce compile error if attempted).\n\nImplementation approach:\n- Add a `pub fn implicitly_converts_to(from: &Type, to: &Type) -> bool` function that encodes all four rules directionally.\n- Update `type_compatible()` to delegate to `implicitly_converts_to()` (bidirectional check).\n- Wire `implicitly_converts_to()` into trait conformance (line 4183: actual->expected) and field composition (line 4640: codomain->domain).\n- Keep overload resolution exact-match only (changing it would create ambiguity between overloads accepting Vector vs Tensor<1>).\n\nNote: The compiler cannot currently resolve Vector/Tensor/Matrix from source type annotations (resolve_type_name only handles Scalar/Bool/Int/Real/String/Length/Mass). So integration tests that compile full source programs with these types are not yet possible. The tests will call `implicitly_converts_to()` directly with programmatically constructed Type values. The trait conformance and field composition wiring is mechanical (replacing `!=` with function call) and the conversion logic is independently tested.\n\nType representations used in conversions:\n- Vector<3,Scalar[m]> = Type::Vector { n: 3, quantity: Box::new(Type::Scalar { dimension: LENGTH }) }\n- Tensor<1,3,Scalar[m]> = Type::Tensor { rank: 1, n: 3, quantity: Box::new(Type::Scalar { dimension: LENGTH }) }\n- Scalar[m] = Type::Scalar { dimension: LENGTH }\n- Tensor<0,N,Scalar[m]> = Type::Tensor { rank: 0, n: N, quantity: Box::new(Type::Scalar { dimension: LENGTH }) }\n- Matrix<3,3,Real> = Type::Matrix { m: 3, n: 3, quantity: Box::new(Type::Real) } (from task 229)\n- Tensor<2,3,Real> = Type::Tensor { rank: 2, n: 3, quantity: Box::new(Type::Real) }",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "Add `meta_block` and `meta_entry` rules to tree-sitter grammar. meta_block = 'meta' '{' commaSep(meta_entry) '}'. meta_entry = field('key', $.identifier) '=' field('value', $.string_literal). Add meta_block to the `_member` choice. Add 'meta' to the `word` conflicts list if needed.",
+      "description": "Merge task/228 branch (Tensor type/value) into this worktree. Type::Tensor { rank, n, quantity } and Type::tensor(rank, n, q) factory must be available. Already confirmed present in current worktree.",
       "status": "done",
-      "commit": "236ccef94d4c8b31fbaa60faaa110d0c72473b8f",
+      "commit": null,
       "tests": []
     },
     {
       "id": "pre-2",
-      "description": "Regenerate tree-sitter parser: run `tree-sitter generate` in tree-sitter-reify/ to produce updated parser.c, grammar.json, node-types.json.",
-      "status": "done",
-      "commit": "236ccef94d4c8b31fbaa60faaa110d0c72473b8f",
-      "tests": []
-    },
-    {
-      "id": "pre-3",
-      "description": "Add MetaBlockDecl struct to reify-syntax/src/lib.rs: `pub struct MetaBlockDecl { pub entries: Vec<(String, String)>, pub span: SourceSpan }`. Add `MetaBlock(MetaBlockDecl)` variant to the `MemberDecl` enum.",
-      "status": "done",
-      "commit": "766cfe56c1afd378548742050877045d66caf8b8",
-      "tests": []
-    },
-    {
-      "id": "pre-4",
-      "description": "Add `lower_meta_block()` to reify-syntax/src/ts_parser.rs. Handle 'meta_block' in `lower_member()` match. Iterate meta_entry children, extract identifier key and string_literal value (strip quotes). Return `MemberDecl::MetaBlock(MetaBlockDecl { entries, span })`.",
-      "status": "done",
-      "commit": "42d1c60f77bf4f9b3d75ddbd0f554841498ff58b",
-      "tests": []
-    },
-    {
-      "id": "pre-5",
-      "description": "Add `MetaAccess { entity: String, key: String }` variant to `CompiledExprKind` enum in reify-types/src/expr.rs. Add the variant to `walk()` (leaf node, no children), `collect_value_refs_inner()` (no refs), and `remap_entity()` (update entity if it matches from_entity). Add `meta_access(entity, key)` constructor on `CompiledExpr` with tag byte 16, result_type Type::String, content_hash from entity+key.",
-      "status": "done",
-      "commit": "c255c34569f8ce4bc4deb5f9b2a0ba1efd2ea2ab",
-      "tests": []
-    },
-    {
-      "id": "pre-6",
-      "description": "Add `pub meta: HashMap<String, String>` field to `TopologyTemplate` struct in reify-compiler/src/lib.rs. Update the TopologyTemplate construction at the end of compile_entity to include `meta`. Add `meta_entries: HashMap<String, String>` field to `CompilationScope` struct and initialize it as empty in `CompilationScope::new()`.",
-      "status": "done",
-      "commit": "c255c34569f8ce4bc4deb5f9b2a0ba1efd2ea2ab",
+      "description": "Merge task/229 branch (Matrix type/value) into this worktree. Type::Matrix { m, n, quantity } and Type::matrix(m, n, q) factory must be available. Must add Value::Matrix variant and exhaustive match arms. Currently NOT in worktree \u2014 requires merge of task/229 branch.",
+      "status": "pending",
+      "commit": null,
       "tests": []
     }
   ],
@@ -70,210 +29,141 @@
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing test `meta_block_stored_in_template`: compile a structure with `meta { description = \"A bracket\", part_number = \"BR-001\" }` and assert `template.meta` contains both key-value pairs.",
+      "description": "Write failing tests in implicit_conversion_tests.rs for Vector<N,Q> <-> Tensor<1,N,Q> bidirectional conversion. Tests: (a) implicitly_converts_to(Vector{3,Real}, Tensor{1,3,Real}) == true, (b) implicitly_converts_to(Tensor{1,3,Real}, Vector{3,Real}) == true, (c) implicitly_converts_to(Vector{3,Length}, Tensor{1,3,Length}) == true with Scalar quantity, (d) implicitly_converts_to(Vector{2,Real}, Tensor{1,3,Real}) == false (mismatched N). Tests FAIL because implicitly_converts_to() does not exist yet.",
       "status": "done",
-      "commit": "86b9cba2"
+      "commit": "PENDING"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "In compile_entity's first pass (member registration loop), handle `MemberDecl::MetaBlock`: collect entries into a local `meta_entries: HashMap<String, String>` and populate `scope.meta_entries`. In the second pass, skip MetaBlock (already collected). Pass `meta: meta_entries` to the TopologyTemplate construction.",
-      "status": "done",
-      "commit": "0723dd45"
+      "description": "Add `pub fn implicitly_converts_to(from: &Type, to: &Type) -> bool` to crates/reify-compiler/src/lib.rs. Initial implementation: return true for identity (from == to), Vector{n,q} -> Tensor{rank:1,n,q} (matching n and quantity), and Tensor{rank:1,n,q} -> Vector{n,q} (reverse). Return false for all other cases. Remove #[allow(dead_code)] from type_compatible if it references this function.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing test `meta_access_compiles_to_string`: compile a structure with a meta block and `let desc : String = meta.description`. Assert the compiled let's default_expr is `CompiledExprKind::MetaAccess { entity: \"Bracket\", key: \"description\" }` and result_type is `Type::String`.",
-      "status": "done",
-      "commit": "684fa715"
+      "description": "Write failing tests for Scalar<Q> <-> Tensor<0,N,Q> bidirectional conversion. Tests: (a) Scalar{LENGTH} -> Tensor{0,3,Scalar{LENGTH}} == true, (b) Tensor{0,3,Scalar{LENGTH}} -> Scalar{LENGTH} == true, (c) Scalar{ANGLE} -> Tensor{0,5,Scalar{ANGLE}} == true (different N), (d) Scalar{LENGTH} -> Tensor{0,3,Scalar{ANGLE}} == false (mismatched dimension), (e) Type::Real -> Tensor{0,3,Real} == true (dimensionless), (f) Tensor{0,2,Real} -> Type::Real == true. Tests for (e,f) FAIL because Scalar<->Tensor rule not yet implemented.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "In compile_expr_guarded's MemberAccess handler, add a check before the final else-error branch: if object is `Ident(\"meta\")`, look up `member` in `scope.meta_entries`. If found, return `CompiledExpr::meta_access(scope.entity_name.clone(), member.clone())`. If scope.meta_entries is empty, emit error 'entity has no meta block'. If key not found, emit error 'meta block has no key: <key>'.",
-      "status": "done",
-      "commit": "284b605b"
+      "description": "Extend implicitly_converts_to() with Scalar<->Tensor<0> rules. Add match arms: (a) from is any type Q, to is Tensor{rank:0, n:_, quantity:Q} where *quantity == *from -> true (any type can be a rank-0 tensor's element). (b) from is Tensor{rank:0, n:_, quantity:Q}, to is any type where *quantity == *to -> true. This handles Scalar, Real, Int as the quantity type. The N parameter is ignored for rank-0 tensors.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing test `meta_access_nonexistent_key_error`: compile a structure with `meta { a = \"1\" }` and `let x : String = meta.nonexistent`. Assert an error diagnostic containing 'no key' is emitted.",
-      "status": "done",
-      "commit": "09c49888"
+      "description": "Write failing tests for Tensor<2,N,Q> -> Matrix<N,N,Q> one-way conversion and Matrix->Tensor rejection. Tests: (a) Tensor{2,3,Real} -> Matrix{3,3,Real} == true, (b) Tensor{2,3,Length} -> Matrix{3,3,Length} == true, (c) Matrix{3,3,Real} -> Tensor{2,3,Real} == false (REJECTED \u2014 Matrix->Tensor is not implicit), (d) Tensor{2,3,Real} -> Matrix{3,4,Real} == false (non-square mismatch), (e) Tensor{2,3,Real} -> Matrix{4,4,Real} == false (N mismatch), (f) Tensor{1,3,Real} -> Matrix{3,3,Real} == false (wrong rank). Tests FAIL because Matrix rule not implemented.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Verify step-4 implementation handles the nonexistent key case correctly (error diagnostic + Undef fallback). Adjust error message if test reveals mismatch.",
-      "status": "done",
-      "commit": "09c49888"
+      "description": "Extend implicitly_converts_to() with one-way Tensor<2>->Matrix rule. Add match arm: from is Tensor{rank:2, n, quantity}, to is Matrix{m, n:mn, quantity:mq} where n==m && n==mn && quantity==mq -> true. No reverse arm for Matrix->Tensor \u2014 the default false return handles rejection.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing test `meta_access_no_meta_block_error`: compile a structure WITHOUT a meta block that uses `let x : String = meta.foo`. Assert an error diagnostic containing 'no meta block' is emitted.",
-      "status": "done",
-      "commit": "466f7269"
+      "description": "Write comprehensive negative and edge case tests. Tests: (a) identity: implicitly_converts_to(Type::Real, Type::Real) == true, (b) Int->Real: implicitly_converts_to(Int, Real) == false (Int->Real widening is NOT an implicit tensor conversion \u2014 it's a separate concern in type_compatible), (c) Point<3,Real> -> Tensor{1,3,Real} == false (Point is NOT Vector), (d) Vector{3,Real} -> Matrix{3,3,Real} == false (no Vector->Matrix shortcut), (e) Tensor{3,2,Real} -> anything-unexpected == false, (f) Tensor{0,3,Real} -> Tensor{1,3,Real} == false (different ranks, not covered by any rule), (g) unrelated types: Bool -> Tensor{...} == false.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Verify step-4 implementation handles the no-meta-block case (empty meta_entries). Adjust if needed.",
-      "status": "done",
-      "commit": "466f7269"
+      "description": "Review and fix any edge cases revealed by step-7 tests. Ensure identity check is first (from == to), then specific conversion rules, then default false. Should mostly pass already from steps 2/4/6 implementation.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write failing test `duplicate_meta_block_error`: compile a structure with two meta blocks. Assert an error diagnostic about duplicate meta blocks is emitted.",
-      "status": "done",
-      "commit": "18e8d4f1"
+      "description": "Write tests for type_compatible() integration with implicit conversions. Tests: (a) type_compatible(Tensor{1,3,Real}, Vector{3,Real}) == true (bidirectional), (b) type_compatible(Vector{3,Real}, Tensor{1,3,Real}) == true, (c) type_compatible(Real, Int) == true (existing Int->Real widening preserved), (d) type_compatible(Tensor{2,3,Real}, Matrix{3,3,Real}) == true, (e) type_compatible(Matrix{3,3,Real}, Tensor{2,3,Real}) == true (type_compatible is symmetric \u2014 checks both directions). Tests FAIL because type_compatible() still only checks exact match + Int->Real.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "In compile_entity's first pass, track whether a meta block has been seen (bool flag + span). If a second MetaBlock is encountered, emit error 'duplicate meta block' with spans pointing to both. Still collect entries from the first block only.",
-      "status": "done",
-      "commit": "3da02b41"
+      "description": "Update type_compatible() to use implicitly_converts_to(). New logic: (1) if from == to, return true; (2) if Int->Real widening (existing), return true; (3) if implicitly_converts_to(param_ty, arg_ty) || implicitly_converts_to(arg_ty, param_ty), return true; (4) return false. Remove #[allow(dead_code)] annotation. This makes type_compatible bidirectional (either direction of implicit conversion suffices).",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-11",
-      "type": "test",
-      "description": "Write test `meta_access_in_constraint_context`: compile a structure with meta block and a constraint `require meta.tag == \"valid\"`. Assert compilation succeeds with no errors and the constraint expr contains a MetaAccess node with type String.",
-      "status": "done",
-      "commit": "c6228bf7"
+      "type": "impl",
+      "description": "Wire implicitly_converts_to() into trait conformance check at line ~4183. Replace `if actual_type != expected_type` with `if !implicitly_converts_to(actual_type, expected_type)`. Direction: actual (structure member) converts TO expected (trait requirement). This allows a structure to provide Tensor<1,3,Q> where trait requires Vector<3,Q>, or Vector where Tensor<1> is required, but NOT Matrix where Tensor is required.",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "No new implementation expected -- step-4's MemberAccess handler already works for any expression context. This step verifies correctness and adjusts if the test reveals issues.",
-      "status": "done",
-      "commit": "c6228bf7"
-    },
-    {
-      "id": "step-13",
-      "type": "test",
-      "description": "Create `crates/reify-expr/tests/meta_eval_tests.rs`. Write test `eval_meta_access_returns_string_value`: construct `CompiledExpr::meta_access(\"Bracket\".into(), \"description\".into())`. Build a meta map `HashMap<String, HashMap<String, String>>` with {\"Bracket\": {\"description\": \"A bracket\"}}. Create an EvalContext via `EvalContext::simple(&values).with_meta(&meta_map)`. Call `eval_expr(&expr, &ctx)` and assert result == `Value::String(\"A bracket\".to_string())`. Also write test `eval_meta_access_is_not_undef` with the same setup asserting result != `Value::Undef`. These tests will fail because EvalContext has no `meta` field and no `with_meta()` method.",
-      "status": "done",
-      "commit": "d09e2898"
-    },
-    {
-      "id": "step-14",
-      "type": "impl",
-      "description": "In `crates/reify-expr/src/lib.rs`: (1) Add `use std::collections::HashMap;`. (2) Add field `pub meta: Option<&'a HashMap<String, HashMap<String, String>>>` to EvalContext. (3) Set `meta: None` in `new()`, `simple()`, and propagate `meta: self.meta` in `with_scope()`. (4) Add builder method `pub fn with_meta(mut self, meta: &'a HashMap<String, HashMap<String, String>>) -> Self { self.meta = Some(meta); self }`. (5) Replace the MetaAccess eval arm entirely: remove synthetic `__meta_` ValueCellId logic. If `ctx.meta` is None, panic with \"MetaAccess evaluation requires meta context in EvalContext\". If Some, look up entity in outer map then key in inner map. If found, return `Value::String(value.clone())`. If entity not found, panic with \"MetaAccess: entity '{entity}' not found in meta context\". If key not found, panic with \"MetaAccess: key '{key}' not found in entity '{entity}' meta\".",
-      "status": "done",
-      "commit": "aa02577b"
-    },
-    {
-      "id": "step-15",
-      "type": "test",
-      "description": "Write test `eval_meta_access_multiple_keys` in meta_eval_tests.rs: build a meta map with entity \"Widget\" having keys {\"name\": \"Gear\", \"version\": \"2.0\", \"material\": \"steel\"}. Eval MetaAccess for each key and assert each returns the correct Value::String. Confirms multi-key entity lookup works correctly.",
-      "status": "done",
-      "commit": "eaecdcb1"
-    },
-    {
-      "id": "step-16",
-      "type": "impl",
-      "description": "Should pass from step-14 implementation. Verify and adjust if needed.",
-      "status": "done",
-      "commit": "eaecdcb1"
-    },
-    {
-      "id": "step-17",
-      "type": "test",
-      "description": "Write test `eval_meta_access_no_context_panics` in meta_eval_tests.rs with `#[should_panic(expected = \"MetaAccess evaluation requires meta context\")]`: create a MetaAccess(\"Bracket\", \"description\") expression and evaluate with `EvalContext::simple(&values)` (meta defaults to None). Asserts that evaluation panics rather than silently returning Undef \u2014 enforcing the project's 'silent defaults should be noisy' convention from feedback_silent_defaults_pattern.md.",
-      "status": "done",
-      "commit": "eebe807e"
-    },
-    {
-      "id": "step-18",
-      "type": "impl",
-      "description": "Should pass from step-14 implementation (panic path when ctx.meta is None). Verify panic message matches the #[should_panic(expected)] string and adjust if needed.",
-      "status": "done",
-      "commit": "eebe807e"
+      "description": "Wire implicitly_converts_to() into field composition type check at line ~4640. Replace `if inner_field.codomain_type != outer_field.domain_type` with `if !implicitly_converts_to(&inner_field.codomain_type, &outer_field.domain_type)`. Direction: inner codomain converts TO outer domain. This allows field composition where inner returns Vector<3,Q> and outer expects Tensor<1,3,Q>, etc.",
+      "status": "pending",
+      "commit": null
     }
   ],
   "design_decisions": [
     {
-      "decision": "MetaAccess as a dedicated CompiledExprKind variant (not a Literal)",
-      "rationale": "The task explicitly says 'resolve to a MetaAccess compiled expression' and 'store meta block contents in TopologyTemplate for runtime access'. Using a dedicated variant allows the evaluator (future task) to resolve meta values from the TopologyTemplate at runtime, which is needed for cross-entity meta access (e.g., sub.meta.key)."
+      "decision": "implicitly_converts_to() is a directional function (from -> to), not symmetric",
+      "rationale": "The Tensor<2,N,Q> -> Matrix<N,N,Q> rule is one-way only. A directional API naturally expresses this asymmetry. Callers that need bidirectional checking (like type_compatible) call it both ways. Callers that need directional checking (trait conformance: actual->expected, field composition: codomain->domain) call it once in the correct direction."
     },
     {
-      "decision": "Meta entries stored in CompilationScope rather than passed as a separate parameter",
-      "rationale": "Consistent with how port_names, collection_sub_names, and collection_sub_member_types are stored in CompilationScope. The scope is already threaded through compile_expr_guarded, so no signature changes needed."
+      "decision": "Overload resolution stays exact-match only \u2014 implicit conversions NOT applied there",
+      "rationale": "Adding implicit conversions to overload resolution would create ambiguity: fn f(x: Vector<3,Real>) and fn f(x: Tensor<1,3,Real>) would both match a Vector argument. The existing exact-matching design (from task 171) deliberately avoids this. Implicit conversions are applied at type-compatibility boundaries (trait conformance, field composition), not at dispatch boundaries."
     },
     {
-      "decision": "Grammar/parser/AST changes included as prerequisites despite module scope being crates/reify-compiler",
-      "rationale": "All compiler tests parse source code through reify_syntax::parse(). Without grammar+parser support for meta blocks, no compiler tests can be written. These are minimal, mechanical changes that enable the core compiler work."
+      "decision": "Scalar<Q> <-> Tensor<0,N,Q> applies to any quantity type Q, not just Type::Scalar",
+      "rationale": "The task notation Scalar<Q> uses 'Scalar' loosely to mean 'a single value'. A rank-0 tensor with quantity Real is conceptually just a Real. Matching on the quantity type (*quantity == *from) handles Type::Scalar{dim}, Type::Real, Type::Int naturally without special-casing each."
     },
     {
-      "decision": "Single-level meta access pattern: Ident(\"meta\") as MemberAccess object",
-      "rationale": "Within an entity body, `meta.key` is the natural access pattern. The AST represents this as MemberAccess { object: Ident(\"meta\"), member: key }. Cross-entity access (sub.meta.key) is a nested MemberAccess pattern that can be added later when sub-component member access is fully supported."
+      "decision": "implicitly_converts_to() is pub for direct testing from integration tests",
+      "rationale": "The function encodes important policy (which conversions are allowed). Making it pub allows thorough testing from the crate's tests/ directory using programmatically constructed Type values, without needing to compile full source programs. Currently, the compiler cannot resolve Vector/Tensor/Matrix from source type annotations (resolve_type_name doesn't handle them), so source-level integration tests aren't possible yet."
     },
     {
-      "decision": "MetaAccess stores entity name as String, not ValueCellId",
-      "rationale": "Meta access is not a value cell reference -- it accesses the TopologyTemplate's meta HashMap at runtime. The entity name identifies which template to look up. This avoids conflating meta access with the value cell dependency graph."
+      "decision": "Trait conformance and field composition wired without dedicated integration tests",
+      "rationale": "The wiring is mechanical \u2014 replacing `actual_type != expected_type` with `!implicitly_converts_to(actual, expected)`. The conversion logic is independently and thoroughly tested via direct calls. Source-level integration tests will become possible when a future task adds Vector/Tensor/Matrix to resolve_type_name()."
     },
     {
-      "decision": "Meta block check positioned after port/collection checks but before generic method/error path in MemberAccess handler",
-      "rationale": "Port and collection checks are more common and should short-circuit first. The meta check uses Ident(\"meta\") detection which won't conflict with ports/collections since 'meta' is a language keyword."
-    },
-    {
-      "decision": "EvalContext.meta as Option<&HashMap<String, HashMap<String, String>>> with None default",
-      "rationale": "Adding meta as an Option preserves backward compatibility for all 40+ existing EvalContext::new/simple call sites \u2014 they continue to work with meta: None. Only callers that need meta resolution opt in via the with_meta() builder. The outer HashMap maps entity name to meta entries, supporting future cross-entity meta access. Panic on None (instead of silent Undef) follows the project's 'silent defaults should be noisy' convention from feedback_silent_defaults_pattern.md."
-    },
-    {
-      "decision": "Panic (not Value::Undef) when MetaAccess eval lacks meta context or key",
-      "rationale": "The compiler validates meta keys at compile time (step-5/step-7), so a runtime MetaAccess with a missing key indicates a bug in the wiring between compiler and evaluator \u2014 not a user error. Panicking makes this immediately visible rather than silently producing wrong values. This directly addresses the review findings about violating feedback_silent_defaults_pattern.md."
-    },
-    {
-      "decision": "Runtime wiring in reify-eval/reify-runtime deferred to follow-up",
-      "rationale": "The Engine in reify-eval has access to TopologyTemplate.meta and can build the entity\u2192meta HashMap to pass via EvalContext::with_meta(). However, this involves modifying ConcurrentEditSetup and the concurrent evaluator \u2014 separate modules with their own concurrency concerns. The eval arm is now correct and tested at the reify-expr level; wiring it into the full runtime is a natural follow-up task."
+      "decision": "type_compatible() checks BOTH directions for implicit conversion",
+      "rationale": "type_compatible(a, b) answers 'can a and b be used interchangeably?' It calls implicitly_converts_to() in both directions. This is appropriate for contexts where the direction is ambiguous (e.g., testing if two types are assignment-compatible). Directional contexts (trait conformance, field composition) call implicitly_converts_to() directly."
     }
   ],
   "reuse": [
     {
-      "what": "compile_module() / compile_first_template() test helpers",
-      "where": "crates/reify-compiler/tests/occurrence_compile_tests.rs",
-      "how": "Copy the helper pattern: parse source with reify_syntax::parse(), compile with reify_compiler::compile(), extract first template and diagnostics."
+      "what": "Test pattern: parse source -> compile -> inspect diagnostics/templates",
+      "where": "crates/reify-compiler/tests/fn_overload_tests.rs, trait_conformance_tests.rs",
+      "how": "Follow the pattern: let parsed = reify_syntax::parse(source, ModulePath::single(\"test\")); let compiled = reify_compiler::compile(&parsed); then inspect compiled.diagnostics for errors."
     },
     {
-      "what": "MemberAccess compilation pattern",
-      "where": "crates/reify-compiler/src/lib.rs lines 1103-1221",
-      "how": "Follow the existing if-let chain pattern for detecting access patterns (port, collection, method). Add meta detection as another branch before the final else-error."
+      "what": "Type factory methods for constructing test types",
+      "where": "crates/reify-types/src/ty.rs",
+      "how": "Use Type::vec3(q), Type::tensor(rank, n, q), Type::matrix(m, n, q), Type::length(), Type::Scalar { dimension: DimensionVector::LENGTH }, Type::Real etc. to construct test types cleanly."
     },
     {
-      "what": "CompiledExpr constructor pattern",
-      "where": "crates/reify-types/src/expr.rs (literal, value_ref, binop, etc.)",
-      "how": "Follow the pattern: unique tag byte (16), combine content hashes of fields, return CompiledExpr { kind, result_type, content_hash }."
+      "what": "Existing type_compatible() function structure",
+      "where": "crates/reify-compiler/src/lib.rs line 554",
+      "how": "Preserve the existing function's role and extend it. It already handles identity and Int->Real widening. Add implicitly_converts_to() delegation without removing existing rules."
     },
     {
-      "what": "walk()/collect_value_refs_inner()/remap_entity() leaf node pattern",
-      "where": "crates/reify-types/src/expr.rs (Literal, OptionNone)",
-      "how": "MetaAccess is a leaf node (no sub-expressions), so walk/collect are no-ops. remap_entity needs to update the entity field, following the ValueRef pattern."
+      "what": "Trait conformance type comparison site",
+      "where": "crates/reify-compiler/src/lib.rs line ~4183",
+      "how": "Replace `if actual_type != expected_type` with `if !implicitly_converts_to(actual_type, expected_type)`. Same error message format, just a broader compatibility check."
     },
     {
-      "what": "lower_member() dispatch pattern",
-      "where": "crates/reify-syntax/src/ts_parser.rs line 825",
-      "how": "Add 'meta_block' case to the match, following the check_and_lower! macro pattern used by other member types."
-    },
-    {
-      "what": "Diagnostic error pattern with span labels",
-      "where": "crates/reify-compiler/src/lib.rs (port member errors, type errors)",
-      "how": "Use Diagnostic::error(message).with_label(DiagnosticLabel::new(span, hint)) followed by returning CompiledExpr::literal(Value::Undef, Type::String) as fallback."
-    },
-    {
-      "what": "Eval test pattern: construct CompiledExpr + EvalContext, call eval_expr, assert result",
-      "where": "crates/reify-expr/tests/option_eval_tests.rs",
-      "how": "Follow the pattern: build a CompiledExpr via constructor (e.g. meta_access), create ValueMap + EvalContext::simple(), call eval_expr(&expr, &ctx), assert on Value variant. For meta tests, chain with_meta() on the EvalContext."
-    },
-    {
-      "what": "EvalContext builder/propagation pattern",
-      "where": "crates/reify-expr/src/lib.rs (with_scope method)",
-      "how": "with_scope creates a new EvalContext propagating functions and recursion_depth while replacing values. The with_meta() builder follows the same self-modifying pattern \u2014 take mut self, set field, return self."
+      "what": "Field composition type comparison site",
+      "where": "crates/reify-compiler/src/lib.rs line ~4640",
+      "how": "Replace `if inner_field.codomain_type != outer_field.domain_type` with `if !implicitly_converts_to(&inner_field.codomain_type, &outer_field.domain_type)`. Same error format."
     }
   ],
-  "_session_id": "211-2be81429",
-  "_created_at": "2026-03-25T11:25:45.273914+00:00"
+  "_session_id": "231-fa4f27b6",
+  "_created_at": "2026-03-25T11:50:07.950613+00:00"
 }
