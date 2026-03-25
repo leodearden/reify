@@ -9,7 +9,7 @@
   "modules": [
     "gui/src-tauri/src"
   ],
-  "analysis": "Both S6 and S7 review items from task 139 are partially or fully addressed in the current code:\n\n**S6 (CloseRequested):** Already implemented. main.rs line 442 uses `WindowEvent::CloseRequested { .. }` with correct comments explaining why it's preferred over Destroyed. The `shutdown_sidecar` function is already tested. No code changes needed \u2014 just verify.\n\n**S7 (Extract spawn logic):** `spawn_sidecar_impl` already exists in claude_bridge.rs (lines 451-486) and is called from main.rs line 320. However, the Tauri command `claude_send_message` (main.rs lines 298-358) still has ~55 lines that include: path resolution (AppHandle-required), lazy-spawn mutex logic, ready notification subscription, and timeout waiting. The lazy-spawn + ready-wait pattern is untestable because it's embedded in the Tauri command handler.\n\n**Remaining work:** Extract the lazy-spawn + ready-wait pattern into `pub async fn ensure_sidecar_ready<F, Fut>(sidecar, spawn_fn, timeout)` in claude_bridge.rs. This generic async function takes a spawn closure, making the pattern fully testable without Tauri. The Tauri command shrinks from ~55 lines to ~20 lines (just path resolution + two function calls). Also add edge-case tests for shutdown_sidecar on empty slot and wait_ready on crash.\n\n**Post-review fixes (steps 15-24):** Three blocking issues found in review:\n1. **Race condition (line 549):** `notify.notified()` is called AFTER the sidecar mutex guard is dropped. On a multi-threaded executor, the reader task can process the ready message and call `notify_waiters()` before the Notified future is registered, causing a lost wakeup and spurious timeout. Fix: move `let notified = notify.notified()` inside the lock scope.\n2. **Slot cleanup on failure:** When Phase 2 (timeout) or Phase 3 (crash/non-ready) returns Err, the spawned handle remains in the slot. Next call sees `is_some()` and returns Ok immediately, leaving callers with a broken sidecar. Fix: clear the slot on all error paths after the handle has been stored.\n3. **Fast-path readiness check:** The `is_some()` early return doesn't verify the handle is actually Ready. A Crashed handle persists forever. Fix: check `SidecarState::Ready` in the fast path; if not ready, clear the slot and fall through to re-spawn.",
+  "analysis": "Both S6 and S7 review items from task 139 are partially or fully addressed in the current code:\n\n**S6 (CloseRequested):** Already implemented. main.rs line 442 uses `WindowEvent::CloseRequested { .. }` with correct comments explaining why it's preferred over Destroyed. The `shutdown_sidecar` function is already tested. No code changes needed \u2014 just verify.\n\n**S7 (Extract spawn logic):** `spawn_sidecar_impl` already exists in claude_bridge.rs (lines 451-486) and is called from main.rs line 320. However, the Tauri command `claude_send_message` (main.rs lines 298-358) still has ~55 lines that include: path resolution (AppHandle-required), lazy-spawn mutex logic, ready notification subscription, and timeout waiting. The lazy-spawn + ready-wait pattern is untestable because it's embedded in the Tauri command handler.\n\n**Remaining work:** Extract the lazy-spawn + ready-wait pattern into `pub async fn ensure_sidecar_ready<F, Fut>(sidecar, spawn_fn, timeout)` in claude_bridge.rs. This generic async function takes a spawn closure, making the pattern fully testable without Tauri. The Tauri command shrinks from ~55 lines to ~20 lines (just path resolution + two function calls). Also add edge-case tests for shutdown_sidecar on empty slot and wait_ready on crash.\n\n**Post-review fixes (steps 15-24):** Three blocking issues found in review:\n1. **Race condition (line 549):** `notify.notified()` is called AFTER the sidecar mutex guard is dropped. On a multi-threaded executor, the reader task can process the ready message and call `notify_waiters()` before the Notified future is registered, causing a lost wakeup and spurious timeout. Fix: move `let notified = notify.notified()` inside the lock scope.\n2. **Slot cleanup on failure:** When Phase 2 (timeout) or Phase 3 (crash/non-ready) returns Err, the spawned handle remains in the slot. Next call sees `is_some()` and returns Ok immediately, leaving callers with a broken sidecar. Fix: clear the slot on all error paths after the handle has been stored.\n3. **Fast-path readiness check:** The `is_some()` early return doesn't verify the handle is actually Ready. A Crashed handle persists forever. Fix: check `SidecarState::Ready` in the fast path; if not ready, clear the slot and fall through to re-spawn.\n\n**Second review fixes (steps 25-32):** Three additional blocking issues:\n1. **Resource leak in Phase 1 (lines 550-552):** Stale-handle eviction uses `*guard = None` without calling `handle.kill().await`. The SidecarHandle has no Drop impl and `spawn_sidecar_impl` doesn't set `kill_on_drop(true)` on the Command, so dropping the handle leaves the OS process running as an orphan and detaches the reader task. Fix: call `guard.take()` + `h.kill().await` before clearing \u2014 same pattern as `shutdown_sidecar`.\n2. **Resource leak in Phase 2/3 (lines 578-614):** Timeout, crash, and unexpected-state cleanup paths also use `*guard = None` without killing. Same orphan process / detached reader issue. Fix: `guard.take()` + `h.kill().await` on all error cleanup paths.\n3. **Race condition \u2014 lock held across spawn (lines 533-568):** The sidecar Mutex is held for the entire duration of `spawn_fn().await?`. While this prevents double-spawning, it blocks `shutdown_sidecar` for the full spawn duration. If the CloseRequested handler fires during spawning, shutdown blocks until spawn completes. Fix: release the lock before spawning, subscribe to ready_notify immediately after spawn (before re-locking), then re-lock to store the handle with a double-check for concurrent callers.",
   "prerequisites": [],
   "steps": [
     {
@@ -179,6 +179,62 @@
       "description": "Write test `ensure_sidecar_ready_respawns_starting_stale_handle`: pre-populate the sidecar slot with a handle in `SidecarState::Starting` (simulating a previous spawn that never completed). Provide a working spawn_fn. Call ensure_sidecar_ready. Verify the stale Starting handle is cleared, spawn_fn is called, and the function returns Ok(()) with a new Ready handle. This covers the edge case where a previous ensure_sidecar_ready was interrupted (e.g., by task cancellation) leaving a Starting handle.",
       "status": "done",
       "commit": "01668dbc"
+    },
+    {
+      "id": "step-25",
+      "type": "test",
+      "description": "Write test `ensure_sidecar_ready_kills_evicted_stale_handle`: pre-populate the sidecar slot with a Crashed handle whose state Arc is cloned before storing (old_state). Keep the duplex writer alive so the reader doesn't EOF independently. Call ensure_sidecar_ready with a working spawn_fn. After Ok, verify that `*old_state.lock().await` is `SidecarState::NotStarted` \u2014 proving kill() was called on the evicted handle (kill sets NotStarted), not just dropped (drop would leave state as Crashed since SidecarHandle has no Drop impl). This test will fail with the current code because Phase 1 stale-handle eviction does `*guard = None` without calling kill().",
+      "status": "done",
+      "commit": "88170516"
+    },
+    {
+      "id": "step-26",
+      "type": "impl",
+      "description": "Fix resource leak in Phase 1 stale-handle eviction: replace `*guard = None;` (line 552) with `if let Some(mut h) = guard.take() { h.kill().await; }`. This calls SidecarHandle::kill() which: (1) SIGKILLs the OS child process and waits for it, (2) aborts the reader JoinHandle, (3) sets state to NotStarted. This matches the cleanup pattern used by shutdown_sidecar and prevents orphan OS processes and detached reader tasks.",
+      "status": "done",
+      "commit": "d7969cd7"
+    },
+    {
+      "id": "step-27",
+      "type": "test",
+      "description": "Write test `ensure_sidecar_ready_kills_handle_on_timeout_cleanup`: create a shared state Arc (SidecarState::Starting), pass it to spawn_fn which returns a handle that never sends ready (duplex stays open, held_writer kept alive). Call ensure_sidecar_ready with 100ms timeout. After Err, verify `*shared_state.lock().await` is `SidecarState::NotStarted` \u2014 proving kill() was called during timeout cleanup. With the current code this fails because the timeout path does `*guard = None` without kill, leaving state as Starting.",
+      "status": "done",
+      "commit": "4c895c15"
+    },
+    {
+      "id": "step-28",
+      "type": "test",
+      "description": "Write test `ensure_sidecar_ready_kills_handle_on_crash_cleanup`: create a shared state Arc (SidecarState::Starting), pass it to spawn_fn which returns a handle whose data_writer is dropped immediately (triggers EOF \u2192 Crashed). Call ensure_sidecar_ready. After Err, verify `*shared_state.lock().await` is `SidecarState::NotStarted` \u2014 proving kill() was called during crash cleanup. The on_exit callback's check `if !matches!(*s, NotStarted)` ensures it doesn't overwrite NotStarted regardless of task scheduling order.",
+      "status": "done",
+      "commit": "4c895c15"
+    },
+    {
+      "id": "step-29",
+      "type": "impl",
+      "description": "Fix resource leak in all error cleanup paths: replace `*guard = None;` with `if let Some(mut h) = guard.take() { h.kill().await; }` at three locations \u2014 Phase 2 timeout (line 585, inside the ptr_eq guard), Phase 3 crash (line 603, inside the ptr_eq guard), and Phase 3 unexpected-state (line 614, inside the ptr_eq guard). The ptr_eq check ensures we only kill our own handle, not one placed by a concurrent caller. This eliminates orphan processes and detached reader tasks on all error paths.",
+      "status": "done",
+      "commit": "415d22b6"
+    },
+    {
+      "id": "step-30",
+      "type": "test",
+      "description": "Write test `shutdown_not_blocked_during_ensure_sidecar_ready_spawn`: use `#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]`. Create a spawn_fn that blocks on a `tokio::sync::oneshot::channel` (controlled delay simulating slow process creation). Start ensure_sidecar_ready in a background tokio::spawn. Yield briefly (tokio::task::yield_now) to let it enter spawn_fn. Call shutdown_sidecar wrapped in `tokio::time::timeout(Duration::from_millis(200), ...)`. Assert the timeout does NOT fire \u2014 shutdown must complete quickly because the lock is released before spawn_fn runs. Then signal spawn_fn via the oneshot channel. Await the background task to verify ensure_sidecar_ready also completes.",
+      "status": "done",
+      "commit": "a955292e"
+    },
+    {
+      "id": "step-31",
+      "type": "impl",
+      "description": "Refactor ensure_sidecar_ready to spawn outside the lock, eliminating the long async critical section. New structure: Phase 1 \u2014 lock, check existing handle (if Ready return Ok, if stale take+kill), drop guard (lock released before spawning). Phase 2 \u2014 call spawn_fn().await? outside the lock so shutdown_sidecar can proceed concurrently. Clone ready_notify and state Arcs, then subscribe to ready notification IMMEDIATELY (let notified = notify_arc.notified()) before re-locking \u2014 this prevents lost wakeups since the reader task may call notify_waiters() on another thread. Phase 3 \u2014 re-lock, double-check for concurrent callers (if slot contains a Ready handle placed by another caller, kill our handle and return Ok; if slot contains a non-Ready handle, take+kill it), store our handle, drop guard. Phase 4 \u2014 await notified with timeout. Phase 5 \u2014 check state (Ready/Crashed/other). All error paths after handle storage use ptr_eq compare-and-take+kill. Update docstring to explain the lock-free spawn window and concurrent-caller guard.",
+      "status": "done",
+      "commit": "d181723d"
+    },
+    {
+      "id": "step-32",
+      "type": "test",
+      "description": "Run full test suite (`cargo test -p reify-gui --lib`) to verify no regressions from all fixes. All 24+ claude_bridge tests must pass, including the multi-thread race test (step-15) which validates the notified-before-unlock invariant is preserved in the new code structure.",
+      "status": "done",
+      "commit": "d181723d"
     }
   ],
   "design_decisions": [
@@ -209,6 +265,22 @@
     {
       "decision": "Fast-path checks SidecarState::Ready, not just is_some()",
       "rationale": "Review finding: a Crashed or stale Starting handle is permanently stuck if the fast path only checks existence. Checking Ready state and clearing non-Ready handles enables automatic recovery without requiring an explicit shutdown_sidecar call from the caller."
+    },
+    {
+      "decision": "Kill before clear \u2014 call handle.kill().await on all eviction/cleanup paths, not just *guard = None",
+      "rationale": "SidecarHandle has no Drop impl and spawn_sidecar_impl does not set kill_on_drop(true) on tokio::process::Command. Dropping a SidecarHandle via `*guard = None` leaves the OS child process running as an orphan and detaches the reader JoinHandle (continues calling event_sink, emitting duplicate events). kill() properly: (1) SIGKILLs and reaps the child, (2) aborts the reader task, (3) sets state to NotStarted. All eviction/cleanup paths must use guard.take() + h.kill().await to match the pattern in shutdown_sidecar."
+    },
+    {
+      "decision": "Spawn sidecar process outside the Mutex lock scope",
+      "rationale": "Holding the sidecar Mutex across spawn_fn().await blocks shutdown_sidecar for the entire duration of OS process creation. If CloseRequested fires during spawning, the shutdown handler waits until spawn completes. Releasing the lock before spawn_fn and re-acquiring to store the handle eliminates this blocking window. The ready_notify subscription is created immediately after spawn (before re-lock) to prevent lost wakeups. A double-check on re-lock handles the rare concurrent-caller case safely."
+    },
+    {
+      "decision": "Double-check pattern on re-lock after spawning outside the lock",
+      "rationale": "When the lock is released during spawn, a concurrent ensure_sidecar_ready or manual spawn could store a handle in the slot. On re-lock, if the slot contains a Ready handle from another caller, we kill our redundant handle and return Ok (first-ready-wins semantic). If the slot contains a non-Ready handle, we kill it and store ours. This makes concurrent calls safe without requiring external serialization."
+    },
+    {
+      "decision": "Verify kill via shared state Arc in tests \u2014 NotStarted proves kill, unchanged state proves drop-without-kill",
+      "rationale": "Since SidecarHandle has no Drop impl, dropping without kill leaves the state unchanged (Crashed stays Crashed, Starting stays Starting). kill() explicitly sets state to NotStarted. Tests clone the state Arc before eviction and check for NotStarted afterward, reliably distinguishing kill from drop regardless of task scheduling order. The on_exit callback's `if !matches!(*s, NotStarted)` guard prevents it from overwriting NotStarted."
     }
   ],
   "reuse": [
@@ -236,8 +308,18 @@
       "what": "SidecarHandle::state() accessor",
       "where": "claude_bridge.rs line 292",
       "how": "Used in fast-path readiness check (step-22) to inspect handle state without consuming the handle. Also used in new tests to verify state transitions."
+    },
+    {
+      "what": "SidecarHandle::kill() method",
+      "where": "claude_bridge.rs line 348",
+      "how": "Already implements proper cleanup: SIGKILL child + wait, abort reader, set NotStarted. All eviction/cleanup paths in ensure_sidecar_ready must call this via guard.take() + h.kill().await instead of just *guard = None."
+    },
+    {
+      "what": "shutdown_sidecar's take+kill pattern",
+      "where": "claude_bridge.rs line 491-496",
+      "how": "The pattern `if let Some(handle) = guard.as_mut() { handle.kill().await; } *guard = None;` is the reference implementation for proper handle cleanup. All new cleanup paths in ensure_sidecar_ready follow this pattern."
     }
   ],
   "_session_id": "353-e582c4ce",
-  "_created_at": "2026-03-25T17:39:09.354626+00:00"
+  "_created_at": "2026-03-25T18:19:43.624608+00:00"
 }
