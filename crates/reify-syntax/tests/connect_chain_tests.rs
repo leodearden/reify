@@ -347,6 +347,32 @@ fn parse_connect_mapping_before_param() {
     assert_eq!(connect.port_mappings[0].1, "input_bore");
 }
 
+// ── task-396 step-5: malformed port mapping emits diagnostic ──────────
+
+#[test]
+fn connect_body_malformed_mapping_emits_diagnostic() {
+    // `{ shaft -> }` has a "from" but no "to"; tree-sitter error recovery
+    // may produce a port_mapping with has_error() or missing fields, which
+    // lower_connect_body currently silently skips.
+    let (_decls, errors) = parse_decls(
+        "structure S { port a : out T  port b : in T  connect a -> b { shaft -> } }",
+    );
+    assert!(
+        !errors.is_empty(),
+        "expected at least one parse error for malformed port mapping, got none"
+    );
+    assert!(
+        errors.iter().any(|e| {
+            e.message.contains("connect body")
+                || e.message.contains("port mapping")
+                || e.message.contains("syntax error")
+                || e.message.contains("invalid connect")
+        }),
+        "expected an error mentioning connect body or port mapping issue, got: {:?}",
+        errors
+    );
+}
+
 // ── task-396 step-3: malformed param in connect body emits diagnostic ─
 
 #[test]
