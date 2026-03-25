@@ -81,6 +81,20 @@ impl Value {
         matches!(self, Value::Undef)
     }
 
+    /// Convert a Value::Matrix to nested Value::Tensor (rank-2 Tensor where each element is
+    /// a Tensor row). All other variants are returned unchanged.
+    ///
+    /// This method exists to support the reify-expr evaluator pipeline. The module boundary
+    /// coupling (reify-types knowing about reify-expr conventions) is an accepted design trade-off.
+    pub fn canonicalize_matrix(self) -> Self {
+        match self {
+            Value::Matrix(rows) => {
+                Value::Tensor(rows.into_iter().map(Value::Tensor).collect())
+            }
+            other => other,
+        }
+    }
+
     /// Get the f64 value if this is a numeric type.
     pub fn as_f64(&self) -> Option<f64> {
         match self {
