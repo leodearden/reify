@@ -329,31 +329,18 @@ impl OcctKernel {
                 .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
             GeometryOp::Loft { profiles } => {
-                match profiles.len() {
-                    0 | 1 => {
-                        return Err(GeometryError::OperationFailed(
-                            "Loft requires at least 2 profiles".into(),
-                        ));
-                    }
-                    2 => {
-                        let w1 = self.get_shape(profiles[0])?;
-                        let w2 = self.get_shape(profiles[1])?;
-                        ffi::ffi::loft_two_profiles(w1, w2)
-                            .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
-                    }
-                    3 => {
-                        let w1 = self.get_shape(profiles[0])?;
-                        let w2 = self.get_shape(profiles[1])?;
-                        let w3 = self.get_shape(profiles[2])?;
-                        ffi::ffi::loft_three_profiles(w1, w2, w3)
-                            .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
-                    }
-                    n => {
-                        return Err(GeometryError::OperationFailed(
-                            format!("Loft with {} profiles not yet supported (max 3)", n),
-                        ));
-                    }
+                if profiles.len() < 2 {
+                    return Err(GeometryError::OperationFailed(
+                        "Loft requires at least 2 profiles".into(),
+                    ));
                 }
+                let mut vec = ffi::ffi::new_shape_vec();
+                for &pid in profiles {
+                    let shape = self.get_shape(pid)?;
+                    ffi::ffi::shape_vec_push(vec.pin_mut(), shape);
+                }
+                ffi::ffi::loft_profiles(&vec)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
             GeometryOp::Draft {
                 target,
