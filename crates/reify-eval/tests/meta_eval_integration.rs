@@ -4,9 +4,11 @@
 //! edit_param paths, and cached eval all resolve correctly when the Engine
 //! wires meta_map into EvalContext.
 
+use reify_compiler::{ValueCellDecl, ValueCellKind, Visibility};
 use reify_eval::Engine;
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
+use reify_test_support::builders::value_ref_typed;
 use reify_types::*;
 
 /// step-3: Parent can access child template meta via meta_access("Child", key).
@@ -134,5 +136,114 @@ fn eval_meta_access_in_let_binding() {
         result.values.get(&label_id),
         Some(&Value::String("A widget".to_string())),
         "let binding with MetaAccess should resolve to the meta value"
+    );
+}
+
+/// step-7: A let member inside a guarded group (guard=true) using meta_access
+/// resolves to the meta value.
+///
+/// Build template 'S' with:
+///   - meta {"mode": "active"}
+///   - Bool param 'active' (default true)
+///   - Guarded group: guard_expr = ValueRef(active), one Let member 'mode_label'
+///     whose default_expr is meta_access("S", "mode")
+/// After eval(), mode_label should == Value::String("active").
+#[test]
+fn eval_meta_access_in_guarded_group() {
+    let guard_id = ValueCellId::new("S", "__guard_0");
+    let mode_label_id = ValueCellId::new("S", "mode_label");
+
+    let guard_expr = value_ref_typed("S", "active", Type::Bool);
+    let meta_expr = CompiledExpr::meta_access("S".to_string(), "mode".to_string());
+
+    // The guarded member: a Let binding whose expr is meta_access
+    let mode_label_decl = ValueCellDecl {
+        id: mode_label_id.clone(),
+        kind: ValueCellKind::Let,
+        visibility: Visibility::Public,
+        cell_type: Type::String,
+        default_expr: Some(meta_expr),
+        span: SourceSpan::new(0, 0),
+    };
+
+    let template = TopologyTemplateBuilder::new("S")
+        .meta(
+            [("mode".to_string(), "active".to_string())]
+                .into_iter()
+                .collect(),
+        )
+        .param(
+            "S",
+            "active",
+            Type::Bool,
+            Some(CompiledExpr::literal(Value::Bool(true), Type::Bool)),
+        )
+        .guarded_group(
+            guard_expr,
+            guard_id.clone(),
+            vec![mode_label_decl], // members (active when guard=true)
+            vec![],                // constraints
+            vec![],                // else_members
+            vec![],                // else_constraints
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+    let result = engine.eval(&module);
+
+    assert_eq!(
+        result.values.get(&guard_id),
+        Some(&Value::Bool(true)),
+        "guard cell should evaluate to true"
+    );
+    assert_eq!(
+        result.values.get(&mode_label_id),
+        Some(&Value::String("active".to_string())),
+        "guarded Let member with MetaAccess should resolve to 'active' when guard=true"
+    );
+}
+
+/// step-9: eval_cached() resolves MetaAccess expressions correctly.
+///
+/// Build template 'Widget' with meta {"description": "A widget"} and a
+/// Let binding whose expr is meta_access("Widget", "description").
+/// Call eval_cached() directly on a fresh engine (no prior eval()).
+/// The let cell should resolve to Value::String("A widget").
+///
+/// This tests that eval_cached() builds meta_map from the module and
+/// wires it into EvalContext, just like eval() does.
+#[test]
+fn eval_meta_access_cached_eval() {
+    let label_id = ValueCellId::new("Widget", "label");
+    let meta_expr = CompiledExpr::meta_access("Widget".to_string(), "description".to_string());
+
+    let template = TopologyTemplateBuilder::new("Widget")
+        .meta(
+            [("description".to_string(), "A widget".to_string())]
+                .into_iter()
+                .collect(),
+        )
+        .let_binding("Widget", "label", Type::String, meta_expr)
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    // Call eval_cached directly (no prior eval())
+    let result = engine.eval_cached(&module, VersionId(1));
+
+    assert_eq!(
+        result.eval_result.values.get(&label_id),
+        Some(&Value::String("A widget".to_string())),
+        "eval_cached let binding with MetaAccess should resolve to the meta value"
     );
 }
