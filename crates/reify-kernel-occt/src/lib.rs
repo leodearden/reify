@@ -448,6 +448,48 @@ impl OcctKernel {
                 ffi::ffi::make_prism(profile_shape, 0.0, 0.0, dist)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
+            GeometryOp::Revolve {
+                profile,
+                axis_origin,
+                axis_dir,
+                angle_rad,
+            } => {
+                // Validate all floats are finite
+                let all_finite = axis_origin.iter().all(|v| v.is_finite())
+                    && axis_dir.iter().all(|v| v.is_finite())
+                    && angle_rad.is_finite();
+                if !all_finite {
+                    return Err(GeometryError::OperationFailed(
+                        "revolve parameters must be finite".into(),
+                    ));
+                }
+                if *angle_rad == 0.0 {
+                    return Err(GeometryError::OperationFailed(
+                        "revolve angle must not be zero".into(),
+                    ));
+                }
+                let axis_mag = (axis_dir[0].powi(2)
+                    + axis_dir[1].powi(2)
+                    + axis_dir[2].powi(2))
+                .sqrt();
+                if axis_mag < 1e-15 {
+                    return Err(GeometryError::OperationFailed(
+                        "revolve axis direction must not be zero-length".into(),
+                    ));
+                }
+                let profile_shape = self.get_shape(*profile)?;
+                ffi::ffi::make_revolve(
+                    profile_shape,
+                    axis_origin[0],
+                    axis_origin[1],
+                    axis_origin[2],
+                    axis_dir[0],
+                    axis_dir[1],
+                    axis_dir[2],
+                    *angle_rad,
+                )
+                .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+            }
         };
         Ok(self.store(shape))
     }
