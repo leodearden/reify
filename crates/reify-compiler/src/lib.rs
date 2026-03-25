@@ -6794,4 +6794,143 @@ mod tests {
             diagnostics
         );
     }
+
+    // --- Revolve compiler tests (task-309 step-9) ---
+
+    #[test]
+    fn is_geometry_function_revolve() {
+        assert!(is_geometry_function("revolve"));
+    }
+
+    #[test]
+    fn is_geometry_function_revolve_full() {
+        assert!(is_geometry_function("revolve_full"));
+    }
+
+    #[test]
+    fn compile_revolve_produces_sweep() {
+        // revolve(profile, ox, oy, oz, ax, ay, az, angle) = 8 args
+        let source = r#"structure S {
+    param p: Scalar = 5mm
+    let result = revolve(p, 0, 0, 0, 0, 0, 1, 3.14)
+}"#;
+        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_revolve"));
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:?}",
+            parsed.errors
+        );
+        let compiled = compile(&parsed);
+        let template = &compiled.templates[0];
+        assert_eq!(
+            template.realizations.len(),
+            1,
+            "expected 1 realization for revolve call"
+        );
+        let op = &template.realizations[0].operations[0];
+        assert!(
+            matches!(
+                op,
+                CompiledGeometryOp::Sweep {
+                    kind: SweepKind::Revolve,
+                    ..
+                }
+            ),
+            "expected Sweep(Revolve), got {:?}",
+            op
+        );
+        assert!(
+            compiled.diagnostics.is_empty(),
+            "expected no diagnostics, got: {:?}",
+            compiled.diagnostics
+        );
+    }
+
+    #[test]
+    fn compile_revolve_full_produces_sweep() {
+        // revolve_full(profile, ox, oy, oz, ax, ay, az) = 7 args → angle injected as 2π
+        let source = r#"structure S {
+    param p: Scalar = 5mm
+    let result = revolve_full(p, 0, 0, 0, 0, 0, 1)
+}"#;
+        let parsed =
+            reify_syntax::parse(source, reify_types::ModulePath::single("test_revolve_full"));
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:?}",
+            parsed.errors
+        );
+        let compiled = compile(&parsed);
+        let template = &compiled.templates[0];
+        assert_eq!(
+            template.realizations.len(),
+            1,
+            "expected 1 realization for revolve_full call"
+        );
+        let op = &template.realizations[0].operations[0];
+        match op {
+            CompiledGeometryOp::Sweep {
+                kind: SweepKind::Revolve,
+                args,
+                ..
+            } => {
+                // Verify angle arg exists and is approximately 2π
+                let angle_arg = args
+                    .iter()
+                    .find(|(name, _)| name == "angle")
+                    .expect("should have 'angle' arg");
+                let angle_val = angle_arg.1.eval(&reify_types::EvalContext::empty());
+                let angle_f64 = angle_val.as_f64().expect("angle should be f64");
+                assert!(
+                    (angle_f64 - std::f64::consts::TAU).abs() < 1e-10,
+                    "revolve_full angle should be 2π, got {}",
+                    angle_f64
+                );
+            }
+            _ => panic!("expected Sweep(Revolve), got {:?}", op),
+        }
+        assert!(
+            compiled.diagnostics.is_empty(),
+            "expected no diagnostics, got: {:?}",
+            compiled.diagnostics
+        );
+    }
+
+    #[test]
+    fn compile_revolve_wrong_arg_count() {
+        // revolve with 5 args (should need 8)
+        let source = r#"structure S {
+    param p: Scalar = 5mm
+    let result = revolve(p, 0, 0, 0, 1)
+}"#;
+        let parsed =
+            reify_syntax::parse(source, reify_types::ModulePath::single("test_revolve_bad"));
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:?}",
+            parsed.errors
+        );
+        let compiled = compile(&parsed);
+        assert!(
+            !compiled.diagnostics.is_empty(),
+            "expected diagnostics for wrong arg count"
+        );
+        // Should not produce a Revolve op
+        let template = &compiled.templates[0];
+        let has_revolve = template.realizations.iter().any(|r| {
+            r.operations.iter().any(|op| {
+                matches!(
+                    op,
+                    CompiledGeometryOp::Sweep {
+                        kind: SweepKind::Revolve,
+                        ..
+                    }
+                )
+            })
+        });
+        assert!(
+            !has_revolve,
+            "should not produce Revolve op with wrong arg count"
+        );
+    }
 }
