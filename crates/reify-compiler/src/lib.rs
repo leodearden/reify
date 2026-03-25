@@ -589,6 +589,13 @@ pub fn implicitly_converts_to(from: &Type, to: &Type) -> bool {
             to_ty,
         ) => tq.as_ref() == to_ty,
 
+        // Rule 3: Tensor<2,N,Q> -> Matrix<N,N,Q>  (one-way, square matrices only)
+        // Note: Matrix->Tensor is NOT allowed; the default `false` arm handles that.
+        (
+            Type::Tensor { rank: 2, n: tn, quantity: tq },
+            Type::Matrix { m, n: mn, quantity: mq },
+        ) => tn == m && tn == mn && tq == mq,
+
         _ => false,
     }
 }
