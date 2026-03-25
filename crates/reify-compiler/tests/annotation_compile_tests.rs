@@ -27,3 +27,23 @@ fn annotation_on_structure_propagates() {
     assert_eq!(template.annotations[0].name, "test");
     assert!(template.annotations[0].args.is_empty());
 }
+
+// ── Step 5: annotation with args on function ────────────────────────────
+
+#[test]
+fn annotation_with_args_on_function_propagates() {
+    let module = compile_module(
+        r#"@deprecated("use new_calc") fn old_calc(x: Real) -> Real { x }"#,
+    );
+    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
+    assert_eq!(module.functions.len(), 1, "expected 1 function");
+
+    let func = &module.functions[0];
+    assert_eq!(func.annotations.len(), 1, "expected 1 annotation, got {:?}", func.annotations);
+    assert_eq!(func.annotations[0].name, "deprecated");
+    assert_eq!(func.annotations[0].args.len(), 1);
+    assert_eq!(
+        func.annotations[0].args[0],
+        reify_types::AnnotationArg::String("use new_calc".into())
+    );
+}

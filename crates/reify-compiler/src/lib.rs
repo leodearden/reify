@@ -5369,7 +5369,7 @@ fn compile_function(
             result_expr,
         },
         content_hash,
-        annotations: vec![],
+        annotations: lower_annotations(&fn_def.annotations, diagnostics),
     })
 }
 
