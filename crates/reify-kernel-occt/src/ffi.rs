@@ -130,6 +130,7 @@ pub mod ffi {
 
         // --- Wire helpers / Loft ---
         fn make_circle_wire(radius: f64, z_height: f64) -> Result<UniquePtr<OcctShape>>;
+        fn make_circle_face(radius: f64, z_height: f64) -> Result<UniquePtr<OcctShape>>;
         fn loft_two_profiles(
             wire1: &OcctShape,
             wire2: &OcctShape,
@@ -138,6 +139,14 @@ pub mod ffi {
             wire1: &OcctShape,
             wire2: &OcctShape,
             wire3: &OcctShape,
+        ) -> Result<UniquePtr<OcctShape>>;
+
+        // --- Sweep / Extrude ---
+        fn make_prism(
+            profile: &OcctShape,
+            dx: f64,
+            dy: f64,
+            dz: f64,
         ) -> Result<UniquePtr<OcctShape>>;
 
         // --- Queries ---

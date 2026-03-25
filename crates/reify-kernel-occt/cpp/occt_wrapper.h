@@ -75,11 +75,20 @@ std::unique_ptr<OcctShape> draft_shape(const OcctShape& shape, double angle_rad,
 /// Create a circular wire profile at a given Z height (for loft profiles).
 std::unique_ptr<OcctShape> make_circle_wire(double radius, double z_height);
 
+/// Create a flat circular face (disk) at a given Z height (for extrude profiles).
+std::unique_ptr<OcctShape> make_circle_face(double radius, double z_height);
+
 /// Loft through two wire profiles to create a solid.
 std::unique_ptr<OcctShape> loft_two_profiles(const OcctShape& wire1, const OcctShape& wire2);
 
 /// Loft through three wire profiles to create a solid.
 std::unique_ptr<OcctShape> loft_three_profiles(const OcctShape& wire1, const OcctShape& wire2, const OcctShape& wire3);
+
+// --- Sweep / Extrude ---
+
+/// Extrude a profile shape by a direction vector (dx, dy, dz).
+/// The direction vector must have non-zero magnitude.
+std::unique_ptr<OcctShape> make_prism(const OcctShape& profile, double dx, double dy, double dz);
 
 // --- Queries ---
 

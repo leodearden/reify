@@ -26,9 +26,13 @@
 #include <BRepOffsetAPI_MakeThickSolid.hxx>
 #include <TopTools_ListOfShape.hxx>
 
-// OCCT edge/wire construction
+// OCCT prism (extrude)
+#include <BRepPrimAPI_MakePrism.hxx>
+
+// OCCT edge/wire/face construction
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
+#include <BRepBuilderAPI_MakeFace.hxx>
 #include <Geom_Circle.hxx>
 #include <Geom_Plane.hxx>
 #include <Geom_Surface.hxx>
@@ -560,6 +564,39 @@ std::unique_ptr<OcctShape> make_circle_wire(double radius, double z_height) {
     }
 }
 
+std::unique_ptr<OcctShape> make_circle_face(double radius, double z_height) {
+    try {
+        if (!(std::isfinite(radius) && radius > 0.0)) {
+            throw std::runtime_error("make_circle_face: radius must be finite and positive");
+        }
+        gp_Ax2 axes(gp_Pnt(0, 0, z_height), gp_Dir(0, 0, 1));
+        Handle(Geom_Circle) circle = new Geom_Circle(axes, radius);
+        BRepBuilderAPI_MakeEdge edgeBuilder(circle);
+        if (!edgeBuilder.IsDone()) {
+            throw std::runtime_error("make_circle_face: MakeEdge failed");
+        }
+        TopoDS_Edge edge = edgeBuilder.Edge();
+        BRepBuilderAPI_MakeWire wireBuilder(edge);
+        if (!wireBuilder.IsDone()) {
+            throw std::runtime_error("make_circle_face: MakeWire failed");
+        }
+        TopoDS_Wire wire = wireBuilder.Wire();
+        BRepBuilderAPI_MakeFace faceBuilder(wire, Standard_True);
+        if (!faceBuilder.IsDone()) {
+            throw std::runtime_error("make_circle_face: MakeFace failed");
+        }
+        auto result = std::make_unique<OcctShape>();
+        result->shape = faceBuilder.Face();
+        return result;
+    } catch (Standard_Failure const& e) {
+        throw std::runtime_error(std::string("OCCT make_circle_face: ") + e.GetMessageString());
+    } catch (std::exception const& e) {
+        throw std::runtime_error(std::string("OCCT make_circle_face: unexpected: ") + e.what());
+    } catch (...) {
+        throw std::runtime_error("OCCT make_circle_face: unknown C++ exception");
+    }
+}
+
 std::unique_ptr<OcctShape> loft_two_profiles(const OcctShape& wire1, const OcctShape& wire2) {
     try {
         // isSolid=true, ruled=false (smooth)
@@ -601,6 +638,34 @@ std::unique_ptr<OcctShape> loft_three_profiles(const OcctShape& wire1, const Occ
         throw std::runtime_error(std::string("OCCT loft_three_profiles: unexpected: ") + e.what());
     } catch (...) {
         throw std::runtime_error("OCCT loft_three_profiles: unknown C++ exception");
+    }
+}
+
+// --- Sweep / Extrude ---
+
+std::unique_ptr<OcctShape> make_prism(const OcctShape& profile, double dx, double dy, double dz) {
+    try {
+        double mag_sq = dx*dx + dy*dy + dz*dz;
+        if (!(std::isfinite(dx) && std::isfinite(dy) && std::isfinite(dz))) {
+            throw std::runtime_error("make_prism: direction vector components must be finite");
+        }
+        if (mag_sq < 1e-30) {
+            throw std::runtime_error("make_prism: direction vector magnitude must be > 0");
+        }
+        gp_Vec vec(dx, dy, dz);
+        BRepPrimAPI_MakePrism maker(profile.shape, vec);
+        if (!maker.IsDone()) {
+            throw std::runtime_error("BRepPrimAPI_MakePrism failed");
+        }
+        auto result = std::make_unique<OcctShape>();
+        result->shape = maker.Shape();
+        return result;
+    } catch (Standard_Failure const& e) {
+        throw std::runtime_error(std::string("OCCT make_prism: ") + e.GetMessageString());
+    } catch (std::exception const& e) {
+        throw std::runtime_error(std::string("OCCT make_prism: unexpected: ") + e.what());
+    } catch (...) {
+        throw std::runtime_error("OCCT make_prism: unknown C++ exception");
     }
 }
 
