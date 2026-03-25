@@ -3249,11 +3249,22 @@ fn compile_geometry_op(
                         GeomRef::Sub(_) => step_handles.last().copied()?,
                     };
                     let eval_arg_f64 = |name: &str| -> f64 {
-                        args.iter()
+                        let (_, expr) = args.iter()
                             .find(|(n, _)| n == name)
-                            .and_then(|(_, expr)| reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions).with_meta(meta_map)).as_f64())
-                            .unwrap_or(0.0)
+                            .unwrap_or_else(|| panic!("Revolve Sweep '{}' arg missing — compiler bug", name));
+                        reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions).with_meta(meta_map))
+                            .as_f64()
+                            .unwrap_or_else(|| panic!("Revolve '{}' arg must evaluate to f64 — compiler bug", name))
                     };
+                    let axis_dir = [
+                        eval_arg_f64("ax"),
+                        eval_arg_f64("ay"),
+                        eval_arg_f64("az"),
+                    ];
+                    let mag = axis_dir.iter().map(|x| x * x).sum::<f64>().sqrt();
+                    if mag < 1e-12 {
+                        return None;
+                    }
                     Some(reify_types::GeometryOp::Revolve {
                         profile: profile_handle,
                         axis_origin: [
@@ -3261,11 +3272,7 @@ fn compile_geometry_op(
                             eval_arg_f64("oy"),
                             eval_arg_f64("oz"),
                         ],
-                        axis_dir: [
-                            eval_arg_f64("ax"),
-                            eval_arg_f64("ay"),
-                            eval_arg_f64("az"),
-                        ],
+                        axis_dir,
                         angle_rad: eval_arg_f64("angle"),
                     })
                 }
