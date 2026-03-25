@@ -956,56 +956,55 @@ fn make_sub_trait(trait_name: &str, sub_name: &str, required_trait: &str) -> Com
     }
 }
 
-/// step-8: MissingSub — trait requires sub 'hole : Hole', structure has no subs → MissingSub.
+/// step-8: MissingSub — trait requires sub 'hole = ScrewHole()', structure has no subs → MissingSub.
 #[test]
 fn conformance_missing_sub_error() {
-    let trait_def = make_sub_trait("HasHole", "hole", "Hole");
+    // "ScrewHole" is the required structure name (as compile_trait would store it).
+    let trait_def = make_sub_trait("HasHole", "hole", "ScrewHole");
     let structure_members: std::collections::HashMap<String, Type> =
         std::collections::HashMap::new();
     let errors = check_trait_conformance(&structure_members, &trait_def, &[], &[]);
     assert_eq!(errors.len(), 1, "expected 1 error, got: {:?}", errors);
     match &errors[0] {
-        ConformanceError::MissingSub { name, expected_trait } => {
+        ConformanceError::MissingSub { name, expected_structure } => {
             assert_eq!(name, "hole");
-            assert_eq!(expected_trait, "Hole");
+            assert_eq!(expected_structure, "ScrewHole");
         }
         other => panic!("expected MissingSub, got: {:?}", other),
     }
 }
 
-/// step-10: SubTraitNotSatisfied — trait requires sub 'mount : MountInterface',
-/// structure has sub 'mount' whose structure type does not declare MountInterface bound.
+/// step-10: SubStructureMismatch — trait requires sub 'mount = MountBracket()',
+/// structure has sub 'mount' with structure_name 'Bracket' (wrong structure).
 #[test]
-fn conformance_sub_trait_not_satisfied_error() {
-    let trait_def = make_sub_trait("HasMount", "mount", "MountInterface");
+fn conformance_sub_structure_mismatch_error() {
+    let trait_def = make_sub_trait("HasMount", "mount", "MountBracket");
     let subs = vec![SubInfo {
         name: "mount".to_string(),
-        structure_name: "Bracket".to_string(),
-        trait_bounds: vec!["OtherTrait".to_string()],
+        structure_name: "Bracket".to_string(), // wrong structure name
     }];
     let structure_members: std::collections::HashMap<String, Type> =
         std::collections::HashMap::new();
     let errors = check_trait_conformance(&structure_members, &trait_def, &[], &subs);
     assert_eq!(errors.len(), 1, "expected 1 error, got: {:?}", errors);
     match &errors[0] {
-        ConformanceError::SubTraitNotSatisfied { name, expected_trait, actual_structure } => {
+        ConformanceError::SubStructureMismatch { name, expected_structure, actual_structure } => {
             assert_eq!(name, "mount");
-            assert_eq!(expected_trait, "MountInterface");
+            assert_eq!(expected_structure, "MountBracket");
             assert_eq!(actual_structure, "Bracket");
         }
-        other => panic!("expected SubTraitNotSatisfied, got: {:?}", other),
+        other => panic!("expected SubStructureMismatch, got: {:?}", other),
     }
 }
 
-/// step-12: sub fully satisfied — trait requires sub 'hole : Hole', structure has sub 'hole'
-/// with trait_bounds containing 'Hole' → no errors.
+/// step-12: sub fully satisfied — trait requires sub 'hole = ScrewHole()',
+/// structure has sub 'hole' with structure_name 'ScrewHole' → no errors.
 #[test]
 fn conformance_sub_fully_satisfied() {
-    let trait_def = make_sub_trait("HasHole", "hole", "Hole");
+    let trait_def = make_sub_trait("HasHole", "hole", "ScrewHole");
     let subs = vec![SubInfo {
         name: "hole".to_string(),
-        structure_name: "ScrewHole".to_string(),
-        trait_bounds: vec!["Hole".to_string(), "Fastener".to_string()],
+        structure_name: "ScrewHole".to_string(), // matches required structure name
     }];
     let structure_members: std::collections::HashMap<String, Type> =
         std::collections::HashMap::new();
@@ -1226,8 +1225,6 @@ fn conformance_sub_structure_name_match_no_error() {
     let subs = vec![SubInfo {
         name: "bolt".to_string(),
         structure_name: "BoltSet".to_string(),
-        // Empty trait_bounds — matches only by structure_name.
-        trait_bounds: vec![],
     }];
     let structure_members: std::collections::HashMap<String, Type> =
         std::collections::HashMap::new();

@@ -50,7 +50,11 @@ pub enum RequirementKind {
     Param(Type),
     /// A let with a specific type: `let x : Length`
     Let(Type),
-    /// A sub-component: `sub hole = Hole`
+    /// A sub-component: `sub hole = BoltSet()`.
+    /// The `String` stores the **structure name** (e.g. "BoltSet"), not a trait name.
+    /// This mirrors the parser's `SubDecl.structure_name` field — there is no trait_ref
+    /// in the syntax AST for sub declarations. Conformance is checked by comparing
+    /// `SubInfo.structure_name` equality, not trait_bounds membership.
     Sub(String),
     /// A port with a type name and direction: `port input : Signal in`
     Port {
@@ -68,11 +72,12 @@ pub struct PortInfo {
 }
 
 /// Lightweight sub descriptor for passing to `check_trait_conformance`.
+/// Only `name` and `structure_name` are needed — conformance is checked by
+/// comparing the sub's concrete structure name against the required structure name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SubInfo {
     pub name: String,
     pub structure_name: String,
-    pub trait_bounds: Vec<String>,
 }
 
 /// A default member provided by a trait — injected if not overridden.
@@ -127,9 +132,9 @@ pub enum ConformanceError {
         actual_direction: reify_types::PortDirection,
     },
     /// The structure is missing a required `sub` member.
-    MissingSub { name: String, expected_trait: String },
-    /// The structure has a `sub` member but its structure type does not satisfy the required trait.
-    SubTraitNotSatisfied { name: String, expected_trait: String, actual_structure: String },
+    MissingSub { name: String, expected_structure: String },
+    /// The structure has a `sub` member but its concrete structure name does not match.
+    SubStructureMismatch { name: String, expected_structure: String, actual_structure: String },
 }
 
 /// Pure conformance check: given a flat member map, port list, sub list, and a
@@ -201,20 +206,20 @@ pub fn check_trait_conformance(
                     Some(_) => {} // satisfied
                 }
             }
-            RequirementKind::Sub(expected_trait) => {
+            RequirementKind::Sub(expected_structure) => {
                 match subs.iter().find(|s| s.name == req.name) {
                     None => errors.push(ConformanceError::MissingSub {
                         name: req.name.clone(),
-                        expected_trait: expected_trait.clone(),
+                        expected_structure: expected_structure.clone(),
                     }),
-                    Some(sub) if !sub.trait_bounds.iter().any(|b| b == expected_trait) => {
-                        errors.push(ConformanceError::SubTraitNotSatisfied {
+                    Some(sub) if sub.structure_name != *expected_structure => {
+                        errors.push(ConformanceError::SubStructureMismatch {
                             name: req.name.clone(),
-                            expected_trait: expected_trait.clone(),
+                            expected_structure: expected_structure.clone(),
                             actual_structure: sub.structure_name.clone(),
                         });
                     }
-                    Some(_) => {} // satisfied
+                    Some(_) => {} // satisfied: structure_name matches
                 }
             }
         }
