@@ -8,7 +8,7 @@
   "modules": [
     "crates/reify-compiler"
   ],
-  "analysis": "Task 204 adds a post-compilation pass that verifies recursive structures have a valid termination condition. It builds on task 203 (recursive structure detection via Tarjan SCC, which adds `is_recursive: bool` to TopologyTemplate and `detect_recursive_structures()`).\n\nThe termination check operates on templates already tagged `is_recursive == true`. For each such template, we examine its `sub_components` to find self-referencing subs (where `structure_name` matches the template name or another structure in the same SCC). For each recursive sub, we verify:\n\n1. The sub has a `where_clause` guard (currently parsed on SubDecl but NOT compiled into SubComponentDecl \u2014 we must add a `guard_expr` field).\n2. The guard expression references at least one param of type Int or Bool from the parent template.\n3. That same param appears in the sub's argument list with a value that decrements/modifies it toward a base case (heuristic: the arg expression for that param uses BinOp::Sub, BinOp::And/Or/Not, or passes a literal that differs from the param's identity).\n4. `undef` is not used as a non-termination mechanism (no Literal(Value::Undef) in the recursive sub's args).\n\nImplementation approach:\n- Add `guard_expr: Option<CompiledExpr>` to `SubComponentDecl` so where-clauses on subs are compiled and available for analysis.\n- Compile the sub's where_clause during sub compilation (line ~2795 in compile_entity).\n- Add `check_recursive_termination()` as a post-compilation pass in `compile()`, after task 203's `detect_recursive_structures()` call.\n- Use `CompiledExpr::walk()` to collect ValueRef references from guard expressions and sub args.\n- Emit `Diagnostic::error(...)` with labels pointing at the recursive sub declaration span.\n\nKey reuse: CompiledExpr::walk() for expression traversal, existing Diagnostic infrastructure, existing compile_expr() for where_clause compilation, existing scope/type infrastructure for param type resolution.",
+  "analysis": "Task 204 adds a post-compilation pass that verifies recursive structures have a valid termination condition. It builds on task 203 (recursive structure detection via Tarjan SCC, which adds `is_recursive: bool` to TopologyTemplate and `detect_recursive_structures()`).\n\nThe termination check operates on templates already tagged `is_recursive == true`. For each such template, we examine its `sub_components` to find self-referencing subs (where `structure_name` matches the template name or another structure in the same SCC). For each recursive sub, we verify:\n\n1. The sub has a `where_clause` guard (currently parsed on SubDecl but NOT compiled into SubComponentDecl \u2014 we must add a `guard_expr` field).\n2. The guard expression references at least one param of type Int or Bool from the parent template.\n3. That same param appears in the sub's argument list with a value that decrements/modifies it toward a base case (heuristic: the arg expression for that param uses BinOp::Sub, BinOp::And/Or/Not, or passes a literal that differs from the param's identity).\n4. `undef` is not used as a non-termination mechanism (no Literal(Value::Undef) in the recursive sub's args).\n\nImplementation approach:\n- Add `guard_expr: Option<CompiledExpr>` to `SubComponentDecl` so where-clauses on subs are compiled and available for analysis.\n- Compile the sub's where_clause during sub compilation (line ~2795 in compile_entity).\n- Add `check_recursive_termination()` as a post-compilation pass in `compile()`, after task 203's `detect_recursive_structures()` call.\n- Use `CompiledExpr::walk()` to collect ValueRef references from guard expressions and sub args.\n- Emit `Diagnostic::error(...)` with labels pointing at the recursive sub declaration span.\n\nKey reuse: CompiledExpr::walk() for expression traversal, existing Diagnostic infrastructure, existing compile_expr() for where_clause compilation, existing scope/type infrastructure for param type resolution.\n\n**Review fix (steps 21-22):** Steps 19-20 claimed to implement block-guard termination recognition, but the test `recursive_sub_inside_block_guard_no_error` passes for the wrong reason. `compile_guarded_members` has a `_ => {}` catch-all (lib.rs:4597-4599) that silently drops ALL Sub declarations inside `when {}` blocks. The sub `child` is never compiled into `sub_components`, so the structure is never flagged as recursive by Tarjan SCC, and `check_recursive_termination` is never invoked. The test produces zero errors not because block-guard termination works, but because the feature (subs inside guarded blocks) is entirely unimplemented upstream. Additionally, `check_recursive_termination` has no block-guard fallback code \u2014 when `sub.guard_expr` is None, it immediately emits an error with no guarded_groups search. Steps 21-22 fix this by: (1) writing a test that honestly documents the current behavior (sub_components is empty), and (2) marking the false-confidence test as #[ignore] with a detailed explanation.",
   "prerequisites": [
     {
       "id": "pre-1",
@@ -165,6 +165,20 @@
       "description": "Handle subs inside guarded groups: when a recursive sub lacks its own guard_expr, check if it's inside a CompiledGuardedGroup whose guard_expr references a decremented Int/Bool param. Collect guarded_group membership for subs and check the enclosing guard as fallback. This requires tracking which subs belong to which guarded_groups during compilation.",
       "status": "done",
       "commit": "7e38e7fa"
+    },
+    {
+      "id": "step-21",
+      "type": "test",
+      "description": "Write test `block_guard_sub_not_yet_compiled` that documents the pre-existing compiler limitation honestly. Compile `structure S { param n: Int = 5; when n > 0 { sub child = S(n: n - 1) } }` and assert that `template.sub_components.is_empty()` \u2014 proving that `compile_guarded_members` silently drops Sub declarations inside `when {}` blocks (lib.rs:4597 catch-all `_ => {}`). Also assert `template.is_recursive == false` \u2014 since no sub_components exist, Tarjan never finds a cycle. This test documents the ACTUAL current behavior and will break (correctly) when compile_guarded_members is updated to handle Sub declarations.",
+      "status": "done",
+      "commit": "d5be4aa8"
+    },
+    {
+      "id": "step-22",
+      "type": "impl",
+      "description": "Fix the false-confidence test from step-19. Mark `recursive_sub_inside_block_guard_no_error` with `#[ignore]` and add a detailed comment explaining: (1) this test passes because `compile_guarded_members` has a `_ => {}` catch-all that silently drops Sub declarations inside `when {}` blocks \u2014 the sub `child` is never compiled into sub_components, (2) because sub_components is empty, S is never flagged as recursive by Tarjan SCC and check_recursive_termination is never invoked, (3) check_recursive_termination has no block-guard fallback path \u2014 when sub.guard_expr is None it immediately errors without searching guarded_groups, (4) to properly enable this test: first update compile_guarded_members to compile Sub declarations into sub_components, then implement the guarded_groups fallback in check_recursive_termination (search template.guarded_groups for a CompiledGuardedGroup whose members contain the sub, then run guard-references-decremented-param on that group's guard_expr). This ensures the test suite does not give false confidence about block-guard termination recognition.",
+      "status": "done",
+      "commit": "bd3dcb09"
     }
   ],
   "design_decisions": [
@@ -195,6 +209,10 @@
     {
       "decision": "detect_recursive_structures returns cyclic SCCs for termination check",
       "rationale": "Modified detect_recursive_structures to return Vec<HashSet<String>> (cyclic SCC sets). This allows check_recursive_termination to determine SCC membership without re-running Tarjan. Avoids duplicating the SCC computation."
+    },
+    {
+      "decision": "Mark block-guard termination test as #[ignore] rather than implementing subs-inside-guarded-blocks compilation",
+      "rationale": "The reviewer found that step-19/20 gave false confidence: the test passes because compile_guarded_members silently drops Sub declarations (pre-existing `_ => {}` catch-all), not because block-guard termination logic works. Implementing subs inside guarded blocks is a significant change to compile_guarded_members that is outside the scope of task 204 (termination checking). The correct fix is to honestly document the limitation: (1) a new test asserts sub_components is empty to surface the unimplemented state, (2) the original test is #[ignore]d with a detailed comment explaining the false-positive pass and what must change to enable it. This avoids shipping a test that gives false confidence while keeping the design intent documented for the future."
     }
   ],
   "reuse": [
@@ -235,5 +253,5 @@
     }
   ],
   "_session_id": "204-8069abdf",
-  "_created_at": "2026-03-25T17:32:16.457747+00:00"
+  "_created_at": "2026-03-25T18:10:55.728198+00:00"
 }
