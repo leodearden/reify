@@ -432,6 +432,22 @@ impl OcctKernel {
                 )
                 .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
+            GeometryOp::Extrude { profile, distance } => {
+                let dist = extract_f64(distance)?;
+                if !dist.is_finite() {
+                    return Err(GeometryError::OperationFailed(
+                        "extrude distance must be finite".into(),
+                    ));
+                }
+                if dist == 0.0 {
+                    return Err(GeometryError::OperationFailed(
+                        "extrude distance must not be zero".into(),
+                    ));
+                }
+                let profile_shape = self.get_shape(*profile)?;
+                ffi::ffi::make_prism(profile_shape, 0.0, 0.0, dist)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+            }
         };
         Ok(self.store(shape))
     }
@@ -2447,5 +2463,225 @@ mod tests {
                 );
             }
         }
+    }
+
+    // --- Extrude tests (task-308 step-7 + step-9) ---
+
+    #[test]
+    fn extrude_zero_distance_returns_error() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        // Create a box as a stand-in profile (provides a valid handle)
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(1.0),
+            })
+            .unwrap();
+        // Extrude with zero distance should fail
+        let result = kernel.execute(&GeometryOp::Extrude {
+            profile: box_h.id,
+            distance: Value::Real(0.0),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(msg)) => {
+                assert!(
+                    msg.contains("zero"),
+                    "expected error message containing 'zero', got: {msg}"
+                );
+            }
+            Ok(_) => panic!("expected OperationFailed for zero distance, got Ok"),
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn extrude_nan_distance_returns_error() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(1.0),
+            })
+            .unwrap();
+        let result = kernel.execute(&GeometryOp::Extrude {
+            profile: box_h.id,
+            distance: Value::Real(f64::NAN),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(msg)) => {
+                assert!(
+                    msg.contains("finite"),
+                    "expected error message containing 'finite', got: {msg}"
+                );
+            }
+            Ok(_) => panic!("expected OperationFailed for NaN distance, got Ok"),
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn extrude_inf_distance_returns_error() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(1.0),
+            })
+            .unwrap();
+        let result = kernel.execute(&GeometryOp::Extrude {
+            profile: box_h.id,
+            distance: Value::Real(f64::INFINITY),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(msg)) => {
+                assert!(
+                    msg.contains("finite"),
+                    "expected error message containing 'finite', got: {msg}"
+                );
+            }
+            Ok(_) => panic!("expected OperationFailed for Inf distance, got Ok"),
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn extrude_circle_face_volume() {
+        // Tests via direct FFI: make_circle_face → make_prism → query_volume.
+        // Circle radius=5, extrude distance=10 → volume ≈ π * 5² * 10 = 785.4
+        let face = ffi::ffi::make_circle_face(5.0, 0.0)
+            .expect("make_circle_face should succeed for radius=5");
+        let prism = ffi::ffi::make_prism(&face, 0.0, 0.0, 10.0)
+            .expect("make_prism should succeed for circle face");
+        let vol = ffi::ffi::query_volume(&prism)
+            .expect("query_volume should work for extruded circle");
+        let expected = std::f64::consts::PI * 25.0 * 10.0; // π * r² * h
+        let rel_err = (vol - expected).abs() / expected;
+        assert!(
+            rel_err < 0.01,
+            "expected extrude circle volume ≈ {:.2}, got {:.2} (rel_err={:.4})",
+            expected,
+            vol,
+            rel_err
+        );
+    }
+
+    #[test]
+    fn extrude_negative_distance_same_volume() {
+        // Extruding in -Z should produce the same volume as +Z.
+        let face = ffi::ffi::make_circle_face(5.0, 0.0)
+            .expect("make_circle_face should succeed");
+        let prism_pos = ffi::ffi::make_prism(&face, 0.0, 0.0, 10.0)
+            .expect("make_prism +Z should succeed");
+        let vol_pos = ffi::ffi::query_volume(&prism_pos)
+            .expect("query_volume +Z should work");
+
+        let face2 = ffi::ffi::make_circle_face(5.0, 0.0)
+            .expect("make_circle_face should succeed for negative test");
+        let prism_neg = ffi::ffi::make_prism(&face2, 0.0, 0.0, -10.0)
+            .expect("make_prism -Z should succeed");
+        let vol_neg = ffi::ffi::query_volume(&prism_neg)
+            .expect("query_volume -Z should work");
+
+        let rel_diff = (vol_pos - vol_neg).abs() / vol_pos;
+        assert!(
+            rel_diff < 0.01,
+            "positive and negative extrude should have same volume, got pos={:.2} neg={:.2}",
+            vol_pos,
+            vol_neg
+        );
+    }
+
+    // --- Extrude kernel-path volume tests (task-308 step-14) ---
+    // These exercise the full OcctKernel::execute() + query() path using
+    // store_raw to inject FFI-created circle faces as kernel handles.
+
+    #[test]
+    fn extrude_circle_face_through_kernel() {
+        // Store a circle face (radius=5) via store_raw, then extrude via execute().
+        // Expected volume: π * r² * h = π * 25 * 10 = 785.4
+        let mut kernel = OcctKernel::new();
+        let face = ffi::ffi::make_circle_face(5.0, 0.0)
+            .expect("make_circle_face should succeed");
+        let face_id = kernel.store_raw(face);
+
+        let result = kernel
+            .execute(&GeometryOp::Extrude {
+                profile: face_id,
+                distance: Value::Real(10.0),
+            })
+            .expect("Extrude through kernel should succeed");
+
+        let vol = kernel
+            .query(&GeometryQuery::Volume(result.id))
+            .expect("Volume query should succeed");
+        let vol_f64 = vol.as_f64().expect("Volume should be numeric");
+        let expected = std::f64::consts::PI * 25.0 * 10.0;
+        let rel_err = (vol_f64 - expected).abs() / expected;
+        assert!(
+            rel_err < 0.01,
+            "expected extrude circle volume ≈ {:.2}, got {:.2} (rel_err={:.4})",
+            expected,
+            vol_f64,
+            rel_err
+        );
+    }
+
+    #[test]
+    fn extrude_negative_distance_through_kernel() {
+        // Negative distance should produce same volume as positive.
+        let mut kernel = OcctKernel::new();
+
+        let face_pos = ffi::ffi::make_circle_face(5.0, 0.0)
+            .expect("make_circle_face should succeed");
+        let face_pos_id = kernel.store_raw(face_pos);
+        let result_pos = kernel
+            .execute(&GeometryOp::Extrude {
+                profile: face_pos_id,
+                distance: Value::Real(10.0),
+            })
+            .expect("Extrude +Z through kernel should succeed");
+        let vol_pos = kernel
+            .query(&GeometryQuery::Volume(result_pos.id))
+            .expect("Volume query +Z should succeed")
+            .as_f64()
+            .expect("Volume should be numeric");
+
+        let face_neg = ffi::ffi::make_circle_face(5.0, 0.0)
+            .expect("make_circle_face should succeed for negative test");
+        let face_neg_id = kernel.store_raw(face_neg);
+        let result_neg = kernel
+            .execute(&GeometryOp::Extrude {
+                profile: face_neg_id,
+                distance: Value::Real(-10.0),
+            })
+            .expect("Extrude -Z through kernel should succeed");
+        let vol_neg = kernel
+            .query(&GeometryQuery::Volume(result_neg.id))
+            .expect("Volume query -Z should succeed")
+            .as_f64()
+            .expect("Volume should be numeric");
+
+        let rel_diff = (vol_pos - vol_neg).abs() / vol_pos;
+        assert!(
+            rel_diff < 0.01,
+            "positive and negative extrude should have same volume, got pos={:.2} neg={:.2}",
+            vol_pos,
+            vol_neg
+        );
     }
 }
