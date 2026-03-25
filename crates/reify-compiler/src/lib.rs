@@ -4698,8 +4698,8 @@ fn check_field_composition_types(
                     if let CompiledExprKind::FunctionCall { function: inner_fn, .. } = &arg.kind
                         && let Some(inner_field) = field_registry.get(inner_fn.name.as_str())
                     {
-                        // inner_field's codomain should match outer_field's domain
-                        if inner_field.codomain_type != outer_field.domain_type {
+                        // inner_field's codomain should implicitly convert to outer_field's domain
+                        if !implicitly_converts_to(&inner_field.codomain_type, &outer_field.domain_type) {
                             errors.push(
                                 Diagnostic::error(format!(
                                     "field composition type mismatch: codomain of '{}' ({}) does not match domain of '{}' ({})",
