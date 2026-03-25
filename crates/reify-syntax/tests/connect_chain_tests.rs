@@ -307,6 +307,39 @@ fn parse_connect_trailing_comma() {
     assert_eq!(connect.port_mappings[0].1, "input_bore");
 }
 
+// ── task-397 step-2: mapping before param ordering ────────────────
+
+#[test]
+fn parse_connect_mapping_before_param() {
+    let (decls, errors) = parse_decls(
+        "structure S { port a : out T  port b : in T  connect a -> b : BoltSet { shaft -> input_bore, grade = 8.8 } }",
+    );
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+
+    let structure = match &decls[0] {
+        Declaration::Structure(s) => s,
+        other => panic!("expected Structure, got {:?}", other),
+    };
+
+    let connect = match &structure.members[2] {
+        MemberDecl::Connect(c) => c,
+        other => panic!("expected Connect, got {:?}", other),
+    };
+
+    assert_eq!(connect.connector_type.as_deref(), Some("BoltSet"));
+
+    assert_eq!(connect.params.len(), 1, "expected 1 param, got {:?}", connect.params);
+    assert_eq!(connect.params[0].0, "grade");
+    match &connect.params[0].1.kind {
+        ExprKind::NumberLiteral(n) => assert!((*n - 8.8).abs() < 1e-10, "expected 8.8, got {}", n),
+        other => panic!("expected NumberLiteral(8.8), got {:?}", other),
+    }
+
+    assert_eq!(connect.port_mappings.len(), 1, "expected 1 port_mapping, got {:?}", connect.port_mappings);
+    assert_eq!(connect.port_mappings[0].0, "shaft");
+    assert_eq!(connect.port_mappings[0].1, "input_bore");
+}
+
 // ── parse_connect_reverse ─────────────────────────────────────────
 
 #[test]
