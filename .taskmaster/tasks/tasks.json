@@ -7682,10 +7682,11 @@
         "description": "In crates/reify-test-support/src/mocks.rs: (1) Fix SequencedMockConstraintSolver::solve — release results lock before acquiring last lock. (2) Make Distance QueryKey order-independent by normalizing (from, to) to (min, max). (Review followup from task 351)",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-03-25T21:45:43.889Z"
       },
       {
         "id": "431",
@@ -7712,7 +7713,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-25T21:45:43.807Z",
+      "lastModified": "2026-03-25T21:45:43.889Z",
       "taskCount": 432,
       "completedCount": 228,
       "tags": [
