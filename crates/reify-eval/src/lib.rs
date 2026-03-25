@@ -1404,7 +1404,7 @@ impl Engine {
                     payload: None,
                 });
 
-                let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, &functions));
+                let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, &functions).with_meta(&self.meta_map));
                 values.insert(vcid.clone(), val.clone());
                 new_snapshot.values.insert(
                     vcid.clone(),
@@ -1479,7 +1479,7 @@ impl Engine {
                     // Re-evaluate the guard cell's expression
                     let guard_val = if let Some(node) = graph.value_cells.get(&group.guard_cell) {
                         if let Some(ref expr) = node.default_expr {
-                            reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, &functions))
+                            reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, &functions).with_meta(&self.meta_map))
                         } else {
                             Value::Undef
                         }
@@ -1504,7 +1504,7 @@ impl Engine {
                             if let Some(node) = graph.value_cells.get(mid)
                                 && let Some(ref expr) = node.default_expr
                             {
-                                let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, &functions));
+                                let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, &functions).with_meta(&self.meta_map));
                                 values.insert(mid.clone(), val.clone());
                                 new_snapshot.values.insert(
                                     mid.clone(), (val, DeterminacyState::Determined),
@@ -1522,7 +1522,7 @@ impl Engine {
                             if let Some(node) = graph.value_cells.get(mid)
                                 && let Some(ref expr) = node.default_expr
                             {
-                                let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, &functions));
+                                let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, &functions).with_meta(&self.meta_map));
                                 values.insert(mid.clone(), val.clone());
                                 new_snapshot.values.insert(
                                     mid.clone(), (val, DeterminacyState::Determined),
@@ -1664,7 +1664,7 @@ impl Engine {
                                         && let Some(node) = new_snapshot.graph.value_cells.get(vcid)
                                         && let Some(ref expr) = node.default_expr
                                     {
-                                        let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, &functions));
+                                        let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, &functions).with_meta(&self.meta_map));
                                         values.insert(vcid.clone(), val.clone());
                                         new_snapshot.values.insert(
                                             vcid.clone(),
@@ -1730,7 +1730,7 @@ impl Engine {
                             if let Some(node) = new_snapshot.graph.value_cells.get(member_id)
                                 && let Some(ref expr) = node.default_expr
                             {
-                                let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, &functions));
+                                let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, &functions).with_meta(&self.meta_map));
                                 values.insert(member_id.clone(), val.clone());
                                 new_snapshot.values.insert(
                                     member_id.clone(),
@@ -1754,7 +1754,7 @@ impl Engine {
                             if let Some(node) = new_snapshot.graph.value_cells.get(member_id)
                                 && let Some(ref expr) = node.default_expr
                             {
-                                let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, &functions));
+                                let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, &functions).with_meta(&self.meta_map));
                                 values.insert(member_id.clone(), val.clone());
                                 new_snapshot.values.insert(
                                     member_id.clone(),
@@ -1840,7 +1840,7 @@ impl Engine {
 
                         // Evaluate the cell
                         let val = if let Some(expr) = default_expr {
-                            reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, &functions))
+                            reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, &functions).with_meta(&self.meta_map))
                         } else {
                             Value::Undef
                         };
