@@ -1,7 +1,7 @@
 //! Tests for meta block compilation — `meta { key = "value" }` and `meta.key` access.
 
 use reify_compiler::{CompiledModule, TopologyTemplate};
-use reify_types::{CompiledExprKind, Diagnostic, ModulePath, Severity};
+use reify_types::{CompiledExpr, CompiledExprKind, Diagnostic, ModulePath, Severity};
 
 /// Helper: parse source and compile, returning the CompiledModule.
 fn compile_module(source: &str) -> CompiledModule {
@@ -177,4 +177,64 @@ fn duplicate_meta_block_error() {
         "expected 'duplicate meta block' error, got: {:?}",
         errors
     );
+}
+
+// ---------------------------------------------------------------------------
+// step-11: meta.key works inside constraint expressions
+// ---------------------------------------------------------------------------
+
+/// Recursively checks whether any node in the expression tree is a MetaAccess.
+fn contains_meta_access(expr: &CompiledExpr) -> bool {
+    let mut found = false;
+    expr.walk(&mut |e| {
+        if matches!(&e.kind, CompiledExprKind::MetaAccess { .. }) {
+            found = true;
+        }
+    });
+    found
+}
+
+#[test]
+fn meta_access_in_constraint_context() {
+    let source = r#"
+        structure def Bracket {
+            meta {
+                tag = "valid"
+            }
+            constraint meta.tag == "valid"
+        }
+    "#;
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    assert!(!template.constraints.is_empty(), "should have at least one constraint");
+
+    let constraint_expr = &template.constraints[0].expr;
+    assert!(
+        contains_meta_access(constraint_expr),
+        "constraint expr should contain a MetaAccess node, got: {:?}",
+        constraint_expr.kind
+    );
+
+    // The constraint is `meta.tag == "valid"`, so top-level should be BinOp::Eq
+    match &constraint_expr.kind {
+        CompiledExprKind::BinOp { op, left, .. } => {
+            assert_eq!(*op, reify_types::BinOp::Eq, "expected Eq comparison");
+            // LHS should be the MetaAccess
+            match &left.kind {
+                CompiledExprKind::MetaAccess { entity, key } => {
+                    assert_eq!(entity, "Bracket");
+                    assert_eq!(key, "tag");
+                    assert_eq!(left.result_type, reify_types::Type::String);
+                }
+                other => panic!("expected MetaAccess as LHS of comparison, got {:?}", other),
+            }
+        }
+        other => panic!("expected BinOp at top level of constraint, got {:?}", other),
+    }
 }
