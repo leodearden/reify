@@ -198,6 +198,44 @@ impl Default for SnapshotValuesBuilder {
     }
 }
 
+// --- Point/Vector/Matrix constructors ---
+
+/// Create a `Value::Point` with three length-dimensioned components (in meters).
+///
+/// Useful for constructing position values in geometry tests.
+pub fn point3(x: f64, y: f64, z: f64) -> Value {
+    Value::Point(vec![Value::length(x), Value::length(y), Value::length(z)])
+}
+
+/// Create a `Value::Vector` with three length-dimensioned components (in meters).
+///
+/// Useful for constructing displacement/translation vectors in geometry tests.
+pub fn vec3(x: f64, y: f64, z: f64) -> Value {
+    Value::Vector(vec![Value::length(x), Value::length(y), Value::length(z)])
+}
+
+/// Create a `Value::Vector` with three dimensionless `Real` components.
+///
+/// Useful for unit normals, directions, and other dimensionless vectors in geometry tests.
+pub fn vec3_unit(x: f64, y: f64, z: f64) -> Value {
+    Value::Vector(vec![Value::Real(x), Value::Real(y), Value::Real(z)])
+}
+
+/// Create a 3×3 `Value::Matrix` with `Real` entries.
+///
+/// Arguments are given row-major: `matrix3x3(r0c0, r0c1, r0c2, r1c0, ...)`.
+pub fn matrix3x3(
+    r0c0: f64, r0c1: f64, r0c2: f64,
+    r1c0: f64, r1c1: f64, r1c2: f64,
+    r2c0: f64, r2c1: f64, r2c2: f64,
+) -> Value {
+    Value::Matrix(vec![
+        vec![Value::Real(r0c0), Value::Real(r0c1), Value::Real(r0c2)],
+        vec![Value::Real(r1c0), Value::Real(r1c1), Value::Real(r1c2)],
+        vec![Value::Real(r2c0), Value::Real(r2c1), Value::Real(r2c2)],
+    ])
+}
+
 // --- Complex value constructors ---
 
 /// Create a Value::Int.
@@ -655,6 +693,124 @@ mod tests {
         assert_eq!(map.len(), 2);
         assert_eq!(map.get("Pressure"), Some(&pressure_type));
         assert_eq!(map.get("Velocity"), Some(&velocity_type));
+    }
+
+    // step-1: failing tests for point3/vec3/vec3_unit/matrix3x3 constructors
+    #[test]
+    fn point3_creates_value_point_with_length_components() {
+        let p = point3(1.0, 2.0, 3.0);
+        match p {
+            Value::Point(items) => {
+                assert_eq!(items.len(), 3);
+                // Each component should be a Value::Scalar with LENGTH dimension
+                for (i, expected_m) in [1.0, 2.0, 3.0].iter().enumerate() {
+                    match &items[i] {
+                        Value::Scalar { si_value, dimension } => {
+                            assert!(
+                                (si_value - expected_m).abs() < 1e-12,
+                                "component {} si_value: expected {}, got {}",
+                                i, expected_m, si_value
+                            );
+                            assert_eq!(
+                                *dimension,
+                                reify_types::dimension::DimensionVector::LENGTH,
+                                "component {} should have LENGTH dimension",
+                                i
+                            );
+                        }
+                        other => panic!("component {} should be Scalar, got {:?}", i, other),
+                    }
+                }
+            }
+            other => panic!("expected Value::Point, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn vec3_creates_value_vector_with_length_components() {
+        let v = vec3(0.5, -1.0, 0.0);
+        match v {
+            Value::Vector(items) => {
+                assert_eq!(items.len(), 3);
+                for (i, expected_m) in [0.5, -1.0, 0.0].iter().enumerate() {
+                    match &items[i] {
+                        Value::Scalar { si_value, dimension } => {
+                            assert!(
+                                (si_value - expected_m).abs() < 1e-12,
+                                "component {} si_value: expected {}, got {}",
+                                i, expected_m, si_value
+                            );
+                            assert_eq!(
+                                *dimension,
+                                reify_types::dimension::DimensionVector::LENGTH,
+                                "component {} should have LENGTH dimension",
+                                i
+                            );
+                        }
+                        other => panic!("component {} should be Scalar, got {:?}", i, other),
+                    }
+                }
+            }
+            other => panic!("expected Value::Vector, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn vec3_unit_creates_value_vector_with_real_components() {
+        let v = vec3_unit(1.0, 0.0, 0.0);
+        match v {
+            Value::Vector(items) => {
+                assert_eq!(items.len(), 3);
+                for (i, expected) in [1.0, 0.0, 0.0].iter().enumerate() {
+                    match &items[i] {
+                        Value::Real(f) => {
+                            assert!(
+                                (f - expected).abs() < 1e-12,
+                                "component {} Real: expected {}, got {}",
+                                i, expected, f
+                            );
+                        }
+                        other => panic!("component {} should be Real, got {:?}", i, other),
+                    }
+                }
+            }
+            other => panic!("expected Value::Vector, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn matrix3x3_creates_value_matrix_with_real_entries() {
+        let m = matrix3x3(
+            1.0, 0.0, 0.0,
+            0.0, 1.0, 0.0,
+            0.0, 0.0, 1.0,
+        );
+        match m {
+            Value::Matrix(rows) => {
+                assert_eq!(rows.len(), 3, "should have 3 rows");
+                let expected = [
+                    [1.0, 0.0, 0.0],
+                    [0.0, 1.0, 0.0],
+                    [0.0, 0.0, 1.0],
+                ];
+                for (r, row) in rows.iter().enumerate() {
+                    assert_eq!(row.len(), 3, "row {} should have 3 columns", r);
+                    for (c, val) in row.iter().enumerate() {
+                        match val {
+                            Value::Real(f) => {
+                                assert!(
+                                    (f - expected[r][c]).abs() < 1e-12,
+                                    "matrix[{}][{}]: expected {}, got {}",
+                                    r, c, expected[r][c], f
+                                );
+                            }
+                            other => panic!("matrix[{}][{}] should be Real, got {:?}", r, c, other),
+                        }
+                    }
+                }
+            }
+            other => panic!("expected Value::Matrix, got {:?}", other),
+        }
     }
 
     #[test]
