@@ -7381,10 +7381,11 @@
         "description": "Two related fixes in gui/src-tauri/src/claude_bridge.rs:\n\n1. Update spawn_sidecar_impl doc comment (line 447) to remove the stale reference to wait_ready as the caller's responsibility. The actual caller in main.rs now uses notify.notified() directly.\n\n2. In SidecarHandle::wait_ready (line 306), call notified.enable() before the re-check await point (line 317) to prevent missed notifications. Without enable(), the Notified future only registers the waiter on first poll, but there are intervening await points (the state lock at line 317) where notify_waiters() could fire and be lost.\n\nSource: review suggestions from esc-353-25 (task 353).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-03-25T21:36:45.016Z"
       },
       {
         "id": "408",
@@ -7639,7 +7640,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-25T21:36:44.649Z",
+      "lastModified": "2026-03-25T21:36:45.016Z",
       "taskCount": 426,
       "completedCount": 228,
       "tags": [
