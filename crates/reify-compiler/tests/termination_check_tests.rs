@@ -372,10 +372,47 @@ structure S {
     );
 }
 
-/// A recursive sub inside a block guard `when n > 0 { sub child = S(n: n-1) }`
+/// A recursive sub inside a block guard `where n > 0 { sub child = S(n: n-1) }`
 /// should be recognized as having a termination condition via the enclosing block guard.
 /// Assert NO error.
+///
+/// # Why this test is ignored
+///
+/// This test passes for the **wrong reason** and gives false confidence about block-guard
+/// termination recognition.  The chain of events that causes it to pass:
+///
+/// 1. **`compile_guarded_members` drops Sub declarations silently.**
+///    The function has a `_ => {}` catch-all (lib.rs:4597-4599) that matches `StructureMember::Sub`
+///    and does nothing.  The sub `child` is never compiled into `sub_components`.
+///
+/// 2. **Because `sub_components` is empty, Tarjan SCC finds no cycle.**
+///    `detect_recursive_structures()` iterates `sub_components` to build the adjacency graph.
+///    With no subs, S appears as an isolated vertex — `is_recursive` stays `false`.
+///
+/// 3. **`check_recursive_termination` is never invoked for S.**
+///    The pass skips templates where `is_recursive == false`, so it never reaches S.
+///
+/// 4. **Zero errors are produced — but NOT because block-guard termination works.**
+///    There is no block-guard fallback code in `check_recursive_termination`.  When
+///    `sub.guard_expr` is `None`, the function immediately emits an error without looking
+///    for an enclosing `guarded_group`.  That code path is never exercised here.
+///
+/// # What must change to enable this test
+///
+/// - **Step A:** Update `compile_guarded_members` to compile `StructureMember::Sub` into
+///   `sub_components` (instead of the `_ => {}` catch-all).  The `block_guard_sub_not_yet_compiled`
+///   test will break at that point, signalling that step A is done.
+///
+/// - **Step B:** Implement the guarded-groups fallback in `check_recursive_termination`:
+///   when a recursive sub has `guard_expr == None`, search `template.guarded_groups` for a
+///   `CompiledGuardedGroup` whose members include the sub, then run the
+///   guard-references-decremented-param heuristic on that group's `guard_expr`.  Only emit
+///   an error if neither the sub's own guard nor any enclosing block guard satisfies the
+///   termination condition.
+///
+/// Remove `#[ignore]` only after both steps A and B are complete and verified.
 #[test]
+#[ignore = "passes for the wrong reason — see doc comment above for the full explanation"]
 fn recursive_sub_inside_block_guard_no_error() {
     let source = r#"
 structure S {
