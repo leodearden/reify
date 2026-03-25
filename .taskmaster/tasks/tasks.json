@@ -6939,11 +6939,11 @@
         "description": "Correctness fixes in geometry transform dispatch:\n\n1. eval_arg_f64 (reify-eval/src/lib.rs:2957) silently returns 0.0 for missing/unevaluable args. For Scale, factor=0.0 collapses geometry to origin. For RotateAround, partial 0.0 defaults produce wrong axis vectors. Change to return Option<f64>, propagate None through compile_geometry_op. Violates feedback_silent_defaults_pattern.\n2. Negative scale factor — OCCT SetScale with negative factor produces inside-out geometry (point-symmetry). Add rejection guard (|| *factor < 0.0) or document+test intentional mirroring.\n3. Forward-reference shadowing — document ordering invariant for functions slice passed to compile_entity/is_geometry_let.\n4. Attach source spans to all 4 new arg-count error diagnostics (currently spanless unlike other diagnostics in same file).\n\nMemory hints: search \"eval_arg_f64 geometry transform Scale\", entities: compile_geometry_op, is_geometry_let",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-03-24T22:17:29.594Z"
+        "updatedAt": "2026-03-25T21:25:51.334Z"
       },
       {
         "id": "377",
@@ -7635,7 +7635,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-25T21:25:51.149Z",
+      "lastModified": "2026-03-25T21:25:51.334Z",
       "taskCount": 426,
       "completedCount": 227,
       "tags": [
