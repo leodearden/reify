@@ -127,6 +127,11 @@ pub enum GeometryOp {
     Loft {
         profiles: Vec<GeometryHandleId>,
     },
+    /// Extrude a 2D profile along Z axis by distance.
+    Extrude {
+        profile: GeometryHandleId,
+        distance: Value,
+    },
     /// Apply draft angle to faces.
     Draft {
         target: GeometryHandleId,
