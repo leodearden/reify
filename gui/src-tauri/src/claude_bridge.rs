@@ -498,18 +498,25 @@ pub async fn shutdown_sidecar(sidecar: &Mutex<Option<SidecarHandle>>) {
 
 /// Ensure the sidecar is spawned and ready to accept messages.
 ///
-/// If the sidecar slot is `None`, calls `spawn_fn` to create a new handle,
-/// subscribes to the ready notification **inside** the lock scope (before the
-/// guard is dropped), stores the handle, then releases the lock and awaits the
-/// notification with the given timeout.
+/// **Fast path**: if the slot contains a handle in `SidecarState::Ready`,
+/// returns `Ok(())` immediately. If the handle exists but is **not** ready
+/// (e.g. `Crashed` or `Starting`), the slot is cleared and the sidecar is
+/// re-spawned — enabling automatic recovery without an explicit
+/// `shutdown_sidecar` call.
+///
+/// **Spawn path**: calls `spawn_fn` to create a new handle, subscribes to the
+/// ready notification **inside** the lock scope (before the guard is dropped),
+/// stores the handle, then releases the lock and awaits the notification with
+/// the given timeout.
 ///
 /// **Race-safety**: subscribing inside the lock scope ensures that even on a
 /// multi-threaded executor the reader task cannot call `notify_waiters()` before
 /// the waiter is registered — eliminating the lost-wakeup race that would cause
 /// a spurious timeout.
 ///
-/// If the slot already contains a handle, returns `Ok(())` immediately without
-/// spawning.
+/// **Error recovery**: on any error after the handle has been stored (timeout,
+/// crash, or unexpected state), the sidecar slot is cleared so the next call
+/// can re-enter the spawn path.
 ///
 /// Returns `Err` if:
 /// - `spawn_fn` returns an error
@@ -524,18 +531,25 @@ where
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = Result<SidecarHandle, String>>,
 {
-    // Phase 1: spawn if needed, subscribe to ready_notify INSIDE the lock,
-    // then release the lock.
+    // Phase 1: check existing handle, spawn if needed, subscribe to
+    // ready_notify INSIDE the lock, then release the lock.
     //
-    // `notify_arc` is declared before the block so that `notified` (which borrows
-    // it) can be used after the block while the Arc remains alive.
+    // `notify_arc` is declared before the block so that `notified` (which
+    // borrows it) can be used after the block while the Arc remains alive.
     let notify_arc: Arc<Notify>;
     let (notified, state) = {
         let mut guard = sidecar.lock().await;
 
-        if guard.is_some() {
-            // Already running — skip spawn and wait.
-            return Ok(());
+        // Fast path: handle exists — check its readiness.
+        if let Some(handle) = guard.as_ref() {
+            let state_val = handle.state().lock().await.clone();
+            if matches!(state_val, SidecarState::Ready) {
+                // Already ready — nothing to do.
+                return Ok(());
+            }
+            // Not ready (Crashed, Starting, …) — clear the stale handle and
+            // fall through to re-spawn.
+            *guard = None;
         }
 
         // Spawn the sidecar process via the caller-supplied closure.
@@ -554,19 +568,31 @@ where
     };
 
     // Phase 2: wait for the ready notification with timeout.
-    tokio::time::timeout(ready_timeout, notified)
-        .await
-        .map_err(|_| {
-            format!("Sidecar did not become ready within {}ms", ready_timeout.as_millis())
-        })?;
+    let wait_result = tokio::time::timeout(ready_timeout, notified).await.map_err(|_| {
+        format!("Sidecar did not become ready within {}ms", ready_timeout.as_millis())
+    });
+
+    if let Err(e) = wait_result {
+        // Timeout: clear the stale handle so the next call can re-spawn.
+        *sidecar.lock().await = None;
+        return Err(e);
+    }
 
     // Phase 3: check state after notification — the notify may have been
     // triggered by a crash rather than the Ready message.
     let state_val = state.lock().await.clone();
     match state_val {
         SidecarState::Ready => Ok(()),
-        SidecarState::Crashed(msg) => Err(format!("sidecar crashed: {}", msg)),
-        other => Err(format!("sidecar not ready after notification: {:?}", other)),
+        SidecarState::Crashed(msg) => {
+            // Crash: clear stale handle so the next call can re-spawn.
+            *sidecar.lock().await = None;
+            Err(format!("sidecar crashed: {}", msg))
+        }
+        other => {
+            // Unexpected state: clear stale handle.
+            *sidecar.lock().await = None;
+            Err(format!("sidecar not ready after notification: {:?}", other))
+        }
     }
 }
 
