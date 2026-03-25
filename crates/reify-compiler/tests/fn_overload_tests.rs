@@ -4,8 +4,6 @@
 //! messages with candidate listing, arity disambiguation, and evaluator
 //! disambiguation of same-name/same-arity/different-type overloads.
 
-use reify_expr::{eval_expr, EvalContext};
-use reify_types::{Value, ValueMap};
 
 /// step-3: Define only fn f(x: Real)->Real, call f(3) where 3 is Int.
 /// Assert produces a "no matching overload" error that lists the candidate.
