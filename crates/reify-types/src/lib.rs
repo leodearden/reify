@@ -11,7 +11,6 @@ pub mod diagnostics;
 pub mod provenance;
 pub mod traits;
 pub mod warm;
-pub mod annotation;
 
 pub use identity::*;
 pub use hash::ContentHash;
@@ -32,4 +31,3 @@ pub use diagnostics::{Diagnostic, DiagnosticLabel, DiagnosticRef, Severity, Sour
 pub use provenance::SnapshotProvenance;
 pub use traits::{EnumDef, PortDirection, TraitBound, TraitDef, TraitMember, TraitRef, TypeParam};
 pub use warm::{OpaqueState, WarmStartable};
-pub use annotation::{Annotation, AnnotationArg};

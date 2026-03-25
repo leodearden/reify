@@ -88,19 +88,6 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                     // They require numeric differentiation infrastructure.
                     Value::Undef
                 }
-                "generate" if evaluated_args.len() == 2 => {
-                    // generate(n, |i| expr) -> List of n elements, indexed 0..n-1.
-                    // Requires EvalContext for apply_lambda so it lives here, not in stdlib.
-                    let count = match &evaluated_args[0] {
-                        Value::Int(n) => *n,
-                        _ => return Value::Undef,
-                    };
-                    let lambda = &evaluated_args[1];
-                    let results: Vec<Value> = (0..count)
-                        .map(|i| apply_lambda(lambda, &[Value::Int(i)], ctx))
-                        .collect();
-                    Value::List(results)
-                }
                 _ => reify_stdlib::eval_builtin(&function.name, &evaluated_args),
             }
         }
@@ -458,7 +445,7 @@ fn eval_method_call(obj: &Value, method: &str, args: &[Value], result_type: &Typ
                         _ => Value::Undef,
                     };
                 }
-                let mut acc = items[0].clone().canonicalize_matrix();
+                let mut acc = items[0].clone();
                 if acc.is_undef() {
                     return Value::Undef;
                 }
@@ -466,8 +453,7 @@ fn eval_method_call(obj: &Value, method: &str, args: &[Value], result_type: &Typ
                     if item.is_undef() {
                         return Value::Undef;
                     }
-                    let item = item.clone().canonicalize_matrix();
-                    acc = eval_add(&acc, &item);
+                    acc = eval_add(&acc, item);
                     if acc.is_undef() {
                         return Value::Undef;
                     }
@@ -622,9 +608,7 @@ fn eval_method_call(obj: &Value, method: &str, args: &[Value], result_type: &Typ
                 _ => unreachable!(),
             };
             match obj {
-                Value::Tensor(components)
-                | Value::Point(components)
-                | Value::Vector(components) => {
+                Value::Tensor(components) => {
                     components.get(index).cloned().unwrap_or(Value::Undef)
                 }
                 _ => Value::Undef,
@@ -642,8 +626,8 @@ fn eval_binop(op: BinOp, left: &CompiledExpr, right: &CompiledExpr, ctx: &EvalCo
         _ => {}
     }
 
-    let lv = eval_expr(left, ctx).canonicalize_matrix();
-    let rv = eval_expr(right, ctx).canonicalize_matrix();
+    let lv = eval_expr(left, ctx);
+    let rv = eval_expr(right, ctx);
 
     // Strict undef propagation for arithmetic/comparison
     if lv.is_undef() || rv.is_undef() {
@@ -723,27 +707,6 @@ fn eval_or(left: &CompiledExpr, right: &CompiledExpr, ctx: &EvalContext) -> Valu
     }
 }
 
-/// Apply a binary op component-wise to two equal-length slices.
-/// Wraps the result with the provided constructor (`Value::Point`, `Value::Vector`,
-/// or `Value::Tensor`).  Returns `Value::Undef` on length mismatch, empty inputs,
-/// or any component producing `Undef`.
-fn componentwise_op(
-    a: &[Value],
-    b: &[Value],
-    op: fn(&Value, &Value) -> Value,
-    wrap: fn(Vec<Value>) -> Value,
-) -> Value {
-    if a.is_empty() || b.is_empty() || a.len() != b.len() {
-        return Value::Undef;
-    }
-    let results: Vec<Value> = a.iter().zip(b.iter()).map(|(x, y)| op(x, y)).collect();
-    if results.iter().any(|v| v.is_undef()) {
-        Value::Undef
-    } else {
-        wrap(results)
-    }
-}
-
 fn eval_add(lv: &Value, rv: &Value) -> Value {
     match (lv, rv) {
         (Value::Int(a), Value::Int(b)) => Value::Int(a + b),
@@ -772,52 +735,19 @@ fn eval_add(lv: &Value, rv: &Value) -> Value {
         }
         (Value::String(a), Value::String(b)) => Value::String(format!("{}{}", a, b)),
         // Component-wise Tensor addition
-        (Value::Tensor(a), Value::Tensor(b)) => componentwise_op(a, b, eval_add, Value::Tensor),
-        // Component-wise Point/Vector addition.
-        // Point + Vector or Vector + Point → Point (displacement).
-        // Vector + Vector → Vector.
-        // Point + Point is guarded at BinOp level (returns Undef via Type check), but
-        // if called directly here we follow "left operand determines type" → Point.
-        (Value::Vector(a), Value::Vector(b)) => componentwise_op(a, b, eval_add, Value::Vector),
-        // Point + Point is geometrically undefined (spec 3.3.1).
-        (Value::Point(_), Value::Point(_)) => Value::Undef,
-        (Value::Point(a), Value::Vector(b)) => componentwise_op(a, b, eval_add, Value::Point),
-        (Value::Vector(a), Value::Point(b)) => componentwise_op(a, b, eval_add, Value::Point),
+        (Value::Tensor(a), Value::Tensor(b)) => {
+            if a.len() != b.len() {
+                return Value::Undef;
+            }
+            let results: Vec<Value> = a.iter().zip(b.iter()).map(|(x, y)| eval_add(x, y)).collect();
+            if results.iter().any(|v| v.is_undef()) {
+                Value::Undef
+            } else {
+                Value::Tensor(results)
+            }
+        }
         _ => Value::Undef,
     }
-}
-
-/// Compute the dot-product sum of an iterator of already-multiplied product values.
-///
-/// Uses `try_fold` for a single-pass, short-circuiting accumulation:
-/// - If the iterator is empty → returns `Value::Undef`
-/// - If any product is `Undef` → short-circuits to `Value::Undef`
-/// - If any partial sum from `eval_add` is `Undef` (e.g. dimension mismatch) → short-circuits
-///
-/// This eliminates the triple-pass collect→check→reduce pattern.
-fn eval_dot(mut products: impl Iterator<Item = Value>) -> Value {
-    // Seed with first product; short-circuit immediately if it's Undef.
-    let first = match products.next() {
-        None => return Value::Undef, // empty iterator
-        Some(v) => v,
-    };
-    if first.is_undef() {
-        return Value::Undef;
-    }
-    // Fold remaining products into running sum, short-circuiting on Undef.
-    products
-        .try_fold(first, |acc, prod| {
-            if prod.is_undef() {
-                return Err(());
-            }
-            let sum = eval_add(&acc, &prod);
-            if sum.is_undef() {
-                Err(())
-            } else {
-                Ok(sum)
-            }
-        })
-        .unwrap_or(Value::Undef)
 }
 
 fn eval_sub(lv: &Value, rv: &Value) -> Value {
@@ -846,15 +776,17 @@ fn eval_sub(lv: &Value, rv: &Value) -> Value {
             }
         }
         // Component-wise Tensor subtraction
-        (Value::Tensor(a), Value::Tensor(b)) => componentwise_op(a, b, eval_sub, Value::Tensor),
-        // Component-wise Point/Vector subtraction.
-        // Point - Point → Vector (displacement).
-        // Vector - Vector → Vector.
-        // Point - Vector → Point (displaced point).
-        // Vector - Point is geometrically invalid → Undef (falls through to default).
-        (Value::Vector(a), Value::Vector(b)) => componentwise_op(a, b, eval_sub, Value::Vector),
-        (Value::Point(a), Value::Point(b)) => componentwise_op(a, b, eval_sub, Value::Vector),
-        (Value::Point(a), Value::Vector(b)) => componentwise_op(a, b, eval_sub, Value::Point),
+        (Value::Tensor(a), Value::Tensor(b)) => {
+            if a.len() != b.len() {
+                return Value::Undef;
+            }
+            let results: Vec<Value> = a.iter().zip(b.iter()).map(|(x, y)| eval_sub(x, y)).collect();
+            if results.iter().any(|v| v.is_undef()) {
+                Value::Undef
+            } else {
+                Value::Tensor(results)
+            }
+        }
         _ => Value::Undef,
     }
 }
@@ -893,7 +825,7 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
         },
         // Scalar * Tensor or Tensor * Scalar: scale each component
         (Value::Tensor(components), scalar) | (scalar, Value::Tensor(components))
-            if !matches!(scalar, Value::Tensor(_) | Value::Point(_) | Value::Vector(_)) =>
+            if !matches!(scalar, Value::Tensor(_)) =>
         {
             let results: Vec<Value> = components.iter().map(|c| eval_mul(c, scalar)).collect();
             if results.iter().any(|v| v.is_undef()) {
@@ -901,133 +833,6 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
             } else {
                 Value::Tensor(results)
             }
-        }
-        // Scalar * Point or Point * Scalar: scale each component, preserve Point type
-        (Value::Point(components), scalar) | (scalar, Value::Point(components))
-            if !matches!(scalar, Value::Tensor(_) | Value::Point(_) | Value::Vector(_)) =>
-        {
-            let results: Vec<Value> = components.iter().map(|c| eval_mul(c, scalar)).collect();
-            if results.iter().any(|v| v.is_undef()) {
-                Value::Undef
-            } else {
-                Value::Point(results)
-            }
-        }
-        // Scalar * Vector or Vector * Scalar: scale each component, preserve Vector type
-        (Value::Vector(components), scalar) | (scalar, Value::Vector(components))
-            if !matches!(scalar, Value::Tensor(_) | Value::Point(_) | Value::Vector(_)) =>
-        {
-            let results: Vec<Value> = components.iter().map(|c| eval_mul(c, scalar)).collect();
-            if results.iter().any(|v| v.is_undef()) {
-                Value::Undef
-            } else {
-                Value::Vector(results)
-            }
-        }
-        // Matrix * Vector: rank-2 Tensor (rows of Tensors) × rank-1 Tensor (flat elements).
-        // Produces a rank-1 Tensor (vector) of dot-product results.
-        // Uses eval_dot for each row's dot product (single-pass, short-circuiting on Undef).
-        // Uses try_fold over rows for row-level early exit: if any row's dot product is Undef,
-        // the entire mat*vec short-circuits to Undef.
-        (Value::Tensor(rows), Value::Tensor(vec_elems))
-            if !rows.is_empty()
-                && !vec_elems.is_empty()
-                && matches!(rows[0], Value::Tensor(_))
-                && !matches!(vec_elems[0], Value::Tensor(_)) =>
-        {
-            let k = vec_elems.len();
-            rows.iter()
-                .try_fold(Vec::with_capacity(rows.len()), |mut acc, row| {
-                    let dot = if let Value::Tensor(row_elems) = row {
-                        if row_elems.len() != k {
-                            Value::Undef
-                        } else {
-                            eval_dot(
-                                row_elems.iter().zip(vec_elems.iter()).map(|(a, b)| eval_mul(a, b)),
-                            )
-                        }
-                    } else {
-                        Value::Undef
-                    };
-                    if dot.is_undef() {
-                        Err(())
-                    } else {
-                        acc.push(dot);
-                        Ok(acc)
-                    }
-                })
-                .map(Value::Tensor)
-                .unwrap_or(Value::Undef)
-        }
-        // Matrix * Matrix: rank-2 Tensor × rank-2 Tensor.
-        // Computes standard O(m*n*k) matrix multiplication with automatic
-        // dimension tracking via eval_mul/eval_add on scalar elements.
-        (Value::Tensor(a_rows), Value::Tensor(b_rows))
-            if !a_rows.is_empty()
-                && !b_rows.is_empty()
-                && matches!(a_rows[0], Value::Tensor(_))
-                && matches!(b_rows[0], Value::Tensor(_)) =>
-        {
-            let k = b_rows.len(); // inner dimension (B's row count)
-            // Verify A's column count equals B's row count
-            let a_cols = if let Value::Tensor(first_a) = &a_rows[0] {
-                first_a.len()
-            } else {
-                return Value::Undef;
-            };
-            if a_cols != k {
-                return Value::Undef;
-            }
-            let n = if let Value::Tensor(first_b) = &b_rows[0] {
-                if first_b.is_empty() {
-                    return Value::Undef;
-                }
-                first_b.len()
-            } else {
-                return Value::Undef;
-            };
-
-            // C[i][j] = sum(A[i][kk] * B[kk][j] for kk in 0..k)
-            // Uses eval_dot for each cell's dot product (single-pass, short-circuiting).
-            // Uses try_fold at two levels:
-            //   - cell level: if any cell in a row is Undef, skip remaining cells
-            //   - row level:  if any row is Undef, skip remaining rows
-            a_rows
-                .iter()
-                .try_fold(Vec::with_capacity(a_rows.len()), |mut c_rows, a_row| {
-                    let row_result = if let Value::Tensor(a_elems) = a_row {
-                        // Build this row of C via cell-level try_fold.
-                        (0..n)
-                            .try_fold(Vec::with_capacity(n), |mut c_row, j| {
-                                let cell = eval_dot((0..k).map(|kk| {
-                                    let b_kj = if let Value::Tensor(b_row_k) = &b_rows[kk] {
-                                        b_row_k.get(j).cloned().unwrap_or(Value::Undef)
-                                    } else {
-                                        Value::Undef
-                                    };
-                                    eval_mul(a_elems.get(kk).unwrap_or(&Value::Undef), &b_kj)
-                                }));
-                                if cell.is_undef() {
-                                    Err(())
-                                } else {
-                                    c_row.push(cell);
-                                    Ok(c_row)
-                                }
-                            })
-                            .map(Value::Tensor)
-                            .unwrap_or(Value::Undef)
-                    } else {
-                        Value::Undef
-                    };
-                    if row_result.is_undef() {
-                        Err(())
-                    } else {
-                        c_rows.push(row_result);
-                        Ok(c_rows)
-                    }
-                })
-                .map(Value::Tensor)
-                .unwrap_or(Value::Undef)
         }
         _ => Value::Undef,
     }
@@ -1085,36 +890,12 @@ fn eval_div(lv: &Value, rv: &Value) -> Value {
             dimension: *dimension,
         },
         // Tensor / Scalar: divide each component by the scalar
-        (Value::Tensor(components), scalar)
-            if !matches!(scalar, Value::Tensor(_) | Value::Point(_) | Value::Vector(_)) =>
-        {
+        (Value::Tensor(components), scalar) if !matches!(scalar, Value::Tensor(_)) => {
             let results: Vec<Value> = components.iter().map(|c| eval_div(c, scalar)).collect();
             if results.iter().any(|v| v.is_undef()) {
                 Value::Undef
             } else {
                 Value::Tensor(results)
-            }
-        }
-        // Point / Scalar: divide each component, preserve Point type
-        (Value::Point(components), scalar)
-            if !matches!(scalar, Value::Tensor(_) | Value::Point(_) | Value::Vector(_)) =>
-        {
-            let results: Vec<Value> = components.iter().map(|c| eval_div(c, scalar)).collect();
-            if results.iter().any(|v| v.is_undef()) {
-                Value::Undef
-            } else {
-                Value::Point(results)
-            }
-        }
-        // Vector / Scalar: divide each component, preserve Vector type
-        (Value::Vector(components), scalar)
-            if !matches!(scalar, Value::Tensor(_) | Value::Point(_) | Value::Vector(_)) =>
-        {
-            let results: Vec<Value> = components.iter().map(|c| eval_div(c, scalar)).collect();
-            if results.iter().any(|v| v.is_undef()) {
-                Value::Undef
-            } else {
-                Value::Vector(results)
             }
         }
         _ => Value::Undef,
@@ -1261,54 +1042,40 @@ fn eval_cmp(lv: &Value, rv: &Value, cmp: fn(f64, f64) -> bool) -> Value {
     }
 }
 
-/// Recursively negate a value.
-///
-/// Handles scalars (Int, Real, Scalar) and arbitrarily nested Tensors (rank-1
-/// vectors and rank-2 matrices represented as Tensor-of-Tensors).  Returns
-/// `Value::Undef` for any variant that cannot be negated.
-fn neg_value(v: Value) -> Value {
-    // Canonicalize Value::Matrix to nested Tensor before dispatch so the
-    // arithmetic engine (which only knows Tensor) can handle it.
-    let v = v.canonicalize_matrix();
-    match v {
-        Value::Int(i) => Value::Int(-i),
-        Value::Real(r) => Value::Real(-r),
-        Value::Scalar { si_value, dimension } => Value::Scalar { si_value: -si_value, dimension },
-        Value::Tensor(components) => {
-            let results: Vec<Value> = components.into_iter().map(neg_value).collect();
-            if results.iter().any(|x| x.is_undef()) {
-                Value::Undef
-            } else {
-                Value::Tensor(results)
-            }
-        }
-        Value::Point(components) => {
-            let results: Vec<Value> = components.into_iter().map(neg_value).collect();
-            if results.iter().any(|x| x.is_undef()) {
-                Value::Undef
-            } else {
-                Value::Point(results)
-            }
-        }
-        Value::Vector(components) => {
-            let results: Vec<Value> = components.into_iter().map(neg_value).collect();
-            if results.iter().any(|x| x.is_undef()) {
-                Value::Undef
-            } else {
-                Value::Vector(results)
-            }
-        }
-        _ => Value::Undef,
-    }
-}
-
 fn eval_unop(op: UnOp, operand: &CompiledExpr, ctx: &EvalContext) -> Value {
     let v = eval_expr(operand, ctx);
     if v.is_undef() {
         return Value::Undef;
     }
     match op {
-        UnOp::Neg => neg_value(v),
+        UnOp::Neg => match v {
+            Value::Int(i) => Value::Int(-i),
+            Value::Real(r) => Value::Real(-r),
+            Value::Scalar { si_value, dimension } => Value::Scalar {
+                si_value: -si_value,
+                dimension,
+            },
+            // Negate all components of a Tensor
+            Value::Tensor(components) => {
+                let results: Vec<Value> = components
+                    .into_iter()
+                    .map(|c| match c {
+                        Value::Int(i) => Value::Int(-i),
+                        Value::Real(r) => Value::Real(-r),
+                        Value::Scalar { si_value, dimension } => {
+                            Value::Scalar { si_value: -si_value, dimension }
+                        }
+                        _ => Value::Undef,
+                    })
+                    .collect();
+                if results.iter().any(|x| x.is_undef()) {
+                    Value::Undef
+                } else {
+                    Value::Tensor(results)
+                }
+            }
+            _ => Value::Undef,
+        },
         UnOp::Not => match v {
             Value::Bool(b) => Value::Bool(!b),
             _ => Value::Undef,
@@ -2120,7 +1887,6 @@ mod tests {
                 ),
             },
             content_hash: ContentHash::of(b"double"),
-            annotations: vec![],
         }
     }
 
@@ -2149,7 +1915,6 @@ mod tests {
                 ),
             },
             content_hash: ContentHash::of(b"f_with_let"),
-            annotations: vec![],
         }
     }
 
@@ -2218,7 +1983,6 @@ mod tests {
                 },
             },
             content_hash: ContentHash::of(b"factorial"),
-            annotations: vec![],
         }
     }
 
@@ -2241,7 +2005,6 @@ mod tests {
                 },
             },
             content_hash: ContentHash::of(b"infinite"),
-            annotations: vec![],
         }
     }
 
@@ -2353,7 +2116,6 @@ mod tests {
                 ),
             },
             content_hash: ContentHash::of(b"area"),
-            annotations: vec![],
         };
         let call_expr = CompiledExpr {
             content_hash: ContentHash::of(b"call_area"),
@@ -2415,7 +2177,6 @@ mod tests {
                 ),
             },
             content_hash: ContentHash::of(b"process1"),
-            annotations: vec![],
         };
         // fn process(x: Real, y: Real) -> Real { x + y }
         let process2 = CompiledFunction {
@@ -2436,7 +2197,6 @@ mod tests {
                 ),
             },
             content_hash: ContentHash::of(b"process2"),
-            annotations: vec![],
         };
 
         let functions = [process1, process2];
@@ -2473,60 +2233,6 @@ mod tests {
             Value::Real(v) => assert!((v - 7.0).abs() < 1e-12, "expected 7.0, got {}", v),
             other => panic!("expected Real(7.0), got {:?}", other),
         }
-    }
-
-    // ── eval_dot unit tests ──────────────────────────────────────
-
-    #[test]
-    fn eval_dot_sums_real_products() {
-        // [Real(1.0), Real(2.0), Real(3.0)] → Real(6.0)
-        let products = vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)];
-        let result = eval_dot(products.into_iter());
-        assert_eq!(result, Value::Real(6.0));
-    }
-
-    #[test]
-    fn eval_dot_short_circuits_on_undef() {
-        // [Undef, Real(2.0)] → Undef (first product is Undef)
-        let products = vec![Value::Undef, Value::Real(2.0)];
-        let result = eval_dot(products.into_iter());
-        assert!(result.is_undef(), "expected Undef, got {:?}", result);
-    }
-
-    #[test]
-    fn eval_dot_empty_returns_undef() {
-        // empty iterator → Undef
-        let result = eval_dot(std::iter::empty());
-        assert!(result.is_undef(), "expected Undef for empty iterator");
-    }
-
-    #[test]
-    fn eval_dot_single_product() {
-        // single Real passes through
-        let result = eval_dot(std::iter::once(Value::Real(42.0)));
-        assert_eq!(result, Value::Real(42.0));
-    }
-
-    #[test]
-    fn eval_dot_scalar_dimension_sum() {
-        // Scalar{LENGTH} values sum correctly: 1m + 2m + 3m = 6m
-        let products = vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)];
-        let result = eval_dot(products.into_iter());
-        assert_eq!(result, Value::length(6.0));
-    }
-
-    #[test]
-    fn eval_dot_dimension_mismatch_in_sum() {
-        // Scalar{LENGTH} + Scalar{MASS} → Undef from eval_add
-        let products = vec![
-            Value::length(1.0),
-            Value::Scalar {
-                si_value: 1.0,
-                dimension: DimensionVector::MASS,
-            },
-        ];
-        let result = eval_dot(products.into_iter());
-        assert!(result.is_undef(), "expected Undef for dimension mismatch in sum");
     }
 
     // ── Match non-enum discriminant ──────────────────────────────

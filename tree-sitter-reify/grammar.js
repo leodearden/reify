@@ -26,8 +26,6 @@ module.exports = grammar({
     [$.maximize_declaration],
     [$.sub_declaration],
     [$.port_declaration],
-    [$.pragma_arg],
-    [$.pragma],
   ],
 
   rules: {
@@ -44,8 +42,6 @@ module.exports = grammar({
       $.purpose_declaration,
       $.constraint_definition,
       $.unit_declaration,
-      $.pragma,
-      $.annotation,
     ),
 
     // ── Enum ──────────────────────────────────────────────────
@@ -142,9 +138,7 @@ module.exports = grammar({
       $.let_declaration,
       $.constraint_declaration,
       $.sub_declaration,
-      $.port_declaration,
       $.associated_type,
-      $.pragma,
     ),
 
     // ── Field definition ─────────────────────────────────────
@@ -231,7 +225,6 @@ module.exports = grammar({
       $.minimize_declaration,
       $.maximize_declaration,
       $.guarded_block,
-      $.pragma,
     ),
 
     // ── Constraint definition (top-level) ────────────────────
@@ -253,7 +246,6 @@ module.exports = grammar({
       $.param_declaration,
       $.let_declaration,
       $.constraint_def_predicate,
-      $.pragma,
     ),
 
     // A bare expression predicate inside a constraint def body.
@@ -344,7 +336,6 @@ module.exports = grammar({
       $.port_declaration,
       $.connect_statement,
       $.chain_statement,
-      $.pragma,
     ),
 
     // ── Where clause (guard) ────────────────────────────────
@@ -550,13 +541,13 @@ module.exports = grammar({
     // ── Expressions ─────────────────────────────────────────
     // Precedence (low → high):
     //   1: || (or)
-    //   2: && (and), :: (qualified access)
+    //   2: && (and)
     //   3: ==, != (equality)
     //   4: <, >, <=, >= (comparison)
     //   5: +, - (additive)
     //   6: *, / (multiplicative)
     //   7: unary -, ! (unary)
-    //   8: postfix (member access, function call, instance qualified access)
+    //   8: postfix (member access, function call)
 
     _expression: $ => choice(
       $.binary_expression,
@@ -565,8 +556,6 @@ module.exports = grammar({
       $.match_expression,
       $.lambda_expression,
       $.quantifier_expression,
-      $.qualified_access,
-      $.instance_qualified_access,
       $.index_access,
       $._primary_expression,
     ),
@@ -689,24 +678,6 @@ module.exports = grammar({
       field('member', $.identifier),
     )),
 
-    // Qualified trait access: `TypeName::ident` (left-associative, prec 2)
-    // Right side is restricted to a bare identifier to avoid ambiguity.
-    qualified_access: $ => prec.left(2, seq(
-      field('qualifier', $._expression),
-      '::',
-      field('member', $.identifier),
-    )),
-
-    // Instance-level qualified trait access: `expr.(TypeName::ident)`
-    // Inner part is constrained to qualified_access to prevent `expr.(42)`.
-    instance_qualified_access: $ => prec.left(8, seq(
-      field('object', $._expression),
-      '.',
-      '(',
-      field('qualified', $.qualified_access),
-      ')',
-    )),
-
     parenthesized_expression: $ => seq('(', $._expression, ')'),
 
     // ── Collection literals ─────────────────────────────────
@@ -745,38 +716,6 @@ module.exports = grammar({
     bool_literal: $ => choice('true', 'false'),
 
     identifier: $ => /[a-zA-Z_][a-zA-Z0-9_]*/,
-
-    // ── Pragma ──────────────────────────────────────────────
-    // `#optimize` or `#config(level=3, name="test")`
-    // '#' must be immediately followed by the name (no whitespace allowed).
-    pragma: $ => seq(
-      '#',
-      field('name', alias($.immediate_identifier, $.identifier)),
-      optional(seq('(', commaSep($.pragma_arg), ')')),
-    ),
-
-    // A pragma argument: either `key=value` or a bare value.
-    pragma_arg: $ => choice(
-      seq(field('key', $.identifier), '=', field('value', $._pragma_value)),
-      field('value', $._pragma_value),
-    ),
-
-    // Pragma values are restricted to compile-time constants.
-    _pragma_value: $ => choice(
-      $.number_literal,
-      $.string_literal,
-      $.bool_literal,
-      $.identifier,
-    ),
-
-    // ── Annotation ──────────────────────────────────────────
-    // `@test` or `@deprecated("use NewS")` — attaches to the next declaration.
-    // '@' must be immediately followed by the name (no whitespace allowed).
-    annotation: $ => seq(
-      '@',
-      field('name', alias($.immediate_identifier, $.identifier)),
-      optional(seq('(', commaSep($._expression), ')')),
-    ),
 
     // ── Comments ────────────────────────────────────────────
     line_comment: $ => token(seq('//', /.*/)),

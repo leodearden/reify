@@ -44,27 +44,7 @@ fn infer_value_type(v: &Value) -> Type {
         Value::Tensor(_) => {
             panic!("literal() cannot infer Tensor type (rank/n/quantity). Use CompiledExpr::literal(value, type) directly.")
         }
-        Value::Point(_) | Value::Vector(_) => {
-            panic!("literal() cannot infer Point/Vector type (n/quantity). Use CompiledExpr::literal(value, type) directly.")
-        }
-        Value::Matrix(_) => {
-            panic!("literal() cannot infer Matrix type (m/n/quantity). Use CompiledExpr::literal(value, type) directly.")
-        }
         Value::Complex { dimension, .. } => Type::complex(Type::Scalar { dimension: *dimension }),
-        Value::Orientation { .. } => Type::Orientation(3),
-        Value::Frame { .. } => Type::Frame(3),
-        Value::Transform { .. } => Type::Transform(3),
-        Value::Plane { .. } => Type::Plane,
-        Value::Axis { .. } => Type::Axis,
-        Value::BoundingBox { .. } => Type::BoundingBox,
-        Value::Range { lower, upper, .. } => {
-            let elem_ty = lower
-                .as_ref()
-                .map(|v| infer_value_type(v))
-                .or_else(|| upper.as_ref().map(|v| infer_value_type(v)))
-                .unwrap_or_else(|| panic!("literal() cannot infer Range element type for fully unbounded range. Use CompiledExpr::literal(value, type) directly."));
-            Type::Range(Box::new(elem_ty))
-        }
         Value::Undef => Type::Bool,
     }
 }
@@ -182,18 +162,6 @@ pub fn map_expr(entries: Vec<(CompiledExpr, CompiledExpr)>) -> CompiledExpr {
     let val_ty = entries[0].1.result_type.clone();
     let result_type = Type::Map(Box::new(key_ty), Box::new(val_ty));
     CompiledExpr::map_literal(entries, result_type)
-}
-
-/// Create an `option_some` expression wrapping `inner`, inferring `Type::Option(inner.result_type)`.
-pub fn option_some_expr(inner: CompiledExpr) -> CompiledExpr {
-    let result_type = Type::Option(Box::new(inner.result_type.clone()));
-    CompiledExpr::option_some(inner, result_type)
-}
-
-/// Create an `option_none` expression for the given inner type, producing `Type::Option(inner_type)`.
-pub fn option_none_expr(inner_type: Type) -> CompiledExpr {
-    let result_type = Type::Option(Box::new(inner_type));
-    CompiledExpr::option_none(result_type)
 }
 
 /// Create a conditional expression. Result type is taken from `then_branch`.
@@ -486,25 +454,6 @@ impl TopologyTemplateBuilder {
         self
     }
 
-    /// Spec-aligned alias for `auto_param`. Creates a ValueCellKind::Auto cell (a "free" parameter
-    /// with no default, determined by the solver).
-    pub fn free_param(self, entity: &str, member: &str, cell_type: Type) -> Self {
-        self.auto_param(entity, member, cell_type)
-    }
-
-    /// Create a ValueCellKind::Param cell with no default expression.
-    pub fn param_no_default(mut self, entity: &str, member: &str, cell_type: Type) -> Self {
-        self.value_cells.push(ValueCellDecl {
-            id: ValueCellId::new(entity, member),
-            kind: ValueCellKind::Param,
-            visibility: reify_compiler::Visibility::Public,
-            cell_type,
-            default_expr: None,
-            span: SourceSpan::new(0, 0),
-        });
-        self
-    }
-
     pub fn let_binding(
         mut self,
         entity: &str,
@@ -691,8 +640,6 @@ impl TopologyTemplateBuilder {
             structure_controlling: self.structure_controlling,
             objective: self.objective,
             content_hash,
-            is_recursive: false,
-            annotations: vec![],
         }
     }
 }
@@ -758,39 +705,6 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "literal() cannot infer Range element type")]
-    fn literal_fully_unbounded_range_panics() {
-        let _ = literal(Value::Range {
-            lower: None,
-            upper: None,
-            lower_inclusive: false,
-            upper_inclusive: false,
-        });
-    }
-
-    #[test]
-    fn literal_range_with_lower_bound_infers_type() {
-        let expr = literal(Value::Range {
-            lower: Some(Box::new(Value::Int(1))),
-            upper: None,
-            lower_inclusive: true,
-            upper_inclusive: false,
-        });
-        assert_eq!(expr.result_type, Type::Range(Box::new(Type::Int)));
-    }
-
-    #[test]
-    fn literal_range_with_upper_bound_only_infers_type() {
-        let expr = literal(Value::Range {
-            lower: None,
-            upper: Some(Box::new(Value::Real(5.0))),
-            lower_inclusive: false,
-            upper_inclusive: true,
-        });
-        assert_eq!(expr.result_type, Type::Range(Box::new(Type::Real)));
-    }
-
-    #[test]
     fn auto_param_builder() {
         let template = TopologyTemplateBuilder::new("T")
             .auto_param("T", "x", Type::length())
@@ -802,6 +716,144 @@ mod tests {
         assert_eq!(cell.kind, ValueCellKind::Auto);
         assert!(cell.default_expr.is_none());
         assert_eq!(cell.cell_type, Type::length());
+    }
+
+    // step-1: failing test for TraitDefBuilder minimal
+    #[test]
+    fn trait_def_builder_minimal() {
+        let ct = TraitDefBuilder::new("Rigid").build();
+        assert_eq!(ct.name, "Rigid");
+        assert!(!ct.is_pub);
+        assert!(ct.required_members.is_empty());
+        assert!(ct.defaults.is_empty());
+        assert!(ct.refinements.is_empty());
+        assert!(ct.type_params.is_empty());
+        // content_hash should be non-zero (derived from name)
+        assert_ne!(ct.content_hash, reify_types::ContentHash(0));
+    }
+
+    // step-3: failing tests for TraitDefBuilder members
+    #[test]
+    fn trait_def_builder_with_requirement() {
+        let ct = TraitDefBuilder::new("Rigid")
+            .requirement("mass", RequirementKind::Param(Type::Scalar {
+                dimension: DimensionVector::LENGTH, // reuse LENGTH for test simplicity
+            }))
+            .build();
+        assert_eq!(ct.required_members.len(), 1);
+        assert_eq!(ct.required_members[0].name, "mass");
+        assert!(matches!(&ct.required_members[0].kind, RequirementKind::Param(_)));
+    }
+
+    #[test]
+    fn trait_def_builder_with_refinement() {
+        let ct = TraitDefBuilder::new("StronglyRigid")
+            .refinement("Rigid")
+            .build();
+        assert_eq!(ct.refinements.len(), 1);
+        assert_eq!(ct.refinements[0], "Rigid");
+    }
+
+    #[test]
+    fn trait_def_builder_with_type_param() {
+        use reify_types::{TraitBound, TraitRef};
+        let param = TypeParam {
+            name: "T".to_string(),
+            bounds: vec![TraitBound {
+                trait_ref: TraitRef {
+                    name: "Rigid".to_string(),
+                    type_args: vec![],
+                },
+            }],
+            default: None,
+        };
+        let ct = TraitDefBuilder::new("Container")
+            .type_param(param)
+            .build();
+        assert_eq!(ct.type_params.len(), 1);
+        assert_eq!(ct.type_params[0].name, "T");
+        assert_eq!(ct.type_params[0].bounds.len(), 1);
+        assert_eq!(ct.type_params[0].bounds[0].trait_ref.name, "Rigid");
+    }
+
+    #[test]
+    fn trait_def_builder_is_pub() {
+        let ct = TraitDefBuilder::new("Rigid").is_pub().build();
+        assert!(ct.is_pub);
+    }
+
+    #[test]
+    fn trait_def_builder_content_hash_differs_by_name() {
+        let ct1 = TraitDefBuilder::new("Rigid").build();
+        let ct2 = TraitDefBuilder::new("Flexible").build();
+        assert_ne!(ct1.content_hash, ct2.content_hash);
+    }
+
+    #[test]
+    fn trait_def_builder_with_default() {
+        let ct = TraitDefBuilder::new("Rigid")
+            .add_default(
+                Some("mass_positive"),
+                DefaultKind::Constraint(reify_syntax::ConstraintDecl {
+                    label: Some("mass_positive".to_string()),
+                    expr: reify_syntax::Expr {
+                        kind: reify_syntax::ExprKind::BoolLiteral(true),
+                        span: SourceSpan::new(0, 0),
+                    },
+                    where_clause: None,
+                    span: SourceSpan::new(0, 0),
+                    content_hash: ContentHash::of_str("true"),
+                }),
+            )
+            .build();
+        assert_eq!(ct.defaults.len(), 1);
+        assert_eq!(ct.defaults[0].name.as_deref(), Some("mass_positive"));
+    }
+
+    #[test]
+    fn trait_def_content_hash_differs_by_type_param() {
+        use reify_types::{TraitBound, TraitRef};
+        let ct1 = TraitDefBuilder::new("Container").build();
+        let ct2 = TraitDefBuilder::new("Container")
+            .type_param(TypeParam {
+                name: "T".to_string(),
+                bounds: vec![TraitBound {
+                    trait_ref: TraitRef {
+                        name: "Rigid".to_string(),
+                        type_args: vec![],
+                    },
+                }],
+                default: None,
+            })
+            .build();
+        assert_ne!(
+            ct1.content_hash, ct2.content_hash,
+            "traits differing only in type_params must produce distinct content_hashes"
+        );
+    }
+
+    #[test]
+    fn trait_def_content_hash_differs_by_default() {
+        let ct1 = TraitDefBuilder::new("Rigid").build();
+        let ct2 = TraitDefBuilder::new("Rigid")
+            .add_default(
+                Some("mass_positive"),
+                DefaultKind::Constraint(reify_syntax::ConstraintDecl {
+                    label: Some("mass_positive".to_string()),
+                    expr: reify_syntax::Expr {
+                        kind: reify_syntax::ExprKind::BoolLiteral(true),
+                        span: SourceSpan::new(0, 0),
+                    },
+                    where_clause: None,
+                    span: SourceSpan::new(0, 0),
+                    content_hash: ContentHash::of_str("true"),
+                }),
+            )
+            .build();
+        assert_ne!(
+            ct1.content_hash, ct2.content_hash,
+            "traits differing only in defaults must produce distinct content_hashes"
+        );
     }
 
     // step-5: failing tests for TopologyTemplateBuilder trait extensions
@@ -1144,151 +1196,7 @@ impl TraitDefBuilder {
             required_members: self.required_members,
             defaults: self.defaults,
             content_hash,
-            annotations: vec![],
         }
-    }
-}
-
-// --- Tests for TraitDefBuilder ---
-
-#[cfg(test)]
-mod trait_def_builder_tests {
-    use super::*;
-    use reify_compiler::{DefaultKind, RequirementKind};
-    use reify_types::{ContentHash, DimensionVector, SourceSpan, TraitBound, TraitRef, TypeParam};
-
-    #[test]
-    fn trait_def_builder_minimal() {
-        let ct = TraitDefBuilder::new("Rigid").build();
-        assert_eq!(ct.name, "Rigid");
-        assert!(!ct.is_pub);
-        assert!(ct.required_members.is_empty());
-        assert!(ct.defaults.is_empty());
-        assert!(ct.refinements.is_empty());
-        assert!(ct.type_params.is_empty());
-        // content_hash should be non-zero (derived from name)
-        assert_ne!(ct.content_hash, reify_types::ContentHash(0));
-    }
-
-    #[test]
-    fn trait_def_builder_with_requirement() {
-        let ct = TraitDefBuilder::new("Rigid")
-            .requirement("mass", RequirementKind::Param(Type::Scalar {
-                dimension: DimensionVector::LENGTH, // reuse LENGTH for test simplicity
-            }))
-            .build();
-        assert_eq!(ct.required_members.len(), 1);
-        assert_eq!(ct.required_members[0].name, "mass");
-        assert!(matches!(&ct.required_members[0].kind, RequirementKind::Param(_)));
-    }
-
-    #[test]
-    fn trait_def_builder_with_refinement() {
-        let ct = TraitDefBuilder::new("StronglyRigid")
-            .refinement("Rigid")
-            .build();
-        assert_eq!(ct.refinements.len(), 1);
-        assert_eq!(ct.refinements[0], "Rigid");
-    }
-
-    #[test]
-    fn trait_def_builder_with_type_param() {
-        let param = TypeParam {
-            name: "T".to_string(),
-            bounds: vec![TraitBound {
-                trait_ref: TraitRef {
-                    name: "Rigid".to_string(),
-                    type_args: vec![],
-                },
-            }],
-            default: None,
-        };
-        let ct = TraitDefBuilder::new("Container")
-            .type_param(param)
-            .build();
-        assert_eq!(ct.type_params.len(), 1);
-        assert_eq!(ct.type_params[0].name, "T");
-        assert_eq!(ct.type_params[0].bounds.len(), 1);
-        assert_eq!(ct.type_params[0].bounds[0].trait_ref.name, "Rigid");
-    }
-
-    #[test]
-    fn trait_def_builder_is_pub() {
-        let ct = TraitDefBuilder::new("Rigid").is_pub().build();
-        assert!(ct.is_pub);
-    }
-
-    #[test]
-    fn trait_def_builder_content_hash_differs_by_name() {
-        let ct1 = TraitDefBuilder::new("Rigid").build();
-        let ct2 = TraitDefBuilder::new("Flexible").build();
-        assert_ne!(ct1.content_hash, ct2.content_hash);
-    }
-
-    #[test]
-    fn trait_def_builder_with_default() {
-        let ct = TraitDefBuilder::new("Rigid")
-            .add_default(
-                Some("mass_positive"),
-                DefaultKind::Constraint(reify_syntax::ConstraintDecl {
-                    label: Some("mass_positive".to_string()),
-                    expr: reify_syntax::Expr {
-                        kind: reify_syntax::ExprKind::BoolLiteral(true),
-                        span: SourceSpan::new(0, 0),
-                    },
-                    where_clause: None,
-                    span: SourceSpan::new(0, 0),
-                    content_hash: ContentHash::of_str("true"),
-                }),
-            )
-            .build();
-        assert_eq!(ct.defaults.len(), 1);
-        assert_eq!(ct.defaults[0].name.as_deref(), Some("mass_positive"));
-    }
-
-    #[test]
-    fn trait_def_content_hash_differs_by_type_param() {
-        let ct1 = TraitDefBuilder::new("Container").build();
-        let ct2 = TraitDefBuilder::new("Container")
-            .type_param(TypeParam {
-                name: "T".to_string(),
-                bounds: vec![TraitBound {
-                    trait_ref: TraitRef {
-                        name: "Rigid".to_string(),
-                        type_args: vec![],
-                    },
-                }],
-                default: None,
-            })
-            .build();
-        assert_ne!(
-            ct1.content_hash, ct2.content_hash,
-            "traits differing only in type_params must produce distinct content_hashes"
-        );
-    }
-
-    #[test]
-    fn trait_def_content_hash_differs_by_default() {
-        let ct1 = TraitDefBuilder::new("Rigid").build();
-        let ct2 = TraitDefBuilder::new("Rigid")
-            .add_default(
-                Some("mass_positive"),
-                DefaultKind::Constraint(reify_syntax::ConstraintDecl {
-                    label: Some("mass_positive".to_string()),
-                    expr: reify_syntax::Expr {
-                        kind: reify_syntax::ExprKind::BoolLiteral(true),
-                        span: SourceSpan::new(0, 0),
-                    },
-                    where_clause: None,
-                    span: SourceSpan::new(0, 0),
-                    content_hash: ContentHash::of_str("true"),
-                }),
-            )
-            .build();
-        assert_ne!(
-            ct1.content_hash, ct2.content_hash,
-            "traits differing only in defaults must produce distinct content_hashes"
-        );
     }
 }
 
@@ -1490,7 +1398,6 @@ impl CompiledFieldBuilder {
             codomain_type: self.codomain_type,
             source,
             content_hash,
-            annotations: vec![],
         }
     }
 }
@@ -1588,7 +1495,6 @@ impl CompiledPurposeBuilder {
             objective: self.objective,
             resolved_queries: self.resolved_queries,
             content_hash,
-            annotations: vec![],
         }
     }
 }
@@ -1669,7 +1575,6 @@ impl CompiledTraitBuilder {
             required_members: self.required_members,
             defaults: self.defaults,
             content_hash,
-            annotations: vec![],
         }
     }
 }
@@ -1869,9 +1774,6 @@ mod constraint_helper_tests {
 #[cfg(test)]
 mod module_builder_extension_tests {
     use super::*;
-    use crate::celsius;
-    use crate::kelvin;
-    use crate::type_alias_module;
     use reify_types::{EnumDef, ModulePath};
 
     fn module_path() -> ModulePath {
@@ -1905,6 +1807,7 @@ mod module_builder_extension_tests {
 
     #[test]
     fn module_builder_with_field() {
+        use reify_compiler::CompiledFieldSource;
         let body = literal(Value::Real(1.0));
         let f = CompiledFieldBuilder::new("temp", Type::Geometry, Type::Real)
             .analytical(body)
@@ -1945,134 +1848,5 @@ mod module_builder_extension_tests {
         let t = CompiledTraitBuilder::new("Rigid").build();
         let with_trait = CompiledModuleBuilder::new(module_path()).trait_def(t).build();
         assert_ne!(empty_module.content_hash, with_trait.content_hash);
-    }
-
-    // step-5: failing tests for option expression helpers
-    #[test]
-    fn option_some_expr_wraps_inner_with_option_type() {
-        let inner = literal(Value::Int(42));
-        let expr = option_some_expr(inner);
-        assert_eq!(expr.result_type, Type::Option(Box::new(Type::Int)));
-        assert!(matches!(expr.kind, CompiledExprKind::OptionSome(_)));
-    }
-
-    #[test]
-    fn option_none_expr_produces_option_none_kind() {
-        let expr = option_none_expr(Type::Real);
-        assert_eq!(expr.result_type, Type::Option(Box::new(Type::Real)));
-        assert!(matches!(expr.kind, CompiledExprKind::OptionNone));
-    }
-
-    #[test]
-    fn option_some_expr_content_hash_is_nonzero() {
-        let inner = literal(Value::Int(42));
-        let expr = option_some_expr(inner);
-        assert_ne!(expr.content_hash, reify_types::ContentHash::of(&[]));
-    }
-
-    // step-7: failing tests for free_param and param_no_default
-    #[test]
-    fn free_param_creates_auto_kind_cell() {
-        use reify_compiler::ValueCellKind;
-        let template = TopologyTemplateBuilder::new("S")
-            .free_param("S", "x", Type::Scalar { dimension: DimensionVector::LENGTH })
-            .build();
-        let cell = &template.value_cells[0];
-        assert_eq!(cell.kind, ValueCellKind::Auto);
-        assert!(cell.default_expr.is_none());
-        assert_eq!(cell.visibility, reify_compiler::Visibility::Public);
-    }
-
-    #[test]
-    fn free_param_is_equivalent_to_auto_param() {
-        let ty = Type::Scalar { dimension: DimensionVector::LENGTH };
-        let via_free = TopologyTemplateBuilder::new("S")
-            .free_param("S", "x", ty.clone())
-            .build();
-        let via_auto = TopologyTemplateBuilder::new("S")
-            .auto_param("S", "x", ty.clone())
-            .build();
-        assert_eq!(via_free.value_cells[0].kind, via_auto.value_cells[0].kind);
-        assert_eq!(via_free.value_cells[0].cell_type, via_auto.value_cells[0].cell_type);
-        // Both should have no default expression
-        assert!(via_free.value_cells[0].default_expr.is_none());
-        assert!(via_auto.value_cells[0].default_expr.is_none());
-    }
-
-    #[test]
-    fn param_no_default_creates_param_kind_without_default() {
-        use reify_compiler::ValueCellKind;
-        let template = TopologyTemplateBuilder::new("S")
-            .param_no_default("S", "y", Type::Int)
-            .build();
-        let cell = &template.value_cells[0];
-        assert_eq!(cell.kind, ValueCellKind::Param);
-        assert!(cell.default_expr.is_none());
-        assert_eq!(cell.visibility, reify_compiler::Visibility::Public);
-    }
-
-    // step-9: failing test for type_alias_module fixture
-    #[test]
-    fn type_alias_module_fixture_returns_compiled_module() {
-        let module = type_alias_module();
-        // Should have at least one template
-        assert!(!module.templates.is_empty(), "should have at least one topology template");
-        // Module should have a valid content_hash (non-zero)
-        assert_ne!(module.content_hash, reify_types::ContentHash::of(&[]));
-        // The template should have temperature-dimensioned params
-        let template = &module.templates[0];
-        let has_temperature_param = template.value_cells.iter().any(|c| {
-            matches!(
-                c.cell_type,
-                Type::Scalar { dimension } if dimension == DimensionVector::TEMPERATURE
-            )
-        });
-        assert!(has_temperature_param, "HeatExchanger should have a TEMPERATURE param");
-    }
-
-    // step-11: integration test composing all new helpers
-    #[test]
-    fn integration_reactor_module_with_all_new_helpers() {
-        // Compose a Reactor module using free_param, celsius() default, range constraint,
-        // option_some_expr/option_none_expr, param_no_default
-        let e = "Reactor";
-        let temp_type = Type::Scalar { dimension: DimensionVector::TEMPERATURE };
-
-        // param with celsius(25.0) as default
-        let temp_default = literal(celsius(25.0));
-
-        // Range constraint: temperature in [kelvin(273.15), kelvin(773.15)]
-        let temp_ref = value_ref_typed(e, "max_temp", temp_type.clone());
-        let lower_bound = literal(kelvin(273.15));
-        let upper_bound = literal(kelvin(773.15));
-        let range_constraint_expr = and(
-            ge(temp_ref.clone(), lower_bound),
-            le(temp_ref.clone(), upper_bound),
-        );
-
-        // option_some_expr and option_none_expr usage in a conditional
-        let opt_temp = option_some_expr(temp_ref.clone());
-        let opt_none = option_none_expr(temp_type.clone());
-        let cond = conditional_expr(literal(Value::Bool(true)), opt_temp, opt_none);
-        assert_eq!(cond.result_type, Type::Option(Box::new(temp_type.clone())));
-
-        let template = TopologyTemplateBuilder::new(e)
-            .free_param(e, "operating_temp", temp_type.clone())
-            .param(e, "max_temp", temp_type.clone(), Some(temp_default))
-            .param_no_default(e, "set_point", temp_type.clone())
-            .constraint(e, 0, Some("temp_range"), range_constraint_expr)
-            .build();
-
-        let module = CompiledModuleBuilder::new(module_path())
-            .template(template)
-            .build();
-
-        assert_eq!(module.templates.len(), 1);
-        let tmpl = &module.templates[0];
-        // free_param + param + param_no_default = 3 cells
-        assert_eq!(tmpl.value_cells.len(), 3);
-        // 1 constraint
-        assert_eq!(tmpl.constraints.len(), 1);
-        assert_ne!(module.content_hash, reify_types::ContentHash::of(&[]));
     }
 }

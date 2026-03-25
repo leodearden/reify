@@ -42,12 +42,9 @@ fn reject_unresolved_type_names() {
             })],
             span: SourceSpan::new(0, 50),
             content_hash: ContentHash::of_str("structure Bad"),
-            pragmas: vec![],
-            annotations: vec![],
         })],
         errors: vec![],
         content_hash: ContentHash::of_str("bad module"),
-        pragmas: vec![],
     };
 
     let compiled = reify_compiler::compile(&module);
@@ -239,15 +236,12 @@ fn handle_parse_errors_gracefully() {
             })],
             span: SourceSpan::new(0, 50),
             content_hash: ContentHash::of_str("structure Partial"),
-            pragmas: vec![],
-            annotations: vec![],
         })],
         errors: vec![ParseError {
             message: "unexpected token".into(),
             span: SourceSpan::new(40, 45),
         }],
         content_hash: ContentHash::of_str("partial module"),
-        pragmas: vec![],
     };
 
     // Should not panic; should produce output for valid parts

@@ -60,23 +60,6 @@ pub mod ffi {
             az: f64,
             angle_rad: f64,
         ) -> Result<UniquePtr<OcctShape>>;
-        fn scale_shape(
-            shape: &OcctShape,
-            factor: f64,
-            cx: f64,
-            cy: f64,
-            cz: f64,
-        ) -> Result<UniquePtr<OcctShape>>;
-        fn rotate_around_shape(
-            shape: &OcctShape,
-            px: f64,
-            py: f64,
-            pz: f64,
-            ax: f64,
-            ay: f64,
-            az: f64,
-            angle_rad: f64,
-        ) -> Result<UniquePtr<OcctShape>>;
 
         // --- Mirror / Pattern / Circular pattern ---
         fn mirror_shape(
@@ -130,7 +113,6 @@ pub mod ffi {
 
         // --- Wire helpers / Loft ---
         fn make_circle_wire(radius: f64, z_height: f64) -> Result<UniquePtr<OcctShape>>;
-        fn make_circle_face(radius: f64, z_height: f64) -> Result<UniquePtr<OcctShape>>;
         fn loft_two_profiles(
             wire1: &OcctShape,
             wire2: &OcctShape,
@@ -139,31 +121,6 @@ pub mod ffi {
             wire1: &OcctShape,
             wire2: &OcctShape,
             wire3: &OcctShape,
-        ) -> Result<UniquePtr<OcctShape>>;
-
-        // --- Sweep / Extrude / Revolve ---
-        fn make_prism(
-            profile: &OcctShape,
-            dx: f64,
-            dy: f64,
-            dz: f64,
-        ) -> Result<UniquePtr<OcctShape>>;
-        fn make_revolve(
-            profile: &OcctShape,
-            ox: f64,
-            oy: f64,
-            oz: f64,
-            ax: f64,
-            ay: f64,
-            az: f64,
-            angle_rad: f64,
-        ) -> Result<UniquePtr<OcctShape>>;
-        fn make_rect_face(
-            width: f64,
-            height: f64,
-            cx: f64,
-            cy: f64,
-            cz: f64,
         ) -> Result<UniquePtr<OcctShape>>;
 
         // --- Queries ---

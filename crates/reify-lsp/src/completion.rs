@@ -84,8 +84,6 @@ const KEYWORDS: &[&str] = &[
 const BUILTIN_FUNCTIONS: &[&str] = &[
     "box", "cylinder", "sphere", "sin", "cos", "tan", "sqrt", "abs", "min", "max",
     "dot", "cross", "normalize", "magnitude",
-    // Complex number functions
-    "complex", "real", "imag", "conjugate", "complex_magnitude", "phase",
 ];
 
 /// Built-in type names.
@@ -256,24 +254,5 @@ mod tests {
         assert!(func_labels.contains(&"cross"), "should include 'cross'");
         assert!(func_labels.contains(&"normalize"), "should include 'normalize'");
         assert!(func_labels.contains(&"magnitude"), "should include 'magnitude'");
-    }
-
-    // --- complex builtin completions (step-10) ---
-
-    #[test]
-    fn completions_include_complex_functions() {
-        let source = reify_test_support::bracket_source();
-        let items = compute_completions(source, &test_uri(), Position::new(1, 0));
-        let func_labels: Vec<&str> = items
-            .iter()
-            .filter(|i| i.kind == Some(CompletionItemKind::FUNCTION))
-            .map(|f| f.label.as_str())
-            .collect();
-        assert!(func_labels.contains(&"complex"), "should include 'complex'");
-        assert!(func_labels.contains(&"real"), "should include 'real'");
-        assert!(func_labels.contains(&"imag"), "should include 'imag'");
-        assert!(func_labels.contains(&"conjugate"), "should include 'conjugate'");
-        assert!(func_labels.contains(&"complex_magnitude"), "should include 'complex_magnitude'");
-        assert!(func_labels.contains(&"phase"), "should include 'phase'");
     }
 }

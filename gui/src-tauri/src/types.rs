@@ -118,54 +118,11 @@ pub fn format_value(v: &Value) -> (String, String) {
             let strs: Vec<String> = items.iter().map(|v| format_value(v).0).collect();
             (format!("[{}]", strs.join(", ")), String::new())
         }
-        Value::Point(items) => {
-            let strs: Vec<String> = items.iter().map(|v| format_value(v).0).collect();
-            (format!("point({})", strs.join(", ")), String::new())
-        }
-        Value::Vector(items) => {
-            let strs: Vec<String> = items.iter().map(|v| format_value(v).0).collect();
-            (format!("vec({})", strs.join(", ")), String::new())
-        }
-        Value::Matrix(rows) => {
-            let row_strs: Vec<String> = rows
-                .iter()
-                .map(|row| {
-                    let inner: Vec<String> = row.iter().map(|v| format_value(v).0).collect();
-                    format!("[{}]", inner.join(", "))
-                })
-                .collect();
-            (format!("[{}]", row_strs.join(", ")), String::new())
-        }
         Value::Complex { re, im, dimension } => {
             let (display_re, unit) = convert_si_to_display(*re, *dimension);
             let (display_im, _) = convert_si_to_display(*im, *dimension);
             let formatted = format!("{} + {}i", format_number(display_re), format_number(display_im));
             (formatted, unit.to_string())
-        }
-        Value::Orientation { w, x, y, z } => {
-            (format!("[{}, {}, {}, {}]q", w, x, y, z), String::new())
-        }
-        Value::Frame { origin, basis } => {
-            (format!("frame({}, {})", format_value(origin).0, format_value(basis).0), String::new())
-        }
-        Value::Transform { rotation, translation } => {
-            (format!("transform({}, {})", format_value(rotation).0, format_value(translation).0), String::new())
-        }
-        Value::Plane { origin, normal } => {
-            (format!("plane({}, {})", format_value(origin).0, format_value(normal).0), String::new())
-        }
-        Value::Axis { origin, direction } => {
-            (format!("axis({}, {})", format_value(origin).0, format_value(direction).0), String::new())
-        }
-        Value::BoundingBox { min, max } => {
-            (format!("bbox({}, {})", format_value(min).0, format_value(max).0), String::new())
-        }
-        Value::Range { lower, upper, lower_inclusive, upper_inclusive } => {
-            let lower_bracket = if *lower_inclusive { "[" } else { "(" };
-            let upper_bracket = if *upper_inclusive { "]" } else { ")" };
-            let lower_str = lower.as_ref().map(|v| format_value(v).0).unwrap_or_else(|| "-∞".to_string());
-            let upper_str = upper.as_ref().map(|v| format_value(v).0).unwrap_or_else(|| "+∞".to_string());
-            (format!("{}{}..{}{}", lower_bracket, lower_str, upper_str, upper_bracket), String::new())
         }
         Value::Undef => ("undefined".to_string(), String::new()),
     }

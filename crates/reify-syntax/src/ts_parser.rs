@@ -43,7 +43,6 @@ pub fn parse(source: &str, module_path: ModulePath) -> ParsedModule {
         declarations: lowering.declarations,
         errors: lowering.errors,
         content_hash,
-        pragmas: lowering.module_pragmas,
     }
 }
 
@@ -54,8 +53,6 @@ struct Lowering<'a> {
     errors: Vec<ParseError>,
     /// Enum names collected in the first pass for disambiguation.
     known_enums: HashSet<String>,
-    /// Module-level pragmas collected during lower_source_file.
-    module_pragmas: Vec<Pragma>,
 }
 
 impl<'a> Lowering<'a> {
@@ -65,7 +62,6 @@ impl<'a> Lowering<'a> {
             declarations: Vec::new(),
             errors: Vec::new(),
             known_enums: HashSet::new(),
-            module_pragmas: Vec::new(),
         }
     }
 
@@ -111,97 +107,60 @@ impl<'a> Lowering<'a> {
         }
 
         // Second pass: lower all declarations.
-        // Annotations immediately before a declaration are accumulated in
-        // `pending_annotations` and drained into the declaration's `annotations` field.
-        let mut pending_annotations: Vec<Annotation> = Vec::new();
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             match child.kind() {
                 "structure_definition" => {
-                    let annotations = std::mem::take(&mut pending_annotations);
-                    if let Some(mut decl) = self.lower_structure(child) {
-                        decl.annotations = annotations;
+                    if let Some(decl) = self.lower_structure(child) {
                         self.declarations.push(Declaration::Structure(decl));
                     }
-                    // annotations dropped here if lowering failed — no leakage
                 }
                 "occurrence_definition" => {
-                    let annotations = std::mem::take(&mut pending_annotations);
-                    if let Some(mut decl) = self.lower_occurrence(child) {
-                        decl.annotations = annotations;
+                    if let Some(decl) = self.lower_occurrence(child) {
                         self.declarations.push(Declaration::Occurrence(decl));
                     }
                 }
                 "import_declaration" => {
-                    let annotations = std::mem::take(&mut pending_annotations);
-                    if let Some(mut decl) = self.lower_import(child) {
-                        decl.annotations = annotations;
+                    if let Some(decl) = self.lower_import(child) {
                         self.declarations.push(Declaration::Import(decl));
                     }
                 }
                 "enum_declaration" => {
-                    let annotations = std::mem::take(&mut pending_annotations);
-                    if let Some(mut decl) = self.lower_enum(child) {
-                        decl.annotations = annotations;
+                    if let Some(decl) = self.lower_enum(child) {
                         self.declarations.push(Declaration::Enum(decl));
                     }
                 }
                 "function_definition" => {
-                    let annotations = std::mem::take(&mut pending_annotations);
-                    if let Some(mut decl) = self.lower_function(child) {
-                        decl.annotations = annotations;
+                    if let Some(decl) = self.lower_function(child) {
                         self.declarations.push(Declaration::Function(decl));
                     }
                 }
                 "trait_declaration" => {
-                    let annotations = std::mem::take(&mut pending_annotations);
-                    if let Some(mut decl) = self.lower_trait(child) {
-                        decl.annotations = annotations;
+                    if let Some(decl) = self.lower_trait(child) {
                         self.declarations.push(Declaration::Trait(decl));
                     }
                 }
                 "field_definition" => {
-                    let annotations = std::mem::take(&mut pending_annotations);
-                    if let Some(mut decl) = self.lower_field(child) {
-                        decl.annotations = annotations;
+                    if let Some(decl) = self.lower_field(child) {
                         self.declarations.push(Declaration::Field(decl));
                     }
                 }
                 "purpose_declaration" => {
-                    let annotations = std::mem::take(&mut pending_annotations);
-                    if let Some(mut decl) = self.lower_purpose(child) {
-                        decl.annotations = annotations;
+                    if let Some(decl) = self.lower_purpose(child) {
                         self.declarations.push(Declaration::Purpose(decl));
                     }
                 }
                 "constraint_definition" => {
-                    let annotations = std::mem::take(&mut pending_annotations);
-                    if let Some(mut decl) = self.lower_constraint_def(child) {
-                        decl.annotations = annotations;
+                    if let Some(decl) = self.lower_constraint_def(child) {
                         self.declarations.push(Declaration::Constraint(decl));
                     }
                 }
                 "unit_declaration" => {
-                    let annotations = std::mem::take(&mut pending_annotations);
-                    if let Some(mut decl) = self.lower_unit(child) {
-                        decl.annotations = annotations;
+                    if let Some(decl) = self.lower_unit(child) {
                         self.declarations.push(Declaration::Unit(decl));
                     }
                 }
-                "annotation" => {
-                    if let Some(annotation) = self.lower_annotation(child) {
-                        pending_annotations.push(annotation);
-                    }
-                }
-                "pragma" => {
-                    if let Some(pragma) = self.lower_pragma(child) {
-                        self.module_pragmas.push(pragma);
-                    }
-                }
                 "ERROR" => {
-                    // Consume any pending annotations so they don't leak past a
-                    // syntax error to the next successfully-parsed declaration.
-                    let _ = std::mem::take(&mut pending_annotations);
                     self.errors.push(ParseError {
                         message: format!("syntax error: {}", self.node_text(child)),
                         span: self.span(child),
@@ -287,7 +246,6 @@ impl<'a> Lowering<'a> {
             is_pub,
             span: self.span(node),
             content_hash: self.content_hash(node),
-            annotations: vec![],
         })
     }
 
@@ -313,7 +271,6 @@ impl<'a> Lowering<'a> {
             variants,
             span: self.span(node),
             content_hash: self.content_hash(node),
-            annotations: vec![],
         })
     }
 
@@ -528,7 +485,6 @@ impl<'a> Lowering<'a> {
             body,
             span: self.span(node),
             content_hash: self.content_hash(node),
-            annotations: vec![],
         })
     }
 
@@ -544,7 +500,7 @@ impl<'a> Lowering<'a> {
         // Extract refinements from optional trait_bound_list child
         let refinements = self.find_trait_bound_list(node);
 
-        let (members, pragmas) = self.lower_trait_members(node);
+        let members = self.lower_trait_members(node);
 
         Some(TraitDecl {
             name,
@@ -554,8 +510,6 @@ impl<'a> Lowering<'a> {
             members,
             span: self.span(node),
             content_hash: self.content_hash(node),
-            pragmas,
-            annotations: vec![],
         })
     }
 
@@ -581,7 +535,6 @@ impl<'a> Lowering<'a> {
             source,
             span: self.span(node),
             content_hash: self.content_hash(node),
-            annotations: vec![],
         })
     }
 
@@ -638,7 +591,7 @@ impl<'a> Lowering<'a> {
         let is_pub = self.has_pub_keyword(node);
         let type_params = self.lower_type_parameters(node);
         let params = self.lower_purpose_params(node);
-        let (members, pragmas) = self.lower_purpose_members(node);
+        let members = self.lower_purpose_members(node);
 
         Some(PurposeDef {
             name,
@@ -648,8 +601,6 @@ impl<'a> Lowering<'a> {
             members,
             span: self.span(node),
             content_hash: self.content_hash(node),
-            pragmas,
-            annotations: vec![],
         })
     }
 
@@ -664,7 +615,6 @@ impl<'a> Lowering<'a> {
 
         let mut params = Vec::new();
         let mut predicates = Vec::new();
-        let mut pragmas = Vec::new();
 
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
@@ -682,11 +632,6 @@ impl<'a> Lowering<'a> {
                         && let Some(expr) = self.lower_expr(expr_node)
                     {
                         predicates.push(expr);
-                    }
-                }
-                "pragma" => {
-                    if let Some(pragma) = self.lower_pragma(child) {
-                        pragmas.push(pragma);
                     }
                 }
                 "ERROR" => {
@@ -710,8 +655,6 @@ impl<'a> Lowering<'a> {
             predicates,
             span: self.span(node),
             content_hash: self.content_hash(node),
-            pragmas,
-            annotations: vec![],
         })
     }
 
@@ -740,110 +683,7 @@ impl<'a> Lowering<'a> {
             offset,
             span: self.span(node),
             content_hash: self.content_hash(node),
-            annotations: vec![],
         })
-    }
-
-    // ── Annotation lowering ───────────────────────────────────
-
-    /// Lower an `annotation` CST node to an `Annotation` AST node.
-    ///
-    /// Grammar: `'@' name:immediate_identifier ('(' commaSep(_expression) ')')?`
-    fn lower_annotation(&self, node: tree_sitter::Node) -> Option<Annotation> {
-        let name_node = node.child_by_field_name("name")?;
-        let name = self.node_text(name_node).to_string();
-
-        // Collect expression args from named children (skipping the name field itself).
-        let mut args = Vec::new();
-        let mut cursor = node.walk();
-        for child in node.named_children(&mut cursor) {
-            // The 'name' field child is the identifier; all other named children
-            // are expression args produced by commaSep($._expression).
-            if child.id() != name_node.id()
-                && let Some(expr) = self.lower_expr(child)
-            {
-                args.push(expr);
-            }
-        }
-
-        Some(Annotation {
-            name,
-            args,
-            span: self.span(node),
-        })
-    }
-
-    // ── Pragma lowering ───────────────────────────────────────
-
-    /// Lower a `pragma` CST node to a `Pragma` AST node.
-    ///
-    /// Grammar: `'#' name:immediate_identifier ('(' commaSep(pragma_arg) ')')?`
-    fn lower_pragma(&self, node: tree_sitter::Node) -> Option<Pragma> {
-        let name_node = node.child_by_field_name("name")?;
-        let name = self.node_text(name_node).to_string();
-
-        // Collect args from pragma_arg children (if any).
-        let mut args = Vec::new();
-        let mut cursor = node.walk();
-        for child in node.named_children(&mut cursor) {
-            if child.kind() == "pragma_arg"
-                && let Some(arg) = self.lower_pragma_arg(child)
-            {
-                args.push(arg);
-            }
-        }
-
-        Some(Pragma {
-            name,
-            args,
-            span: self.span(node),
-        })
-    }
-
-    /// Lower a `pragma_arg` CST node.
-    ///
-    /// Grammar: `(key:identifier '=' value:_pragma_value) | value:_pragma_value`
-    fn lower_pragma_arg(&self, node: tree_sitter::Node) -> Option<PragmaArg> {
-        if let Some(key_node) = node.child_by_field_name("key") {
-            // KeyValue form: `key = value`
-            let key = self.node_text(key_node).to_string();
-            let value_node = node.child_by_field_name("value")?;
-            let value = self.lower_pragma_value(value_node)?;
-            Some(PragmaArg::KeyValue { key, value })
-        } else if let Some(value_node) = node.child_by_field_name("value") {
-            // Bare form: just a value
-            let value = self.lower_pragma_value(value_node)?;
-            Some(PragmaArg::Bare(value))
-        } else {
-            None
-        }
-    }
-
-    /// Lower a `_pragma_value` CST node to a `PragmaValue`.
-    fn lower_pragma_value(&self, node: tree_sitter::Node) -> Option<PragmaValue> {
-        match node.kind() {
-            "identifier" => Some(PragmaValue::Ident(self.node_text(node).to_string())),
-            "number_literal" => {
-                let text = self.node_text(node);
-                text.parse::<f64>().ok().map(PragmaValue::Number)
-            }
-            "string_literal" => {
-                let raw = self.node_text(node);
-                // Strip the surrounding quotes.
-                let s = raw
-                    .strip_prefix('"')
-                    .and_then(|s| s.strip_suffix('"'))
-                    .unwrap_or(raw)
-                    .to_string();
-                Some(PragmaValue::String(s))
-            }
-            "bool_literal" => match self.node_text(node) {
-                "true" => Some(PragmaValue::Bool(true)),
-                "false" => Some(PragmaValue::Bool(false)),
-                _ => None,
-            },
-            _ => None,
-        }
     }
 
     fn lower_purpose_params(&self, node: tree_sitter::Node) -> Vec<PurposeParam> {
@@ -873,28 +713,20 @@ impl<'a> Lowering<'a> {
         })
     }
 
-    fn lower_purpose_members(
-        &mut self,
-        node: tree_sitter::Node,
-    ) -> (Vec<MemberDecl>, Vec<Pragma>) {
+    fn lower_purpose_members(&mut self, node: tree_sitter::Node) -> Vec<MemberDecl> {
         let mut members = Vec::new();
-        let mut pragmas = Vec::new();
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             if child.kind() == "purpose_member" {
-                // purpose_member is a choice node wrapping the actual member or pragma
-                if let Some(inner) = child.named_child(0) {
-                    if inner.kind() == "pragma" {
-                        if let Some(pragma) = self.lower_pragma(inner) {
-                            pragmas.push(pragma);
-                        }
-                    } else if let Some(member) = self.lower_member(inner) {
-                        members.push(member);
-                    }
+                // purpose_member is a choice node wrapping the actual member
+                if let Some(inner) = child.named_child(0)
+                    && let Some(member) = self.lower_member(inner)
+                {
+                    members.push(member);
                 }
             }
         }
-        (members, pragmas)
+        members
     }
 
     fn lower_fn_param(&self, node: tree_sitter::Node) -> Option<FnParam> {
@@ -957,29 +789,20 @@ impl<'a> Lowering<'a> {
     }
 
     /// Collect members from trait_member children of a trait_declaration node.
-    /// Collect members and block-level pragmas from trait_member children.
-    ///
-    /// Returns `(members, pragmas)` — trait_member wraps either a regular member
-    /// or a pragma; pragmas are collected separately.
-    fn lower_trait_members(&mut self, node: tree_sitter::Node) -> (Vec<MemberDecl>, Vec<Pragma>) {
+    fn lower_trait_members(&mut self, node: tree_sitter::Node) -> Vec<MemberDecl> {
         let mut members = Vec::new();
-        let mut pragmas = Vec::new();
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             if child.kind() == "trait_member" {
-                // trait_member is a choice node wrapping the actual member or pragma
-                if let Some(inner) = child.named_child(0) {
-                    if inner.kind() == "pragma" {
-                        if let Some(pragma) = self.lower_pragma(inner) {
-                            pragmas.push(pragma);
-                        }
-                    } else if let Some(member) = self.lower_member(inner) {
-                        members.push(member);
-                    }
+                // trait_member is a choice node wrapping the actual member
+                if let Some(inner) = child.named_child(0)
+                    && let Some(member) = self.lower_member(inner)
+                {
+                    members.push(member);
                 }
             }
         }
-        (members, pragmas)
+        members
     }
 
     fn lower_associated_type(&self, node: tree_sitter::Node) -> Option<AssociatedTypeDecl> {
@@ -1035,24 +858,16 @@ impl<'a> Lowering<'a> {
         }
     }
 
-    /// Collect members and block-level pragmas from children of a node.
-    ///
-    /// Returns `(members, pragmas)` — pragma nodes are separated from member nodes
-    /// so each block-scoped type can store them independently.
-    fn lower_members(&mut self, node: tree_sitter::Node) -> (Vec<MemberDecl>, Vec<Pragma>) {
+    /// Collect members from children of a node (structure body or guarded block body).
+    fn lower_members(&mut self, node: tree_sitter::Node) -> Vec<MemberDecl> {
         let mut members = Vec::new();
-        let mut pragmas = Vec::new();
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
-            if child.kind() == "pragma" {
-                if let Some(pragma) = self.lower_pragma(child) {
-                    pragmas.push(pragma);
-                }
-            } else if let Some(member) = self.lower_member(child) {
+            if let Some(member) = self.lower_member(child) {
                 members.push(member);
             }
         }
-        (members, pragmas)
+        members
     }
 
     fn lower_structure(&mut self, node: tree_sitter::Node) -> Option<StructureDef> {
@@ -1068,7 +883,7 @@ impl<'a> Lowering<'a> {
         // Extract optional trait bounds (as TraitBoundRef with type args)
         let trait_bounds = self.find_trait_bound_refs(node);
 
-        let (members, pragmas) = self.lower_members(node);
+        let members = self.lower_members(node);
 
         let content_hash = self.content_hash(node);
 
@@ -1080,8 +895,6 @@ impl<'a> Lowering<'a> {
             members,
             span: self.span(node),
             content_hash,
-            pragmas,
-            annotations: vec![],
         })
     }
 
@@ -1092,7 +905,7 @@ impl<'a> Lowering<'a> {
         let is_pub = self.has_pub_keyword(node);
         let type_params = self.lower_type_parameters(node);
         let trait_bounds = self.find_trait_bound_refs(node);
-        let (members, pragmas) = self.lower_members(node);
+        let members = self.lower_members(node);
         let content_hash = self.content_hash(node);
 
         Some(OccurrenceDef {
@@ -1103,8 +916,6 @@ impl<'a> Lowering<'a> {
             members,
             span: self.span(node),
             content_hash,
-            pragmas,
-            annotations: vec![],
         })
     }
 
@@ -1577,8 +1388,6 @@ impl<'a> Lowering<'a> {
             "map_literal" => self.lower_map_literal(node),
             "index_access" => self.lower_index_access(node),
             "member_access" => self.lower_member_access(node),
-            "qualified_access" => self.lower_qualified_access(node),
-            "instance_qualified_access" => self.lower_instance_qualified_access(node),
             "parenthesized_expression" => {
                 // Unwrap parenthesized expression — find the inner expression
                 let mut cursor = node.walk();
@@ -1958,38 +1767,6 @@ impl<'a> Lowering<'a> {
             kind: ExprKind::MemberAccess {
                 object: Box::new(object),
                 member,
-            },
-            span: self.span(node),
-        })
-    }
-
-    fn lower_qualified_access(&self, node: tree_sitter::Node) -> Option<Expr> {
-        let qualifier_node = node.child_by_field_name("qualifier")?;
-        let member_node = node.child_by_field_name("member")?;
-
-        let qualifier = self.lower_expr(qualifier_node)?;
-        let member = self.node_text(member_node).to_string();
-
-        Some(Expr {
-            kind: ExprKind::QualifiedAccess {
-                qualifier: Box::new(qualifier),
-                member,
-            },
-            span: self.span(node),
-        })
-    }
-
-    fn lower_instance_qualified_access(&self, node: tree_sitter::Node) -> Option<Expr> {
-        let object_node = node.child_by_field_name("object")?;
-        let qualified_node = node.child_by_field_name("qualified")?;
-
-        let object = self.lower_expr(object_node)?;
-        let qualified = self.lower_expr(qualified_node)?;
-
-        Some(Expr {
-            kind: ExprKind::InstanceQualifiedAccess {
-                object: Box::new(object),
-                qualified: Box::new(qualified),
             },
             span: self.span(node),
         })
