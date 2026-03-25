@@ -251,18 +251,39 @@ pub fn check_trait_conformance_chain(
     subs: &[SubInfo],
 ) -> Vec<ConformanceError> {
     let mut requirements: Vec<TraitRequirement> = Vec::new();
+    let mut collected_defaults: Vec<TraitDefault> = Vec::new();
     let mut visited: HashSet<String> = HashSet::new();
     let mut seen_names: HashMap<String, Type> = HashMap::new();
+    let mut seen_default_names: HashSet<String> = HashSet::new();
     let mut chain_errors: Vec<ConformanceError> = Vec::new();
 
     collect_chain_requirements(
         trait_name,
         trait_registry,
         &mut requirements,
+        &mut collected_defaults,
         &mut visited,
         &mut seen_names,
+        &mut seen_default_names,
         &mut chain_errors,
     );
+
+    // Build available_defaults map: name → type for named Param/Let defaults.
+    // Used to cross-check requirements: a requirement is satisfied if another
+    // trait in the bound set provides a matching default (mirrors compiler's
+    // internal collect_all_requirements semantics at lines 5174-5185).
+    let available_defaults: HashMap<String, Type> = collected_defaults
+        .iter()
+        .filter_map(|d| {
+            let name = d.name.as_deref()?;
+            let ty = match &d.kind {
+                DefaultKind::Param { cell_type, .. } => cell_type.clone(),
+                DefaultKind::Let { cell_type, .. } => cell_type.clone(),
+                DefaultKind::Constraint(_) => return None,
+            };
+            Some((name.to_string(), ty))
+        })
+        .collect();
 
     // Build a temporary flat trait for member-by-member checking.
     let flat_trait = CompiledTrait {
@@ -276,7 +297,16 @@ pub fn check_trait_conformance_chain(
         annotations: vec![],
     };
 
-    chain_errors.extend(check_trait_conformance(structure_members, &flat_trait, ports, subs));
+    // Filter conformance errors: remove MissingParam/MissingLet entries that are
+    // satisfied by a matching default from another trait in the bound set.
+    let conformance_errors = check_trait_conformance(structure_members, &flat_trait, ports, subs);
+    chain_errors.extend(conformance_errors.into_iter().filter(|e| match e {
+        ConformanceError::MissingParam { name, expected_type }
+        | ConformanceError::MissingLet { name, expected_type } => {
+            available_defaults.get(name) != Some(expected_type)
+        }
+        _ => true,
+    }));
     chain_errors
 }
 
@@ -291,8 +321,10 @@ pub fn check_trait_conformance_multi(
     subs: &[SubInfo],
 ) -> Vec<ConformanceError> {
     let mut requirements: Vec<TraitRequirement> = Vec::new();
+    let mut collected_defaults: Vec<TraitDefault> = Vec::new();
     let mut visited: HashSet<String> = HashSet::new();
     let mut seen_names: HashMap<String, Type> = HashMap::new();
+    let mut seen_default_names: HashSet<String> = HashSet::new();
     let mut chain_errors: Vec<ConformanceError> = Vec::new();
 
     for &name in trait_names {
@@ -300,11 +332,30 @@ pub fn check_trait_conformance_multi(
             name,
             trait_registry,
             &mut requirements,
+            &mut collected_defaults,
             &mut visited,
             &mut seen_names,
+            &mut seen_default_names,
             &mut chain_errors,
         );
     }
+
+    // Build available_defaults map: name → type for named Param/Let defaults.
+    // Used to cross-check requirements: a requirement is satisfied if another
+    // trait in the bound set provides a matching default (mirrors compiler's
+    // internal collect_all_requirements semantics at lines 5174-5185).
+    let available_defaults: HashMap<String, Type> = collected_defaults
+        .iter()
+        .filter_map(|d| {
+            let name = d.name.as_deref()?;
+            let ty = match &d.kind {
+                DefaultKind::Param { cell_type, .. } => cell_type.clone(),
+                DefaultKind::Let { cell_type, .. } => cell_type.clone(),
+                DefaultKind::Constraint(_) => return None,
+            };
+            Some((name.to_string(), ty))
+        })
+        .collect();
 
     let flat_trait = CompiledTrait {
         name: "__multi__".to_string(),
@@ -317,23 +368,36 @@ pub fn check_trait_conformance_multi(
         annotations: vec![],
     };
 
-    chain_errors.extend(check_trait_conformance(structure_members, &flat_trait, ports, subs));
+    // Filter conformance errors: remove MissingParam/MissingLet entries that are
+    // satisfied by a matching default from another trait in the bound set.
+    let conformance_errors = check_trait_conformance(structure_members, &flat_trait, ports, subs);
+    chain_errors.extend(conformance_errors.into_iter().filter(|e| match e {
+        ConformanceError::MissingParam { name, expected_type }
+        | ConformanceError::MissingLet { name, expected_type } => {
+            available_defaults.get(name) != Some(expected_type)
+        }
+        _ => true,
+    }));
     chain_errors
 }
 
 /// Internal recursive helper: depth-first, parent-first collection of all requirements
-/// from `trait_name` and its refinement ancestors.
+/// and defaults from `trait_name` and its refinement ancestors.
 ///
 /// - `visited`: prevents revisiting traits in diamond patterns (diamond dedup).
 /// - `seen_names`: tracks (name → type) for Param/Let requirements; used for dedup and
-///   later for conflict detection once [`ConformanceError::ConflictingRequirement`] is added.
+///   conflict detection.
+/// - `seen_default_names`: tracks default names for dedup (prevents duplicate defaults
+///   from diamond patterns).
 /// - `chain_errors`: accumulates chain-specific errors (unresolved, conflicting).
 fn collect_chain_requirements(
     trait_name: &str,
     trait_registry: &HashMap<String, &CompiledTrait>,
     requirements: &mut Vec<TraitRequirement>,
+    defaults: &mut Vec<TraitDefault>,
     visited: &mut HashSet<String>,
     seen_names: &mut HashMap<String, Type>,
+    seen_default_names: &mut HashSet<String>,
     chain_errors: &mut Vec<ConformanceError>,
 ) {
     if !visited.insert(trait_name.to_string()) {
@@ -351,8 +415,10 @@ fn collect_chain_requirements(
             refinement,
             trait_registry,
             requirements,
+            defaults,
             visited,
             seen_names,
+            seen_default_names,
             chain_errors,
         );
     }
@@ -381,6 +447,19 @@ fn collect_chain_requirements(
         }
 
         requirements.push(req.clone());
+    }
+
+    // Collect defaults from this trait, deduplicating by name (unnamed defaults always pushed).
+    for default in &compiled_trait.defaults {
+        match &default.name {
+            None => defaults.push(default.clone()), // unnamed (e.g., unlabeled constraints)
+            Some(name) => {
+                if seen_default_names.insert(name.clone()) {
+                    defaults.push(default.clone());
+                }
+                // Duplicate named default — skip (diamond dedup).
+            }
+        }
     }
 }
 
