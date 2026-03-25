@@ -1865,4 +1865,37 @@ mod tests {
             "Matrix (tag 18) hash should differ from nested Tensor (tag 14)"
         );
     }
+
+    // ── Value::Matrix canonicalize_matrix() tests (step-7) ────────────────────
+
+    #[test]
+    fn canonicalize_2x2() {
+        let matrix = Value::Matrix(vec![
+            vec![Value::Real(1.0), Value::Real(2.0)],
+            vec![Value::Real(3.0), Value::Real(4.0)],
+        ]);
+        let expected = Value::Tensor(vec![
+            Value::Tensor(vec![Value::Real(1.0), Value::Real(2.0)]),
+            Value::Tensor(vec![Value::Real(3.0), Value::Real(4.0)]),
+        ]);
+        assert_eq!(matrix.canonicalize_matrix(), expected);
+    }
+
+    #[test]
+    fn canonicalize_empty_outer() {
+        let matrix = Value::Matrix(vec![]);
+        assert_eq!(matrix.canonicalize_matrix(), Value::Tensor(vec![]));
+    }
+
+    #[test]
+    fn canonicalize_identity_real() {
+        let v = Value::Real(1.0);
+        assert_eq!(v.clone().canonicalize_matrix(), v);
+    }
+
+    #[test]
+    fn canonicalize_identity_tensor() {
+        let v = Value::Tensor(vec![Value::Int(1), Value::Int(2)]);
+        assert_eq!(v.clone().canonicalize_matrix(), v);
+    }
 }
