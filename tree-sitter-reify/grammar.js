@@ -495,7 +495,7 @@ module.exports = grammar({
 
     connect_body: $ => seq(
       '{',
-      repeat(choice(
+      commaSep(choice(
         $.port_mapping,
         $.connect_param_assignment,
       )),

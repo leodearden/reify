@@ -691,3 +691,86 @@ structure def S {
         "expected auto-generated identity mapping for param 'd'"
     );
 }
+
+// ── task-246/step-5: compile_connect_mixed_params_and_mappings ───────
+
+#[test]
+fn compile_connect_mixed_params_and_mappings() {
+    let source = r#"
+trait T { param d : Length }
+structure def BoltSet { param grade : Real = 8.8 }
+structure def S {
+    port a : out T { param d : Length = 5mm }
+    port b : in T { param d : Length = 5mm }
+    connect a -> b : BoltSet { grade = 10.9, shaft -> input_bore }
+}
+"#;
+
+    let module = compile_module(source);
+    let s_template = module.templates.iter().find(|t| t.name == "S").expect("expected template S");
+    let diagnostics = &module.diagnostics;
+
+    let errors: Vec<_> = diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    assert_eq!(s_template.connections.len(), 1);
+    let conn = &s_template.connections[0];
+
+    // connector_sub should be present with __connector_ prefix
+    assert!(conn.connector_sub.is_some(), "expected connector_sub");
+    let connector_name = conn.connector_sub.as_ref().unwrap();
+    assert!(connector_name.starts_with("__connector_"), "expected __connector_ prefix, got {}", connector_name);
+
+    // sub_component for connector should have structure_name="BoltSet"
+    let connector_sub = s_template.sub_components.iter().find(|s| s.name == *connector_name);
+    assert!(connector_sub.is_some(), "expected sub_component for connector");
+    assert_eq!(connector_sub.unwrap().structure_name, "BoltSet");
+
+    // port_mappings should be the explicit mapping
+    assert_eq!(
+        conn.port_mappings,
+        vec![("shaft".to_string(), "input_bore".to_string())],
+        "expected explicit port mapping shaft->input_bore"
+    );
+}
+
+// ── task-246/step-7: compile_connect_mixed_skips_auto_match ──────────
+
+#[test]
+fn compile_connect_mixed_skips_auto_match() {
+    // Both ports have same trait T with matching param `d`.
+    // Explicit mapping `d -> d` is provided in a mixed body with a param.
+    // The explicit mapping should be used (not auto-match), and no warning diagnostics.
+    let source = r#"
+trait T { param d : Length }
+structure def BoltSet { param grade : Real = 8.8 }
+structure def S {
+    port a : out T { param d : Length = 5mm }
+    port b : in T { param d : Length = 5mm }
+    connect a -> b : BoltSet { grade = 8.8, d -> d }
+}
+"#;
+
+    let module = compile_module(source);
+    let s_template = module.templates.iter().find(|t| t.name == "S").expect("expected template S");
+    let diagnostics = &module.diagnostics;
+
+    let errors: Vec<_> = diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    let warnings: Vec<_> = diagnostics.iter().filter(|d| d.severity == Severity::Warning).collect();
+    assert!(warnings.is_empty(), "unexpected warnings: {:?}", warnings);
+
+    assert_eq!(s_template.connections.len(), 1);
+    let conn = &s_template.connections[0];
+
+    // connector_sub should be present
+    assert!(conn.connector_sub.is_some(), "expected connector_sub");
+
+    // explicit port mapping should be used
+    assert_eq!(
+        conn.port_mappings,
+        vec![("d".to_string(), "d".to_string())],
+        "expected explicit port mapping d->d"
+    );
+}
