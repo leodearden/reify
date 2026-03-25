@@ -97,6 +97,20 @@
       "description": "Wire .with_meta(&self.meta_map) to EvalContext::new() calls inside eval_cached() (~2119, 2212). Also wire resolve_concurrent_edit() (~702). Add meta_map field to ConcurrentEditSetup struct, populate it in prepare_concurrent_edit() from self.meta_map. Wire compile_geometry_op() calls (~2852, 2903 and others) by passing meta_map parameter for completeness.",
       "status": "done",
       "commit": "1de71146"
+    },
+    {
+      "id": "step-11",
+      "type": "test",
+      "description": "Write test `eval_meta_access_collection_sub_component` in meta_eval_integration.rs. Build two templates: 'Bolt' with meta {\"grade\": \"A2\"} and a param 'len', and 'Plate' with a collection sub_component 'bolts' -> 'Bolt' (count=3) and a Let binding using meta_access(\"Bolt\", \"grade\"). Eval via Engine and assert the Plate let cell == Value::String(\"A2\"). This tests that collection sub-component elaboration correctly passes meta context and validates the hot-loop allocation fix from step-12.",
+      "status": "done",
+      "commit": "7140d72a"
+    },
+    {
+      "id": "step-12",
+      "type": "impl",
+      "description": "Fix unnecessary allocation in collection sub-component hot loop (review issue reviewer_performance/unnecessary_allocation_in_hot_loop). At lib.rs line ~1094, `self.meta_map.clone()` is called inside the `for idx in 0..n` loop, creating O(n) redundant deep clones of the HashMap. Since elaborate_child_instance() is a free function taking `&HashMap<...>`, and Rust supports disjoint struct field borrows, replace `let meta_map = self.meta_map.clone();` + `&meta_map` with `&self.meta_map` directly in the elaborate_child_instance call. The borrow checker allows this because `self.meta_map` (immutable), `self.journal` (mutable), and `self.cache` (mutable) are disjoint fields. Also apply the same optimization to the singular sub-component call site at line ~1139 for consistency, replacing its clone with `&self.meta_map`.",
+      "status": "done",
+      "commit": "d93ffe32"
     }
   ],
   "design_decisions": [
@@ -119,6 +133,10 @@
     {
       "decision": "Add meta_map to ConcurrentEditSetup for concurrent evaluation",
       "rationale": "ConcurrentEditSetup already carries functions, values, and other state needed for off-thread evaluation. Adding meta_map ensures concurrent eval paths can also resolve MetaAccess expressions without accessing the Engine directly."
+    },
+    {
+      "decision": "Use direct &self.meta_map reference instead of clone for elaborate_child_instance calls",
+      "rationale": "elaborate_child_instance is a free function (not an Engine method), so borrowing self.meta_map immutably alongside self.journal and self.cache mutably works via Rust's disjoint struct field borrows. This eliminates O(n) redundant deep clones in the collection loop. The evaluate_let_bindings calls still require a clone because that method takes &mut self, which conflicts with borrowing self.meta_map."
     }
   ],
   "reuse": [
@@ -151,8 +169,13 @@
       "what": "Sub-component test pattern from collection_sub_eval.rs",
       "where": "crates/reify-eval/tests/collection_sub_eval.rs",
       "how": "Follow the pattern for building multi-template modules with sub-components: parent template with sub_component(), child template in same module, verify cross-template evaluation."
+    },
+    {
+      "what": "Collection sub-component builder pattern",
+      "where": "crates/reify-eval/tests/collection_sub_eval.rs",
+      "how": "Use TopologyTemplateBuilder.collection_sub_component(name, target, count_expr, args) for building collection subs. Follow existing tests for count cell setup and __list_ synthetic cell assertions."
     }
   ],
   "_session_id": "212-33616d8b",
-  "_created_at": "2026-03-25T11:48:15.524048+00:00"
+  "_created_at": "2026-03-25T12:23:07.427652+00:00"
 }
