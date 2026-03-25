@@ -7381,11 +7381,11 @@
         "description": "Two related fixes in gui/src-tauri/src/claude_bridge.rs:\n\n1. Update spawn_sidecar_impl doc comment (line 447) to remove the stale reference to wait_ready as the caller's responsibility. The actual caller in main.rs now uses notify.notified() directly.\n\n2. In SidecarHandle::wait_ready (line 306), call notified.enable() before the re-check await point (line 317) to prevent missed notifications. Without enable(), the Notified future only registers the waiter on first poll, but there are intervening await points (the state lock at line 317) where notify_waiters() could fire and be lost.\n\nSource: review suggestions from esc-353-25 (task 353).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-25T21:36:45.016Z"
+        "updatedAt": "2026-03-25T22:01:41.484Z"
       },
       {
         "id": "408",
@@ -7405,11 +7405,11 @@
         "description": "Two structural improvements to crates/reify-compiler/src/lib.rs:\n\n1. In detect_recursive_structures(), merge the two loops over st.sccs that both compute is_cycle identically (one for in_cycle tagging + diagnostics, one for building cyclic_sccs). Single pass that does both.\n\n2. Extract ~250 lines of Tarjan SCC code (detect_recursive_structures, TarjanState, tarjan_scc_visit, reconstruct_scc_cycle, find_cycle_back_to) into a new crates/reify-compiler/src/scc.rs module. Precedent: module_dag is already extracted.\n\nSource: review suggestions from esc-204-20 (task 204).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-25T21:54:53.910Z"
+        "updatedAt": "2026-03-25T22:01:41.513Z"
       },
       {
         "id": "410",
@@ -7748,7 +7748,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-25T22:01:41.452Z",
+      "lastModified": "2026-03-25T22:01:41.513Z",
       "taskCount": 435,
       "completedCount": 229,
       "tags": [
