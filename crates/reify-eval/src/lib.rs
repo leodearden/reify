@@ -103,6 +103,10 @@ pub struct Engine {
     /// Populated during eval() so that edit_param() can look up the objective
     /// by scope_name without needing access to the original templates.
     objectives: HashMap<String, OptimizationObjective>,
+    /// Maximum depth for recursive sub-component unfolding.
+    /// Prevents runaway recursion when guard expressions don't terminate.
+    /// Default: 64.
+    max_unfold_depth: usize,
 }
 
 /// Statistics about cache behavior during a cached evaluation.
@@ -268,7 +272,14 @@ impl Engine {
             active_objective_map: HashMap::new(),
             objectives: HashMap::new(),
             meta_map: HashMap::new(),
+            max_unfold_depth: 64,
         }
+    }
+
+    /// Set the maximum depth for recursive sub-component unfolding.
+    /// The default is 64. Lower values are useful for tests to keep execution fast.
+    pub fn set_max_unfold_depth(&mut self, depth: usize) {
+        self.max_unfold_depth = depth;
     }
 
     /// Set the constraint solver for resolving auto parameters.
