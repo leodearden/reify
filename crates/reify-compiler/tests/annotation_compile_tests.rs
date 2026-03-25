@@ -184,7 +184,7 @@ fn multiple_annotations_all_preserved() {
 #[test]
 fn annotation_arg_types_lowered() {
     let module = compile_module(
-        r#"@config("name", 42, 3.14, true, mechanical) structure S { param x : Real }"#,
+        r#"@config("name", 42, 2.5, true, mechanical) structure S { param x : Real }"#,
     );
     assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
     let template = &module.templates[0];
@@ -193,7 +193,7 @@ fn annotation_arg_types_lowered() {
     assert_eq!(args.len(), 5, "expected 5 args, got {:?}", args);
     assert_eq!(args[0], reify_types::AnnotationArg::String("name".into()));
     assert_eq!(args[1], reify_types::AnnotationArg::Int(42));
-    assert_eq!(args[2], reify_types::AnnotationArg::Real(3.14));
+    assert_eq!(args[2], reify_types::AnnotationArg::Real(2.5));
     assert_eq!(args[3], reify_types::AnnotationArg::Bool(true));
     assert_eq!(args[4], reify_types::AnnotationArg::Ident("mechanical".into()));
 }

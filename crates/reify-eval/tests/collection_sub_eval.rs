@@ -115,7 +115,7 @@ fn eval_collection_sub_produces_instances() {
 
     // Verify 4 instances have diameter = 0.01 (10mm)
     for i in 0..4 {
-        let scoped_id = ValueCellId::new(&format!("Parent.bolts[{}]", i), "diameter");
+        let scoped_id = ValueCellId::new(format!("Parent.bolts[{}]", i), "diameter");
         let val = result.values.get(&scoped_id);
         assert_eq!(
             val,
@@ -181,7 +181,7 @@ fn eval_collection_sub_undef_count_no_instances() {
 
     // No instances should exist
     for i in 0..4 {
-        let scoped_id = ValueCellId::new(&format!("Parent.bolts[{}]", i), "diameter");
+        let scoped_id = ValueCellId::new(format!("Parent.bolts[{}]", i), "diameter");
         assert!(
             result.values.get(&scoped_id).is_none(),
             "bolts[{}] should not exist when count is Undef",
@@ -237,7 +237,7 @@ fn edit_param_count_change_re_elaborates_collection() {
 
     // Verify 4 instances exist initially
     for i in 0..4 {
-        let scoped_id = ValueCellId::new(&format!("Parent.bolts[{}]", i), "diameter");
+        let scoped_id = ValueCellId::new(format!("Parent.bolts[{}]", i), "diameter");
         assert!(
             initial_result.values.get(&scoped_id).is_some(),
             "initially bolts[{}] should exist",
@@ -259,7 +259,7 @@ fn edit_param_count_change_re_elaborates_collection() {
 
     // (2) 6 instances should now exist
     for i in 0..6 {
-        let scoped_id = ValueCellId::new(&format!("Parent.bolts[{}]", i), "diameter");
+        let scoped_id = ValueCellId::new(format!("Parent.bolts[{}]", i), "diameter");
         let val = edit_result.values.get(&scoped_id);
         assert_eq!(
             val,
@@ -328,7 +328,7 @@ fn edit_param_count_decrease_removes_stale_instances() {
 
     // bolts[0] and bolts[1] should still have values
     for i in 0..2 {
-        let scoped_id = ValueCellId::new(&format!("Parent.bolts[{}]", i), "diameter");
+        let scoped_id = ValueCellId::new(format!("Parent.bolts[{}]", i), "diameter");
         assert_eq!(
             result.values.get(&scoped_id),
             Some(&Value::length(0.01)),
@@ -339,7 +339,7 @@ fn edit_param_count_decrease_removes_stale_instances() {
 
     // bolts[2] and bolts[3] should be gone (not just overwritten)
     for i in 2..4 {
-        let scoped_id = ValueCellId::new(&format!("Parent.bolts[{}]", i), "diameter");
+        let scoped_id = ValueCellId::new(format!("Parent.bolts[{}]", i), "diameter");
         assert!(
             result.values.get(&scoped_id).is_none(),
             "bolts[{}].diameter should be removed after count decreased from 4 to 2",
