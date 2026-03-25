@@ -1,142 +1,269 @@
 {
-  "task_id": "235",
-  "title": "Transform: Type, Value, constructors",
+  "task_id": "183",
+  "title": "Trait conformance: port and sub checking",
   "files": [
-    "crates/reify-types/src/ty.rs",
-    "crates/reify-types/src/value.rs",
-    "crates/reify-stdlib/src/lib.rs"
+    "crates/reify-compiler/src/lib.rs",
+    "crates/reify-compiler/tests/trait_conformance_tests.rs"
   ],
   "modules": [
-    "crates/reify-types",
-    "crates/reify-stdlib"
+    "crates/reify-compiler"
   ],
-  "analysis": "Add Transform(usize) to the Type enum and a corresponding Value::Transform { rotation, translation } variant. Transform represents a rigid-body transformation: rotation (Orientation<N>) + translation (Vector<N,Length>). This follows the exact same compound-type pattern as Frame { origin: Box<Value>, basis: Box<Value> }, but with different semantics and fields: Transform stores a rotation (Orientation) and a translation (Vector) rather than an origin (Point) and a basis (Orientation). Two constructors go in reify-stdlib: transform3(rotation, translation) and transform3_identity(). The implementation touches 3 files: ty.rs (Type enum + Display + factory + tests), value.rs (Value enum + PartialEq + Ord + content_hash + Display + dimension + tests), and stdlib lib.rs (eval_builtin match arms + tests). All trait impls follow the Frame pattern exactly. Transform gets type_tag=21 (next after Frame=20) and content_hash tag=21 (next available after Frame's tag=20). The Ord comment on line 460 must be extended to include Transform=21.",
-  "prerequisites": [],
+  "analysis": "Task 182 established the pure `check_trait_conformance` function and `ConformanceError` enum with 4 variants covering Param and Let checking. The function takes a flat `HashMap<String, Type>` of structure members plus a `CompiledTrait`, and returns `Vec<ConformanceError>`. Port and Sub requirements are explicitly skipped with a `// Sub checking not in scope for this function` comment.\n\nThis task extends conformance checking to cover Port and Sub members. Key findings:\n\n**Port conformance:** `TraitMember::Port` has name, ty (Type), and direction (PortDirection). In `compile_trait()`, the `MemberDecl::Port` variant falls through the catch-all `_ =>` branch. We need to (1) add `RequirementKind::Port { type_name, direction }`, (2) handle `MemberDecl::Port` in `compile_trait()` to emit port requirements, (3) add ConformanceError variants for missing/mismatched ports, and (4) extend `check_trait_conformance()` to accept port data and check it.\n\n**Sub conformance:** `RequirementKind::Sub(String)` already exists and `compile_trait()` already emits sub requirements. However, `check_trait_conformance()` ignores them. The check_and_apply_trait_conformance integration function does a simple name+structure_name equality check, but the task asks for trait-bound satisfaction checking. We need to (1) add ConformanceError variants for missing/unsatisfied subs, (2) extend `check_trait_conformance()` to accept sub data and check it.\n\n**Function signature change:** The pure function needs richer input. We add `PortInfo` and `SubInfo` structs as lightweight descriptors, and extend the function to take `&[PortInfo]` and `&[SubInfo]` slices. All 8 existing call sites in tests pass `&[]` for the new params (backward-compatible behavior).\n\n**Direction semantics:** For conformance, we use exact direction matching (not connection-compatibility). A trait requiring `in` means the structure must declare `in`, not just a compatible direction.\n\n**REVIEW FIX — Sub semantic contract violation (steps 21-26):** Post-review analysis revealed that `RequirementKind::Sub(String)` has inconsistent semantics between the two call sites. `compile_trait()` (line 1813) stores `sub_decl.structure_name` — a concrete structure name like \"BoltSet\". But `check_trait_conformance()` (line 204-218) treats that same String as a trait name and checks `sub.trait_bounds.contains(it)`. Meanwhile, `check_and_apply_trait_conformance()` (line 4757-4776) correctly treats it as a structure name and checks `s.structure_name == structure_name`. The unit tests only passed accidentally because `make_sub_trait()` manually constructed RequirementKind::Sub with a trait name string, bypassing `compile_trait()`. The grammar/parser (`SubDecl.structure_name`) produces structure names — there is no trait_ref in the syntax AST for sub declarations. Fix: align `check_trait_conformance()` with `check_and_apply_trait_conformance()` by switching to structure-name matching. Rename ConformanceError variants from trait semantics to structure semantics. Remove `SubInfo.trait_bounds` field (unused after fix). Update all sub unit tests.",
+  "prerequisites": [
+    {
+      "id": "pre-1",
+      "description": "Add PortInfo and SubInfo structs to reify-compiler/src/lib.rs for passing port/sub data to the conformance checker",
+      "status": "done",
+      "commit": "b1c8180e",
+      "tests": []
+    },
+    {
+      "id": "pre-2",
+      "description": "Add RequirementKind::Port { type_name: String, direction: PortDirection } variant to the RequirementKind enum",
+      "status": "done",
+      "commit": "b1c8180e",
+      "tests": []
+    },
+    {
+      "id": "pre-3",
+      "description": "Update check_trait_conformance() signature to accept &[PortInfo] and &[SubInfo] slices; update all 8 existing test call sites to pass &[] for new params",
+      "status": "done",
+      "commit": "b1c8180e",
+      "tests": []
+    }
+  ],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing tests for Type::Transform(usize) in ty.rs mod tests: construction and equality (Transform(3)==Transform(3), Transform(3)!=Transform(2)), Display ('Transform3', 'Transform2'), factory method Type::transform(n), Eq/Hash consistency via HashMap, is_numeric()=false, as_name()=None, Transform(3)!=Frame(3), Transform(3)!=Orientation(3)",
+      "description": "Write failing test: MissingPort — trait requires port 'input' of type 'Signal' with direction In, structure has no ports → ConformanceError::MissingPort",
       "status": "done",
-      "commit": "e4899e1c"
+      "commit": "94d7c9d0"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Add Transform(usize) variant to Type enum in ty.rs (after Frame(usize) on line 49). Add Display arm: 'Transform{n}' (after Frame arm on line 810). Add factory method Type::transform(n: usize) -> Self (after frame factory on line 120). is_numeric already returns false via catch-all, as_name already returns None. All step-1 tests pass.",
+      "description": "Add ConformanceError::MissingPort { name, expected_type, expected_direction } variant. Implement port name lookup in check_trait_conformance: if no matching port name found, emit MissingPort",
       "status": "done",
-      "commit": "e4899e1c"
+      "commit": "b1c8180e"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing tests for Value::Transform in value.rs mod tests: construction with Orientation rotation and Vector translation (verify fields via destructure), PartialEq (equal transforms, different rotation, different translation), Display format 'transform([w,x,y,z]q, vec(...))', dimension() returns DIMENSIONLESS, content_hash determinism (same transform same hash), content_hash distinct from Frame and Orientation and Vector, Ord type_tag=21 > Frame=20, same-type Ord compares rotation first then translation, content_hash with neg-zero in translation differs",
+      "description": "Write failing test: PortTypeMismatch — trait requires port 'mount' of type 'MountInterface', structure has port 'mount' of type 'OtherInterface' → ConformanceError::PortTypeMismatch",
       "status": "done",
-      "commit": "3474704e"
+      "commit": "94d7c9d0"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Add Value::Transform { rotation: Box<Value>, translation: Box<Value> } variant to Value enum (after Frame on line 62). Implement: content_hash arm (tag=21, combine rotation+translation hashes following Frame's tag=20 pattern on line 322-324), PartialEq arm (rotation==rotation && translation==translation following Frame pattern on lines 414-417), Ord type_tag=21 (update comment on line 460, add tag match on ~line 483), same-variant cmp rotation.cmp then translation.cmp (after Frame arm on line 584-586), Display arm 'transform({rotation}, {translation})' (after Frame arm on line 717-719). Dimension returns DIMENSIONLESS via existing catch-all on line 180. All step-3 tests pass.",
+      "description": "Add ConformanceError::PortTypeMismatch { name, expected_type, actual_type } variant. Extend port check: if port found but type_name differs, emit PortTypeMismatch",
       "status": "done",
-      "commit": "3474704e"
+      "commit": "b1c8180e"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing tests for transform3(rotation, translation) constructor in stdlib lib.rs: valid Orientation + Vector3<Length> args returns Value::Transform with correct rotation and translation fields, verify fields stored exactly, wrong arg count (0, 1, 3 args) returns Undef, non-Orientation first arg (e.g. Real) returns Undef, non-Vector second arg (e.g. Real, Point3, Orientation) returns Undef, Vector2 translation (wrong component count) returns Undef, dimensionless Vector3 (Real components) is accepted",
+      "description": "Write failing test: PortDirectionMismatch — trait requires port 'output' with direction Out, structure has port 'output' with direction In → ConformanceError::PortDirectionMismatch",
       "status": "done",
-      "commit": "1ac007a3"
+      "commit": "94d7c9d0"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Add 'transform3' match arm to eval_builtin in stdlib lib.rs (after frame3 block around line 513): validate exactly 2 args, first must be Value::Orientation { .. }, second must be Value::Vector with exactly 3 components. Return Value::Transform { rotation: Box::new(args[0].clone()), translation: Box::new(args[1].clone()) }. Return Value::Undef on any validation failure. All step-5 tests pass.",
+      "description": "Add ConformanceError::PortDirectionMismatch { name, expected_direction, actual_direction } variant. Extend port check: if port found with correct type but wrong direction, emit PortDirectionMismatch",
       "status": "done",
-      "commit": "1ac007a3"
+      "commit": "b1c8180e"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing tests for transform3_identity() constructor in stdlib lib.rs: no-arg call returns Value::Transform, rotation field equals identity Orientation (w:1,x:0,y:0,z:0), translation field equals zero Vector3<Length> vec([0m,0m,0m]), call with any args (1 arg, 2 args) returns Undef",
+      "description": "Write passing test: port fully satisfied — trait requires port 'input : Signal in', structure has matching port → no errors (happy path verification)",
       "status": "done",
-      "commit": "1ac007a3"
+      "commit": "94d7c9d0"
     },
     {
       "id": "step-8",
-      "type": "impl",
-      "description": "Add 'transform3_identity' match arm to eval_builtin in stdlib lib.rs (after transform3 block): if args.is_empty(), return Value::Transform { rotation: Box::new(Orientation{w:1,x:0,y:0,z:0}), translation: Box::new(Vector([Value::length(0.0) x3])) }; else return Value::Undef. All step-7 tests pass.",
+      "type": "test",
+      "description": "Write failing test: MissingSub — trait requires sub 'hole' satisfying trait 'Hole', structure has no subs → ConformanceError::MissingSub",
       "status": "done",
-      "commit": "1ac007a3"
+      "commit": "94d7c9d0"
+    },
+    {
+      "id": "step-9",
+      "type": "impl",
+      "description": "Add ConformanceError::MissingSub { name, expected_trait } variant. Implement sub name lookup in check_trait_conformance: if no matching sub name found, emit MissingSub",
+      "status": "done",
+      "commit": "b1c8180e"
+    },
+    {
+      "id": "step-10",
+      "type": "test",
+      "description": "Write failing test: SubTraitNotSatisfied — trait requires sub 'mount' satisfying trait 'MountInterface', structure has sub 'mount' whose structure type does not declare MountInterface bound → ConformanceError::SubTraitNotSatisfied",
+      "status": "done",
+      "commit": "94d7c9d0"
+    },
+    {
+      "id": "step-11",
+      "type": "impl",
+      "description": "Add ConformanceError::SubTraitNotSatisfied { name, expected_trait, actual_structure } variant. Extend sub check: if sub found but its trait_bounds don't include the required trait, emit SubTraitNotSatisfied",
+      "status": "done",
+      "commit": "b1c8180e"
+    },
+    {
+      "id": "step-12",
+      "type": "test",
+      "description": "Write passing test: sub fully satisfied — trait requires sub 'hole' satisfying 'Hole', structure has sub 'hole' with trait_bounds containing 'Hole' → no errors",
+      "status": "done",
+      "commit": "94d7c9d0"
+    },
+    {
+      "id": "step-13",
+      "type": "test",
+      "description": "Write failing test: compile_trait handles MemberDecl::Port — parse a trait with 'port input : Signal in', verify compiled trait has RequirementKind::Port with correct type_name and direction",
+      "status": "done",
+      "commit": "d1c93299"
+    },
+    {
+      "id": "step-14",
+      "type": "impl",
+      "description": "Add MemberDecl::Port(port_decl) case to compile_trait(): extract type_name from port_decl.type_name, direction from port_decl.direction (default Bidi), emit TraitRequirement with RequirementKind::Port",
+      "status": "done",
+      "commit": "38aa614d"
+    },
+    {
+      "id": "step-15",
+      "type": "test",
+      "description": "Write integration test: structure with matching port satisfies trait port requirement — compile full source with trait+structure, assert no error diagnostics",
+      "status": "done",
+      "commit": "cfab6e3d"
+    },
+    {
+      "id": "step-16",
+      "type": "test",
+      "description": "Write integration test: structure missing required port — compile source where structure lacks the port required by trait, assert error diagnostic mentioning missing port",
+      "status": "done",
+      "commit": "cfab6e3d"
+    },
+    {
+      "id": "step-17",
+      "type": "impl",
+      "description": "Update check_and_apply_trait_conformance() to handle RequirementKind::Port: collect structure ports, check name/type/direction match, emit diagnostics for mismatches",
+      "status": "done",
+      "commit": "b1c8180e"
+    },
+    {
+      "id": "step-18",
+      "type": "test",
+      "description": "Write integration test: structure with sub satisfying trait sub requirement — compile full source, assert no error diagnostics",
+      "status": "done",
+      "commit": "cfab6e3d"
+    },
+    {
+      "id": "step-19",
+      "type": "test",
+      "description": "Write integration test: structure missing required sub — compile source where structure lacks the sub required by trait, assert error diagnostic mentioning missing sub",
+      "status": "done",
+      "commit": "cfab6e3d"
+    },
+    {
+      "id": "step-20",
+      "type": "test",
+      "description": "Write test: multiple port requirements in a single trait — one satisfied, one missing → exactly one error",
+      "status": "done",
+      "commit": "94d7c9d0"
+    },
+    {
+      "id": "step-21",
+      "type": "test",
+      "description": "Write failing test exposing the semantic mismatch: construct RequirementKind::Sub(\"BoltSet\") (a structure name, as compile_trait produces) and a SubInfo with structure_name \"BoltSet\" but trait_bounds: [] → currently fails because check_trait_conformance checks trait_bounds instead of structure_name, but should return no errors since the structure name matches",
+      "status": "done",
+      "commit": "91b096da"
+    },
+    {
+      "id": "step-22",
+      "type": "impl",
+      "description": "Fix the Sub semantic contract violation: (1) Update RequirementKind::Sub doc comment to clarify it stores a structure name, not a trait name. (2) Rename ConformanceError::MissingSub field from expected_trait to expected_structure. (3) Rename ConformanceError::SubTraitNotSatisfied to SubStructureMismatch { name, expected_structure, actual_structure }. (4) Change check_trait_conformance() Sub arm to check sub.structure_name == expected instead of sub.trait_bounds.contains(). (5) Remove trait_bounds field from SubInfo (now unused). (6) Update all existing sub unit tests (make_sub_trait helper, steps 8/10/12 tests) to use structure-name semantics in SubInfo construction and error assertions.",
+      "status": "done",
+      "commit": "cc7aa749"
+    },
+    {
+      "id": "step-23",
+      "type": "test",
+      "description": "Write test verifying compile_trait→check_trait_conformance agreement: parse a trait with 'sub bolt = BoltSet()', compile it via compile_module, extract RequirementKind::Sub and verify it contains \"BoltSet\" (structure name), then pass to check_trait_conformance with SubInfo { name: \"bolt\", structure_name: \"BoltSet\" } → no errors. This proves the two code paths agree.",
+      "status": "done",
+      "commit": "bcd56714"
+    },
+    {
+      "id": "step-24",
+      "type": "test",
+      "description": "Write test for structure-name mismatch via the compile_trait path: compile a trait with 'sub bolt = BoltSet()', check_trait_conformance with SubInfo { name: \"bolt\", structure_name: \"WrongStructure\" } → ConformanceError::SubStructureMismatch { expected_structure: \"BoltSet\", actual_structure: \"WrongStructure\" }",
+      "status": "done",
+      "commit": "bcd56714"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Transform stores rotation (Orientation) + translation (Vector), NOT origin (Point) + basis (Orientation) like Frame",
-      "rationale": "Transform represents a rigid-body transformation (how to move/rotate something), while Frame represents a coordinate system (where something is positioned and oriented). The task description specifies rotation + translation, matching standard SE(3) representation where T(x) = R*x + t."
+      "decision": "Extend check_trait_conformance() signature rather than creating a new function",
+      "rationale": "The pure function is the right place for all conformance checks. Adding parameters is simpler than maintaining parallel functions. Existing callers pass &[] for new params, preserving backward behavior."
     },
     {
-      "decision": "Value::Transform uses Box<Value> for both fields, following the Frame pattern",
-      "rationale": "Frame already established the compound-type pattern with Box<Value> fields (line 62 of value.rs). Consistency matters more than marginal optimization. Enables delegation for Display/content_hash/comparison."
+      "decision": "Use lightweight PortInfo and SubInfo structs rather than passing full CompiledPort/SubComponentDecl",
+      "rationale": "The pure function should not depend on compilation-stage types. PortInfo/SubInfo contain only the fields needed for conformance checking (name, type_name, direction for ports; name, structure_name for subs), keeping the API clean and testable."
     },
     {
-      "decision": "type_tag=21 and content_hash tag=21 for Transform",
-      "rationale": "Frame uses type_tag=20 and hash tag=20. Next sequential value ensures no hash or ordering collisions. The Ord comment on line 460 documents the full tag mapping and must be extended."
+      "decision": "Port direction conformance uses exact match, not connection-compatibility",
+      "rationale": "Connection compatibility (is_forward_compatible) is for port-to-port wiring, not trait conformance. A trait requiring 'port x : T in' means the structure must declare the port with direction In. Bidi is not a wildcard for conformance — the trait specifies the contract."
     },
     {
-      "decision": "transform3 takes (rotation, translation) not (translation, rotation)",
-      "rationale": "In rigid-body transforms, the mathematical convention is T(x) = R*x + t, with rotation applied first. The rotation comes first both mathematically and in the constructor signature, matching how frame3 takes (origin, basis) in logical order."
+      "decision": "[REVISED] Sub conformance checks structure_name equality, not trait_bounds membership",
+      "rationale": "Review identified a semantic contract violation: compile_trait() stores sub_decl.structure_name (a structure name like 'BoltSet') in RequirementKind::Sub, but check_trait_conformance treated it as a trait name and checked trait_bounds. check_and_apply_trait_conformance already correctly does structure_name equality. The grammar/parser (SubDecl) only produces structure names — there is no trait_ref in the syntax AST for sub declarations. Both code paths must agree: Sub(String) stores a structure name and is checked via structure_name equality. Unit tests previously passed accidentally because make_sub_trait() manually constructed the same string in both RequirementKind::Sub and SubInfo.trait_bounds. Trait-ref semantics can be added in a future task when the grammar supports `sub x : TraitName` syntax distinct from `sub x = StructureName()`."
     },
     {
-      "decision": "transform3_identity uses zero-length Vector3 (0m, 0m, 0m) not dimensionless Vector3",
-      "rationale": "Consistent with frame3_identity which uses Value::length(0.0) for origin components. Translation is inherently a length-dimensioned quantity in the physical world."
+      "decision": "Remove SubInfo.trait_bounds field after Sub semantics fix",
+      "rationale": "With structure-name matching, trait_bounds is unused by check_trait_conformance. Keeping dead fields creates confusion about what the function actually checks. SubInfo becomes { name, structure_name } — minimal and precise."
     },
     {
-      "decision": "Display format is 'transform(rot, trans)' following 'frame(origin, basis)' pattern",
-      "rationale": "Existing compound type Frame uses lowercase function-call notation for Display (line 718). Transform follows the same convention for consistency."
+      "decision": "Separate ConformanceError variants for Port type vs direction mismatch",
+      "rationale": "Fine-grained error variants enable precise diagnostics. A user seeing 'wrong direction' vs 'wrong type' can fix the issue faster than a generic 'port mismatch'."
     },
     {
-      "decision": "transform3 accepts any Vector3 regardless of inner component dimension",
-      "rationale": "Consistent with frame3 which accepts any Point3 regardless of inner quantity dimension (line 502 just checks component count, not dimension). Users might use dimensionless coordinates for pure geometric operations."
+      "decision": "Port requirements are always TraitRequirements (never TraitDefaults)",
+      "rationale": "Unlike params (which can have default values), ports describe structural contracts that the implementor must provide. There is no meaningful 'default port' that a trait could inject."
     }
   ],
   "reuse": [
     {
-      "what": "Frame(usize) type variant pattern",
-      "where": "crates/reify-types/src/ty.rs:49 (variant), 119 (factory), 810 (Display)",
-      "how": "Transform(usize) follows the identical pattern \u2014 single usize parameter, Display as 'Transform{n}', factory method Type::transform(n), is_numeric returns false via catch-all, as_name returns None via catch-all."
+      "what": "Existing check_trait_conformance() function structure",
+      "where": "crates/reify-compiler/src/lib.rs:100-143",
+      "how": "Extend the match on RequirementKind with new Port and Sub arms, following the same pattern of push-to-errors-vec"
     },
     {
-      "what": "Value::Frame { origin, basis } compound value pattern",
-      "where": "crates/reify-types/src/value.rs:62 (variant), 322-324 (content_hash), 414-417 (PartialEq), 460+483 (Ord tag), 584-586 (Ord cmp), 717-719 (Display)",
-      "how": "Transform's trait impls follow Frame's structure exactly: content_hash uses unique tag and combines sub-hashes; PartialEq delegates to inner field equality; Ord compares fields in order (rotation then translation); Display uses function-call notation."
+      "what": "Existing RequirementKind::Sub variant and compile_trait Sub handling",
+      "where": "crates/reify-compiler/src/lib.rs:54 and 1730-1735",
+      "how": "Sub compilation already works; only the conformance checking in check_trait_conformance needs to stop ignoring Sub"
     },
     {
-      "what": "Frame type tests",
-      "where": "crates/reify-types/src/ty.rs:716-775",
-      "how": "Copy Frame tests, rename Frame\u2192Transform, verify same behavioral properties (construction, Display, factory, Hash, is_numeric, as_name, ne to other types)."
+      "what": "Existing test helpers: empty_trait(), test_span(), compile_module(), compile_first_template()",
+      "where": "crates/reify-compiler/tests/trait_conformance_tests.rs:10-279",
+      "how": "Reuse all helpers for new unit and integration tests"
     },
     {
-      "what": "Frame value tests",
-      "where": "crates/reify-types/src/value.rs:2781-2921",
-      "how": "Copy Frame value tests, adapt to Transform fields (rotation+translation instead of origin+basis), adjust expected Display format, update type_tag comparison (21>20 instead of 20>19)."
+      "what": "PortDirection enum from reify-types",
+      "where": "crates/reify-types/src/traits.rs:15-23",
+      "how": "Use in RequirementKind::Port, ConformanceError variants, and PortInfo struct"
     },
     {
-      "what": "frame3/frame3_identity constructor pattern",
-      "where": "crates/reify-stdlib/src/lib.rs:480-513",
-      "how": "Copy frame3 constructor, change: first arg validates as Orientation (matches! Orientation { .. }), second validates as Vector with 3 components. Identity returns Orientation{1,0,0,0} + Vector([length(0),length(0),length(0)])."
+      "what": "ContentHash::of_str for test trait construction",
+      "where": "crates/reify-types",
+      "how": "Same pattern used in existing tests for constructing CompiledTrait in unit tests"
     },
     {
-      "what": "frame3 stdlib tests",
-      "where": "crates/reify-stdlib/src/lib.rs:3919-4064",
-      "how": "Copy frame3 test suite, adapt to transform3 argument types (Orientation first, Vector second) and expected Value::Transform output variant."
-    },
-    {
-      "what": "make_identity_orientation() test helper",
-      "where": "crates/reify-stdlib/src/lib.rs:3927-3929",
-      "how": "Reuse directly as the rotation argument for transform3 tests."
+      "what": "check_and_apply_trait_conformance Sub arm pattern (structure_name matching)",
+      "where": "crates/reify-compiler/src/lib.rs:4757-4776",
+      "how": "check_trait_conformance Sub arm should follow the same structure_name equality pattern used by check_and_apply_trait_conformance, ensuring both code paths agree"
     }
   ],
-  "_session_id": "235-48da0fd9",
-  "_created_at": "2026-03-25T01:57:44.445856+00:00"
+  "_session_id": "183-1d1af319",
+  "_created_at": "2026-03-25T02:13:32.300798+00:00"
 }

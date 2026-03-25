@@ -30,7 +30,7 @@ fn conformance_empty_trait_no_errors() {
     let trait_def = empty_trait("Empty");
     let structure_members: std::collections::HashMap<String, Type> =
         std::collections::HashMap::new();
-    let errors = check_trait_conformance(&structure_members, &trait_def);
+    let errors = check_trait_conformance(&structure_members, &trait_def, &[], &[]);
     assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
 }
 
@@ -54,7 +54,7 @@ fn conformance_missing_param_error() {
     };
     let structure_members: std::collections::HashMap<String, Type> =
         std::collections::HashMap::new();
-    let errors = check_trait_conformance(&structure_members, &trait_def);
+    let errors = check_trait_conformance(&structure_members, &trait_def, &[], &[]);
     assert_eq!(errors.len(), 1, "expected 1 error, got: {:?}", errors);
     match &errors[0] {
         ConformanceError::MissingParam { name, expected_type } => {
@@ -92,7 +92,7 @@ fn conformance_type_mismatch_error() {
         "mass".to_string(),
         Type::Scalar { dimension: DimensionVector::LENGTH },
     );
-    let errors = check_trait_conformance(&structure_members, &trait_def);
+    let errors = check_trait_conformance(&structure_members, &trait_def, &[], &[]);
     assert_eq!(errors.len(), 1, "expected 1 error, got: {:?}", errors);
     match &errors[0] {
         ConformanceError::TypeMismatch { name, expected_type, actual_type } => {
@@ -127,7 +127,7 @@ fn conformance_satisfied_param_no_errors() {
         "width".to_string(),
         Type::Scalar { dimension: DimensionVector::LENGTH },
     );
-    let errors = check_trait_conformance(&structure_members, &trait_def);
+    let errors = check_trait_conformance(&structure_members, &trait_def, &[], &[]);
     assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
 }
 
@@ -173,7 +173,7 @@ fn conformance_multiple_requirements_mixed() {
         "mass".to_string(),
         Type::Scalar { dimension: DimensionVector::LENGTH },
     );
-    let errors = check_trait_conformance(&structure_members, &trait_def);
+    let errors = check_trait_conformance(&structure_members, &trait_def, &[], &[]);
     assert_eq!(errors.len(), 2, "expected 2 errors, got: {:?}", errors);
 
     let has_type_mismatch = errors.iter().any(|e| matches!(
@@ -206,7 +206,7 @@ fn conformance_let_requirement_checked() {
     };
     let structure_members: std::collections::HashMap<String, Type> =
         std::collections::HashMap::new();
-    let errors = check_trait_conformance(&structure_members, &trait_def);
+    let errors = check_trait_conformance(&structure_members, &trait_def, &[], &[]);
     assert_eq!(errors.len(), 1, "expected 1 error, got: {:?}", errors);
     match &errors[0] {
         ConformanceError::MissingLet { name, expected_type } => {
@@ -243,7 +243,7 @@ fn conformance_exact_type_equality_dimensions() {
             "length".to_string(),
             Type::Scalar { dimension: DimensionVector::MASS },
         );
-        let errors = check_trait_conformance(&structure_members, &trait_def);
+        let errors = check_trait_conformance(&structure_members, &trait_def, &[], &[]);
         assert_eq!(errors.len(), 1, "expected 1 error for wrong dimension, got: {:?}", errors);
         assert!(
             matches!(&errors[0], ConformanceError::TypeMismatch { name, .. } if name == "length"),
@@ -259,7 +259,7 @@ fn conformance_exact_type_equality_dimensions() {
             "length".to_string(),
             Type::Scalar { dimension: DimensionVector::LENGTH },
         );
-        let errors = check_trait_conformance(&structure_members, &trait_def);
+        let errors = check_trait_conformance(&structure_members, &trait_def, &[], &[]);
         assert!(errors.is_empty(), "expected no errors for correct dimension, got: {:?}", errors);
     }
 }
@@ -825,4 +825,488 @@ structure def S : Safe {
         !template.constraints.is_empty(),
         "expected constraint from trait default"
     );
+}
+
+// ── Port conformance unit tests ─────────────────────────────────────────────
+
+fn make_port_trait(
+    trait_name: &str,
+    port_name: &str,
+    type_name: &str,
+    direction: reify_types::PortDirection,
+) -> CompiledTrait {
+    CompiledTrait {
+        name: trait_name.to_string(),
+        is_pub: true,
+        type_params: vec![],
+        refinements: vec![],
+        required_members: vec![TraitRequirement {
+            name: port_name.to_string(),
+            kind: RequirementKind::Port {
+                type_name: type_name.to_string(),
+                direction,
+            },
+            span: test_span(),
+        }],
+        defaults: vec![],
+        content_hash: ContentHash::of_str(trait_name),
+    }
+}
+
+/// step-1: MissingPort — trait requires port 'input : Signal in', structure has no ports → MissingPort.
+#[test]
+fn conformance_missing_port_error() {
+    let trait_def = make_port_trait("HasInput", "input", "Signal", reify_types::PortDirection::In);
+    let structure_members: std::collections::HashMap<String, Type> =
+        std::collections::HashMap::new();
+    let errors = check_trait_conformance(&structure_members, &trait_def, &[], &[]);
+    assert_eq!(errors.len(), 1, "expected 1 error, got: {:?}", errors);
+    match &errors[0] {
+        ConformanceError::MissingPort { name, expected_type, expected_direction } => {
+            assert_eq!(name, "input");
+            assert_eq!(expected_type, "Signal");
+            assert_eq!(*expected_direction, reify_types::PortDirection::In);
+        }
+        other => panic!("expected MissingPort, got: {:?}", other),
+    }
+}
+
+/// step-3: PortTypeMismatch — trait requires port 'mount : MountInterface', structure has 'mount : OtherInterface'.
+#[test]
+fn conformance_port_type_mismatch_error() {
+    let trait_def =
+        make_port_trait("HasMount", "mount", "MountInterface", reify_types::PortDirection::In);
+    let ports = vec![PortInfo {
+        name: "mount".to_string(),
+        type_name: "OtherInterface".to_string(),
+        direction: reify_types::PortDirection::In,
+    }];
+    let structure_members: std::collections::HashMap<String, Type> =
+        std::collections::HashMap::new();
+    let errors = check_trait_conformance(&structure_members, &trait_def, &ports, &[]);
+    assert_eq!(errors.len(), 1, "expected 1 error, got: {:?}", errors);
+    match &errors[0] {
+        ConformanceError::PortTypeMismatch { name, expected_type, actual_type } => {
+            assert_eq!(name, "mount");
+            assert_eq!(expected_type, "MountInterface");
+            assert_eq!(actual_type, "OtherInterface");
+        }
+        other => panic!("expected PortTypeMismatch, got: {:?}", other),
+    }
+}
+
+/// step-5: PortDirectionMismatch — trait requires port 'output : Signal out', structure has 'output : Signal in'.
+#[test]
+fn conformance_port_direction_mismatch_error() {
+    let trait_def =
+        make_port_trait("HasOutput", "output", "Signal", reify_types::PortDirection::Out);
+    let ports = vec![PortInfo {
+        name: "output".to_string(),
+        type_name: "Signal".to_string(),
+        direction: reify_types::PortDirection::In,
+    }];
+    let structure_members: std::collections::HashMap<String, Type> =
+        std::collections::HashMap::new();
+    let errors = check_trait_conformance(&structure_members, &trait_def, &ports, &[]);
+    assert_eq!(errors.len(), 1, "expected 1 error, got: {:?}", errors);
+    match &errors[0] {
+        ConformanceError::PortDirectionMismatch {
+            name,
+            expected_direction,
+            actual_direction,
+        } => {
+            assert_eq!(name, "output");
+            assert_eq!(*expected_direction, reify_types::PortDirection::Out);
+            assert_eq!(*actual_direction, reify_types::PortDirection::In);
+        }
+        other => panic!("expected PortDirectionMismatch, got: {:?}", other),
+    }
+}
+
+/// step-7: port fully satisfied — trait requires 'input : Signal in', structure has matching port → no errors.
+#[test]
+fn conformance_port_fully_satisfied() {
+    let trait_def = make_port_trait("HasInput", "input", "Signal", reify_types::PortDirection::In);
+    let ports = vec![PortInfo {
+        name: "input".to_string(),
+        type_name: "Signal".to_string(),
+        direction: reify_types::PortDirection::In,
+    }];
+    let structure_members: std::collections::HashMap<String, Type> =
+        std::collections::HashMap::new();
+    let errors = check_trait_conformance(&structure_members, &trait_def, &ports, &[]);
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+}
+
+// ── Sub conformance unit tests ───────────────────────────────────────────────
+
+fn make_sub_trait(trait_name: &str, sub_name: &str, required_trait: &str) -> CompiledTrait {
+    CompiledTrait {
+        name: trait_name.to_string(),
+        is_pub: true,
+        type_params: vec![],
+        refinements: vec![],
+        required_members: vec![TraitRequirement {
+            name: sub_name.to_string(),
+            kind: RequirementKind::Sub(required_trait.to_string()),
+            span: test_span(),
+        }],
+        defaults: vec![],
+        content_hash: ContentHash::of_str(trait_name),
+    }
+}
+
+/// step-8: MissingSub — trait requires sub 'hole = ScrewHole()', structure has no subs → MissingSub.
+#[test]
+fn conformance_missing_sub_error() {
+    // "ScrewHole" is the required structure name (as compile_trait would store it).
+    let trait_def = make_sub_trait("HasHole", "hole", "ScrewHole");
+    let structure_members: std::collections::HashMap<String, Type> =
+        std::collections::HashMap::new();
+    let errors = check_trait_conformance(&structure_members, &trait_def, &[], &[]);
+    assert_eq!(errors.len(), 1, "expected 1 error, got: {:?}", errors);
+    match &errors[0] {
+        ConformanceError::MissingSub { name, expected_structure } => {
+            assert_eq!(name, "hole");
+            assert_eq!(expected_structure, "ScrewHole");
+        }
+        other => panic!("expected MissingSub, got: {:?}", other),
+    }
+}
+
+/// step-10: SubStructureMismatch — trait requires sub 'mount = MountBracket()',
+/// structure has sub 'mount' with structure_name 'Bracket' (wrong structure).
+#[test]
+fn conformance_sub_structure_mismatch_error() {
+    let trait_def = make_sub_trait("HasMount", "mount", "MountBracket");
+    let subs = vec![SubInfo {
+        name: "mount".to_string(),
+        structure_name: "Bracket".to_string(), // wrong structure name
+    }];
+    let structure_members: std::collections::HashMap<String, Type> =
+        std::collections::HashMap::new();
+    let errors = check_trait_conformance(&structure_members, &trait_def, &[], &subs);
+    assert_eq!(errors.len(), 1, "expected 1 error, got: {:?}", errors);
+    match &errors[0] {
+        ConformanceError::SubStructureMismatch { name, expected_structure, actual_structure } => {
+            assert_eq!(name, "mount");
+            assert_eq!(expected_structure, "MountBracket");
+            assert_eq!(actual_structure, "Bracket");
+        }
+        other => panic!("expected SubStructureMismatch, got: {:?}", other),
+    }
+}
+
+/// step-12: sub fully satisfied — trait requires sub 'hole = ScrewHole()',
+/// structure has sub 'hole' with structure_name 'ScrewHole' → no errors.
+#[test]
+fn conformance_sub_fully_satisfied() {
+    let trait_def = make_sub_trait("HasHole", "hole", "ScrewHole");
+    let subs = vec![SubInfo {
+        name: "hole".to_string(),
+        structure_name: "ScrewHole".to_string(), // matches required structure name
+    }];
+    let structure_members: std::collections::HashMap<String, Type> =
+        std::collections::HashMap::new();
+    let errors = check_trait_conformance(&structure_members, &trait_def, &[], &subs);
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+}
+
+/// step-20: multiple port requirements — one satisfied, one missing → exactly one error.
+#[test]
+fn conformance_multiple_port_requirements_one_missing() {
+    let trait_def = CompiledTrait {
+        name: "HasTwoPorts".to_string(),
+        is_pub: true,
+        type_params: vec![],
+        refinements: vec![],
+        required_members: vec![
+            TraitRequirement {
+                name: "input".to_string(),
+                kind: RequirementKind::Port {
+                    type_name: "Signal".to_string(),
+                    direction: reify_types::PortDirection::In,
+                },
+                span: test_span(),
+            },
+            TraitRequirement {
+                name: "output".to_string(),
+                kind: RequirementKind::Port {
+                    type_name: "Signal".to_string(),
+                    direction: reify_types::PortDirection::Out,
+                },
+                span: test_span(),
+            },
+        ],
+        defaults: vec![],
+        content_hash: ContentHash::of_str("HasTwoPorts"),
+    };
+    // Only provide 'input', not 'output'.
+    let ports = vec![PortInfo {
+        name: "input".to_string(),
+        type_name: "Signal".to_string(),
+        direction: reify_types::PortDirection::In,
+    }];
+    let structure_members: std::collections::HashMap<String, Type> =
+        std::collections::HashMap::new();
+    let errors = check_trait_conformance(&structure_members, &trait_def, &ports, &[]);
+    assert_eq!(errors.len(), 1, "expected 1 error, got: {:?}", errors);
+    assert!(
+        matches!(&errors[0], ConformanceError::MissingPort { name, .. } if name == "output"),
+        "expected MissingPort for 'output', got: {:?}",
+        errors
+    );
+}
+
+// ── compile_trait Port handling (step-13) ───────────────────────────────────
+
+/// step-13: compile_trait handles MemberDecl::Port — parse a trait with
+/// 'port input : in Signal', verify compiled trait has RequirementKind::Port
+/// with correct type_name="Signal" and direction=In.
+#[test]
+fn compile_trait_handles_port_member() {
+    let source = r#"
+trait HasInput {
+    port input : in Signal
+}
+"#;
+    let module = compile_module(source);
+    assert_eq!(module.trait_defs.len(), 1, "expected 1 trait def");
+    let trait_def = &module.trait_defs[0];
+    assert_eq!(trait_def.name, "HasInput");
+    assert_eq!(
+        trait_def.required_members.len(),
+        1,
+        "expected 1 required member (port), got: {:?}",
+        trait_def.required_members
+    );
+    let req = &trait_def.required_members[0];
+    assert_eq!(req.name, "input");
+    match &req.kind {
+        RequirementKind::Port { type_name, direction } => {
+            assert_eq!(type_name, "Signal");
+            assert_eq!(*direction, reify_types::PortDirection::In);
+        }
+        other => panic!("expected RequirementKind::Port, got: {:?}", other),
+    }
+}
+
+/// step-13b: compile_trait handles port with direction Out.
+#[test]
+fn compile_trait_handles_port_member_out() {
+    let source = r#"
+trait HasOutput {
+    port output : out Data
+}
+"#;
+    let module = compile_module(source);
+    let trait_def = &module.trait_defs[0];
+    let req = &trait_def.required_members[0];
+    assert_eq!(req.name, "output");
+    match &req.kind {
+        RequirementKind::Port { type_name, direction } => {
+            assert_eq!(type_name, "Data");
+            assert_eq!(*direction, reify_types::PortDirection::Out);
+        }
+        other => panic!("expected RequirementKind::Port, got: {:?}", other),
+    }
+}
+
+// ── Integration tests: port conformance ─────────────────────────────────────
+
+/// step-15: structure with matching port satisfies trait port requirement → no errors.
+#[test]
+fn integration_port_satisfied_no_errors() {
+    let source = r#"
+trait HasInput {
+    port input : in Signal
+}
+
+structure def Receiver : HasInput {
+    port input : in Signal
+}
+"#;
+    let (_, diagnostics) = compile_first_template(source);
+    let errors: Vec<_> =
+        diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+}
+
+/// step-16: structure missing required port → error diagnostic mentioning missing port.
+#[test]
+fn integration_port_missing_error() {
+    let source = r#"
+trait HasInput {
+    port input : in Signal
+}
+
+structure def Transmitter : HasInput {
+    param x : Length = 1mm
+}
+"#;
+    let (_, diagnostics) = compile_first_template(source);
+    let errors: Vec<_> =
+        diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    assert!(!errors.is_empty(), "expected error for missing port");
+    let error_msg = format!("{:?}", errors);
+    assert!(
+        error_msg.contains("input"),
+        "error should mention 'input', got: {}",
+        error_msg
+    );
+}
+
+// ── Integration tests: sub conformance ──────────────────────────────────────
+
+/// step-18: structure with sub satisfying trait sub requirement → no errors.
+#[test]
+fn integration_sub_satisfied_no_errors() {
+    let source = r#"
+trait HasFastener {
+    sub bolt = BoltSet()
+}
+
+structure def BoltSet {
+    param count : Int = 4
+}
+
+structure def Assembly : HasFastener {
+    sub bolt = BoltSet()
+}
+"#;
+    let (_, diagnostics) = compile_first_template(source);
+    let errors: Vec<_> =
+        diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+}
+
+/// step-19: structure missing required sub → error diagnostic mentioning missing sub.
+#[test]
+fn integration_sub_missing_error() {
+    let source = r#"
+trait HasFastener {
+    sub bolt = BoltSet()
+}
+
+structure def BoltSet {
+    param count : Int = 4
+}
+
+structure def BadAssembly : HasFastener {
+    param x : Length = 1mm
+}
+"#;
+    let (_, diagnostics) = compile_first_template(source);
+    let errors: Vec<_> =
+        diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    assert!(!errors.is_empty(), "expected error for missing sub");
+    let error_msg = format!("{:?}", errors);
+    assert!(
+        error_msg.contains("bolt"),
+        "error should mention 'bolt', got: {}",
+        error_msg
+    );
+}
+
+// ── Review fix: Sub semantic contract (steps 21-24) ─────────────────────────
+
+/// step-21: expose the semantic mismatch — RequirementKind::Sub stores a structure
+/// name (as compile_trait produces), but the current implementation checks
+/// trait_bounds instead of structure_name. A SubInfo with structure_name == the
+/// required name but empty trait_bounds should produce no errors after the fix.
+///
+/// Currently FAILS: returns SubTraitNotSatisfied because trait_bounds doesn't
+/// contain "BoltSet". After step-22 fix, returns no errors.
+#[test]
+fn conformance_sub_structure_name_match_no_error() {
+    // make_sub_trait passes "BoltSet" as the second argument to RequirementKind::Sub —
+    // exactly what compile_trait() would do for `sub bolt = BoltSet()`.
+    let trait_def = make_sub_trait("HasBolt", "bolt", "BoltSet");
+    let subs = vec![SubInfo {
+        name: "bolt".to_string(),
+        structure_name: "BoltSet".to_string(),
+    }];
+    let structure_members: std::collections::HashMap<String, Type> =
+        std::collections::HashMap::new();
+    let errors = check_trait_conformance(&structure_members, &trait_def, &[], &subs);
+    // Should be satisfied: sub.structure_name == RequirementKind::Sub value "BoltSet".
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+}
+
+/// step-23: verify compile_trait → check_trait_conformance agreement.
+/// Parse a trait with 'sub bolt = BoltSet()', compile it via compile_module,
+/// extract RequirementKind::Sub and verify it contains "BoltSet" (structure name),
+/// then pass to check_trait_conformance with SubInfo { name: "bolt", structure_name: "BoltSet" }
+/// → no errors. Proves both code paths agree on structure-name semantics.
+#[test]
+fn compile_trait_sub_check_conformance_agreement() {
+    let source = r#"
+trait HasBolt {
+    sub bolt = BoltSet()
+}
+"#;
+    let module = compile_module(source);
+    assert_eq!(module.trait_defs.len(), 1, "expected 1 trait def");
+    let trait_def = &module.trait_defs[0];
+    assert_eq!(trait_def.name, "HasBolt");
+    assert_eq!(
+        trait_def.required_members.len(),
+        1,
+        "expected 1 required member (sub), got: {:?}",
+        trait_def.required_members
+    );
+    let req = &trait_def.required_members[0];
+    assert_eq!(req.name, "bolt");
+    // Verify compile_trait stores structure name "BoltSet", not a trait name.
+    match &req.kind {
+        RequirementKind::Sub(structure_name) => {
+            assert_eq!(structure_name, "BoltSet", "Sub should store structure name");
+        }
+        other => panic!("expected RequirementKind::Sub, got: {:?}", other),
+    }
+    // Now verify check_trait_conformance agrees: SubInfo with structure_name="BoltSet" → no errors.
+    let subs = vec![SubInfo {
+        name: "bolt".to_string(),
+        structure_name: "BoltSet".to_string(),
+    }];
+    let structure_members: std::collections::HashMap<String, Type> =
+        std::collections::HashMap::new();
+    let errors = check_trait_conformance(&structure_members, trait_def, &[], &subs);
+    assert!(
+        errors.is_empty(),
+        "compile_trait + check_trait_conformance should agree — no errors, got: {:?}",
+        errors
+    );
+}
+
+/// step-24: structure-name mismatch via the compile_trait path.
+/// Compile a trait with 'sub bolt = BoltSet()', check_trait_conformance with
+/// SubInfo { name: "bolt", structure_name: "WrongStructure" }
+/// → ConformanceError::SubStructureMismatch { expected_structure: "BoltSet", actual_structure: "WrongStructure" }.
+#[test]
+fn compile_trait_sub_structure_mismatch() {
+    let source = r#"
+trait HasBolt {
+    sub bolt = BoltSet()
+}
+"#;
+    let module = compile_module(source);
+    let trait_def = &module.trait_defs[0];
+    // Sub with wrong structure name.
+    let subs = vec![SubInfo {
+        name: "bolt".to_string(),
+        structure_name: "WrongStructure".to_string(),
+    }];
+    let structure_members: std::collections::HashMap<String, Type> =
+        std::collections::HashMap::new();
+    let errors = check_trait_conformance(&structure_members, trait_def, &[], &subs);
+    assert_eq!(errors.len(), 1, "expected 1 error, got: {:?}", errors);
+    match &errors[0] {
+        ConformanceError::SubStructureMismatch { name, expected_structure, actual_structure } => {
+            assert_eq!(name, "bolt");
+            assert_eq!(expected_structure, "BoltSet");
+            assert_eq!(actual_structure, "WrongStructure");
+        }
+        other => panic!("expected SubStructureMismatch, got: {:?}", other),
+    }
 }

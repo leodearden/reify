@@ -50,8 +50,34 @@ pub enum RequirementKind {
     Param(Type),
     /// A let with a specific type: `let x : Length`
     Let(Type),
-    /// A sub-component: `sub hole = Hole`
+    /// A sub-component: `sub hole = BoltSet()`.
+    /// The `String` stores the **structure name** (e.g. "BoltSet"), not a trait name.
+    /// This mirrors the parser's `SubDecl.structure_name` field — there is no trait_ref
+    /// in the syntax AST for sub declarations. Conformance is checked by comparing
+    /// `SubInfo.structure_name` equality, not trait_bounds membership.
     Sub(String),
+    /// A port with a type name and direction: `port input : Signal in`
+    Port {
+        type_name: String,
+        direction: reify_types::PortDirection,
+    },
+}
+
+/// Lightweight port descriptor for passing to `check_trait_conformance`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PortInfo {
+    pub name: String,
+    pub type_name: String,
+    pub direction: reify_types::PortDirection,
+}
+
+/// Lightweight sub descriptor for passing to `check_trait_conformance`.
+/// Only `name` and `structure_name` are needed — conformance is checked by
+/// comparing the sub's concrete structure name against the required structure name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubInfo {
+    pub name: String,
+    pub structure_name: String,
 }
 
 /// A default member provided by a trait — injected if not overridden.
@@ -91,15 +117,35 @@ pub enum ConformanceError {
     MissingLet { name: String, expected_type: Type },
     /// The structure has a `let` member with the wrong type.
     LetTypeMismatch { name: String, expected_type: Type, actual_type: Type },
+    /// The structure is missing a required `port` member.
+    MissingPort {
+        name: String,
+        expected_type: String,
+        expected_direction: reify_types::PortDirection,
+    },
+    /// The structure has a `port` member with the wrong type name.
+    PortTypeMismatch { name: String, expected_type: String, actual_type: String },
+    /// The structure has a `port` member with the wrong direction.
+    PortDirectionMismatch {
+        name: String,
+        expected_direction: reify_types::PortDirection,
+        actual_direction: reify_types::PortDirection,
+    },
+    /// The structure is missing a required `sub` member.
+    MissingSub { name: String, expected_structure: String },
+    /// The structure has a `sub` member but its concrete structure name does not match.
+    SubStructureMismatch { name: String, expected_structure: String, actual_structure: String },
 }
 
-/// Pure conformance check: given a flat member map and a single compiled trait
-/// definition, return all conformance errors for required `param` and `let`
-/// members.  Sub requirements are not checked (they need richer input).
+/// Pure conformance check: given a flat member map, port list, sub list, and a
+/// single compiled trait definition, return all conformance errors for required
+/// `param`, `let`, `port`, and `sub` members.
 /// Refinement hierarchy walking remains the caller's responsibility.
 pub fn check_trait_conformance(
     structure_members: &HashMap<String, Type>,
     trait_def: &CompiledTrait,
+    ports: &[PortInfo],
+    subs: &[SubInfo],
 ) -> Vec<ConformanceError> {
     let mut errors = Vec::new();
     for req in &trait_def.required_members {
@@ -136,7 +182,46 @@ pub fn check_trait_conformance(
                     Some(_) => {} // satisfied
                 }
             }
-            RequirementKind::Sub(_) => {} // Sub checking not in scope for this function
+            RequirementKind::Port { type_name: expected_type, direction: expected_direction } => {
+                match ports.iter().find(|p| p.name == req.name) {
+                    None => errors.push(ConformanceError::MissingPort {
+                        name: req.name.clone(),
+                        expected_type: expected_type.clone(),
+                        expected_direction: *expected_direction,
+                    }),
+                    Some(port) if port.type_name != *expected_type => {
+                        errors.push(ConformanceError::PortTypeMismatch {
+                            name: req.name.clone(),
+                            expected_type: expected_type.clone(),
+                            actual_type: port.type_name.clone(),
+                        });
+                    }
+                    Some(port) if port.direction != *expected_direction => {
+                        errors.push(ConformanceError::PortDirectionMismatch {
+                            name: req.name.clone(),
+                            expected_direction: *expected_direction,
+                            actual_direction: port.direction,
+                        });
+                    }
+                    Some(_) => {} // satisfied
+                }
+            }
+            RequirementKind::Sub(expected_structure) => {
+                match subs.iter().find(|s| s.name == req.name) {
+                    None => errors.push(ConformanceError::MissingSub {
+                        name: req.name.clone(),
+                        expected_structure: expected_structure.clone(),
+                    }),
+                    Some(sub) if sub.structure_name != *expected_structure => {
+                        errors.push(ConformanceError::SubStructureMismatch {
+                            name: req.name.clone(),
+                            expected_structure: expected_structure.clone(),
+                            actual_structure: sub.structure_name.clone(),
+                        });
+                    }
+                    Some(_) => {} // satisfied: structure_name matches
+                }
+            }
         }
     }
     errors
@@ -1732,6 +1817,18 @@ fn compile_trait(
                     name: sub_decl.name.clone(),
                     kind: RequirementKind::Sub(sub_decl.structure_name.clone()),
                     span: sub_decl.span,
+                });
+            }
+            reify_syntax::MemberDecl::Port(port_decl) => {
+                let direction =
+                    port_decl.direction.unwrap_or(reify_types::PortDirection::Bidi);
+                required_members.push(TraitRequirement {
+                    name: port_decl.name.clone(),
+                    kind: RequirementKind::Port {
+                        type_name: port_decl.type_name.clone(),
+                        direction,
+                    },
+                    span: port_decl.span,
                 });
             }
             _ => {
@@ -4681,6 +4778,57 @@ fn check_and_apply_trait_conformance(
                             "required by trait",
                         )),
                     );
+                }
+            }
+            RequirementKind::Port { type_name: expected_type, direction: expected_direction } => {
+                // Collect structure ports to check against.
+                let port = structure.members.iter().find_map(|m| {
+                    if let reify_syntax::MemberDecl::Port(p) = m {
+                        if p.name == req.name { Some(p) } else { None }
+                    } else {
+                        None
+                    }
+                });
+                match port {
+                    None => {
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "missing required port '{}' of type '{}' ({:?})",
+                                req.name, expected_type, expected_direction
+                            ))
+                            .with_label(DiagnosticLabel::new(
+                                structure.span,
+                                "required by trait",
+                            )),
+                        );
+                    }
+                    Some(p) if p.type_name != *expected_type => {
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "port type mismatch for '{}': expected '{}', got '{}'",
+                                req.name, expected_type, p.type_name
+                            ))
+                            .with_label(DiagnosticLabel::new(
+                                structure.span,
+                                "port type mismatch",
+                            )),
+                        );
+                    }
+                    Some(p) => {
+                        let actual_dir = p.direction.unwrap_or(reify_types::PortDirection::Bidi);
+                        if actual_dir != *expected_direction {
+                            diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "port direction mismatch for '{}': expected {:?}, got {:?}",
+                                    req.name, expected_direction, actual_dir
+                                ))
+                                .with_label(DiagnosticLabel::new(
+                                    structure.span,
+                                    "port direction mismatch",
+                                )),
+                            );
+                        }
+                    }
                 }
             }
         }
