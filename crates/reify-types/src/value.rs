@@ -1825,6 +1825,29 @@ mod tests {
         assert_eq!(h1, h2, "same matrix should hash identically across two calls");
     }
 
+    // ── Value::Matrix Ord tests (step-5) ─────────────────────────────────────
+
+    #[test]
+    fn matrix_ord_after_complex() {
+        // Matrix type_tag=15 > Complex type_tag=14
+        let matrix = Value::Matrix(vec![vec![Value::Int(1)]]);
+        let complex = Value::Complex { re: 0.0, im: 0.0, dimension: DimensionVector::DIMENSIONLESS };
+        assert!(matrix > complex, "Matrix (tag 15) should order after Complex (tag 14)");
+    }
+
+    #[test]
+    fn matrix_ord_within_type() {
+        let ma = Value::Matrix(vec![
+            vec![Value::Int(1), Value::Int(2)],
+            vec![Value::Int(3), Value::Int(4)],
+        ]);
+        let mb = Value::Matrix(vec![
+            vec![Value::Int(1), Value::Int(2)],
+            vec![Value::Int(3), Value::Int(99)],
+        ]);
+        assert!(ma < mb, "lexicographic: [..3,4] < [..3,99]");
+    }
+
     #[test]
     fn matrix_content_hash_differs_from_nested_tensor() {
         // Matrix tag=18 vs Tensor tag=14 — hashes must differ
