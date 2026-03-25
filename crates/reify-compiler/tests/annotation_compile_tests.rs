@@ -64,13 +64,13 @@ fn annotation_on_trait_propagates() {
 #[test]
 fn annotation_on_field_propagates() {
     let module = compile_module(
-        "field def temp_field : Point3 -> Real = analytical { |p| 0.0 }",
+        "field def temp_field : Point3 -> Real { source = analytical { |p| 0.0 } }",
     );
     // Note: @deprecated on field is tested separately; first verify basic field compiles
     assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
 
     let module = compile_module(
-        "@deprecated field def temp_field : Point3 -> Real = analytical { |p| 0.0 }",
+        "@deprecated field def temp_field : Point3 -> Real { source = analytical { |p| 0.0 } }",
     );
     assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
     assert_eq!(module.fields.len(), 1);

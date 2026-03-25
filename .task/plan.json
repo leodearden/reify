@@ -70,57 +70,57 @@
       "id": "step-1",
       "type": "test",
       "description": "Write test in crates/reify-types/tests/exports.rs: new test fn `annotation_types_exported` that constructs Annotation { name: \"test\".into(), args: vec![AnnotationArg::String(\"msg\".into())], span: SourceSpan::new(0,0) } and exercises all AnnotationArg variants (String, Int, Real, Bool, Ident). Verifies types are accessible from crate root via `reify_types::Annotation` and `reify_types::AnnotationArg`.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "f467ca96"
     },
     {
       "id": "step-2",
       "type": "impl",
       "description": "Verify prerequisites pre-1 through pre-6 make the project compile. Run `cargo check -p reify-types -p reify-compiler -p reify-expr -p reify-test-support` and fix any compilation errors. The exports test from step-1 should pass.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "f467ca96"
     },
     {
       "id": "step-3",
       "type": "test",
       "description": "Write failing test in crates/reify-compiler/tests/annotation_compile_tests.rs: `annotation_on_structure_propagates`. Parse `@test structure S { param x : Real }` via compile_module helper (parse + compile pattern from other test files). Assert module has no error-level diagnostics, templates[0].annotations.len() == 1, annotations[0].name == \"test\", annotations[0].args.is_empty().",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "373ebfc6"
     },
     {
       "id": "step-4",
       "type": "impl",
       "description": "Implement annotation lowering for structures/occurrences: (1) Add `annotations: &'a [reify_syntax::Annotation]` field to EntityDefRef struct (~line 2850), update From<StructureDef> and From<OccurrenceDef> impls to pass &s.annotations / &o.annotations. (2) Write standalone fn `lower_annotations(parsed: &[reify_syntax::Annotation], diagnostics: &mut Vec<Diagnostic>) -> Vec<reify_types::Annotation>` that maps each parsed annotation: name passes through, args are lowered from Expr to AnnotationArg (NumberLiteral with value==floor and fits i64\u2192Int else\u2192Real, StringLiteral\u2192String, BoolLiteral\u2192Bool, Ident\u2192Ident, other\u2192diagnostic warning and skip arg). (3) In compile_entity, call lower_annotations(structure.annotations, diagnostics) and set TopologyTemplate.annotations field.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "d1440c20"
     },
     {
       "id": "step-5",
       "type": "test",
       "description": "Write test: `annotation_with_args_on_function_propagates`. Parse `@deprecated(\"use new_calc\") fn old_calc(x: Real) -> Real { x }`. Assert functions[0].annotations[0].name == \"deprecated\", annotations[0].args.len() == 1, annotations[0].args[0] == AnnotationArg::String(\"use new_calc\".into()).",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "856da5d2"
     },
     {
       "id": "step-6",
       "type": "impl",
       "description": "In compile_function(), add annotation lowering: call lower_annotations(&fn_def.annotations, diagnostics) and set annotations field in the CompiledFunction return struct literal (~line 5293).",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "856da5d2"
     },
     {
       "id": "step-7",
       "type": "test",
       "description": "Write three tests: (a) `annotation_on_trait_propagates`: parse `@deprecated trait Measurable { param width : Length }`, assert trait_defs[0].annotations[0].name == \"deprecated\". (b) `annotation_on_field_propagates`: parse `@deprecated field temp_field : Point3 -> Real = analytical { 0.0 }`, assert fields[0].annotations[0].name == \"deprecated\". (c) `annotation_on_purpose_propagates`: parse a structure S + `@deprecated purpose P(subject: S) { minimize subject.x }`, assert compiled_purposes[0].annotations[0].name == \"deprecated\".",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "143013da"
     },
     {
       "id": "step-8",
       "type": "impl",
       "description": "Add annotation lowering in compile_trait (call lower_annotations(&trait_decl.annotations, diagnostics), set CompiledTrait.annotations), compile_field (call lower_annotations(&field_def.annotations, diagnostics), set CompiledField.annotations), and compile_purpose (call lower_annotations(&purpose_def.annotations, diagnostics), set CompiledPurpose.annotations).",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "143013da"
     },
     {
       "id": "step-9",
