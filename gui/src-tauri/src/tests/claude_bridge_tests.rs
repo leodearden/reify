@@ -1301,6 +1301,202 @@ async fn ensure_sidecar_ready_timeout_when_no_ready_signal() {
 
 // --- post-review fix tests (task-353/steps-15..24) ---
 
+/// After a timeout error the sidecar slot must be cleared so the next call can
+/// re-enter the spawn path.  Without cleanup a timed-out handle persists in the
+/// slot and every subsequent call returns Ok(()) without re-spawning.
+#[tokio::test]
+async fn ensure_sidecar_ready_clears_slot_on_timeout() {
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::io::BufReader;
+    use tokio::sync::Mutex;
+
+    // Hold the writer alive so the duplex stays open (no EOF → no crash).
+    let held_writer: Arc<Mutex<Option<tokio::io::DuplexStream>>> =
+        Arc::new(Mutex::new(None));
+    let held_clone = Arc::clone(&held_writer);
+
+    let spawn_fn = move || {
+        let held = Arc::clone(&held_clone);
+        async move {
+            let state = Arc::new(Mutex::new(SidecarState::Starting));
+            // Open duplex but never write the ready message.
+            let (data_writer, data_reader) = tokio::io::duplex(1024);
+            let reader = BufReader::new(data_reader);
+            let (stdin_writer, _stdin_reader) = tokio::io::duplex(1024);
+            let handle = SidecarHandle::from_parts(stdin_writer, reader, state);
+            *held.lock().await = Some(data_writer);
+            Ok::<SidecarHandle, String>(handle)
+        }
+    };
+
+    let sidecar: Mutex<Option<SidecarHandle>> = Mutex::new(None);
+    let result = ensure_sidecar_ready(&sidecar, spawn_fn, Duration::from_millis(100)).await;
+
+    assert!(result.is_err(), "Expected timeout error");
+
+    // *** Key assertion: slot must be None so the next call can re-spawn. ***
+    assert!(
+        sidecar.lock().await.is_none(),
+        "Sidecar slot must be cleared after timeout so recovery is possible"
+    );
+}
+
+/// After a crash error the sidecar slot must be cleared so the next call can
+/// re-enter the spawn path.
+#[tokio::test]
+async fn ensure_sidecar_ready_clears_slot_on_crash() {
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::io::BufReader;
+    use tokio::sync::Mutex;
+
+    let spawn_fn = || async move {
+        let state = Arc::new(Mutex::new(SidecarState::Starting));
+        // Immediately drop data_writer → EOF → reader task sets Crashed.
+        let (data_writer, data_reader) = tokio::io::duplex(1024);
+        drop(data_writer);
+        let reader = BufReader::new(data_reader);
+        let (stdin_writer, _stdin_reader) = tokio::io::duplex(1024);
+        let handle = SidecarHandle::from_parts(stdin_writer, reader, state);
+        Ok::<SidecarHandle, String>(handle)
+    };
+
+    let sidecar: Mutex<Option<SidecarHandle>> = Mutex::new(None);
+    let result = ensure_sidecar_ready(&sidecar, spawn_fn, Duration::from_secs(5)).await;
+
+    assert!(result.is_err(), "Expected crash error: {:?}", result);
+    let msg = result.unwrap_err();
+    assert!(
+        msg.contains("crashed") || msg.contains("not ready"),
+        "Error should mention crash or not-ready: {}",
+        msg
+    );
+
+    // *** Key assertion: slot must be None so the next call can re-spawn. ***
+    assert!(
+        sidecar.lock().await.is_none(),
+        "Sidecar slot must be cleared after crash so recovery is possible"
+    );
+}
+
+/// A handle in `SidecarState::Crashed` in the fast path should be cleared and
+/// re-spawned on the next call.
+#[tokio::test]
+async fn ensure_sidecar_ready_rejects_crashed_existing_handle() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+    use tokio::io::{AsyncWriteExt, BufReader};
+    use tokio::sync::Mutex;
+
+    // Pre-populate the slot with a Crashed handle.
+    let crashed_state = Arc::new(Mutex::new(SidecarState::Crashed("pre-crash".to_string())));
+    let data: &[u8] = b"";
+    let empty_reader = BufReader::new(data);
+    let (writer, _writer_end) = tokio::io::duplex(1024);
+    let crashed_handle = SidecarHandle::from_parts(writer, empty_reader, crashed_state);
+    let sidecar: Mutex<Option<SidecarHandle>> = Mutex::new(Some(crashed_handle));
+
+    // Working spawn_fn that produces a Ready handle.
+    let spawn_called = Arc::new(AtomicBool::new(false));
+    let spawn_called_clone = Arc::clone(&spawn_called);
+    let held_writer: Arc<Mutex<Option<tokio::io::DuplexStream>>> =
+        Arc::new(Mutex::new(None));
+    let held_clone = Arc::clone(&held_writer);
+
+    let spawn_fn = move || {
+        spawn_called_clone.store(true, Ordering::SeqCst);
+        let held = Arc::clone(&held_clone);
+        async move {
+            let state = Arc::new(Mutex::new(SidecarState::Starting));
+            let (mut data_writer, data_reader) = tokio::io::duplex(1024);
+            data_writer
+                .write_all(b"{\"type\":\"ready\"}\n")
+                .await
+                .map_err(|e| e.to_string())?;
+            let reader = BufReader::new(data_reader);
+            let (stdin_writer, _stdin_reader) = tokio::io::duplex(1024);
+            let handle = SidecarHandle::from_parts(stdin_writer, reader, state);
+            *held.lock().await = Some(data_writer);
+            Ok(handle)
+        }
+    };
+
+    let result = ensure_sidecar_ready(&sidecar, spawn_fn, Duration::from_secs(5)).await;
+
+    assert!(
+        result.is_ok(),
+        "Should succeed after clearing crashed handle and re-spawning: {:?}",
+        result
+    );
+    assert!(
+        spawn_called.load(Ordering::SeqCst),
+        "spawn_fn must be called to replace the Crashed handle"
+    );
+    assert!(
+        sidecar.lock().await.is_some(),
+        "Slot should contain a new handle after successful re-spawn"
+    );
+}
+
+/// A handle in `SidecarState::Starting` (stale from a cancelled previous attempt)
+/// should be cleared and re-spawned.
+#[tokio::test]
+async fn ensure_sidecar_ready_respawns_starting_stale_handle() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+    use tokio::io::{AsyncWriteExt, BufReader};
+    use tokio::sync::Mutex;
+
+    // Pre-populate with a Starting handle that will never become Ready.
+    let stale_state = Arc::new(Mutex::new(SidecarState::Starting));
+    let (stale_data_writer, stale_data_reader) = tokio::io::duplex(1024);
+    let reader = BufReader::new(stale_data_reader);
+    let (writer, _writer_end) = tokio::io::duplex(1024);
+    let stale_handle = SidecarHandle::from_parts(writer, reader, stale_state);
+    // Keep stale_data_writer alive so there's no EOF/crash on the stale handle.
+    let _stale_writer_keeper = stale_data_writer;
+    let sidecar: Mutex<Option<SidecarHandle>> = Mutex::new(Some(stale_handle));
+
+    let spawn_called = Arc::new(AtomicBool::new(false));
+    let spawn_called_clone = Arc::clone(&spawn_called);
+    let held_writer: Arc<Mutex<Option<tokio::io::DuplexStream>>> =
+        Arc::new(Mutex::new(None));
+    let held_clone = Arc::clone(&held_writer);
+
+    let spawn_fn = move || {
+        spawn_called_clone.store(true, Ordering::SeqCst);
+        let held = Arc::clone(&held_clone);
+        async move {
+            let state = Arc::new(Mutex::new(SidecarState::Starting));
+            let (mut data_writer, data_reader) = tokio::io::duplex(1024);
+            data_writer
+                .write_all(b"{\"type\":\"ready\"}\n")
+                .await
+                .map_err(|e| e.to_string())?;
+            let reader = BufReader::new(data_reader);
+            let (stdin_writer, _stdin_reader) = tokio::io::duplex(1024);
+            let handle = SidecarHandle::from_parts(stdin_writer, reader, state);
+            *held.lock().await = Some(data_writer);
+            Ok(handle)
+        }
+    };
+
+    let result = ensure_sidecar_ready(&sidecar, spawn_fn, Duration::from_secs(5)).await;
+
+    assert!(
+        result.is_ok(),
+        "Should succeed after clearing stale Starting handle: {:?}",
+        result
+    );
+    assert!(
+        spawn_called.load(Ordering::SeqCst),
+        "spawn_fn must be called to replace the stale Starting handle"
+    );
+}
+
 /// Reproduce the race condition where `notify.notified()` is called AFTER the
 /// sidecar lock is released, so a multi-thread executor can let the reader task
 /// call `notify_waiters()` before the waiter is registered (lost wakeup →
