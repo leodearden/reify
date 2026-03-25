@@ -55,3 +55,39 @@ structure def S : A + B {
     assert!(has_a, "expected value cell 'a' from trait A");
     assert!(has_b, "expected value cell 'b' from trait B");
 }
+
+// ── step-2 ───────────────────────────────────────────────────────────────────
+
+/// Two traits share the same `param x : Length`.
+/// The requirement is deduplicated — structure S provides x once.
+/// Assert: no errors, exactly 1 'x' value cell (not 2).
+#[test]
+fn two_trait_merge_shared_param_deduped() {
+    let source = r#"
+trait A {
+    param x : Length
+}
+
+trait B {
+    param x : Length
+}
+
+structure def S : A + B {
+    param x : Length = 5mm
+}
+"#;
+
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    let x_cells: Vec<_> = template.value_cells.iter().filter(|vc| vc.id.member == "x").collect();
+    assert_eq!(
+        x_cells.len(),
+        1,
+        "expected exactly 1 'x' value cell (deduplicated), got {}: {:?}",
+        x_cells.len(),
+        x_cells.iter().map(|vc| &vc.id).collect::<Vec<_>>()
+    );
+}
