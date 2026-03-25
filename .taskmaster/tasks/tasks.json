@@ -6963,11 +6963,11 @@
         "description": "Follow-up from task 2 code review. Three test coverage gaps and one style fix in crates/reify-stdlib/src/lib.rs:\n\n1. **Remove `#[inline(always)]` from `complex_abs`** (line 648) — No other private helper in this file uses inline attributes. Let LLVM decide. Remove the attribute to match the file's convention.\n\n2. **Add `complex_magnitude_overflow_dimensioned_returns_undef` test** — The existing overflow test only covers the dimensionless branch (returns `Value::Real`). Add a test with `dimension: DimensionVector::LENGTH` and `re: f64::MAX, im: f64::MAX` to exercise the `Value::Scalar` return path through `sanitize_value`.\n\n3. **Add `magnitude_complex_overflow_returns_undef` test** — The `magnitude` builtin also calls `complex_abs` (line 286) but has no overflow test in its Complex test section (around line 2986). Add one mirroring the complex_magnitude overflow test.\n\n4. **Add `complex_magnitude_nan_component_returns_undef` test** — No test verifies that NaN component inputs (e.g., `re: f64::NAN, im: 1.0`) return Undef. `sanitize_value` handles this correctly, but the contract is unverified.\n\nMemory hints: search \"complex_abs sanitize_value overflow\", entities: eval_builtin, complex_abs",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-03-25T21:50:32.873Z"
+        "updatedAt": "2026-03-25T21:53:01.630Z"
       },
       {
         "id": "379",
@@ -7713,7 +7713,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-25T21:52:39.633Z",
+      "lastModified": "2026-03-25T21:53:01.631Z",
       "taskCount": 432,
       "completedCount": 229,
       "tags": [
