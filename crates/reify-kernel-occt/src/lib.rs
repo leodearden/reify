@@ -1720,6 +1720,34 @@ mod tests {
     }
 
     #[test]
+    fn loft_two_different_circles_cone_like() {
+        let mut kernel = OcctKernel::new();
+        let w1 = ffi::ffi::make_circle_wire(10.0, 0.0).expect("wire1");
+        let id1 = kernel.store_raw(w1);
+        let w2 = ffi::ffi::make_circle_wire(2.0, 20.0).expect("wire2");
+        let id2 = kernel.store_raw(w2);
+
+        let loft_h = kernel
+            .execute(&GeometryOp::Loft {
+                profiles: vec![id1, id2],
+            })
+            .unwrap();
+
+        let vol = kernel.query(&GeometryQuery::Volume(loft_h.id)).unwrap();
+        match vol {
+            Value::Real(v) => {
+                // Should be between small cylinder (pi*4*20 ~= 251) and
+                // large cylinder (pi*100*20 ~= 6283): a cone-like frustum
+                assert!(
+                    v > 251.0 && v < 6283.0,
+                    "cone-like frustum volume should be between 251 and 6283, got {v}"
+                );
+            }
+            other => panic!("expected Value::Real, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn loft_four_circles_creates_solid() {
         let mut kernel = OcctKernel::new();
         // Create 4 circle wire profiles at different heights with decreasing radii
