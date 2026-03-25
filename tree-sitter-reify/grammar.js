@@ -336,6 +336,21 @@ module.exports = grammar({
       $.port_declaration,
       $.connect_statement,
       $.chain_statement,
+      $.meta_block,
+    ),
+
+    // ── Meta block ──────────────────────────────────────────
+    meta_block: $ => seq(
+      'meta',
+      '{',
+      commaSep($.meta_entry),
+      '}',
+    ),
+
+    meta_entry: $ => seq(
+      field('key', $.identifier),
+      '=',
+      field('value', $.string_literal),
     ),
 
     // ── Where clause (guard) ────────────────────────────────
