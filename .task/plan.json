@@ -1,6 +1,6 @@
 {
-  "task_id": "183",
-  "title": "Trait conformance: port and sub checking",
+  "task_id": "186",
+  "title": "Trait conformance: refinement chains",
   "files": [
     "crates/reify-compiler/src/lib.rs",
     "crates/reify-compiler/tests/trait_conformance_tests.rs"
@@ -8,262 +8,189 @@
   "modules": [
     "crates/reify-compiler"
   ],
-  "analysis": "Task 182 established the pure `check_trait_conformance` function and `ConformanceError` enum with 4 variants covering Param and Let checking. The function takes a flat `HashMap<String, Type>` of structure members plus a `CompiledTrait`, and returns `Vec<ConformanceError>`. Port and Sub requirements are explicitly skipped with a `// Sub checking not in scope for this function` comment.\n\nThis task extends conformance checking to cover Port and Sub members. Key findings:\n\n**Port conformance:** `TraitMember::Port` has name, ty (Type), and direction (PortDirection). In `compile_trait()`, the `MemberDecl::Port` variant falls through the catch-all `_ =>` branch. We need to (1) add `RequirementKind::Port { type_name, direction }`, (2) handle `MemberDecl::Port` in `compile_trait()` to emit port requirements, (3) add ConformanceError variants for missing/mismatched ports, and (4) extend `check_trait_conformance()` to accept port data and check it.\n\n**Sub conformance:** `RequirementKind::Sub(String)` already exists and `compile_trait()` already emits sub requirements. However, `check_trait_conformance()` ignores them. The check_and_apply_trait_conformance integration function does a simple name+structure_name equality check, but the task asks for trait-bound satisfaction checking. We need to (1) add ConformanceError variants for missing/unsatisfied subs, (2) extend `check_trait_conformance()` to accept sub data and check it.\n\n**Function signature change:** The pure function needs richer input. We add `PortInfo` and `SubInfo` structs as lightweight descriptors, and extend the function to take `&[PortInfo]` and `&[SubInfo]` slices. All 8 existing call sites in tests pass `&[]` for the new params (backward-compatible behavior).\n\n**Direction semantics:** For conformance, we use exact direction matching (not connection-compatibility). A trait requiring `in` means the structure must declare `in`, not just a compatible direction.\n\n**REVIEW FIX — Sub semantic contract violation (steps 21-26):** Post-review analysis revealed that `RequirementKind::Sub(String)` has inconsistent semantics between the two call sites. `compile_trait()` (line 1813) stores `sub_decl.structure_name` — a concrete structure name like \"BoltSet\". But `check_trait_conformance()` (line 204-218) treats that same String as a trait name and checks `sub.trait_bounds.contains(it)`. Meanwhile, `check_and_apply_trait_conformance()` (line 4757-4776) correctly treats it as a structure name and checks `s.structure_name == structure_name`. The unit tests only passed accidentally because `make_sub_trait()` manually constructed RequirementKind::Sub with a trait name string, bypassing `compile_trait()`. The grammar/parser (`SubDecl.structure_name`) produces structure names — there is no trait_ref in the syntax AST for sub declarations. Fix: align `check_trait_conformance()` with `check_and_apply_trait_conformance()` by switching to structure-name matching. Rename ConformanceError variants from trait semantics to structure semantics. Remove `SubInfo.trait_bounds` field (unused after fix). Update all sub unit tests.",
-  "prerequisites": [
-    {
-      "id": "pre-1",
-      "description": "Add PortInfo and SubInfo structs to reify-compiler/src/lib.rs for passing port/sub data to the conformance checker",
-      "status": "done",
-      "commit": "b1c8180e",
-      "tests": []
-    },
-    {
-      "id": "pre-2",
-      "description": "Add RequirementKind::Port { type_name: String, direction: PortDirection } variant to the RequirementKind enum",
-      "status": "done",
-      "commit": "b1c8180e",
-      "tests": []
-    },
-    {
-      "id": "pre-3",
-      "description": "Update check_trait_conformance() signature to accept &[PortInfo] and &[SubInfo] slices; update all 8 existing test call sites to pass &[] for new params",
-      "status": "done",
-      "commit": "b1c8180e",
-      "tests": []
-    }
-  ],
+  "analysis": "The public `check_trait_conformance()` (from task 182) checks a single `CompiledTrait` against a structure's members \u2014 its doc explicitly states 'Refinement hierarchy walking remains the caller's responsibility.' The private `collect_all_requirements()` already walks refinement chains recursively with dedup/conflict detection, but it's tightly coupled to `check_and_apply_trait_conformance()` which produces `Diagnostic`s and injects defaults. Task 186 creates a new public function `check_trait_conformance_chain()` that walks refinement chains and returns structured `Vec<ConformanceError>` \u2014 bridging the pure validation API (task 182) with chain-aware semantics. Two new `ConformanceError` variants are needed: `ConflictingRequirement` (same member name, different types across chain) and `UnresolvedTrait` (refinement references unknown trait). The function reuses `check_trait_conformance` for per-requirement checking after collecting/deduplicating requirements from the chain.",
+  "prerequisites": [],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing test: MissingPort — trait requires port 'input' of type 'Signal' with direction In, structure has no ports → ConformanceError::MissingPort",
+      "description": "Write failing test `chain_single_trait_no_refinement`: call `check_trait_conformance_chain` on a trait with no refinements and a structure missing a param \u2192 expect MissingParam. Fails because function does not exist yet.",
       "status": "done",
-      "commit": "94d7c9d0"
+      "commit": "c1b2b2bb303eb5833fedd4ec51fb96b34f8aaacd"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Add ConformanceError::MissingPort { name, expected_type, expected_direction } variant. Implement port name lookup in check_trait_conformance: if no matching port name found, emit MissingPort",
+      "description": "Add `check_trait_conformance_chain(structure_members, trait_name, trait_registry, ports, subs) -> Vec<ConformanceError>` to lib.rs. For the base case: look up trait_name in registry, delegate to existing `check_trait_conformance`. Test passes.",
       "status": "done",
-      "commit": "b1c8180e"
+      "commit": "c1b2b2bb303eb5833fedd4ec51fb96b34f8aaacd"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing test: PortTypeMismatch — trait requires port 'mount' of type 'MountInterface', structure has port 'mount' of type 'OtherInterface' → ConformanceError::PortTypeMismatch",
+      "description": "Write failing test `chain_two_level_walks_parent`: trait B requires `width : Length`, trait A refines B and requires `height : Length`. Call chain fn on trait A; structure has `height` but not `width` \u2192 MissingParam for `width`. Fails because chain walking not implemented.",
       "status": "done",
-      "commit": "94d7c9d0"
+      "commit": "788ba1598ac47b3c9d97a0b11a7171d385bd7ee8"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Add ConformanceError::PortTypeMismatch { name, expected_type, actual_type } variant. Extend port check: if port found but type_name differs, emit PortTypeMismatch",
+      "description": "Implement recursive refinement walking in `check_trait_conformance_chain`: before checking the current trait, recurse into each refinement. Collect all requirements into a Vec with a `visited: HashSet<String>` and `seen_names: HashMap<String, RequirementKind>` for dedup. Check all collected requirements against structure members. Test passes.",
       "status": "done",
-      "commit": "b1c8180e"
+      "commit": "c1b2b2bb303eb5833fedd4ec51fb96b34f8aaacd"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing test: PortDirectionMismatch — trait requires port 'output' with direction Out, structure has port 'output' with direction In → ConformanceError::PortDirectionMismatch",
+      "description": "Write test `chain_three_level_all_satisfied`: C requires `x`, B : C requires `y`, A : B requires `z`. Structure provides all three \u2192 no errors. Verifies multi-level recursive walking works.",
       "status": "done",
-      "commit": "94d7c9d0"
+      "commit": "788ba1598ac47b3c9d97a0b11a7171d385bd7ee8"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Add ConformanceError::PortDirectionMismatch { name, expected_direction, actual_direction } variant. Extend port check: if port found with correct type but wrong direction, emit PortDirectionMismatch",
+      "description": "Verify test passes with existing recursive implementation from step-4. No code changes expected \u2014 commit confirms multi-level chains work.",
       "status": "done",
-      "commit": "b1c8180e"
+      "commit": "788ba1598ac47b3c9d97a0b11a7171d385bd7ee8"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write passing test: port fully satisfied — trait requires port 'input : Signal in', structure has matching port → no errors (happy path verification)",
+      "description": "Write test `chain_missing_deep_ancestor_member`: A : B : C, C requires `base : Length`, structure provides A's and B's members but not `base` \u2192 exactly 1 MissingParam error for `base`.",
       "status": "done",
-      "commit": "94d7c9d0"
+      "commit": "788ba1598ac47b3c9d97a0b11a7171d385bd7ee8"
     },
     {
       "id": "step-8",
-      "type": "test",
-      "description": "Write failing test: MissingSub — trait requires sub 'hole' satisfying trait 'Hole', structure has no subs → ConformanceError::MissingSub",
+      "type": "impl",
+      "description": "Verify test passes with existing recursive implementation. No code changes expected \u2014 commit confirms deep ancestor error propagation.",
       "status": "done",
-      "commit": "94d7c9d0"
+      "commit": "788ba1598ac47b3c9d97a0b11a7171d385bd7ee8"
     },
     {
       "id": "step-9",
-      "type": "impl",
-      "description": "Add ConformanceError::MissingSub { name, expected_trait } variant. Implement sub name lookup in check_trait_conformance: if no matching sub name found, emit MissingSub",
+      "type": "test",
+      "description": "Write test `chain_diamond_dedup_satisfied`: C requires `x : Length`. A : C, B : C. Call chain fn with both A and B via `check_trait_conformance_multi` helper (simulating `structure : A + B`). Structure has `x` \u2192 no errors, requirement from C not checked twice.",
       "status": "done",
-      "commit": "b1c8180e"
+      "commit": "788ba1598ac47b3c9d97a0b11a7171d385bd7ee8"
     },
     {
       "id": "step-10",
-      "type": "test",
-      "description": "Write failing test: SubTraitNotSatisfied — trait requires sub 'mount' satisfying trait 'MountInterface', structure has sub 'mount' whose structure type does not declare MountInterface bound → ConformanceError::SubTraitNotSatisfied",
+      "type": "impl",
+      "description": "Add `check_trait_conformance_multi(structure_members, trait_names, trait_registry, ports, subs) -> Vec<ConformanceError>` that iterates over multiple trait bounds sharing a visited set, preventing duplicate chain walks. Test passes.",
       "status": "done",
-      "commit": "94d7c9d0"
+      "commit": "c1b2b2bb303eb5833fedd4ec51fb96b34f8aaacd"
     },
     {
       "id": "step-11",
-      "type": "impl",
-      "description": "Add ConformanceError::SubTraitNotSatisfied { name, expected_trait, actual_structure } variant. Extend sub check: if sub found but its trait_bounds don't include the required trait, emit SubTraitNotSatisfied",
+      "type": "test",
+      "description": "Write test `chain_diamond_missing_exactly_one_error`: same diamond (A : C, B : C, C requires `x`), but structure lacks `x` \u2192 exactly 1 MissingParam error (not 2 from walking C via both A and B).",
       "status": "done",
-      "commit": "b1c8180e"
+      "commit": "788ba1598ac47b3c9d97a0b11a7171d385bd7ee8"
     },
     {
       "id": "step-12",
-      "type": "test",
-      "description": "Write passing test: sub fully satisfied — trait requires sub 'hole' satisfying 'Hole', structure has sub 'hole' with trait_bounds containing 'Hole' → no errors",
+      "type": "impl",
+      "description": "Dedup in visited set ensures C's requirement added only once. Verify test passes \u2014 no additional code changes expected.",
       "status": "done",
-      "commit": "94d7c9d0"
+      "commit": "788ba1598ac47b3c9d97a0b11a7171d385bd7ee8"
     },
     {
       "id": "step-13",
       "type": "test",
-      "description": "Write failing test: compile_trait handles MemberDecl::Port — parse a trait with 'port input : Signal in', verify compiled trait has RequirementKind::Port with correct type_name and direction",
+      "description": "Write failing test `chain_conflicting_requirements`: C requires `x : Length`, D requires `x : Mass`. Trait A refines both C and D. Call chain fn \u2192 expect ConflictingRequirement { name: 'x', type_a: Length, type_b: Mass }. Fails because variant does not exist.",
       "status": "done",
-      "commit": "d1c93299"
+      "commit": "4583c3eb"
     },
     {
       "id": "step-14",
       "type": "impl",
-      "description": "Add MemberDecl::Port(port_decl) case to compile_trait(): extract type_name from port_decl.type_name, direction from port_decl.direction (default Bidi), emit TraitRequirement with RequirementKind::Port",
+      "description": "Add `ConflictingRequirement { name: String, type_a: Type, type_b: Type }` variant to ConformanceError. In chain walker, when collecting requirements, detect same name with different type via `seen_names` map and emit ConflictingRequirement. Test passes.",
       "status": "done",
-      "commit": "38aa614d"
+      "commit": "4583c3eb"
     },
     {
       "id": "step-15",
       "type": "test",
-      "description": "Write integration test: structure with matching port satisfies trait port requirement — compile full source with trait+structure, assert no error diagnostics",
+      "description": "Write failing test `chain_unresolved_trait`: trait A has refinement 'Nonexistent' (not in registry). Call chain fn \u2192 expect UnresolvedTrait { name: 'Nonexistent' }. Fails because variant does not exist.",
       "status": "done",
-      "commit": "cfab6e3d"
+      "commit": "b251ebe7"
     },
     {
       "id": "step-16",
-      "type": "test",
-      "description": "Write integration test: structure missing required port — compile source where structure lacks the port required by trait, assert error diagnostic mentioning missing port",
+      "type": "impl",
+      "description": "Add `UnresolvedTrait { name: String }` variant to ConformanceError. In chain walker, when trait_name is not found in trait_registry, push UnresolvedTrait error and return early. Test passes.",
       "status": "done",
-      "commit": "cfab6e3d"
+      "commit": "b251ebe7"
     },
     {
       "id": "step-17",
-      "type": "impl",
-      "description": "Update check_and_apply_trait_conformance() to handle RequirementKind::Port: collect structure ports, check name/type/direction match, emit diagnostics for mismatches",
+      "type": "test",
+      "description": "Write integration test `integration_deep_chain_defaults_no_duplicate_injection`: C has default `size : Length = 10mm`, A : C, B : C. `structure def X : A + B {}` \u2192 compile_first_template, expect exactly 1 'size' value cell (not 2). Verifies no duplicate default injection from shared ancestors in the full compilation pipeline.",
       "status": "done",
-      "commit": "b1c8180e"
+      "commit": "0b745132442012607d7e0d1bb4fbe1e6ad97ce23"
     },
     {
       "id": "step-18",
-      "type": "test",
-      "description": "Write integration test: structure with sub satisfying trait sub requirement — compile full source, assert no error diagnostics",
-      "status": "done",
-      "commit": "cfab6e3d"
-    },
-    {
-      "id": "step-19",
-      "type": "test",
-      "description": "Write integration test: structure missing required sub — compile source where structure lacks the sub required by trait, assert error diagnostic mentioning missing sub",
-      "status": "done",
-      "commit": "cfab6e3d"
-    },
-    {
-      "id": "step-20",
-      "type": "test",
-      "description": "Write test: multiple port requirements in a single trait — one satisfied, one missing → exactly one error",
-      "status": "done",
-      "commit": "94d7c9d0"
-    },
-    {
-      "id": "step-21",
-      "type": "test",
-      "description": "Write failing test exposing the semantic mismatch: construct RequirementKind::Sub(\"BoltSet\") (a structure name, as compile_trait produces) and a SubInfo with structure_name \"BoltSet\" but trait_bounds: [] → currently fails because check_trait_conformance checks trait_bounds instead of structure_name, but should return no errors since the structure name matches",
-      "status": "done",
-      "commit": "91b096da"
-    },
-    {
-      "id": "step-22",
       "type": "impl",
-      "description": "Fix the Sub semantic contract violation: (1) Update RequirementKind::Sub doc comment to clarify it stores a structure name, not a trait name. (2) Rename ConformanceError::MissingSub field from expected_trait to expected_structure. (3) Rename ConformanceError::SubTraitNotSatisfied to SubStructureMismatch { name, expected_structure, actual_structure }. (4) Change check_trait_conformance() Sub arm to check sub.structure_name == expected instead of sub.trait_bounds.contains(). (5) Remove trait_bounds field from SubInfo (now unused). (6) Update all existing sub unit tests (make_sub_trait helper, steps 8/10/12 tests) to use structure-name semantics in SubInfo construction and error assertions.",
+      "description": "Verify existing `collect_all_requirements` dedup logic handles diamond defaults correctly. Test should pass based on existing visited-set logic. If not, fix the dedup in collect_all_requirements. Commit confirms end-to-end chain default injection is correct.",
       "status": "done",
-      "commit": "cc7aa749"
-    },
-    {
-      "id": "step-23",
-      "type": "test",
-      "description": "Write test verifying compile_trait→check_trait_conformance agreement: parse a trait with 'sub bolt = BoltSet()', compile it via compile_module, extract RequirementKind::Sub and verify it contains \"BoltSet\" (structure name), then pass to check_trait_conformance with SubInfo { name: \"bolt\", structure_name: \"BoltSet\" } → no errors. This proves the two code paths agree.",
-      "status": "done",
-      "commit": "bcd56714"
-    },
-    {
-      "id": "step-24",
-      "type": "test",
-      "description": "Write test for structure-name mismatch via the compile_trait path: compile a trait with 'sub bolt = BoltSet()', check_trait_conformance with SubInfo { name: \"bolt\", structure_name: \"WrongStructure\" } → ConformanceError::SubStructureMismatch { expected_structure: \"BoltSet\", actual_structure: \"WrongStructure\" }",
-      "status": "done",
-      "commit": "bcd56714"
+      "commit": "0b745132442012607d7e0d1bb4fbe1e6ad97ce23"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Extend check_trait_conformance() signature rather than creating a new function",
-      "rationale": "The pure function is the right place for all conformance checks. Adding parameters is simpler than maintaining parallel functions. Existing callers pass &[] for new params, preserving backward behavior."
+      "decision": "New function `check_trait_conformance_chain` rather than modifying `check_trait_conformance`",
+      "rationale": "The existing function has a clean single-trait contract (documented: 'Refinement hierarchy walking remains the caller's responsibility'). Adding registry/chain parameters would break existing callers and conflate two responsibilities. A separate chain-aware function composes with the single-trait checker."
     },
     {
-      "decision": "Use lightweight PortInfo and SubInfo structs rather than passing full CompiledPort/SubComponentDecl",
-      "rationale": "The pure function should not depend on compilation-stage types. PortInfo/SubInfo contain only the fields needed for conformance checking (name, type_name, direction for ports; name, structure_name for subs), keeping the API clean and testable."
+      "decision": "Also add `check_trait_conformance_multi` for multiple trait bounds with shared dedup state",
+      "rationale": "Diamond patterns (structure : A + B where A : C and B : C) require shared visited/seen state across multiple top-level trait bounds. A multi-trait entry point shares dedup state, preventing duplicate requirement collection from shared ancestors."
     },
     {
-      "decision": "Port direction conformance uses exact match, not connection-compatibility",
-      "rationale": "Connection compatibility (is_forward_compatible) is for port-to-port wiring, not trait conformance. A trait requiring 'port x : T in' means the structure must declare the port with direction In. Bidi is not a wildcard for conformance — the trait specifies the contract."
+      "decision": "Return `Vec<ConformanceError>` (same return type as single-trait checker) with new variants for chain-specific errors",
+      "rationale": "Keeps the error type unified. Callers can handle all conformance errors with one match. ConflictingRequirement and UnresolvedTrait are legitimate conformance errors that only arise in chain contexts."
     },
     {
-      "decision": "[REVISED] Sub conformance checks structure_name equality, not trait_bounds membership",
-      "rationale": "Review identified a semantic contract violation: compile_trait() stores sub_decl.structure_name (a structure name like 'BoltSet') in RequirementKind::Sub, but check_trait_conformance treated it as a trait name and checked trait_bounds. check_and_apply_trait_conformance already correctly does structure_name equality. The grammar/parser (SubDecl) only produces structure names — there is no trait_ref in the syntax AST for sub declarations. Both code paths must agree: Sub(String) stores a structure name and is checked via structure_name equality. Unit tests previously passed accidentally because make_sub_trait() manually constructed the same string in both RequirementKind::Sub and SubInfo.trait_bounds. Trait-ref semantics can be added in a future task when the grammar supports `sub x : TraitName` syntax distinct from `sub x = StructureName()`."
+      "decision": "Function takes `trait_name: &str` + `trait_registry: &HashMap<String, &CompiledTrait>` instead of `&CompiledTrait`",
+      "rationale": "Chain walking requires looking up parent traits by name, which needs the registry. The entry point is a trait name, and the function resolves it internally."
     },
     {
-      "decision": "Remove SubInfo.trait_bounds field after Sub semantics fix",
-      "rationale": "With structure-name matching, trait_bounds is unused by check_trait_conformance. Keeping dead fields creates confusion about what the function actually checks. SubInfo becomes { name, structure_name } — minimal and precise."
+      "decision": "Internal chain walker collects all requirements first, then checks \u2014 rather than checking each trait independently",
+      "rationale": "Collect-then-check enables deduplication of requirements from diamond patterns. Checking independently would produce duplicate errors for shared ancestors."
     },
     {
-      "decision": "Separate ConformanceError variants for Port type vs direction mismatch",
-      "rationale": "Fine-grained error variants enable precise diagnostics. A user seeing 'wrong direction' vs 'wrong type' can fix the issue faster than a generic 'port mismatch'."
-    },
-    {
-      "decision": "Port requirements are always TraitRequirements (never TraitDefaults)",
-      "rationale": "Unlike params (which can have default values), ports describe structural contracts that the implementor must provide. There is no meaningful 'default port' that a trait could inject."
+      "decision": "Keep `collect_all_requirements` private; new public function has its own chain-walking logic",
+      "rationale": "collect_all_requirements is tightly coupled to the internal Diagnostic/default-injection pipeline. The new public function has its own simpler chain-walking logic that returns ConformanceError variants, avoiding coupling to the internal compilation flow."
     }
   ],
   "reuse": [
     {
-      "what": "Existing check_trait_conformance() function structure",
-      "where": "crates/reify-compiler/src/lib.rs:100-143",
-      "how": "Extend the match on RequirementKind with new Port and Sub arms, following the same pattern of push-to-errors-vec"
+      "what": "`check_trait_conformance()` single-trait checker",
+      "where": "lib.rs lines 144-224",
+      "how": "After collecting all requirements from the chain into a temporary CompiledTrait (or inline Vec), delegate to this function for the actual member-by-member checking against structure members, ports, and subs."
     },
     {
-      "what": "Existing RequirementKind::Sub variant and compile_trait Sub handling",
-      "where": "crates/reify-compiler/src/lib.rs:54 and 1730-1735",
-      "how": "Sub compilation already works; only the conformance checking in check_trait_conformance needs to stop ignoring Sub"
+      "what": "Chain-walking pattern from `collect_all_requirements()`",
+      "where": "lib.rs lines 4945-5063",
+      "how": "The new chain walker follows the same algorithmic pattern: visited set for diamond dedup, seen_names map for conflict detection, depth-first parent-first recursion. Adapted to emit ConformanceError instead of Diagnostic."
     },
     {
-      "what": "Existing test helpers: empty_trait(), test_span(), compile_module(), compile_first_template()",
-      "where": "crates/reify-compiler/tests/trait_conformance_tests.rs:10-279",
-      "how": "Reuse all helpers for new unit and integration tests"
+      "what": "Test helpers: `empty_trait()`, `test_span()`, `compile_module()`, `compile_first_template()`",
+      "where": "trait_conformance_tests.rs lines 10-279",
+      "how": "Reuse all four helpers. Unit tests construct CompiledTraits directly (using empty_trait + modifications). Integration tests use compile_first_template to exercise the full pipeline."
     },
     {
-      "what": "PortDirection enum from reify-types",
-      "where": "crates/reify-types/src/traits.rs:15-23",
-      "how": "Use in RequirementKind::Port, ConformanceError variants, and PortInfo struct"
+      "what": "Existing ConformanceError variants (MissingParam, TypeMismatch, etc.)",
+      "where": "lib.rs lines 111-138",
+      "how": "Chain function returns the same error variants for per-member failures. Only adds ConflictingRequirement and UnresolvedTrait as new chain-specific variants."
     },
     {
-      "what": "ContentHash::of_str for test trait construction",
-      "where": "crates/reify-types",
-      "how": "Same pattern used in existing tests for constructing CompiledTrait in unit tests"
-    },
-    {
-      "what": "check_and_apply_trait_conformance Sub arm pattern (structure_name matching)",
-      "where": "crates/reify-compiler/src/lib.rs:4757-4776",
-      "how": "check_trait_conformance Sub arm should follow the same structure_name equality pattern used by check_and_apply_trait_conformance, ensuring both code paths agree"
+      "what": "Diamond dedup algorithm from `collect_all_requirements`",
+      "where": "lib.rs lines 4957-4958, 4994-5008",
+      "how": "Same pattern: `visited.insert(trait_name)` for cycle/diamond prevention, `seen_names.get()` for requirement conflict detection."
     }
   ],
-  "_session_id": "183-1d1af319",
-  "_created_at": "2026-03-25T02:13:32.300798+00:00"
+  "_session_id": "186-215f216d",
+  "_created_at": "2026-03-25T02:48:03.976820+00:00"
 }
