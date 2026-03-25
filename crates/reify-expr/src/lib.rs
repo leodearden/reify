@@ -226,6 +226,11 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             Value::Option(Some(Box::new(val)))
         }
 
+        // Determinacy predicates cannot be evaluated at this layer — the eval context
+        // only has ValueMap, not DeterminacyState. Real evaluation happens at the engine
+        // level (reify-eval) where snapshot state is available.
+        CompiledExprKind::DeterminacyPredicate { .. } => Value::Undef,
+
         CompiledExprKind::Quantifier { kind, variable_id, collection, predicate, .. } => {
             let coll_val = eval_expr(collection, ctx);
             if coll_val.is_undef() {
