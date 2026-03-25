@@ -45,6 +45,8 @@ pub enum Type {
     Complex(Box<Type>),
     /// Orientation in N-dimensional space (unit quaternion for N=3, angle for N=2).
     Orientation(usize),
+    /// Coordinate frame in N-dimensional space: an origin point + a basis orientation.
+    Frame(usize),
     /// Range over a comparable element type (e.g., Range<Int>, Range<Scalar[m]>).
     Range(Box<Type>),
     /// User-facing m×n matrix type (e.g., Matrix3x2<Scalar[m]>).
@@ -110,6 +112,11 @@ impl Type {
     /// Shorthand for an orientation in N-dimensional space.
     pub fn orientation(n: usize) -> Self {
         Type::Orientation(n)
+    }
+
+    /// Shorthand for a coordinate frame in N-dimensional space.
+    pub fn frame(n: usize) -> Self {
+        Type::Frame(n)
     }
 
     /// Shorthand for a range over a given element type.
@@ -705,6 +712,67 @@ mod tests {
         };
         assert_eq!(format!("{}", p1_int), "Point1<Int>");
     }
+
+    // ── Frame tests (step-1) ─────────────────────────────────────────────────
+
+    #[test]
+    fn type_frame_construction() {
+        let f3 = Type::Frame(3);
+        let f2 = Type::Frame(2);
+        // Same dimension equal
+        assert_eq!(Type::Frame(3), Type::Frame(3));
+        // Distinct dimensions not equal
+        assert_ne!(f3, f2);
+    }
+
+    #[test]
+    fn type_frame_display() {
+        assert_eq!(format!("{}", Type::Frame(3)), "Frame3");
+        assert_eq!(format!("{}", Type::Frame(2)), "Frame2");
+    }
+
+    #[test]
+    fn type_frame_factory() {
+        assert_eq!(Type::frame(3), Type::Frame(3));
+        assert_eq!(Type::frame(2), Type::Frame(2));
+    }
+
+    #[test]
+    fn type_frame_eq_and_hash() {
+        use std::collections::HashMap;
+
+        let f3a = Type::Frame(3);
+        let f3b = Type::Frame(3);
+        let f2 = Type::Frame(2);
+
+        assert_eq!(f3a, f3b);
+        assert_ne!(f3a, f2);
+        // Frame != other types
+        assert_ne!(f3a, Type::Real);
+
+        // Hash consistency
+        let mut map: HashMap<Type, &str> = HashMap::new();
+        map.insert(f3a.clone(), "f3");
+        assert_eq!(map.get(&f3b), Some(&"f3"));
+        assert_eq!(map.get(&f2), None);
+    }
+
+    #[test]
+    fn type_frame_not_numeric() {
+        assert!(!Type::Frame(3).is_numeric());
+        assert!(!Type::Frame(2).is_numeric());
+    }
+
+    #[test]
+    fn type_frame_as_name_none() {
+        assert_eq!(Type::Frame(3).as_name(), None);
+    }
+
+    #[test]
+    fn type_frame_ne_orientation() {
+        // Frame(3) and Orientation(3) are distinct types
+        assert_ne!(Type::Frame(3), Type::Orientation(3));
+    }
 }
 
 impl std::fmt::Display for Type {
@@ -739,6 +807,7 @@ impl std::fmt::Display for Type {
             Type::Tensor { rank, n, quantity } => write!(f, "Tensor{}x{}<{}>", rank, n, quantity),
             Type::Complex(inner) => write!(f, "Complex<{}>", inner),
             Type::Orientation(n) => write!(f, "Orientation{}", n),
+            Type::Frame(n) => write!(f, "Frame{}", n),
             Type::Range(inner) => write!(f, "Range<{}>", inner),
             Type::Matrix { m, n, quantity } => write!(f, "Matrix{}x{}<{}>", m, n, quantity),
         }
