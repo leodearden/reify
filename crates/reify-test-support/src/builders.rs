@@ -54,6 +54,9 @@ fn infer_value_type(v: &Value) -> Type {
         Value::Orientation { .. } => Type::Orientation(3),
         Value::Frame { .. } => Type::Frame(3),
         Value::Transform { .. } => Type::Transform(3),
+        Value::Plane { .. } => Type::Plane,
+        Value::Axis { .. } => Type::Axis,
+        Value::BoundingBox { .. } => Type::BoundingBox,
         Value::Range { lower, upper, .. } => {
             let elem_ty = lower
                 .as_ref()

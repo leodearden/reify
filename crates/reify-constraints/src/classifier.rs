@@ -96,9 +96,12 @@ impl ConstraintClassifier {
                         | Value::Orientation { .. }
                         | Value::Frame { .. }
                         | Value::Transform { .. }
+                        | Value::Plane { .. }
+                        | Value::Axis { .. }
+                        | Value::BoundingBox { .. }
                         | Value::Range { .. } => {
                             // Collection, enum, lambda, field, tensor, Point, Vector, Matrix, Complex,
-                            // Orientation, Frame, Transform, and Range types don't contribute to domain classification.
+                            // Orientation, Frame, Transform, Plane, Axis, BoundingBox, and Range types don't contribute to domain classification.
                         }
                     }
                 }

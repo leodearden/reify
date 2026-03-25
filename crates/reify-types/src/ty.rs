@@ -51,6 +51,12 @@ pub enum Type {
     Transform(usize),
     /// Range over a comparable element type (e.g., Range<Int>, Range<Scalar[m]>).
     Range(Box<Type>),
+    /// 3D plane: an origin point and a unit normal vector.
+    Plane,
+    /// 3D axis (ray): an origin point and a unit direction vector.
+    Axis,
+    /// 3D axis-aligned bounding box defined by min and max corner points.
+    BoundingBox,
     /// User-facing m×n matrix type (e.g., Matrix3x2<Scalar[m]>).
     ///
     /// Semantically, evaluation treats matrices as rank-2 tensors; `Type::Matrix` preserves
@@ -129,6 +135,21 @@ impl Type {
     /// Shorthand for a range over a given element type.
     pub fn range(inner: Type) -> Self {
         Type::Range(Box::new(inner))
+    }
+
+    /// Shorthand for a 3D plane type.
+    pub fn plane() -> Self {
+        Type::Plane
+    }
+
+    /// Shorthand for a 3D axis type.
+    pub fn axis() -> Self {
+        Type::Axis
+    }
+
+    /// Shorthand for a 3D bounding box type.
+    pub fn bounding_box() -> Self {
+        Type::BoundingBox
     }
 
     /// Shorthand for an m×n matrix with a given quantity type.
@@ -847,6 +868,105 @@ mod tests {
         // Transform(3) and Orientation(3) are distinct types
         assert_ne!(Type::Transform(3), Type::Orientation(3));
     }
+
+    // ── Plane tests (pre-1) ──────────────────────────────────────────────────
+
+    #[test]
+    fn type_plane_construction_and_equality() {
+        assert_eq!(Type::Plane, Type::Plane);
+        assert_ne!(Type::Plane, Type::Axis);
+        assert_ne!(Type::Plane, Type::BoundingBox);
+        assert_ne!(Type::Plane, Type::Real);
+    }
+
+    #[test]
+    fn type_plane_display() {
+        assert_eq!(format!("{}", Type::Plane), "Plane");
+    }
+
+    #[test]
+    fn type_plane_factory() {
+        assert_eq!(Type::plane(), Type::Plane);
+    }
+
+    #[test]
+    fn type_plane_eq_and_hash() {
+        use std::collections::HashMap;
+        let mut map: HashMap<Type, &str> = HashMap::new();
+        map.insert(Type::Plane, "plane");
+        assert_eq!(map.get(&Type::Plane), Some(&"plane"));
+        assert_eq!(map.get(&Type::Axis), None);
+    }
+
+    #[test]
+    fn type_plane_not_numeric() {
+        assert!(!Type::Plane.is_numeric());
+    }
+
+    #[test]
+    fn type_plane_as_name_none() {
+        assert_eq!(Type::Plane.as_name(), None);
+    }
+
+    // ── Axis tests (pre-1) ───────────────────────────────────────────────────
+
+    #[test]
+    fn type_axis_construction_and_equality() {
+        assert_eq!(Type::Axis, Type::Axis);
+        assert_ne!(Type::Axis, Type::Plane);
+        assert_ne!(Type::Axis, Type::BoundingBox);
+        assert_ne!(Type::Axis, Type::Real);
+    }
+
+    #[test]
+    fn type_axis_display() {
+        assert_eq!(format!("{}", Type::Axis), "Axis");
+    }
+
+    #[test]
+    fn type_axis_factory() {
+        assert_eq!(Type::axis(), Type::Axis);
+    }
+
+    #[test]
+    fn type_axis_not_numeric() {
+        assert!(!Type::Axis.is_numeric());
+    }
+
+    #[test]
+    fn type_axis_as_name_none() {
+        assert_eq!(Type::Axis.as_name(), None);
+    }
+
+    // ── BoundingBox tests (pre-1) ────────────────────────────────────────────
+
+    #[test]
+    fn type_bounding_box_construction_and_equality() {
+        assert_eq!(Type::BoundingBox, Type::BoundingBox);
+        assert_ne!(Type::BoundingBox, Type::Plane);
+        assert_ne!(Type::BoundingBox, Type::Axis);
+        assert_ne!(Type::BoundingBox, Type::Real);
+    }
+
+    #[test]
+    fn type_bounding_box_display() {
+        assert_eq!(format!("{}", Type::BoundingBox), "BoundingBox");
+    }
+
+    #[test]
+    fn type_bounding_box_factory() {
+        assert_eq!(Type::bounding_box(), Type::BoundingBox);
+    }
+
+    #[test]
+    fn type_bounding_box_not_numeric() {
+        assert!(!Type::BoundingBox.is_numeric());
+    }
+
+    #[test]
+    fn type_bounding_box_as_name_none() {
+        assert_eq!(Type::BoundingBox.as_name(), None);
+    }
 }
 
 impl std::fmt::Display for Type {
@@ -884,6 +1004,9 @@ impl std::fmt::Display for Type {
             Type::Frame(n) => write!(f, "Frame{}", n),
             Type::Transform(n) => write!(f, "Transform{}", n),
             Type::Range(inner) => write!(f, "Range<{}>", inner),
+            Type::Plane => write!(f, "Plane"),
+            Type::Axis => write!(f, "Axis"),
+            Type::BoundingBox => write!(f, "BoundingBox"),
             Type::Matrix { m, n, quantity } => write!(f, "Matrix{}x{}<{}>", m, n, quantity),
         }
     }
