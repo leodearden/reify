@@ -1,175 +1,118 @@
 {
-  "task_id": "230",
-  "title": "Tensor/Matrix: arithmetic",
+  "task_id": "241",
+  "title": "Connector params: compiler",
   "files": [
-    "crates/reify-expr/tests/tensor_matrix_arithmetic_tests.rs",
-    "crates/reify-expr/src/lib.rs"
+    "crates/reify-compiler/src/lib.rs",
+    "crates/reify-compiler/tests/connect_compile_tests.rs"
   ],
   "modules": [
-    "crates/reify-expr"
+    "crates/reify-compiler"
   ],
-  "analysis": "Task 230 requires tensor addition (same rank/N/Q), scalar-tensor multiplication, matrix-vector multiplication (M(M,K,Q1)*V(K,Q2)->V(M,Q1*Q2)), and matrix-matrix multiplication (M(M,K,Q1)*M(K,N,Q2)->M(M,N,Q1*Q2)) with dimensional checking on all operations.\n\nThe core implementation already exists in crates/reify-expr/src/lib.rs from dependency tasks 228/229:\n- eval_add: componentwise Tensor+Tensor via componentwise_op (recursive, any rank)\n- eval_sub: componentwise Tensor-Tensor via componentwise_op\n- eval_mul: Scalar*Tensor scaling, Mat*Vec (dot product per row, try_fold), Mat*Mat (O(m*n*k) with eval_dot)\n- eval_div: Tensor/Scalar component-wise division\n- neg_value: recursive Tensor negation with Matrix canonicalization\n- eval_dot: single-pass short-circuiting dot product helper\n- componentwise_op: length-matched zip with Undef propagation\n- eval_binop: canonicalizes Value::Matrix to nested Value::Tensor before dispatch\n\nAll 34 existing tests in tensor_matrix_arithmetic_tests.rs pass, covering rank-2 (matrix) operations. However, there are test coverage gaps for the operations task 230 specifically describes:\n\n1. Rank-1 Tensor arithmetic (add/sub/neg/scale/div) — tests exist for Value::Vector in point_vector_eval_tests.rs, but Value::Tensor rank-1 is a different variant with different semantics\n2. Rank-3+ Tensor arithmetic — no tests verify recursive generality beyond rank-2\n3. Dimension product Q1*Q2 tracking — tested for Length*Length=Area in mat*vec/mat*mat, but needs explicit verification for other dimension combinations\n4. Rank/shape mismatch Undef checking for rank-1 tensors\n5. Mixed-rank tensor operations (rank-1 + rank-2 → Undef)\n\nThe TDD plan adds these missing tests. Since the implementation handles all ranks generically via recursion, all new tests should pass without implementation changes. If any test reveals a gap, the corresponding impl step addresses it.",
+  "analysis": "Task 241 requires the compiler to: (1) create synthetic __connector_N sub-components when a connector type is specified in a connect statement, (2) compile parameter assignments from the connector body, (3) generate port compatibility constraints, and (4) generate frame alignment constraints when both ports satisfy LocatedPort.\n\nAll four requirements are ALREADY IMPLEMENTED in compile_connection() at lib.rs:3773-4034:\n- Lines 3903-3966: Synthetic sub-component creation (__connector_N) with compiled params, content hash, best-effort param validation against connector template\n- Lines 3888-3901: Compatibility constraint generation (connect_compat_{left}_{right}) as boolean literal\n- Lines 3992-4022: Frame alignment constraint generation via trait_satisfies() check for LocatedPort (including transitive refinement)\n- Lines 3305-3327: Content hash computation includes all connection components (ports, operator, mappings, connector_sub, frame_constraint)\n\n21 existing tests in connect_compile_tests.rs all pass, covering: basic connections, connector sub-component creation, chain desugaring, direction errors (forward/reverse/bidi), port mapping propagation, unknown port errors, content hash sensitivity (type, params, operator, frame), port type mismatch warnings, trait refinement, connector param validation, frame alignment with LocatedPort, frame alignment via refinement chain, and frame_constraint=None for non-LocatedPort.\n\nGaps identified: (1) No test for connector with BOTH params AND port mappings combined, (2) No test for multiple connectors on same entity verifying __connector_0/__connector_1 indexing, (3) No test verifying connector args can reference parent scope parameters. These edge cases should be tested to ensure robustness.",
   "prerequisites": [],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing tests for rank-1 tensor addition: (a) Tensor([Real(1),Real(2),Real(3)]) + Tensor([Real(4),Real(5),Real(6)]) = Tensor([Real(5),Real(7),Real(9)]); (b) Tensor([Length(1),Length(2)]) + Tensor([Length(3),Length(4)]) = Tensor([Length(4),Length(6)]) — dimension preserved; (c) length mismatch Tensor([1,2,3]) + Tensor([1,2]) → Undef; (d) dimension mismatch Tensor([Length(1)]) + Tensor([Angle(1)]) → Undef",
+      "description": "Write test `connector_with_params_and_port_mappings` verifying that a connect statement with BOTH params and port mappings produces: (a) a connector sub-component with correct structure_name and compiled args, (b) port_mappings propagated to CompiledConnection, (c) no errors. Source: `connect a -> b : BoltSet { grade = 10.9  shaft -> bore }`",
       "status": "done",
-      "commit": "99e719c24b54c2501a47dc7029b22f47b1c45ec7"
+      "commit": "30cfa457"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Verify rank-1 tensor addition tests pass — eval_add already handles Tensor+Tensor via componentwise_op with recursive dimension checking. No implementation changes expected.",
+      "description": "Verify step-1 test passes against existing implementation (compile_connection already handles both params and port_mappings independently; this test confirms they work together). Fix if needed.",
       "status": "done",
-      "commit": "99e719c24b54c2501a47dc7029b22f47b1c45ec7"
+      "commit": "30cfa457"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing tests for scalar-tensor multiplication with rank-1 tensors and dimension tracking: (a) Int(3) * Tensor([Real(1),Real(2)]) = Tensor([Real(3),Real(6)]); (b) Length(2) * Tensor([Length(1),Length(3)]) = Tensor([Area(2),Area(6)]) — Q1*Q2 dimension product; (c) Tensor * Scalar commutativity: Tensor([Real(1),Real(2)]) * Real(3) = Tensor([Real(3),Real(6)]); (d) Real(0.5) * Tensor([Length(4),Length(8)]) = Tensor([Length(2),Length(4)])",
+      "description": "Write test `multiple_connectors_per_entity` verifying that two connect statements with connectors in the same structure produce __connector_0 and __connector_1 with distinct names and correct structure_names. Source: two connect statements with different connector types (BoltSet and RivetSet).",
       "status": "done",
-      "commit": "99e719c24b54c2501a47dc7029b22f47b1c45ec7"
+      "commit": "30cfa457"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Verify scalar-tensor multiplication tests pass — eval_mul scalar*tensor arm handles Int/Real/Scalar * Tensor with recursive scaling. The guard '!matches!(scalar, Value::Tensor(_))' ensures proper dispatch. No implementation changes expected.",
+      "description": "Verify step-3 test passes against existing implementation (connector_index is tracked in ConnectAccumulator and incremented per connector). Fix if needed.",
       "status": "done",
-      "commit": "99e719c24b54c2501a47dc7029b22f47b1c45ec7"
+      "commit": "30cfa457"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing tests for rank-1 tensor subtraction, negation, and division: (a) Tensor([Real(5),Real(3)]) - Tensor([Real(1),Real(2)]) = Tensor([Real(4),Real(1)]); (b) Tensor([Length(10),Length(20)]) - Tensor([Length(3),Length(7)]) = Tensor([Length(7),Length(13)]); (c) -Tensor([Real(1),Real(-2),Real(3)]) = Tensor([Real(-1),Real(2),Real(-3)]); (d) Tensor([Area(4),Area(6)]) / Length(2) = Tensor([Length(2),Length(3)]) — Q/Q' dimension quotient",
+      "description": "Write test `connector_args_reference_parent_params` verifying that connector parameter expressions can reference the parent structure's params. Source: `structure def S { param g : Real = 8.8 ... connect a -> b : BoltSet { grade = g } }`. Assert the connector sub-component's args contain a CompiledExpr with a ValueRef to the parent param.",
       "status": "done",
-      "commit": "99e719c24b54c2501a47dc7029b22f47b1c45ec7"
+      "commit": "30cfa457"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Verify rank-1 tensor sub/neg/div tests pass — eval_sub uses componentwise_op, neg_value recurses into Tensor components, eval_div handles Tensor/Scalar with component-wise division. No implementation changes expected.",
+      "description": "Verify step-5 test passes against existing implementation (compile_expr uses ctx.scope which includes parent params). Fix if needed.",
       "status": "done",
-      "commit": "99e719c24b54c2501a47dc7029b22f47b1c45ec7"
+      "commit": "30cfa457"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write failing tests for rank/shape validation across operations: (a) rank-1 + rank-2 → Undef: Tensor([Real(1),Real(2)]) + Tensor([Tensor([1,2]),Tensor([3,4])]) → Undef; (b) rank-1 * rank-1 → Undef: Tensor([Real(1)]) * Tensor([Real(2)]) → Undef (no element-wise tensor multiply); (c) empty rank-1 tensor operations: Tensor([]) + Tensor([]) → Undef; (d) single-element rank-1 tensor: Tensor([Length(5)]) + Tensor([Length(3)]) = Tensor([Length(8)])",
+      "description": "Run full compiler test suite (`cargo test -p reify-compiler`) and verify all tests pass including the 21 existing connect_compile_tests plus the 3 new edge-case tests.",
       "status": "done",
-      "commit": "99e719c24b54c2501a47dc7029b22f47b1c45ec7"
+      "commit": "30cfa457"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Verify rank/shape validation tests pass — componentwise_op rejects empty/mismatched lengths, eval_mul guards prevent rank-1*rank-1 (falls to _ => Undef), recursive dispatch produces Undef for rank mismatches at leaf level. No implementation changes expected.",
+      "description": "Final verification: ensure no regressions across the full compiler test suite. All 24+ connect tests and all other compiler tests must pass.",
       "status": "done",
-      "commit": "99e719c24b54c2501a47dc7029b22f47b1c45ec7"
-    },
-    {
-      "id": "step-9",
-      "type": "test",
-      "description": "Write failing test for rank-3 tensor addition to verify recursive generality: Tensor([Tensor([Tensor([Real(1),Real(2)]),Tensor([Real(3),Real(4)])]),Tensor([Tensor([Real(5),Real(6)]),Tensor([Real(7),Real(8)])])]) + same-shape tensor = element-wise sum. This confirms componentwise_op recurses correctly through arbitrary nesting depth.",
-      "status": "done",
-      "commit": "99e719c24b54c2501a47dc7029b22f47b1c45ec7"
-    },
-    {
-      "id": "step-10",
-      "type": "impl",
-      "description": "Verify rank-3 tensor addition test passes — componentwise_op calls eval_add recursively, which calls componentwise_op again for nested Tensor layers. This recursive structure handles any rank. No implementation changes expected.",
-      "status": "done",
-      "commit": "99e719c24b54c2501a47dc7029b22f47b1c45ec7"
-    },
-    {
-      "id": "step-11",
-      "type": "test",
-      "description": "Write failing tests for mat*vec and mat*mat dimension product Q1*Q2 with non-trivial dimensions: (a) mat*vec: Matrix(Angle) * Vector(Length) → Vector(Angle·Length dimension product): [[Angle(1),Angle(2)],[Angle(3),Angle(4)]] * [Length(1),Length(1)] = [AngleLength(3),AngleLength(7)]; (b) mat*mat: 2x2(Length) * 2x2(Time⁻¹ via velocity/length) → 2x2(dimensionless or appropriate product); (c) mat*vec inner-dim mismatch with dimensioned values → Undef",
-      "status": "done",
-      "commit": "99e719c24b54c2501a47dc7029b22f47b1c45ec7"
-    },
-    {
-      "id": "step-12",
-      "type": "impl",
-      "description": "Verify dimension product tests pass — eval_mul delegates to DimensionVector::mul for dimension products in both scalar*scalar (leaf) and dot product (eval_dot via eval_add). Dimension tracking is automatic through recursive evaluation. No implementation changes expected.",
-      "status": "done",
-      "commit": "99e719c24b54c2501a47dc7029b22f47b1c45ec7"
-    },
-    {
-      "id": "step-13",
-      "type": "test",
-      "description": "Write a comprehensive integration test combining multiple operations: scalar * (matrix + matrix) * vector with dimensional tracking — e.g., Real(2) * ([[Length(1),Length(0)],[Length(0),Length(1)]] + [[Length(1),Length(1)],[Length(1),Length(1)]]) * [Length(1),Length(1)] — verifying correct dimension product chain through add then scale then mat*vec.",
-      "status": "done",
-      "commit": "99e719c24b54c2501a47dc7029b22f47b1c45ec7"
-    },
-    {
-      "id": "step-14",
-      "type": "impl",
-      "description": "Verify integration test passes. Run full test suite: cargo test -p reify-expr to confirm no regressions across all 34+ existing tests plus all new tests. No implementation changes expected.",
-      "status": "done",
-      "commit": "99e719c24b54c2501a47dc7029b22f47b1c45ec7"
+      "commit": "30cfa457"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Leverage existing recursive tensor arithmetic — no new code paths needed",
-      "rationale": "The eval_add/eval_sub/eval_mul/eval_div/neg_value functions already handle Value::Tensor recursively via componentwise_op. Adding rank-specific code would duplicate logic. The recursive structure naturally handles rank-1, rank-2 (matrix), and rank-N tensors identically. Task 230's scope is covered by existing generic implementations from dependencies 228/229."
+      "decision": "No new implementation code needed — core connector compilation is already complete",
+      "rationale": "compile_connection() at lib.rs:3773-4034 already handles all four task requirements: synthetic __connector_N sub-components (lines 3903-3966), parameter compilation (3908-3913), compatibility constraints (3888-3901), and frame alignment constraints (3992-4022). 21 tests verify this behavior. The remaining work is edge-case test coverage."
     },
     {
-      "decision": "Test-first verification strategy: all tests should pass without implementation changes",
-      "rationale": "Dependencies 228 and 229 already implemented the complete arithmetic engine (eval_add, eval_sub, eval_mul with mat*vec and mat*mat arms, eval_div, neg_value, eval_dot, componentwise_op). Task 230 adds test coverage for the specific operations mentioned in its description (rank-1 tensors, Q1*Q2 dimension products, rank-3 generality) to confirm and document the existing behavior."
+      "decision": "Connector sub-components use Private visibility and __connector_N naming",
+      "rationale": "Connectors are implementation details of the connection, not user-visible members. Private visibility prevents external access. The __connector_N naming uses a monotonically incrementing index within each entity to ensure unique names, matching the __count_N and __guard_N synthetic naming conventions."
     },
     {
-      "decision": "Rank-1 Tensor × Rank-1 Tensor → Undef (no element-wise multiply)",
-      "rationale": "Element-wise tensor multiplication (Hadamard product) is not a standard mathematical operation in engineering CAD contexts. eval_mul only defines Scalar*Tensor (scaling), Matrix*Vector (linear transform), and Matrix*Matrix (composition). Rank-1 × rank-1 falls through to _ => Undef, which is correct by design."
+      "decision": "Frame alignment constraint is a boolean literal (true) placeholder",
+      "rationale": "The current implementation emits frame_align_{left}_{right} constraints as Bool(true) literals. This establishes the constraint infrastructure and content hash dependency. The actual frame transformation logic (comparing frame expressions from both ports) will be implemented in a later task when the evaluator supports spatial transforms."
     },
     {
-      "decision": "Dimension products (Q1*Q2) verified through DimensionVector::mul at Scalar leaf level",
-      "rationale": "The dimension product Q1*Q2 in mat*vec/mat*mat is an emergent property: eval_mul on Scalar elements calls DimensionVector::mul (adds exponents), and eval_add in eval_dot verifies summands have matching dimensions. No special dimension logic exists at the matrix level — it's all handled by the leaf operations. Tests should verify this end-to-end."
+      "decision": "Connector param validation is best-effort (only when connector template already compiled)",
+      "rationale": "The compiler processes entities in source order. If the connector structure appears after the entity using it, its template won't be available yet for param validation. The current implementation gracefully skips validation in this case via the `ctx.compiled_templates.iter().find()` guard at line 3917."
     }
   ],
   "reuse": [
     {
-      "what": "componentwise_op helper for rank-matched binary operations",
-      "where": "crates/reify-expr/src/lib.rs:730-745",
-      "how": "Already used by eval_add and eval_sub for Tensor+Tensor and Tensor-Tensor. Handles length checking, zip, Undef propagation. Recursion through eval_add/eval_sub enables arbitrary rank support."
+      "what": "compile_expr for connector parameter compilation",
+      "where": "crates/reify-compiler/src/lib.rs:3908-3913",
+      "how": "Connector params are compiled using the same compile_expr() used for all other expression compilation, with the parent entity's CompilationScope. This means connector params can reference parent params, lets, and port members."
     },
     {
-      "what": "eval_mul scalar*tensor arm with guard",
-      "where": "crates/reify-expr/src/lib.rs:894-904",
-      "how": "Already handles Int/Real/Scalar * Tensor and Tensor * Scalar with !matches!(scalar, Tensor|Point|Vector) guard. Recursively scales each component, propagates Undef."
+      "what": "trait_satisfies for LocatedPort detection",
+      "where": "crates/reify-compiler/src/lib.rs:3998-4001",
+      "how": "Frame alignment detection reuses the existing trait_satisfies() function which performs transitive refinement checking through the trait registry. This means ports typed with MechanicalPort (which refines LocatedPort) automatically get frame constraints."
     },
     {
-      "what": "eval_mul mat*vec arm with try_fold and eval_dot",
-      "where": "crates/reify-expr/src/lib.rs:927-961",
-      "how": "Detects rank-2 * rank-1 via rows[0] is Tensor and vec_elems[0] is not Tensor. Computes dot product per row with dimension tracking via eval_mul on elements and eval_dot for summation."
+      "what": "ContentHash pattern for connector sub-components",
+      "where": "crates/reify-compiler/src/lib.rs:3943-3949",
+      "how": "Connector sub-component hash combines connector type + operator + port names + param expression hashes using the same ContentHash::combine/of_str pattern used throughout the compiler."
     },
     {
-      "what": "eval_mul mat*mat arm with nested try_fold",
-      "where": "crates/reify-expr/src/lib.rs:962-1031",
-      "how": "Detects rank-2 * rank-2 via a_rows[0] and b_rows[0] both Tensor. O(m*n*k) with eval_dot per cell, safe indexing via .get().unwrap_or(Undef), double try_fold for short-circuit."
+      "what": "SubComponentDecl struct for connector subs",
+      "where": "crates/reify-compiler/src/lib.rs:3951-3961",
+      "how": "Synthetic connector sub-components reuse the same SubComponentDecl struct as regular sub-components (params, type_args, is_collection, count_cell, content_hash), just with Private visibility and auto-generated name."
     },
     {
-      "what": "eval_dot short-circuiting dot product",
-      "where": "crates/reify-expr/src/lib.rs:798-821",
-      "how": "Single-pass fold over products with early Undef exit via try_fold. Used by both mat*vec and mat*mat. Handles dimension checking implicitly through eval_add."
-    },
-    {
-      "what": "DimensionVector::mul for Q1*Q2 dimension products",
-      "where": "crates/reify-types/src/dimension.rs",
-      "how": "Adds rational exponent vectors element-wise. Called by eval_mul at Scalar*Scalar leaf, producing correct composite dimension (e.g., Length*Length=Area, Length*Angle=AngleLength)."
-    },
-    {
-      "what": "Test helpers: mat(), vec_lit(), scalar_lit(), area(), eval()",
-      "where": "crates/reify-expr/tests/tensor_matrix_arithmetic_tests.rs:18-44",
-      "how": "Existing helpers for constructing CompiledExpr literals and evaluating them. New tests reuse these plus add a rank3_tensor() helper for rank-3 construction."
-    },
-    {
-      "what": "Matrix canonicalization in eval_binop",
-      "where": "crates/reify-expr/src/lib.rs:645-646",
-      "how": "Value::Matrix is canonicalized to nested Value::Tensor before arithmetic dispatch. All arithmetic functions pattern-match exclusively on Tensor. Tests using Value::Matrix inputs benefit from this transparent conversion."
+      "what": "Existing test helpers (compile_module, compile_first_template)",
+      "where": "crates/reify-compiler/tests/connect_compile_tests.rs:9-20",
+      "how": "All new edge-case tests reuse the existing test helper functions that parse source text and compile to CompiledModule or (TopologyTemplate, Vec<Diagnostic>)."
     }
   ],
-  "_session_id": "230-316ac9ab",
-  "_created_at": "2026-03-24T23:32:55.170890+00:00"
+  "_session_id": "241-1d6f7cda",
+  "_created_at": "2026-03-24T23:37:41.981333+00:00"
 }
