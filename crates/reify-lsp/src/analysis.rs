@@ -201,6 +201,25 @@ pub fn format_value(value: &Value) -> String {
                 format!("{re} {sign} {im_abs}i {unit}")
             }
         }
+        Value::Matrix(rows) => {
+            // SKIP #7: direct String buffer approach (efficient from the start)
+            let mut out = String::from("[");
+            for (i, row) in rows.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                out.push('[');
+                for (j, elem) in row.iter().enumerate() {
+                    if j > 0 {
+                        out.push_str(", ");
+                    }
+                    out.push_str(&format_value(elem));
+                }
+                out.push(']');
+            }
+            out.push(']');
+            out
+        }
         Value::Undef => "(undefined)".to_string(),
     }
 }
@@ -486,5 +505,16 @@ mod tests {
             dimension: DimensionVector::LENGTH,
         };
         assert_eq!(format_value(&v), "3 + 4i m");
+    }
+
+    // --- format_value for Matrix (DO NOW #10) ---
+
+    #[test]
+    fn format_value_matrix() {
+        let v = Value::Matrix(vec![
+            vec![Value::Int(1), Value::Int(2)],
+            vec![Value::Int(3), Value::Int(4)],
+        ]);
+        assert_eq!(format_value(&v), "[[1, 2], [3, 4]]");
     }
 }

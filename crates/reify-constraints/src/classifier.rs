@@ -89,7 +89,8 @@ impl ConstraintClassifier {
                         | Value::Lambda { .. }
                         | Value::Field { .. }
                         | Value::Tensor(_)
-                        | Value::Complex { .. } => {
+                        | Value::Complex { .. }
+                        | Value::Matrix(_) => {
                             // Collection, enum, lambda, field, tensor, and Complex types
                             // don't contribute to domain classification.
                             // Complex is not numeric (Type::is_numeric() returns false for

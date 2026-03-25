@@ -52,6 +52,10 @@ pub enum Value {
     Tensor(Vec<Value>),
     /// Complex number: re and im share one dimension (e.g., complex impedance in ohms).
     Complex { re: f64, im: f64, dimension: DimensionVector },
+    /// User-facing matrix literal (m rows × n cols). Before arithmetic evaluation,
+    /// canonicalized to nested Value::Tensor (rank-2) via canonicalize_matrix().
+    /// This method exists to support the reify-expr evaluator pipeline.
+    Matrix(Vec<Vec<Value>>),
     /// Undefined — not yet determined or computation failed.
     Undef,
 }
@@ -75,6 +79,40 @@ impl Value {
 
     pub fn is_undef(&self) -> bool {
         matches!(self, Value::Undef)
+    }
+
+    /// Convert a Value::Matrix to nested Value::Tensor (rank-2 Tensor where each element is
+    /// a Tensor row). All other variants are returned unchanged.
+    ///
+    /// This method exists to support the reify-expr evaluator pipeline. The module boundary
+    /// coupling (reify-types knowing about reify-expr conventions) is an accepted design trade-off.
+    pub fn canonicalize_matrix(self) -> Self {
+        match self {
+            Value::Matrix(rows) => {
+                Value::Tensor(rows.into_iter().map(Value::Tensor).collect())
+            }
+            other => other,
+        }
+    }
+
+    /// Convert a rank-2 nested Value::Tensor back to Value::Matrix.
+    /// Returns Some(Matrix(...)) if self is a non-empty Tensor where every element is a Tensor.
+    /// Returns None otherwise. Note: the round-trip invariant canonicalize_matrix().try_into_matrix()
+    /// holds only for non-empty matrices. Empty Matrix canonicalizes to Tensor([]) which returns None here.
+    /// Currently used in tests for round-trip verification; retained for future LSP/format use.
+    pub fn try_into_matrix(self) -> Option<Self> {
+        match self {
+            Value::Tensor(rows) if !rows.is_empty() => {
+                rows.into_iter()
+                    .map(|r| match r {
+                        Value::Tensor(elems) => Some(elems),
+                        _ => None,
+                    })
+                    .collect::<Option<Vec<_>>>()
+                    .map(Value::Matrix)
+            }
+            _ => None,
+        }
     }
 
     /// Get the f64 value if this is a numeric type.
@@ -205,6 +243,20 @@ impl Value {
                 buf[9..17].copy_from_slice(&im_bits.to_le_bytes());
                 ContentHash::of(&buf).combine(dimension.content_hash())
             }
+            Value::Matrix(rows) => {
+                // Hash structure: tag(18) + row_count + for each row: col_count + element hashes.
+                // This two-level encoding intentionally differs from Tensor's flat tag(14)+count+elements
+                // to distinguish Matrix from nested-Tensor at the hash level.
+                let mut h = ContentHash::of(&[18]);
+                h = h.combine(ContentHash::of(&(rows.len() as u64).to_le_bytes()));
+                for row in rows {
+                    h = h.combine(ContentHash::of(&(row.len() as u64).to_le_bytes()));
+                    for elem in row {
+                        h = h.combine(elem.content_hash());
+                    }
+                }
+                h
+            }
             Value::Undef => ContentHash::of(&[5]),
         }
     }
@@ -249,6 +301,7 @@ impl PartialEq for Value {
                 Value::Complex { re: ar, im: ai, dimension: ad },
                 Value::Complex { re: br, im: bi, dimension: bd },
             ) => ar.to_bits() == br.to_bits() && ai.to_bits() == bi.to_bits() && ad == bd,
+            (Value::Matrix(a), Value::Matrix(b)) => a == b,
             (Value::Undef, Value::Undef) => true,
             _ => false,
         }
@@ -268,7 +321,7 @@ impl Ord for Value {
         use std::cmp::Ordering;
 
         // Type-tag discriminant for cross-type ordering:
-        // Undef=0, Bool=1, Int=2, Real=3, Scalar=4, String=5, Enum=6, List=7, Set=8, Map=9, Option=10, Field=11, Lambda=12, Tensor=13, Complex=14
+        // Undef=0, Bool=1, Int=2, Real=3, Scalar=4, String=5, Enum=6, List=7, Set=8, Map=9, Option=10, Field=11, Lambda=12, Tensor=13, Complex=14, Matrix=15
         fn type_tag(v: &Value) -> u8 {
             match v {
                 Value::Undef => 0,
@@ -286,6 +339,7 @@ impl Ord for Value {
                 Value::Lambda { .. } => 12,
                 Value::Tensor(_) => 13,
                 Value::Complex { .. } => 14,
+                Value::Matrix(_) => 15,
             }
         }
 
@@ -348,6 +402,7 @@ impl Ord for Value {
                     .then_with(|| ar.to_bits().cmp(&br.to_bits()))
                     .then_with(|| ai.to_bits().cmp(&bi.to_bits()))
             }
+            (Value::Matrix(a), Value::Matrix(b)) => a.cmp(b),
             _ => unreachable!("same type tag but different variants"),
         }
     }
@@ -446,6 +501,23 @@ impl std::fmt::Display for Value {
                 } else {
                     write!(f, "({}{}{}i) {}", re_str, sign, im_abs_str, dimension)
                 }
+            }
+            Value::Matrix(rows) => {
+                write!(f, "[")?;
+                for (i, row) in rows.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "[")?;
+                    for (j, elem) in row.iter().enumerate() {
+                        if j > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{}", elem)?;
+                    }
+                    write!(f, "]")?;
+                }
+                write!(f, "]")
             }
             Value::Undef => write!(f, "undef"),
         }
@@ -1734,5 +1806,161 @@ mod tests {
     fn value_complex_dimensionless_returns_dimensionless() {
         let v = Value::Complex { re: 1.0, im: 2.0, dimension: DimensionVector::DIMENSIONLESS };
         assert_eq!(v.dimension(), DimensionVector::DIMENSIONLESS);
+    }
+
+    // ── Value::Matrix construction, PartialEq, Display tests (step-1) ─────────
+
+    #[test]
+    fn matrix_construction_and_partial_eq() {
+        let m1 = Value::Matrix(vec![
+            vec![Value::Int(1), Value::Int(2)],
+            vec![Value::Int(3), Value::Int(4)],
+        ]);
+        let m2 = Value::Matrix(vec![
+            vec![Value::Int(1), Value::Int(2)],
+            vec![Value::Int(3), Value::Int(4)],
+        ]);
+        assert_eq!(m1, m2, "identical 2x2 matrices should be equal");
+
+        let m3 = Value::Matrix(vec![
+            vec![Value::Int(1), Value::Int(2)],
+            vec![Value::Int(3), Value::Int(99)],
+        ]);
+        assert_ne!(m1, m3, "different 2x2 matrices should not be equal");
+    }
+
+    #[test]
+    fn matrix_display() {
+        let m = Value::Matrix(vec![
+            vec![Value::Int(1), Value::Int(2)],
+            vec![Value::Int(3), Value::Int(4)],
+        ]);
+        assert_eq!(m.to_string(), "[[1, 2], [3, 4]]");
+    }
+
+    #[test]
+    fn matrix_ne_tensor() {
+        // Matrix([[1,2]]) != Tensor([Tensor([Int(1),Int(2)])])
+        let matrix = Value::Matrix(vec![vec![Value::Int(1), Value::Int(2)]]);
+        let tensor = Value::Tensor(vec![Value::Tensor(vec![Value::Int(1), Value::Int(2)])]);
+        assert_ne!(matrix, tensor, "Matrix and nested Tensor should be distinct variants");
+    }
+
+    // ── Value::Matrix content_hash tests (step-3) ─────────────────────────────
+
+    #[test]
+    fn matrix_content_hash_determinism() {
+        let m = Value::Matrix(vec![
+            vec![Value::Int(1), Value::Int(2)],
+            vec![Value::Int(3), Value::Int(4)],
+        ]);
+        let h1 = m.content_hash();
+        let h2 = m.content_hash();
+        assert_eq!(h1, h2, "same matrix should hash identically across two calls");
+    }
+
+    // ── Value::Matrix Ord tests (step-5) ─────────────────────────────────────
+
+    #[test]
+    fn matrix_ord_after_complex() {
+        // Matrix type_tag=15 > Complex type_tag=14
+        let matrix = Value::Matrix(vec![vec![Value::Int(1)]]);
+        let complex = Value::Complex { re: 0.0, im: 0.0, dimension: DimensionVector::DIMENSIONLESS };
+        assert!(matrix > complex, "Matrix (tag 15) should order after Complex (tag 14)");
+    }
+
+    #[test]
+    fn matrix_ord_within_type() {
+        let ma = Value::Matrix(vec![
+            vec![Value::Int(1), Value::Int(2)],
+            vec![Value::Int(3), Value::Int(4)],
+        ]);
+        let mb = Value::Matrix(vec![
+            vec![Value::Int(1), Value::Int(2)],
+            vec![Value::Int(3), Value::Int(99)],
+        ]);
+        assert!(ma < mb, "lexicographic: [..3,4] < [..3,99]");
+    }
+
+    #[test]
+    fn matrix_content_hash_differs_from_nested_tensor() {
+        // Matrix tag=18 vs Tensor tag=14 — hashes must differ
+        let matrix = Value::Matrix(vec![
+            vec![Value::Int(1), Value::Int(2)],
+            vec![Value::Int(3), Value::Int(4)],
+        ]);
+        let tensor = Value::Tensor(vec![
+            Value::Tensor(vec![Value::Int(1), Value::Int(2)]),
+            Value::Tensor(vec![Value::Int(3), Value::Int(4)]),
+        ]);
+        assert_ne!(
+            matrix.content_hash(),
+            tensor.content_hash(),
+            "Matrix (tag 18) hash should differ from nested Tensor (tag 14)"
+        );
+    }
+
+    // ── Value::Matrix canonicalize_matrix() tests (step-7) ────────────────────
+
+    #[test]
+    fn canonicalize_2x2() {
+        let matrix = Value::Matrix(vec![
+            vec![Value::Real(1.0), Value::Real(2.0)],
+            vec![Value::Real(3.0), Value::Real(4.0)],
+        ]);
+        let expected = Value::Tensor(vec![
+            Value::Tensor(vec![Value::Real(1.0), Value::Real(2.0)]),
+            Value::Tensor(vec![Value::Real(3.0), Value::Real(4.0)]),
+        ]);
+        assert_eq!(matrix.canonicalize_matrix(), expected);
+    }
+
+    #[test]
+    fn canonicalize_empty_outer() {
+        let matrix = Value::Matrix(vec![]);
+        assert_eq!(matrix.canonicalize_matrix(), Value::Tensor(vec![]));
+    }
+
+    #[test]
+    fn canonicalize_identity_real() {
+        let v = Value::Real(1.0);
+        assert_eq!(v.clone().canonicalize_matrix(), v);
+    }
+
+    #[test]
+    fn canonicalize_identity_tensor() {
+        let v = Value::Tensor(vec![Value::Int(1), Value::Int(2)]);
+        assert_eq!(v.clone().canonicalize_matrix(), v);
+    }
+
+    // ── Value::Matrix try_into_matrix() tests (step-9) ────────────────────────
+
+    #[test]
+    fn try_into_matrix_round_trip_non_empty() {
+        let original = Value::Matrix(vec![
+            vec![Value::Int(1), Value::Int(2)],
+            vec![Value::Int(3), Value::Int(4)],
+        ]);
+        let canonicalized = original.clone().canonicalize_matrix();
+        assert_eq!(canonicalized.try_into_matrix(), Some(original));
+    }
+
+    #[test]
+    fn try_into_matrix_empty_outer_round_trip_returns_none() {
+        // Documents known invariant break: round-trip fails for empty matrices
+        let empty = Value::Matrix(vec![]);
+        let canonicalized = empty.canonicalize_matrix();
+        assert_eq!(canonicalized.try_into_matrix(), None);
+    }
+
+    #[test]
+    fn try_into_matrix_non_tensor_returns_none() {
+        assert_eq!(Value::Real(1.0).try_into_matrix(), None);
+    }
+
+    #[test]
+    fn try_into_matrix_flat_tensor_returns_none() {
+        let flat = Value::Tensor(vec![Value::Real(1.0)]);
+        assert_eq!(flat.try_into_matrix(), None);
     }
 }
