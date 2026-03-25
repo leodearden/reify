@@ -40,9 +40,13 @@ pub fn compute_hover(source: &str, uri: &Url, position: Position) -> Option<Hove
     // Try structure name
     for (name, params, lets, constraints) in ctx.structure_names() {
         if name == word {
-            let md = format!(
+            let mut md = format!(
                 "```reify\nstructure {name}\n```\n\n{params} params, {lets} lets, {constraints} constraints"
             );
+            if let Some(doc) = ctx.find_entity_doc(name) {
+                md.push_str("\n\n");
+                md.push_str(doc);
+            }
             return Some(make_hover_markdown(md));
         }
     }
