@@ -4303,30 +4303,22 @@ fn check_trait_conformance(
 
     // Collect all requirements and defaults from all trait bounds,
     // handling refinement chains and deduplication.
-    let mut all_requirements: Vec<TraitRequirement> = Vec::new();
-    let mut all_defaults: Vec<TraitDefault> = Vec::new();
-    let mut visited_traits: HashSet<String> = HashSet::new();
-    let mut seen_requirement_names: HashMap<String, Type> = HashMap::new();
-    let mut seen_default_names: HashMap<String, Type> = HashMap::new();
-    // Tracks sub_name -> structure_name for Sub requirement dedup and conflict detection.
-    let mut seen_sub_names: HashMap<String, String> = HashMap::new();
+    let mut state = RequirementCollectionState::new();
 
     for trait_bound in structure.trait_bounds {
         collect_all_requirements(
             &trait_bound.name,
             trait_registry,
-            &mut all_requirements,
-            &mut all_defaults,
-            &mut visited_traits,
-            &mut seen_requirement_names,
-            &mut seen_default_names,
-            &mut seen_sub_names,
+            &mut state,
             &structure_members,
             structure.span,
             diagnostics,
             0,
         );
     }
+
+    let all_requirements = state.requirements;
+    let all_defaults = state.defaults;
 
     // Build O(1) lookup map for sub-component requirements.
     // Maps sub_name -> structure_name for all Sub members in the structure.
@@ -4497,17 +4489,55 @@ fn check_trait_conformance(
 /// Realistic hierarchies rarely exceed 10 levels; 128 provides ample headroom.
 const MAX_TRAIT_DEPTH: usize = 128;
 
+/// Accumulated state for `collect_all_requirements` across the recursion.
+///
+/// Extracting these into a struct reduces the function arity from 11 to 7 parameters
+/// and groups the related deduplication/accumulation state together. (S3)
+///
+/// # Param-vs-let fungibility (S4)
+///
+/// `seen_names` maps member names to their expected `Type` regardless of whether the
+/// requirement was declared as `param` or `let`.  This is intentional: the trait system
+/// checks structural completeness (the right named member with the right type exists),
+/// not syntactic form.  A structure using `let x : Length = 5mm` satisfies a trait
+/// requirement of `param x : Length`.
+///
+/// # TypeMismatch non-suppression (S23)
+///
+/// TypeMismatch errors are never suppressed by defaults: if a structure explicitly
+/// provides a member with the wrong type, that is always an error regardless of any
+/// trait default.  Only *missing* members are eligible to be satisfied by a default.
+struct RequirementCollectionState {
+    requirements: Vec<TraitRequirement>,
+    defaults: Vec<TraitDefault>,
+    visited: HashSet<String>,
+    /// Maps member name to its expected Type for Param/Let requirement dedup and
+    /// conflict detection.  See "Param-vs-let fungibility" note above.
+    seen_names: HashMap<String, Type>,
+    seen_defaults: HashMap<String, Type>,
+    /// Maps sub-component name to its required structure type for Sub requirement
+    /// dedup and conflict detection.
+    seen_sub_names: HashMap<String, String>,
+}
+
+impl RequirementCollectionState {
+    fn new() -> Self {
+        Self {
+            requirements: Vec::new(),
+            defaults: Vec::new(),
+            visited: HashSet::new(),
+            seen_names: HashMap::new(),
+            seen_defaults: HashMap::new(),
+            seen_sub_names: HashMap::new(),
+        }
+    }
+}
+
 /// Recursively collect all requirements and defaults from a trait and its refinements.
-#[allow(clippy::too_many_arguments)]
 fn collect_all_requirements(
     trait_name: &str,
     trait_registry: &HashMap<String, &CompiledTrait>,
-    requirements: &mut Vec<TraitRequirement>,
-    defaults: &mut Vec<TraitDefault>,
-    visited: &mut HashSet<String>,
-    seen_names: &mut HashMap<String, Type>,
-    seen_defaults: &mut HashMap<String, Type>,
-    seen_sub_names: &mut HashMap<String, String>,
+    state: &mut RequirementCollectionState,
     structure_members: &HashMap<String, Type>,
     span: SourceSpan,
     diagnostics: &mut Vec<Diagnostic>,
@@ -4524,7 +4554,7 @@ fn collect_all_requirements(
         return;
     }
 
-    if !visited.insert(trait_name.to_string()) {
+    if !state.visited.insert(trait_name.to_string()) {
         return; // Already visited (diamond pattern)
     }
 
@@ -4544,12 +4574,7 @@ fn collect_all_requirements(
         collect_all_requirements(
             refinement,
             trait_registry,
-            requirements,
-            defaults,
-            visited,
-            seen_names,
-            seen_defaults,
-            seen_sub_names,
+            state,
             structure_members,
             span,
             diagnostics,
@@ -4565,7 +4590,7 @@ fn collect_all_requirements(
         };
 
         if let Some(expected_type) = &expected_type {
-            if let Some(existing_type) = seen_names.get(&req.name) {
+            if let Some(existing_type) = state.seen_names.get(&req.name) {
                 if existing_type != expected_type {
                     diagnostics.push(
                         Diagnostic::error(format!(
@@ -4577,13 +4602,13 @@ fn collect_all_requirements(
                 }
                 continue; // Deduplicated
             }
-            seen_names.insert(req.name.clone(), expected_type.clone());
+            state.seen_names.insert(req.name.clone(), expected_type.clone());
         }
 
         // Deduplicate Sub requirements by name; detect conflicting Sub requirements
         // (same name, different structure types from different traits).
         if let RequirementKind::Sub(structure_name) = &req.kind {
-            if let Some(existing_structure) = seen_sub_names.get(&req.name) {
+            if let Some(existing_structure) = state.seen_sub_names.get(&req.name) {
                 if existing_structure == structure_name {
                     continue; // Exact duplicate — already collected
                 } else {
@@ -4598,17 +4623,17 @@ fn collect_all_requirements(
                     continue; // Can't satisfy both; skip this requirement
                 }
             }
-            seen_sub_names.insert(req.name.clone(), structure_name.clone());
+            state.seen_sub_names.insert(req.name.clone(), structure_name.clone());
         }
 
-        requirements.push(req.clone());
+        state.requirements.push(req.clone());
     }
 
     // Collect defaults from this trait, deduplicating by name.
     for default in &compiled_trait.defaults {
         if default.name.is_none() {
             // Unnamed defaults (e.g., unlabeled constraints) — always push.
-            defaults.push(default.clone());
+            state.defaults.push(default.clone());
         } else if let Some(name) = &default.name {
             // Extract type for dedup comparison.
             let default_type = match &default.kind {
@@ -4617,7 +4642,7 @@ fn collect_all_requirements(
                 DefaultKind::Constraint(_) => Type::Bool, // sentinel for constraint label dedup
             };
 
-            if let Some(existing_type) = seen_defaults.get(name.as_str()) {
+            if let Some(existing_type) = state.seen_defaults.get(name.as_str()) {
                 if existing_type != &default_type
                     && !structure_members.contains_key(name.as_str())
                 {
@@ -4633,8 +4658,8 @@ fn collect_all_requirements(
                 // Same name already seen → skip (deduplicate).
                 continue;
             }
-            seen_defaults.insert(name.clone(), default_type);
-            defaults.push(default.clone());
+            state.seen_defaults.insert(name.clone(), default_type);
+            state.defaults.push(default.clone());
         }
     }
 }
