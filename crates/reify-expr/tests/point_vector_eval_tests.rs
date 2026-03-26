@@ -1071,11 +1071,9 @@ fn value_point_mul_vector_returns_undef() {
     assert_eq!(result, Value::Undef);
 }
 
-/// Value::Point / Int → Undef (eval_div lacks a Point/scalar arm; only Tensor/scalar is handled).
-/// NOTE: If Point division support is added to eval_div, update this test to expect
-/// Point([length(2), length(3), length(4)]) instead.
+/// Value::Point / Int → Value::Point (exercises scale_components with Int divisor).
 #[test]
-fn value_point_div_int_returns_undef() {
+fn value_point_div_int_returns_point() {
     let left = CompiledExpr::literal(
         Value::Point(vec![Value::length(6.0), Value::length(9.0), Value::length(12.0)]),
         Type::point3(Type::length()),
@@ -1084,7 +1082,10 @@ fn value_point_div_int_returns_undef() {
     let expr = CompiledExpr::binop(BinOp::Div, left, right, Type::point3(Type::length()));
     let values = ValueMap::new();
     let result = eval_expr(&expr, &EvalContext::simple(&values));
-    assert_eq!(result, Value::Undef);
+    assert_eq!(
+        result,
+        Value::Point(vec![Value::length(2.0), Value::length(3.0), Value::length(4.0)])
+    );
 }
 
 /// Value::Vector / Real(0.0) → Undef (division-by-zero early check).
