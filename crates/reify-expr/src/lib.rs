@@ -741,6 +741,43 @@ fn eval_or(left: &CompiledExpr, right: &CompiledExpr, ctx: &EvalContext) -> Valu
     }
 }
 
+/// Apply a binary operation component-wise to two equal-length component slices,
+/// wrapping the result with the given constructor. Returns `Value::Undef` if lengths
+/// differ or any component operation produces `Value::Undef`.
+fn componentwise_binop(
+    a: &[Value],
+    b: &[Value],
+    op: fn(&Value, &Value) -> Value,
+    wrap: fn(Vec<Value>) -> Value,
+) -> Value {
+    if a.len() != b.len() {
+        return Value::Undef;
+    }
+    let results: Vec<Value> = a.iter().zip(b.iter()).map(|(x, y)| op(x, y)).collect();
+    if results.iter().any(|v| v.is_undef()) {
+        Value::Undef
+    } else {
+        wrap(results)
+    }
+}
+
+/// Scale each component of a component slice by a scalar value using the given
+/// binary operation, wrapping the result with the given constructor. Returns
+/// `Value::Undef` if any component operation produces `Value::Undef`.
+fn scale_components(
+    components: &[Value],
+    scalar: &Value,
+    op: fn(&Value, &Value) -> Value,
+    wrap: fn(Vec<Value>) -> Value,
+) -> Value {
+    let results: Vec<Value> = components.iter().map(|c| op(c, scalar)).collect();
+    if results.iter().any(|v| v.is_undef()) {
+        Value::Undef
+    } else {
+        wrap(results)
+    }
+}
+
 fn eval_add(lv: &Value, rv: &Value) -> Value {
     match (lv, rv) {
         (Value::Int(a), Value::Int(b)) => Value::Int(a + b),
@@ -769,17 +806,7 @@ fn eval_add(lv: &Value, rv: &Value) -> Value {
         }
         (Value::String(a), Value::String(b)) => Value::String(format!("{}{}", a, b)),
         // Component-wise Tensor addition
-        (Value::Tensor(a), Value::Tensor(b)) => {
-            if a.len() != b.len() {
-                return Value::Undef;
-            }
-            let results: Vec<Value> = a.iter().zip(b.iter()).map(|(x, y)| eval_add(x, y)).collect();
-            if results.iter().any(|v| v.is_undef()) {
-                Value::Undef
-            } else {
-                Value::Tensor(results)
-            }
-        }
+        (Value::Tensor(a), Value::Tensor(b)) => componentwise_binop(a, b, eval_add, Value::Tensor),
         _ => Value::Undef,
     }
 }
@@ -810,17 +837,7 @@ fn eval_sub(lv: &Value, rv: &Value) -> Value {
             }
         }
         // Component-wise Tensor subtraction
-        (Value::Tensor(a), Value::Tensor(b)) => {
-            if a.len() != b.len() {
-                return Value::Undef;
-            }
-            let results: Vec<Value> = a.iter().zip(b.iter()).map(|(x, y)| eval_sub(x, y)).collect();
-            if results.iter().any(|v| v.is_undef()) {
-                Value::Undef
-            } else {
-                Value::Tensor(results)
-            }
-        }
+        (Value::Tensor(a), Value::Tensor(b)) => componentwise_binop(a, b, eval_sub, Value::Tensor),
         _ => Value::Undef,
     }
 }
@@ -861,12 +878,7 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
         (Value::Tensor(components), scalar) | (scalar, Value::Tensor(components))
             if !matches!(scalar, Value::Tensor(_)) =>
         {
-            let results: Vec<Value> = components.iter().map(|c| eval_mul(c, scalar)).collect();
-            if results.iter().any(|v| v.is_undef()) {
-                Value::Undef
-            } else {
-                Value::Tensor(results)
-            }
+            scale_components(components, scalar, eval_mul, Value::Tensor)
         }
         _ => Value::Undef,
     }
@@ -925,12 +937,7 @@ fn eval_div(lv: &Value, rv: &Value) -> Value {
         },
         // Tensor / Scalar: divide each component by the scalar
         (Value::Tensor(components), scalar) if !matches!(scalar, Value::Tensor(_)) => {
-            let results: Vec<Value> = components.iter().map(|c| eval_div(c, scalar)).collect();
-            if results.iter().any(|v| v.is_undef()) {
-                Value::Undef
-            } else {
-                Value::Tensor(results)
-            }
+            scale_components(components, scalar, eval_div, Value::Tensor)
         }
         _ => Value::Undef,
     }
