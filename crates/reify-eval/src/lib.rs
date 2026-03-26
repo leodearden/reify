@@ -1783,8 +1783,10 @@ impl Engine {
             });
 
             if guard_changed {
-                // Re-evaluate each guarded group based on current guard values
-                for group in new_snapshot.graph.guarded_groups.clone() {
+                // Re-evaluate each guarded group based on current guard values.
+                // No clone needed: we only read graph (guarded_groups, value_cells)
+                // and mutate the separate `values` field on the snapshot.
+                for group in &new_snapshot.graph.guarded_groups {
                     let guard_val = values.get(&group.guard_cell).cloned()
                         .unwrap_or(Value::Undef);
                     let guard_is_true = matches!(&guard_val, Value::Bool(true));
@@ -1836,17 +1838,27 @@ impl Engine {
         // If any structure_controlling cell is a collection count cell and
         // its value changed, add/remove instances to match the new count.
         {
-            let collection_subs = new_snapshot.graph.collection_subs.clone();
-            for col_sub in &collection_subs {
+            // Pre-collect indices of collection_subs that actually changed count,
+            // so we only clone individual changed items instead of the entire Vec.
+            let changed_sub_indices: Vec<usize> = (0..new_snapshot.graph.collection_subs.len())
+                .filter(|&i| {
+                    let count_cell = &new_snapshot.graph.collection_subs[i].count_cell;
+                    let new_val = values.get(count_cell);
+                    let old_val = self.eval_state.as_ref()
+                        .and_then(|s| s.snapshot.values.get(count_cell))
+                        .map(|(v, _)| v);
+                    new_val != old_val
+                })
+                .collect();
+            for sub_idx in changed_sub_indices {
+                // Clone only this single CollectionSubInfo (not the whole Vec).
+                // Needed because loop body mutates graph.value_cells.
+                let col_sub = new_snapshot.graph.collection_subs[sub_idx].clone();
                 let new_count_val = values.get(&col_sub.count_cell).cloned().unwrap_or(Value::Undef);
                 let old_count_val = self.eval_state.as_ref()
                     .and_then(|s| s.snapshot.values.get(&col_sub.count_cell))
                     .map(|(v, _)| v.clone())
                     .unwrap_or(Value::Undef);
-
-                if new_count_val == old_count_val {
-                    continue;
-                }
 
                 // Remove old instances from graph and snapshot
                 let old_count = match &old_count_val {
