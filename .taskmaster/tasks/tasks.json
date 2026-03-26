@@ -8641,6 +8641,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 510,
+        "title": "Harden CLI build tests: pre-cleanup, file existence, and summary assertion",
+        "description": "Three small gaps in CLI build test assertions need fixing.",
+        "details": "In crates/reify-cli/tests/cli_build.rs:\n1. build_valid_bracket_exits_success lacks pre-run cleanup — add let _ = std::fs::remove_file(output_path) before the Command, matching the pattern in build_violating_bracket.\n2. build_valid_bracket only checks stdout for 'Wrote' but never asserts the output file exists on disk — add Path::exists() assertion.\n3. build_violating_bracket checks for 'VIOLATED' but does not assert the summary message 'Some constraints violated.' — add assertion.\n\nFiles: crates/reify-cli/tests/cli_build.rs\n\nmemory_hints: search \"cli_build test\" | entities: cmd_build",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -8653,7 +8664,7 @@
       ],
       "created": "2026-03-26T21:45:39.849Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-26T21:46:02.525Z"
+      "updated": "2026-03-26T21:46:05.240Z"
     }
   }
 }
