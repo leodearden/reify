@@ -331,12 +331,13 @@ pub async fn edit_check_concurrent(
     new_value: Value,
     cancel: &CancellationToken,
 ) -> Result<CheckResult, SchedulerError> {
-    let (setup, result) = edit_param_concurrent(engine, cell, new_value, cancel).await?;
+    let (setup, mut result) = edit_param_concurrent(engine, cell, new_value, cancel).await?;
 
-    // Capture resolution metadata before apply consumes the result
+    // Extract fields not consumed by apply_concurrent_edit to avoid cloning.
+    // Only resolved_params needs cloning (used by both apply and the caller).
     let resolved_params = result.resolved_params.clone();
-    let mut diagnostics = result.diagnostics.clone();
-    let values = result.values.clone();
+    let mut diagnostics = std::mem::take(&mut result.diagnostics);
+    let values = std::mem::take(&mut result.values);
 
     // Apply concurrent edit to update engine state
     engine.apply_concurrent_edit(&setup, result);
