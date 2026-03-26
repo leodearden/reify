@@ -7285,14 +7285,15 @@
         "testStrategy": "",
         "priority": "low",
         "dependencies": [],
-        "status": "pending",
+        "status": "in-progress",
         "metadata": {
           "modules": [
             "crates/reify-expr",
             "crates/reify-types"
           ]
         },
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-03-26T07:15:42.261Z"
       },
       {
         "id": "400",
@@ -7914,7 +7915,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-26T07:15:42.179Z",
+      "lastModified": "2026-03-26T07:15:42.261Z",
       "taskCount": 447,
       "completedCount": 238,
       "tags": [
