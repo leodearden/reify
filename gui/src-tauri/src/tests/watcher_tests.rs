@@ -99,13 +99,9 @@ fn watcher_with_target_file_only_fires_for_that_file() {
     let changed_paths: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(vec![]));
     let changed_clone = changed_paths.clone();
 
-    let Some(_watcher) = try_watcher(
-        dir.path(),
-        Some(PathBuf::from("project.ri")),
-        move |path| {
-            changed_clone.lock().unwrap().push(path);
-        },
-    ) else {
+    let Some(_watcher) = try_watcher(dir.path(), Some(PathBuf::from("project.ri")), move |path| {
+        changed_clone.lock().unwrap().push(path);
+    }) else {
         return;
     };
 

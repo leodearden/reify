@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use reify_constraints::SimpleConstraintChecker;
-use reify_test_support::{bracket_source, MockGeometryKernel};
+use reify_test_support::{MockGeometryKernel, bracket_source};
 
 use crate::commands::AppState;
 use crate::engine::EngineSession;
@@ -56,10 +56,7 @@ fn constraint_violation_set_thickness_1mm() {
     };
 
     // thickness=1mm violates "thickness > 2mm"
-    let thickness_gt_constraint = state
-        .constraints
-        .iter()
-        .find(|c| c.status == "Violated");
+    let thickness_gt_constraint = state.constraints.iter().find(|c| c.status == "Violated");
 
     assert!(
         thickness_gt_constraint.is_some(),
@@ -110,12 +107,26 @@ fn constraint_violation_and_recovery() {
         .set_parameter("Bracket.thickness", "1mm")
         .expect("set thickness=1mm");
 
-    let violated_count = state.constraints.iter().filter(|c| c.status == "Violated").count();
-    assert!(violated_count >= 1, "thickness=1mm should violate at least 1 constraint");
+    let violated_count = state
+        .constraints
+        .iter()
+        .filter(|c| c.status == "Violated")
+        .count();
+    assert!(
+        violated_count >= 1,
+        "thickness=1mm should violate at least 1 constraint"
+    );
 
     // Some constraints should still be satisfied
-    let satisfied_count = state.constraints.iter().filter(|c| c.status == "Satisfied").count();
-    assert!(satisfied_count >= 1, "some constraints should still be satisfied");
+    let satisfied_count = state
+        .constraints
+        .iter()
+        .filter(|c| c.status == "Satisfied")
+        .count();
+    assert!(
+        satisfied_count >= 1,
+        "some constraints should still be satisfied"
+    );
 
     // Set back to 5mm → all satisfied again
     let state = session
@@ -141,7 +152,10 @@ fn end_to_end_get_source_location() {
         assert!(loc.is_some(), "should find location for {}", param);
         let loc = loc.unwrap();
         assert_eq!(loc.file, "bracket.ri");
-        assert!(loc.line >= 1 && loc.line <= 15, "line should be within bracket.ri");
+        assert!(
+            loc.line >= 1 && loc.line <= 15,
+            "line should be within bracket.ri"
+        );
     }
 
     // Non-existent should return None
@@ -165,9 +179,7 @@ fn end_to_end_export_via_impl() {
 #[test]
 fn module_structure_all_public_types() {
     // Verify all public types are accessible from the crate
-    use crate::types::{
-        ConstraintData, FileData, GuiState, MeshData, SourceLocation, ValueData,
-    };
+    use crate::types::{ConstraintData, FileData, GuiState, MeshData, SourceLocation, ValueData};
     // Verify types implement Clone + Debug (compile-time check)
     fn assert_clone_debug<T: Clone + std::fmt::Debug>() {}
     assert_clone_debug::<GuiState>();

@@ -80,7 +80,10 @@ pub struct EvaluationStatus {
 /// - `Undef` → `("undefined", "")`
 pub fn format_value(v: &Value) -> (String, String) {
     match v {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             let (display_value, unit) = convert_si_to_display(*si_value, *dimension);
             // Format nicely: avoid trailing zeros for whole numbers
             let formatted = format_number(display_value);
@@ -111,9 +114,15 @@ pub fn format_value(v: &Value) -> (String, String) {
             None => ("none".to_string(), String::new()),
         },
         Value::Lambda { .. } => ("<lambda>".to_string(), String::new()),
-        Value::Field { domain_type, codomain_type, source, .. } => {
-            (format!("Field<{}, {}>({:?})", domain_type, codomain_type, source), String::new())
-        }
+        Value::Field {
+            domain_type,
+            codomain_type,
+            source,
+            ..
+        } => (
+            format!("Field<{}, {}>({:?})", domain_type, codomain_type, source),
+            String::new(),
+        ),
         Value::Tensor(items) => {
             let strs: Vec<String> = items.iter().map(|v| format_value(v).0).collect();
             (format!("[{}]", strs.join(", ")), String::new())
@@ -139,36 +148,81 @@ pub fn format_value(v: &Value) -> (String, String) {
         Value::Complex { re, im, dimension } => {
             let (display_re, unit) = convert_si_to_display(*re, *dimension);
             let (display_im, _) = convert_si_to_display(*im, *dimension);
-            let formatted = format!("{} + {}i", format_number(display_re), format_number(display_im));
+            let formatted = format!(
+                "{} + {}i",
+                format_number(display_re),
+                format_number(display_im)
+            );
             (formatted, unit.to_string())
         }
         Value::Orientation { w, x, y, z } => {
             (format!("[{}, {}, {}, {}]q", w, x, y, z), String::new())
         }
-        Value::Frame { origin, basis } => {
-            (format!("frame({}, {})", format_value(origin).0, format_value(basis).0), String::new())
-        }
-        Value::Transform { rotation, translation } => {
-            (format!("transform({}, {})", format_value(rotation).0, format_value(translation).0), String::new())
-        }
-        Value::Plane { origin, normal } => {
-            (format!("plane({}, {})", format_value(origin).0, format_value(normal).0), String::new())
-        }
-        Value::Axis { origin, direction } => {
-            (format!("axis({}, {})", format_value(origin).0, format_value(direction).0), String::new())
-        }
-        Value::BoundingBox { min, max } => {
-            (format!("bbox({}, {})", format_value(min).0, format_value(max).0), String::new())
-        }
-        Value::Range { lower, upper, lower_inclusive, upper_inclusive } => {
+        Value::Frame { origin, basis } => (
+            format!(
+                "frame({}, {})",
+                format_value(origin).0,
+                format_value(basis).0
+            ),
+            String::new(),
+        ),
+        Value::Transform {
+            rotation,
+            translation,
+        } => (
+            format!(
+                "transform({}, {})",
+                format_value(rotation).0,
+                format_value(translation).0
+            ),
+            String::new(),
+        ),
+        Value::Plane { origin, normal } => (
+            format!(
+                "plane({}, {})",
+                format_value(origin).0,
+                format_value(normal).0
+            ),
+            String::new(),
+        ),
+        Value::Axis { origin, direction } => (
+            format!(
+                "axis({}, {})",
+                format_value(origin).0,
+                format_value(direction).0
+            ),
+            String::new(),
+        ),
+        Value::BoundingBox { min, max } => (
+            format!("bbox({}, {})", format_value(min).0, format_value(max).0),
+            String::new(),
+        ),
+        Value::Range {
+            lower,
+            upper,
+            lower_inclusive,
+            upper_inclusive,
+        } => {
             // Defensive re-normalization: None bounds → inclusive=false
             let lower_inclusive = *lower_inclusive && lower.is_some();
             let upper_inclusive = *upper_inclusive && upper.is_some();
             let lower_bracket = if lower_inclusive { "[" } else { "(" };
             let upper_bracket = if upper_inclusive { "]" } else { ")" };
-            let lower_str = lower.as_ref().map(|v| format_value(v).0).unwrap_or_else(|| "-∞".to_string());
-            let upper_str = upper.as_ref().map(|v| format_value(v).0).unwrap_or_else(|| "+∞".to_string());
-            (format!("{}{}..{}{}", lower_bracket, lower_str, upper_str, upper_bracket), String::new())
+            let lower_str = lower
+                .as_ref()
+                .map(|v| format_value(v).0)
+                .unwrap_or_else(|| "-∞".to_string());
+            let upper_str = upper
+                .as_ref()
+                .map(|v| format_value(v).0)
+                .unwrap_or_else(|| "+∞".to_string());
+            (
+                format!(
+                    "{}{}..{}{}",
+                    lower_bracket, lower_str, upper_str, upper_bracket
+                ),
+                String::new(),
+            )
         }
         Value::Undef => ("undefined".to_string(), String::new()),
     }

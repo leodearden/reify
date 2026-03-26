@@ -108,7 +108,10 @@ fn evaluation_status_serializes_with_phase_and_optional_progress() {
     };
     let v = serde_json::to_value(&status).unwrap();
     assert_eq!(v["phase"], json!("idle"));
-    assert!(v.get("progress").is_none(), "progress should be omitted when None");
+    assert!(
+        v.get("progress").is_none(),
+        "progress should be omitted when None"
+    );
 
     // EvaluationStatus with progress should include it
     let status = EvaluationStatus {
@@ -123,8 +126,17 @@ fn evaluation_status_serializes_with_phase_and_optional_progress() {
 #[test]
 fn format_determinacy_returns_lowercase_strings() {
     // The frontend expects lowercase determinacy strings (e.g. 'determined', not 'Determined')
-    assert_eq!(format_determinacy(DeterminacyState::Determined), "determined");
-    assert_eq!(format_determinacy(DeterminacyState::Undetermined), "undetermined");
-    assert_eq!(format_determinacy(DeterminacyState::Provisional), "provisional");
+    assert_eq!(
+        format_determinacy(DeterminacyState::Determined),
+        "determined"
+    );
+    assert_eq!(
+        format_determinacy(DeterminacyState::Undetermined),
+        "undetermined"
+    );
+    assert_eq!(
+        format_determinacy(DeterminacyState::Provisional),
+        "provisional"
+    );
     assert_eq!(format_determinacy(DeterminacyState::Auto), "auto");
 }

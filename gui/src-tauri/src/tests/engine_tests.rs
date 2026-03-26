@@ -1,10 +1,10 @@
 use std::path::Path;
 
 use reify_constraints::SimpleConstraintChecker;
-use reify_test_support::{bracket_source, bracket_source_with_width, MockGeometryKernel};
+use reify_test_support::{MockGeometryKernel, bracket_source, bracket_source_with_width};
 use reify_types::ExportFormat;
 
-use crate::engine::{parse_value_string, EngineSession};
+use crate::engine::{EngineSession, parse_value_string};
 
 #[test]
 fn engine_session_new_with_mock_kernel() {
@@ -41,11 +41,7 @@ fn load_from_source_returns_gui_state_with_constraints() {
         .load_from_source(bracket_source(), "bracket")
         .expect("load_from_source should succeed");
 
-    assert_eq!(
-        state.constraints.len(),
-        3,
-        "bracket has 3 constraints"
-    );
+    assert_eq!(state.constraints.len(), 3, "bracket has 3 constraints");
 }
 
 #[test]
@@ -133,7 +129,11 @@ fn set_parameter_constraints_still_correct() {
 
     assert_eq!(state.constraints.len(), 3);
     for c in &state.constraints {
-        assert_eq!(c.status, "Satisfied", "constraint {} should be satisfied", c.node_id);
+        assert_eq!(
+            c.status, "Satisfied",
+            "constraint {} should be satisfied",
+            c.node_id
+        );
     }
 }
 
@@ -151,9 +151,7 @@ fn load_file_returns_gui_state() {
         .unwrap()
         .join("examples/bracket.ri");
 
-    let state = session
-        .load_file(&path)
-        .expect("load_file should succeed");
+    let state = session.load_file(&path).expect("load_file should succeed");
 
     assert!(state.values.len() >= 5, "should have bracket values");
     assert_eq!(state.constraints.len(), 3, "should have 3 constraints");
@@ -214,11 +212,11 @@ fn constraint_violation_roundtrip() {
         .set_parameter("Bracket.thickness", "1mm")
         .expect("set thickness should succeed");
 
-    let violated = state
-        .constraints
-        .iter()
-        .any(|c| c.status == "Violated");
-    assert!(violated, "should have at least one violated constraint when thickness=1mm");
+    let violated = state.constraints.iter().any(|c| c.status == "Violated");
+    assert!(
+        violated,
+        "should have at least one violated constraint when thickness=1mm"
+    );
 
     // Set back to 5mm → all satisfied again
     let state = session
@@ -250,7 +248,11 @@ fn get_source_location_end_to_end() {
 
     assert_eq!(loc.file, "bracket.ri");
     // width is on line 2 of bracket_source() (line 1 = "structure Bracket {")
-    assert!(loc.line >= 2, "width should be on line 2 or later, got {}", loc.line);
+    assert!(
+        loc.line >= 2,
+        "width should be on line 2 or later, got {}",
+        loc.line
+    );
     assert!(loc.column >= 1, "column should be positive");
     assert!(loc.end_line >= loc.line, "end_line should be >= line");
 }
@@ -367,8 +369,13 @@ fn export_no_unnecessary_clone() {
     assert!(!data.is_empty(), "exported file should not be empty");
 
     // Verify engine state is still usable after export (no moved/consumed fields)
-    let state = session.build_gui_state().expect("build_gui_state after export");
-    assert!(!state.values.is_empty(), "values should still be available after export");
+    let state = session
+        .build_gui_state()
+        .expect("build_gui_state after export");
+    assert!(
+        !state.values.is_empty(),
+        "values should still be available after export"
+    );
 }
 
 /// Review bug #4: [state_corruption_not_tested] + [state_inconsistency_on_error]
@@ -463,8 +470,15 @@ fn parse_value_string_all_units_correct() {
     // mm → 0.001 * value, LENGTH
     let v = parse_value_string("5mm").expect("5mm should parse");
     match v {
-        Value::Scalar { si_value, dimension } => {
-            assert!((si_value - 0.005).abs() < 1e-10, "5mm → 0.005, got {}", si_value);
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
+            assert!(
+                (si_value - 0.005).abs() < 1e-10,
+                "5mm → 0.005, got {}",
+                si_value
+            );
             assert_eq!(dimension, DimensionVector::LENGTH);
         }
         _ => panic!("5mm should be Scalar, got {:?}", v),
@@ -473,8 +487,15 @@ fn parse_value_string_all_units_correct() {
     // cm → 0.01 * value, LENGTH
     let v = parse_value_string("5cm").expect("5cm should parse");
     match v {
-        Value::Scalar { si_value, dimension } => {
-            assert!((si_value - 0.05).abs() < 1e-10, "5cm → 0.05, got {}", si_value);
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
+            assert!(
+                (si_value - 0.05).abs() < 1e-10,
+                "5cm → 0.05, got {}",
+                si_value
+            );
             assert_eq!(dimension, DimensionVector::LENGTH);
         }
         _ => panic!("5cm should be Scalar, got {:?}", v),
@@ -483,7 +504,10 @@ fn parse_value_string_all_units_correct() {
     // m → 1.0 * value, LENGTH
     let v = parse_value_string("5m").expect("5m should parse");
     match v {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert!((si_value - 5.0).abs() < 1e-10, "5m → 5.0, got {}", si_value);
             assert_eq!(dimension, DimensionVector::LENGTH);
         }
@@ -493,7 +517,10 @@ fn parse_value_string_all_units_correct() {
     // deg → PI/180 * value, ANGLE
     let v = parse_value_string("90deg").expect("90deg should parse");
     match v {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert!(
                 (si_value - std::f64::consts::FRAC_PI_2).abs() < 1e-10,
                 "90deg → PI/2, got {}",
@@ -507,8 +534,15 @@ fn parse_value_string_all_units_correct() {
     // rad → 1.0 * value, ANGLE
     let v = parse_value_string("1rad").expect("1rad should parse");
     match v {
-        Value::Scalar { si_value, dimension } => {
-            assert!((si_value - 1.0).abs() < 1e-10, "1rad → 1.0, got {}", si_value);
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
+            assert!(
+                (si_value - 1.0).abs() < 1e-10,
+                "1rad → 1.0, got {}",
+                si_value
+            );
             assert_eq!(dimension, DimensionVector::ANGLE);
         }
         _ => panic!("1rad should be Scalar, got {:?}", v),
@@ -523,7 +557,10 @@ fn parse_value_string_m_does_not_shadow_longer_suffixes() {
 
     let v = parse_value_string("100cm").expect("100cm should parse");
     match v {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert!(
                 (si_value - 1.0).abs() < 1e-10,
                 "100cm → 1.0, got {} (would be 100.0 if 'm' shadowed 'cm')",
@@ -546,7 +583,10 @@ fn parse_value_string_unit_table_ordering_invariant() {
     // '5mm' must be recognized as millimeters, not meters
     let v = parse_value_string("5mm").expect("5mm should parse");
     match v {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert!(
                 (si_value - 0.005).abs() < 1e-10,
                 "5mm → 0.005 (not 5.0 from 'm' match), got {}",
@@ -560,7 +600,10 @@ fn parse_value_string_unit_table_ordering_invariant() {
     // '45deg' must be recognized as degrees (ANGLE), not fail or parse incorrectly
     let v = parse_value_string("45deg").expect("45deg should parse");
     match v {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             let expected = 45.0 * std::f64::consts::PI / 180.0;
             assert!(
                 (si_value - expected).abs() < 1e-10,
@@ -568,7 +611,11 @@ fn parse_value_string_unit_table_ordering_invariant() {
                 expected,
                 si_value
             );
-            assert_eq!(dimension, DimensionVector::ANGLE, "45deg should be ANGLE dimension");
+            assert_eq!(
+                dimension,
+                DimensionVector::ANGLE,
+                "45deg should be ANGLE dimension"
+            );
         }
         _ => panic!("45deg should be Scalar, got {:?}", v),
     }
@@ -606,14 +653,25 @@ fn build_gui_state_mesh_data_structure_matches_kernel_output() {
     let mesh = &state.meshes[0];
 
     // MockGeometryKernel returns: vertices = [0,0,0, 1,0,0, 0,1,0] (9 floats = 3 vertices)
-    assert_eq!(mesh.vertices.len(), 9, "expected 9 vertex floats (3 vertices × 3 coords)");
+    assert_eq!(
+        mesh.vertices.len(),
+        9,
+        "expected 9 vertex floats (3 vertices × 3 coords)"
+    );
     // indices = [0, 1, 2] (1 triangle)
     assert_eq!(mesh.indices.len(), 3, "expected 3 indices (1 triangle)");
     // normals = Some([0,0,1, 0,0,1, 0,0,1]) (9 floats)
     assert!(mesh.normals.is_some(), "expected normals to be present");
-    assert_eq!(mesh.normals.as_ref().unwrap().len(), 9, "expected 9 normal floats");
+    assert_eq!(
+        mesh.normals.as_ref().unwrap().len(),
+        9,
+        "expected 9 normal floats"
+    );
     // entity_path should be non-empty
-    assert!(!mesh.entity_path.is_empty(), "entity_path should be non-empty");
+    assert!(
+        !mesh.entity_path.is_empty(),
+        "entity_path should be non-empty"
+    );
 }
 
 #[test]
