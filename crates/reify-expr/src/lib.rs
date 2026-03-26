@@ -634,6 +634,25 @@ fn eval_method_call(obj: &Value, method: &str, args: &[Value], result_type: &Typ
                 _ => Value::Undef,
             }
         },
+        "magnitude" => {
+            if !args.is_empty() {
+                return Value::Undef;
+            }
+            match obj {
+                Value::Complex { re, im, dimension } => {
+                    let mag = (re * re + im * im).sqrt();
+                    if dimension.is_dimensionless() {
+                        Value::Real(mag)
+                    } else {
+                        Value::Scalar {
+                            si_value: mag,
+                            dimension: *dimension,
+                        }
+                    }
+                }
+                _ => Value::Undef,
+            }
+        },
         "re" | "im" => {
             if !args.is_empty() {
                 return Value::Undef;
