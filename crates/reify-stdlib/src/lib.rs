@@ -4964,4 +4964,198 @@ mod tests {
             other => panic!("expected Value::Plane, got {:?}", other),
         }
     }
+
+    // ── step-7: frame_to_frame tests ─────────────────────────────────────────
+
+    /// Helper: build a Frame with given origin (LENGTH) and orientation.
+    fn make_frame(ox: f64, oy: f64, oz: f64, orientation: Value) -> Value {
+        Value::Frame {
+            origin: Box::new(Value::Point(vec![
+                Value::length(ox),
+                Value::length(oy),
+                Value::length(oz),
+            ])),
+            basis: Box::new(orientation),
+        }
+    }
+
+    /// Helper: 90-degree Z rotation quaternion.
+    fn make_rot90z() -> Value {
+        let s = std::f64::consts::FRAC_1_SQRT_2;
+        Value::Orientation { w: s, x: 0.0, y: 0.0, z: s }
+    }
+
+    /// frame_to_frame(F, F) should return an identity transform.
+    #[test]
+    fn frame_to_frame_same_gives_identity() {
+        let f = make_frame(5.0, 3.0, 1.0, make_identity_orientation());
+        let result = eval_builtin("frame_to_frame", &[f.clone(), f]);
+        match result {
+            Value::Transform { rotation, translation } => {
+                // Identity rotation
+                match *rotation {
+                    Value::Orientation { w, x, y, z } => {
+                        let pos_ok = (w - 1.0).abs() < 1e-10
+                            && x.abs() < 1e-10
+                            && y.abs() < 1e-10
+                            && z.abs() < 1e-10;
+                        let neg_ok = (w + 1.0).abs() < 1e-10
+                            && x.abs() < 1e-10
+                            && y.abs() < 1e-10
+                            && z.abs() < 1e-10;
+                        assert!(pos_ok || neg_ok, "expected identity rotation, got ({w},{x},{y},{z})");
+                    }
+                    ref other => panic!("expected Orientation, got {:?}", other),
+                }
+                // Zero translation
+                match *translation {
+                    Value::Vector(ref items) if items.len() == 3 => {
+                        for (i, item) in items.iter().enumerate() {
+                            let v = item.as_f64().unwrap();
+                            assert!(v.abs() < 1e-10, "translation[{i}] = {v}, expected ~0");
+                        }
+                    }
+                    ref other => panic!("expected Vector3, got {:?}", other),
+                }
+            }
+            other => panic!("expected Transform, got {:?}", other),
+        }
+    }
+
+    /// frame_to_frame(origin_frame, translated_frame) gives pure translation.
+    #[test]
+    fn frame_to_frame_translated() {
+        let from = make_frame(0.0, 0.0, 0.0, make_identity_orientation());
+        let to = make_frame(5.0, 0.0, 0.0, make_identity_orientation());
+        let result = eval_builtin("frame_to_frame", &[from, to]);
+        match result {
+            Value::Transform { rotation, translation } => {
+                // Identity rotation
+                match *rotation {
+                    Value::Orientation { w, x, y, z } => {
+                        let pos_ok = (w - 1.0).abs() < 1e-10
+                            && x.abs() < 1e-10
+                            && y.abs() < 1e-10
+                            && z.abs() < 1e-10;
+                        let neg_ok = (w + 1.0).abs() < 1e-10
+                            && x.abs() < 1e-10
+                            && y.abs() < 1e-10
+                            && z.abs() < 1e-10;
+                        assert!(pos_ok || neg_ok, "expected identity rotation, got ({w},{x},{y},{z})");
+                    }
+                    ref other => panic!("expected Orientation, got {:?}", other),
+                }
+                // Translation = (5,0,0)
+                match *translation {
+                    Value::Vector(ref items) if items.len() == 3 => {
+                        let tx = items[0].as_f64().unwrap();
+                        let ty = items[1].as_f64().unwrap();
+                        let tz = items[2].as_f64().unwrap();
+                        assert!((tx - 5.0).abs() < 1e-10, "tx = {tx}, expected 5");
+                        assert!(ty.abs() < 1e-10, "ty = {ty}, expected 0");
+                        assert!(tz.abs() < 1e-10, "tz = {tz}, expected 0");
+                    }
+                    ref other => panic!("expected Vector3, got {:?}", other),
+                }
+            }
+            other => panic!("expected Transform, got {:?}", other),
+        }
+    }
+
+    /// frame_to_frame(identity_frame, rotated_frame) gives pure rotation.
+    #[test]
+    fn frame_to_frame_rotated() {
+        let from = make_frame(0.0, 0.0, 0.0, make_identity_orientation());
+        let to = make_frame(0.0, 0.0, 0.0, make_rot90z());
+        let result = eval_builtin("frame_to_frame", &[from, to]);
+        match result {
+            Value::Transform { rotation, translation } => {
+                // 90Z rotation
+                let s = std::f64::consts::FRAC_1_SQRT_2;
+                match *rotation {
+                    Value::Orientation { w, x, y, z } => {
+                        let pos_ok = (w - s).abs() < 1e-10
+                            && x.abs() < 1e-10
+                            && y.abs() < 1e-10
+                            && (z - s).abs() < 1e-10;
+                        let neg_ok = (w + s).abs() < 1e-10
+                            && x.abs() < 1e-10
+                            && y.abs() < 1e-10
+                            && (z + s).abs() < 1e-10;
+                        assert!(pos_ok || neg_ok, "expected 90Z rotation, got ({w},{x},{y},{z})");
+                    }
+                    ref other => panic!("expected Orientation, got {:?}", other),
+                }
+                // Zero translation
+                match *translation {
+                    Value::Vector(ref items) if items.len() == 3 => {
+                        for (i, item) in items.iter().enumerate() {
+                            let v = item.as_f64().unwrap();
+                            assert!(v.abs() < 1e-10, "translation[{i}] = {v}, expected ~0");
+                        }
+                    }
+                    ref other => panic!("expected Vector3, got {:?}", other),
+                }
+            }
+            other => panic!("expected Transform, got {:?}", other),
+        }
+    }
+
+    /// frame_to_frame with both rotation and translation.
+    /// From: origin=(1,0,0), identity rotation
+    /// To: origin=(0,0,0), 90Z rotation
+    /// R = R_to * conj(R_from) = 90Z * identity = 90Z
+    /// t = origin_to - R * origin_from = (0,0,0) - 90Z*(1,0,0) = (0,0,0) - (0,1,0) = (0,-1,0)
+    #[test]
+    fn frame_to_frame_general() {
+        let from = make_frame(1.0, 0.0, 0.0, make_identity_orientation());
+        let to = make_frame(0.0, 0.0, 0.0, make_rot90z());
+        let result = eval_builtin("frame_to_frame", &[from, to]);
+        match result {
+            Value::Transform { rotation, translation } => {
+                let s = std::f64::consts::FRAC_1_SQRT_2;
+                match *rotation {
+                    Value::Orientation { w, x, y, z } => {
+                        let pos_ok = (w - s).abs() < 1e-10
+                            && x.abs() < 1e-10
+                            && y.abs() < 1e-10
+                            && (z - s).abs() < 1e-10;
+                        let neg_ok = (w + s).abs() < 1e-10
+                            && x.abs() < 1e-10
+                            && y.abs() < 1e-10
+                            && (z + s).abs() < 1e-10;
+                        assert!(pos_ok || neg_ok, "expected 90Z rotation, got ({w},{x},{y},{z})");
+                    }
+                    ref other => panic!("expected Orientation, got {:?}", other),
+                }
+                match *translation {
+                    Value::Vector(ref items) if items.len() == 3 => {
+                        let tx = items[0].as_f64().unwrap();
+                        let ty = items[1].as_f64().unwrap();
+                        let tz = items[2].as_f64().unwrap();
+                        assert!(tx.abs() < 1e-10, "tx = {tx}, expected 0");
+                        assert!((ty + 1.0).abs() < 1e-10, "ty = {ty}, expected -1");
+                        assert!(tz.abs() < 1e-10, "tz = {tz}, expected 0");
+                    }
+                    ref other => panic!("expected Vector3, got {:?}", other),
+                }
+            }
+            other => panic!("expected Transform, got {:?}", other),
+        }
+    }
+
+    /// Wrong argument count or non-Frame args return Undef.
+    #[test]
+    fn frame_to_frame_wrong_args_undef() {
+        // No args
+        assert!(eval_builtin("frame_to_frame", &[]).is_undef());
+        // One arg
+        let f = make_frame(0.0, 0.0, 0.0, make_identity_orientation());
+        assert!(eval_builtin("frame_to_frame", &[f.clone()]).is_undef());
+        // Three args
+        assert!(eval_builtin("frame_to_frame", &[f.clone(), f.clone(), f.clone()]).is_undef());
+        // Non-Frame args
+        assert!(eval_builtin("frame_to_frame", &[Value::Real(1.0), f.clone()]).is_undef());
+        assert!(eval_builtin("frame_to_frame", &[f, Value::Real(1.0)]).is_undef());
+    }
 }
