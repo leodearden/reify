@@ -1181,13 +1181,15 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
                         // Compose rotations: R = R1 * R2
                         let q1 = (*w1, *x1, *y1, *z1);
                         let (rw, rx, ry, rz) = quat_mul_t(q1, (*w2, *x2, *y2, *z2));
-                        // Normalize result quaternion
+                        // Normalize result quaternion (reject NaN/Inf/zero-length)
+                        if !rw.is_finite() || !rx.is_finite() || !ry.is_finite() || !rz.is_finite() {
+                            return Value::Undef;
+                        }
                         let norm = (rw * rw + rx * rx + ry * ry + rz * rz).sqrt();
-                        let (rw, rx, ry, rz) = if norm > 0.0 {
-                            (rw / norm, rx / norm, ry / norm, rz / norm)
-                        } else {
-                            (1.0, 0.0, 0.0, 0.0)
-                        };
+                        if norm == 0.0 {
+                            return Value::Undef;
+                        }
+                        let (rw, rx, ry, rz) = (rw / norm, rx / norm, ry / norm, rz / norm);
                         // Compose translations: t = R1 * t2 + t1
                         let (rt2x, rt2y, rt2z) = quat_rotate(q1, t2x, t2y, t2z);
                         Value::Transform {
