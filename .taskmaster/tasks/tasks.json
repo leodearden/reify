@@ -7459,10 +7459,11 @@
         "description": "Move assert_numeric_approx and make_analytical_field from crates/reify-expr/tests/gradient_tests.rs to crates/reify-test-support for reuse by upcoming divergence/curl tests.\n\nAlso fix the hidden coupling where make_analytical_field hardcodes ValueCellId::new(\"__lambda\", \"p\") matching the lambda_expr builder's internal convention.\n\nSource: review suggestions from esc-281-11 (task 281).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-03-26T02:35:21.222Z"
       },
       {
         "id": "414",
@@ -7829,7 +7830,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-26T02:35:21.115Z",
+      "lastModified": "2026-03-26T02:35:21.222Z",
       "taskCount": 441,
       "completedCount": 233,
       "tags": [
