@@ -239,3 +239,76 @@ fn real_mul_complex() {
     );
     assert_eq!(result, complex_val(1.0, 1.5, DimensionVector::LENGTH));
 }
+
+// ─── step-9: Complex division ──────────────────────────────────────────────
+
+/// Complex<Area> / Scalar<Length> returns Complex<Length>.
+#[test]
+fn complex_div_scalar() {
+    let result = eval_binop(
+        BinOp::Div,
+        complex_val(6.0, 8.0, DimensionVector::AREA),
+        Type::complex(Type::Real),
+        scalar_val(2.0, DimensionVector::LENGTH),
+        Type::length(),
+        Type::complex(Type::length()),
+    );
+    let expected_dim = DimensionVector::AREA.div(&DimensionVector::LENGTH);
+    assert_eq!(result, complex_val(3.0, 4.0, expected_dim));
+}
+
+/// Complex / Int halves re/im, preserves dimension.
+#[test]
+fn complex_div_int() {
+    let result = eval_binop(
+        BinOp::Div,
+        complex_val(6.0, 8.0, DimensionVector::LENGTH),
+        Type::complex(Type::length()),
+        Value::Int(2),
+        Type::Int,
+        Type::complex(Type::length()),
+    );
+    assert_eq!(result, complex_val(3.0, 4.0, DimensionVector::LENGTH));
+}
+
+/// Complex / Real halves re/im, preserves dimension.
+#[test]
+fn complex_div_real() {
+    let result = eval_binop(
+        BinOp::Div,
+        complex_val(6.0, 8.0, DimensionVector::LENGTH),
+        Type::complex(Type::length()),
+        Value::Real(2.0),
+        Type::Real,
+        Type::complex(Type::length()),
+    );
+    assert_eq!(result, complex_val(3.0, 4.0, DimensionVector::LENGTH));
+}
+
+/// Complex / 0 (Int) returns Undef.
+#[test]
+fn complex_div_by_zero_int() {
+    let result = eval_binop(
+        BinOp::Div,
+        complex_val(6.0, 8.0, DimensionVector::LENGTH),
+        Type::complex(Type::length()),
+        Value::Int(0),
+        Type::Int,
+        Type::complex(Type::length()),
+    );
+    assert!(result.is_undef());
+}
+
+/// Complex / Scalar(0.0) returns Undef.
+#[test]
+fn complex_div_by_zero_scalar() {
+    let result = eval_binop(
+        BinOp::Div,
+        complex_val(6.0, 8.0, DimensionVector::LENGTH),
+        Type::complex(Type::length()),
+        scalar_val(0.0, DimensionVector::LENGTH),
+        Type::length(),
+        Type::complex(Type::length()),
+    );
+    assert!(result.is_undef());
+}
