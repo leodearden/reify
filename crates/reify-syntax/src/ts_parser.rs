@@ -1411,7 +1411,18 @@ impl<'a> Lowering<'a> {
                         span: self.span(child),
                     });
                 }
-                _ => {}
+                _ => {
+                    if child.is_named() && !child.is_extra() {
+                        self.errors.push(ParseError {
+                            message: format!(
+                                "unexpected '{}' in connect body: {}",
+                                child.kind(),
+                                self.node_text(child)
+                            ),
+                            span: self.span(child),
+                        });
+                    }
+                }
             }
         }
 
@@ -2994,6 +3005,50 @@ mod tests {
                 .any(|e| e.message.contains("port mapping")),
             "expected error mentioning 'port mapping', got: {:?}",
             errors
+        );
+    }
+
+    #[test]
+    fn lower_connect_body_extras_not_flagged() {
+        // Comments are tree-sitter extras — they must NOT trigger the catch-all
+        // diagnostic. Verify that a connect body containing a block comment
+        // produces no errors mentioning "unexpected".
+        let errors = lower_body_directly(
+            "structure S { port a : out T  port b : in T  connect a -> b { /* comment */ grade = 8.8 }  }",
+        );
+        assert!(
+            !errors.iter().any(|e| e.message.contains("unexpected")),
+            "expected no 'unexpected' errors for comment extras, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn lower_connect_body_catch_all_emits_for_unexpected_named_children() {
+        // Pass a constraint_definition node to lower_connect_body. Its named
+        // children (identifier, param_declaration, constraint_def_predicate)
+        // don't match any connect_body arm and should hit the catch-all.
+        let source = "constraint def Eq { param x: Scalar  x > 0 }";
+        let mut ts_parser = tree_sitter::Parser::new();
+        ts_parser
+            .set_language(&tree_sitter_reify::language().into())
+            .expect("Error loading Reify grammar");
+        let tree = ts_parser.parse(source, None).expect("Failed to parse");
+        let root = tree.root_node();
+
+        let constraint_node = find_node_by_kind(root, "constraint_definition")
+            .expect("no constraint_definition node found in parse tree");
+
+        let mut lowering = Lowering::new(source);
+        lowering.lower_connect_body(constraint_node);
+        assert!(
+            !lowering.errors.is_empty(),
+            "expected diagnostics for unexpected named children in catch-all, got none"
+        );
+        assert!(
+            lowering.errors.iter().any(|e| e.message.contains("unexpected")),
+            "expected at least one error containing 'unexpected', got: {:?}",
+            lowering.errors
         );
     }
 
