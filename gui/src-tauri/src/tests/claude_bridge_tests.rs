@@ -1845,3 +1845,142 @@ async fn ensure_sidecar_ready_notified_race_on_multithread() {
         );
     }
 }
+
+// --- wait_ready enable() race test (task-407/step-1) ---
+
+/// Reproduce the race condition in `wait_ready` where `self.ready_notify.notified()`
+/// creates a Notified future (line 314) but the waiter is NOT registered until first
+/// poll. Between creation and the first poll at `tokio::time::timeout` (line 321),
+/// there is an await point at `self.state.lock().await` (line 317). On a multi-thread
+/// runtime the following interleaving causes a lost notification:
+///
+///   1. wait_ready: `notified()` created — waiter NOT registered
+///   2. wait_ready: acquires state lock, sees Starting, releases lock
+///   3. notifier task: acquires state lock, sets Ready, calls `notify_waiters()` — lost
+///   4. wait_ready: polls `notified` — registers waiter, but notification already fired
+///
+/// The fix adds `tokio::pin!(notified)` + `notified.as_mut().enable()` so the waiter
+/// is eagerly registered before the intervening await point.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn wait_ready_enable_prevents_missed_notification_race() {
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::io::BufReader;
+    use tokio::sync::Mutex;
+
+    for i in 0..50 {
+        let state = Arc::new(Mutex::new(SidecarState::Starting));
+
+        // Create a live duplex to prevent EOF → Crashed state transition.
+        let (_data_writer, data_reader) = tokio::io::duplex(1024);
+        let reader = BufReader::new(data_reader);
+        let (writer, _writer_end) = tokio::io::duplex(1024);
+
+        let handle = SidecarHandle::from_parts(writer, reader, state.clone());
+
+        let notify_arc = Arc::clone(handle.ready_notify());
+        let state_clone = Arc::clone(&state);
+
+        // Spawn a task that yields minimally then sets Ready + notifies.
+        // On a multi-thread runtime this can preempt wait_ready between
+        // notified() creation and the first poll, triggering the race.
+        tokio::spawn(async move {
+            // Yield to give wait_ready a chance to reach the race window.
+            tokio::task::yield_now().await;
+            let mut s = state_clone.lock().await;
+            *s = SidecarState::Ready;
+            drop(s);
+            notify_arc.notify_waiters();
+        });
+
+        let result = handle.wait_ready(Duration::from_millis(500)).await;
+        assert!(
+            result.is_ok(),
+            "iteration {}: wait_ready should succeed (race: notify_waiters \
+             fires between notified() creation and first poll): {:?}",
+            i,
+            result
+        );
+    }
+}
+
+// --- ensure_sidecar_ready enable() race test (task-407/step-4) ---
+
+/// Reproduce the race condition in `ensure_sidecar_ready` where
+/// `notify_arc.notified()` (line 582) creates a Notified future whose waiter
+/// is NOT registered until first polled. Between creation and the first poll at
+/// `tokio::time::timeout(ready_timeout, notified)` (line 613), there are three
+/// await points forming a race window:
+///   - `sidecar.lock().await` (line 586)
+///   - `state_arc.lock().await` (line 592)
+///   - `h.kill().await` (line 606)
+///
+/// Pre-populating the sidecar slot with a non-ready handle triggers the
+/// `h.kill().await` at line 606, adding a third await point and widening the
+/// race window.  On a multi-thread runtime the reader task can fire
+/// `notify_waiters()` during any of these, producing a lost wakeup and a
+/// spurious timeout.
+///
+/// The fix adds `tokio::pin!(notified)` + `notified.as_mut().enable()` so the
+/// waiter is eagerly registered before any Phase 3 await points.
+///
+/// This is distinct from `ensure_sidecar_ready_notified_race_on_multithread`
+/// which was written for the earlier fix (moving `notified()` before the lock)
+/// and uses only 20 iterations without a pre-populated sidecar slot.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ensure_sidecar_ready_enable_prevents_missed_notification_race() {
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::io::{AsyncWriteExt, BufReader};
+    use tokio::sync::Mutex;
+
+    for i in 0..50 {
+        let held_writer: Arc<Mutex<Option<tokio::io::DuplexStream>>> =
+            Arc::new(Mutex::new(None));
+        let held_clone = Arc::clone(&held_writer);
+
+        let spawn_fn = move || {
+            let held = Arc::clone(&held_clone);
+            async move {
+                let state = Arc::new(Mutex::new(SidecarState::Starting));
+                let (mut data_writer, data_reader) = tokio::io::duplex(1024);
+                // Write ready BEFORE creating the handle so the reader task can
+                // process it immediately when scheduled on the second thread.
+                data_writer
+                    .write_all(b"{\"type\":\"ready\"}\n")
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let reader = BufReader::new(data_reader);
+                let (stdin_writer, _stdin_reader) = tokio::io::duplex(1024);
+                let handle = SidecarHandle::from_parts(stdin_writer, reader, state);
+                // Hold the writer alive so the reader doesn't see EOF.
+                *held.lock().await = Some(data_writer);
+                Ok(handle)
+            }
+        };
+
+        // Pre-populate the sidecar slot with a non-ready (Starting) handle.
+        // This triggers the h.kill().await at line 606 inside Phase 3,
+        // adding an extra await point between notified() creation and first
+        // poll, widening the race window.
+        let stale_state = Arc::new(Mutex::new(SidecarState::Starting));
+        let (_stale_writer, stale_reader) = tokio::io::duplex(1024);
+        let stale_reader = BufReader::new(stale_reader);
+        let (stale_stdin, _stale_stdin_end) = tokio::io::duplex(1024);
+        let stale_handle =
+            SidecarHandle::from_parts(stale_stdin, stale_reader, stale_state);
+
+        let sidecar: Mutex<Option<SidecarHandle>> = Mutex::new(Some(stale_handle));
+        let result =
+            ensure_sidecar_ready(&sidecar, spawn_fn, Duration::from_millis(500)).await;
+
+        assert!(
+            result.is_ok(),
+            "iteration {}: ensure_sidecar_ready should return Ok \
+             (enable() race: notify_waiters fires during Phase 3 await \
+             points between notified() creation and first poll): {:?}",
+            i,
+            result
+        );
+    }
+}

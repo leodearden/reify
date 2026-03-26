@@ -311,9 +311,16 @@ impl SidecarHandle {
 
         // Slow path: subscribe before checking again to avoid the race between
         // checking state and the notification being fired.
+        //
+        // IMPORTANT: `Notified::notified()` does NOT register the waiter until the
+        // future is first polled. We must pin + enable() eagerly so that any
+        // `notify_waiters()` call during the re-check await below is captured.
+        // Without enable(), a multi-thread executor can interleave:
+        //   1. notified() created — waiter not registered
+        //   2. state lock acquired/released (re-check below)
+        //   3. another task sets Ready + calls notify_waiters() — lost
+        //   4. notified polled — registers waiter, but notification already fired
         let mut notified = std::pin::pin!(self.ready_notify.notified());
-        // Eagerly register interest so that a `notify_waiters()` call on another
-        // thread between now and the first poll of `notified` is not lost.
         notified.as_mut().enable();
         // Re-check under the subscription to avoid missing a notification that
         // arrived between the fast-path check and the subscribe.
@@ -443,12 +450,13 @@ pub async fn claude_clear_session_impl(
     }
 }
 
-/// Spawn the Claude sidecar process and return a ready-to-use [`SidecarHandle`].
+/// Spawn the Claude sidecar process and return a [`SidecarHandle`] in `Starting` state.
 ///
 /// Extracts stdin/stdout from the child, wraps stdout in a [`BufReader`], and
 /// wires up event emission and MCP interception via [`SidecarHandle::from_parts_with_mcp`].
-/// The caller is responsible for calling [`SidecarHandle::wait_ready`] and storing
-/// the returned handle in the shared sidecar slot.
+/// The returned handle starts in [`SidecarState::Starting`]; the caller typically uses
+/// [`ensure_sidecar_ready`] to store it in the shared sidecar slot and await readiness,
+/// or can call [`SidecarHandle::wait_ready`] manually.
 ///
 /// Returns `Err` if the process cannot be spawned or if stdin/stdout are unavailable.
 pub async fn spawn_sidecar_impl<F>(
@@ -566,9 +574,17 @@ where
 
     // Subscribe to the ready notification BEFORE re-locking.  On a multi-thread
     // executor the reader task can call `notify_waiters()` immediately after
-    // spawn_fn returns and before Phase 3 re-acquires the lock.  Eagerly
-    // register interest via `enable()` so a `notify_waiters()` call between
-    // now and the first poll of `notified` is not lost.
+    // spawn_fn returns and before Phase 3 re-acquires the lock.
+    //
+    // IMPORTANT: `Notified::notified()` does NOT register the waiter until the
+    // future is first polled. We must pin + enable() eagerly so that any
+    // `notify_waiters()` call during the Phase 3 await points (sidecar.lock,
+    // state_arc.lock, h.kill) is captured. Without enable(), a multi-thread
+    // executor can interleave:
+    //   1. notified() created — waiter not registered
+    //   2. Phase 3 await points execute (lock, state check, kill)
+    //   3. reader task sets Ready + calls notify_waiters() — lost
+    //   4. notified polled at Phase 4 — registers waiter, but notification already fired
     let mut notified = std::pin::pin!(notify_arc.notified());
     notified.as_mut().enable();
 
@@ -598,6 +614,15 @@ where
         }
         *guard = Some(handle);
         // Guard dropped here — lock released.
+    }
+
+    // Re-check: the reader task may have already set Ready and called
+    // notify_waiters() before our notified()/enable() subscription was set up
+    // (e.g., during spawn_fn's internal await points).  Without this check,
+    // a lost notification would cause a spurious timeout.  This mirrors the
+    // re-check in wait_ready (line 329).
+    if matches!(*state.lock().await, SidecarState::Ready) {
+        return Ok(());
     }
 
     // Phase 4: wait for the ready notification with timeout.
