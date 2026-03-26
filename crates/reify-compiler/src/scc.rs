@@ -176,7 +176,13 @@ fn reconstruct_scc_cycle(
     if let Some(cycle) = find_cycle_back_to(start, &scc_set, adjacency) {
         cycle.iter().map(|&i| templates[i].name.as_str()).collect::<Vec<_>>().join(" -> ")
     } else {
-        // Fallback: list all SCC members (should not happen in a valid SCC)
+        // Invariant: find_cycle_back_to should always succeed for a valid SCC.
+        // If it fails, the SCC adjacency is broken — noisy in debug builds,
+        // graceful degradation in release builds (lossy but safe fallback).
+        debug_assert!(
+            false,
+            "find_cycle_back_to returned None for valid SCC — Tarjan algorithm invariant violated"
+        );
         let mut names: Vec<&str> = scc.iter().map(|&i| templates[i].name.as_str()).collect();
         names.push(templates[scc[0]].name.as_str());
         names.join(" -> ")
