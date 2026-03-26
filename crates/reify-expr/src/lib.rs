@@ -668,6 +668,19 @@ fn eval_method_call(obj: &Value, method: &str, args: &[Value], result_type: &Typ
                 _ => Value::Undef,
             }
         },
+        "conjugate" => {
+            if !args.is_empty() {
+                return Value::Undef;
+            }
+            match obj {
+                Value::Complex { re, im, dimension } => Value::Complex {
+                    re: *re,
+                    im: -im,
+                    dimension: *dimension,
+                },
+                _ => Value::Undef,
+            }
+        },
         "re" | "im" => {
             if !args.is_empty() {
                 return Value::Undef;

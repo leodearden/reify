@@ -149,14 +149,14 @@
       "id": "step-19",
       "type": "test",
       "description": "Write failing test for .conjugate(): method_conjugate \u2014 Complex(3.0, 4.0, LENGTH).conjugate() returns Complex(3.0, -4.0, LENGTH)",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "06126948"
     },
     {
       "id": "step-20",
       "type": "impl",
       "description": "Add 'conjugate' arm to eval_method_call for Value::Complex: return Complex{re: *re, im: -im, dimension: *dimension}. Check args.is_empty()",
-      "status": "pending",
+      "status": "done",
       "commit": null
     },
     {
