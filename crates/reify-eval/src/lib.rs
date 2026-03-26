@@ -1221,7 +1221,7 @@ impl Engine {
 
         // Resolution phase: resolve auto params using the constraint solver.
         let mut resolved_params = HashMap::new();
-        if self.solver.is_some() {
+        if let Some(solver) = &self.solver {
             // Refresh template-native objectives so edit_param() can access them.
             self.objectives.clear();
             for template in &module.templates {
@@ -1277,7 +1277,7 @@ impl Engine {
                 let parent_snap_id = snapshot.id;
                 // Use a temporary borrow of the solver so the reference
                 // doesn't outlive the solve() call.
-                let solve_result = self.solver.as_ref().unwrap().solve(&problem);
+                let solve_result = solver.solve(&problem);
 
                 match solve_result {
                     SolveResult::Solved { values: solver_values } => {
@@ -2860,6 +2860,7 @@ impl Engine {
 /// Free function (not a method on Engine) to avoid borrow conflicts —
 /// callers can pass `&self.meta_map` directly without cloning, since
 /// `journal` and `cache` are borrowed separately from `meta_map`.
+#[allow(clippy::too_many_arguments)]
 fn evaluate_let_bindings(
     journal: &mut EventJournal,
     cache: &mut CacheStore,
