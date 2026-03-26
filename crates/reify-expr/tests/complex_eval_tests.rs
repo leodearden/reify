@@ -88,3 +88,33 @@ fn complex_add_dimension_mismatch() {
     );
     assert!(result.is_undef());
 }
+
+// ─── step-3: Complex - Complex ─────────────────────────────────────────────
+
+/// Subtracting two Complex values with the same dimension differences re and im.
+#[test]
+fn complex_sub_same_dimension() {
+    let result = eval_binop(
+        BinOp::Sub,
+        complex_val(5.0, 7.0, DimensionVector::LENGTH),
+        Type::complex(Type::length()),
+        complex_val(2.0, 3.0, DimensionVector::LENGTH),
+        Type::complex(Type::length()),
+        Type::complex(Type::length()),
+    );
+    assert_eq!(result, complex_val(3.0, 4.0, DimensionVector::LENGTH));
+}
+
+/// Subtracting Complex values with mismatched dimensions returns Undef.
+#[test]
+fn complex_sub_dimension_mismatch() {
+    let result = eval_binop(
+        BinOp::Sub,
+        complex_val(5.0, 7.0, DimensionVector::LENGTH),
+        Type::complex(Type::length()),
+        complex_val(2.0, 3.0, DimensionVector::TIME),
+        Type::complex(Type::Real),
+        Type::complex(Type::length()),
+    );
+    assert!(result.is_undef());
+}
