@@ -8139,10 +8139,11 @@
         "description": "Replace .unwrap() with .unwrap_or_else(|e| e.into_inner()) on all RwLock/Mutex acquisitions in evaluate(), into_result(), and build_result_shared() to prevent cascading panics",
         "details": "In crates/reify-runtime/src/concurrent_eval.rs:\n- evaluate(): three .unwrap() calls on RwLock/Mutex at values write, snapshot_values write, and results lock cause cascading panics if one eval task poisons a lock\n- into_result(): lock.into_inner().unwrap() prevents rollback path from executing if locks are poisoned\n\nReplace all with .unwrap_or_else(|e| e.into_inner()) to recover poisoned locks gracefully. Document that a poisoned lock implies a task panicked.\n\nFrom review of task 397 (esc-397-121).\n\nmemory_hints:\n  search: \"lock poisoning concurrent eval\"\n  entities: [\"ConcurrentEvalAdapter\", \"AsyncNodeEvaluator\"]",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-03-26T08:21:14.436Z"
       },
       {
         "id": "468",
@@ -8202,7 +8203,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-26T08:21:14.206Z",
+      "lastModified": "2026-03-26T08:21:14.436Z",
       "taskCount": 472,
       "completedCount": 249,
       "tags": [
