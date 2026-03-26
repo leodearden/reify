@@ -6723,11 +6723,11 @@
         "description": "The `real`/`imag` (and `re`/`im`) match arms in eval_builtin return extracted components without calling `sanitize_value`. If a Complex with NaN/Inf components were constructed (e.g., via future deserialization or FFI), `real(z)` would return `Value::Real(NaN)` instead of `Value::Undef`. Other functions (`phase`, `complex_magnitude`, `complex_add`, `complex_mul`) all sanitize their outputs. Wrap returned values in `sanitize_value(...)` for consistency.\n\nMemory hints: search \"sanitize_value eval_builtin real imag\", entities: eval_builtin, sanitize_value",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-03-26T02:42:01.275Z"
+        "updatedAt": "2026-03-26T12:05:52.865Z"
       },
       {
         "id": "359",
@@ -6735,11 +6735,11 @@
         "description": "Fix NaN bypassing ALL validation in orient_basis (IEEE 754 comparisons always false) by adding explicit finiteness check. Add !value.is_finite() guard in trig_input as defense-in-depth. Extract vec3_norm() helper to deduplicate inline 3D vector magnitude computation across orient_basis/orient_axis_angle.\n\nMissing tests to add:\n- Axis normalization with non-unit vector (e.g. [2,0,0])\n- Dimensioned Scalar input to orient_quaternion (as_f64 silently strips dimension)\n- NaN/Inf angle values through trig_input\n- Uppercase convention 'XYZ' for orient_euler (documents case-sensitivity)\n\nMemory hints: search \"orient_basis orient_axis_angle trig_input NaN validation\", entities: eval_builtin, orient_basis, orient_euler",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-03-25T22:31:31.573Z"
+        "updatedAt": "2026-03-26T12:05:52.895Z"
       },
       {
         "id": "360",
@@ -8337,7 +8337,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-26T12:05:52.832Z",
+      "lastModified": "2026-03-26T12:05:52.895Z",
       "taskCount": 482,
       "completedCount": 249,
       "tags": [
