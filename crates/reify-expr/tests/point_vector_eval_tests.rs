@@ -740,6 +740,93 @@ fn value_vector_sub_point_returns_undef() {
     assert_eq!(result, Value::Undef);
 }
 
+// ─── step-9 (task 398): Value::Point / Value::Vector division ───
+
+/// Value::Vector / Scalar(Real) → Value::Vector.
+#[test]
+fn value_vector_div_scalar_returns_vector() {
+    let left = CompiledExpr::literal(
+        Value::Vector(vec![Value::length(10.0), Value::length(20.0), Value::length(30.0)]),
+        Type::vec3(Type::length()),
+    );
+    let right = CompiledExpr::literal(Value::Real(2.0), Type::Real);
+    let expr = CompiledExpr::binop(BinOp::Div, left, right, Type::vec3(Type::length()));
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Vector(vec![Value::length(5.0), Value::length(10.0), Value::length(15.0)])
+    );
+}
+
+/// Value::Vector / Int → Value::Vector.
+#[test]
+fn value_vector_div_int_returns_vector() {
+    let left = CompiledExpr::literal(
+        Value::Vector(vec![Value::length(9.0), Value::length(12.0), Value::length(15.0)]),
+        Type::vec3(Type::length()),
+    );
+    let right = CompiledExpr::literal(Value::Int(3), Type::Int);
+    let expr = CompiledExpr::binop(BinOp::Div, left, right, Type::vec3(Type::length()));
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Vector(vec![Value::length(3.0), Value::length(4.0), Value::length(5.0)])
+    );
+}
+
+/// Value::Point / Scalar(Real) → Value::Point (pragmatic deviation).
+#[test]
+fn value_point_div_scalar_returns_point() {
+    let left = CompiledExpr::literal(
+        Value::Point(vec![Value::length(10.0), Value::length(20.0), Value::length(30.0)]),
+        Type::point3(Type::length()),
+    );
+    let right = CompiledExpr::literal(Value::Real(2.0), Type::Real);
+    let expr = CompiledExpr::binop(BinOp::Div, left, right, Type::point3(Type::length()));
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Point(vec![Value::length(5.0), Value::length(10.0), Value::length(15.0)])
+    );
+}
+
+/// Value::Point / Value::Point → Undef (no geometric meaning).
+#[test]
+fn value_point_div_point_returns_undef() {
+    let left = CompiledExpr::literal(
+        Value::Point(vec![Value::length(10.0), Value::length(20.0)]),
+        Type::point2(Type::length()),
+    );
+    let right = CompiledExpr::literal(
+        Value::Point(vec![Value::length(2.0), Value::length(4.0)]),
+        Type::point2(Type::length()),
+    );
+    let expr = CompiledExpr::binop(BinOp::Div, left, right, Type::point2(Type::length()));
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::Undef);
+}
+
+/// Value::Point / Value::Vector → Undef (no geometric meaning).
+#[test]
+fn value_point_div_vector_returns_undef() {
+    let left = CompiledExpr::literal(
+        Value::Point(vec![Value::length(10.0), Value::length(20.0)]),
+        Type::point2(Type::length()),
+    );
+    let right = CompiledExpr::literal(
+        Value::Vector(vec![Value::length(2.0), Value::length(4.0)]),
+        Type::vec2(Type::length()),
+    );
+    let expr = CompiledExpr::binop(BinOp::Div, left, right, Type::point2(Type::length()));
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::Undef);
+}
+
 // ─── step-5 (task 398): Value::Point / Value::Vector negation ───
 
 /// -Value::Vector → Value::Vector with negated components.
