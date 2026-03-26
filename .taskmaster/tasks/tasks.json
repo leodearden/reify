@@ -7969,10 +7969,11 @@
         "description": "13 reviewer suggestions deferred from task 407. All non-blocking.\n\n**Comment accuracy (claude_bridge.rs):**\n- Re-check comment (lines 622-629) doesn't distinguish pre-creation vs post-creation race windows. Should clarify that enable() handles post-creation and re-check handles pre-creation.\n- Rename `state` variable to `spawned_state` for clarity in ensure_sidecar_ready.\n\n**Test documentation (claude_bridge_tests.rs):**\n- `ensure_sidecar_ready_enable_prevents_missed_notification_race` doc incorrectly claims stale handle triggers h.kill() in Phase 3 (actually killed in Phase 1).\n- `wait_ready_enable_prevents_missed_notification_race` can pass via re-check path, not exclusively via enable().\n- Post-Phase-3 re-check (line 627) has no deterministic test.\n\n**Test code hygiene (claude_bridge_tests.rs):**\n- `held_writer` not scoped per iteration (50 DuplexStreams accumulate).\n- `spawn_fn` closure duplicated verbatim from existing ensure_sidecar_ready_notified_race_on_multithread test — extract helper.\n- SidecarHandle::from_parts setup repeated across 4 tests — extract make_starting_handle() helper.\n- Arc<Mutex<Option<DuplexStream>>> could be OnceLock (single-write pattern).\n\n**Performance (claude_bridge_tests.rs):**\n- Reader tasks not aborted between loop iterations (50 detached tasks overlap).\n\nSource: task 407 reviews (architect, performance, reuse_auditor, robustness, test_analyst).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-03-26T08:23:53.456Z"
       },
       {
         "id": "453",
@@ -8204,7 +8205,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-26T08:23:53.332Z",
+      "lastModified": "2026-03-26T08:23:53.456Z",
       "taskCount": 472,
       "completedCount": 249,
       "tags": [
