@@ -1088,13 +1088,11 @@ fn unfold_mutual_recursion_with_let_bindings() {
 fn unfold_mutual_recursion_heterogeneous_members() {
     // The let expr for `total`: width + A.b.height
     // References A.width (same template) and A.b.height (cross-template via sub path).
-    // In the compiled form the let expr sees `A.b.height` as a value_ref to (A, "b.height")
-    // but after scoping in the evaluator, it resolves through the child_values map.
-    // Actually, the let-binding `total` is on template A, so the compiled expr references
-    // A.width and the deeper entity's height. The BFS must project B's `height` member
+    // In the compiled form, cross-entity references use (entity, member) — so "A.b.height"
+    // becomes ValueCellId("A.b", "height"). The BFS must project B's `height` member
     // from the global values into child_values so the let-binding can resolve it.
 
-    // Template A: param n=2, param width=5, let total = width + <b.height via child_values>,
+    // Template A: param n=2, param width=5, let total = width + <A.b.height via child_values>,
     //             sub b = B(n: n-1) where n > 0
     let template_a = TopologyTemplateBuilder::new("A")
         .param("A", "n", Type::Int, Some(CompiledExpr::literal(Value::Int(2), Type::Int)))
@@ -1102,11 +1100,12 @@ fn unfold_mutual_recursion_heterogeneous_members() {
         .let_binding(
             "A", "total", Type::Int,
             // total = width + A.b.height
-            // After scoping: child_values has A.width and (if BFS works) A.b.height
+            // Cross-entity ref: entity="A.b" (the sub), member="height" (B's param).
+            // After BFS projection: child_values has ValueCellId("A.b", "height") from global values.
             binop(
                 BinOp::Add,
                 value_ref_typed("A", "width", Type::Int),
-                value_ref_typed("A", "b.height", Type::Int),
+                value_ref_typed("A.b", "height", Type::Int),
             ),
         )
         .is_recursive(true)

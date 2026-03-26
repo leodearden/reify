@@ -3490,6 +3490,7 @@ fn unfold_recursive_sub<'t>(
         child_values,
         meta_map,
         &child_recursive_sub_names,
+        templates,
     );
 }
 
@@ -3520,7 +3521,7 @@ fn elaborate_child_instance(
     );
     elaborate_child_lets_only(
         values, snapshot, functions, journal, cache, version_id,
-        child_template, scoped_entity, child_values, meta_map, &[],
+        child_template, scoped_entity, child_values, meta_map, &[], &[],
     );
 }
 
@@ -3616,19 +3617,25 @@ fn elaborate_child_params_only(
 /// sub name branches at each level), so cross-sub values are projected correctly.
 /// E.g., for subs [left, right] at `S.left`: both `S.left.left.*` and `S.left.right.*`
 /// are projected, enabling lets like `let sum = S.left.val + S.right.val`.
+///
+/// For heterogeneous mutual recursion (A→B→A where A and B have different members),
+/// the BFS queue carries `(entity_path, &TopologyTemplate)` tuples so each depth level
+/// iterates the correct template's value_cells. When enqueuing children, the entity's
+/// template's sub_components determine child sub names and their target templates.
 #[allow(clippy::too_many_arguments)]
-fn elaborate_child_lets_only(
+fn elaborate_child_lets_only<'t>(
     values: &mut ValueMap,
     snapshot: &mut Snapshot,
     functions: &[CompiledFunction],
     journal: &mut EventJournal,
     cache: &mut CacheStore,
     version_id: u64,
-    child_template: &TopologyTemplate,
+    child_template: &'t TopologyTemplate,
     scoped_entity: &str,
     mut child_values: ValueMap,
     meta_map: &HashMap<String, HashMap<String, String>>,
     recursive_sub_names: &[&str],
+    templates: &'t [TopologyTemplate],
 ) {
     // Enrich child_values with sub-component values projected from the global map.
     // Only needed for recursive subs where deeper levels have already been elaborated
@@ -3642,15 +3649,24 @@ fn elaborate_child_lets_only(
         let scoped_prefix = format!("{}.", scoped_entity);
         let template_prefix = format!("{}.", child_template.name);
 
-        // BFS queue: visit all entities in the recursive subtree under scoped_entity.
-        let mut queue: std::collections::VecDeque<String> = recursive_sub_names
+        // BFS queue carries (entity_path, entity_template) so each depth level uses
+        // the correct template's value_cells for projection (heterogeneous mutual recursion).
+        let mut queue: std::collections::VecDeque<(String, &TopologyTemplate)> = recursive_sub_names
             .iter()
-            .map(|name| format!("{}.{}", scoped_entity, name))
+            .filter_map(|name| {
+                // Look up the sub declaration to find its target template.
+                let sub_decl = child_template.sub_components.iter().find(|s| s.name == *name)?;
+                let target_tmpl = templates.iter().find(|t| t.name == sub_decl.structure_name)
+                    .unwrap_or(child_template);
+                Some((format!("{}.{}", scoped_entity, name), target_tmpl))
+            })
             .collect();
 
-        while let Some(depth_entity) = queue.pop_front() {
+        while let Some((depth_entity, entity_template)) = queue.pop_front() {
             let mut found_any = false;
-            for cell in &child_template.value_cells {
+            // Use entity_template.value_cells — NOT child_template.value_cells.
+            // This ensures B-specific members (e.g., "height") are projected for B entities.
+            for cell in &entity_template.value_cells {
                 let id = ValueCellId::new(&depth_entity, &cell.id.member);
                 if let Some(val) = values.get(&id)
                     && let Some(suffix) = depth_entity.strip_prefix(&scoped_prefix)
@@ -3664,9 +3680,15 @@ fn elaborate_child_lets_only(
                 }
             }
             if found_any {
-                // Enqueue children of this entity for all sub names (full tree walk).
-                for name in recursive_sub_names {
-                    queue.push_back(format!("{}.{}", depth_entity, name));
+                // Enqueue children using entity_template's sub declarations to determine
+                // child sub names and their target templates (not the static recursive_sub_names).
+                for sub_decl in &entity_template.sub_components {
+                    if sub_decl.guard_expr.is_some() {
+                        let target_tmpl = templates.iter()
+                            .find(|t| t.name == sub_decl.structure_name)
+                            .unwrap_or(entity_template);
+                        queue.push_back((format!("{}.{}", depth_entity, sub_decl.name), target_tmpl));
+                    }
                 }
             }
         }
