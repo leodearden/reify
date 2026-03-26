@@ -548,6 +548,70 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
             }
         }
 
+        // --- Transform operations ---
+        "frame_to_frame" => {
+            if args.len() != 2 {
+                return Value::Undef;
+            }
+            // Both args must be Frames
+            let (origin_from, basis_from) = match &args[0] {
+                Value::Frame { origin, basis } => (origin.as_ref(), basis.as_ref()),
+                _ => return Value::Undef,
+            };
+            let (origin_to, basis_to) = match &args[1] {
+                Value::Frame { origin, basis } => (origin.as_ref(), basis.as_ref()),
+                _ => return Value::Undef,
+            };
+            // Extract quaternions
+            let q_from = match basis_from {
+                Value::Orientation { w, x, y, z } => (*w, *x, *y, *z),
+                _ => return Value::Undef,
+            };
+            let q_to = match basis_to {
+                Value::Orientation { w, x, y, z } => (*w, *x, *y, *z),
+                _ => return Value::Undef,
+            };
+            // Extract origin points as f64 triples
+            let (fx, fy, fz, f_dim) = match origin_from {
+                Value::Point(comps) if comps.len() == 3 => {
+                    match (comps[0].as_f64(), comps[1].as_f64(), comps[2].as_f64()) {
+                        (Some(x), Some(y), Some(z)) => (x, y, z, comps[0].dimension()),
+                        _ => return Value::Undef,
+                    }
+                }
+                _ => return Value::Undef,
+            };
+            let (tx, ty, tz, t_dim) = match origin_to {
+                Value::Point(comps) if comps.len() == 3 => {
+                    match (comps[0].as_f64(), comps[1].as_f64(), comps[2].as_f64()) {
+                        (Some(x), Some(y), Some(z)) => (x, y, z, comps[0].dimension()),
+                        _ => return Value::Undef,
+                    }
+                }
+                _ => return Value::Undef,
+            };
+            // R = R_to * conj(R_from)
+            let r = quat_mul(q_to, quat_conj(q_from));
+            // Normalize the result quaternion
+            match normalize_quaternion(r.0, r.1, r.2, r.3) {
+                Some(rot_val) => {
+                    // t = origin_to - R * origin_from
+                    let (rfx, rfy, rfz) = quat_rotate(r, fx, fy, fz);
+                    let dim = if f_dim == t_dim { f_dim } else { t_dim };
+                    let trans = Value::Vector(vec![
+                        Value::Scalar { si_value: tx - rfx, dimension: dim },
+                        Value::Scalar { si_value: ty - rfy, dimension: dim },
+                        Value::Scalar { si_value: tz - rfz, dimension: dim },
+                    ]);
+                    Value::Transform {
+                        rotation: Box::new(rot_val),
+                        translation: Box::new(trans),
+                    }
+                }
+                None => Value::Undef,
+            }
+        }
+
         // --- Plane constructors ---
         "plane_xy" => make_plane(args, 2, [0.0, 0.0, 1.0]),
         "plane_xz" => make_plane(args, 1, [0.0, 1.0, 0.0]),
@@ -927,6 +991,19 @@ fn quat_mul(a: (f64, f64, f64, f64), b: (f64, f64, f64, f64)) -> (f64, f64, f64,
         a.0 * b.2 - a.1 * b.3 + a.2 * b.0 + a.3 * b.1,
         a.0 * b.3 + a.1 * b.2 - a.2 * b.1 + a.3 * b.0,
     )
+}
+
+/// Conjugate of a unit quaternion (equivalent to inverse for unit quaternions).
+fn quat_conj(q: (f64, f64, f64, f64)) -> (f64, f64, f64, f64) {
+    (q.0, -q.1, -q.2, -q.3)
+}
+
+/// Rotate a 3D vector by a unit quaternion: q * (0,v) * conj(q).
+fn quat_rotate(q: (f64, f64, f64, f64), vx: f64, vy: f64, vz: f64) -> (f64, f64, f64) {
+    let v_quat = (0.0, vx, vy, vz);
+    let tmp = quat_mul(q, v_quat);
+    let result = quat_mul(tmp, quat_conj(q));
+    (result.1, result.2, result.3)
 }
 
 /// Convert non-finite f64 values (NaN, inf) to Undef.
