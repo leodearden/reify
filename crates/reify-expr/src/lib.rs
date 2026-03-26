@@ -807,6 +807,14 @@ fn eval_add(lv: &Value, rv: &Value) -> Value {
         (Value::String(a), Value::String(b)) => Value::String(format!("{}{}", a, b)),
         // Component-wise Tensor addition
         (Value::Tensor(a), Value::Tensor(b)) => componentwise_binop(a, b, eval_add, Value::Tensor),
+        // Affine geometry: Vector + Vector → Vector
+        (Value::Vector(a), Value::Vector(b)) => componentwise_binop(a, b, eval_add, Value::Vector),
+        // Affine geometry: Point + Vector or Vector + Point → Point (displacement)
+        (Value::Point(a), Value::Vector(b)) | (Value::Vector(b), Value::Point(a)) => {
+            componentwise_binop(a, b, eval_add, Value::Point)
+        }
+        // Affine geometry: Point + Point is undefined
+        (Value::Point(_), Value::Point(_)) => Value::Undef,
         _ => Value::Undef,
     }
 }
