@@ -65,6 +65,8 @@ pub struct Engine {
     geometry_kernel: Option<Box<dyn GeometryKernel>>,
     solver: Option<Box<dyn ConstraintSolver>>,
     cache: CacheStore,
+    /// Compiled stdlib prelude modules (cached via OnceLock; zero-cost borrow).
+    prelude: &'static [CompiledModule],
     /// Overridden param values (set by set_param_and_invalidate).
     param_overrides: std::collections::HashMap<ValueCellId, reify_types::Value>,
     /// Consolidated evaluation state from last eval() or edit_param().
@@ -264,6 +266,7 @@ impl Engine {
             geometry_kernel,
             solver: None,
             cache: CacheStore::new(),
+            prelude: reify_compiler::stdlib_loader::load_stdlib(),
             param_overrides: std::collections::HashMap::new(),
             eval_state: None,
             demand: DemandRegistry::new(),
@@ -280,6 +283,11 @@ impl Engine {
             max_unfold_depth: 64,
             max_unfold_nodes: 10_000,
         }
+    }
+
+    /// Returns the compiled stdlib prelude modules stored by this engine.
+    pub fn prelude(&self) -> &[CompiledModule] {
+        self.prelude
     }
 
     /// Set the maximum depth for recursive sub-component unfolding.
@@ -839,6 +847,10 @@ impl Engine {
     ) -> EvalResult {
         // Store functions and purposes for this module (used by edit_param and purpose activation)
         self.functions = module.functions.clone();
+        // Extend with prelude functions so user expressions can call stdlib functions.
+        for pm in self.prelude {
+            self.functions.extend(pm.functions.iter().cloned());
+        }
         self.compiled_purposes = module.compiled_purposes.clone();
         // Clear stale purpose state from previous eval() calls — the fresh
         // snapshot discards all purpose-injected constraints/objectives.
