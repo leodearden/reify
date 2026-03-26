@@ -896,6 +896,33 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
             si_value: si_value * r,
             dimension: *dimension,
         },
+        // Complex * Scalar | Scalar * Complex: scale re/im, combine dimensions
+        (
+            Value::Complex { re, im, dimension: cd },
+            Value::Scalar { si_value, dimension: sd },
+        )
+        | (
+            Value::Scalar { si_value, dimension: sd },
+            Value::Complex { re, im, dimension: cd },
+        ) => Value::Complex {
+            re: re * si_value,
+            im: im * si_value,
+            dimension: cd.mul(sd),
+        },
+        // Complex * Int | Int * Complex: dimensionless multiplier preserves dimension
+        (Value::Complex { re, im, dimension }, Value::Int(n))
+        | (Value::Int(n), Value::Complex { re, im, dimension }) => Value::Complex {
+            re: re * *n as f64,
+            im: im * *n as f64,
+            dimension: *dimension,
+        },
+        // Complex * Real | Real * Complex: dimensionless multiplier preserves dimension
+        (Value::Complex { re, im, dimension }, Value::Real(r))
+        | (Value::Real(r), Value::Complex { re, im, dimension }) => Value::Complex {
+            re: re * r,
+            im: im * r,
+            dimension: *dimension,
+        },
         // Scalar * Tensor or Tensor * Scalar: scale each component
         (Value::Tensor(components), scalar) | (scalar, Value::Tensor(components))
             if !matches!(scalar, Value::Tensor(_)) =>
