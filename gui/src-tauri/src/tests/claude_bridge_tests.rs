@@ -2,7 +2,7 @@
 #![allow(unused_imports)]
 
 use crate::claude_bridge::*;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 // --- IPC message type tests (step-1) ---
 
@@ -83,7 +83,11 @@ fn outbound_tool_call_deserializes() {
     let json_str = r#"{"type":"tool_call","id":"msg-1","tool_name":"reify_get_shape","tool_input":{"name":"cube1"}}"#;
     let msg: OutboundMessage = serde_json::from_str(json_str).unwrap();
     match msg {
-        OutboundMessage::ToolCall { id, tool_name, tool_input } => {
+        OutboundMessage::ToolCall {
+            id,
+            tool_name,
+            tool_input,
+        } => {
             assert_eq!(id, "msg-1");
             assert_eq!(tool_name, "reify_get_shape");
             assert_eq!(tool_input["name"], "cube1");
@@ -94,10 +98,15 @@ fn outbound_tool_call_deserializes() {
 
 #[test]
 fn outbound_tool_result_deserializes() {
-    let json_str = r#"{"type":"tool_result","id":"msg-1","tool_name":"reify_get_shape","result":"ok"}"#;
+    let json_str =
+        r#"{"type":"tool_result","id":"msg-1","tool_name":"reify_get_shape","result":"ok"}"#;
     let msg: OutboundMessage = serde_json::from_str(json_str).unwrap();
     match msg {
-        OutboundMessage::ToolResult { id, tool_name, result } => {
+        OutboundMessage::ToolResult {
+            id,
+            tool_name,
+            result,
+        } => {
             assert_eq!(id, "msg-1");
             assert_eq!(tool_name, "reify_get_shape");
             assert_eq!(result, json!("ok"));
@@ -169,14 +178,26 @@ fn ipc_types_are_clone_debug_partialeq() {
 fn parse_outbound_text_delta() {
     let line = r#"{"type":"text_delta","id":"msg-1","content":"Hello"}"#;
     let msg = parse_outbound(line).unwrap();
-    assert_eq!(msg, OutboundMessage::TextDelta { id: "msg-1".to_string(), content: "Hello".to_string() });
+    assert_eq!(
+        msg,
+        OutboundMessage::TextDelta {
+            id: "msg-1".to_string(),
+            content: "Hello".to_string()
+        }
+    );
 }
 
 #[test]
 fn parse_outbound_thinking_delta() {
     let line = r#"{"type":"thinking_delta","id":"msg-2","content":"hmm"}"#;
     let msg = parse_outbound(line).unwrap();
-    assert_eq!(msg, OutboundMessage::ThinkingDelta { id: "msg-2".to_string(), content: "hmm".to_string() });
+    assert_eq!(
+        msg,
+        OutboundMessage::ThinkingDelta {
+            id: "msg-2".to_string(),
+            content: "hmm".to_string()
+        }
+    );
 }
 
 #[test]
@@ -184,7 +205,11 @@ fn parse_outbound_tool_call() {
     let line = r#"{"type":"tool_call","id":"msg-3","tool_name":"reify_get","tool_input":{"x":1}}"#;
     let msg = parse_outbound(line).unwrap();
     match msg {
-        OutboundMessage::ToolCall { id, tool_name, tool_input } => {
+        OutboundMessage::ToolCall {
+            id,
+            tool_name,
+            tool_input,
+        } => {
             assert_eq!(id, "msg-3");
             assert_eq!(tool_name, "reify_get");
             assert_eq!(tool_input["x"], 1);
@@ -198,7 +223,11 @@ fn parse_outbound_tool_result() {
     let line = r#"{"type":"tool_result","id":"msg-3","tool_name":"reify_get","result":"done"}"#;
     let msg = parse_outbound(line).unwrap();
     match msg {
-        OutboundMessage::ToolResult { id, tool_name, result } => {
+        OutboundMessage::ToolResult {
+            id,
+            tool_name,
+            result,
+        } => {
             assert_eq!(id, "msg-3");
             assert_eq!(tool_name, "reify_get");
             assert_eq!(result, json!("done"));
@@ -211,14 +240,25 @@ fn parse_outbound_tool_result() {
 fn parse_outbound_done() {
     let line = r#"{"type":"done","id":"msg-4"}"#;
     let msg = parse_outbound(line).unwrap();
-    assert_eq!(msg, OutboundMessage::Done { id: "msg-4".to_string() });
+    assert_eq!(
+        msg,
+        OutboundMessage::Done {
+            id: "msg-4".to_string()
+        }
+    );
 }
 
 #[test]
 fn parse_outbound_error() {
     let line = r#"{"type":"error","id":"msg-5","message":"oops"}"#;
     let msg = parse_outbound(line).unwrap();
-    assert_eq!(msg, OutboundMessage::ErrorMessage { id: "msg-5".to_string(), message: "oops".to_string() });
+    assert_eq!(
+        msg,
+        OutboundMessage::ErrorMessage {
+            id: "msg-5".to_string(),
+            message: "oops".to_string()
+        }
+    );
 }
 
 #[test]
@@ -257,7 +297,10 @@ async fn claude_send_message_impl_errors_when_sidecar_is_none() {
 
     let result = claude_send_message_impl(&sidecar, "hello", None).await;
 
-    assert!(result.is_err(), "Expected error when sidecar is not started");
+    assert!(
+        result.is_err(),
+        "Expected error when sidecar is not started"
+    );
     let msg = result.unwrap_err();
     assert!(
         msg.contains("not started") || msg.contains("spawn") || msg.contains("sidecar"),
@@ -280,7 +323,11 @@ async fn claude_send_message_impl_sends_message_when_sidecar_ready() {
 
     let result = claude_send_message_impl(&sidecar, "hello world", None).await;
 
-    assert!(result.is_ok(), "Expected success when sidecar is Ready: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "Expected success when sidecar is Ready: {:?}",
+        result
+    );
     let id = result.unwrap();
     assert!(id.starts_with("msg-"), "ID should start with msg-: {}", id);
 
@@ -310,16 +357,19 @@ async fn claude_send_message_impl_errors_when_sidecar_not_ready() {
     let result = claude_send_message_impl(&sidecar, "hello", None).await;
 
     // Should error since sidecar is not in Ready state
-    assert!(result.is_err(), "Expected error when sidecar is Starting (not yet Ready)");
+    assert!(
+        result.is_err(),
+        "Expected error when sidecar is Starting (not yet Ready)"
+    );
 }
 
 #[tokio::test]
 async fn from_parts_with_mcp_intercepts_reify_tool_calls() {
-    use std::sync::Arc;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
+    use crate::engine::EngineSession;
     use reify_constraints::SimpleConstraintChecker;
     use reify_test_support::MockGeometryKernel;
-    use crate::engine::EngineSession;
+    use std::sync::Arc;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
 
     // Set up engine for MCP dispatch
     let checker = SimpleConstraintChecker;
@@ -373,7 +423,10 @@ async fn from_parts_with_mcp_intercepts_reify_tool_calls() {
     // Verify tool_result was written back to sidecar stdin
     let mut buf = vec![0u8; 4096];
     let n = stdin_reader.read(&mut buf).await.unwrap_or(0);
-    assert!(n > 0, "Expected tool_result to be written back to sidecar stdin");
+    assert!(
+        n > 0,
+        "Expected tool_result to be written back to sidecar stdin"
+    );
     let written = std::str::from_utf8(&buf[..n]).unwrap();
     // The response should be a tool_result JSON line
     let json_val: serde_json::Value =
@@ -392,11 +445,11 @@ async fn from_parts_with_mcp_intercepts_reify_tool_calls() {
 
 #[test]
 fn app_state_has_sidecar_field() {
-    use std::sync::{Arc, Mutex};
-    use reify_constraints::SimpleConstraintChecker;
-    use reify_test_support::MockGeometryKernel;
     use crate::commands::AppState;
     use crate::engine::EngineSession;
+    use reify_constraints::SimpleConstraintChecker;
+    use reify_test_support::MockGeometryKernel;
+    use std::sync::{Arc, Mutex};
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
@@ -427,7 +480,10 @@ async fn sidecar_handle_kill_sets_state_to_not_started() {
 
     handle.kill().await;
 
-    assert!(matches!(*handle.state().lock().await, SidecarState::NotStarted));
+    assert!(matches!(
+        *handle.state().lock().await,
+        SidecarState::NotStarted
+    ));
 }
 
 #[tokio::test]
@@ -452,7 +508,10 @@ async fn crash_detection_sets_state_to_crashed_on_eof() {
         tokio::task::yield_now().await;
     }
 
-    assert!(matches!(*handle.state().lock().await, SidecarState::Crashed(_)));
+    assert!(matches!(
+        *handle.state().lock().await,
+        SidecarState::Crashed(_)
+    ));
 }
 
 // --- SidecarHandle::abort and clear_session tests (step-17) ---
@@ -597,7 +656,10 @@ async fn sidecar_handle_transitions_to_ready_on_ready_message() {
     let handle = SidecarHandle::from_parts(writer, reader, state.clone());
 
     // Write the ready message (without closing the writer, so no EOF)
-    data_writer.write_all(b"{\"type\":\"ready\"}\n").await.unwrap();
+    data_writer
+        .write_all(b"{\"type\":\"ready\"}\n")
+        .await
+        .unwrap();
 
     // Yield control multiple times to let the spawned reader task execute
     for _ in 0..20 {
@@ -605,7 +667,11 @@ async fn sidecar_handle_transitions_to_ready_on_ready_message() {
     }
 
     let s = handle.state().lock().await;
-    assert!(matches!(*s, SidecarState::Ready), "Expected Ready, got {:?}", *s);
+    assert!(
+        matches!(*s, SidecarState::Ready),
+        "Expected Ready, got {:?}",
+        *s
+    );
     // Keep data_writer alive so reader task stays open (no EOF/Crashed)
     drop(data_writer);
 }
@@ -654,7 +720,8 @@ async fn read_sidecar_output_receives_messages_in_order() {
     use std::sync::{Arc, Mutex};
     use tokio::io::BufReader;
 
-    let data = b"{\"type\":\"ready\"}\n{\"type\":\"text_delta\",\"id\":\"msg-1\",\"content\":\"hi\"}\n";
+    let data =
+        b"{\"type\":\"ready\"}\n{\"type\":\"text_delta\",\"id\":\"msg-1\",\"content\":\"hi\"}\n";
     let reader = BufReader::new(&data[..]);
     let received: Arc<Mutex<Vec<OutboundMessage>>> = Arc::new(Mutex::new(vec![]));
     let received_clone = Arc::clone(&received);
@@ -675,7 +742,13 @@ async fn read_sidecar_output_receives_messages_in_order() {
     let msgs = received.lock().unwrap();
     assert_eq!(msgs.len(), 2);
     assert_eq!(msgs[0], OutboundMessage::Ready);
-    assert_eq!(msgs[1], OutboundMessage::TextDelta { id: "msg-1".to_string(), content: "hi".to_string() });
+    assert_eq!(
+        msgs[1],
+        OutboundMessage::TextDelta {
+            id: "msg-1".to_string(),
+            content: "hi".to_string()
+        }
+    );
     assert!(*exit_fired.lock().unwrap(), "on_exit should fire at EOF");
 }
 
@@ -698,7 +771,10 @@ async fn read_sidecar_output_eof_fires_on_exit() {
     )
     .await;
 
-    assert!(*exit_fired.lock().unwrap(), "on_exit should fire at EOF even with no messages");
+    assert!(
+        *exit_fired.lock().unwrap(),
+        "on_exit should fire at EOF even with no messages"
+    );
 }
 
 #[tokio::test]
@@ -730,7 +806,10 @@ async fn read_sidecar_output_skips_invalid_json_lines() {
 
 #[test]
 fn outbound_to_event_text_delta() {
-    let msg = OutboundMessage::TextDelta { id: "msg-1".to_string(), content: "hi".to_string() };
+    let msg = OutboundMessage::TextDelta {
+        id: "msg-1".to_string(),
+        content: "hi".to_string(),
+    };
     let (name, payload) = outbound_to_event(&msg);
     assert_eq!(name, "claude-text-delta");
     assert_eq!(payload["id"], "msg-1");
@@ -739,7 +818,10 @@ fn outbound_to_event_text_delta() {
 
 #[test]
 fn outbound_to_event_thinking_delta() {
-    let msg = OutboundMessage::ThinkingDelta { id: "msg-2".to_string(), content: "...".to_string() };
+    let msg = OutboundMessage::ThinkingDelta {
+        id: "msg-2".to_string(),
+        content: "...".to_string(),
+    };
     let (name, payload) = outbound_to_event(&msg);
     assert_eq!(name, "claude-thinking-delta");
     assert_eq!(payload["id"], "msg-2");
@@ -776,7 +858,9 @@ fn outbound_to_event_tool_result() {
 
 #[test]
 fn outbound_to_event_done() {
-    let msg = OutboundMessage::Done { id: "msg-4".to_string() };
+    let msg = OutboundMessage::Done {
+        id: "msg-4".to_string(),
+    };
     let (name, payload) = outbound_to_event(&msg);
     assert_eq!(name, "claude-done");
     assert_eq!(payload["id"], "msg-4");
@@ -784,7 +868,10 @@ fn outbound_to_event_done() {
 
 #[test]
 fn outbound_to_event_error() {
-    let msg = OutboundMessage::ErrorMessage { id: "msg-5".to_string(), message: "oops".to_string() };
+    let msg = OutboundMessage::ErrorMessage {
+        id: "msg-5".to_string(),
+        message: "oops".to_string(),
+    };
     let (name, payload) = outbound_to_event(&msg);
     assert_eq!(name, "claude-error");
     assert_eq!(payload["id"], "msg-5");
@@ -816,11 +903,17 @@ async fn kill_without_child_sets_state_to_not_started() {
     let mut handle = SidecarHandle::from_parts(writer, empty_reader, state);
 
     // from_parts creates no child
-    assert!(!handle.has_child(), "from_parts handle should have no child");
+    assert!(
+        !handle.has_child(),
+        "from_parts handle should have no child"
+    );
 
     // kill() should not panic even without a child
     handle.kill().await;
-    assert!(matches!(*handle.state().lock().await, SidecarState::NotStarted));
+    assert!(matches!(
+        *handle.state().lock().await,
+        SidecarState::NotStarted
+    ));
 }
 
 #[tokio::test]
@@ -882,7 +975,10 @@ async fn kill_with_child_terminates_process_and_clears_child() {
     handle.kill().await;
 
     assert!(!handle.has_child(), "child should be cleared after kill");
-    assert!(matches!(*handle.state().lock().await, SidecarState::NotStarted));
+    assert!(matches!(
+        *handle.state().lock().await,
+        SidecarState::NotStarted
+    ));
 }
 
 // --- shutdown_sidecar tests (step-5) ---
@@ -903,23 +999,29 @@ async fn shutdown_sidecar_kills_and_clears_handle() {
     let sidecar: tokio::sync::Mutex<Option<SidecarHandle>> = Mutex::new(Some(handle));
 
     // Before: slot is Some
-    assert!(sidecar.lock().await.is_some(), "Expected Some before shutdown");
+    assert!(
+        sidecar.lock().await.is_some(),
+        "Expected Some before shutdown"
+    );
 
     shutdown_sidecar(&sidecar).await;
 
     // After: slot should be None
-    assert!(sidecar.lock().await.is_none(), "Expected None after shutdown_sidecar");
+    assert!(
+        sidecar.lock().await.is_none(),
+        "Expected None after shutdown_sidecar"
+    );
 }
 
 // --- spawn_sidecar_impl tests (step-1, step-3) ---
 
 #[tokio::test]
 async fn spawn_sidecar_impl_returns_error_for_missing_binary() {
-    use std::path::Path;
-    use std::sync::Arc;
+    use crate::engine::EngineSession;
     use reify_constraints::SimpleConstraintChecker;
     use reify_test_support::MockGeometryKernel;
-    use crate::engine::EngineSession;
+    use std::path::Path;
+    use std::sync::Arc;
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
@@ -944,11 +1046,11 @@ async fn spawn_sidecar_impl_returns_error_for_missing_binary() {
 
 #[tokio::test]
 async fn spawn_sidecar_impl_returns_handle_for_valid_binary() {
-    use std::path::Path;
-    use std::sync::Arc;
+    use crate::engine::EngineSession;
     use reify_constraints::SimpleConstraintChecker;
     use reify_test_support::MockGeometryKernel;
-    use crate::engine::EngineSession;
+    use std::path::Path;
+    use std::sync::Arc;
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
@@ -965,7 +1067,10 @@ async fn spawn_sidecar_impl_returns_handle_for_valid_binary() {
 
     assert!(result.is_ok(), "Expected Ok for /bin/cat binary");
     let mut handle = result.expect("Expected handle");
-    assert!(handle.has_child(), "Handle should have a child process after spawn");
+    assert!(
+        handle.has_child(),
+        "Handle should have a child process after spawn"
+    );
 
     // Clean up: kill the spawned cat process
     handle.kill().await;
@@ -989,11 +1094,18 @@ async fn wait_ready_returns_ok_when_ready_message_arrives() {
     let handle = SidecarHandle::from_parts(writer, reader, state.clone());
 
     // Write the ready message so the reader task processes it
-    data_writer.write_all(b"{\"type\":\"ready\"}\n").await.unwrap();
+    data_writer
+        .write_all(b"{\"type\":\"ready\"}\n")
+        .await
+        .unwrap();
 
     // wait_ready should return Ok once the ready message is processed
     let result = handle.wait_ready(Duration::from_secs(5)).await;
-    assert!(result.is_ok(), "wait_ready should return Ok when sidecar sends ready: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "wait_ready should return Ok when sidecar sends ready: {:?}",
+        result
+    );
 
     // State should now be Ready
     assert!(matches!(*handle.state().lock().await, SidecarState::Ready));
@@ -1043,7 +1155,11 @@ async fn wait_ready_returns_ok_immediately_when_already_ready() {
 
     // Should return immediately without blocking
     let result = handle.wait_ready(Duration::from_secs(1)).await;
-    assert!(result.is_ok(), "wait_ready should return Ok immediately when state is already Ready: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "wait_ready should return Ok immediately when state is already Ready: {:?}",
+        result
+    );
 }
 
 // --- format_inbound tests (step-3) ---
@@ -1157,7 +1273,10 @@ async fn wait_ready_returns_err_on_crash_during_wait() {
     });
 
     let result = handle.wait_ready(Duration::from_secs(5)).await;
-    assert!(result.is_err(), "wait_ready should return Err when sidecar crashes during wait");
+    assert!(
+        result.is_err(),
+        "wait_ready should return Err when sidecar crashes during wait"
+    );
     let msg = result.unwrap_err();
     assert!(
         msg.contains("test crash"),
@@ -1204,7 +1323,11 @@ async fn ensure_sidecar_ready_spawns_and_waits_when_none() {
     let sidecar: Mutex<Option<SidecarHandle>> = Mutex::new(None);
     let result = ensure_sidecar_ready(&sidecar, spawn_fn, Duration::from_secs(5)).await;
 
-    assert!(result.is_ok(), "Expected Ok from ensure_sidecar_ready: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "Expected Ok from ensure_sidecar_ready: {:?}",
+        result
+    );
     assert!(
         sidecar.lock().await.is_some(),
         "Expected sidecar slot to contain Some(handle) after ensure_sidecar_ready"
@@ -1240,7 +1363,11 @@ async fn ensure_sidecar_ready_skips_spawn_when_already_some() {
 
     let result = ensure_sidecar_ready(&sidecar, spawn_fn, Duration::from_secs(5)).await;
 
-    assert!(result.is_ok(), "Expected Ok when sidecar is already Some: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "Expected Ok when sidecar is already Some: {:?}",
+        result
+    );
     assert!(
         !spawn_called.load(Ordering::SeqCst),
         "spawn_fn should NOT be called when sidecar slot is already Some"
@@ -1317,8 +1444,7 @@ async fn ensure_sidecar_ready_clears_slot_on_timeout() {
     use tokio::sync::Mutex;
 
     // Hold the writer alive so the duplex stays open (no EOF → no crash).
-    let held_writer: Arc<Mutex<Option<tokio::io::DuplexStream>>> =
-        Arc::new(Mutex::new(None));
+    let held_writer: Arc<Mutex<Option<tokio::io::DuplexStream>>> = Arc::new(Mutex::new(None));
     let held_clone = Arc::clone(&held_writer);
 
     let spawn_fn = move || {
@@ -1406,8 +1532,7 @@ async fn ensure_sidecar_ready_rejects_crashed_existing_handle() {
     // Working spawn_fn that produces a Ready handle.
     let spawn_called = Arc::new(AtomicBool::new(false));
     let spawn_called_clone = Arc::clone(&spawn_called);
-    let held_writer: Arc<Mutex<Option<tokio::io::DuplexStream>>> =
-        Arc::new(Mutex::new(None));
+    let held_writer: Arc<Mutex<Option<tokio::io::DuplexStream>>> = Arc::new(Mutex::new(None));
     let held_clone = Arc::clone(&held_writer);
 
     let spawn_fn = move || {
@@ -1467,8 +1592,7 @@ async fn ensure_sidecar_ready_respawns_starting_stale_handle() {
 
     let spawn_called = Arc::new(AtomicBool::new(false));
     let spawn_called_clone = Arc::clone(&spawn_called);
-    let held_writer: Arc<Mutex<Option<tokio::io::DuplexStream>>> =
-        Arc::new(Mutex::new(None));
+    let held_writer: Arc<Mutex<Option<tokio::io::DuplexStream>>> = Arc::new(Mutex::new(None));
     let held_clone = Arc::clone(&held_writer);
 
     let spawn_fn = move || {
@@ -1686,8 +1810,8 @@ async fn ensure_sidecar_ready_kills_handle_on_crash_cleanup() {
 /// immediately while `spawn_fn` is still running — no timeout.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn shutdown_not_blocked_during_ensure_sidecar_ready_spawn() {
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
     use tokio::sync::Mutex;
 
@@ -1809,8 +1933,7 @@ async fn ensure_sidecar_ready_notified_race_on_multithread() {
 
     // Run 20 iterations to increase failure probability with the buggy code.
     for i in 0..20 {
-        let held_writer: Arc<Mutex<Option<tokio::io::DuplexStream>>> =
-            Arc::new(Mutex::new(None));
+        let held_writer: Arc<Mutex<Option<tokio::io::DuplexStream>>> = Arc::new(Mutex::new(None));
         let held_clone = Arc::clone(&held_writer);
 
         let spawn_fn = move || {
@@ -1834,8 +1957,7 @@ async fn ensure_sidecar_ready_notified_race_on_multithread() {
         };
 
         let sidecar: Mutex<Option<SidecarHandle>> = Mutex::new(None);
-        let result =
-            ensure_sidecar_ready(&sidecar, spawn_fn, Duration::from_millis(500)).await;
+        let result = ensure_sidecar_ready(&sidecar, spawn_fn, Duration::from_millis(500)).await;
 
         assert!(
             result.is_ok(),

@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use reify_constraints::SimpleConstraintChecker;
-use reify_test_support::{bracket_source, MockGeometryKernel};
+use reify_test_support::{MockGeometryKernel, bracket_source};
 
 use crate::engine::EngineSession;
 use crate::mcp_context::TauriToolContext;
@@ -127,7 +127,10 @@ fn get_source_location_for_width() {
 fn get_source_location_nonexistent_returns_error() {
     let ctx = make_tauri_context();
     let result = ctx.get_source_location("Nonexistent.param");
-    assert!(result.is_err(), "should return error for nonexistent entity");
+    assert!(
+        result.is_err(),
+        "should return error for nonexistent entity"
+    );
 }
 
 #[test]
@@ -230,7 +233,10 @@ fn focus_entity_with_emitter_records_event() {
     let events_clone = events.clone();
 
     let ctx = TauriToolContext::with_event_emitter(engine, move |name, payload| {
-        events_clone.lock().unwrap().push((name.to_string(), payload));
+        events_clone
+            .lock()
+            .unwrap()
+            .push((name.to_string(), payload));
     });
 
     let result = ctx
@@ -251,7 +257,10 @@ fn navigate_to_source_with_emitter_records_event() {
     let events_clone = events.clone();
 
     let ctx = TauriToolContext::with_event_emitter(engine, move |name, payload| {
-        events_clone.lock().unwrap().push((name.to_string(), payload));
+        events_clone
+            .lock()
+            .unwrap()
+            .push((name.to_string(), payload));
     });
 
     let result = ctx

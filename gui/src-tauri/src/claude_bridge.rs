@@ -5,8 +5,8 @@
 // Tauri frontend events.
 
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -238,33 +238,36 @@ impl SidecarHandle {
                         sink(event_name, payload);
 
                         // 3. MCP tool interception for reify_ prefixed tool calls
-                        if let OutboundMessage::ToolCall { id, tool_name, tool_input } = &msg
-                            && tool_name.starts_with("reify_") {
-                                let id = id.clone();
-                                let tool_name = tool_name.clone();
-                                let tool_input = tool_input.clone();
-                                let engine_clone = Arc::clone(engine);
-                                let stdin_clone = Arc::clone(&stdin_for_reader);
-                                tokio::spawn(async move {
-                                    let ctx = crate::mcp_context::TauriToolContext::new(engine_clone);
-                                    let result = crate::mcp_context::mcp_tool_call_impl(
-                                        &tool_name,
-                                        tool_input,
-                                        &ctx,
-                                    );
-                                    let result_val = match result {
-                                        Ok(v) => v,
-                                        Err(e) => serde_json::json!({ "error": e }),
-                                    };
-                                    let response = InboundMessage::ToolResult {
-                                        id,
-                                        tool_name,
-                                        result: result_val,
-                                    };
-                                    let mut writer = stdin_clone.lock().await;
-                                    write_to_sidecar(&mut *writer, &response).await.ok();
-                                });
-                            }
+                        if let OutboundMessage::ToolCall {
+                            id,
+                            tool_name,
+                            tool_input,
+                        } = &msg
+                            && tool_name.starts_with("reify_")
+                        {
+                            let id = id.clone();
+                            let tool_name = tool_name.clone();
+                            let tool_input = tool_input.clone();
+                            let engine_clone = Arc::clone(engine);
+                            let stdin_clone = Arc::clone(&stdin_for_reader);
+                            tokio::spawn(async move {
+                                let ctx = crate::mcp_context::TauriToolContext::new(engine_clone);
+                                let result = crate::mcp_context::mcp_tool_call_impl(
+                                    &tool_name, tool_input, &ctx,
+                                );
+                                let result_val = match result {
+                                    Ok(v) => v,
+                                    Err(e) => serde_json::json!({ "error": e }),
+                                };
+                                let response = InboundMessage::ToolResult {
+                                    id,
+                                    tool_name,
+                                    result: result_val,
+                                };
+                                let mut writer = stdin_clone.lock().await;
+                                write_to_sidecar(&mut *writer, &response).await.ok();
+                            });
+                        }
                     }
                 },
                 move || {
@@ -285,7 +288,13 @@ impl SidecarHandle {
             .await;
         });
 
-        SidecarHandle { stdin, reader_handle, state, ready_notify, child: None }
+        SidecarHandle {
+            stdin,
+            reader_handle,
+            state,
+            ready_notify,
+            child: None,
+        }
     }
 
     /// Get a reference to the state mutex.
@@ -328,9 +337,12 @@ impl SidecarHandle {
             return Ok(());
         }
 
-        tokio::time::timeout(timeout, notified)
-            .await
-            .map_err(|_| format!("Timeout waiting for sidecar ready after {}ms", timeout.as_millis()))?;
+        tokio::time::timeout(timeout, notified).await.map_err(|_| {
+            format!(
+                "Timeout waiting for sidecar ready after {}ms",
+                timeout.as_millis()
+            )
+        })?;
 
         // Re-check state: notification may have been triggered by a crash, not Ready.
         let state = self.state.lock().await;
@@ -491,7 +503,8 @@ where
 
     let reader = BufReader::new(stdout);
     let sidecar_state = Arc::new(Mutex::new(SidecarState::Starting));
-    let mut handle = SidecarHandle::from_parts_with_mcp(stdin, reader, sidecar_state, engine, event_sink);
+    let mut handle =
+        SidecarHandle::from_parts_with_mcp(stdin, reader, sidecar_state, engine, event_sink);
     handle.set_child(proc);
     Ok(handle)
 }
@@ -626,9 +639,14 @@ where
     }
 
     // Phase 4: wait for the ready notification with timeout.
-    let wait_result = tokio::time::timeout(ready_timeout, notified).await.map_err(|_| {
-        format!("Sidecar did not become ready within {}ms", ready_timeout.as_millis())
-    });
+    let wait_result = tokio::time::timeout(ready_timeout, notified)
+        .await
+        .map_err(|_| {
+            format!(
+                "Sidecar did not become ready within {}ms",
+                ready_timeout.as_millis()
+            )
+        });
 
     if let Err(e) = wait_result {
         // Timeout: compare-and-kill+clear — only kill/remove the handle if it
@@ -690,25 +708,29 @@ pub fn outbound_to_event(msg: &OutboundMessage) -> (String, Value) {
             "claude-thinking-delta".to_string(),
             serde_json::json!({ "id": id, "content": content }),
         ),
-        OutboundMessage::ToolCall { id, tool_name, tool_input } => (
+        OutboundMessage::ToolCall {
+            id,
+            tool_name,
+            tool_input,
+        } => (
             "claude-tool-call".to_string(),
             serde_json::json!({ "id": id, "tool_name": tool_name, "tool_input": tool_input }),
         ),
-        OutboundMessage::ToolResult { id, tool_name, result } => (
+        OutboundMessage::ToolResult {
+            id,
+            tool_name,
+            result,
+        } => (
             "claude-tool-result".to_string(),
             serde_json::json!({ "id": id, "tool_name": tool_name, "result": result }),
         ),
-        OutboundMessage::Done { id } => (
-            "claude-done".to_string(),
-            serde_json::json!({ "id": id }),
-        ),
+        OutboundMessage::Done { id } => {
+            ("claude-done".to_string(), serde_json::json!({ "id": id }))
+        }
         OutboundMessage::ErrorMessage { id, message } => (
             "claude-error".to_string(),
             serde_json::json!({ "id": id, "message": message }),
         ),
-        OutboundMessage::Ready => (
-            "claude-ready".to_string(),
-            serde_json::json!({}),
-        ),
+        OutboundMessage::Ready => ("claude-ready".to_string(), serde_json::json!({})),
     }
 }

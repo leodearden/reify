@@ -14,7 +14,7 @@ use tauri::{Emitter, Manager};
 use reify_constraints::SimpleConstraintChecker;
 use reify_geometry::DispatchPlanner;
 use reify_gui::commands::AppState;
-use reify_gui::diff::{compute_delta, delta_to_events, StateDelta};
+use reify_gui::diff::{StateDelta, compute_delta, delta_to_events};
 use reify_gui::engine::EngineSession;
 use reify_gui::lsp_bridge::LspBridge;
 use reify_gui::types::EvaluationStatus;
@@ -84,7 +84,10 @@ impl NotificationSink for TauriNotificationSink {
 }
 
 /// Create a FileWatcher for the given file, wired to update the engine and emit events.
-fn create_watcher(app_handle: &tauri::AppHandle, file_path: &std::path::Path) -> Option<FileWatcher> {
+fn create_watcher(
+    app_handle: &tauri::AppHandle,
+    file_path: &std::path::Path,
+) -> Option<FileWatcher> {
     let parent = file_path.parent()?;
     let target = Some(PathBuf::from(file_path.file_name()?));
     let handle = app_handle.clone();
@@ -214,11 +217,7 @@ fn open_file_engine(
 }
 
 #[tauri::command]
-fn export(
-    state: tauri::State<'_, AppState>,
-    format: String,
-    path: String,
-) -> Result<(), String> {
+fn export(state: tauri::State<'_, AppState>, format: String, path: String) -> Result<(), String> {
     reify_gui::commands::export_impl(&state.engine, &format, &path)
 }
 
@@ -322,13 +321,9 @@ async fn claude_send_message(
             let app_c = app_for_events;
             let eng = engine;
             async move {
-                reify_gui::claude_bridge::spawn_sidecar_impl(
-                    &path,
-                    eng,
-                    move |name, payload| {
-                        app_c.emit(&name, payload).ok();
-                    },
-                )
+                reify_gui::claude_bridge::spawn_sidecar_impl(&path, eng, move |name, payload| {
+                    app_c.emit(&name, payload).ok();
+                })
                 .await
             }
         },
@@ -366,7 +361,11 @@ fn main() {
         let path = std::path::PathBuf::from(&path_str);
         if path.exists() && path.extension().is_some_and(|ext| ext == "ri") {
             if let Err(e) = session.load_file(&path) {
-                eprintln!("Warning: failed to load initial file {}: {}", path.display(), e);
+                eprintln!(
+                    "Warning: failed to load initial file {}: {}",
+                    path.display(),
+                    e
+                );
             } else {
                 initial_file = Some(path);
             }

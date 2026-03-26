@@ -50,11 +50,7 @@ pub fn update_source_impl(
 }
 
 /// Export geometry to a file.
-pub fn export_impl(
-    engine: &Mutex<EngineSession>,
-    format: &str,
-    path: &str,
-) -> Result<(), String> {
+pub fn export_impl(engine: &Mutex<EngineSession>, format: &str, path: &str) -> Result<(), String> {
     let export_format = match format {
         "step" | "stp" => reify_types::ExportFormat::Step,
         "stl" => reify_types::ExportFormat::Stl,

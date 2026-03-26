@@ -1,11 +1,11 @@
 use std::sync::{Arc, Mutex};
 
 use reify_constraints::SimpleConstraintChecker;
-use reify_test_support::{bracket_source, MockGeometryKernel};
+use reify_test_support::{MockGeometryKernel, bracket_source};
 
 use crate::diff::compute_delta;
 use crate::engine::EngineSession;
-use crate::mcp_context::{mcp_tool_call_impl, TauriToolContext};
+use crate::mcp_context::{TauriToolContext, mcp_tool_call_impl};
 use crate::types::GuiState;
 
 fn make_engine() -> Arc<Mutex<EngineSession>> {
