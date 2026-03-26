@@ -1452,6 +1452,7 @@ impl CompiledModuleBuilder {
             fields: self.fields,
             compiled_purposes: self.compiled_purposes,
             templates: self.templates,
+            units: Vec::new(),
             diagnostics: self.diagnostics,
             content_hash,
         }
