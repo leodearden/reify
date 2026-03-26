@@ -231,4 +231,55 @@ describe('subscribeToClaudeEvents', () => {
       message: 'rate limit exceeded',
     });
   });
+
+  describe('listener rollback on partial failure', () => {
+    it('cleans up already-registered listeners when a middle listen() fails', async () => {
+      const unlisteners = [vi.fn(), vi.fn(), vi.fn()];
+      let callIdx = 0;
+      mockListen.mockImplementation(async () => {
+        if (callIdx < 3) {
+          return unlisteners[callIdx++];
+        }
+        throw new Error('listen failed on call 4');
+      });
+
+      const handler = vi.fn();
+      await expect(subscribeToClaudeEvents(handler)).rejects.toThrow('listen failed on call 4');
+
+      // All 3 previously-resolved unlisteners must be called to avoid leaking
+      for (const unsub of unlisteners) {
+        expect(unsub).toHaveBeenCalledTimes(1);
+      }
+    });
+
+    it('rejects cleanly when the very first listen() fails (no unlisteners to clean up)', async () => {
+      mockListen.mockRejectedValue(new Error('listen failed on call 1'));
+
+      const handler = vi.fn();
+      await expect(subscribeToClaudeEvents(handler)).rejects.toThrow('listen failed on call 1');
+
+      // No unlisteners should have been called (none were registered)
+      // Verify listen was only called once before failure
+      expect(mockListen).toHaveBeenCalledTimes(1);
+    });
+
+    it('cleans up all 6 prior listeners when the last (7th) listen() fails', async () => {
+      const unlisteners = Array.from({ length: 6 }, () => vi.fn());
+      let callIdx = 0;
+      mockListen.mockImplementation(async () => {
+        if (callIdx < 6) {
+          return unlisteners[callIdx++];
+        }
+        throw new Error('listen failed on call 7');
+      });
+
+      const handler = vi.fn();
+      await expect(subscribeToClaudeEvents(handler)).rejects.toThrow('listen failed on call 7');
+
+      // All 6 previously-resolved unlisteners must be called
+      for (const unsub of unlisteners) {
+        expect(unsub).toHaveBeenCalledTimes(1);
+      }
+    });
+  });
 });
