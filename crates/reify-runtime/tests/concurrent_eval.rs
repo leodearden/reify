@@ -1932,3 +1932,142 @@ async fn evaluate_missing_node_returns_unchanged() {
         "no results should be recorded for missing nodes"
     );
 }
+
+/// F1/F3 regression test: concurrent eval on a large linear chain completes
+/// correctly. Establishes a baseline before ValueMap clone optimization.
+#[tokio::test]
+async fn concurrent_eval_large_graph_no_quadratic_clone() {
+    use reify_eval::deps::extract_dependency_trace;
+
+    let e = "Chain";
+    let n = 100usize;
+
+    // Build a linear chain: p0 (param), then n0=p0*2, n1=n0*2, ..., n99=n98*2
+    let mut builder = TopologyTemplateBuilder::new(e)
+        .param(
+            e,
+            "p0",
+            Type::Real,
+            Some(reify_types::CompiledExpr::literal(Value::Real(1.0), Type::Real)),
+        );
+
+    // First let: n0 = p0 * 2
+    let prev_ref = reify_types::CompiledExpr::value_ref(ValueCellId::new(e, "p0"), Type::Real);
+    let two = reify_types::CompiledExpr::literal(Value::Real(2.0), Type::Real);
+    let expr = reify_types::CompiledExpr::binop(BinOp::Mul, prev_ref, two, Type::Real);
+    builder = builder.let_binding(e, "n0", Type::Real, expr);
+
+    for i in 1..n {
+        let prev_name = format!("n{}", i - 1);
+        let this_name = format!("n{}", i);
+        let prev_ref = reify_types::CompiledExpr::value_ref(
+            ValueCellId::new(e, &prev_name),
+            Type::Real,
+        );
+        let two = reify_types::CompiledExpr::literal(Value::Real(2.0), Type::Real);
+        let expr = reify_types::CompiledExpr::binop(BinOp::Mul, prev_ref, two, Type::Real);
+        builder = builder.let_binding(e, &this_name, Type::Real, expr);
+    }
+
+    let template = builder.build();
+    let graph = EvaluationGraph::from_templates(&[template.clone()]);
+
+    // Initial values: p0=2.0 (changed from 1.0), all n_i = old values (1.0)
+    let mut values = ValueMap::new();
+    values.insert(ValueCellId::new(e, "p0"), Value::Real(2.0));
+    for i in 0..n {
+        values.insert(ValueCellId::new(e, &format!("n{}", i)), Value::Real(1.0));
+    }
+
+    let mut snapshot_values = PersistentMap::new();
+    for (k, v) in values.iter() {
+        snapshot_values.insert(k.clone(), (v.clone(), DeterminacyState::Determined));
+    }
+
+    // Build traces from expressions
+    let mut traces = HashMap::new();
+    traces.insert(
+        NodeId::Value(ValueCellId::new(e, "p0")),
+        DependencyTrace::default(),
+    );
+    for cell in &template.value_cells {
+        if let Some(ref expr) = cell.default_expr {
+            let node_id = NodeId::Value(cell.id.clone());
+            traces.insert(node_id, extract_dependency_trace(expr));
+        }
+    }
+
+    let reverse_index = ReverseDependencyIndex::build_from_graph(&graph);
+
+    // Eval set: all n_i nodes (p0 is the changed param, not evaluated)
+    let eval_set: Vec<NodeId> = (0..n)
+        .map(|i| NodeId::Value(ValueCellId::new(e, &format!("n{}", i))))
+        .collect();
+
+    let mut changed_cells = HashSet::new();
+    changed_cells.insert(ValueCellId::new(e, "p0"));
+
+    let mut previous_hashes = HashMap::new();
+    for i in 0..n {
+        let old_hash = CachedResult::Value(Value::Real(1.0), DeterminacyState::Determined)
+            .content_hash();
+        previous_hashes.insert(
+            NodeId::Value(ValueCellId::new(e, &format!("n{}", i))),
+            old_hash,
+        );
+    }
+
+    let setup = ConcurrentEditSetup {
+        eval_set: eval_set.clone(),
+        graph,
+        values,
+        snapshot_values,
+        traces: traces.clone(),
+        reverse_index,
+        previous_hashes,
+        version: VersionId(1),
+        snapshot_id: SnapshotId(1),
+        parent_snapshot_id: SnapshotId(0),
+        changed_cells: changed_cells.clone(),
+        functions: vec![],
+        meta_map: HashMap::new(),
+        objective: None,
+    };
+
+    let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+    let adapter_arc = Arc::new(adapter);
+
+    let cancel = CancellationToken::new();
+    let scheduler = ConcurrentScheduler;
+    let scheduler_result = scheduler
+        .execute(
+            eval_set.clone(),
+            Arc::clone(&adapter_arc),
+            &traces,
+            &cancel,
+            &changed_cells,
+        )
+        .await
+        .expect("scheduler should complete without error");
+
+    let result = match Arc::try_unwrap(adapter_arc) {
+        Ok(adapter) => adapter.into_result(&eval_set, scheduler_result.skipped),
+        Err(arc) => arc.build_result_shared(&eval_set, scheduler_result.skipped),
+    };
+
+    // Verify: n0 = 2*2 = 4, n1 = 4*2 = 8, ..., n_i = 2^(i+2)
+    // (p0=2, so n0=4, n1=8, etc.)
+    let final_n0 = result.values.get(&ValueCellId::new(e, "n0"));
+    assert_eq!(final_n0, Some(&Value::Real(4.0)), "n0 should be p0*2 = 4.0");
+
+    let final_n1 = result.values.get(&ValueCellId::new(e, "n1"));
+    assert_eq!(final_n1, Some(&Value::Real(8.0)), "n1 should be n0*2 = 8.0");
+
+    // Check that all nodes were evaluated (none skipped, since all changed)
+    assert!(
+        result.actual_eval_set.len() == n,
+        "all {} nodes should be in actual_eval_set, got {}",
+        n,
+        result.actual_eval_set.len()
+    );
+}

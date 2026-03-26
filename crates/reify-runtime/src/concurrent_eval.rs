@@ -196,16 +196,29 @@ impl AsyncNodeEvaluator for ConcurrentEvalAdapter {
         {
             let expr = cell_node.default_expr.as_ref().unwrap();
 
-            // Read current values (brief read lock)
-            let current_values = {
-                self.values.read().unwrap().clone()
+            // Compute dependency trace to know which values the expression reads
+            let trace = extract_dependency_trace(expr);
+
+            // Read only the referenced values (brief read lock, O(k) where k = arity).
+            // This replaces a full ValueMap clone (O(n)) that was the #1 performance
+            // bottleneck: O(n) per node × n nodes = O(n²) total for the graph.
+            let local_values = {
+                let values = self.values.read().unwrap();
+                let mut local = ValueMap::new();
+                for dep_id in &trace.reads {
+                    if let Some(v) = values.get(dep_id) {
+                        local.insert(dep_id.clone(), v.clone());
+                    }
+                }
+                // Also include the node's own current value (needed for self-referencing exprs)
+                if let Some(v) = values.get(vcid) {
+                    local.insert(vcid.clone(), v.clone());
+                }
+                local
             };
 
             // Evaluate expression (pure, no lock held)
-            let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&current_values, &self.functions).with_meta(&self.meta_map));
-
-            // Compute dependency trace
-            let trace = extract_dependency_trace(expr);
+            let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&local_values, &self.functions).with_meta(&self.meta_map));
 
             // Compute content hash for early cutoff
             let cached_result = CachedResult::Value(
