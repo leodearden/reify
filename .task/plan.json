@@ -75,7 +75,7 @@
       "type": "impl",
       "description": "Replace Promise.all in subscribeToClaudeEvents (bridge.ts lines 153-181) with a sequential try-catch-with-rollback pattern. Define the event-name/mapper entries as an array of tuples. Loop sequentially: const unlisteners: UnlistenFn[] = []; try { for (const [name, mapper] of entries) { unlisteners.push(await listen(name, mapper)); } } catch (err) { unlisteners.forEach(u => u()); throw err; } Return the combined unlisten function as before. This ensures that if any listen() call fails, all already-registered listeners are torn down before the error propagates to the caller.",
       "status": "done",
-      "commit": null
+      "commit": "955e8a17"
     }
   ],
   "design_decisions": [
