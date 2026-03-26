@@ -3900,6 +3900,30 @@ mod tests {
     }
 
     #[test]
+    fn compile_geometry_op_revolve_nan_axis_returns_none() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        // All 7 args present and numeric, but ax=NaN (non-finite rotation axis)
+        let op = CompiledGeometryOp::Sweep {
+            kind: SweepKind::Revolve,
+            profiles: vec![GeomRef::Step(0)],
+            args: vec![
+                ("ox".into(), literal_f64(0.0)),
+                ("oy".into(), literal_f64(0.0)),
+                ("oz".into(), literal_f64(0.0)),
+                ("ax".into(), literal_f64(f64::NAN)),
+                ("ay".into(), literal_f64(0.0)),
+                ("az".into(), literal_f64(0.0)),
+                ("angle".into(), literal_f64(std::f64::consts::PI)),
+            ],
+        };
+
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        assert!(result.is_none(), "NaN rotation axis should return None");
+    }
+
+    #[test]
     fn compile_geometry_op_revolve_produces_revolve_variant() {
         let step_handles = vec![GeometryHandleId(55)];
         let values = ValueMap::new();
