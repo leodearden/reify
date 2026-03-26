@@ -1,7 +1,7 @@
 use reify_types::ModulePath;
 use tower_lsp::lsp_types::{Location, Position, Url};
 
-use crate::analysis::module_name_from_uri;
+use crate::analysis::{find_named_member_span, module_name_from_uri};
 use crate::convert::{find_word_at_offset, position_to_offset, span_to_range};
 
 /// Compute go-to-definition for the symbol at the given position.
@@ -18,28 +18,18 @@ pub fn compute_goto_definition(source: &str, uri: &Url, position: Position) -> O
     let parsed = reify_syntax::parse(source, ModulePath::single(module_name));
 
     // Search for a param or let declaration with matching name
+    // (recursing into guarded groups via find_named_member_span)
     for decl in &parsed.declarations {
         let members = match decl {
             reify_syntax::Declaration::Structure(s) => &s.members,
             reify_syntax::Declaration::Occurrence(o) => &o.members,
             _ => continue,
         };
-        for member in members {
-            match member {
-                reify_syntax::MemberDecl::Param(p) if p.name == word => {
-                    return Some(Location {
-                        uri: uri.clone(),
-                        range: span_to_range(source, p.span),
-                    });
-                }
-                reify_syntax::MemberDecl::Let(l) if l.name == word => {
-                    return Some(Location {
-                        uri: uri.clone(),
-                        range: span_to_range(source, l.span),
-                    });
-                }
-                _ => {}
-            }
+        if let Some((span, _doc)) = find_named_member_span(members, word) {
+            return Some(Location {
+                uri: uri.clone(),
+                range: span_to_range(source, span),
+            });
         }
     }
 
