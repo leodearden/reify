@@ -184,6 +184,25 @@ impl ConcurrentEvalAdapter {
         .join()
         .ok();
     }
+
+    /// Return Arc clones of the three interior-mutable fields (values, snapshot_values, results).
+    ///
+    /// Holding these clones alive while calling `into_result` forces `Arc::try_unwrap`
+    /// to fail (strong_count >= 2), exercising the fallback clone branches at lines 121, 125, 129.
+    /// This follows the same `Arc::clone(&self.field)` pattern used by the `poison_*` methods.
+    pub fn hold_arc_refs(
+        &self,
+    ) -> (
+        Arc<RwLock<ValueMap>>,
+        Arc<RwLock<PersistentMap<ValueCellId, (Value, DeterminacyState)>>>,
+        Arc<Mutex<Vec<ConcurrentNodeResult>>>,
+    ) {
+        (
+            Arc::clone(&self.values),
+            Arc::clone(&self.snapshot_values),
+            Arc::clone(&self.results),
+        )
+    }
 }
 
 impl AsyncNodeEvaluator for ConcurrentEvalAdapter {
