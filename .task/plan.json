@@ -162,6 +162,13 @@
       "description": "Fix NaN propagation in Revolve axis guard at crates/reify-eval/src/lib.rs:3265. Change `if mag < 1e-12 {` to `if !mag.is_finite() || mag < 1e-12 {`. This catches both NaN (from NaN axis components) and Inf (from extremely large values), in addition to the existing zero-length check. Step-16 test passes because NaN magnitude is now caught by is_finite() returning false.",
       "status": "done",
       "commit": "7a6a945e"
+    },
+    {
+      "id": "step-18",
+      "type": "impl",
+      "description": "Rebase task/364 onto current main to resolve merge_ff_failed (review round 3). Main is 8 commits ahead (all task-status auto-commits touching only .task/ metadata files). task/364 HEAD (9326934d) is already the merge-base \u2014 all task commits are ancestors of main \u2014 so this is a pure fast-forward rebase: `git rebase main` moves the branch pointer to main's tip with zero conflicts. Restore .task/plan.json after rebase. Run `cargo test -p reify-types -p reify-test-support -p reify-eval` to confirm no regressions.",
+      "status": "done",
+      "commit": "b3ab0c03"
     }
   ],
   "design_decisions": [
@@ -223,6 +230,6 @@
     }
   ],
   "_session_id": "364-c2e67267",
-  "_created_at": "2026-03-25T22:55:42.801105+00:00",
+  "_created_at": "2026-03-26T02:19:22.596359+00:00",
   "_schema_version": 1
 }
