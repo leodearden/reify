@@ -1563,40 +1563,28 @@ impl Engine {
                     let is_true = matches!(&guard_val, Value::Bool(true));
                     let is_false = matches!(&guard_val, Value::Bool(false));
 
-                    for mid in &group.members {
-                        if is_true {
-                            if let Some(node) = graph.value_cells.get(mid)
-                                && let Some(ref expr) = node.default_expr
-                            {
-                                let val = reify_expr::eval_expr(expr, &self.make_eval_ctx(&values, &functions));
-                                values.insert(mid.clone(), val.clone());
+                    // Evaluate both branches: members (active when true), else_members (active when false)
+                    for (cells, is_active) in [
+                        (group.members.as_slice(), is_true),
+                        (group.else_members.as_slice(), is_false),
+                    ] {
+                        for mid in cells {
+                            if is_active {
+                                if let Some(node) = graph.value_cells.get(mid)
+                                    && let Some(ref expr) = node.default_expr
+                                {
+                                    let val = reify_expr::eval_expr(expr, &self.make_eval_ctx(&values, &functions));
+                                    values.insert(mid.clone(), val.clone());
+                                    new_snapshot.values.insert(
+                                        mid.clone(), (val, DeterminacyState::Determined),
+                                    );
+                                }
+                            } else {
+                                values.insert(mid.clone(), Value::Undef);
                                 new_snapshot.values.insert(
-                                    mid.clone(), (val, DeterminacyState::Determined),
+                                    mid.clone(), (Value::Undef, DeterminacyState::Undetermined),
                                 );
                             }
-                        } else {
-                            values.insert(mid.clone(), Value::Undef);
-                            new_snapshot.values.insert(
-                                mid.clone(), (Value::Undef, DeterminacyState::Undetermined),
-                            );
-                        }
-                    }
-                    for mid in &group.else_members {
-                        if is_false {
-                            if let Some(node) = graph.value_cells.get(mid)
-                                && let Some(ref expr) = node.default_expr
-                            {
-                                let val = reify_expr::eval_expr(expr, &self.make_eval_ctx(&values, &functions));
-                                values.insert(mid.clone(), val.clone());
-                                new_snapshot.values.insert(
-                                    mid.clone(), (val, DeterminacyState::Determined),
-                                );
-                            }
-                        } else {
-                            values.insert(mid.clone(), Value::Undef);
-                            new_snapshot.values.insert(
-                                mid.clone(), (Value::Undef, DeterminacyState::Undetermined),
-                            );
                         }
                     }
                 }
