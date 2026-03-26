@@ -7885,6 +7885,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 446,
+        "title": "Add Point/Vector edge-case tests: mismatched-length, Undef propagation, div-by-zero",
+        "description": "Add missing edge-case tests to crates/reify-expr/tests/point_vector_eval_tests.rs covering 5 gaps identified in task-224 review:\n\n1. **Mismatched-length operands**: Point3 + Vector2 → Undef (componentwise_binop length guard). Mirror for Sub.\n2. **Undef component propagation**: Vector([1m, Undef, 3m]) + Vector([1m,1m,1m]) → Undef. Repeat for Point.\n3. **Vector*Point / Point*Vector → Undef**: Verify the exclusion guard rejects these combinations.\n4. **Point / Int**: Point([length(6), length(9), length(12)]) / Int(3) → Point([length(2), length(3), length(4)]). Currently only Real divisor is tested.\n5. **Division-by-zero**: Vector/Real(0.0) → Undef and Point/Real(0.0) → Undef. Tests the early zero check in eval_div.\n\nmemory_hints: search \"point_vector_eval_tests\" for existing test patterns",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -7897,7 +7908,7 @@
       ],
       "created": "2026-03-26T07:15:01.454Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-26T07:15:08.379Z"
+      "updated": "2026-03-26T07:15:14.633Z"
     }
   }
 }
