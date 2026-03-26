@@ -38,6 +38,20 @@
       "description": "Verify build_valid_bracket_exits_success passes without additional code changes (the violation check should only trigger when violations exist). Run all cli_build tests to confirm no regressions.",
       "status": "done",
       "commit": "17607120"
+    },
+    {
+      "id": "step-5",
+      "type": "test",
+      "description": "Fix stale-file false positive in build_violating_bracket_exits_failure: add `let _ = std::fs::remove_file(output_path);` as the first line of the test body, before running the binary. This ensures that a leftover file from a prior panicked run cannot cause the `exists()` assertion to pass when the binary actually failed to write the file \u2014 eliminating a silent regression-masking false positive. The reviewer noted this is a new failure mode since none of the pre-existing tests check for file existence.",
+      "status": "done",
+      "commit": "a3b3acab"
+    },
+    {
+      "id": "step-6",
+      "type": "impl",
+      "description": "Run all cli_build tests to verify the pre-cleanup fix doesn't break any test and the violating test still passes end-to-end. Confirm the output file is correctly produced and cleaned up.",
+      "status": "done",
+      "commit": "a3b3acab"
     }
   ],
   "design_decisions": [
@@ -56,6 +70,10 @@
     {
       "decision": "No new fixture files needed",
       "rationale": "bracket_violating.ri already exists with thickness=1mm that violates 'constraint thickness > 2mm'. This fixture is already used by cli_check tests, proving it produces Violated constraint results."
+    },
+    {
+      "decision": "Use pre-cleanup pattern instead of unique temp paths for stale-file protection",
+      "rationale": "The reviewer suggested either pre-cleanup or UUID-based unique paths. Pre-cleanup (`let _ = std::fs::remove_file(output_path);` at test start) is minimal (one line), matches the existing test style which uses hardcoded /tmp paths, and avoids adding a tempfile dependency. It directly addresses the false-positive risk: if a prior run panicked and left the file, the next run deletes it before invoking the binary."
     }
   ],
   "reuse": [
@@ -76,5 +94,5 @@
     }
   ],
   "_session_id": "493-50146efe",
-  "_created_at": "2026-03-26T18:21:05.400326+00:00"
+  "_created_at": "2026-03-26T18:31:13.255591+00:00"
 }

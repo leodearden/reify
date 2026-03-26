@@ -62,6 +62,10 @@ fn build_violating_bracket_exits_failure() {
         stderr.contains("VIOLATED"),
         "stderr should contain 'VIOLATED', got: {stderr}"
     );
+    assert!(
+        stderr.contains("Some constraints violated."),
+        "stderr should contain summary message, got: {stderr}"
+    );
     // Geometry file should still be written even when constraints are violated
     assert!(
         std::path::Path::new(output_path).exists(),
@@ -74,6 +78,7 @@ fn build_violating_bracket_exits_failure() {
 #[test]
 fn build_valid_bracket_exits_success() {
     let output_path = "/tmp/reify_test_valid_build_out.step";
+    let _ = std::fs::remove_file(output_path);
     let output = Command::new(env!("CARGO_BIN_EXE_reify"))
         .args([
             "build",
@@ -101,6 +106,10 @@ fn build_valid_bracket_exits_success() {
     assert!(
         !stderr.contains("VIOLATED"),
         "stderr should NOT contain 'VIOLATED' for valid bracket, got: {stderr}"
+    );
+    assert!(
+        std::path::Path::new(output_path).exists(),
+        "geometry file should be written on success"
     );
     // Clean up
     let _ = std::fs::remove_file(output_path);
