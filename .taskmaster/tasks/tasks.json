@@ -7923,6 +7923,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 449,
+        "title": "Add anti-cascade and eval Error arm tests for Type::Error sentinel",
+        "description": "In crates/reify-compiler/tests: add test compiling `let x = (port @ face(\"top\")) + 5.0` and asserting exactly one diagnostic (the stub error) with no cascading type-mismatch. In crates/reify-expr: add unit test calling eval_expr on CompiledExpr::error() asserting Value::Undef. (Review followup from task 248)",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -7935,7 +7946,7 @@
       ],
       "created": "2026-03-26T07:20:43.288Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-26T07:20:43.292Z"
+      "updated": "2026-03-26T07:20:46.492Z"
     }
   }
 }
