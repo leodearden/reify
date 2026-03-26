@@ -8148,6 +8148,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 469,
+        "title": "Add missing MetaAccess test coverage for guard branches and concurrent path",
+        "description": "Add test for MetaAccess in else_members with guard=false, and test for edit_check_concurrent with MetaAccess expressions",
+        "details": "1. In crates/reify-eval/tests/meta_eval_integration.rs: add variant of eval_meta_access_in_guarded_group that puts MetaAccess Let cell in else_members (not members) with guard=false\n2. In crates/reify-runtime/tests/concurrent_eval.rs: add test edit_check_concurrent_meta_access_resolves that builds a template with a meta block, a Let cell whose expr is MetaAccess, runs through edit_check_concurrent, and asserts the resolved value matches the meta entry\n\nFrom review of task 397 (esc-397-121).\n\nmemory_hints:\n  search: \"MetaAccess guard evaluation else_members\"\n  entities: [\"MetaAccess\", \"edit_check_concurrent\", \"eval_meta_access_in_guarded_group\"]",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -8160,7 +8171,7 @@
       ],
       "created": "2026-03-26T07:59:21.955Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-26T07:59:45.344Z"
+      "updated": "2026-03-26T07:59:50.664Z"
     }
   }
 }
