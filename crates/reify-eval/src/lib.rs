@@ -3868,11 +3868,13 @@ mod tests {
     }
 
     #[test]
-    fn compile_geometry_op_revolve_missing_arg_returns_none() {
+    #[should_panic(expected = "compiler bug")]
+    fn compile_geometry_op_revolve_missing_arg_panics() {
         let step_handles = vec![GeometryHandleId(10)];
         let values = ValueMap::new();
 
-        // Revolve with missing 'ox' arg — returns None (not silently 0.0)
+        // Revolve with missing 'ox' arg — compiler must always emit all args,
+        // so absence is an invariant violation that should panic
         let op = CompiledGeometryOp::Sweep {
             kind: SweepKind::Revolve,
             profiles: vec![GeomRef::Step(0)],
@@ -3887,9 +3889,26 @@ mod tests {
             ],
         };
 
-        // Missing 'ox' causes eval_arg_f64("ox") to return None, propagated via ?
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
-        assert!(result.is_none(), "expected None when required arg 'ox' is missing");
+        // Should panic, not return None
+        compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+    }
+
+    #[test]
+    #[should_panic(expected = "compiler bug")]
+    fn compile_geometry_op_extrude_missing_distance_panics() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        // Extrude with no args — compiler must always emit "distance" arg,
+        // so absence is an invariant violation that should panic
+        let op = CompiledGeometryOp::Sweep {
+            kind: SweepKind::Extrude,
+            profiles: vec![GeomRef::Step(0)],
+            args: vec![],
+        };
+
+        // Should panic, not return None
+        compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
     }
 
     #[test]
