@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use reify_types::{BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, QuantifierKind, Type, UnOp, Value, ValueCellId, ValueMap};
+use reify_types::{BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, DimensionVector, QuantifierKind, Type, UnOp, Value, ValueCellId, ValueMap};
 
 /// Maximum recursion depth for user-defined function calls.
 const MAX_RECURSION_DEPTH: u32 = 256;
@@ -634,6 +634,72 @@ fn eval_method_call(obj: &Value, method: &str, args: &[Value], result_type: &Typ
                 _ => Value::Undef,
             }
         },
+        "magnitude" => {
+            if !args.is_empty() {
+                return Value::Undef;
+            }
+            match obj {
+                Value::Complex { re, im, dimension } => {
+                    let mag = re.hypot(*im);
+                    if dimension.is_dimensionless() {
+                        Value::Real(mag)
+                    } else {
+                        Value::Scalar {
+                            si_value: mag,
+                            dimension: *dimension,
+                        }
+                    }
+                }
+                _ => Value::Undef,
+            }
+        },
+        "phase" => {
+            if !args.is_empty() {
+                return Value::Undef;
+            }
+            match obj {
+                Value::Complex { re, im, .. } => {
+                    let angle = im.atan2(*re);
+                    Value::Scalar {
+                        si_value: angle,
+                        dimension: DimensionVector::ANGLE,
+                    }
+                }
+                _ => Value::Undef,
+            }
+        },
+        "conjugate" => {
+            if !args.is_empty() {
+                return Value::Undef;
+            }
+            match obj {
+                Value::Complex { re, im, dimension } => Value::Complex {
+                    re: *re,
+                    im: -im,
+                    dimension: *dimension,
+                },
+                _ => Value::Undef,
+            }
+        },
+        "re" | "im" => {
+            if !args.is_empty() {
+                return Value::Undef;
+            }
+            match obj {
+                Value::Complex { re, im, dimension } => {
+                    let component = if method == "re" { *re } else { *im };
+                    if dimension.is_dimensionless() {
+                        Value::Real(component)
+                    } else {
+                        Value::Scalar {
+                            si_value: component,
+                            dimension: *dimension,
+                        }
+                    }
+                }
+                _ => Value::Undef,
+            }
+        },
         "x" | "y" | "z" => {
             let index = match method {
                 "x" => 0,
@@ -825,6 +891,21 @@ fn eval_add(lv: &Value, rv: &Value) -> Value {
                 }
             }
         }
+        // Complex + Complex: dimension must match
+        (
+            Value::Complex { re: ar, im: ai, dimension: ad },
+            Value::Complex { re: br, im: bi, dimension: bd },
+        ) => {
+            if ad != bd {
+                Value::Undef
+            } else {
+                Value::Complex {
+                    re: ar + br,
+                    im: ai + bi,
+                    dimension: *ad,
+                }
+            }
+        }
         (Value::String(a), Value::String(b)) => Value::String(format!("{}{}", a, b)),
         // Component-wise Tensor addition
         (Value::Tensor(a), Value::Tensor(b)) => componentwise_binop(a, b, eval_add, Value::Tensor),
@@ -865,6 +946,21 @@ fn eval_sub(lv: &Value, rv: &Value) -> Value {
                 }
             }
         }
+        // Complex - Complex: dimension must match
+        (
+            Value::Complex { re: ar, im: ai, dimension: ad },
+            Value::Complex { re: br, im: bi, dimension: bd },
+        ) => {
+            if ad != bd {
+                Value::Undef
+            } else {
+                Value::Complex {
+                    re: ar - br,
+                    im: ai - bi,
+                    dimension: *ad,
+                }
+            }
+        }
         // Component-wise Tensor subtraction
         (Value::Tensor(a), Value::Tensor(b)) => componentwise_binop(a, b, eval_sub, Value::Tensor),
         // Affine geometry: Point - Point → Vector (displacement)
@@ -885,6 +981,15 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
         (Value::Int(a), Value::Real(b)) | (Value::Real(b), Value::Int(a)) => {
             Value::Real(*a as f64 * b)
         }
+        // Complex * Complex: (ac-bd) + (ad+bc)i, dimensions multiply
+        (
+            Value::Complex { re: ar, im: ai, dimension: ad },
+            Value::Complex { re: br, im: bi, dimension: bd },
+        ) => Value::Complex {
+            re: ar * br - ai * bi,
+            im: ar * bi + ai * br,
+            dimension: ad.mul(bd),
+        },
         // Scalar * Scalar: multiply values, add dimension exponents
         (
             Value::Scalar {
@@ -908,6 +1013,33 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
         (Value::Scalar { si_value, dimension }, Value::Real(r))
         | (Value::Real(r), Value::Scalar { si_value, dimension }) => Value::Scalar {
             si_value: si_value * r,
+            dimension: *dimension,
+        },
+        // Complex * Scalar | Scalar * Complex: scale re/im, combine dimensions
+        (
+            Value::Complex { re, im, dimension: cd },
+            Value::Scalar { si_value, dimension: sd },
+        )
+        | (
+            Value::Scalar { si_value, dimension: sd },
+            Value::Complex { re, im, dimension: cd },
+        ) => Value::Complex {
+            re: re * si_value,
+            im: im * si_value,
+            dimension: cd.mul(sd),
+        },
+        // Complex * Int | Int * Complex: dimensionless multiplier preserves dimension
+        (Value::Complex { re, im, dimension }, Value::Int(n))
+        | (Value::Int(n), Value::Complex { re, im, dimension }) => Value::Complex {
+            re: re * *n as f64,
+            im: im * *n as f64,
+            dimension: *dimension,
+        },
+        // Complex * Real | Real * Complex: dimensionless multiplier preserves dimension
+        (Value::Complex { re, im, dimension }, Value::Real(r))
+        | (Value::Real(r), Value::Complex { re, im, dimension }) => Value::Complex {
+            re: re * r,
+            im: im * r,
             dimension: *dimension,
         },
         // Scalar * Tensor or Tensor * Scalar: scale each component
@@ -983,6 +1115,27 @@ fn eval_div(lv: &Value, rv: &Value) -> Value {
         },
         (Value::Scalar { si_value, dimension }, Value::Real(r)) => Value::Scalar {
             si_value: si_value / r,
+            dimension: *dimension,
+        },
+        // Complex / Scalar: divide re/im, combine dimensions
+        (
+            Value::Complex { re, im, dimension: cd },
+            Value::Scalar { si_value, dimension: sd },
+        ) => Value::Complex {
+            re: re / si_value,
+            im: im / si_value,
+            dimension: cd.div(sd),
+        },
+        // Complex / Int: preserve dimension
+        (Value::Complex { re, im, dimension }, Value::Int(n)) => Value::Complex {
+            re: re / *n as f64,
+            im: im / *n as f64,
+            dimension: *dimension,
+        },
+        // Complex / Real: preserve dimension
+        (Value::Complex { re, im, dimension }, Value::Real(r)) => Value::Complex {
+            re: re / r,
+            im: im / r,
             dimension: *dimension,
         },
         // Tensor / Scalar: divide each component by the scalar
@@ -1157,6 +1310,11 @@ fn eval_unop(op: UnOp, operand: &CompiledExpr, ctx: &EvalContext) -> Value {
             Value::Real(r) => Value::Real(-r),
             Value::Scalar { si_value, dimension } => Value::Scalar {
                 si_value: -si_value,
+                dimension,
+            },
+            Value::Complex { re, im, dimension } => Value::Complex {
+                re: -re,
+                im: -im,
                 dimension,
             },
             // Negate all components of a Tensor

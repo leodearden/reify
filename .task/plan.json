@@ -1,122 +1,246 @@
 {
-  "task_id": "396",
-  "title": "Emit diagnostics for ERROR nodes and silent drops in lower_connect_body",
+  "task_id": "287",
+  "title": "Complex<Q>: arithmetic",
   "files": [
-    "crates/reify-syntax/src/ts_parser.rs",
-    "crates/reify-syntax/tests/connect_chain_tests.rs"
+    "crates/reify-expr/src/lib.rs",
+    "crates/reify-expr/tests/complex_eval_tests.rs"
   ],
   "modules": [
-    "crates/reify-syntax"
+    "crates/reify-expr"
   ],
-  "analysis": "Task 396 addresses three silent-failure paths in lower_connect_body (ts_parser.rs:1329-1419). Prior work has already resolved two of the three issues: (1) an explicit \"ERROR\" arm was added at line 1405 to emit diagnostics for tree-sitter ERROR nodes, and (2) has_error() guards were added on the connect_param_assignment arm (line 1337) and port_mapping arm (line 1375). Both integration tests (in connect_chain_tests.rs, task-396 steps 1/3/5/7/8/10) and unit tests (in ts_parser.rs tests module, lines 2942-2998) already exist and verify these behaviors.\n\nThe remaining issue is the `_ => {}` catch-all at line 1414, which silently discards any child node that doesn't match the known arms. While tree-sitter's grammar for connect_body only produces connect_param_assignment, port_mapping, and ERROR as named children (plus anonymous punctuation and extras like comments), the catch-all should defensively emit diagnostics for unexpected named non-extra children \u2014 matching the robustness pattern used elsewhere in the codebase.\n\nKey concern: comments (line_comment, block_comment) are tree-sitter extras that appear as named children of any node. The fix must use child.is_extra() to avoid spurious diagnostics on comments. The catch-all should only emit diagnostics when child.is_named() && !child.is_extra().\n\nThe defensive catch-all cannot be triggered through the current grammar under normal parsing, but CAN be tested by deliberately calling lower_connect_body on a wrong node type (e.g., a constraint_definition node), which produces named children like param_declaration and constraint_def_predicate that hit the catch-all.",
+  "analysis": "Task 286 established the Complex type infrastructure: Value::Complex { re, im, dimension } in reify-types, and stdlib functions (complex(), re(), im(), conjugate(), phase(), magnitude(), complex_add(), complex_mul()). This task promotes Complex arithmetic from function-call-only (stdlib) to first-class operator support in the expression evaluator (reify-expr), and adds method-call syntax (.re, .im, .magnitude(), .phase(), .conjugate()). The evaluator's eval_add/eval_sub/eval_mul/eval_div/eval_unop functions need Complex arms following the existing Scalar pattern. eval_method_call needs Complex-specific method dispatch following the .x/.y/.z Tensor pattern. Key dimension rules: add/sub require matching dimensions, mul combines dimensions via DimensionVector::mul(), div combines via DimensionVector::div(). The evaluator does NOT sanitize NaN/Inf (consistent with existing Scalar arithmetic); that responsibility stays in stdlib. Complex/Scalar mixed arithmetic uses the scalar's value as a real multiplier/divisor and combines dimensions. Complex/Int and Complex/Real use the numeric as a dimensionless multiplier preserving the Complex's dimension.",
   "prerequisites": [
     {
       "id": "pre-1",
-      "description": "ERROR arm, has_error() guards, unit tests, and integration tests already exist from prior work on this task. The \"ERROR\" arm at line 1405, has_error() guards at lines 1337 and 1375, unit tests (lower_connect_body_error_node_emits_diagnostic, lower_connect_body_malformed_param_emits_diagnostic, lower_connect_body_malformed_mapping_emits_diagnostic), and integration tests (connect_body_error_node_emits_diagnostic, connect_body_malformed_param_emits_diagnostic, connect_body_malformed_mapping_emits_diagnostic, connect_body_valid_no_spurious_errors, connect_statement_malformed_outer_emits_diagnostic, connect_statement_valid_outer_no_spurious_errors) are all committed and passing.",
+      "description": "Create test file crates/reify-expr/tests/complex_eval_tests.rs with imports (reify_expr, reify_types) and helper functions: lit(v, ty) wrapping CompiledExpr::literal, complex_val(re, im, dim) building Value::Complex, and scalar_val(v, dim) building Value::Scalar \u2014 matching existing test patterns from point_vector_eval_tests.rs and the inline tests module",
       "status": "done",
-      "commit": null,
-      "tests": [
-        "lower_connect_body_error_node_emits_diagnostic",
-        "lower_connect_body_malformed_param_emits_diagnostic",
-        "lower_connect_body_malformed_mapping_emits_diagnostic",
-        "connect_body_error_node_emits_diagnostic",
-        "connect_body_malformed_param_emits_diagnostic",
-        "connect_body_malformed_mapping_emits_diagnostic",
-        "connect_body_valid_no_spurious_errors",
-        "connect_statement_malformed_outer_emits_diagnostic",
-        "connect_statement_valid_outer_no_spurious_errors"
-      ]
+      "commit": "71d0b509",
+      "tests": []
     }
   ],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write integration test `connect_body_with_comment_no_spurious_errors` in connect_chain_tests.rs. Parse `structure S { port a : out T  port b : in T  connect a -> b : BoltSet { /* inline comment */ grade = 8.8 } }` and assert errors.is_empty(). Also test with line comments: `structure S { port a : out T  port b : in T  connect a -> b { // comment\\nshaft -> bore } }`. Verifies comments inside connect body don't produce spurious diagnostics. This test should PASS with existing code (catch-all silently skips comments) and must continue to pass after the catch-all fix.",
+      "description": "Write failing tests for Complex + Complex: (1) complex_add_same_dimension \u2014 two Complex<Length> values added return Complex with summed re/im and preserved dimension; (2) complex_add_dimension_mismatch \u2014 Complex<Length> + Complex<Time> returns Undef",
       "status": "done",
-      "commit": "038f11be"
+      "commit": "ef245d4c"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Verify step-1 test passes without code changes. The existing `_ => {}` catch-all correctly skips comment nodes since they don't match any arm. No implementation change needed \u2014 run `cargo test -p reify-syntax connect_body_with_comment` to confirm.",
+      "description": "Add Value::Complex arm to eval_add in lib.rs: match (Complex{re:ar,im:ai,dimension:ad}, Complex{re:br,im:bi,dimension:bd}), check ad==bd (Undef if not), return Complex{re:ar+br, im:ai+bi, dimension:*ad}. Insert before the _ => Value::Undef catch-all",
       "status": "done",
-      "commit": "038f11be"
+      "commit": "c09960e3"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write unit test `lower_connect_body_catch_all_emits_for_unexpected_named_children` in ts_parser.rs tests module. Parse `constraint Eq(a: Scalar, b: Scalar) { a == b }`, use find_node_by_kind to find the constraint_definition node, then call lower_connect_body on it. The constraint_definition's children include named non-extra nodes (identifier, param_declaration, constraint_def_predicate) that don't match any connect_body arm, so they hit the catch-all. Assert that lowering.errors is non-empty and at least one error message contains \"unexpected\". This test FAILS with current `_ => {}` (no errors emitted for unexpected named children).",
+      "description": "Write failing tests for Complex - Complex: (1) complex_sub_same_dimension \u2014 subtraction returns Complex with differenced re/im and preserved dimension; (2) complex_sub_dimension_mismatch \u2192 Undef",
       "status": "done",
-      "commit": "ef722f33"
+      "commit": "d501f5d1"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Replace the `_ => {}` catch-all at line 1414 in lower_connect_body with a diagnostic-emitting version. Change to: `_ => { if child.is_named() && !child.is_extra() { self.errors.push(ParseError { message: format!(\"unexpected '{}' in connect body: {}\", child.kind(), self.node_text(child)), span: self.span(child) }); } }`. This emits diagnostics for unexpected named non-extra children while still silently skipping anonymous punctuation tokens ({, }, ,) and extras (line_comment, block_comment). Step-3 test now PASSES.",
+      "description": "Add Value::Complex arm to eval_sub in lib.rs: same pattern as add but with subtraction. Check dimension match, return Complex{re:ar-br, im:ai-bi, dimension:*ad}",
       "status": "done",
-      "commit": "0dc520b7"
+      "commit": "480dbc47"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write unit test `lower_connect_body_extras_not_flagged` in ts_parser.rs tests module. Call lower_body_directly (existing helper) on `structure S { port a : out T  port b : in T  connect a -> b { /* comment */ grade = 8.8 } }`. Assert that no error message contains \"unexpected\". This verifies that the new catch-all check correctly skips extras (comments) via !child.is_extra(). This test should PASS with the step-4 implementation.",
+      "description": "Write failing tests for Complex * Complex: (1) complex_mul_dimensionless \u2014 (1+2i)*(3+4i) = (-5+10i) with DIMENSIONLESS; (2) complex_mul_dimension_product \u2014 Complex<Length> * Complex<Time> returns Complex with LENGTH.mul(TIME) dimension, verifying (ac-bd)+(ad+bc)i formula",
       "status": "done",
-      "commit": "8cedc76e"
+      "commit": "958dcdf7"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Verify step-5 passes with no additional changes. The is_extra() check in step-4 correctly filters comment nodes. Run full test suite (`cargo test -p reify-syntax`) to confirm no regressions across all 9 pre-existing task-396 tests plus the 3 new tests.",
+      "description": "Add Complex\u00d7Complex arm to eval_mul: compute re=ar*br-ai*bi, im=ar*bi+ai*br, dimension=ad.mul(bd). Return Value::Complex{re, im, dimension}",
       "status": "done",
-      "commit": "8cedc76e"
+      "commit": "e1b629dd"
+    },
+    {
+      "id": "step-7",
+      "type": "test",
+      "description": "Write failing tests for Complex * Scalar and Scalar * Complex: (1) complex_mul_scalar_right \u2014 Complex<Length> * Scalar<Time> scales re/im and combines dimensions; (2) scalar_mul_complex_left \u2014 Scalar<Time> * Complex<Length> is commutative with same result; (3) complex_mul_int and int_mul_complex \u2014 dimensionless integer multiplier preserves Complex dimension; (4) complex_mul_real and real_mul_complex \u2014 same for Real",
+      "status": "done",
+      "commit": "cc2e19c4"
+    },
+    {
+      "id": "step-8",
+      "type": "impl",
+      "description": "Add mixed multiplication arms to eval_mul: (Complex,Scalar)|(Scalar,Complex) \u2014 multiply re/im by si_value, combine dimensions via mul(); (Complex,Int)|(Int,Complex) \u2014 multiply re/im by n as f64, preserve Complex dimension; (Complex,Real)|(Real,Complex) \u2014 multiply re/im by r, preserve Complex dimension. Place before the _ catch-all",
+      "status": "done",
+      "commit": "92667664"
+    },
+    {
+      "id": "step-9",
+      "type": "test",
+      "description": "Write failing tests for Complex division: (1) complex_div_scalar \u2014 Complex<Area>/Scalar<Length> returns Complex<Length> with re/im divided by si_value; (2) complex_div_int \u2014 Complex / 2 halves re/im, preserves dimension; (3) complex_div_real \u2014 Complex / 2.0 same; (4) complex_div_by_zero_int \u2192 Undef; (5) complex_div_by_zero_scalar \u2192 Undef",
+      "status": "done",
+      "commit": "5d1ca49e"
+    },
+    {
+      "id": "step-10",
+      "type": "impl",
+      "description": "Add Complex division arms to eval_div: (Complex,Scalar) \u2014 divide re/im by si_value, combine dimensions via div(); (Complex,Int) \u2014 divide by n as f64, preserve dimension; (Complex,Real) \u2014 divide by r, preserve dimension. Division-by-zero already handled by the existing guard at top of eval_div",
+      "status": "done",
+      "commit": "96901cff"
+    },
+    {
+      "id": "step-11",
+      "type": "test",
+      "description": "Write failing test for unary -Complex: complex_negation \u2014 negating Complex<Length>(3.0, 4.0) returns Complex<Length>(-3.0, -4.0) with same dimension",
+      "status": "done",
+      "commit": "be61b361"
+    },
+    {
+      "id": "step-12",
+      "type": "impl",
+      "description": "Add Value::Complex arm to eval_unop UnOp::Neg: return Value::Complex { re: -re, im: -im, dimension }",
+      "status": "done",
+      "commit": "39456781"
+    },
+    {
+      "id": "step-13",
+      "type": "test",
+      "description": "Write failing tests for .re and .im methods: (1) method_re_dimensionless \u2014 Complex(3.0,4.0,DIMENSIONLESS).re returns Real(3.0); (2) method_re_dimensioned \u2014 Complex(3.0,4.0,LENGTH).re returns Scalar{3.0,LENGTH}; (3) method_im_dimensionless \u2014 returns Real(4.0); (4) method_im_dimensioned \u2014 returns Scalar{4.0,LENGTH}. Uses CompiledExpr::method_call with zero args",
+      "status": "done",
+      "commit": "c2c1eddb"
+    },
+    {
+      "id": "step-14",
+      "type": "impl",
+      "description": "Add 're' and 'im' arms to eval_method_call: match on Value::Complex, check args.is_empty() (Undef if not), extract re or im component. Return Real if dimension.is_dimensionless(), Scalar{si_value, dimension} otherwise. Insert before the _ catch-all",
+      "status": "done",
+      "commit": "5cd331a6"
+    },
+    {
+      "id": "step-15",
+      "type": "test",
+      "description": "Write failing tests for .magnitude(): (1) method_magnitude_dimensionless \u2014 Complex(3.0,4.0,DIMENSIONLESS).magnitude() returns Real(5.0); (2) method_magnitude_dimensioned \u2014 Complex(3.0,4.0,LENGTH).magnitude() returns Scalar{5.0,LENGTH}",
+      "status": "done",
+      "commit": "45105fc3"
+    },
+    {
+      "id": "step-16",
+      "type": "impl",
+      "description": "Add 'magnitude' arm to eval_method_call for Value::Complex: compute (re*re + im*im).sqrt(), return Real if dimensionless, Scalar with preserved dimension otherwise. Check args.is_empty()",
+      "status": "done",
+      "commit": "4483353a"
+    },
+    {
+      "id": "step-17",
+      "type": "test",
+      "description": "Write failing test for .phase(): method_phase \u2014 Complex(1.0, 1.0, LENGTH).phase() returns Scalar with ANGLE dimension and value PI/4 (\u22480.7854). Verify dimension is ANGLE regardless of input dimension",
+      "status": "done",
+      "commit": "fd5b20c2"
+    },
+    {
+      "id": "step-18",
+      "type": "impl",
+      "description": "Add 'phase' arm to eval_method_call for Value::Complex: compute im.atan2(re), return Scalar{si_value: angle, dimension: DimensionVector::ANGLE}. Check args.is_empty()",
+      "status": "done",
+      "commit": "e547d696"
+    },
+    {
+      "id": "step-19",
+      "type": "test",
+      "description": "Write failing test for .conjugate(): method_conjugate \u2014 Complex(3.0, 4.0, LENGTH).conjugate() returns Complex(3.0, -4.0, LENGTH)",
+      "status": "done",
+      "commit": "06126948"
+    },
+    {
+      "id": "step-20",
+      "type": "impl",
+      "description": "Add 'conjugate' arm to eval_method_call for Value::Complex: return Complex{re: *re, im: -im, dimension: *dimension}. Check args.is_empty()",
+      "status": "done",
+      "commit": "fc35da87"
+    },
+    {
+      "id": "step-21",
+      "type": "test",
+      "description": "Write edge-case tests: (1) complex_add_non_complex_undef \u2014 Complex + Int/Real/Scalar returns Undef; (2) method_re_on_non_complex_undef \u2014 calling .re on a Scalar returns Undef; (3) method_magnitude_with_args_undef \u2014 .magnitude(1) with unexpected args returns Undef; (4) complex_undef_propagation \u2014 Undef + Complex returns Undef (already handled by eval_binop, but verify)",
+      "status": "done",
+      "commit": "73fd3959"
+    },
+    {
+      "id": "step-22",
+      "type": "impl",
+      "description": "Verify all edge-case tests pass \u2014 they should be covered by the existing _ => Value::Undef catch-all arms in eval_add/eval_method_call and Undef propagation in eval_binop. Fix any failures if catch-all ordering is wrong",
+      "status": "done",
+      "commit": "0760682c"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Use child.is_extra() to filter tree-sitter extras (comments) rather than checking specific kind names like 'line_comment' or 'block_comment'",
-      "rationale": "is_extra() is maintained by the tree-sitter grammar's extras array, so if new extras are added to the grammar (e.g., new comment styles), they'll be automatically filtered without updating the parser code. This is more maintainable than hardcoding kind names."
+      "decision": "No NaN/Inf sanitization in evaluator for Complex arithmetic",
+      "rationale": "Consistent with existing Scalar arithmetic in eval_mul/eval_div/eval_add which do NOT call sanitize_value. Sanitization is the stdlib's responsibility (defense-in-depth at the function call boundary). The evaluator is a pure arithmetic engine."
     },
     {
-      "decision": "Test the defensive catch-all by deliberately passing a wrong node type (constraint_definition) to lower_connect_body",
-      "rationale": "The catch-all cannot be triggered through the current grammar \u2014 tree-sitter's error recovery always wraps unexpected content in ERROR nodes, which are caught by the explicit ERROR arm. Passing a wrong node type is the only reliable way to produce named non-extra children that hit the catch-all, and it tests the defensive behavior that protects against future grammar changes or unusual error recovery scenarios."
+      "decision": "Complex/Int and Complex/Real treat the numeric as a dimensionless scalar multiplier",
+      "rationale": "Follows the established pattern from Scalar*Int and Scalar*Real in eval_mul: the numeric preserves the Complex's dimension. This is the natural mathematical interpretation."
     },
     {
-      "decision": "Keep scope limited to lower_connect_body only; do NOT fix lower_port_body which has the same issues (no ERROR arm, silent catch-all at line 1267)",
-      "rationale": "The task explicitly targets lower_connect_body. lower_port_body should be addressed in a separate task to maintain clean scope boundaries. Noted for follow-up."
+      "decision": "Method names match stdlib function names: 're', 'im', 'magnitude', 'phase', 'conjugate'",
+      "rationale": "The stdlib already defines these as function names (re(), im(), etc.). Using identical names for methods ensures consistency: z.re and re(z) are semantically equivalent."
     },
     {
-      "decision": "Use 'unexpected' as the keyword in the catch-all diagnostic message rather than 'syntax error' or 'invalid'",
-      "rationale": "Distinguishes defensive catch-all diagnostics from tree-sitter ERROR node diagnostics ('syntax error in connect body') and has_error() guard diagnostics ('invalid connect parameter'). Each error path produces a uniquely identifiable message, making test assertions precise and debugging clearer."
+      "decision": "Methods .re and .im are zero-arg method calls (not field access)",
+      "rationale": "The evaluator dispatch is via MethodCall { object, method, args } \u2014 there is no FieldAccess expression kind. The task describes .re and .im as accessors, so we implement them as zero-argument method calls, matching the .x/.y/.z pattern for Tensor components."
+    },
+    {
+      "decision": "Complex division only supports Complex/Scalar (not Complex/Complex)",
+      "rationale": "The task description explicitly lists Complex/Scalar but not Complex/Complex division. Complex/Complex division (via conjugate multiplication) is a separate concern and not requested."
+    },
+    {
+      "decision": "All tests in a separate integration test file",
+      "rationale": "Follows the established pattern: complex topics get their own test file in crates/reify-expr/tests/ (see point_vector_eval_tests.rs, collection_eval_tests.rs, lambda_eval_tests.rs)."
+    },
+    {
+      "decision": ".magnitude() returns Real for dimensionless Complex, Scalar for dimensioned",
+      "rationale": "Matches the stdlib magnitude() function behavior and the re()/im() extraction pattern. A dimensionless Complex's magnitude is a plain real number."
     }
   ],
   "reuse": [
     {
-      "what": "find_node_by_kind helper function",
-      "where": "ts_parser.rs tests module, line 2908",
-      "how": "Reuse for finding constraint_definition node in the catch-all test (step-3). Already exists and handles recursive tree traversal."
+      "what": "eval_add/eval_sub/eval_mul/eval_div pattern for Scalar arithmetic",
+      "where": "crates/reify-expr/src/lib.rs lines 744-937",
+      "how": "Add Complex match arms following the exact same pattern: dimension check for add/sub, dimension.mul()/div() for mul/div"
     },
     {
-      "what": "lower_body_directly helper function",
-      "where": "ts_parser.rs tests module, line 2926",
-      "how": "Reuse for step-5 test (extras not flagged). Parses source, finds connect_body node, calls lower_connect_body directly, returns errors."
+      "what": "eval_unop Neg pattern for Tensor",
+      "where": "crates/reify-expr/src/lib.rs lines 1085-1108",
+      "how": "Add Complex arm with simple negation of both re and im, much simpler than Tensor's component-wise pattern"
     },
     {
-      "what": "parse_decls helper function",
-      "where": "connect_chain_tests.rs, line 8",
-      "how": "Reuse for step-1 integration test. Parses source and returns (declarations, errors) tuple."
+      "what": "eval_method_call .x/.y/.z pattern for Tensor",
+      "where": "crates/reify-expr/src/lib.rs lines 637-650",
+      "how": "Add 're'/'im' as zero-arg methods extracting Complex components, following same match-on-method-name pattern"
     },
     {
-      "what": "Existing ParseError emit pattern from ERROR arm",
-      "where": "ts_parser.rs lines 1405-1412 (ERROR arm in lower_connect_body)",
-      "how": "Follow same pattern for the catch-all diagnostic: push ParseError with descriptive message and span from self.span(child). Keeps error emission consistent across all arms."
+      "what": "DimensionVector::mul() and DimensionVector::div()",
+      "where": "crates/reify-types/src/dimension.rs lines 147-162",
+      "how": "Use for Complex*Complex and Complex*Scalar dimension algebra, identical to Scalar*Scalar usage"
     },
     {
-      "what": "Lowering::new constructor for direct unit tests",
-      "where": "ts_parser.rs line 59",
-      "how": "Step-3 test creates a Lowering instance directly (same pattern as lower_body_directly helper) to call lower_connect_body on an arbitrary node type."
+      "what": "Test helpers: lit(), mm_val() pattern from inline tests",
+      "where": "crates/reify-expr/src/lib.rs lines 1126-1139",
+      "how": "Replicate in test file with additional complex_val() helper that builds Value::Complex"
+    },
+    {
+      "what": "Stdlib complex math formulas",
+      "where": "crates/reify-stdlib/src/lib.rs lines 441-467",
+      "how": "Same mathematical formulas for Complex addition (re+re, im+im) and multiplication ((ac-bd)+(ad+bc)i) are reused in the evaluator arms"
+    },
+    {
+      "what": "CompiledExpr::method_call() constructor",
+      "where": "crates/reify-types/src/expr.rs line 677",
+      "how": "Use in tests to build MethodCall expressions for .re, .im, .magnitude(), .phase(), .conjugate()"
     }
   ],
-  "_session_id": "396-2b2ea04a",
-  "_created_at": "2026-03-26T02:12:28.418693+00:00"
+  "_session_id": "287-763512ba",
+  "_created_at": "2026-03-26T02:47:31.311907+00:00"
 }
