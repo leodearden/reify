@@ -3761,7 +3761,7 @@ fn elaborate_child_lets_only<'t>(
 mod tests {
     use super::*;
     use reify_compiler::{CompiledGeometryOp, GeomRef, SweepKind, TransformKind};
-    use reify_types::GeometryHandleId;
+    use reify_types::{CompiledExpr, GeometryHandleId, Type};
 
     /// Helper: build a CompiledExpr literal from a constant f64.
     fn literal_f64(v: f64) -> reify_types::CompiledExpr {
@@ -3777,6 +3777,129 @@ mod tests {
             },
             reify_types::Type::length(),
         )
+    }
+
+    /// Unit test for the `evaluate_let_bindings` free function.
+    ///
+    /// Builds a 3-node let-binding chain: a = 1.0, b = a + 1.0, c = b + 1.0.
+    /// Verifies that topological sorting + evaluation produces a=1, b=2, c=3,
+    /// and that the cache records entries for each node.
+    #[test]
+    fn evaluate_let_bindings_three_node_chain() {
+        use reify_compiler::{EntityKind, ValueCellDecl, ValueCellKind, Visibility};
+        use reify_types::{BinOp, SourceSpan, SnapshotProvenance};
+
+        let a_id = ValueCellId::new("T", "a");
+        let b_id = ValueCellId::new("T", "b");
+        let c_id = ValueCellId::new("T", "c");
+
+        // a = 1.0
+        let a_expr = CompiledExpr::literal(Value::Real(1.0), Type::Real);
+        // b = a + 1.0
+        let b_expr = CompiledExpr::binop(
+            BinOp::Add,
+            CompiledExpr::value_ref(a_id.clone(), Type::Real),
+            CompiledExpr::literal(Value::Real(1.0), Type::Real),
+            Type::Real,
+        );
+        // c = b + 1.0
+        let c_expr = CompiledExpr::binop(
+            BinOp::Add,
+            CompiledExpr::value_ref(b_id.clone(), Type::Real),
+            CompiledExpr::literal(Value::Real(1.0), Type::Real),
+            Type::Real,
+        );
+
+        let template = reify_compiler::TopologyTemplate {
+            name: "T".to_string(),
+            entity_kind: EntityKind::Structure,
+            visibility: Visibility::Public,
+            type_params: vec![],
+            trait_bounds: vec![],
+            value_cells: vec![
+                ValueCellDecl {
+                    id: a_id.clone(),
+                    kind: ValueCellKind::Let,
+                    visibility: Visibility::Public,
+                    cell_type: Type::Real,
+                    default_expr: Some(a_expr),
+                    span: SourceSpan { start: 0, end: 0 },
+                },
+                ValueCellDecl {
+                    id: b_id.clone(),
+                    kind: ValueCellKind::Let,
+                    visibility: Visibility::Public,
+                    cell_type: Type::Real,
+                    default_expr: Some(b_expr),
+                    span: SourceSpan { start: 0, end: 0 },
+                },
+                ValueCellDecl {
+                    id: c_id.clone(),
+                    kind: ValueCellKind::Let,
+                    visibility: Visibility::Public,
+                    cell_type: Type::Real,
+                    default_expr: Some(c_expr),
+                    span: SourceSpan { start: 0, end: 0 },
+                },
+            ],
+            constraints: vec![],
+            realizations: vec![],
+            sub_components: vec![],
+            ports: vec![],
+            connections: vec![],
+            guarded_groups: vec![],
+            structure_controlling: HashSet::new(),
+            objective: None,
+            meta: HashMap::new(),
+            content_hash: ContentHash::of_str("test"),
+            is_recursive: false,
+        };
+
+        let mut journal = EventJournal::new();
+        let mut cache = CacheStore::new();
+        let mut values = ValueMap::new();
+        let mut snapshot = snapshot::Snapshot {
+            id: SnapshotId(0),
+            version: VersionId(0),
+            graph: graph::EvaluationGraph::from_templates(&[template.clone()]),
+            values: PersistentMap::new(),
+            topology_fingerprint: ContentHash::of_str("test"),
+            provenance: SnapshotProvenance::Initial,
+        };
+        let meta_map = MetaMap::new();
+
+        evaluate_let_bindings(
+            &mut journal,
+            &mut cache,
+            &template,
+            &mut values,
+            &mut snapshot,
+            1,
+            &[],
+            &meta_map,
+        );
+
+        // Verify computed values
+        match values.get(&a_id) {
+            Some(Value::Real(v)) => assert!((v - 1.0).abs() < 1e-12, "a should be 1.0, got {v}"),
+            other => panic!("a should be Real(1.0), got {:?}", other),
+        }
+        match values.get(&b_id) {
+            Some(Value::Real(v)) => assert!((v - 2.0).abs() < 1e-12, "b should be 2.0, got {v}"),
+            other => panic!("b should be Real(2.0), got {:?}", other),
+        }
+        match values.get(&c_id) {
+            Some(Value::Real(v)) => assert!((v - 3.0).abs() < 1e-12, "c should be 3.0, got {v}"),
+            other => panic!("c should be Real(3.0), got {:?}", other),
+        }
+
+        // Verify cache entries recorded for all 3 nodes
+        let a_node = NodeId::Value(a_id);
+        let b_node = NodeId::Value(b_id);
+        let c_node = NodeId::Value(c_id);
+        assert!(cache.get(&a_node).is_some(), "cache should have entry for a");
+        assert!(cache.get(&b_node).is_some(), "cache should have entry for b");
+        assert!(cache.get(&c_node).is_some(), "cache should have entry for c");
     }
 
     #[test]
