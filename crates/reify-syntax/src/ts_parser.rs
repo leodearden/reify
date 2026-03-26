@@ -3430,6 +3430,46 @@ mod tests {
         );
     }
 
+    // ── Port body defensive catch-all tests ────────────────────
+
+    /// Helper: parse source, find the port_body node, call lower_port_body
+    /// directly (bypassing check_and_lower!), and return the errors.
+    fn lower_port_body_directly(source: &str) -> Vec<ParseError> {
+        let mut ts_parser = tree_sitter::Parser::new();
+        ts_parser
+            .set_language(&tree_sitter_reify::language().into())
+            .expect("Error loading Reify grammar");
+        let tree = ts_parser.parse(source, None).expect("Failed to parse");
+        let root = tree.root_node();
+
+        let body_node = find_node_by_kind(root, "port_body")
+            .expect("no port_body node found in parse tree");
+
+        let mut lowering = Lowering::new(source);
+        lowering.lower_port_body(body_node);
+        lowering.errors
+    }
+
+    #[test]
+    fn lower_port_body_error_node_emits_diagnostic() {
+        // `{ >= }` produces an ERROR child inside port_body.
+        // When lower_port_body is called directly, the ERROR arm should fire.
+        let errors = lower_port_body_directly(
+            "structure S { port a : in T { >= } }",
+        );
+        assert!(
+            !errors.is_empty(),
+            "expected body-level diagnostic for ERROR node, got none"
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("syntax error in port body")),
+            "expected 'syntax error in port body', got: {:?}",
+            errors
+        );
+    }
+
     // ── Doc comment extraction tests ─────────────────────────
 
     #[test]
