@@ -1168,6 +1168,7 @@ impl Engine {
                                 &scoped_entity,
                                 &sub.args,
                                 &self.meta_map,
+                                &mut diagnostics,
                             );
                         }
 
@@ -1236,6 +1237,7 @@ impl Engine {
                     &scoped_entity,
                     &sub.args,
                     &self.meta_map,
+                    &mut diagnostics,
                 );
             }
 
@@ -3491,6 +3493,7 @@ fn unfold_recursive_sub<'t>(
         meta_map,
         &child_recursive_sub_names,
         templates,
+        diagnostics,
     );
 }
 
@@ -3514,6 +3517,7 @@ fn elaborate_child_instance(
     scoped_entity: &str,
     args: &[(String, reify_types::CompiledExpr)],
     meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
 ) {
     let child_values = elaborate_child_params_only(
         values, snapshot, functions, journal, cache, version_id,
@@ -3522,6 +3526,7 @@ fn elaborate_child_instance(
     elaborate_child_lets_only(
         values, snapshot, functions, journal, cache, version_id,
         child_template, scoped_entity, child_values, meta_map, &[], &[],
+        diagnostics,
     );
 }
 
@@ -3636,6 +3641,7 @@ fn elaborate_child_lets_only<'t>(
     meta_map: &HashMap<String, HashMap<String, String>>,
     recursive_sub_names: &[&str],
     templates: &'t [TopologyTemplate],
+    diagnostics: &mut Vec<Diagnostic>,
 ) {
     // Enrich child_values with sub-component values projected from the global map.
     // Only needed for recursive subs where deeper levels have already been elaborated
@@ -3709,6 +3715,26 @@ fn elaborate_child_lets_only<'t>(
         .collect();
 
     let sorted_child_lets = topological_sort(&child_let_node_ids, &child_let_traces);
+
+    // Detect cyclic let-binding dependencies: if topological_sort dropped nodes
+    // (Kahn's algorithm silently omits nodes in cycles), report them.
+    if sorted_child_lets.len() < child_let_node_ids.len() {
+        let sorted_set: HashSet<&NodeId> = sorted_child_lets.iter().collect();
+        let mut cyclic_members: Vec<&str> = child_let_node_ids
+            .iter()
+            .filter(|nid| !sorted_set.contains(nid))
+            .filter_map(|nid| match nid {
+                NodeId::Value(vcid) => Some(vcid.member.as_str()),
+                _ => None,
+            })
+            .collect();
+        cyclic_members.sort();
+        diagnostics.push(Diagnostic::error(format!(
+            "circular let-binding dependency in '{}': [{}]",
+            scoped_entity,
+            cyclic_members.join(", "),
+        )));
+    }
 
     for child_node_id in sorted_child_lets {
         let expr = child_let_cells[&child_node_id];
