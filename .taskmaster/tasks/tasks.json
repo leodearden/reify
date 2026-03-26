@@ -8564,6 +8564,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 503,
+        "title": "Extract shared constraint reporting helper from cmd_check and cmd_build",
+        "description": "The constraint-reporting loop in cmd_build (lines 162-175) is a near-exact copy of cmd_check (lines 89-102). Both iterate constraint_results, match on Satisfaction, set all_satisfied=false for violations, format labels identically, and print status strings. The only difference is println vs eprintln.\n\n**Fix:** Extract a helper function like:\n```rust\nfn report_constraint_results(results: &[ConstraintEntry], use_stderr: bool) -> bool\n```\nOr separate concerns: a pure `fn all_constraints_satisfied(results: &[ConstraintEntry]) -> bool` for exit-code logic, with each command printing in its own style.\n\n**Location:** crates/reify-cli/src/main.rs\n\n**Memory hints:** search for \"CLI constraint reporting\", entity names: cmd_build, cmd_check, ConstraintEntry",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -8576,7 +8587,7 @@
       ],
       "created": "2026-03-26T18:39:02.275Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-26T18:39:10.067Z"
+      "updated": "2026-03-26T18:39:14.738Z"
     }
   }
 }
