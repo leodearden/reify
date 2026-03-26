@@ -80,6 +80,25 @@ impl<'a> Lowering<'a> {
         ContentHash::of_str(self.node_text(node))
     }
 
+    /// Emit a diagnostic for an unexpected named child in a lowering context.
+    ///
+    /// Skips anonymous tokens and extras (comments). For named, non-extra
+    /// children that don't match any expected arm, pushes an error with the
+    /// child's kind and source text.
+    fn warn_unexpected_child(&mut self, child: tree_sitter::Node, context: &str) {
+        if child.is_named() && !child.is_extra() {
+            self.errors.push(ParseError {
+                message: format!(
+                    "unexpected '{}' in {}: {}",
+                    child.kind(),
+                    context,
+                    self.node_text(child)
+                ),
+                span: self.span(child),
+            });
+        }
+    }
+
     /// Extract a doc comment from `///` line comments immediately preceding a node.
     ///
     /// Walks backward through previous siblings collecting consecutive `line_comment`
@@ -1392,7 +1411,16 @@ impl<'a> Lowering<'a> {
                         frame_expr = self.lower_expr(value_node);
                     }
                 }
-                _ => {}
+                "ERROR" => {
+                    self.errors.push(ParseError {
+                        message: format!(
+                            "syntax error in port body: {}",
+                            self.node_text(child)
+                        ),
+                        span: self.span(child),
+                    });
+                }
+                _ => self.warn_unexpected_child(child, "port body"),
             }
         }
 
