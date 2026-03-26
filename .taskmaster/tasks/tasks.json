@@ -7648,11 +7648,11 @@
         "description": "Several test quality issues in `crates/reify-compiler/tests/recursive_detection_tests.rs`:\n\n1. **Remove duplicate test**: `warning_diagnostic_count_matches_scc_count` (line ~280) uses identical source and assertions as `multiple_independent_cycles` (line ~173). Remove the duplicate or replace its source with a distinct topology (e.g., 3-node cycle + self-loop).\n\n2. **Fix vacuous assertion**: `sub_referencing_unknown_structure_not_recursive` (line ~339) uses `if let Some(s)` which silently passes if the template isn't emitted. Use `find_template()` or add `assert!(!templates.is_empty())` before the conditional.\n\n3. **Add multi-node cycle path test**: No test exercises the `find_cycle_back_to` code path for multi-node SCCs. Add a test that verifies a 2-node mutual cycle produces a warning containing \"A -> B -> A\" or \"B -> A -> B\".\n\n4. **Add diagnostic assertion to collection test**: `collection_sub_creates_reference_edge` (line ~319) checks `is_recursive` but doesn't verify the cycle warning diagnostic is emitted. Add a diagnostic assertion for consistency.\n\nMemory hints: search \"recursive_detection_tests\" for test context; search \"reconstruct_scc_cycle find_cycle_back_to\" for the cycle path reconstruction logic.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-03-26T02:36:50.698Z"
+        "updatedAt": "2026-03-26T02:40:14.632Z"
       },
       {
         "id": "427",
@@ -7832,7 +7832,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-26T02:36:50.698Z",
+      "lastModified": "2026-03-26T02:40:14.632Z",
       "taskCount": 441,
       "completedCount": 233,
       "tags": [
