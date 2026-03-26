@@ -118,3 +118,35 @@ fn complex_sub_dimension_mismatch() {
     );
     assert!(result.is_undef());
 }
+
+// ─── step-5: Complex * Complex ─────────────────────────────────────────────
+
+/// (1+2i)*(3+4i) = (1*3-2*4)+(1*4+2*3)i = -5+10i, dimensionless.
+#[test]
+fn complex_mul_dimensionless() {
+    let result = eval_binop(
+        BinOp::Mul,
+        complex_val(1.0, 2.0, DimensionVector::DIMENSIONLESS),
+        Type::complex(Type::Real),
+        complex_val(3.0, 4.0, DimensionVector::DIMENSIONLESS),
+        Type::complex(Type::Real),
+        Type::complex(Type::Real),
+    );
+    assert_eq!(result, complex_val(-5.0, 10.0, DimensionVector::DIMENSIONLESS));
+}
+
+/// Complex<Length> * Complex<Time> combines dimensions via mul().
+#[test]
+fn complex_mul_dimension_product() {
+    // (2+3i)*Length * (4+5i)*Time = (2*4-3*5)+(2*5+3*4)i = (-7+22i) Length*Time
+    let result = eval_binop(
+        BinOp::Mul,
+        complex_val(2.0, 3.0, DimensionVector::LENGTH),
+        Type::complex(Type::length()),
+        complex_val(4.0, 5.0, DimensionVector::TIME),
+        Type::complex(Type::Real),
+        Type::complex(Type::Real),
+    );
+    let expected_dim = DimensionVector::LENGTH.mul(&DimensionVector::TIME);
+    assert_eq!(result, complex_val(-7.0, 22.0, expected_dim));
+}
