@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use reify_types::{BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, QuantifierKind, Type, UnOp, Value, ValueCellId, ValueMap};
+use reify_types::{BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, DimensionVector, QuantifierKind, Type, UnOp, Value, ValueCellId, ValueMap};
 
 /// Maximum recursion depth for user-defined function calls.
 const MAX_RECURSION_DEPTH: u32 = 256;
@@ -648,6 +648,21 @@ fn eval_method_call(obj: &Value, method: &str, args: &[Value], result_type: &Typ
                             si_value: mag,
                             dimension: *dimension,
                         }
+                    }
+                }
+                _ => Value::Undef,
+            }
+        },
+        "phase" => {
+            if !args.is_empty() {
+                return Value::Undef;
+            }
+            match obj {
+                Value::Complex { re, im, .. } => {
+                    let angle = im.atan2(*re);
+                    Value::Scalar {
+                        si_value: angle,
+                        dimension: DimensionVector::ANGLE,
                     }
                 }
                 _ => Value::Undef,
