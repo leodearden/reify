@@ -8459,11 +8459,11 @@
         "description": "cmd_build at crates/reify-cli/src/main.rs:173-180 returns ExitCode::SUCCESS whenever geometry is produced, regardless of constraint violations. This makes CI pipelines unable to detect violated constraints.\n\n**What's wrong:**\n- cmd_check correctly returns ExitCode::FAILURE when !all_satisfied (line 113)\n- cmd_build prints constraint violations to stderr but always exits 0 if geometry was produced\n- A CI script calling `reify build` cannot detect that the output violates constraints\n\n**Fix:** After writing the geometry file, check constraint_results for any Violated entries. If any exist, exit with FAILURE (or a distinct exit code like 2 to distinguish \"built with violations\" from \"failed to build\"). Add a test that runs cmd_build on fixtures/bracket_violating.ri and verifies non-zero exit code.\n\n**Memory hints:** search for \"CLI build command\", entity names: cmd_build, cmd_check, ExitCode",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-03-26T18:19:18.092Z"
+        "updatedAt": "2026-03-26T18:37:27.367Z"
       },
       {
         "id": "494",
@@ -8546,7 +8546,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-26T18:37:16.470Z",
+      "lastModified": "2026-03-26T18:37:27.376Z",
       "taskCount": 500,
       "completedCount": 250,
       "tags": [
