@@ -7438,11 +7438,11 @@
         "description": "Fix naming convention and documentation issues in the gradient implementation:\n\n1. Rename NumericalGradient to GradientOf in FieldSourceKind (crates/reify-types/src/value.rs) — the existing variants describe data provenance, not computation method.\n2. Update Field lambda field doc to cover the NumericalGradient case where it holds a Value::Field.\n3. Fix stale divergence/curl stub comment (crates/reify-expr/src/lib.rs:107-110) that says \"require numeric differentiation infrastructure\" — gradient already proved it exists.\n4. Document O(6^depth) cost of nested gradient fields in compute_numerical_gradient doc comment.\n\nSource: review suggestions from esc-281-11 (task 281).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-03-26T07:18:38.326Z"
+        "updatedAt": "2026-03-26T12:05:53.336Z"
       },
       {
         "id": "412",
@@ -7474,11 +7474,11 @@
         "description": "Three missing test cases in crates/reify-expr/tests/gradient_tests.rs:\n\n1. Point3 with non-Scalar quantity (e.g., Vec3) as domain -> eval_gradient should return Undef.\n2. Wrong-sized Tensor point (e.g., 2-component instead of 3) -> compute_numerical_gradient should return Undef.\n3. Partial Undef propagation: lambda returns Undef only for perturbations on one axis, verifying the early-exit behavior.\n\nSource: review suggestions from esc-281-11 (task 281).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-26T03:11:06.378Z"
+        "updatedAt": "2026-03-26T12:05:53.368Z"
       },
       {
         "id": "415",
@@ -8337,7 +8337,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-26T12:05:53.305Z",
+      "lastModified": "2026-03-26T12:05:53.368Z",
       "taskCount": 482,
       "completedCount": 249,
       "tags": [
