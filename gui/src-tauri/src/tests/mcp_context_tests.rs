@@ -43,7 +43,7 @@ fn get_open_files_returns_bracket_file() {
     assert_eq!(files.len(), 1);
     assert_eq!(files[0].path, "bracket.ri");
     assert_eq!(files[0].language, "reify");
-    assert_eq!(files[0].dirty, false);
+    assert!(!files[0].dirty);
 }
 
 #[test]
@@ -188,7 +188,7 @@ fn open_file_reads_from_disk() {
         .expect("open_file should succeed");
     assert_eq!(result.path, path.to_str().unwrap());
     assert_eq!(result.language, "reify");
-    assert_eq!(result.dirty, false);
+    assert!(!result.dirty);
 }
 
 #[test]
