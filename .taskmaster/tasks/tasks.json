@@ -7375,10 +7375,11 @@
         "description": "Fill test gaps in crates/reify-expr/tests/tensor_matrix_arithmetic_tests.rs:\n\n1. **matrix_times_scalar symmetry** — Only scalar*matrix tested; add matrix*scalar (Matrix * Real(2.0)) to exercise the reverse match arm in eval_mul\n2. **Single-element list sum** — list_sum_matrix_elements tests 2-element list; add 1-element list test which uses a different code path (no loop iteration, just initial clone + canonicalize)\n3. **Undef propagation** — No tests for Matrix+Undef→Undef or neg(Matrix with Undef element)→Undef\n4. **Matrix subtraction** — BinOp::Sub untested for Matrix; eval_sub is a separate code path from eval_add\n5. **content_hash structural test** — matrix_content_hash_determinism is trivially true (pure function called twice). Replace/augment with 2x3 vs 3x2 same-elements test to verify row-count encoding matters\n6. **Unignore or track matrix_literal_times_tensor_vector** — Currently #[ignore] with no tracking beyond esc-404-57; consider moving to a dedicated not-yet-implemented module\n\nLocation: crates/reify-expr/tests/tensor_matrix_arithmetic_tests.rs, crates/reify-types/src/value.rs tests\nmemory_hints: search \"tensor_matrix_arithmetic_tests matrix test coverage\" entity \"eval_binop\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-03-26T02:32:38.329Z"
       },
       {
         "id": "407",
@@ -7827,7 +7828,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-26T02:32:38.260Z",
+      "lastModified": "2026-03-26T02:32:38.329Z",
       "taskCount": 441,
       "completedCount": 233,
       "tags": [
