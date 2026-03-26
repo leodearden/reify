@@ -1100,7 +1100,7 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
         }
         // Scalar * Vector or Vector * Scalar: scale each component → Vector
         (Value::Vector(components), scalar) | (scalar, Value::Vector(components))
-            if !matches!(scalar, Value::Vector(_) | Value::Point(_) | Value::Tensor(_)) =>
+            if !matches!(scalar, Value::Vector(_) | Value::Point(_) | Value::Tensor(_) | Value::Transform { .. }) =>
         {
             scale_components(components, scalar, eval_mul, Value::Vector)
         }
@@ -1108,7 +1108,7 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
         // Pragmatic deviation from strict affine rules: needed for weighted
         // interpolation and barycentric coordinates.
         (Value::Point(components), scalar) | (scalar, Value::Point(components))
-            if !matches!(scalar, Value::Vector(_) | Value::Point(_) | Value::Tensor(_)) =>
+            if !matches!(scalar, Value::Vector(_) | Value::Point(_) | Value::Tensor(_) | Value::Transform { .. }) =>
         {
             scale_components(components, scalar, eval_mul, Value::Point)
         }
