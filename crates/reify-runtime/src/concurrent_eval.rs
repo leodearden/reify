@@ -276,15 +276,15 @@ pub async fn edit_param_concurrent(
     cancel: &CancellationToken,
 ) -> Result<(ConcurrentEditSetup, ConcurrentEditResult), SchedulerError> {
     let setup = engine.prepare_concurrent_edit(cell, new_value)?;
-    let eval_set = setup.eval_set.clone();
-    let traces = setup.traces.clone();
 
     let adapter = ConcurrentEvalAdapter::from_setup(&setup);
     let adapter_arc = Arc::new(adapter);
 
     let scheduler = ConcurrentScheduler;
+    // Pass eval_set.clone() (consumed by execute) and borrow traces from setup directly,
+    // avoiding the pre-clone of both fields.
     match scheduler
-        .execute(eval_set.clone(), Arc::clone(&adapter_arc), &traces, cancel, &setup.changed_cells)
+        .execute(setup.eval_set.clone(), Arc::clone(&adapter_arc), &setup.traces, cancel, &setup.changed_cells)
         .await
     {
         Ok(scheduler_result) => {
@@ -293,8 +293,8 @@ pub async fn edit_param_concurrent(
             // be ours — but if a spawned task retained a clone, fall back to
             // building the result via shared access.
             let mut result = match Arc::try_unwrap(adapter_arc) {
-                Ok(adapter) => adapter.into_result(&eval_set, scheduler_result.skipped),
-                Err(arc) => arc.build_result_shared(&eval_set, scheduler_result.skipped),
+                Ok(adapter) => adapter.into_result(&setup.eval_set, scheduler_result.skipped),
+                Err(arc) => arc.build_result_shared(&setup.eval_set, scheduler_result.skipped),
             };
 
             // Resolution phase: run solver synchronously after concurrent
