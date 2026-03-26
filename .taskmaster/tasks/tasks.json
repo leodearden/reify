@@ -8481,6 +8481,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 496,
+        "title": "Remove stale ChatMessage/SessionStatus from gui/src/types.ts (superseded by claudeStore.ts)",
+        "description": "gui/src/types.ts defines ChatMessage and SessionStatus types that are never imported — all components use the richer versions from gui/src/stores/claudeStore.ts. The two definitions have divergent shapes (types.ts has flat ChatMessage with 4 fields, claudeStore.ts has discriminated union with rich message types; types.ts has 3 SessionStatus variants, claudeStore.ts has 4).\n\n**Fix:** Remove ChatMessage and SessionStatus from types.ts. Verify no imports reference them (grep confirms zero imports from types.ts for these types).",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -8493,7 +8504,7 @@
       ],
       "created": "2026-03-26T15:04:44.899Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-26T15:05:29.383Z"
+      "updated": "2026-03-26T15:05:34.337Z"
     }
   }
 }
