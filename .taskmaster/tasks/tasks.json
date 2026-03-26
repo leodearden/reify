@@ -8017,10 +8017,11 @@
         "description": "Test quality suggestions from task 396 review (all in crates/reify-syntax, test code only):\n\n1. **Strengthen assertion** (test_analyst, robustness): `lower_connect_body_extras_not_flagged` uses `!errors.iter().any(|e| e.message.contains(\"unexpected\"))` — should be `assert!(errors.is_empty())` since source is syntactically valid. Location: ts_parser.rs ~line 3008.\n\n2. **Assert error count** (test_analyst): `lower_connect_body_catch_all_emits_for_unexpected_named_children` should assert `errors.len() >= 3` (one per named non-extra child). Location: ts_parser.rs ~line 3045.\n\n3. **Add has_error guard** (robustness): catch-all test should verify `!root.has_error()` before proceeding, for self-diagnosis on grammar changes. Location: ts_parser.rs ~line 3032.\n\n4. **Use let-else** (test_analyst): Replace `.expect()` with let-else for better test failure output. Location: ts_parser.rs ~line 3032.\n\n5. **Add anonymous token test** (test_analyst): New test `lower_connect_body_anonymous_tokens_not_flagged` — parse empty connect body `{}`, assert `errors.is_empty()`.\n\n6. **Split comment integration test** (test_analyst): `connect_body_with_comment_no_spurious_errors` tests two scenarios in one function — split into block/line comment tests. Location: connect_chain_tests.rs ~line 540.\n\n7. **Extract test helper** (reuse_auditor): Generalize `lower_body_directly` to `lower_node_directly(source, kind)` accepting target node kind as parameter. Location: ts_parser.rs ~line 2937.\n\n8. **Document test design** (architect_reviewer): Add comment explaining why catch-all test deliberately passes wrong node type. Location: ts_parser.rs ~line 3027.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-03-26T08:24:30.554Z"
       },
       {
         "id": "457",
@@ -8207,7 +8208,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-26T08:24:30.454Z",
+      "lastModified": "2026-03-26T08:24:30.554Z",
       "taskCount": 472,
       "completedCount": 249,
       "tags": [
