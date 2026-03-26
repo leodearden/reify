@@ -130,6 +130,24 @@ mod tests {
         );
     }
 
+    // --- guarded group go-to-definition tests ---
+
+    #[test]
+    fn goto_def_param_inside_where_block() {
+        // Source with guarded_x declared inside a where block,
+        // referenced by let ref_x = guarded_x on line 5.
+        let source = "structure S {\n    param cond : Bool = true\n    where cond {\n        param guarded_x : Scalar = 5mm\n    }\n    let ref_x = guarded_x\n}";
+        // Line 5: "    let ref_x = guarded_x"
+        //                          ^-- char 16 = start of 'guarded_x' reference
+        let position = Position::new(5, 16);
+        let loc = compute_goto_definition(source, &test_uri(), position)
+            .expect("goto-def for guarded_x ref should return location");
+        assert_eq!(loc.uri, test_uri());
+        // Should point to the param declaration on line 3:
+        // "        param guarded_x : Scalar = 5mm"
+        assert_eq!(loc.range.start.line, 3);
+    }
+
     #[test]
     fn goto_def_unknown_word_returns_none() {
         let source = "structure Foo {\n  param x: Scalar = 5mm\n}";
