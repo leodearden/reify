@@ -307,21 +307,32 @@ fn quantity_literal_uses_registry_unit() {
 #[test]
 fn hardcoded_units_still_work_without_declarations() {
     // All hardcoded units should still work when no unit declarations are present.
+    // Covers mm (Length), deg (Angle), and kg (Mass) fallback paths.
     let module = parse_and_compile(
         "structure S { param a : Length = 10mm\n param b : Angle = 90deg\n param c : Mass = 1kg }"
     );
     assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
     let template = module.templates.iter().find(|t| t.name == "S").expect("S not found");
-    let a = template.value_cells.iter().find(|c| c.id.member == "a").expect("a not found");
-    if let Some(expr) = &a.default_expr {
+
+    // Helper: extract si_value from a param's default_expr
+    let check = |name: &str, expected: f64, desc: &str| {
+        let cell = template.value_cells.iter().find(|c| c.id.member == name)
+            .unwrap_or_else(|| panic!("{} not found", name));
+        let expr = cell.default_expr.as_ref()
+            .unwrap_or_else(|| panic!("{} has no default_expr", name));
         if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar { si_value, .. }) = &expr.kind {
-            assert!((si_value - 0.01).abs() < 1e-9, "10mm should be 0.01m, got {}", si_value);
+            assert!(
+                (si_value - expected).abs() < 1e-9,
+                "{} expected {}, got {}", desc, expected, si_value
+            );
         } else {
-            panic!("expected scalar literal for a");
+            panic!("expected scalar literal for {}", name);
         }
-    } else {
-        panic!("a has no default_expr");
-    }
+    };
+
+    check("a", 0.01, "10mm should be 0.01m");
+    check("b", 90.0 * std::f64::consts::PI / 180.0, "90deg should be PI/2 rad");
+    check("c", 1.0, "1kg should be 1.0kg");
 }
 
 // ─── step-13: duplicate unit names produce diagnostic error ───────────────────
