@@ -368,3 +368,48 @@ fn compose_dimension_mismatch_undef() {
     );
     assert!(result.is_undef(), "mismatched translation dimensions should return Undef, got {:?}", result);
 }
+
+// ── step-11: Transform * Transform NaN quaternion tests ──────────────────────
+
+/// Transform with NaN in one rotation component * identity should return Undef,
+/// not silently substitute identity quaternion (1,0,0,0).
+#[test]
+fn compose_nan_rotation_returns_undef() {
+    let nan_transform = Value::Transform {
+        rotation: Box::new(Value::Orientation { w: f64::NAN, x: 0.0, y: 0.0, z: 0.0 }),
+        translation: Box::new(Value::Vector(vec![
+            Value::length(0.0),
+            Value::length(0.0),
+            Value::length(0.0),
+        ])),
+    };
+    let result = eval_mul_expr(
+        nan_transform,
+        Type::Transform(3),
+        identity_transform(),
+        Type::Transform(3),
+        Type::Transform(3),
+    );
+    assert!(result.is_undef(), "NaN rotation component should return Undef, got {:?}", result);
+}
+
+/// Transform with all-NaN rotation components * identity should return Undef.
+#[test]
+fn compose_all_nan_rotation_returns_undef() {
+    let nan_transform = Value::Transform {
+        rotation: Box::new(Value::Orientation { w: f64::NAN, x: f64::NAN, y: f64::NAN, z: f64::NAN }),
+        translation: Box::new(Value::Vector(vec![
+            Value::length(0.0),
+            Value::length(0.0),
+            Value::length(0.0),
+        ])),
+    };
+    let result = eval_mul_expr(
+        nan_transform,
+        Type::Transform(3),
+        identity_transform(),
+        Type::Transform(3),
+        Type::Transform(3),
+    );
+    assert!(result.is_undef(), "all-NaN rotation should return Undef, got {:?}", result);
+}
