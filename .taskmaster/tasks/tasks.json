@@ -6855,11 +6855,11 @@
         "description": "All pragma-lowering methods take &self not &mut self; failures return None silently with no diagnostic. Change to &mut self and push ParseError on failure. Fix f64 parse failure silently dropping entire pragma arg (ts_parser.rs:757-759). Fix malformed string literal falling back to raw text including quote char (ts_parser.rs:762-768). Add PartialEq to Pragma and PragmaArg (enables duplicate-pragma checking).\n\nMissing tests:\n- Bare(Number), Bare(String), Bare(Bool) pragma arg variants\n- Multiple pragmas in a single block\n- Pragma placed after other members (interleaved ordering)\n\nMemory hints: search \"lower_pragma ParseError pragma arg parse\", entities: lower_pragma, PragmaValue, PragmaArg",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-26T12:05:53.004Z"
+        "updatedAt": "2026-03-26T12:17:03.059Z"
       },
       {
         "id": "370",
@@ -8340,7 +8340,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-26T12:17:03.001Z",
+      "lastModified": "2026-03-26T12:17:03.059Z",
       "taskCount": 482,
       "completedCount": 249,
       "tags": [
