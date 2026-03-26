@@ -312,3 +312,17 @@ fn complex_div_by_zero_scalar() {
     );
     assert!(result.is_undef());
 }
+
+// ─── step-11: Unary negation ───────────────────────────────────────────────
+
+/// Negating a Complex value negates both re and im, preserves dimension.
+#[test]
+fn complex_negation() {
+    let result = eval_unop(
+        UnOp::Neg,
+        complex_val(3.0, 4.0, DimensionVector::LENGTH),
+        Type::complex(Type::length()),
+        Type::complex(Type::length()),
+    );
+    assert_eq!(result, complex_val(-3.0, -4.0, DimensionVector::LENGTH));
+}
