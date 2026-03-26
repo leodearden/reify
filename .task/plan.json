@@ -4,14 +4,16 @@
   "files": [
     "crates/reify-types/src/value.rs",
     "gui/src-tauri/src/types.rs",
-    "crates/reify-test-support/src/mocks.rs"
+    "crates/reify-test-support/src/mocks.rs",
+    "crates/reify-eval/src/lib.rs"
   ],
   "modules": [
     "crates/reify-types",
     "gui/src-tauri",
-    "crates/reify-test-support"
+    "crates/reify-test-support",
+    "crates/reify-eval"
   ],
-  "analysis": "Value::Range variant has public fields (inherent in Rust enums), allowing direct struct-literal construction that bypasses the normalizing Value::range() constructor. The constructor normalizes inclusivity flags (lower_inclusive=false when lower is None, etc.) to ensure logically identical ranges compare equal and hash identically.\n\nCurrently, Display, PartialEq, content_hash, and Ord all have debug_assert! checks that catch invariant violations in debug builds, but use raw (un-normalized) flags for computation. In release builds, debug_assert! is a no-op, so bypassed construction produces:\n- Wrong brackets in Display (e.g., '[-inf..' instead of '(-inf..')\n- Broken equality for logically identical ranges\n- Different content hashes for semantically equal ranges\n- Inconsistent ordering\n\nThe GUI format_value function (gui/src-tauri/src/types.rs:163) has the same bug \u2014 uses raw flags without normalization.\n\nApproach: Replace debug_assert!-only defense with defensive re-normalization at each use site. The pattern `*flag && bound.is_some()` (already in the constructor at line 118-119) is applied inline in Display, PartialEq, content_hash, and Ord. This makes the code self-healing: bypassed construction produces correct results everywhere.\n\nExisting #[cfg(debug_assertions)] #[should_panic] tests (6 total) are replaced with tests that verify correct normalized behavior for bypassed construction.\n\nThree test gaps are also filled:\n1. content_hash equivalence for both-None Range with different inclusivity flags\n2. PartialEq for the common both-bounds-present case\n3. content_hash for the common both-bounds-present case\n\nAdditional review fix: MockGeometryKernel::find_ops and has_op hold MutexGuard across caller-supplied closure execution. If the closure panics, the mutex is poisoned, causing all subsequent operations to fail with misleading 'poisoned' errors. Fix: snapshot operations into a local Vec while holding the lock, release, then filter/search the snapshot.",
+  "analysis": "Value::Range variant has public fields (inherent in Rust enums), allowing direct struct-literal construction that bypasses the normalizing Value::range() constructor. The constructor normalizes inclusivity flags (lower_inclusive=false when lower is None, etc.) to ensure logically identical ranges compare equal and hash identically.\n\nCurrently, Display, PartialEq, content_hash, and Ord all have debug_assert! checks that catch invariant violations in debug builds, but use raw (un-normalized) flags for computation. In release builds, debug_assert! is a no-op, so bypassed construction produces:\n- Wrong brackets in Display (e.g., '[-inf..' instead of '(-inf..')\n- Broken equality for logically identical ranges\n- Different content hashes for semantically equal ranges\n- Inconsistent ordering\n\nThe GUI format_value function (gui/src-tauri/src/types.rs:163) has the same bug \u2014 uses raw flags without normalization.\n\nApproach: Replace debug_assert!-only defense with defensive re-normalization at each use site. The pattern `*flag && bound.is_some()` (already in the constructor at line 118-119) is applied inline in Display, PartialEq, content_hash, and Ord. This makes the code self-healing: bypassed construction produces correct results everywhere.\n\nExisting #[cfg(debug_assertions)] #[should_panic] tests (6 total) are replaced with tests that verify correct normalized behavior for bypassed construction.\n\nThree test gaps are also filled:\n1. content_hash equivalence for both-None Range with different inclusivity flags\n2. PartialEq for the common both-bounds-present case\n3. content_hash for the common both-bounds-present case\n\nAdditional review fix: MockGeometryKernel::find_ops and has_op hold MutexGuard across caller-supplied closure execution. If the closure panics, the mutex is poisoned, causing all subsequent operations to fail with misleading 'poisoned' errors. Fix: snapshot operations into a local Vec while holding the lock, release, then filter/search the snapshot.\n\nReview feedback (round 2): NaN propagation in Revolve axis guard. The zero-magnitude axis guard `if mag < 1e-12` at lib.rs:3264-3266 does not catch NaN because `NaN < 1e-12` evaluates to `false` in Rust's IEEE 754 semantics. If any axis component evaluates to NaN, the NaN direction flows into GeometryOp::Revolve and reaches the OCCT C++ kernel, which may invoke undefined behaviour on NaN coordinates. Fix: replace with `if !mag.is_finite() || mag < 1e-12`.",
   "prerequisites": [
     {
       "id": "pre-1",
@@ -139,6 +141,27 @@
       "description": "Rebase task/364 onto current main to resolve merge_ff_failed. Main is 46 commits ahead (task-status auto-commits, task-203 LSP hover merge, task-351 merge, syntax doc-comment changes, eval trait-conformance tests, test-support fixtures). No source-code conflicts expected \u2014 main did not touch mocks.rs, while this branch's new changes (steps 12-13) are only in mocks.rs. Run `cargo test -p reify-test-support` after rebase to confirm no regressions.",
       "status": "done",
       "commit": "4e4a98fc"
+    },
+    {
+      "id": "step-15",
+      "type": "impl",
+      "description": "Rebase task/364 onto current main to resolve merge_ff_failed (review round 2). Main is 35 commits ahead (all task-status auto-commits). No source-code conflicts expected \u2014 main only changed .task/ metadata files, while this branch's unique commits touch mocks.rs. Run `git rebase main`, restore .task/plan.json, then run `cargo test -p reify-test-support -p reify-eval` after rebase to confirm no regressions.",
+      "status": "done",
+      "commit": "e725cc6d"
+    },
+    {
+      "id": "step-16",
+      "type": "test",
+      "description": "Write test compile_geometry_op_revolve_nan_axis_returns_none in crates/reify-eval/src/lib.rs tests module. Follows the exact pattern of the existing compile_geometry_op_revolve_zero_axis_returns_none test (line 3882): constructs a CompiledGeometryOp::Sweep with kind=SweepKind::Revolve, profiles=[GeomRef::Step(0)], and all 7 args present \u2014 but sets ax=f64::NAN, ay=0.0, az=0.0. Calls compile_geometry_op and asserts result.is_none(). Uses the existing literal_f64 helper (line 3718). Test FAILS because NaN magnitude bypasses the `mag < 1e-12` guard \u2014 `NaN < 1e-12` is false in IEEE 754, so Some(Revolve{axis_dir: [NaN, 0.0, 0.0], ...}) is returned.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-17",
+      "type": "impl",
+      "description": "Fix NaN propagation in Revolve axis guard at crates/reify-eval/src/lib.rs:3265. Change `if mag < 1e-12 {` to `if !mag.is_finite() || mag < 1e-12 {`. This catches both NaN (from NaN axis components) and Inf (from extremely large values), in addition to the existing zero-length check. Step-16 test passes because NaN magnitude is now caught by is_finite() returning false.",
+      "status": "pending",
+      "commit": null
     }
   ],
   "design_decisions": [
@@ -161,6 +184,10 @@
     {
       "decision": "Snapshot-then-filter for mutex safety in mock kernel",
       "rationale": "Cloning the Vec<GeometryOpRecord> before running caller-supplied closures ensures the MutexGuard is dropped before any user code executes. The clone cost is negligible in test code \u2014 these are mock operations with small payloads. This prevents mutex poisoning if a closure panics (e.g., from an assertion failure or unwrap), so subsequent test operations get the real error, not a misleading 'poisoned lock' message."
+    },
+    {
+      "decision": "Use is_finite() guard for NaN axis direction instead of is_nan() per-component",
+      "rationale": "Checking !mag.is_finite() on the computed magnitude catches both NaN and Inf in a single check, regardless of which component(s) are non-finite. This is more robust than checking each of ax/ay/az individually with is_nan(), since it also handles Inf values that would produce a seemingly valid but degenerate axis direction. The existing `mag < 1e-12` guard remains to catch genuinely zero-length axes."
     }
   ],
   "reuse": [
@@ -183,9 +210,19 @@
       "what": "Existing mock_find_ops/mock_has_op test patterns",
       "where": "crates/reify-test-support/src/mocks.rs:677-714",
       "how": "New mutex-poisoning tests follow the same kernel setup pattern (create kernel, execute ops), then add catch_unwind + post-panic assertions"
+    },
+    {
+      "what": "Existing compile_geometry_op_revolve_zero_axis_returns_none test pattern",
+      "where": "crates/reify-eval/src/lib.rs:3882-3903",
+      "how": "NaN axis test follows identical structure: same step_handles, ValueMap, CompiledGeometryOp::Sweep setup, and assert!(result.is_none()) \u2014 only axis values differ (f64::NAN instead of 0.0)"
+    },
+    {
+      "what": "literal_f64 test helper",
+      "where": "crates/reify-eval/src/lib.rs:3718-3719",
+      "how": "Reuse to construct CompiledExpr::literal(Value::Real(f64::NAN), Type::Real) for NaN axis args"
     }
   ],
   "_session_id": "364-c2e67267",
-  "_created_at": "2026-03-25T22:37:24.905787+00:00",
+  "_created_at": "2026-03-25T22:55:42.801105+00:00",
   "_schema_version": 1
 }
