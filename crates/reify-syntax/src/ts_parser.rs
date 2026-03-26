@@ -724,7 +724,7 @@ impl<'a> Lowering<'a> {
         })
     }
 
-    fn lower_type_alias(&self, node: tree_sitter::Node) -> Option<TypeAliasDecl> {
+    fn lower_type_alias(&mut self, node: tree_sitter::Node) -> Option<TypeAliasDecl> {
         let name_node = node.child_by_field_name("name")?;
         let name = self.node_text(name_node).to_string();
 
@@ -749,13 +749,31 @@ impl<'a> Lowering<'a> {
     /// Lower a dimensional_type_expr node. Handles binary operations on types
     /// (e.g., `Force / Area`, `Mass * Length`) and delegates to `lower_type_expr_node`
     /// for leaf type expressions.
-    fn lower_dimensional_type_expr(&self, node: tree_sitter::Node) -> TypeExpr {
+    fn lower_dimensional_type_expr(&mut self, node: tree_sitter::Node) -> TypeExpr {
         if node.kind() == "dimensional_type_expr" {
             // Check if this is a binary op (has op field) or a passthrough to type_expr
             if let Some(op_node) = node.child_by_field_name("op") {
                 let op = self.node_text(op_node).to_string();
-                let left_node = node.child_by_field_name("left").unwrap();
-                let right_node = node.child_by_field_name("right").unwrap();
+                let left_node = match node.child_by_field_name("left") {
+                    Some(n) if !n.is_missing() && !n.is_error() && !n.has_error() => n,
+                    _ => {
+                        self.errors.push(ParseError {
+                            message: "dimensional type expression missing left operand".into(),
+                            span: self.span(node),
+                        });
+                        return self.lower_type_expr_node(node);
+                    }
+                };
+                let right_node = match node.child_by_field_name("right") {
+                    Some(n) if !n.is_missing() && !n.is_error() && !n.has_error() => n,
+                    _ => {
+                        self.errors.push(ParseError {
+                            message: "dimensional type expression missing right operand".into(),
+                            span: self.span(node),
+                        });
+                        return self.lower_type_expr_node(node);
+                    }
+                };
                 let left = self.lower_dimensional_type_expr(left_node);
                 let right = self.lower_dimensional_type_expr(right_node);
                 return TypeExpr {
