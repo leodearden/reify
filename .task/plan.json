@@ -1,0 +1,106 @@
+{
+  "task_id": "481",
+  "title": "LSP: position-sensitive completion tests (test-first)",
+  "files": [
+    "crates/reify-lsp/src/completion.rs"
+  ],
+  "modules": [
+    "crates/reify-lsp"
+  ],
+  "analysis": "The `compute_completions` function in `crates/reify-lsp/src/completion.rs` takes a `Position` parameter but ignores it (named `_position`). It returns a flat merged list of all keywords + builtins + types + member names + structure names regardless of cursor position. This task writes 6 failing tests that assert position-sensitive behavior: each test provides a specific cursor context (top-level, body, expression, dot-access, type annotation, constraint expression) and asserts that only contextually-relevant completions are returned. The tests will compile and run but the exclusion assertions will fail because the current implementation returns everything everywhere. No implementation changes are needed \u2014 task 2 will make these tests pass.\n\nExisting tests (7 total) assert only inclusion (e.g., 'keywords include param') with no exclusion checks, so they continue to pass with the current implementation. The new tests use both inclusion and exclusion assertions; the exclusion assertions are what cause the expected failures.\n\nThe KEYWORDS list contains: structure, param, let, constraint, sub, import, if, then, else, and, or, not, true, false, auto. Tests focus on these existing keywords for assertions. Keywords mentioned in the task description that are not yet in the list (fn, trait, enum, minimize, maximize, port, connect, where) are noted in comments but not asserted \u2014 they can be added when the keyword list is expanded.\n\nThe bracket_source() fixture has 15 lines (0-14): structure Bracket on line 0, 5 params on lines 1-5, blank on 6, let volume on 7, blank on 8, 3 constraints on 9-11, blank on 12, let body on 13, closing brace on 14.",
+  "prerequisites": [],
+  "steps": [
+    {
+      "id": "step-1",
+      "type": "test",
+      "description": "Write failing test `completion_top_level_excludes_body_keywords`: source has one structure then a blank line; cursor at line 3 col 0 (outside any structure). Assert `structure` and `import` ARE present, assert `param`, `let`, `constraint`, `sub` are NOT present. Exclusion assertions fail because current impl returns all keywords everywhere.",
+      "status": "done",
+      "commit": "f0e1ca01"
+    },
+    {
+      "id": "step-2",
+      "type": "test",
+      "description": "Write failing test `completion_inside_body_excludes_top_level_keywords`: use bracket_source(), cursor at line 6 col 4 (blank line inside body between params and let). Assert `param`, `let`, `constraint`, `sub` ARE present; assert `structure`, `import` are NOT present. Exclusion assertions fail.",
+      "status": "done",
+      "commit": "f0e1ca01"
+    },
+    {
+      "id": "step-3",
+      "type": "test",
+      "description": "Write failing test `completion_expression_excludes_declaration_keywords`: source is `structure Foo { let x = <cursor> }`, cursor at line 1 col 12 (after `= `). Assert builtin functions (sin, cos) ARE present; assert `param`, `let`, `constraint`, `structure` are NOT present. Exclusion assertions fail.",
+      "status": "done",
+      "commit": "f0e1ca01"
+    },
+    {
+      "id": "step-4",
+      "type": "test",
+      "description": "Write failing test `completion_after_dot_returns_only_members`: source has structure Foo with params and `let x = part.`, cursor at line 4 col 18 (after `part.`). Assert no keywords are present, no builtin functions, no type names. All exclusion assertions fail because current impl returns everything.",
+      "status": "done",
+      "commit": "f0e1ca01"
+    },
+    {
+      "id": "step-5",
+      "type": "test",
+      "description": "Write failing test `completion_type_position_returns_types_and_structs`: source is `structure Foo { param x: <cursor> }`, cursor at line 1 col 13 (after `x: `). Assert type names (Scalar, Bool, Int, Real, String) ARE present and Foo struct IS present; assert keywords (`param`, `let`, `structure`) and builtin functions (`sin`, `box`) are NOT present. Exclusion assertions fail.",
+      "status": "done",
+      "commit": "f0e1ca01"
+    },
+    {
+      "id": "step-6",
+      "type": "test",
+      "description": "Write failing test `completion_constraint_expr_excludes_declaration_keywords`: use bracket_source(), cursor at line 9 col 27 (inside constraint expression `thickness > 2mm`). Assert member names (width, height) and builtins (sin, abs) ARE present; assert declaration keywords (`param`, `let`, `constraint`, `structure`) are NOT present. Exclusion assertions fail.",
+      "status": "done",
+      "commit": "f0e1ca01"
+    }
+  ],
+  "design_decisions": [
+    {
+      "decision": "Only assert with keywords currently in the KEYWORDS list",
+      "rationale": "The task description mentions fn, trait, enum, minimize, maximize, port, connect, where as future keywords, but they don't exist in the current KEYWORDS constant. Testing with non-existent keywords would conflate 'missing keyword' failures with 'wrong context' failures. Tests include comments noting where future keywords should be added."
+    },
+    {
+      "decision": "Tests fail via exclusion assertions only, inclusion assertions pass",
+      "rationale": "The current implementation returns everything everywhere, so any 'X is present' assertion passes trivially. The meaningful (failing) assertions are 'X is NOT present' \u2014 these document the desired position-sensitive filtering behavior that task 2 will implement."
+    },
+    {
+      "decision": "Use #[should_panic] attribute is NOT used \u2014 tests fail naturally",
+      "rationale": "The tests should compile and run, with assert! failures reported as normal test failures. Using #[should_panic] would invert the semantics and make the tests pass now but fail after task 2 implements the fix. Instead, the tests fail now and will pass after task 2."
+    },
+    {
+      "decision": "After-dot test uses Foo structure with undefined Bar sub-structure",
+      "rationale": "Following the task description's source string exactly. Even though Bar is undefined, the exclusion assertions (no keywords, no builtins, no types) are meaningful and will fail with the current flat-return implementation. A comment notes that ideally this would resolve Bar's members."
+    },
+    {
+      "decision": "Each test is marked with #[ignore] so existing CI passes while clearly documenting intent",
+      "rationale": "The task requires tests to compile but acknowledges they will fail. Using #[ignore] lets us run them explicitly with --ignored while keeping the default test suite green. Each test has a comment explaining it's expected to fail until task 2 implements position-sensitive completions."
+    },
+    {
+      "decision": "Existing tests are not modified",
+      "rationale": "All 7 existing tests assert only inclusion (contains checks) with no exclusion. They pass with the current implementation and will need to be updated by task 2 when position-sensitive filtering is added (e.g., completions_include_keywords at position (1,0) asserts 'structure' keyword which won't be offered inside a body). That's task 2's responsibility."
+    }
+  ],
+  "reuse": [
+    {
+      "what": "test_uri() helper function",
+      "where": "crates/reify-lsp/src/completion.rs tests module line 97",
+      "how": "Reuse directly \u2014 all new tests call test_uri() for the URI parameter"
+    },
+    {
+      "what": "bracket_source() fixture",
+      "where": "crates/reify-test-support/src/fixtures.rs",
+      "how": "Used in tests 2 (inside body) and 6 (constraint expression) via reify_test_support::bracket_source()"
+    },
+    {
+      "what": "Existing assertion pattern: filter by CompletionItemKind, collect labels as Vec<&str>, use .contains()",
+      "where": "crates/reify-lsp/src/completion.rs existing tests (lines 107-128)",
+      "how": "New tests follow the same pattern: filter items by kind, collect labels, assert contains/not-contains"
+    },
+    {
+      "what": "compute_completions function signature",
+      "where": "crates/reify-lsp/src/completion.rs line 9",
+      "how": "No signature changes needed \u2014 function already accepts Position, just ignores it"
+    }
+  ],
+  "_session_id": "481-a900e8af",
+  "_created_at": "2026-03-26T12:16:00.312127+00:00"
+}
