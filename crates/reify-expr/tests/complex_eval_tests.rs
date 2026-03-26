@@ -402,3 +402,19 @@ fn method_magnitude_dimensioned() {
     );
     assert_eq!(result, scalar_val(5.0, DimensionVector::LENGTH));
 }
+
+// ─── step-17: .phase() ─────────────────────────────────────────────────────
+
+/// .phase() returns Scalar with ANGLE dimension regardless of input dimension.
+#[test]
+fn method_phase() {
+    // Complex(1.0, 1.0) → phase = atan2(1.0, 1.0) = PI/4
+    let result = eval_method(
+        complex_val(1.0, 1.0, DimensionVector::LENGTH),
+        Type::complex(Type::length()),
+        "phase",
+        Type::Real,
+    );
+    let expected = scalar_val(std::f64::consts::FRAC_PI_4, DimensionVector::ANGLE);
+    assert_eq!(result, expected);
+}

@@ -1,312 +1,246 @@
 {
-  "task_id": "203",
-  "title": "Recursive structures: detection",
+  "task_id": "287",
+  "title": "Complex<Q>: arithmetic",
   "files": [
-    "crates/reify-compiler/tests/recursive_detection_tests.rs",
-    "crates/reify-compiler/src/lib.rs",
-    "crates/reify-eval/src/lib.rs",
-    "crates/reify-eval/tests/recursive_unfold.rs"
+    "crates/reify-expr/src/lib.rs",
+    "crates/reify-expr/tests/complex_eval_tests.rs"
   ],
   "modules": [
-    "crates/reify-compiler",
-    "crates/reify-eval"
+    "crates/reify-expr"
   ],
-  "analysis": "Task 203 requires detecting self-referential structure definitions during compilation: building a reference graph among structure defs, identifying direct and indirect cycles, and tagging recursive structures for special handling.\n\nThe core implementation already exists in lib.rs (lines 2404-2639):\n- `detect_recursive_structures()` builds an adjacency list from sub_components, runs iterative Tarjan's SCC algorithm, identifies cyclic SCCs, tags templates with `is_recursive = true`, and emits warning diagnostics with reconstructed cycle paths.\n- `tarjan_scc_visit()` is an iterative (non-recursive) Tarjan implementation using an explicit call stack.\n- `reconstruct_scc_cycle()` and `find_cycle_back_to()` produce human-readable cycle path strings.\n- `TopologyTemplate.is_recursive: bool` is the tag field (line 182), initialized to `false` in `compile_entity()` (line 3782) and set to `true` in the post-pass.\n\nThe adjacency building (lines 2417-2425) handles both instantiation form (`sub x = A()`) and collection form (`sub items : List<A>`) since both populate `SubComponentDecl.structure_name`.\n\nExisting test coverage is in `termination_check_tests.rs` (Task 204) which tests detection indirectly through termination error scenarios. There are NO dedicated tests for the detection behavior itself \u2014 specifically:\n- No tests verify `is_recursive` is correctly set/unset for various graph topologies\n- No tests verify the warning diagnostic is emitted with correct cycle path format\n- No tests for complex graph patterns (diamonds, multiple independent cycles, long chains)\n- No tests for collection sub form creating reference edges\n- No tests isolating detection from termination checking\n\nThis plan creates a dedicated test file for recursive detection with comprehensive coverage of all graph topologies and edge cases.\n\n**Review feedback (post step-23):** Two blocking issues were identified:\n1. `merge_ff_failed` \u2014 main advanced again during conflict resolution, requiring another rebase.\n2. `incorrect_behavior_for_mutual_recursion` \u2014 In `crates/reify-eval/src/lib.rs`, `unfold_recursive_sub` Phase 2 passes the *parent* template's `all_recursive_subs` unchanged into recursive calls for child entities. For self-recursion (S\u2192S) this is harmless. For mutual recursion (A\u2192B\u2192A), at depth 1 Phase 2 tries to expand entity A.b (type B) using A's sub declarations. The guard expressions reference A's `ValueCellId` keys, but `local_values` is built from B's `value_cells`. The A-keyed refs are absent, guard evaluates to `Value::Undef`, and the `Undef => return` branch fires silently \u2014 B's entity is left incomplete.\n\nThe fix: replace the `all_recursive_subs`/`all_recursive_sub_names` parameters with a `templates: &[TopologyTemplate]` slice (the module's template list). Inside `unfold_recursive_sub`, recompute `child_recursive_subs` from `child_template.sub_components` at each recursion depth. In Phase 2, iterate child's recursive subs and look up each sub's target template from the templates slice. This also fixes Phase 3's `elaborate_child_lets_only` which receives the correct child-scoped sub names for BFS traversal.",
-  "prerequisites": [],
+  "analysis": "Task 286 established the Complex type infrastructure: Value::Complex { re, im, dimension } in reify-types, and stdlib functions (complex(), re(), im(), conjugate(), phase(), magnitude(), complex_add(), complex_mul()). This task promotes Complex arithmetic from function-call-only (stdlib) to first-class operator support in the expression evaluator (reify-expr), and adds method-call syntax (.re, .im, .magnitude(), .phase(), .conjugate()). The evaluator's eval_add/eval_sub/eval_mul/eval_div/eval_unop functions need Complex arms following the existing Scalar pattern. eval_method_call needs Complex-specific method dispatch following the .x/.y/.z Tensor pattern. Key dimension rules: add/sub require matching dimensions, mul combines dimensions via DimensionVector::mul(), div combines via DimensionVector::div(). The evaluator does NOT sanitize NaN/Inf (consistent with existing Scalar arithmetic); that responsibility stays in stdlib. Complex/Scalar mixed arithmetic uses the scalar's value as a real multiplier/divisor and combines dimensions. Complex/Int and Complex/Real use the numeric as a dimensionless multiplier preserving the Complex's dimension.",
+  "prerequisites": [
+    {
+      "id": "pre-1",
+      "description": "Create test file crates/reify-expr/tests/complex_eval_tests.rs with imports (reify_expr, reify_types) and helper functions: lit(v, ty) wrapping CompiledExpr::literal, complex_val(re, im, dim) building Value::Complex, and scalar_val(v, dim) building Value::Scalar \u2014 matching existing test patterns from point_vector_eval_tests.rs and the inline tests module",
+      "status": "done",
+      "commit": "71d0b509",
+      "tests": []
+    }
+  ],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Create recursive_detection_tests.rs with helpers (compile_all, find_template) and write test `direct_self_reference_sets_is_recursive`: structure S with `sub child = S(n: n - 1) where n > 0` should have `is_recursive == true`. Also write test `no_subs_not_recursive`: structure with only params/lets should have `is_recursive == false`.",
+      "description": "Write failing tests for Complex + Complex: (1) complex_add_same_dimension \u2014 two Complex<Length> values added return Complex with summed re/im and preserved dimension; (2) complex_add_dimension_mismatch \u2014 Complex<Length> + Complex<Time> returns Undef",
       "status": "done",
-      "commit": "b49135a4"
+      "commit": "ef245d4c"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Verify step-1 tests pass against existing detect_recursive_structures() implementation. No code changes expected \u2014 implementation exists at lib.rs lines 2404-2491.",
+      "description": "Add Value::Complex arm to eval_add in lib.rs: match (Complex{re:ar,im:ai,dimension:ad}, Complex{re:br,im:bi,dimension:bd}), check ad==bd (Undef if not), return Complex{re:ar+br, im:ai+bi, dimension:*ad}. Insert before the _ => Value::Undef catch-all",
       "status": "done",
-      "commit": "b49135a4"
+      "commit": "c09960e3"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write test `indirect_two_node_cycle_both_recursive`: structures A (sub b = B()) and B (sub a = A()) with where-clause guards \u2014 both should have `is_recursive == true`. Write test `indirect_three_node_cycle_all_recursive`: A\u2192B\u2192C\u2192A chain \u2014 all three should be tagged recursive.",
+      "description": "Write failing tests for Complex - Complex: (1) complex_sub_same_dimension \u2014 subtraction returns Complex with differenced re/im and preserved dimension; (2) complex_sub_dimension_mismatch \u2192 Undef",
       "status": "done",
-      "commit": "fa1ee848"
+      "commit": "d501f5d1"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Verify step-3 tests pass. Multi-node SCC detection is handled by Tarjan's algorithm which finds all strongly-connected components regardless of cycle length.",
+      "description": "Add Value::Complex arm to eval_sub in lib.rs: same pattern as add but with subtraction. Check dimension match, return Complex{re:ar-br, im:ai-bi, dimension:*ad}",
       "status": "done",
-      "commit": "fa1ee848"
+      "commit": "480dbc47"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write test `linear_chain_no_cycle`: A\u2192B\u2192C with no back-edges \u2014 none should be recursive. Write test `diamond_no_cycle`: A\u2192B, A\u2192C, B\u2192D, C\u2192D (shared leaf, no back-edge) \u2014 none should be recursive. These verify non-cyclic graph patterns are correctly excluded.",
+      "description": "Write failing tests for Complex * Complex: (1) complex_mul_dimensionless \u2014 (1+2i)*(3+4i) = (-5+10i) with DIMENSIONLESS; (2) complex_mul_dimension_product \u2014 Complex<Length> * Complex<Time> returns Complex with LENGTH.mul(TIME) dimension, verifying (ac-bd)+(ad+bc)i formula",
       "status": "done",
-      "commit": "fa1ee848"
+      "commit": "958dcdf7"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Verify step-5 tests pass. Non-cyclic SCCs (single-node without self-edge) are correctly excluded by the `is_cycle` check at lines 2448-2454.",
+      "description": "Add Complex\u00d7Complex arm to eval_mul: compute re=ar*br-ai*bi, im=ar*bi+ai*br, dimension=ad.mul(bd). Return Value::Complex{re, im, dimension}",
       "status": "done",
-      "commit": "fa1ee848"
+      "commit": "e1b629dd"
     },
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write test `multiple_independent_cycles`: two separate cycles ({A\u2194B} and {C\u2194D}) in the same module \u2014 all four should be `is_recursive == true` and two separate warning diagnostics should be emitted. Write test `mixed_recursive_and_non_recursive`: cycle A\u2194B plus non-cycling structure C that references A \u2014 A and B should be recursive, C should not.",
+      "description": "Write failing tests for Complex * Scalar and Scalar * Complex: (1) complex_mul_scalar_right \u2014 Complex<Length> * Scalar<Time> scales re/im and combines dimensions; (2) scalar_mul_complex_left \u2014 Scalar<Time> * Complex<Length> is commutative with same result; (3) complex_mul_int and int_mul_complex \u2014 dimensionless integer multiplier preserves Complex dimension; (4) complex_mul_real and real_mul_complex \u2014 same for Real",
       "status": "done",
-      "commit": "fa1ee848"
+      "commit": "cc2e19c4"
     },
     {
       "id": "step-8",
       "type": "impl",
-      "description": "Verify step-7 tests pass. Tarjan processes all SCCs independently, so multiple disjoint cycles and mixed topologies are handled correctly.",
+      "description": "Add mixed multiplication arms to eval_mul: (Complex,Scalar)|(Scalar,Complex) \u2014 multiply re/im by si_value, combine dimensions via mul(); (Complex,Int)|(Int,Complex) \u2014 multiply re/im by n as f64, preserve Complex dimension; (Complex,Real)|(Real,Complex) \u2014 multiply re/im by r, preserve Complex dimension. Place before the _ catch-all",
       "status": "done",
-      "commit": "fa1ee848"
+      "commit": "92667664"
     },
     {
       "id": "step-9",
       "type": "test",
-      "description": "Write test `warning_diagnostic_emitted_for_cycle`: verify that a cycle produces exactly one warning-level diagnostic containing 'recursive structure cycle detected' and the cycle path string (e.g., 'S -> S' for self-ref, or 'A -> B -> A' for mutual). Write test `warning_diagnostic_count_matches_scc_count`: two independent cycles should produce exactly two warning diagnostics.",
+      "description": "Write failing tests for Complex division: (1) complex_div_scalar \u2014 Complex<Area>/Scalar<Length> returns Complex<Length> with re/im divided by si_value; (2) complex_div_int \u2014 Complex / 2 halves re/im, preserves dimension; (3) complex_div_real \u2014 Complex / 2.0 same; (4) complex_div_by_zero_int \u2192 Undef; (5) complex_div_by_zero_scalar \u2192 Undef",
       "status": "done",
-      "commit": "fa1ee848"
+      "commit": "5d1ca49e"
     },
     {
       "id": "step-10",
       "type": "impl",
-      "description": "Verify step-9 tests pass. Warning emission happens at lines 2461-2464 with `reconstruct_scc_cycle()` providing the path string.",
+      "description": "Add Complex division arms to eval_div: (Complex,Scalar) \u2014 divide re/im by si_value, combine dimensions via div(); (Complex,Int) \u2014 divide by n as f64, preserve dimension; (Complex,Real) \u2014 divide by r, preserve dimension. Division-by-zero already handled by the existing guard at top of eval_div",
       "status": "done",
-      "commit": "fa1ee848"
+      "commit": "96901cff"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write test `collection_sub_creates_reference_edge`: structure S with `sub items : List<S>` (collection form) should have `is_recursive == true`, verifying that collection subs are included in the reference graph. Write test `sub_referencing_unknown_structure_not_recursive`: structure S with `sub x = Unknown()` where Unknown is not defined in the module \u2014 should not crash and S should not be recursive (the reference is filtered out by name_to_idx lookup).",
+      "description": "Write failing test for unary -Complex: complex_negation \u2014 negating Complex<Length>(3.0, 4.0) returns Complex<Length>(-3.0, -4.0) with same dimension",
       "status": "done",
-      "commit": "fa1ee848"
+      "commit": "be61b361"
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "Verify step-11 tests pass. Collection subs use the same `structure_name` field (line 2422). Unknown structure references are filtered by the `filter_map` on name_to_idx (line 2422), producing no edge.",
+      "description": "Add Value::Complex arm to eval_unop UnOp::Neg: return Value::Complex { re: -re, im: -im, dimension }",
       "status": "done",
-      "commit": "fa1ee848"
+      "commit": "39456781"
     },
     {
       "id": "step-13",
-      "type": "impl",
-      "description": "Rebase task branch onto latest main to resolve merge_ff_failed. Main advanced with task-status auto-commits (.taskmaster/tasks/tasks.json, .task/*, orchestrator DB files, .gitignore, orchestrator.yaml). No code-file conflicts expected \u2014 main did NOT change mocks.rs, values.rs, or lib.rs since the branch point. For auto-generated file conflicts: accept main's version of .taskmaster/tasks/tasks.json and orchestrator files, keep task branch's .task/iterations.jsonl content.",
+      "type": "test",
+      "description": "Write failing tests for .re and .im methods: (1) method_re_dimensionless \u2014 Complex(3.0,4.0,DIMENSIONLESS).re returns Real(3.0); (2) method_re_dimensioned \u2014 Complex(3.0,4.0,LENGTH).re returns Scalar{3.0,LENGTH}; (3) method_im_dimensionless \u2014 returns Real(4.0); (4) method_im_dimensioned \u2014 returns Scalar{4.0,LENGTH}. Uses CompiledExpr::method_call with zero args",
       "status": "done",
-      "commit": "e6c5f493"
+      "commit": "c2c1eddb"
     },
     {
       "id": "step-14",
       "type": "impl",
-      "description": "Verify all tests pass after rebase: run `cargo test` for reify-compiler crate (recursive_detection_tests and termination_check_tests) to confirm detection behavior is intact on the rebased branch. Also run `cargo clippy` to ensure no new warnings.",
+      "description": "Add 're' and 'im' arms to eval_method_call: match on Value::Complex, check args.is_empty() (Undef if not), extract re or im component. Return Real if dimension.is_dimensionless(), Scalar{si_value, dimension} otherwise. Insert before the _ catch-all",
       "status": "done",
-      "commit": "e6c5f493"
+      "commit": "5cd331a6"
     },
     {
       "id": "step-15",
-      "type": "impl",
-      "description": "Retry fast-forward merge to main. If FF merge still fails (main advanced again during rebase), repeat rebase cycle from step-13.",
+      "type": "test",
+      "description": "Write failing tests for .magnitude(): (1) method_magnitude_dimensionless \u2014 Complex(3.0,4.0,DIMENSIONLESS).magnitude() returns Real(5.0); (2) method_magnitude_dimensioned \u2014 Complex(3.0,4.0,LENGTH).magnitude() returns Scalar{5.0,LENGTH}",
       "status": "done",
-      "commit": "e6c5f493"
+      "commit": "45105fc3"
     },
     {
       "id": "step-16",
       "type": "impl",
-      "description": "Second rebase onto latest main to resolve merge_ff_failed (main advanced again during step-15 conflict resolution with task-status auto-commits and task-364 code changes). The task branch has only one commit on top of the merge base (a0a60de0, touching only .task/plan.json). Main's changes since the merge base (.taskmaster/tasks/tasks.json, lib.rs, value.rs, types.rs) do not overlap with .task/plan.json, so the rebase should be conflict-free. Run: `git rebase main`.",
+      "description": "Add 'magnitude' arm to eval_method_call for Value::Complex: compute (re*re + im*im).sqrt(), return Real if dimensionless, Scalar with preserved dimension otherwise. Check args.is_empty()",
       "status": "done",
-      "commit": "b87f1c4a"
+      "commit": "4483353a"
     },
     {
       "id": "step-17",
-      "type": "impl",
-      "description": "Verify all tests pass after second rebase: run `cargo test -p reify-compiler` to confirm recursive_detection_tests and termination_check_tests pass. Also run `cargo clippy -p reify-compiler` to ensure no warnings introduced by main's changes (task-364 touched lib.rs).",
-      "status": "done",
-      "commit": "b87f1c4a"
+      "type": "test",
+      "description": "Write failing test for .phase(): method_phase \u2014 Complex(1.0, 1.0, LENGTH).phase() returns Scalar with ANGLE dimension and value PI/4 (\u22480.7854). Verify dimension is ANGLE regardless of input dimension",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-18",
       "type": "impl",
-      "description": "Retry fast-forward merge to main. Run `git checkout main && git merge --ff-only task/351`. If FF merge fails again (main advanced during rebase), repeat rebase from step-16.",
-      "status": "done",
-      "commit": "118bc901"
+      "description": "Add 'phase' arm to eval_method_call for Value::Complex: compute im.atan2(re), return Scalar{si_value: angle, dimension: DimensionVector::ANGLE}. Check args.is_empty()",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-19",
-      "type": "impl",
-      "description": "Resolve merge_ff_failed review issue. Verify task/351 is already an ancestor of main (merge from step-18 succeeded, main then advanced with task-status auto-commits). Fast-forward task/351 branch pointer to main HEAD so branch is synchronized. Run: `git merge-base --is-ancestor task/351 main` to confirm, then `git checkout task/351 && git merge --ff-only main` to sync.",
-      "status": "done",
-      "commit": "6fd99340"
+      "type": "test",
+      "description": "Write failing test for .conjugate(): method_conjugate \u2014 Complex(3.0, 4.0, LENGTH).conjugate() returns Complex(3.0, -4.0, LENGTH)",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-20",
       "type": "impl",
-      "description": "Verify recursive detection tests pass on synchronized branch: run `cargo test -p reify-compiler recursive_detection` to confirm all 12 detection tests pass. This validates that no intervening main commits broke the detection behavior.",
-      "status": "done",
-      "commit": "6fd99340"
+      "description": "Add 'conjugate' arm to eval_method_call for Value::Complex: return Complex{re: *re, im: -im, dimension: *dimension}. Check args.is_empty()",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-21",
-      "type": "impl",
-      "description": "Rebase task/351 onto main to resolve fourth merge_ff_failed. The task branch has exactly one diverging commit (39b0d970 'fix: update revolve test to match Option-based missing-arg handling') which is byte-for-byte identical to ade9feaa already on main. Git rebase will detect the duplicate patch and drop it, leaving task/351 pointing at main HEAD. Run: `git checkout task/351 && git rebase main`. The rebase should report 'dropping 39b0d970' with no conflicts.",
-      "status": "done",
-      "commit": "9f673c31"
+      "type": "test",
+      "description": "Write edge-case tests: (1) complex_add_non_complex_undef \u2014 Complex + Int/Real/Scalar returns Undef; (2) method_re_on_non_complex_undef \u2014 calling .re on a Scalar returns Undef; (3) method_magnitude_with_args_undef \u2014 .magnitude(1) with unexpected args returns Undef; (4) complex_undef_propagation \u2014 Undef + Complex returns Undef (already handled by eval_binop, but verify)",
+      "status": "pending",
+      "commit": null
     },
     {
       "id": "step-22",
       "type": "impl",
-      "description": "Verify recursive detection tests pass after rebase: run `cargo test -p reify-compiler recursive_detection` to confirm all 12 detection tests pass on the rebased branch. Also verify task/351 and main point to the same commit with `git rev-parse task/351 main`.",
-      "status": "done",
-      "commit": "9f673c31"
-    },
-    {
-      "id": "step-23",
-      "type": "impl",
-      "description": "Fast-forward merge task/351 to main. Since task/351 should now be at main HEAD (duplicate commit dropped by rebase), this is a no-op merge. Run: `git checkout main && git merge --ff-only task/351`. If they're already at the same commit, the merge succeeds trivially. Verify with `git log --oneline -3 main`.",
-      "status": "done",
-      "commit": "9f673c31"
-    },
-    {
-      "id": "step-24",
-      "type": "impl",
-      "description": "Rebase task/351 onto latest main to resolve merge_ff_failed (main advanced again since step-23). task/351 has one diverging commit (9211b939 'chore(task-351): final rebase sync'). Main advanced with task-status auto-commits only (no code-file changes). Run: `git checkout task/351 && git rebase main`. Verify with `git log --oneline -3`.",
-      "status": "done",
-      "commit": "9d179c21"
-    },
-    {
-      "id": "step-25",
-      "type": "impl",
-      "description": "Verify existing tests pass after rebase: run `cargo test -p reify-compiler recursive_detection` and `cargo test -p reify-eval recursive_unfold` to confirm both detection and eval recursive unfold tests pass on the rebased branch.",
-      "status": "done",
-      "commit": "9d179c21"
-    },
-    {
-      "id": "step-26",
-      "type": "test",
-      "description": "Write failing test `unfold_mutual_recursion_two_node_cycle` in crates/reify-eval/tests/recursive_unfold.rs. Build two templates: A (param n:Int=2, is_recursive=true, sub b=B(n:n-1) where n>0) and B (param n:Int=0, is_recursive=true, sub a=A(n:n-1) where n>0). Create a two-template module and eval. Assert: A.b.n == 1 (B instantiated with n=1), A.b.a.n == 0 (A instantiated with n=0), and A.b.a.b does NOT exist (guard stops at n=0). This test will FAIL against the current implementation because Phase 2 passes A's all_recursive_subs into the recursive call for B: the guard expression references A's ValueCellId keys, but local_values is built from B's value_cells, causing Undef => silent return.",
-      "status": "pending",
-      "commit": null
-    },
-    {
-      "id": "step-27",
-      "type": "impl",
-      "description": "Fix `unfold_recursive_sub` in crates/reify-eval/src/lib.rs to handle mutual recursion correctly:\n1. Change function signature: replace `all_recursive_subs: &[&'t SubComponentDecl]` and `all_recursive_sub_names: &[&str]` with `templates: &'t [TopologyTemplate]`.\n2. Inside the function, compute `child_recursive_subs` from `child_template.sub_components.iter().filter(|s| s.guard_expr.is_some())` and `child_recursive_sub_names` from those subs.\n3. In Phase 2 loop: iterate `child_recursive_subs` (child template's subs, not parent's). For each `next_sub`, look up the target template via `templates.iter().find(|t| t.name == next_sub.structure_name)` and pass it as `child_template` in the recursive call. Pass `templates` (not the fixed parent slice) so each depth level recomputes from its own child.\n4. In Phase 3: pass `child_recursive_sub_names` to `elaborate_child_lets_only` so BFS walks the correct child-scoped sub names.\n5. Update the call site (eval loop ~line 1214): remove the pre-computed `all_recursive_subs`/`all_recursive_sub_names` vectors. Pass `&module.templates` as the `templates` parameter instead.\n6. Verify step-26 test now passes.",
-      "status": "pending",
-      "commit": null
-    },
-    {
-      "id": "step-28",
-      "type": "test",
-      "description": "Write test `unfold_mutual_recursion_three_node_cycle` in recursive_unfold.rs: structures A->B->C->A each with param n, guards (n>0), and arg (n:n-1). With A.n=3, verify A.b.n==2, A.b.c.n==1, A.b.c.a.n==0, and A.b.c.a.b does NOT exist. This tests that the template lookup chains correctly through a 3-node cycle. Also write test `unfold_mutual_recursion_with_let_bindings`: A and B each have `let val = n * 10`. Verify that let-bindings at each mutual recursion depth are evaluated correctly (Phase 3 uses child-scoped sub names for BFS projection).",
-      "status": "pending",
-      "commit": null
-    },
-    {
-      "id": "step-29",
-      "type": "impl",
-      "description": "Verify step-28 tests pass. The three-node cycle test exercises template lookup across three distinct templates. The let-bindings test verifies Phase 3's elaborate_child_lets_only receives the correct child-scoped recursive_sub_names for BFS traversal.",
-      "status": "pending",
-      "commit": null
-    },
-    {
-      "id": "step-30",
-      "type": "impl",
-      "description": "Run full test suite for both affected crates: `cargo test -p reify-compiler` and `cargo test -p reify-eval`. Also run `cargo clippy -p reify-eval` to verify no new warnings from the signature change. Confirm all existing self-recursion tests still pass (no regression).",
-      "status": "pending",
-      "commit": null
-    },
-    {
-      "id": "step-31",
-      "type": "impl",
-      "description": "Rebase task/351 onto latest main and fast-forward merge. Run: `git checkout task/351 && git rebase main && git checkout main && git merge --ff-only task/351`. Verify with `git log --oneline -5 main`.",
+      "description": "Verify all edge-case tests pass \u2014 they should be covered by the existing _ => Value::Undef catch-all arms in eval_add/eval_method_call and Undef propagation in eval_binop. Fix any failures if catch-all ordering is wrong",
       "status": "pending",
       "commit": null
     }
   ],
   "design_decisions": [
     {
-      "decision": "Create a dedicated test file (recursive_detection_tests.rs) separate from termination_check_tests.rs",
-      "rationale": "Task 203 (detection) and Task 204 (termination verification) are distinct concerns. The termination tests already exist and test detection only indirectly through error scenarios. Detection tests need to verify the is_recursive flag, warning diagnostics, and graph topology handling independent of termination checking behavior."
+      "decision": "No NaN/Inf sanitization in evaluator for Complex arithmetic",
+      "rationale": "Consistent with existing Scalar arithmetic in eval_mul/eval_div/eval_add which do NOT call sanitize_value. Sanitization is the stdlib's responsibility (defense-in-depth at the function call boundary). The evaluator is a pure arithmetic engine."
     },
     {
-      "decision": "Tests verify existing implementation rather than driving new code",
-      "rationale": "The detect_recursive_structures() implementation (Tarjan SCC, cycle reconstruction, is_recursive tagging) was implemented as part of the compiler post-pass infrastructure. This task's value is in providing comprehensive, dedicated test coverage and regression protection for the detection behavior across diverse graph topologies."
+      "decision": "Complex/Int and Complex/Real treat the numeric as a dimensionless scalar multiplier",
+      "rationale": "Follows the established pattern from Scalar*Int and Scalar*Real in eval_mul: the numeric preserves the Complex's dimension. This is the natural mathematical interpretation."
     },
     {
-      "decision": "Use where-clause guards on recursive subs in test sources to avoid termination check errors polluting detection tests",
-      "rationale": "Without guards, the termination check (Task 204) emits errors that could obscure detection test assertions. Adding `where n > 0` guards with `n: n - 1` args produces clean compilation where only detection warnings appear, isolating the behavior under test."
+      "decision": "Method names match stdlib function names: 're', 'im', 'magnitude', 'phase', 'conjugate'",
+      "rationale": "The stdlib already defines these as function names (re(), im(), etc.). Using identical names for methods ensures consistency: z.re and re(z) are semantically equivalent."
     },
     {
-      "decision": "Test graph topologies comprehensively: self-loop, 2-node, 3-node cycles, linear chains, diamonds, multiple independent cycles, mixed",
-      "rationale": "Tarjan's SCC algorithm has distinct code paths for single-node SCCs with self-edges vs multi-node SCCs. Diamond patterns test that convergent (but non-cyclic) references are correctly excluded. Multiple independent cycles test that the algorithm processes all SCCs. Mixed topologies test that non-participating structures are not falsely tagged."
+      "decision": "Methods .re and .im are zero-arg method calls (not field access)",
+      "rationale": "The evaluator dispatch is via MethodCall { object, method, args } \u2014 there is no FieldAccess expression kind. The task describes .re and .im as accessors, so we implement them as zero-argument method calls, matching the .x/.y/.z pattern for Tensor components."
     },
     {
-      "decision": "Rebase onto main rather than merge to maintain linear history",
-      "rationale": "The merge_ff_failed issue is caused by task-status auto-commits on main diverging from the branch point. Main did NOT change any of the code files this task touches (mocks.rs, values.rs, lib.rs), so the rebase will be conflict-free on code. Only auto-generated files (.taskmaster/tasks/tasks.json, orchestrator DBs) need resolution, where main's version is authoritative."
+      "decision": "Complex division only supports Complex/Scalar (not Complex/Complex)",
+      "rationale": "The task description explicitly lists Complex/Scalar but not Complex/Complex division. Complex/Complex division (via conjugate multiplication) is a separate concern and not requested."
     },
     {
-      "decision": "Second rebase cycle uses same strategy as first",
-      "rationale": "Main advanced again during the first rebase/merge window (race condition with orchestrator auto-commits and task-364). The task branch now has only one commit diverging from the merge base (a0a60de0 touching .task/plan.json), and main's new changes (tasks.json, lib.rs, value.rs, types.rs) have zero overlap with .task/plan.json, making the rebase trivially conflict-free."
+      "decision": "All tests in a separate integration test file",
+      "rationale": "Follows the established pattern: complex topics get their own test file in crates/reify-expr/tests/ (see point_vector_eval_tests.rs, collection_eval_tests.rs, lambda_eval_tests.rs)."
     },
     {
-      "decision": "Fast-forward task branch to main instead of re-rebasing for third merge_ff_failed",
-      "rationale": "task/351 is already an ancestor of main (confirmed via git merge-base --is-ancestor). The code changes are fully merged. Main advanced only with task-status auto-commits (no code conflicts). The correct resolution is to fast-forward the task branch pointer to main's HEAD, which is a no-conflict operation that synchronizes the branch without any rebase."
-    },
-    {
-      "decision": "Fourth merge_ff_failed: rebase to drop duplicate commit",
-      "rationale": "task/351 has exactly one diverging commit (39b0d970) that is byte-for-byte identical to ade9feaa on main (both apply the same revolve test fix to reify-eval/src/lib.rs). The branches diverged because this fix was cherry-picked or independently applied on both branches. Rebasing will auto-detect the duplicate patch and drop it, converging the branches without conflict. This is cleaner than force-resetting because git handles the deduplication automatically."
-    },
-    {
-      "decision": "Replace all_recursive_subs/all_recursive_sub_names params with templates slice for mutual recursion fix",
-      "rationale": "The root cause is that a fixed parent template's sub declarations are passed unchanged through all recursion depths. For mutual recursion (A->B->A), the child template differs from the parent, so its sub declarations (with different guard expressions referencing different ValueCellId keys) must be used. Passing the full templates slice allows each recursion level to: (1) recompute recursive subs from the actual child_template, (2) look up the correct grandchild template for each sub's structure_name. This also fixes Phase 3 (elaborate_child_lets_only) which needs child-scoped sub names for correct BFS traversal of the entity tree."
-    },
-    {
-      "decision": "Scope expansion to crates/reify-eval for mutual recursion bug fix",
-      "rationale": "The reviewer_robustness issue (incorrect_behavior_for_mutual_recursion) is in the eval crate's unfold_recursive_sub, not the compiler's detection logic. Since detection (compiler) feeds directly into evaluation (eval), and the compiler correctly detects mutual cycles and sets is_recursive=true on both templates, the incomplete behavior manifests only at eval time. The fix must be in reify-eval/src/lib.rs with tests in reify-eval/tests/recursive_unfold.rs."
+      "decision": ".magnitude() returns Real for dimensionless Complex, Scalar for dimensioned",
+      "rationale": "Matches the stdlib magnitude() function behavior and the re()/im() extraction pattern. A dimensionless Complex's magnitude is a plain real number."
     }
   ],
   "reuse": [
     {
-      "what": "Test helper pattern (compile_all, compile_first_template)",
-      "where": "crates/reify-compiler/tests/termination_check_tests.rs",
-      "how": "Copy the same helper functions into the new test file \u2014 parse source, assert no parse errors, compile, return templates + diagnostics. This is the standard pattern across all compiler test files."
+      "what": "eval_add/eval_sub/eval_mul/eval_div pattern for Scalar arithmetic",
+      "where": "crates/reify-expr/src/lib.rs lines 744-937",
+      "how": "Add Complex match arms following the exact same pattern: dimension check for add/sub, dimension.mul()/div() for mul/div"
     },
     {
-      "what": "detect_recursive_structures() implementation",
-      "where": "crates/reify-compiler/src/lib.rs lines 2404-2491",
-      "how": "Existing implementation handles all detection scenarios: adjacency building, Tarjan SCC, cycle identification, is_recursive tagging, and warning diagnostic emission. No new implementation code needed."
+      "what": "eval_unop Neg pattern for Tensor",
+      "where": "crates/reify-expr/src/lib.rs lines 1085-1108",
+      "how": "Add Complex arm with simple negation of both re and im, much simpler than Tensor's component-wise pattern"
     },
     {
-      "what": "Tarjan SCC + cycle reconstruction helpers",
-      "where": "crates/reify-compiler/src/lib.rs lines 2493-2639",
-      "how": "TarjanState, tarjan_scc_visit(), reconstruct_scc_cycle(), find_cycle_back_to() \u2014 all internal helpers used by detect_recursive_structures(). Tested indirectly through the public compile() entry point."
+      "what": "eval_method_call .x/.y/.z pattern for Tensor",
+      "where": "crates/reify-expr/src/lib.rs lines 637-650",
+      "how": "Add 're'/'im' as zero-arg methods extracting Complex components, following same match-on-method-name pattern"
     },
     {
-      "what": "Reify source language syntax for structures and subs",
-      "where": "crates/reify-syntax/src/lib.rs (SubDecl, MemberDecl::Sub)",
-      "how": "Test sources use the Reify language syntax: `structure S { param n : Int = 5; sub child = S(n: n - 1) where n > 0 }` for instantiation form, `sub items : List<S>` for collection form."
+      "what": "DimensionVector::mul() and DimensionVector::div()",
+      "where": "crates/reify-types/src/dimension.rs lines 147-162",
+      "how": "Use for Complex*Complex and Complex*Scalar dimension algebra, identical to Scalar*Scalar usage"
     },
     {
-      "what": "Existing recursive_unfold.rs test infrastructure",
-      "where": "crates/reify-eval/tests/recursive_unfold.rs",
-      "how": "Reuse build_recursive_s() helper pattern, eval_single_template() helper, TopologyTemplateBuilder and CompiledModuleBuilder for constructing multi-template modules. Extend with a new eval_multi_template() helper that takes multiple templates."
+      "what": "Test helpers: lit(), mm_val() pattern from inline tests",
+      "where": "crates/reify-expr/src/lib.rs lines 1126-1139",
+      "how": "Replicate in test file with additional complex_val() helper that builds Value::Complex"
     },
     {
-      "what": "TopologyTemplateBuilder.sub_component_with_guard()",
-      "where": "crates/reify-test-support/src/builders.rs line 569",
-      "how": "Used to add guarded recursive subs to templates. For mutual recursion tests, call on each template with the other template's name as structure_name (e.g., A's sub b = B(...), B's sub a = A(...))."
+      "what": "Stdlib complex math formulas",
+      "where": "crates/reify-stdlib/src/lib.rs lines 441-467",
+      "how": "Same mathematical formulas for Complex addition (re+re, im+im) and multiplication ((ac-bd)+(ad+bc)i) are reused in the evaluator arms"
+    },
+    {
+      "what": "CompiledExpr::method_call() constructor",
+      "where": "crates/reify-types/src/expr.rs line 677",
+      "how": "Use in tests to build MethodCall expressions for .re, .im, .magnitude(), .phase(), .conjugate()"
     }
   ],
-  "_session_id": "351-fef2cc1d",
-  "_created_at": "2026-03-26T02:39:15.687917+00:00",
-  "_schema_version": 1
+  "_session_id": "287-763512ba",
+  "_created_at": "2026-03-26T02:47:31.311907+00:00"
 }
