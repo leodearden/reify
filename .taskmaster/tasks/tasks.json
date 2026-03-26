@@ -5083,7 +5083,7 @@
           "223",
           "224"
         ],
-        "status": "pending",
+        "status": "in-progress",
         "metadata": {
           "modules": [
             "crates/reify-stdlib",
@@ -5092,7 +5092,7 @@
           "milestone": "M11"
         },
         "subtasks": [],
-        "updatedAt": "2026-03-26T12:05:52.766Z"
+        "updatedAt": "2026-03-26T12:05:54.366Z"
       },
       {
         "id": "282",
@@ -8337,7 +8337,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-26T12:05:54.286Z",
+      "lastModified": "2026-03-26T12:05:54.366Z",
       "taskCount": 482,
       "completedCount": 249,
       "tags": [
