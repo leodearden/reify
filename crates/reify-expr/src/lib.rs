@@ -862,6 +862,15 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
         (Value::Int(a), Value::Real(b)) | (Value::Real(b), Value::Int(a)) => {
             Value::Real(*a as f64 * b)
         }
+        // Complex * Complex: (ac-bd) + (ad+bc)i, dimensions multiply
+        (
+            Value::Complex { re: ar, im: ai, dimension: ad },
+            Value::Complex { re: br, im: bi, dimension: bd },
+        ) => Value::Complex {
+            re: ar * br - ai * bi,
+            im: ar * bi + ai * br,
+            dimension: ad.mul(bd),
+        },
         // Scalar * Scalar: multiply values, add dimension exponents
         (
             Value::Scalar {
