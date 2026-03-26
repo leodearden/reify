@@ -1,4 +1,5 @@
 pub mod module_dag;
+pub mod stdlib_loader;
 mod scc;
 
 use std::collections::{HashMap, HashSet};
@@ -1941,8 +1942,22 @@ fn compile_purpose(
 /// Compile a parsed module into a compiled module.
 ///
 /// Performs name resolution, type checking, and expression compilation.
+/// Equivalent to `compile_with_prelude(parsed, &[])`.
 pub fn compile(
     parsed: &reify_syntax::ParsedModule,
+) -> CompiledModule {
+    compile_with_prelude(parsed, &[])
+}
+
+/// Compile a parsed module with prelude definitions available for resolution.
+///
+/// Prelude modules provide trait definitions, enum definitions, and functions
+/// that are visible to the user module during compilation. The output
+/// `CompiledModule` contains only the user's own definitions — prelude
+/// definitions are used as context but not duplicated in the output.
+pub fn compile_with_prelude(
+    parsed: &reify_syntax::ParsedModule,
+    prelude: &[CompiledModule],
 ) -> CompiledModule {
     let mut imports = Vec::new();
     let mut functions = Vec::new();
@@ -2075,31 +2090,51 @@ pub fn compile(
         }
     }
 
+    // Build resolution_enums: prelude enums + module-local enums.
+    // resolution_enums is used for type resolution during compilation;
+    // only enum_defs (module-local) goes into the output CompiledModule.
+    let mut resolution_enums: Vec<reify_types::EnumDef> = prelude
+        .iter()
+        .flat_map(|m| m.enum_defs.iter().cloned())
+        .collect();
+    resolution_enums.extend(enum_defs.iter().cloned());
+
     // Compile in dependency order after collecting all references:
-    // 1. Functions (need all enum_defs, plus prior compiled functions for self-reference)
+    // 1. Functions (need all resolution_enums, plus prior compiled functions for self-reference)
     for fn_def in &fn_refs {
-        if let Some(compiled_fn) = compile_function(fn_def, &enum_defs, &functions, &mut diagnostics)
+        if let Some(compiled_fn) = compile_function(fn_def, &resolution_enums, &functions, &mut diagnostics)
         {
             functions.push(compiled_fn);
         }
     }
 
-    // 2. Traits (depend on enum_defs for enum type resolution in params)
+    // 2. Traits (depend on resolution_enums for enum type resolution in params)
     let mut trait_defs = Vec::new();
     for trait_decl in &trait_refs {
-        let compiled_trait = compile_trait(trait_decl, &enum_defs, &mut diagnostics);
+        let compiled_trait = compile_trait(trait_decl, &resolution_enums, &mut diagnostics);
         trait_defs.push(compiled_trait);
     }
 
     // Build trait registry for conformance checking.
-    let trait_registry: HashMap<String, &CompiledTrait> = trait_defs
+    // Start with prelude traits, then add module-local traits (module overrides prelude on collision).
+    let mut trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
+    // Collect prelude trait references. We need to hold the prelude trait_defs
+    // in scope so trait_registry can borrow from them.
+    let prelude_trait_defs: Vec<&CompiledTrait> = prelude
         .iter()
-        .map(|t| (t.name.clone(), t))
+        .flat_map(|m| m.trait_defs.iter())
         .collect();
+    for t in &prelude_trait_defs {
+        trait_registry.insert(t.name.clone(), t);
+    }
+    // Module-local traits override prelude on name collision
+    for t in &trait_defs {
+        trait_registry.insert(t.name.clone(), t);
+    }
 
-    // 3. Fields (need all enum_defs + all compiled functions)
+    // 3. Fields (need all resolution_enums + all compiled functions)
     for field_def in &field_refs {
-        let compiled = compile_field(field_def, &enum_defs, &functions, &mut diagnostics);
+        let compiled = compile_field(field_def, &resolution_enums, &functions, &mut diagnostics);
         fields.push(compiled);
     }
 
@@ -2121,7 +2156,7 @@ pub fn compile(
                     .is_none_or(|(first_span, _)| *first_span == structure.span);
                 if is_first_def {
                     let entity_ref = EntityDefRef::from(structure);
-                    let template = compile_entity(&entity_ref, EntityKind::Structure, &enum_defs, &functions, &trait_registry, &field_registry, &mut pending_bound_checks, &mut diagnostics, &templates);
+                    let template = compile_entity(&entity_ref, EntityKind::Structure, &resolution_enums, &functions, &trait_registry, &field_registry, &mut pending_bound_checks, &mut diagnostics, &templates);
                     templates.push(template);
                 }
             }
@@ -2157,7 +2192,7 @@ pub fn compile(
                     .is_none_or(|(first_span, _)| *first_span == occurrence.span);
                 if is_first_def {
                     let entity_ref = EntityDefRef::from(occurrence);
-                    let template = compile_entity(&entity_ref, EntityKind::Occurrence, &enum_defs, &functions, &trait_registry, &field_registry, &mut pending_bound_checks, &mut diagnostics, &templates);
+                    let template = compile_entity(&entity_ref, EntityKind::Occurrence, &resolution_enums, &functions, &trait_registry, &field_registry, &mut pending_bound_checks, &mut diagnostics, &templates);
                     templates.push(template);
                 }
             }
@@ -2295,7 +2330,7 @@ pub fn compile(
             if let reify_syntax::Declaration::Purpose(purpose_def) = decl {
                 let compiled = compile_purpose(
                     purpose_def,
-                    &enum_defs,
+                    &resolution_enums,
                     &functions,
                     &purpose_template_registry,
                     &mut diagnostics,

@@ -1,0 +1,152 @@
+{
+  "task_id": "326",
+  "title": "Stdlib: .ri prelude loader \u2014 include_str!, parse, compile, cache",
+  "files": [
+    "crates/reify-compiler/src/stdlib_loader.rs",
+    "crates/reify-compiler/src/lib.rs",
+    "crates/reify-compiler/tests/stdlib_loader_tests.rs",
+    "crates/reify-eval/src/lib.rs",
+    "crates/reify-eval/tests/stdlib_prelude_tests.rs"
+  ],
+  "modules": [
+    "crates/reify-compiler",
+    "crates/reify-eval"
+  ],
+  "analysis": "The task builds infrastructure to load stdlib .ri files embedded via include_str!() in reify-compiler, parse+compile them once, cache with OnceLock, and make their definitions (traits, enums, functions) available to user code without explicit import.\n\nExisting state:\n- crates/reify-compiler/stdlib/materials_mechanical.ri already exists with 9 traits + 1 enum (Material, Elastic, Strong, Hard, FatigueRated, FractureTough, Ductile, ImpactResistant, Damping, HardnessScale)\n- Existing tests in materials_mechanical_tests.rs load it from filesystem via env!(\"CARGO_MANIFEST_DIR\") \u2014 not embedded\n- No include_str!() for .ri files anywhere; no OnceLock/lazy_static in the codebase\n- module_dag.rs has ModuleResolver with std.* prefix convention but isn't wired to compilation\n- compile() is a single-module function that builds a trait_registry HashMap from the module's own trait declarations (line 2094-2098). Trait conformance checking (check_trait_conformance) uses this registry.\n- Engine::eval() takes a single &CompiledModule, stores module.functions in self.functions for expression evaluation. No multi-module merge exists.\n- reify-eval already depends on reify-compiler (Cargo.toml), so calling into compiler's stdlib_loader is fine.\n\nKey challenge: Trait conformance is a compile-time concern (trait_registry in compile()), while function availability is an eval-time concern (EvalContext.functions). The prelude must serve both:\n1. compile_with_prelude() seeds trait_registry + enum resolution with prelude definitions\n2. Engine::eval() merges prelude functions into self.functions for expression evaluation\n\nApproach: Create stdlib_loader module with OnceLock caching, add compile_with_prelude() to the compiler that seeds the compilation context with prelude definitions, and modify Engine to store prelude and merge definitions during eval().",
+  "prerequisites": [
+    {
+      "id": "pre-1",
+      "description": "Verify materials_mechanical.ri exists and compiles cleanly with existing tests (cargo test -p reify-compiler --test materials_mechanical_tests)",
+      "status": "done",
+      "commit": null,
+      "tests": []
+    }
+  ],
+  "steps": [
+    {
+      "id": "step-1",
+      "type": "test",
+      "description": "Write failing tests in crates/reify-compiler/tests/stdlib_loader_tests.rs: (1) load_stdlib() returns non-empty slice, (2) all modules have zero error-level diagnostics, (3) materials_mechanical.ri traits are present (Material, Elastic, Strong etc.), (4) second call returns same pointer (cached). Tests fail because stdlib_loader module doesn't exist yet.",
+      "status": "done",
+      "commit": "06aa7527"
+    },
+    {
+      "id": "step-2",
+      "type": "impl",
+      "description": "Create crates/reify-compiler/src/stdlib_loader.rs: static STDLIB_CACHE: OnceLock<Vec<CompiledModule>>; pub fn load_stdlib() -> &'static [CompiledModule] using get_or_init that include_str!s each .ri file from ../stdlib/, parses with reify_syntax::parse, compiles with crate::compile, collects into Vec. Add 'pub mod stdlib_loader;' to lib.rs. All step-1 tests should pass.",
+      "status": "done",
+      "commit": "e2b5e187"
+    },
+    {
+      "id": "step-3",
+      "type": "test",
+      "description": "Write failing test in stdlib_loader_tests.rs: compile_with_prelude() makes prelude traits visible to user code. Test compiles 'structure def Steel : Elastic { param youngs_modulus: Real = 200.0  param poissons_ratio: Real = 0.3  param shear_modulus: Real = 77.0 }' using compile_with_prelude(parsed, load_stdlib()) and asserts zero error diagnostics and trait_bounds contains 'Elastic'. Fails because compile_with_prelude doesn't exist.",
+      "status": "done",
+      "commit": "328a2e0f"
+    },
+    {
+      "id": "step-4",
+      "type": "impl",
+      "description": "Add pub fn compile_with_prelude(parsed: &ParsedModule, prelude: &[CompiledModule]) -> CompiledModule to lib.rs. Refactor compile() to delegate: compile(parsed) calls compile_with_prelude(parsed, &[]). In compile_with_prelude: (1) collect prelude trait_defs into Vec<&CompiledTrait>, prelude enum_defs into Vec<EnumDef>, prelude functions into Vec<CompiledFunction>, (2) build resolution_enums = prelude_enums + module enums for passing to compile_trait/compile_field/compile_entity, (3) build trait_registry from prelude_traits first then module traits (module overrides prelude on name collision), (4) pass resolution_enums and combined trait_registry to internal compilation, (5) output CompiledModule contains only module-local definitions. Step-3 test passes.",
+      "status": "done",
+      "commit": "27b418b4"
+    },
+    {
+      "id": "step-5",
+      "type": "test",
+      "description": "Write failing test in stdlib_loader_tests.rs: compile_with_prelude injects trait constraint defaults. Compile 'structure def Steel : Strong { param yield_strength: Real = 250.0  param uts: Real = 400.0  param compressive_strength: Real = 250.0 }' with prelude, assert template.constraints is non-empty (uts >= yield_strength from Strong trait default). Should pass if step-4 correctly wires trait_registry.",
+      "status": "done",
+      "commit": "4bfa0d12"
+    },
+    {
+      "id": "step-6",
+      "type": "impl",
+      "description": "Fix any issues from step-5 test. Verify that prelude trait defaults (constraints, params, lets) are correctly injected into conforming structures during compile_with_prelude. This may require ensuring resolution_enums is passed to check_trait_conformance's internal compile_constraint_expr calls.",
+      "status": "done",
+      "commit": "4bfa0d12"
+    },
+    {
+      "id": "step-7",
+      "type": "test",
+      "description": "Write failing test in crates/reify-eval/tests/stdlib_prelude_tests.rs: (1) Engine::new() stores prelude \u2014 engine has non-empty prelude field, (2) eval() with a user module compiled via compile_with_prelude works correctly for a structure conforming to a prelude trait \u2014 values are populated, no error diagnostics. Fails because Engine doesn't have prelude field yet.",
+      "status": "done",
+      "commit": "52a87814"
+    },
+    {
+      "id": "step-8",
+      "type": "impl",
+      "description": "Modify Engine in crates/reify-eval/src/lib.rs: (1) add field 'prelude: &'static [CompiledModule]' to Engine struct, (2) in Engine::new(), set prelude: reify_compiler::stdlib_loader::load_stdlib(), (3) in eval(), after self.functions = module.functions.clone(), extend self.functions with prelude functions: for pm in self.prelude { self.functions.extend(pm.functions.iter().cloned()); }. Add pub fn prelude(&self) -> &[CompiledModule] accessor for test visibility. Step-7 tests pass.",
+      "status": "done",
+      "commit": "ed8547ed"
+    },
+    {
+      "id": "step-9",
+      "type": "test",
+      "description": "Write end-to-end test in stdlib_prelude_tests.rs: full pipeline from .ri source string through compile_with_prelude + Engine::eval. User code 'structure def Steel : Material + Elastic { param density: Real = 7800.0  param name: String = \"A36\"  param youngs_modulus: Real = 200.0  param poissons_ratio: Real = 0.3  param shear_modulus: Real = 77.0 }' compiles and evaluates successfully. Assert: (1) no error diagnostics from compilation, (2) eval returns values for all 5 params, (3) trait_bounds on template include both Material and Elastic.",
+      "status": "done",
+      "commit": "bd52d192"
+    },
+    {
+      "id": "step-10",
+      "type": "impl",
+      "description": "Fix any remaining issues to make step-9 end-to-end test pass. Verify backward compatibility: run existing test suites for reify-compiler and reify-eval to ensure no regressions from the compile() refactoring or Engine prelude addition.",
+      "status": "done",
+      "commit": "bd52d192"
+    }
+  ],
+  "design_decisions": [
+    {
+      "decision": "Use std::sync::OnceLock for stdlib caching instead of lazy_static or once_cell",
+      "rationale": "OnceLock is in std since Rust 1.70 \u2014 no extra dependency needed. The workspace already uses edition 2024. OnceLock provides the exact semantics needed: initialize-once, thread-safe, zero-cost after init."
+    },
+    {
+      "decision": "include_str!() for embedding .ri files rather than filesystem loading",
+      "rationale": "Compile-time embedding ensures stdlib is always available regardless of install location. Eliminates filesystem errors at runtime. The .ri files are small (< 5KB each), so binary size impact is negligible. This is the same pattern used by reify-mcp for documentation chunks."
+    },
+    {
+      "decision": "compile_with_prelude() seeds trait_registry and enum resolution context rather than merging parsed declarations",
+      "rationale": "Merging at the compile level (seeding trait_registry HashMap) is cleaner than merging ParsedModule declarations because: (1) prelude is already compiled, avoiding redundant parsing, (2) compiled traits have resolved types, (3) output CompiledModule only contains user definitions, avoiding double-counting. The alternative of merging parsed declarations would require converting CompiledTrait back to TraitDecl or maintaining both representations."
+    },
+    {
+      "decision": "compile() delegates to compile_with_prelude(parsed, &[]) \u2014 no code duplication",
+      "rationale": "The existing compile() function becomes a thin wrapper. All compilation logic lives in compile_with_prelude(). This ensures backward compatibility \u2014 all existing callers of compile() continue to work unchanged, while new callers can opt into prelude visibility."
+    },
+    {
+      "decision": "Engine always loads prelude in new() rather than opt-in",
+      "rationale": "The task specifies 'Engine::new() merges stdlib modules into eval context'. Since OnceLock makes the second call effectively free (<1ms), the cost of always loading is negligible. The current stdlib (materials_mechanical.ri) only contains traits and enums \u2014 no functions or templates \u2014 so existing eval tests are unaffected. The prelude is stored as &'static [CompiledModule] (a borrowed reference to the OnceLock cache), costing only a pointer-width field."
+    },
+    {
+      "decision": "Prelude definitions excluded from output CompiledModule in compile_with_prelude",
+      "rationale": "The output module should only reflect what the user wrote. Prelude definitions are used as compilation context (trait_registry, type resolution) but not included in the output's trait_defs, enum_defs, or functions vectors. This prevents double-counting when multiple modules are compiled and avoids content_hash changes from prelude updates affecting user module hashes."
+    }
+  ],
+  "reuse": [
+    {
+      "what": "Existing stdlib/materials_mechanical.ri file and test patterns",
+      "where": "crates/reify-compiler/stdlib/materials_mechanical.ri, crates/reify-compiler/tests/materials_mechanical_tests.rs",
+      "how": "The .ri file is already validated by comprehensive tests. Reuse the file as-is for include_str!. Reuse test patterns (load_stdlib_module helper, error filtering, trait assertion style) as templates for stdlib_loader_tests.rs."
+    },
+    {
+      "what": "reify-mcp include_str! pattern for embedded content",
+      "where": "crates/reify-mcp/src/lib.rs (SYNTAX, STRUCTURES etc. constants)",
+      "how": "Follow the same pattern of const CONTENT: &str = include_str!(\"path\") for embedding .ri source files. Validates this is an established project pattern."
+    },
+    {
+      "what": "compile() internal trait_registry and enum_defs compilation context",
+      "where": "crates/reify-compiler/src/lib.rs lines 2088-2098",
+      "how": "compile_with_prelude extends the existing trait_registry HashMap and enum_defs Vec with prelude entries before passing to compile_entity, compile_trait, compile_field. The internal function signatures don't change \u2014 they already accept &HashMap<String, &CompiledTrait> and &[EnumDef]."
+    },
+    {
+      "what": "MockConstraintChecker from test support",
+      "where": "crates/reify-test-support/src/mocks.rs",
+      "how": "Engine tests in stdlib_prelude_tests.rs use MockConstraintChecker::new() to create Engine instances, following the established eval test pattern."
+    },
+    {
+      "what": "Standard parse \u2192 compile \u2192 eval test pattern",
+      "where": "crates/reify-eval/tests/m9_trait_conformance.rs, field_eval_tests.rs",
+      "how": "End-to-end tests follow the established pattern: parse source string \u2192 compile \u2192 Engine::new(MockChecker) \u2192 engine.eval(&compiled) \u2192 assert values and diagnostics. The new tests add compile_with_prelude into this pipeline."
+    }
+  ],
+  "_session_id": "326-83fe7413",
+  "_created_at": "2026-03-26T12:14:44.831114+00:00"
+}
