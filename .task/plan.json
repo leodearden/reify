@@ -11,7 +11,7 @@
     "crates/reify-compiler",
     "crates/reify-eval"
   ],
-  "analysis": "Task 203 requires detecting self-referential structure definitions during compilation: building a reference graph among structure defs, identifying direct and indirect cycles, and tagging recursive structures for special handling.\n\nThe core implementation already exists in lib.rs (lines 2404-2639):\n- `detect_recursive_structures()` builds an adjacency list from sub_components, runs iterative Tarjan's SCC algorithm, identifies cyclic SCCs, tags templates with `is_recursive = true`, and emits warning diagnostics with reconstructed cycle paths.\n- `tarjan_scc_visit()` is an iterative (non-recursive) Tarjan implementation using an explicit call stack.\n- `reconstruct_scc_cycle()` and `find_cycle_back_to()` produce human-readable cycle path strings.\n- `TopologyTemplate.is_recursive: bool` is the tag field (line 182), initialized to `false` in `compile_entity()` (line 3782) and set to `true` in the post-pass.\n\nThe adjacency building (lines 2417-2425) handles both instantiation form (`sub x = A()`) and collection form (`sub items : List<A>`) since both populate `SubComponentDecl.structure_name`.\n\nExisting test coverage is in `termination_check_tests.rs` (Task 204) which tests detection indirectly through termination error scenarios. There are NO dedicated tests for the detection behavior itself — specifically:\n- No tests verify `is_recursive` is correctly set/unset for various graph topologies\n- No tests verify the warning diagnostic is emitted with correct cycle path format\n- No tests for complex graph patterns (diamonds, multiple independent cycles, long chains)\n- No tests for collection sub form creating reference edges\n- No tests isolating detection from termination checking\n\nThis plan creates a dedicated test file for recursive detection with comprehensive coverage of all graph topologies and edge cases.\n\n**Review feedback (post step-23):** Two blocking issues were identified:\n1. `merge_ff_failed` — main advanced again during conflict resolution, requiring another rebase.\n2. `incorrect_behavior_for_mutual_recursion` — In `crates/reify-eval/src/lib.rs`, `unfold_recursive_sub` Phase 2 passes the *parent* template's `all_recursive_subs` unchanged into recursive calls for child entities. For self-recursion (S→S) this is harmless. For mutual recursion (A→B→A), at depth 1 Phase 2 tries to expand entity A.b (type B) using A's sub declarations. The guard expressions reference A's `ValueCellId` keys, but `local_values` is built from B's `value_cells`. The A-keyed refs are absent, guard evaluates to `Value::Undef`, and the `Undef => return` branch fires silently — B's entity is left incomplete.\n\nThe fix: replace the `all_recursive_subs`/`all_recursive_sub_names` parameters with a `templates: &[TopologyTemplate]` slice (the module's template list). Inside `unfold_recursive_sub`, recompute `child_recursive_subs` from `child_template.sub_components` at each recursion depth. In Phase 2, iterate child's recursive subs and look up each sub's target template from the templates slice. This also fixes Phase 3's `elaborate_child_lets_only` which receives the correct child-scoped sub names for BFS traversal.\n\n**Review feedback (post step-31):** merge_ff_failed again — main advanced with 5 task-status auto-commits during conflict resolution. task/351 has one diverging commit (f702ef7a) touching only .task/plan.json and .taskmaster/tasks/tasks.json. All code changes are already on main via merge base d136ba49. Rebase to resolve.\n\n**Review feedback (post step-33):** merge_ff_failed again — main advanced with 3 task-status auto-commits (351=done, 364=blocked, 364=done). task/351 (6f2d8201) is confirmed ancestor of main (d1c5f1ac). All code fully merged. Fast-forward task/351 branch pointer to main HEAD to synchronize.\n\n**Review feedback (post step-35):** Eighth merge_ff_failed reported. Investigation shows task/351 and main both point to identical commit b8207196. Branches are already fully synchronized — this is a stale/spurious merge_ff_failed. Verify and confirm.",
+  "analysis": "Task 203 requires detecting self-referential structure definitions during compilation: building a reference graph among structure defs, identifying direct and indirect cycles, and tagging recursive structures for special handling.\n\nThe core implementation already exists in lib.rs (lines 2404-2639):\n- `detect_recursive_structures()` builds an adjacency list from sub_components, runs iterative Tarjan's SCC algorithm, identifies cyclic SCCs, tags templates with `is_recursive = true`, and emits warning diagnostics with reconstructed cycle paths.\n- `tarjan_scc_visit()` is an iterative (non-recursive) Tarjan implementation using an explicit call stack.\n- `reconstruct_scc_cycle()` and `find_cycle_back_to()` produce human-readable cycle path strings.\n- `TopologyTemplate.is_recursive: bool` is the tag field (line 182), initialized to `false` in `compile_entity()` (line 3782) and set to `true` in the post-pass.\n\nThe adjacency building (lines 2417-2425) handles both instantiation form (`sub x = A()`) and collection form (`sub items : List<A>`) since both populate `SubComponentDecl.structure_name`.\n\nExisting test coverage is in `termination_check_tests.rs` (Task 204) which tests detection indirectly through termination error scenarios. There are NO dedicated tests for the detection behavior itself \u2014 specifically:\n- No tests verify `is_recursive` is correctly set/unset for various graph topologies\n- No tests verify the warning diagnostic is emitted with correct cycle path format\n- No tests for complex graph patterns (diamonds, multiple independent cycles, long chains)\n- No tests for collection sub form creating reference edges\n- No tests isolating detection from termination checking\n\nThis plan creates a dedicated test file for recursive detection with comprehensive coverage of all graph topologies and edge cases.\n\n**Review feedback (post step-23):** Two blocking issues were identified:\n1. `merge_ff_failed` \u2014 main advanced again during conflict resolution, requiring another rebase.\n2. `incorrect_behavior_for_mutual_recursion` \u2014 In `crates/reify-eval/src/lib.rs`, `unfold_recursive_sub` Phase 2 passes the *parent* template's `all_recursive_subs` unchanged into recursive calls for child entities. For self-recursion (S\u2192S) this is harmless. For mutual recursion (A\u2192B\u2192A), at depth 1 Phase 2 tries to expand entity A.b (type B) using A's sub declarations. The guard expressions reference A's `ValueCellId` keys, but `local_values` is built from B's `value_cells`. The A-keyed refs are absent, guard evaluates to `Value::Undef`, and the `Undef => return` branch fires silently \u2014 B's entity is left incomplete.\n\nThe fix: replace the `all_recursive_subs`/`all_recursive_sub_names` parameters with a `templates: &[TopologyTemplate]` slice (the module's template list). Inside `unfold_recursive_sub`, recompute `child_recursive_subs` from `child_template.sub_components` at each recursion depth. In Phase 2, iterate child's recursive subs and look up each sub's target template from the templates slice. This also fixes Phase 3's `elaborate_child_lets_only` which receives the correct child-scoped sub names for BFS traversal.\n\n**Review feedback (post step-31):** merge_ff_failed again \u2014 main advanced with 5 task-status auto-commits during conflict resolution. task/351 has one diverging commit (f702ef7a) touching only .task/plan.json and .taskmaster/tasks/tasks.json. All code changes are already on main via merge base d136ba49. Rebase to resolve.\n\n**Review feedback (post step-33):** merge_ff_failed again \u2014 main advanced with 3 task-status auto-commits (351=done, 364=blocked, 364=done). task/351 (6f2d8201) is confirmed ancestor of main (d1c5f1ac). All code fully merged. Fast-forward task/351 branch pointer to main HEAD to synchronize.\n\n**Review feedback (post step-35):** Eighth merge_ff_failed reported. Investigation shows task/351 and main both point to identical commit b8207196. Branches are already fully synchronized \u2014 this is a stale/spurious merge_ff_failed. Verify and confirm.\n\n**Review feedback (post step-36):** Three blocking issues identified:\n1. `merge_ff_failed` \u2014 main advanced during conflict resolution (ninth occurrence).\n2. `incorrect_behavior_under_heterogeneous_mutual_recursion` \u2014 The BFS projection in `elaborate_child_lets_only` (lib.rs:3644-3665) iterates `child_template.value_cells` at ALL depth levels, but in mutual recursion (A\u2192B\u2192A) with different member names (A has `width`, B has `height`), the lookup `ValueCellId::new(&depth_entity, &cell.id.member)` silently misses values at depth levels belonging to the other template. Cross-depth let-bindings referencing those values evaluate to `Value::Undef` with no diagnostic. The existing mutual recursion tests all use identical member names (`n` and `val`), so this failure mode is not exercised.\n3. `silent_data_loss_on_cyclic_let_dependencies` \u2014 `topological_sort` (dirty.rs:50-54, via `compute_levels`:65-126) uses Kahn's algorithm and silently omits nodes in dependency cycles. In `elaborate_child_lets_only` (lib.rs:3682-3693), if two let-bindings form a circular dependency, they are never evaluated and remain `Value::Undef` with no diagnostic.\n\nFix for issue 2: Thread `templates: &[TopologyTemplate]` into `elaborate_child_lets_only`. Change the BFS queue to carry `(entity_path, &TopologyTemplate)` tuples. Seed from `child_template`'s recursive subs with their target templates. At each depth, iterate the entity's own template's `value_cells` (not the parent's). When enqueuing children, use the entity's template's recursive sub declarations to determine child sub names and their target templates. This replaces the static `recursive_sub_names` iteration that assumed all depths share the same template.\n\nFix for issue 3: After `topological_sort` returns in `elaborate_child_lets_only`, compare `sorted_child_lets.len()` against `child_let_node_ids.len()`. If they differ, the missing nodes form a cycle. Collect the unresolved node names and emit a `Diagnostic::error` naming them. This requires adding a `diagnostics: &mut Vec<Diagnostic>` parameter to `elaborate_child_lets_only` (threaded from the caller `unfold_recursive_sub` which already has it).",
   "prerequisites": [],
   "steps": [
     {
@@ -24,14 +24,14 @@
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Verify step-1 tests pass against existing detect_recursive_structures() implementation. No code changes expected — implementation exists at lib.rs lines 2404-2491.",
+      "description": "Verify step-1 tests pass against existing detect_recursive_structures() implementation. No code changes expected \u2014 implementation exists at lib.rs lines 2404-2491.",
       "status": "done",
       "commit": "b49135a4"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write test `indirect_two_node_cycle_both_recursive`: structures A (sub b = B()) and B (sub a = A()) with where-clause guards — both should have `is_recursive == true`. Write test `indirect_three_node_cycle_all_recursive`: A→B→C→A chain — all three should be tagged recursive.",
+      "description": "Write test `indirect_two_node_cycle_both_recursive`: structures A (sub b = B()) and B (sub a = A()) with where-clause guards \u2014 both should have `is_recursive == true`. Write test `indirect_three_node_cycle_all_recursive`: A\u2192B\u2192C\u2192A chain \u2014 all three should be tagged recursive.",
       "status": "done",
       "commit": "fa1ee848"
     },
@@ -45,7 +45,7 @@
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write test `linear_chain_no_cycle`: A→B→C with no back-edges — none should be recursive. Write test `diamond_no_cycle`: A→B, A→C, B→D, C→D (shared leaf, no back-edge) — none should be recursive. These verify non-cyclic graph patterns are correctly excluded.",
+      "description": "Write test `linear_chain_no_cycle`: A\u2192B\u2192C with no back-edges \u2014 none should be recursive. Write test `diamond_no_cycle`: A\u2192B, A\u2192C, B\u2192D, C\u2192D (shared leaf, no back-edge) \u2014 none should be recursive. These verify non-cyclic graph patterns are correctly excluded.",
       "status": "done",
       "commit": "fa1ee848"
     },
@@ -59,7 +59,7 @@
     {
       "id": "step-7",
       "type": "test",
-      "description": "Write test `multiple_independent_cycles`: two separate cycles ({A↔B} and {C↔D}) in the same module — all four should be `is_recursive == true` and two separate warning diagnostics should be emitted. Write test `mixed_recursive_and_non_recursive`: cycle A↔B plus non-cycling structure C that references A — A and B should be recursive, C should not.",
+      "description": "Write test `multiple_independent_cycles`: two separate cycles ({A\u2194B} and {C\u2194D}) in the same module \u2014 all four should be `is_recursive == true` and two separate warning diagnostics should be emitted. Write test `mixed_recursive_and_non_recursive`: cycle A\u2194B plus non-cycling structure C that references A \u2014 A and B should be recursive, C should not.",
       "status": "done",
       "commit": "fa1ee848"
     },
@@ -87,7 +87,7 @@
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write test `collection_sub_creates_reference_edge`: structure S with `sub items : List<S>` (collection form) should have `is_recursive == true`, verifying that collection subs are included in the reference graph. Write test `sub_referencing_unknown_structure_not_recursive`: structure S with `sub x = Unknown()` where Unknown is not defined in the module — should not crash and S should not be recursive (the reference is filtered out by name_to_idx lookup).",
+      "description": "Write test `collection_sub_creates_reference_edge`: structure S with `sub items : List<S>` (collection form) should have `is_recursive == true`, verifying that collection subs are included in the reference graph. Write test `sub_referencing_unknown_structure_not_recursive`: structure S with `sub x = Unknown()` where Unknown is not defined in the module \u2014 should not crash and S should not be recursive (the reference is filtered out by name_to_idx lookup).",
       "status": "done",
       "commit": "fa1ee848"
     },
@@ -101,7 +101,7 @@
     {
       "id": "step-13",
       "type": "impl",
-      "description": "Rebase task branch onto latest main to resolve merge_ff_failed. Main advanced with task-status auto-commits (.taskmaster/tasks/tasks.json, .task/*, orchestrator DB files, .gitignore, orchestrator.yaml). No code-file conflicts expected — main did NOT change mocks.rs, values.rs, or lib.rs since the branch point. For auto-generated file conflicts: accept main's version of .taskmaster/tasks/tasks.json and orchestrator files, keep task branch's .task/iterations.jsonl content.",
+      "description": "Rebase task branch onto latest main to resolve merge_ff_failed. Main advanced with task-status auto-commits (.taskmaster/tasks/tasks.json, .task/*, orchestrator DB files, .gitignore, orchestrator.yaml). No code-file conflicts expected \u2014 main did NOT change mocks.rs, values.rs, or lib.rs since the branch point. For auto-generated file conflicts: accept main's version of .taskmaster/tasks/tasks.json and orchestrator files, keep task branch's .task/iterations.jsonl content.",
       "status": "done",
       "commit": "e6c5f493"
     },
@@ -248,7 +248,7 @@
     {
       "id": "step-34",
       "type": "impl",
-      "description": "Resolve seventh merge_ff_failed. task/351 (6f2d8201) is confirmed ancestor of main (d1c5f1ac) — all code fully merged. Main advanced with 3 task-status auto-commits (351=done, 364=blocked, 364=done). Fast-forward task/351 branch pointer to main HEAD: `git checkout task/351 && git merge --ff-only main`. Verify with `git rev-parse task/351 main` showing identical SHAs.",
+      "description": "Resolve seventh merge_ff_failed. task/351 (6f2d8201) is confirmed ancestor of main (d1c5f1ac) \u2014 all code fully merged. Main advanced with 3 task-status auto-commits (351=done, 364=blocked, 364=done). Fast-forward task/351 branch pointer to main HEAD: `git checkout task/351 && git merge --ff-only main`. Verify with `git rev-parse task/351 main` showing identical SHAs.",
       "status": "done",
       "commit": "d1c5f1ac"
     },
@@ -262,9 +262,51 @@
     {
       "id": "step-36",
       "type": "impl",
-      "description": "Resolve eighth merge_ff_failed (spurious). Verified that task/351 and main both point to identical commit b8207196 — branches are already fully synchronized. No rebase or merge needed. Confirm with `git rev-parse task/351 main` (identical SHAs), `git merge-base --is-ancestor task/351 main` (true), and `cargo test -p reify-compiler --test recursive_detection_tests` (12 passed) + `cargo test -p reify-eval --test recursive_unfold` (19 passed). This merge_ff_failed was stale — main had already incorporated all task/351 commits at the time the review feedback was generated.",
+      "description": "Resolve eighth merge_ff_failed (spurious). Verified that task/351 and main both point to identical commit b8207196 \u2014 branches are already fully synchronized. No rebase or merge needed. Confirm with `git rev-parse task/351 main` (identical SHAs), `git merge-base --is-ancestor task/351 main` (true), and `cargo test -p reify-compiler --test recursive_detection_tests` (12 passed) + `cargo test -p reify-eval --test recursive_unfold` (19 passed). This merge_ff_failed was stale \u2014 main had already incorporated all task/351 commits at the time the review feedback was generated.",
       "status": "done",
       "commit": "af381339"
+    },
+    {
+      "id": "step-37",
+      "type": "test",
+      "description": "Write failing test `unfold_mutual_recursion_heterogeneous_members` in crates/reify-eval/tests/recursive_unfold.rs. Build two templates with NON-OVERLAPPING member names beyond the shared param `n`: Template A has `{param n: Int = 2, param width: Int = 5, let total: Int = width + A.b.height}` with `sub b = B(n: n-1) where n > 0`. Template B has `{param n: Int = 0, param height: Int = 3}` with `sub a = A(n: n-1) where n > 0`. Both `is_recursive = true`. Eval from A(n=2). Assert: A.width == 5, A.b.height == 3, and critically: A.total == 8 (= width + A.b.height). This test will FAIL because the BFS in `elaborate_child_lets_only` (lib.rs:3644-3665) iterates `child_template.value_cells` (A's members: n, width, total) to scan entity A.b (which is a B). `ValueCellId::new(\"A.b\", \"height\")` is never constructed because `height` is not in A's value_cells \u2014 so A.b.height is never projected into child_values, and A.total evaluates to Undef.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-38",
+      "type": "impl",
+      "description": "Fix BFS projection in `elaborate_child_lets_only` (lib.rs:3613-3666) to use per-entity template lookups for heterogeneous mutual recursion:\n1. Add `templates: &[TopologyTemplate]` parameter to `elaborate_child_lets_only`.\n2. Change BFS queue from `VecDeque<String>` to `VecDeque<(String, &TopologyTemplate)>` \u2014 each entry carries the entity path AND the template that entity belongs to.\n3. Seed the queue by looking up each recursive sub's target template: for each name in `recursive_sub_names`, find the sub in `child_template.sub_components`, then find the target template in `templates` via `sub.structure_name`. Push `(entity_path, target_template)` tuples.\n4. In the BFS loop body, iterate `entity_template.value_cells` (the entity's OWN template) instead of `child_template.value_cells`.\n5. When enqueuing children, use `entity_template.sub_components` to find child sub names and their target templates (via `templates` lookup), instead of the static `recursive_sub_names`. This ensures each depth level uses the correct template's sub declarations.\n6. Update the call site in `unfold_recursive_sub` (lib.rs:3474) to pass `templates`.\n7. Verify step-37 test now passes, plus all existing mutual recursion tests still pass.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-39",
+      "type": "test",
+      "description": "Write failing test `cyclic_let_bindings_emit_diagnostic` in crates/reify-eval/tests/recursive_unfold.rs. Build a recursive template S with `{param n: Int = 2, let a: Int = b + 1, let b: Int = a + 1, sub child = S(n: n-1) where n > 0}` with `is_recursive = true`. Eval the module. Assert: (1) the eval result's `diagnostics` contains at least one error-level diagnostic whose message contains 'circular let-binding dependency' (or similar) and names both `a` and `b`, (2) the values for S.a and S.b are `Value::Undef` (they were never evaluated due to the cycle). This test will FAIL because `elaborate_child_lets_only` currently has no cycle detection \u2014 the sorted output silently omits the cyclic nodes and no diagnostic is emitted.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-40",
+      "type": "impl",
+      "description": "Add cyclic let-binding detection in `elaborate_child_lets_only` (lib.rs:3682):\n1. Add `diagnostics: &mut Vec<Diagnostic>` parameter to `elaborate_child_lets_only`.\n2. After `let sorted_child_lets = topological_sort(...)` (line 3682), compare `sorted_child_lets.len()` against `child_let_node_ids.len()`. If `sorted_child_lets.len() < child_let_node_ids.len()`, collect the missing node IDs by computing the set difference `child_let_node_ids - sorted_set`. Extract member names from the missing `NodeId::Value(vcid)` entries.\n3. Emit `Diagnostic::error(format!(\"circular let-binding dependency in '{}': [{}]\", scoped_entity, missing_names.join(\", \")))`. The entity's let-bindings involved in the cycle remain as `Value::Undef` in the snapshot (they are never evaluated, which is the existing behavior \u2014 now it's just reported).\n4. Update the call site in `unfold_recursive_sub` (lib.rs:3474) to pass `diagnostics`.\n5. Verify step-39 test now passes, plus all existing tests still pass.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-41",
+      "type": "impl",
+      "description": "Run full test suite for both affected crates: `cargo test -p reify-compiler` and `cargo test -p reify-eval`. Run `cargo clippy -p reify-eval` to verify no new warnings from the signature changes. Confirm all existing self-recursion, mutual recursion (homogeneous), detection, and termination tests still pass (no regression from the two fixes).",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-42",
+      "type": "impl",
+      "description": "Rebase task/351 onto latest main and fast-forward merge. Run: `git checkout task/351 && git rebase main && git checkout main && git merge --ff-only task/351`. If main advanced during the operation, repeat rebase. Verify merge with `git log --oneline -5 main` and `cargo test -p reify-eval --test recursive_unfold`.",
+      "status": "pending",
+      "commit": null
     }
   ],
   "design_decisions": [
@@ -310,22 +352,34 @@
     },
     {
       "decision": "Sixth merge_ff_failed: rebase single metadata commit, accept main's tasks.json",
-      "rationale": "task/351's sole diverging commit (f702ef7a) only modifies .task/plan.json and .taskmaster/tasks/tasks.json — both metadata. All code changes are already on main via the merge base (d136ba49). Main's version of tasks.json is authoritative (it has the latest task-status transitions from the orchestrator). The plan.json should keep ours since it contains the updated plan with the new steps."
+      "rationale": "task/351's sole diverging commit (f702ef7a) only modifies .task/plan.json and .taskmaster/tasks/tasks.json \u2014 both metadata. All code changes are already on main via the merge base (d136ba49). Main's version of tasks.json is authoritative (it has the latest task-status transitions from the orchestrator). The plan.json should keep ours since it contains the updated plan with the new steps."
     },
     {
       "decision": "Seventh merge_ff_failed: fast-forward task branch to main (same as step-19 pattern)",
-      "rationale": "task/351 is confirmed ancestor of main (git merge-base --is-ancestor). All code is merged. Main advanced with 3 task-status auto-commits only (351=done, 364=blocked, 364=done). No rebase needed — just advance task/351's branch pointer to main HEAD via fast-forward merge. This is the simplest resolution with zero conflict risk."
+      "rationale": "task/351 is confirmed ancestor of main (git merge-base --is-ancestor). All code is merged. Main advanced with 3 task-status auto-commits only (351=done, 364=blocked, 364=done). No rebase needed \u2014 just advance task/351's branch pointer to main HEAD via fast-forward merge. This is the simplest resolution with zero conflict risk."
     },
     {
-      "decision": "Eighth merge_ff_failed: no-op — branches already synchronized",
-      "rationale": "Both task/351 and main point to identical commit b8207196. The merge_ff_failed review feedback was generated from stale state — by the time the plan update was requested, the branches had already converged. Verified via git rev-parse (identical SHAs), ancestry check, and full test pass (12 detection + 19 unfold tests). No action required beyond verification."
+      "decision": "Eighth merge_ff_failed: no-op \u2014 branches already synchronized",
+      "rationale": "Both task/351 and main point to identical commit b8207196. The merge_ff_failed review feedback was generated from stale state \u2014 by the time the plan update was requested, the branches had already converged. Verified via git rev-parse (identical SHAs), ancestry check, and full test pass (12 detection + 19 unfold tests). No action required beyond verification."
+    },
+    {
+      "decision": "BFS queue carries (entity_path, template) tuples for heterogeneous mutual recursion",
+      "rationale": "The root cause is that the BFS in elaborate_child_lets_only uses a single template's value_cells at ALL depth levels. In mutual recursion A\u2192B\u2192A with different member names, entities alternate between templates A and B, but only A's members are scanned. The fix tracks which template each BFS entity belongs to by carrying (entity_path, &TopologyTemplate) tuples in the queue. At each level, the entity's OWN template's value_cells are scanned, and its OWN template's sub declarations determine which children to enqueue and what their templates are. This is O(1) extra memory per queue entry and does not require a separate entity\u2192template map to be built during Phase 2."
+    },
+    {
+      "decision": "Cycle detection at the topological_sort call site, not inside topological_sort itself",
+      "rationale": "topological_sort/compute_levels is a generic utility in dirty.rs used by multiple callers (elaborate_child_lets_only, compute_eval_set). Changing its return type to Result<> would require updating all call sites and changing the error handling contract. The simpler fix is a post-hoc length check at the specific call site in elaborate_child_lets_only, which is the only caller where cyclic let-bindings are a meaningful error condition. Other callers (e.g., compute_eval_set for the dirty cone) have different cycle semantics."
+    },
+    {
+      "decision": "Thread diagnostics parameter into elaborate_child_lets_only",
+      "rationale": "elaborate_child_lets_only currently has no way to report errors \u2014 it writes values, snapshot, and journal but has no diagnostic output. The cyclic let detection needs to emit a Diagnostic::error. The caller unfold_recursive_sub already has &mut Vec<Diagnostic>, so threading it through is a minimal signature change. This also future-proofs the function for other diagnostic needs (e.g., type errors in let evaluation)."
     }
   ],
   "reuse": [
     {
       "what": "Test helper pattern (compile_all, compile_first_template)",
       "where": "crates/reify-compiler/tests/termination_check_tests.rs",
-      "how": "Copy the same helper functions into the new test file — parse source, assert no parse errors, compile, return templates + diagnostics. This is the standard pattern across all compiler test files."
+      "how": "Copy the same helper functions into the new test file \u2014 parse source, assert no parse errors, compile, return templates + diagnostics. This is the standard pattern across all compiler test files."
     },
     {
       "what": "detect_recursive_structures() implementation",
@@ -335,7 +389,7 @@
     {
       "what": "Tarjan SCC + cycle reconstruction helpers",
       "where": "crates/reify-compiler/src/lib.rs lines 2493-2639",
-      "how": "TarjanState, tarjan_scc_visit(), reconstruct_scc_cycle(), find_cycle_back_to() — all internal helpers used by detect_recursive_structures(). Tested indirectly through the public compile() entry point."
+      "how": "TarjanState, tarjan_scc_visit(), reconstruct_scc_cycle(), find_cycle_back_to() \u2014 all internal helpers used by detect_recursive_structures(). Tested indirectly through the public compile() entry point."
     },
     {
       "what": "Reify source language syntax for structures and subs",
@@ -351,9 +405,19 @@
       "what": "TopologyTemplateBuilder.sub_component_with_guard()",
       "where": "crates/reify-test-support/src/builders.rs line 569",
       "how": "Used to add guarded recursive subs to templates. For mutual recursion tests, call on each template with the other template's name as structure_name (e.g., A's sub b = B(...), B's sub a = A(...))."
+    },
+    {
+      "what": "Existing mutual recursion test patterns (step-26/28)",
+      "where": "crates/reify-eval/tests/recursive_unfold.rs lines 850-1067",
+      "how": "The heterogeneous member test (step-37) follows the same structure as unfold_mutual_recursion_two_node_cycle: build two templates with TopologyTemplateBuilder, create module with CompiledModuleBuilder, eval, assert values. The key difference is adding non-overlapping param/let members (width on A, height on B) and a cross-template let reference."
+    },
+    {
+      "what": "topological_sort and NodeId infrastructure",
+      "where": "crates/reify-eval/src/dirty.rs lines 50-54, crates/reify-eval/src/cache.rs (NodeId)",
+      "how": "The existing topological_sort returns Vec<NodeId>. The cycle detection compares its length against the input HashSet<NodeId> size. NodeId::Value(vcid) extracts the member name for the diagnostic message. No changes to dirty.rs needed."
     }
   ],
   "_session_id": "351-fef2cc1d",
-  "_created_at": "2026-03-26T07:15:02.951663+00:00",
+  "_created_at": "2026-03-26T07:43:51.404593+00:00",
   "_schema_version": 1
 }

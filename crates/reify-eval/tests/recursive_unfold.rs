@@ -1065,3 +1065,99 @@ fn unfold_mutual_recursion_with_let_bindings() {
         "A.b.a.val should be 0 (= 0 * 10)"
     );
 }
+
+// ─── step-37: mutual recursion with heterogeneous (non-overlapping) members ──
+
+/// Two mutually-recursive templates with NON-OVERLAPPING member names beyond `n`:
+///   A { param n: Int = 2; param width: Int = 5; let total: Int = width + A.b.height;
+///       is_recursive = true; sub b = B(n: n-1) where n > 0 }
+///   B { param n: Int = 0; param height: Int = 3;
+///       is_recursive = true; sub a = A(n: n-1) where n > 0 }
+///
+/// Starting from A(n=2):
+///   A(n=2, width=5) → A.b = B(n=1, height=3) → A.b.a = A(n=0, width=5) → guard false.
+///
+/// Key assertion: A.total = width + A.b.height = 5 + 3 = 8
+///
+/// This tests that the BFS projection in `elaborate_child_lets_only` uses
+/// per-entity template lookups — NOT just child_template.value_cells at all depths.
+/// With heterogeneous members, B's `height` is absent from A's value_cells, so the
+/// current BFS (iterating A.value_cells for entity A.b) never constructs
+/// ValueCellId("A.b", "height"), causing A.total to evaluate to Undef.
+#[test]
+fn unfold_mutual_recursion_heterogeneous_members() {
+    // The let expr for `total`: width + A.b.height
+    // References A.width (same template) and A.b.height (cross-template via sub path).
+    // In the compiled form the let expr sees `A.b.height` as a value_ref to (A, "b.height")
+    // but after scoping in the evaluator, it resolves through the child_values map.
+    // Actually, the let-binding `total` is on template A, so the compiled expr references
+    // A.width and the deeper entity's height. The BFS must project B's `height` member
+    // from the global values into child_values so the let-binding can resolve it.
+
+    // Template A: param n=2, param width=5, let total = width + <b.height via child_values>,
+    //             sub b = B(n: n-1) where n > 0
+    let template_a = TopologyTemplateBuilder::new("A")
+        .param("A", "n", Type::Int, Some(CompiledExpr::literal(Value::Int(2), Type::Int)))
+        .param("A", "width", Type::Int, Some(CompiledExpr::literal(Value::Int(5), Type::Int)))
+        .let_binding(
+            "A", "total", Type::Int,
+            // total = width + A.b.height
+            // After scoping: child_values has A.width and (if BFS works) A.b.height
+            binop(
+                BinOp::Add,
+                value_ref_typed("A", "width", Type::Int),
+                value_ref_typed("A", "b.height", Type::Int),
+            ),
+        )
+        .is_recursive(true)
+        .sub_component_with_guard(
+            "b", "B",
+            vec![("n".to_string(), binop(BinOp::Sub, value_ref_typed("A", "n", Type::Int), literal(Value::Int(1))))],
+            gt(value_ref_typed("A", "n", Type::Int), literal(Value::Int(0))),
+        )
+        .build();
+
+    // Template B: param n=0, param height=3, sub a = A(n: n-1) where n > 0
+    let template_b = TopologyTemplateBuilder::new("B")
+        .param("B", "n", Type::Int, Some(CompiledExpr::literal(Value::Int(0), Type::Int)))
+        .param("B", "height", Type::Int, Some(CompiledExpr::literal(Value::Int(3), Type::Int)))
+        .is_recursive(true)
+        .sub_component_with_guard(
+            "a", "A",
+            vec![("n".to_string(), binop(BinOp::Sub, value_ref_typed("B", "n", Type::Int), literal(Value::Int(1))))],
+            gt(value_ref_typed("B", "n", Type::Int), literal(Value::Int(0))),
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template_a)
+        .template(template_b)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+    let result = engine.eval(&module);
+
+    // Basic params
+    assert_eq!(
+        result.values.get(&ValueCellId::new("A", "width")),
+        Some(&Value::Int(5)),
+        "A.width should be 5"
+    );
+    assert_eq!(
+        result.values.get(&ValueCellId::new("A.b", "height")),
+        Some(&Value::Int(3)),
+        "A.b.height should be 3 (B's param at depth 1)"
+    );
+
+    // KEY: cross-template let-binding that depends on child entity's member
+    // A.total = A.width + A.b.height = 5 + 3 = 8
+    // This will FAIL if the BFS projection doesn't look up B's value_cells for entity A.b.
+    assert_eq!(
+        result.values.get(&ValueCellId::new("A", "total")),
+        Some(&Value::Int(8)),
+        "A.total should be 8 (= width 5 + A.b.height 3). \
+         If Undef, BFS projection in elaborate_child_lets_only iterates A's value_cells \
+         for entity A.b (a B instance), missing B-specific members like 'height'."
+    );
+}
