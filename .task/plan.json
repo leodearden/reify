@@ -164,14 +164,14 @@
       "type": "test",
       "description": "Write edge-case tests: (1) complex_add_non_complex_undef \u2014 Complex + Int/Real/Scalar returns Undef; (2) method_re_on_non_complex_undef \u2014 calling .re on a Scalar returns Undef; (3) method_magnitude_with_args_undef \u2014 .magnitude(1) with unexpected args returns Undef; (4) complex_undef_propagation \u2014 Undef + Complex returns Undef (already handled by eval_binop, but verify)",
       "status": "done",
-      "commit": null
+      "commit": "73fd3959"
     },
     {
       "id": "step-22",
       "type": "impl",
       "description": "Verify all edge-case tests pass \u2014 they should be covered by the existing _ => Value::Undef catch-all arms in eval_add/eval_method_call and Undef propagation in eval_binop. Fix any failures if catch-all ordering is wrong",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "0760682c"
     }
   ],
   "design_decisions": [
