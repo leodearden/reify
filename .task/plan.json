@@ -1,185 +1,301 @@
 {
-  "task_id": "398",
-  "title": "Review: Eval geometric semantics consistency (21 suggestions from task 224)",
+  "task_id": "409",
+  "title": "Merge duplicate is_cycle loops and extract SCC module from lib.rs",
   "files": [
-    "crates/reify-expr/src/lib.rs",
-    "crates/reify-expr/tests/point_vector_eval_tests.rs",
-    "crates/reify-stdlib/src/lib.rs"
+    "crates/reify-compiler/src/lib.rs",
+    "crates/reify-compiler/src/scc.rs",
+    "crates/reify-eval/src/lib.rs"
   ],
   "modules": [
-    "crates/reify-expr",
-    "crates/reify-stdlib"
+    "crates/reify-compiler/src",
+    "crates/reify-eval/src"
   ],
-  "analysis": "The evaluator in reify-expr handles component-wise arithmetic only for Value::Tensor, but Value::Point and Value::Vector are distinct enum variants (created by stdlib constructors point2/point3/vec2/vec3). When Point/Vector values flow into eval_add/eval_sub/eval_mul/eval_div/neg_value, they hit the catch-all `_ => Value::Undef` arm. This task adds proper Point/Vector handling with correct affine geometry rules (Point+Point=Undef, -Point=Undef, Point-Point=Vector, Point+Vector=Point, etc.), extracts DRY helpers to eliminate the collect/undef-check/wrap pattern duplication, adds missing test coverage, and fixes minor robustness issues. The escalation triage (esc-224-8) accepted 11 items for implementation and deferred 3 (early-exit optimization, arrayvec, empty container dimension). The existing code uses Value::Tensor in all point_vector_eval_tests \u2014 tests must be added/updated to use Value::Point/Value::Vector directly to exercise the new arms.",
-  "prerequisites": [
-    {
-      "id": "pre-1",
-      "description": "Extract componentwise_binop helper from existing Tensor arms in eval_add/eval_sub. Signature: fn componentwise_binop(a: &[Value], b: &[Value], op: fn(&Value, &Value) -> Value, wrap: fn(Vec<Value>) -> Value) -> Value. Refactor existing Tensor add/sub arms to use it. Also extract scale_components helper for scalar*components pattern used by eval_mul/eval_div/neg_value. Run existing tests to verify no regression.",
-      "status": "done",
-      "commit": "f299a1d2",
-      "tests": [
-        "cargo test -p reify-expr"
-      ]
-    }
-  ],
+  "analysis": "The original detect_recursive_structures() in lib.rs has two separate loops over st.sccs that both compute is_cycle identically: (1) tags in_cycle[v] and emits warning diagnostics, (2) builds cyclic_sccs Vec<HashSet<String>>. These should be merged into a single pass. Additionally, ~240 lines of Tarjan SCC code (detect_recursive_structures, TarjanState, tarjan_scc_visit, reconstruct_scc_cycle, find_cycle_back_to) should be extracted into a new scc.rs module, following the precedent of module_dag.rs which is already extracted. This is a pure refactor \u2014 no new behavior. Existing integration tests in recursive_detection_tests.rs (12 tests) and termination_check_tests.rs (12 tests) exercise the SCC detection and termination checking through the public compile() function. The implementation commit (14fd7663) is complete on the task branch. Steps 1-11 completed the SCC refactor and verified the merge to main.\n\nPOST-REVIEW UPDATE 1 (steps 12-16): Review identified two blocking issues. (1) design_coherence_invariant_handling: Task 351 (merged to main at d5b1123a) converted expect(\"compiler bug\") to ? (silent None propagation) on Extrude/Revolve arg lookups in crates/reify-eval/src/lib.rs:3237-3278. This violates the project convention that logic errors must be noisy (feedback_silent_defaults_pattern.md). Missing args and non-f64 results are compiler invariants \u2014 the compiler must always emit these, so absence is a bug. The fix restores expect()/panic!() on invariant checks while keeping the NaN/Inf filter added by ba327379 (legitimate runtime check). (2) merge_ff_failed: Main advanced after our initial merge; the SCC refactor commit 2bbe33c6 IS already an ancestor of main, but the unmerged commits needed the invariant-handling fix.\n\nPOST-REVIEW UPDATE 2 (steps 17-20): Step-16 merge was superseded \u2014 main advanced again (~120 commits since merge base 2bbe33c6, HEAD now at 7d6b54c6). The SCC refactor remains in main. The invariant-fix commits (b662570e test, 55212594 impl) need rebase onto current main. Conflicts expected in crates/reify-eval/src/lib.rs because: (a) main independently changed the revolve missing-arg test from _panics to _returns_none (ade9feaa), (b) main added NaN axis test (task-364: c7dd0ffe), (c) both sides modified eval_arg_f64 closure differently (main added .filter(), task replaced ? with panic). Resolution: keep task's invariant assertions (expect/panic), keep task's #[should_panic] tests, keep main's NaN test, keep .filter(|v| v.is_finite()) in the restructured closure.\n\nPOST-REVIEW UPDATE 3 (steps 21-29): Review round 3 found three blocking issues. (1) merge_ff_failed: Main advanced again \u2014 task/409 has 2 commits (9efd1ed3, a032f1d3) not in main; main gained task-351 rebase and status-update commits. Rebase + merge needed. (2) untested_failure_mode: Extrude distance is not filtered for NaN/Inf \u2014 the evaluated Value is passed directly into GeometryOp::Extrude without finiteness validation, while Revolve has .filter(|v| v.is_finite()). The asymmetry means NaN/Inf extrude distances silently reach the OCCT kernel. Fix: add `distance.as_f64().filter(|v| v.is_finite())?;` after the expect, plus tests for NaN and Inf cases. (3) silent_failure_on_invariant_violation: reconstruct_scc_cycle in scc.rs:178-182 silently falls back to listing all SCC members when find_cycle_back_to returns None \u2014 a 'should not happen' path that violates feedback_silent_defaults_pattern.md. Fix: add debug_assert!(false, ...) before the fallback so debug/test builds panic on this invariant violation.",
+  "prerequisites": [],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing tests for Point/Vector addition: Vector+Vector\u2192Vector, Point+Vector\u2192Point, Vector+Point\u2192Point, Point+Point\u2192Undef (value-level, using Value::Point/Value::Vector directly). Add to point_vector_eval_tests.rs.",
+      "description": "Verify all 24 existing recursive_detection_tests and termination_check_tests pass on main before refactoring (baseline confirmation that no test regressions exist pre-change)",
       "status": "done",
-      "commit": "c98bca36"
+      "commit": null
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Add Point/Vector arms to eval_add using componentwise_binop helper: (Point,Vector)|(Vector,Point)\u2192componentwise add\u2192Point, (Vector,Vector)\u2192componentwise add\u2192Vector, (Point,Point)\u2192Undef. Pass step-1 tests.",
+      "description": "Merge the two identical loops over st.sccs in detect_recursive_structures(): combine in_cycle tagging + diagnostic emission + cyclic_sccs collection into a single pass with one is_cycle computation per SCC",
       "status": "done",
-      "commit": "47b41fd8"
+      "commit": "14fd7663"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Write failing tests for Point/Vector subtraction: Point-Point\u2192Vector (displacement), Point-Vector\u2192Point, Vector-Vector\u2192Vector, Vector-Point\u2192Undef. Also replace the duplicate point3_length_sub test with a Point2-Point2 case.",
+      "description": "Verify all recursive_detection_tests and termination_check_tests still pass after loop merge (behavior-preserving refactor)",
       "status": "done",
-      "commit": "818a7bbc"
+      "commit": "14fd7663"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Add Point/Vector arms to eval_sub: (Point,Point)\u2192componentwise sub\u2192Vector, (Point,Vector)\u2192componentwise sub\u2192Point, (Vector,Vector)\u2192componentwise sub\u2192Vector. Vector-Point falls through to Undef. Pass step-3 tests.",
+      "description": "Create crates/reify-compiler/src/scc.rs: move detect_recursive_structures (as pub(crate)), TarjanState, tarjan_scc_visit, reconstruct_scc_cycle, find_cycle_back_to from lib.rs into the new module. Add 'mod scc;' to lib.rs and update the call site to scc::detect_recursive_structures",
       "status": "done",
-      "commit": "f050d145"
+      "commit": "14fd7663"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Write failing tests for Point/Vector negation: -Vector3\u2192Vector3 (all components negated), -Point3\u2192Undef (affine rule: points cannot be negated per spec 3.3.1).",
+      "description": "Verify all recursive_detection_tests, termination_check_tests, and full compiler test suite pass after module extraction (ensures no broken imports or visibility issues)",
       "status": "done",
-      "commit": "991f71fa"
+      "commit": "14fd7663"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Add Point/Vector arms to neg_value in eval_unop: Value::Vector\u2192negate components\u2192Vector (using map helper), Value::Point\u2192Undef with comment citing affine space invariant. Pass step-5 tests.",
+      "description": "Rebase onto current main and retry merge (previous merge failed because main advanced during the merge window)",
       "status": "done",
-      "commit": "83bac02f"
+      "commit": "14fd7663"
     },
     {
       "id": "step-7",
-      "type": "test",
-      "description": "Write failing tests for scalar*Point/Vector: Scalar*Vector\u2192Vector, Vector*Scalar\u2192Vector (commutative), Scalar*Point\u2192Point (pragmatic deviation from strict affine rules, needed for interpolation), Int*Vector\u2192Vector, Real*Point\u2192Point.",
+      "type": "impl",
+      "description": "Rebase task/409 onto current main (d5b1123a) to incorporate task/351 merge that advanced main after step-6. No conflicts expected since main's new commits don't touch crates/reify-compiler/.",
       "status": "done",
-      "commit": "d6d110f6"
+      "commit": "2bbe33c6"
     },
     {
       "id": "step-8",
-      "type": "impl",
-      "description": "Add Point/Vector arms to eval_mul using scale_components helper: (Point,scalar)|(scalar,Point)\u2192scale\u2192Point, (Vector,scalar)|(scalar,Vector)\u2192scale\u2192Vector. Add comment documenting scalar*Point as intentional pragmatic deviation from strict affine rules (needed for weighted interpolation/barycentric coordinates). Pass step-7 tests.",
+      "type": "test",
+      "description": "Verify all recursive_detection_tests, termination_check_tests, and full compiler test suite still pass after rebase onto updated main (confirms no regressions from task/351 interaction)",
       "status": "done",
-      "commit": "8cd0f448"
+      "commit": "2bbe33c6"
     },
     {
       "id": "step-9",
-      "type": "test",
-      "description": "Write failing tests for Point/Vector division: Vector/Scalar\u2192Vector, Vector/Real\u2192Vector, Point/Scalar\u2192Point (pragmatic deviation), Vector/Int\u2192Vector, Point/Point\u2192Undef, Point/Vector\u2192Undef.",
+      "type": "impl",
+      "description": "Fast-forward merge task/409 into main. Verify merge succeeded and main HEAD contains the refactor commit.",
       "status": "done",
-      "commit": "e35105db"
+      "commit": "2bbe33c6"
     },
     {
       "id": "step-10",
-      "type": "impl",
-      "description": "Add Point/Vector arms to eval_div using scale_components helper: (Point,scalar)\u2192divide\u2192Point, (Vector,scalar)\u2192divide\u2192Vector. Add pragmatic deviation comment for Point/scalar. Pass step-9 tests.",
+      "type": "test",
+      "description": "Verify merge is already present in main: confirm 2bbe33c6 is an ancestor of main via git merge-base --is-ancestor, and confirm scc.rs exists in main's tree. The merge_ff_failed review feedback was a false positive \u2014 main advanced after our merge landed but our commit is reachable from current main HEAD (114a1ac0).",
       "status": "done",
-      "commit": "eecdcb77"
+      "commit": "2bbe33c6"
     },
     {
       "id": "step-11",
       "type": "test",
-      "description": "Write failing test for construct_point_or_vector with empty args (expected_n=0, args=[]): should return Undef, not panic.",
+      "description": "Run recursive_detection_tests (12 tests) and termination_check_tests (12 tests) against current main to confirm no regressions from the ~30 commits that landed after our merge.",
       "status": "done",
-      "commit": "60f5c4da"
+      "commit": "9326934d"
     },
     {
       "id": "step-12",
       "type": "impl",
-      "description": "Fix construct_point_or_vector in reify-stdlib: replace `args[0].dimension()` with `match args.first() { Some(v) => v.dimension(), None => return Value::Undef }` to prevent latent panic on empty args. Pass step-11 test.",
+      "description": "Reset task/409 to current main HEAD (all SCC refactor work from steps 1-11 is already merged). Drop unmerged commits 325e35f7 (status update) and 87bb12fd (stale test adaptation) \u2014 both will be superseded by the invariant-handling fix. This gives a clean baseline with main's current eval code including the NaN/Inf filter from ba327379.",
       "status": "done",
-      "commit": "c7506aff"
+      "commit": "87bb12fd"
     },
     {
       "id": "step-13",
       "type": "test",
-      "description": "Add stdlib tests exercising tensor_components_f64 with Value::Vector/Point inputs: magnitude(Value::Vector([3m,4m,0m]))\u22485m, normalize(Value::Vector([3,4,0]))=[0.6,0.8,0], dot(Value::Vector,Value::Vector), cross(Value::Vector,Value::Vector). Verify these pass with existing impl (tensor_components_f64 already accepts Point/Vector).",
+      "description": "Write failing tests for compiler invariant assertions in crates/reify-eval/src/lib.rs: (1) Restore #[should_panic(expected = \"compiler bug\")] on compile_geometry_op_revolve_missing_arg test \u2014 rename back to _panics, remove assert!(result.is_none()) and call compile_geometry_op directly (will fail because code returns None instead of panicking). (2) Add new #[test] #[should_panic(expected = \"compiler bug\")] fn compile_geometry_op_extrude_missing_distance_panics() that constructs an Extrude Sweep with empty args vec and calls compile_geometry_op (will fail because code returns None instead of panicking).",
       "status": "done",
-      "commit": "8c161d66"
+      "commit": "b662570e"
     },
     {
       "id": "step-14",
-      "type": "test",
-      "description": "Fix point_vector_semantic_distinction test in reify-stdlib: add content_hash assertions (p2.content_hash() != v2.content_hash()), and Display format assertions (format!(\"{}\", p2).starts_with(\"point(\") && format!(\"{}\", v2).starts_with(\"vec(\")). Replace dead `let _ = items` code.",
+      "type": "impl",
+      "description": "Restore invariant assertions in compile_geometry_op (crates/reify-eval/src/lib.rs:3236-3275): (1) Extrude distance (line ~3239): replace trailing `?` with `.expect(\"Extrude distance arg missing \u2014 compiler bug\")`. (2) Revolve eval_arg_f64 closure (lines ~3250-3256): replace `find(|(n, _)| n == name)?` with `.find(...).unwrap_or_else(|| panic!(\"Revolve Sweep '{}' arg missing \u2014 compiler bug\", name))`, then replace the implicit `as_f64()` in the `?` chain with `.as_f64().unwrap_or_else(|| panic!(\"Revolve '{}' arg must evaluate to f64 \u2014 compiler bug\", name))`, and wrap the result: `Some(val).filter(|v| v.is_finite())` to keep the NaN/Inf filter. Closure return type stays `-> Option<f64>` since NaN/Inf legitimately returns None.",
       "status": "done",
-      "commit": "3247bf9a"
+      "commit": "55212594"
+    },
+    {
+      "id": "step-15",
+      "type": "test",
+      "description": "Verify all eval tests pass: (1) #[should_panic] tests for Revolve missing-arg and Extrude missing-distance both pass (invariant violations now panic). (2) compile_geometry_op_revolve_nan_axis_returns_none still returns None (NaN is runtime, not invariant). (3) compile_geometry_op_revolve_zero_axis_returns_none still returns None. (4) Full `cargo test --package reify-eval` passes. (5) Full `cargo test --package reify-compiler` passes (no regressions to SCC refactor).",
+      "status": "done",
+      "commit": "55212594"
+    },
+    {
+      "id": "step-16",
+      "type": "impl",
+      "description": "Merge task/409 into main via fast-forward (or rebase if main advanced). Verify merge succeeded with git merge-base --is-ancestor and that both scc.rs and the restored invariant assertions are present in main's tree.",
+      "status": "done",
+      "commit": "55212594"
+    },
+    {
+      "id": "step-17",
+      "type": "impl",
+      "description": "Rebase invariant-fix commits (b662570e, 55212594) onto current main HEAD (7d6b54c6). Main advanced ~120 commits since merge base 2bbe33c6. Conflicts expected in crates/reify-eval/src/lib.rs: (a) eval_arg_f64 closure \u2014 main added .filter(|v| v.is_finite()) after .as_f64()?, task replaced entire ? chain with unwrap_or_else(panic) + Some(val).filter(); resolve by keeping task's restructured closure with both panic assertions and filter. (b) revolve missing-arg test \u2014 main renamed _panics\u2192_returns_none (ade9feaa), task keeps _panics with #[should_panic]; resolve by keeping task's _panics version. (c) main added compile_geometry_op_revolve_nan_axis_returns_none test (task-364); resolve by keeping it alongside task's new extrude test. After rebase, task branch should have exactly 2 commits on top of main.",
+      "status": "done",
+      "commit": "a032f1d3"
+    },
+    {
+      "id": "step-18",
+      "type": "test",
+      "description": "Verify all tests pass after rebase: (1) cargo test --package reify-eval \u2014 confirms #[should_panic] tests pass, NaN/zero-axis tests pass, no new failures from main's changes. (2) cargo test --package reify-compiler \u2014 confirms SCC refactor still works with latest main. (3) Spot-check that compile_geometry_op_revolve_nan_axis_returns_none (main's test) coexists with compile_geometry_op_revolve_missing_arg_panics (task's test).",
+      "status": "done",
+      "commit": "a032f1d3"
+    },
+    {
+      "id": "step-19",
+      "type": "impl",
+      "description": "Fast-forward merge task/409 into main. If main advanced again during rebase, re-rebase and retry (up to 2 retries). Verify with git merge-base --is-ancestor that the new HEAD of task/409 is an ancestor of main after merge.",
+      "status": "done",
+      "commit": "a032f1d3"
+    },
+    {
+      "id": "step-20",
+      "type": "test",
+      "description": "Post-merge verification on main: (1) Confirm scc.rs exists in main's tree. (2) Confirm invariant assertions (expect/panic) are present in compile_geometry_op. (3) Confirm .filter(|v| v.is_finite()) is preserved. (4) Run cargo test --package reify-eval and cargo test --package reify-compiler one final time from main HEAD.",
+      "status": "done",
+      "commit": "a032f1d3"
+    },
+    {
+      "id": "step-21",
+      "type": "test",
+      "description": "Write two failing tests in crates/reify-eval/src/lib.rs for the Extrude NaN/Inf gap: (1) `compile_geometry_op_extrude_nan_distance_returns_none` \u2014 constructs an Extrude Sweep with a valid profile and `literal_f64(f64::NAN)` as the distance arg, asserts compile_geometry_op returns None. Will FAIL because current code passes NaN through to GeometryOp::Extrude without checking finiteness. (2) `compile_geometry_op_extrude_inf_distance_returns_none` \u2014 same but with `literal_f64(f64::INFINITY)` as distance. Will also FAIL for the same reason. These mirror the existing `compile_geometry_op_revolve_nan_axis_returns_none` test pattern.",
+      "status": "done",
+      "commit": "42240fef"
+    },
+    {
+      "id": "step-22",
+      "type": "impl",
+      "description": "Add finiteness check to the Extrude arm in compile_geometry_op (crates/reify-eval/src/lib.rs:3226-3234): after the `.expect(\"compiler bug\")` that produces the `distance: Value`, add a guard `distance.as_f64().filter(|v| v.is_finite())?;` before constructing the GeometryOp::Extrude. This returns None when the distance is NaN, Inf, or non-numeric (same pattern as Revolve's eval_arg_f64 closure). The full Value is still passed to the struct when finite. Verify both new tests now pass.",
+      "status": "done",
+      "commit": "4eac9e96"
+    },
+    {
+      "id": "step-23",
+      "type": "test",
+      "description": "Write a unit test in crates/reify-compiler/src/scc.rs inside a new `#[cfg(test)] mod tests` block: `#[test] #[cfg(debug_assertions)] #[should_panic(expected = \"Tarjan algorithm invariant violated\")]` fn `reconstruct_scc_cycle_panics_on_invalid_scc`. Construct 2 minimal TopologyTemplate values (name='A', name='B', all other fields default/empty) and an adjacency list `vec![vec![1], vec![]]` where node 0\u21921 but 1 has no edges \u2014 so find_cycle_back_to(0, {0,1}, adj) returns None. Call `reconstruct_scc_cycle(&[0, 1], &adjacency, &templates)`. This test will FAIL because the current else branch silently falls back instead of asserting.",
+      "status": "done",
+      "commit": "1d815b66"
+    },
+    {
+      "id": "step-24",
+      "type": "impl",
+      "description": "Replace the silent fallback in reconstruct_scc_cycle (crates/reify-compiler/src/scc.rs:178-182): change the else branch from a plain fallback to `debug_assert!(false, \"find_cycle_back_to returned None for valid SCC \u2014 Tarjan algorithm invariant violated\");` followed by the existing fallback code. This makes the invariant violation noisy in debug/test builds (panic via debug_assert) while keeping the degraded-but-safe path for release builds. Add a comment explaining the intentional lossy fallback in release mode.",
+      "status": "done",
+      "commit": "72c367f3"
+    },
+    {
+      "id": "step-25",
+      "type": "test",
+      "description": "Verify all tests pass after both fixes: (1) `cargo test --package reify-eval` \u2014 confirms both new extrude NaN/Inf tests pass alongside existing revolve NaN/zero-axis tests, #[should_panic] invariant tests, and all other eval tests. (2) `cargo test --package reify-compiler` \u2014 confirms new SCC debug_assert test passes (in debug build) alongside all existing recursive_detection_tests and termination_check_tests.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-26",
+      "type": "impl",
+      "description": "Rebase task/409 onto current main HEAD. Task branch currently has 2 old commits (9efd1ed3, a032f1d3) plus new commits from steps 21-24 on top of merge-base 8348674c. Main has task-351 rebase and status commits. Conflicts expected in crates/reify-eval/src/lib.rs (Extrude/Revolve arm code differs between branches \u2014 main uses `?` for missing args, task uses expect/panic). Resolution: keep all of task's changes (invariant assertions + new NaN/Inf guard + new tests). Conflicts also possible in scc.rs if main touched it \u2014 keep task's version with debug_assert. After rebase, verify commit count and content match expectations.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-27",
+      "type": "test",
+      "description": "Post-rebase verification: (1) `cargo test --package reify-eval` \u2014 all eval tests pass on rebased branch. (2) `cargo test --package reify-compiler` \u2014 all compiler tests pass on rebased branch. (3) Spot-check: extrude NaN/Inf tests exist, scc.rs has debug_assert, invariant panics are present.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-28",
+      "type": "impl",
+      "description": "Fast-forward merge task/409 into main. If main advanced during rebase, re-rebase and retry (up to 2 retries). Verify with `git merge-base --is-ancestor` that task/409 HEAD is an ancestor of main after merge.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-29",
+      "type": "test",
+      "description": "Post-merge verification on main: (1) Confirm scc.rs has debug_assert in reconstruct_scc_cycle. (2) Confirm Extrude arm has `.as_f64().filter(|v| v.is_finite())?` guard. (3) Confirm invariant assertions (expect/panic) remain. (4) Run `cargo test --package reify-eval` and `cargo test --package reify-compiler` from main HEAD \u2014 all tests green.",
+      "status": "pending",
+      "commit": null
     }
   ],
   "design_decisions": [
     {
-      "decision": "Point negation returns Undef, not a negated Point",
-      "rationale": "Affine geometry: only vectors have negation (-v is the opposite direction). Negating a point has no valid meaning in affine space. This matches the existing Point+Point\u2192Undef rule (spec 3.3.1). If upstream type checker blocks this, the eval-level check is defense-in-depth."
+      "decision": "Use pub(crate) visibility for detect_recursive_structures in scc.rs",
+      "rationale": "The function is called from lib.rs compile() but is not part of the public API. pub(crate) matches the module-internal usage pattern without leaking implementation details."
     },
     {
-      "decision": "Scalar * Point and Point / Scalar are intentionally allowed (pragmatic deviation from strict affine rules)",
-      "rationale": "Needed for weighted interpolation, barycentric coordinates, and affine combinations. The type checker can enforce stricter rules upstream; the eval layer allows it as a pragmatic convenience. Document with inline comment."
+      "decision": "Keep TarjanState, tarjan_scc_visit, reconstruct_scc_cycle, find_cycle_back_to as private functions within scc.rs",
+      "rationale": "These are implementation details of the SCC algorithm. Only detect_recursive_structures is the public entry point for the module. This mirrors how module_dag.rs exposes ModuleDag/ModuleResolver but keeps helpers private."
     },
     {
-      "decision": "Point - Point produces Vector (displacement), not Undef",
-      "rationale": "Standard affine geometry: the difference of two points is a displacement vector. This is mathematically valid and widely expected."
+      "decision": "No new tests needed \u2014 rely on existing integration tests",
+      "rationale": "This is a pure structural refactor (loop merge + module extraction) with zero behavior change. The 12 recursive_detection_tests and 12 termination_check_tests exercise all SCC-related behavior through the public compile() API, which is the correct abstraction boundary for testing."
     },
     {
-      "decision": "Vector - Point returns Undef",
-      "rationale": "Subtracting a point from a vector has no geometric meaning in affine space. Falls through to catch-all arm naturally."
+      "decision": "Both changes (loop merge + extraction) combined in a single commit",
+      "rationale": "The two changes are tightly coupled (both touch the same ~250-line block) and neither is useful without the other. A single atomic commit avoids an intermediate state where the loop is merged but not extracted."
     },
     {
-      "decision": "Extract componentwise_binop and scale_components helpers to eliminate DRY violations",
-      "rationale": "The collect\u2192any(is_undef)\u2192wrap pattern is repeated ~10 times across eval_add, eval_sub, eval_mul, eval_div, and neg_value for Tensor/Point/Vector. Extracting parameterized helpers eliminates duplication and ensures future edge-case fixes propagate to all variant handling."
+      "decision": "No rebase/re-merge needed for merge_ff_failed feedback",
+      "rationale": "Investigation confirmed commit 2bbe33c6 is already an ancestor of main (git merge-base --is-ancestor exits 0). The review feedback was a false positive \u2014 main advanced with other task merges after our merge landed. Steps 10-11 verify this rather than re-merging."
     },
     {
-      "decision": "Skip componentwise_op early-exit optimization, arrayvec for tensor_components, and empty Point/Vector dimension fallback",
-      "rationale": "Per escalation triage: early-exit is a separate optimization concern, arrayvec is premature for current scale, and DIMENSIONLESS fallback for empty containers is an acceptable convention."
+      "decision": "Restore expect()/panic!() for compiler-invariant arg lookups, keep NaN/Inf filter as Option",
+      "rationale": "Missing args (find returns None) and non-f64 evaluation results (as_f64 returns None) are compiler invariants \u2014 the compiler must always emit these args with the correct types, so their absence is a bug that must be loud per feedback_silent_defaults_pattern.md. NaN/Inf from user expressions is a legitimate runtime edge case (not a compiler bug), so the .filter(|v| v.is_finite()) correctly returns None and lets the caller emit a diagnostic. This separation preserves both the loud-invariant contract and the graceful NaN handling added by ba327379."
+    },
+    {
+      "decision": "Reset task/409 to main rather than rebase stale commits",
+      "rationale": "The two unmerged commits (status update + test adaptation) are both stale \u2014 the status update is ephemeral and the test adaptation endorsed the wrong pattern. Resetting to main and applying fixes fresh avoids rebase conflicts with ade9feaa (which made the same test change on main independently)."
+    },
+    {
+      "decision": "Rebase 2 commits rather than cherry-pick or squash for third merge attempt",
+      "rationale": "The task branch has exactly 2 meaningful commits (b662570e test, 55212594 impl) on top of the already-merged SCC refactor. Rebasing preserves the TDD commit history (test-first, then impl) and produces a clean fast-forward merge. Cherry-pick would duplicate commits; squash would lose the test-impl separation."
+    },
+    {
+      "decision": "Extrude NaN/Inf guard checks Value.as_f64() then filters, preserving the full Value in the struct",
+      "rationale": "GeometryOp::Extrude stores distance as a Value (not f64) to preserve unit/dimension info. The finiteness check uses .as_f64().filter(|v| v.is_finite())? as a gate \u2014 if the underlying number is NaN/Inf, the op is skipped (returns None). If finite, the original Value (with Scalar type, dimension, etc.) is passed through unchanged. This mirrors Revolve's eval_arg_f64 pattern but operates on Value instead of f64."
+    },
+    {
+      "decision": "Use debug_assert!(false, ...) + fallback for SCC invariant, not unreachable!()",
+      "rationale": "unreachable!() would crash release builds if the invariant is ever violated (e.g., due to a subtle bug in the SCC adjacency construction). debug_assert!(false, ...) + fallback gives the best of both worlds: noisy failure in debug/test builds (satisfying feedback_silent_defaults_pattern.md), graceful degradation in release builds (the fallback message is slightly less precise but still useful). The fallback path is documented as intentionally lossy."
+    },
+    {
+      "decision": "Unit test for SCC invariant uses #[cfg(debug_assertions)] gate",
+      "rationale": "The debug_assert only fires in debug builds. The #[should_panic] test must be gated with #[cfg(debug_assertions)] so it doesn't fail in release-mode test runs (where debug_assert is a no-op). This is standard practice for testing debug_assert behavior."
     }
   ],
   "reuse": [
     {
-      "what": "Existing eval_add/eval_sub Tensor arm pattern",
-      "where": "crates/reify-expr/src/lib.rs lines 772-782 (eval_add), 813-822 (eval_sub)",
-      "how": "Extract into componentwise_binop helper, then reuse for Point/Vector arms with different wrap constructors"
+      "what": "module_dag.rs extraction precedent",
+      "where": "crates/reify-compiler/src/module_dag.rs",
+      "how": "Follow the same pattern: declare private module in lib.rs with 'mod scc;', expose entry point as pub(crate), keep implementation details private"
     },
     {
-      "what": "Existing eval_mul Tensor\u00d7Scalar pattern",
-      "where": "crates/reify-expr/src/lib.rs lines 861-870",
-      "how": "Extract into scale_components helper, then reuse for Point/Vector arms in both eval_mul and eval_div"
+      "what": "Existing integration tests for SCC detection",
+      "where": "crates/reify-compiler/tests/recursive_detection_tests.rs",
+      "how": "12 tests covering self-reference, indirect cycles (2-node, 3-node), non-cyclic graphs (linear chains, diamonds), multiple independent cycles, and diagnostic messages \u2014 all exercise detect_recursive_structures through compile()"
     },
     {
-      "what": "Value::Point/Value::Vector constructors as wrap functions",
-      "where": "crates/reify-types/src/value.rs lines 54-56",
-      "how": "Pass Value::Point and Value::Vector as the wrap parameter to the extracted helpers"
+      "what": "Existing integration tests for termination checking",
+      "where": "crates/reify-compiler/tests/termination_check_tests.rs",
+      "how": "12 tests covering termination condition validation that depend on correct SCC detection output (cyclic_sccs) \u2014 validates the merged loop produces correct cyclic_sccs downstream"
     },
     {
-      "what": "Existing point_vector_eval_tests.rs test patterns",
-      "where": "crates/reify-expr/tests/point_vector_eval_tests.rs",
-      "how": "Follow same CompiledExpr::literal + CompiledExpr::binop/unop pattern but with Value::Point/Value::Vector instead of Value::Tensor"
+      "what": "Existing NaN/Inf and zero-axis test patterns",
+      "where": "crates/reify-eval/src/lib.rs (compile_geometry_op_revolve_nan_axis_returns_none, compile_geometry_op_revolve_zero_axis_returns_none)",
+      "how": "These tests verify that NaN/Inf values and zero-length axes correctly return None \u2014 they confirm the NaN/Inf filter is preserved after restoring invariant panics on arg lookups. The new Extrude NaN/Inf tests follow this exact pattern."
     },
     {
-      "what": "tensor_components_f64 already accepts Point/Vector",
-      "where": "crates/reify-stdlib/src/lib.rs line 1091",
-      "how": "stdlib operations (magnitude, normalize, dot, cross) already work with Value::Point/Value::Vector inputs; step-13 just adds test coverage to verify"
+      "what": "Original expect() message patterns from pre-task-351 code",
+      "where": "git diff d5b1123a^1..d5b1123a -- crates/reify-eval/src/lib.rs",
+      "how": "Restore the same message format: 'Extrude Sweep args must contain distance key \u2014 compiler bug', 'Revolve Sweep X arg missing \u2014 compiler bug', 'Revolve X arg must evaluate to f64 \u2014 compiler bug'"
     },
     {
-      "what": "Display and content_hash already implemented for Point/Vector",
-      "where": "crates/reify-types/src/value.rs lines 291-306 (content_hash), lines 665-684 (Display)",
-      "how": "Step-14 adds assertions to the existing semantic distinction test to verify these work correctly"
+      "what": "literal_f64 test helper for NaN/Inf test construction",
+      "where": "crates/reify-eval/src/lib.rs (test module, line ~3735)",
+      "how": "Reuse existing literal_f64(v) helper to construct CompiledExpr::literal(Value::Real(v)) for NaN and Inf distance values in the new Extrude tests"
     }
   ],
-  "_session_id": "398-5756d3a0",
-  "_created_at": "2026-03-26T03:19:57.261112+00:00"
+  "_schema_version": 1,
+  "_session_id": "409-beee0a5a",
+  "_created_at": "2026-03-26T03:17:19.604103+00:00"
 }

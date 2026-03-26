@@ -176,7 +176,13 @@ fn reconstruct_scc_cycle(
     if let Some(cycle) = find_cycle_back_to(start, &scc_set, adjacency) {
         cycle.iter().map(|&i| templates[i].name.as_str()).collect::<Vec<_>>().join(" -> ")
     } else {
-        // Fallback: list all SCC members (should not happen in a valid SCC)
+        // Invariant: find_cycle_back_to should always succeed for a valid SCC.
+        // If it fails, the SCC adjacency is broken — noisy in debug builds,
+        // graceful degradation in release builds (lossy but safe fallback).
+        debug_assert!(
+            false,
+            "find_cycle_back_to returned None for valid SCC — Tarjan algorithm invariant violated"
+        );
         let mut names: Vec<&str> = scc.iter().map(|&i| templates[i].name.as_str()).collect();
         names.push(templates[scc[0]].name.as_str());
         names.join(" -> ")
@@ -230,4 +236,47 @@ fn find_cycle_back_to(
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use reify_types::ContentHash;
+    use crate::{EntityKind, Visibility};
+
+    /// Helper: build a minimal TopologyTemplate with just a name.
+    fn minimal_template(name: &str) -> TopologyTemplate {
+        TopologyTemplate {
+            name: name.to_string(),
+            entity_kind: EntityKind::Structure,
+            visibility: Visibility::Public,
+            type_params: vec![],
+            trait_bounds: vec![],
+            value_cells: vec![],
+            constraints: vec![],
+            realizations: vec![],
+            sub_components: vec![],
+            ports: vec![],
+            connections: vec![],
+            guarded_groups: vec![],
+            structure_controlling: HashSet::new(),
+            objective: None,
+            meta: HashMap::new(),
+            content_hash: ContentHash(0),
+            is_recursive: false,
+        }
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "Tarjan algorithm invariant violated")]
+    fn reconstruct_scc_cycle_panics_on_invalid_scc() {
+        let templates = vec![minimal_template("A"), minimal_template("B")];
+        // Node 0 -> 1, but node 1 has no edges — find_cycle_back_to(0, {0,1}, adj)
+        // cannot find a cycle back to 0, so it returns None.
+        let adjacency = vec![vec![1], vec![]];
+        // This should hit the debug_assert in the else branch
+        reconstruct_scc_cycle(&[0, 1], &adjacency, &templates);
+    }
 }

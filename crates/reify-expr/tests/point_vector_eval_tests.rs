@@ -960,3 +960,157 @@ fn negate_vector3_negates_all_components() {
         Value::Tensor(vec![Value::length(-1.0), Value::length(-2.0), Value::length(-3.0)])
     );
 }
+
+// ─── task 446: edge-case coverage ───
+
+/// Value::Point(3 components) + Value::Vector(2 components) → Undef due to length mismatch.
+/// Exercises componentwise_binop length guard on the Point+Vector arm of eval_add.
+#[test]
+fn value_point3_add_vector2_mismatched_length_returns_undef() {
+    let left = CompiledExpr::literal(
+        Value::Point(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]),
+        Type::point3(Type::length()),
+    );
+    let right = CompiledExpr::literal(
+        Value::Vector(vec![Value::length(1.0), Value::length(2.0)]),
+        Type::vec2(Type::length()),
+    );
+    let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::point3(Type::length()));
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::Undef);
+}
+
+/// Value::Point(3 components) - Value::Vector(2 components) → Undef due to length mismatch.
+/// Mirror of add test, confirming componentwise_binop length guard applies to eval_sub's Point-Vector arm.
+#[test]
+fn value_point3_sub_vector2_mismatched_length_returns_undef() {
+    let left = CompiledExpr::literal(
+        Value::Point(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]),
+        Type::point3(Type::length()),
+    );
+    let right = CompiledExpr::literal(
+        Value::Vector(vec![Value::length(1.0), Value::length(2.0)]),
+        Type::vec2(Type::length()),
+    );
+    let expr = CompiledExpr::binop(BinOp::Sub, left, right, Type::point3(Type::length()));
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::Undef);
+}
+
+/// Value::Vector with an Undef component + Value::Vector → Undef.
+/// Exercises componentwise_binop's `results.iter().any(|v| v.is_undef())` check on Vector+Vector arm.
+#[test]
+fn value_vector_with_undef_component_add_propagates() {
+    let left = CompiledExpr::literal(
+        Value::Vector(vec![Value::length(1.0), Value::Undef, Value::length(3.0)]),
+        Type::vec3(Type::length()),
+    );
+    let right = CompiledExpr::literal(
+        Value::Vector(vec![Value::length(1.0), Value::length(1.0), Value::length(1.0)]),
+        Type::vec3(Type::length()),
+    );
+    let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::vec3(Type::length()));
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::Undef);
+}
+
+/// Value::Point with an Undef component + Value::Vector → Undef.
+/// Same Undef component propagation for the Point+Vector arm of eval_add.
+#[test]
+fn value_point_with_undef_component_add_vector_propagates() {
+    let left = CompiledExpr::literal(
+        Value::Point(vec![Value::length(1.0), Value::Undef, Value::length(3.0)]),
+        Type::point3(Type::length()),
+    );
+    let right = CompiledExpr::literal(
+        Value::Vector(vec![Value::length(1.0), Value::length(1.0), Value::length(1.0)]),
+        Type::vec3(Type::length()),
+    );
+    let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::point3(Type::length()));
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::Undef);
+}
+
+/// Value::Vector * Value::Point → Undef.
+/// eval_mul's Vector arm guard rejects Point as scalar, falling through to _ → Undef.
+#[test]
+fn value_vector_mul_point_returns_undef() {
+    let left = CompiledExpr::literal(
+        Value::Vector(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]),
+        Type::vec3(Type::length()),
+    );
+    let right = CompiledExpr::literal(
+        Value::Point(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]),
+        Type::point3(Type::length()),
+    );
+    let expr = CompiledExpr::binop(BinOp::Mul, left, right, Type::vec3(Type::length()));
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::Undef);
+}
+
+/// Value::Point * Value::Vector → Undef.
+/// eval_mul's Point arm guard rejects Vector as scalar. Tests the symmetric rejection case.
+#[test]
+fn value_point_mul_vector_returns_undef() {
+    let left = CompiledExpr::literal(
+        Value::Point(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]),
+        Type::point3(Type::length()),
+    );
+    let right = CompiledExpr::literal(
+        Value::Vector(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]),
+        Type::vec3(Type::length()),
+    );
+    let expr = CompiledExpr::binop(BinOp::Mul, left, right, Type::point3(Type::length()));
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::Undef);
+}
+
+/// Value::Point / Int → Undef (eval_div lacks a Point/scalar arm; only Tensor/scalar is handled).
+/// NOTE: If Point division support is added to eval_div, update this test to expect
+/// Point([length(2), length(3), length(4)]) instead.
+#[test]
+fn value_point_div_int_returns_undef() {
+    let left = CompiledExpr::literal(
+        Value::Point(vec![Value::length(6.0), Value::length(9.0), Value::length(12.0)]),
+        Type::point3(Type::length()),
+    );
+    let right = CompiledExpr::literal(Value::Int(3), Type::Int);
+    let expr = CompiledExpr::binop(BinOp::Div, left, right, Type::point3(Type::length()));
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::Undef);
+}
+
+/// Value::Vector / Real(0.0) → Undef (division-by-zero early check).
+#[test]
+fn value_vector_div_zero_returns_undef() {
+    let left = CompiledExpr::literal(
+        Value::Vector(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]),
+        Type::vec3(Type::length()),
+    );
+    let right = CompiledExpr::literal(Value::Real(0.0), Type::Real);
+    let expr = CompiledExpr::binop(BinOp::Div, left, right, Type::vec3(Type::length()));
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::Undef);
+}
+
+/// Value::Point / Real(0.0) → Undef (division-by-zero early check for Point).
+#[test]
+fn value_point_div_zero_returns_undef() {
+    let left = CompiledExpr::literal(
+        Value::Point(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]),
+        Type::point3(Type::length()),
+    );
+    let right = CompiledExpr::literal(Value::Real(0.0), Type::Real);
+    let expr = CompiledExpr::binop(BinOp::Div, left, right, Type::point3(Type::length()));
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::Undef);
+}
