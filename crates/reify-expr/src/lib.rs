@@ -1051,6 +1051,27 @@ fn eval_div(lv: &Value, rv: &Value) -> Value {
             si_value: si_value / r,
             dimension: *dimension,
         },
+        // Complex / Scalar: divide re/im, combine dimensions
+        (
+            Value::Complex { re, im, dimension: cd },
+            Value::Scalar { si_value, dimension: sd },
+        ) => Value::Complex {
+            re: re / si_value,
+            im: im / si_value,
+            dimension: cd.div(sd),
+        },
+        // Complex / Int: preserve dimension
+        (Value::Complex { re, im, dimension }, Value::Int(n)) => Value::Complex {
+            re: re / *n as f64,
+            im: im / *n as f64,
+            dimension: *dimension,
+        },
+        // Complex / Real: preserve dimension
+        (Value::Complex { re, im, dimension }, Value::Real(r)) => Value::Complex {
+            re: re / r,
+            im: im / r,
+            dimension: *dimension,
+        },
         // Tensor / Scalar: divide each component by the scalar
         (Value::Tensor(components), scalar) if !matches!(scalar, Value::Tensor(_)) => {
             scale_components(components, scalar, eval_div, Value::Tensor)
