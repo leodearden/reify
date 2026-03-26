@@ -118,3 +118,44 @@ structure def Steel : Elastic {
         template.trait_bounds
     );
 }
+
+// ─── step-5: compile_with_prelude injects trait constraint defaults ──
+
+/// compile_with_prelude injects trait constraint defaults from the prelude.
+/// A structure conforming to the prelude's Strong trait gets the
+/// `uts >= yield_strength` constraint injected.
+#[test]
+fn compile_with_prelude_injects_trait_constraints() {
+    let source = r#"
+structure def Steel : Strong {
+    param yield_strength : Real = 250.0
+    param uts : Real = 400.0
+    param compressive_strength : Real = 250.0
+}
+"#;
+    let prelude = stdlib_loader::load_stdlib();
+    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = reify_compiler::compile_with_prelude(&parsed, prelude);
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "compile_with_prelude should produce no errors for Strong-conforming Steel, got: {:?}",
+        errors
+    );
+
+    let template = compiled
+        .templates
+        .first()
+        .expect("expected at least 1 template");
+    assert!(
+        !template.constraints.is_empty(),
+        "expected constraint from Strong trait (uts >= yield_strength) injected into Steel, but constraints is empty"
+    );
+}
