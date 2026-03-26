@@ -847,7 +847,10 @@ fn construct_point_or_vector(args: &[Value], expected_n: usize, is_point: bool) 
         return Value::Undef;
     }
     // All args must share the same physical dimension
-    let first_dim = args[0].dimension();
+    let first_dim = match args.first() {
+        Some(v) => v.dimension(),
+        None => return Value::Undef,
+    };
     if !args.iter().all(|a| a.dimension() == first_dim) {
         return Value::Undef;
     }
