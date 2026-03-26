@@ -784,7 +784,7 @@ fn negate_components(components: Vec<Value>, wrap: fn(Vec<Value>) -> Value) -> V
     let results: Vec<Value> = components
         .into_iter()
         .map(|c| match c {
-            Value::Int(i) => Value::Int(-i),
+            Value::Int(i) => i.checked_neg().map(Value::Int).unwrap_or(Value::Undef),
             Value::Real(r) => Value::Real(-r),
             Value::Scalar { si_value, dimension } => {
                 Value::Scalar { si_value: -si_value, dimension }
