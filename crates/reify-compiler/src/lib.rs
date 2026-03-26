@@ -2173,9 +2173,6 @@ pub fn compile(
             reify_syntax::Declaration::Unit(_) => {
                 // Unit declarations: compilation not yet implemented (task 208).
             }
-            reify_syntax::Declaration::TypeAlias(_) => {
-                // Type alias declarations: compilation not yet implemented.
-            }
         }
     }
 

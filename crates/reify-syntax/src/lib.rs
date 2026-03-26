@@ -24,7 +24,6 @@ pub enum Declaration {
     Purpose(PurposeDef),
     Constraint(ConstraintDef),
     Unit(UnitDecl),
-    TypeAlias(TypeAliasDecl),
 }
 
 /// A structure definition (the primary entity type in Reify).
@@ -353,22 +352,6 @@ pub struct UnitDecl {
     pub dimension_type: TypeExpr,
     pub conversion: Option<Expr>,
     pub offset: Option<Expr>,
-    pub span: SourceSpan,
-    pub content_hash: ContentHash,
-}
-
-/// A type alias declaration: `type Pressure = Force / Area`
-///
-/// Declares a named type alias, optionally with type parameters.
-/// The `type_expr` is the aliased type, which can be a simple type, parameterized type,
-/// or a dimensional type expression using `*` and `/` operators.
-#[derive(Debug, Clone)]
-pub struct TypeAliasDecl {
-    pub name: String,
-    pub doc: Option<String>,
-    pub is_pub: bool,
-    pub type_params: Vec<TypeParamDecl>,
-    pub type_expr: TypeExpr,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
 }

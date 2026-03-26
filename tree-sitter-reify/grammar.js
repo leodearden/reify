@@ -42,7 +42,6 @@ module.exports = grammar({
       $.purpose_declaration,
       $.constraint_definition,
       $.unit_declaration,
-      $.type_alias_declaration,
     ),
 
     // ── Enum ──────────────────────────────────────────────────
@@ -265,18 +264,6 @@ module.exports = grammar({
       field('type', $.type_expr),
       optional(seq('=', field('conversion', $._expression))),
       optional(seq('offset', field('offset', $._expression))),
-    ),
-
-    // ── Type alias (top-level) ─────────────────────────────
-    // `type Pressure = Force / Area`
-    // `type Stress<T> = Force / Area`
-    type_alias_declaration: $ => seq(
-      optional('pub'),
-      'type',
-      field('name', $.identifier),
-      optional($.type_parameters),
-      '=',
-      field('type', $.dimensional_type_expr),
     ),
 
     // ── Associated type ─────────────────────────────────────
@@ -564,14 +551,6 @@ module.exports = grammar({
       $.type_expr,
       repeat(seq(',', $.type_expr)),
       optional(','),
-    ),
-
-    // Dimensional type expression: supports `*`, `/` binary ops on types.
-    // Used in type alias RHS to express dimensional analysis (e.g., `Force / Area`).
-    dimensional_type_expr: $ => choice(
-      prec.left(1, seq(field('left', $.dimensional_type_expr), field('op', '*'), field('right', $.dimensional_type_expr))),
-      prec.left(1, seq(field('left', $.dimensional_type_expr), field('op', '/'), field('right', $.dimensional_type_expr))),
-      $.type_expr,
     ),
 
     // ── Expressions ─────────────────────────────────────────

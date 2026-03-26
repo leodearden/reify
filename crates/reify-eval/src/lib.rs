@@ -3229,7 +3229,7 @@ fn compile_geometry_op(
                         .iter()
                         .find(|(n, _)| n == "distance")
                         .map(|(_, expr)| reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions).with_meta(meta_map)))?;
-                    let distance_f64 = distance.as_f64().filter(|v| v.is_finite())?;
+                    let _distance_f64 = distance.as_f64().filter(|v| v.is_finite())?;
                     Some(reify_types::GeometryOp::Extrude {
                         profile: profile_handle,
                         distance,
