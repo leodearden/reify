@@ -150,3 +150,92 @@ fn complex_mul_dimension_product() {
     let expected_dim = DimensionVector::LENGTH.mul(&DimensionVector::TIME);
     assert_eq!(result, complex_val(-7.0, 22.0, expected_dim));
 }
+
+// ─── step-7: Complex * Scalar / Int / Real (mixed) ─────────────────────────
+
+/// Complex<Length> * Scalar<Time> scales re/im and combines dimensions.
+#[test]
+fn complex_mul_scalar_right() {
+    // (2+3i)*Length * 4*Time = (8+12i) Length*Time
+    let result = eval_binop(
+        BinOp::Mul,
+        complex_val(2.0, 3.0, DimensionVector::LENGTH),
+        Type::complex(Type::length()),
+        scalar_val(4.0, DimensionVector::TIME),
+        Type::Real,
+        Type::complex(Type::Real),
+    );
+    let expected_dim = DimensionVector::LENGTH.mul(&DimensionVector::TIME);
+    assert_eq!(result, complex_val(8.0, 12.0, expected_dim));
+}
+
+/// Scalar<Time> * Complex<Length> is commutative.
+#[test]
+fn scalar_mul_complex_left() {
+    let result = eval_binop(
+        BinOp::Mul,
+        scalar_val(4.0, DimensionVector::TIME),
+        Type::Real,
+        complex_val(2.0, 3.0, DimensionVector::LENGTH),
+        Type::complex(Type::length()),
+        Type::complex(Type::Real),
+    );
+    let expected_dim = DimensionVector::TIME.mul(&DimensionVector::LENGTH);
+    assert_eq!(result, complex_val(8.0, 12.0, expected_dim));
+}
+
+/// Complex * Int: dimensionless integer multiplier preserves Complex dimension.
+#[test]
+fn complex_mul_int() {
+    let result = eval_binop(
+        BinOp::Mul,
+        complex_val(2.0, 3.0, DimensionVector::LENGTH),
+        Type::complex(Type::length()),
+        Value::Int(5),
+        Type::Int,
+        Type::complex(Type::length()),
+    );
+    assert_eq!(result, complex_val(10.0, 15.0, DimensionVector::LENGTH));
+}
+
+/// Int * Complex: commutative.
+#[test]
+fn int_mul_complex() {
+    let result = eval_binop(
+        BinOp::Mul,
+        Value::Int(5),
+        Type::Int,
+        complex_val(2.0, 3.0, DimensionVector::LENGTH),
+        Type::complex(Type::length()),
+        Type::complex(Type::length()),
+    );
+    assert_eq!(result, complex_val(10.0, 15.0, DimensionVector::LENGTH));
+}
+
+/// Complex * Real: dimensionless real multiplier preserves Complex dimension.
+#[test]
+fn complex_mul_real() {
+    let result = eval_binop(
+        BinOp::Mul,
+        complex_val(2.0, 3.0, DimensionVector::LENGTH),
+        Type::complex(Type::length()),
+        Value::Real(0.5),
+        Type::Real,
+        Type::complex(Type::length()),
+    );
+    assert_eq!(result, complex_val(1.0, 1.5, DimensionVector::LENGTH));
+}
+
+/// Real * Complex: commutative.
+#[test]
+fn real_mul_complex() {
+    let result = eval_binop(
+        BinOp::Mul,
+        Value::Real(0.5),
+        Type::Real,
+        complex_val(2.0, 3.0, DimensionVector::LENGTH),
+        Type::complex(Type::length()),
+        Type::complex(Type::length()),
+    );
+    assert_eq!(result, complex_val(1.0, 1.5, DimensionVector::LENGTH));
+}
