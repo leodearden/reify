@@ -3438,7 +3438,13 @@ fn unfold_recursive_sub<'t>(
         // this alternates: B's sub "a" targets A, A's sub "b" targets B.
         let next_child_template = match templates.iter().find(|t| t.name == next_sub.structure_name) {
             Some(t) => t,
-            None => continue, // Unknown structure — skip (same as non-recursive path)
+            None => {
+                diagnostics.push(Diagnostic::warning(format!(
+                    "recursive sub \"{}\" in \"{}\" at depth {} references unknown structure \"{}\"; skipping branch",
+                    next_sub.name, next_entity, depth + 1, next_sub.structure_name
+                )));
+                continue;
+            }
         };
         unfold_recursive_sub(
             values,
