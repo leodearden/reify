@@ -1,301 +1,122 @@
 {
-  "task_id": "409",
-  "title": "Merge duplicate is_cycle loops and extract SCC module from lib.rs",
+  "task_id": "396",
+  "title": "Emit diagnostics for ERROR nodes and silent drops in lower_connect_body",
   "files": [
-    "crates/reify-compiler/src/lib.rs",
-    "crates/reify-compiler/src/scc.rs",
-    "crates/reify-eval/src/lib.rs"
+    "crates/reify-syntax/src/ts_parser.rs",
+    "crates/reify-syntax/tests/connect_chain_tests.rs"
   ],
   "modules": [
-    "crates/reify-compiler/src",
-    "crates/reify-eval/src"
+    "crates/reify-syntax"
   ],
-  "analysis": "The original detect_recursive_structures() in lib.rs has two separate loops over st.sccs that both compute is_cycle identically: (1) tags in_cycle[v] and emits warning diagnostics, (2) builds cyclic_sccs Vec<HashSet<String>>. These should be merged into a single pass. Additionally, ~240 lines of Tarjan SCC code (detect_recursive_structures, TarjanState, tarjan_scc_visit, reconstruct_scc_cycle, find_cycle_back_to) should be extracted into a new scc.rs module, following the precedent of module_dag.rs which is already extracted. This is a pure refactor \u2014 no new behavior. Existing integration tests in recursive_detection_tests.rs (12 tests) and termination_check_tests.rs (12 tests) exercise the SCC detection and termination checking through the public compile() function. The implementation commit (14fd7663) is complete on the task branch. Steps 1-11 completed the SCC refactor and verified the merge to main.\n\nPOST-REVIEW UPDATE 1 (steps 12-16): Review identified two blocking issues. (1) design_coherence_invariant_handling: Task 351 (merged to main at d5b1123a) converted expect(\"compiler bug\") to ? (silent None propagation) on Extrude/Revolve arg lookups in crates/reify-eval/src/lib.rs:3237-3278. This violates the project convention that logic errors must be noisy (feedback_silent_defaults_pattern.md). Missing args and non-f64 results are compiler invariants \u2014 the compiler must always emit these, so absence is a bug. The fix restores expect()/panic!() on invariant checks while keeping the NaN/Inf filter added by ba327379 (legitimate runtime check). (2) merge_ff_failed: Main advanced after our initial merge; the SCC refactor commit 2bbe33c6 IS already an ancestor of main, but the unmerged commits needed the invariant-handling fix.\n\nPOST-REVIEW UPDATE 2 (steps 17-20): Step-16 merge was superseded \u2014 main advanced again (~120 commits since merge base 2bbe33c6, HEAD now at 7d6b54c6). The SCC refactor remains in main. The invariant-fix commits (b662570e test, 55212594 impl) need rebase onto current main. Conflicts expected in crates/reify-eval/src/lib.rs because: (a) main independently changed the revolve missing-arg test from _panics to _returns_none (ade9feaa), (b) main added NaN axis test (task-364: c7dd0ffe), (c) both sides modified eval_arg_f64 closure differently (main added .filter(), task replaced ? with panic). Resolution: keep task's invariant assertions (expect/panic), keep task's #[should_panic] tests, keep main's NaN test, keep .filter(|v| v.is_finite()) in the restructured closure.\n\nPOST-REVIEW UPDATE 3 (steps 21-29): Review round 3 found three blocking issues. (1) merge_ff_failed: Main advanced again \u2014 task/409 has 2 commits (9efd1ed3, a032f1d3) not in main; main gained task-351 rebase and status-update commits. Rebase + merge needed. (2) untested_failure_mode: Extrude distance is not filtered for NaN/Inf \u2014 the evaluated Value is passed directly into GeometryOp::Extrude without finiteness validation, while Revolve has .filter(|v| v.is_finite()). The asymmetry means NaN/Inf extrude distances silently reach the OCCT kernel. Fix: add `distance.as_f64().filter(|v| v.is_finite())?;` after the expect, plus tests for NaN and Inf cases. (3) silent_failure_on_invariant_violation: reconstruct_scc_cycle in scc.rs:178-182 silently falls back to listing all SCC members when find_cycle_back_to returns None \u2014 a 'should not happen' path that violates feedback_silent_defaults_pattern.md. Fix: add debug_assert!(false, ...) before the fallback so debug/test builds panic on this invariant violation.",
-  "prerequisites": [],
+  "analysis": "Task 396 addresses three silent-failure paths in lower_connect_body (ts_parser.rs:1329-1419). Prior work has already resolved two of the three issues: (1) an explicit \"ERROR\" arm was added at line 1405 to emit diagnostics for tree-sitter ERROR nodes, and (2) has_error() guards were added on the connect_param_assignment arm (line 1337) and port_mapping arm (line 1375). Both integration tests (in connect_chain_tests.rs, task-396 steps 1/3/5/7/8/10) and unit tests (in ts_parser.rs tests module, lines 2942-2998) already exist and verify these behaviors.\n\nThe remaining issue is the `_ => {}` catch-all at line 1414, which silently discards any child node that doesn't match the known arms. While tree-sitter's grammar for connect_body only produces connect_param_assignment, port_mapping, and ERROR as named children (plus anonymous punctuation and extras like comments), the catch-all should defensively emit diagnostics for unexpected named non-extra children \u2014 matching the robustness pattern used elsewhere in the codebase.\n\nKey concern: comments (line_comment, block_comment) are tree-sitter extras that appear as named children of any node. The fix must use child.is_extra() to avoid spurious diagnostics on comments. The catch-all should only emit diagnostics when child.is_named() && !child.is_extra().\n\nThe defensive catch-all cannot be triggered through the current grammar under normal parsing, but CAN be tested by deliberately calling lower_connect_body on a wrong node type (e.g., a constraint_definition node), which produces named children like param_declaration and constraint_def_predicate that hit the catch-all.",
+  "prerequisites": [
+    {
+      "id": "pre-1",
+      "description": "ERROR arm, has_error() guards, unit tests, and integration tests already exist from prior work on this task. The \"ERROR\" arm at line 1405, has_error() guards at lines 1337 and 1375, unit tests (lower_connect_body_error_node_emits_diagnostic, lower_connect_body_malformed_param_emits_diagnostic, lower_connect_body_malformed_mapping_emits_diagnostic), and integration tests (connect_body_error_node_emits_diagnostic, connect_body_malformed_param_emits_diagnostic, connect_body_malformed_mapping_emits_diagnostic, connect_body_valid_no_spurious_errors, connect_statement_malformed_outer_emits_diagnostic, connect_statement_valid_outer_no_spurious_errors) are all committed and passing.",
+      "status": "done",
+      "commit": null,
+      "tests": [
+        "lower_connect_body_error_node_emits_diagnostic",
+        "lower_connect_body_malformed_param_emits_diagnostic",
+        "lower_connect_body_malformed_mapping_emits_diagnostic",
+        "connect_body_error_node_emits_diagnostic",
+        "connect_body_malformed_param_emits_diagnostic",
+        "connect_body_malformed_mapping_emits_diagnostic",
+        "connect_body_valid_no_spurious_errors",
+        "connect_statement_malformed_outer_emits_diagnostic",
+        "connect_statement_valid_outer_no_spurious_errors"
+      ]
+    }
+  ],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Verify all 24 existing recursive_detection_tests and termination_check_tests pass on main before refactoring (baseline confirmation that no test regressions exist pre-change)",
+      "description": "Write integration test `connect_body_with_comment_no_spurious_errors` in connect_chain_tests.rs. Parse `structure S { port a : out T  port b : in T  connect a -> b : BoltSet { /* inline comment */ grade = 8.8 } }` and assert errors.is_empty(). Also test with line comments: `structure S { port a : out T  port b : in T  connect a -> b { // comment\\nshaft -> bore } }`. Verifies comments inside connect body don't produce spurious diagnostics. This test should PASS with existing code (catch-all silently skips comments) and must continue to pass after the catch-all fix.",
       "status": "done",
-      "commit": null
+      "commit": "038f11be"
     },
     {
       "id": "step-2",
       "type": "impl",
-      "description": "Merge the two identical loops over st.sccs in detect_recursive_structures(): combine in_cycle tagging + diagnostic emission + cyclic_sccs collection into a single pass with one is_cycle computation per SCC",
+      "description": "Verify step-1 test passes without code changes. The existing `_ => {}` catch-all correctly skips comment nodes since they don't match any arm. No implementation change needed \u2014 run `cargo test -p reify-syntax connect_body_with_comment` to confirm.",
       "status": "done",
-      "commit": "14fd7663"
+      "commit": "038f11be"
     },
     {
       "id": "step-3",
       "type": "test",
-      "description": "Verify all recursive_detection_tests and termination_check_tests still pass after loop merge (behavior-preserving refactor)",
+      "description": "Write unit test `lower_connect_body_catch_all_emits_for_unexpected_named_children` in ts_parser.rs tests module. Parse `constraint Eq(a: Scalar, b: Scalar) { a == b }`, use find_node_by_kind to find the constraint_definition node, then call lower_connect_body on it. The constraint_definition's children include named non-extra nodes (identifier, param_declaration, constraint_def_predicate) that don't match any connect_body arm, so they hit the catch-all. Assert that lowering.errors is non-empty and at least one error message contains \"unexpected\". This test FAILS with current `_ => {}` (no errors emitted for unexpected named children).",
       "status": "done",
-      "commit": "14fd7663"
+      "commit": "ef722f33"
     },
     {
       "id": "step-4",
       "type": "impl",
-      "description": "Create crates/reify-compiler/src/scc.rs: move detect_recursive_structures (as pub(crate)), TarjanState, tarjan_scc_visit, reconstruct_scc_cycle, find_cycle_back_to from lib.rs into the new module. Add 'mod scc;' to lib.rs and update the call site to scc::detect_recursive_structures",
+      "description": "Replace the `_ => {}` catch-all at line 1414 in lower_connect_body with a diagnostic-emitting version. Change to: `_ => { if child.is_named() && !child.is_extra() { self.errors.push(ParseError { message: format!(\"unexpected '{}' in connect body: {}\", child.kind(), self.node_text(child)), span: self.span(child) }); } }`. This emits diagnostics for unexpected named non-extra children while still silently skipping anonymous punctuation tokens ({, }, ,) and extras (line_comment, block_comment). Step-3 test now PASSES.",
       "status": "done",
-      "commit": "14fd7663"
+      "commit": "0dc520b7"
     },
     {
       "id": "step-5",
       "type": "test",
-      "description": "Verify all recursive_detection_tests, termination_check_tests, and full compiler test suite pass after module extraction (ensures no broken imports or visibility issues)",
+      "description": "Write unit test `lower_connect_body_extras_not_flagged` in ts_parser.rs tests module. Call lower_body_directly (existing helper) on `structure S { port a : out T  port b : in T  connect a -> b { /* comment */ grade = 8.8 } }`. Assert that no error message contains \"unexpected\". This verifies that the new catch-all check correctly skips extras (comments) via !child.is_extra(). This test should PASS with the step-4 implementation.",
       "status": "done",
-      "commit": "14fd7663"
+      "commit": "8cedc76e"
     },
     {
       "id": "step-6",
       "type": "impl",
-      "description": "Rebase onto current main and retry merge (previous merge failed because main advanced during the merge window)",
+      "description": "Verify step-5 passes with no additional changes. The is_extra() check in step-4 correctly filters comment nodes. Run full test suite (`cargo test -p reify-syntax`) to confirm no regressions across all 9 pre-existing task-396 tests plus the 3 new tests.",
       "status": "done",
-      "commit": "14fd7663"
-    },
-    {
-      "id": "step-7",
-      "type": "impl",
-      "description": "Rebase task/409 onto current main (d5b1123a) to incorporate task/351 merge that advanced main after step-6. No conflicts expected since main's new commits don't touch crates/reify-compiler/.",
-      "status": "done",
-      "commit": "2bbe33c6"
-    },
-    {
-      "id": "step-8",
-      "type": "test",
-      "description": "Verify all recursive_detection_tests, termination_check_tests, and full compiler test suite still pass after rebase onto updated main (confirms no regressions from task/351 interaction)",
-      "status": "done",
-      "commit": "2bbe33c6"
-    },
-    {
-      "id": "step-9",
-      "type": "impl",
-      "description": "Fast-forward merge task/409 into main. Verify merge succeeded and main HEAD contains the refactor commit.",
-      "status": "done",
-      "commit": "2bbe33c6"
-    },
-    {
-      "id": "step-10",
-      "type": "test",
-      "description": "Verify merge is already present in main: confirm 2bbe33c6 is an ancestor of main via git merge-base --is-ancestor, and confirm scc.rs exists in main's tree. The merge_ff_failed review feedback was a false positive \u2014 main advanced after our merge landed but our commit is reachable from current main HEAD (114a1ac0).",
-      "status": "done",
-      "commit": "2bbe33c6"
-    },
-    {
-      "id": "step-11",
-      "type": "test",
-      "description": "Run recursive_detection_tests (12 tests) and termination_check_tests (12 tests) against current main to confirm no regressions from the ~30 commits that landed after our merge.",
-      "status": "done",
-      "commit": "9326934d"
-    },
-    {
-      "id": "step-12",
-      "type": "impl",
-      "description": "Reset task/409 to current main HEAD (all SCC refactor work from steps 1-11 is already merged). Drop unmerged commits 325e35f7 (status update) and 87bb12fd (stale test adaptation) \u2014 both will be superseded by the invariant-handling fix. This gives a clean baseline with main's current eval code including the NaN/Inf filter from ba327379.",
-      "status": "done",
-      "commit": "87bb12fd"
-    },
-    {
-      "id": "step-13",
-      "type": "test",
-      "description": "Write failing tests for compiler invariant assertions in crates/reify-eval/src/lib.rs: (1) Restore #[should_panic(expected = \"compiler bug\")] on compile_geometry_op_revolve_missing_arg test \u2014 rename back to _panics, remove assert!(result.is_none()) and call compile_geometry_op directly (will fail because code returns None instead of panicking). (2) Add new #[test] #[should_panic(expected = \"compiler bug\")] fn compile_geometry_op_extrude_missing_distance_panics() that constructs an Extrude Sweep with empty args vec and calls compile_geometry_op (will fail because code returns None instead of panicking).",
-      "status": "done",
-      "commit": "b662570e"
-    },
-    {
-      "id": "step-14",
-      "type": "impl",
-      "description": "Restore invariant assertions in compile_geometry_op (crates/reify-eval/src/lib.rs:3236-3275): (1) Extrude distance (line ~3239): replace trailing `?` with `.expect(\"Extrude distance arg missing \u2014 compiler bug\")`. (2) Revolve eval_arg_f64 closure (lines ~3250-3256): replace `find(|(n, _)| n == name)?` with `.find(...).unwrap_or_else(|| panic!(\"Revolve Sweep '{}' arg missing \u2014 compiler bug\", name))`, then replace the implicit `as_f64()` in the `?` chain with `.as_f64().unwrap_or_else(|| panic!(\"Revolve '{}' arg must evaluate to f64 \u2014 compiler bug\", name))`, and wrap the result: `Some(val).filter(|v| v.is_finite())` to keep the NaN/Inf filter. Closure return type stays `-> Option<f64>` since NaN/Inf legitimately returns None.",
-      "status": "done",
-      "commit": "55212594"
-    },
-    {
-      "id": "step-15",
-      "type": "test",
-      "description": "Verify all eval tests pass: (1) #[should_panic] tests for Revolve missing-arg and Extrude missing-distance both pass (invariant violations now panic). (2) compile_geometry_op_revolve_nan_axis_returns_none still returns None (NaN is runtime, not invariant). (3) compile_geometry_op_revolve_zero_axis_returns_none still returns None. (4) Full `cargo test --package reify-eval` passes. (5) Full `cargo test --package reify-compiler` passes (no regressions to SCC refactor).",
-      "status": "done",
-      "commit": "55212594"
-    },
-    {
-      "id": "step-16",
-      "type": "impl",
-      "description": "Merge task/409 into main via fast-forward (or rebase if main advanced). Verify merge succeeded with git merge-base --is-ancestor and that both scc.rs and the restored invariant assertions are present in main's tree.",
-      "status": "done",
-      "commit": "55212594"
-    },
-    {
-      "id": "step-17",
-      "type": "impl",
-      "description": "Rebase invariant-fix commits (b662570e, 55212594) onto current main HEAD (7d6b54c6). Main advanced ~120 commits since merge base 2bbe33c6. Conflicts expected in crates/reify-eval/src/lib.rs: (a) eval_arg_f64 closure \u2014 main added .filter(|v| v.is_finite()) after .as_f64()?, task replaced entire ? chain with unwrap_or_else(panic) + Some(val).filter(); resolve by keeping task's restructured closure with both panic assertions and filter. (b) revolve missing-arg test \u2014 main renamed _panics\u2192_returns_none (ade9feaa), task keeps _panics with #[should_panic]; resolve by keeping task's _panics version. (c) main added compile_geometry_op_revolve_nan_axis_returns_none test (task-364); resolve by keeping it alongside task's new extrude test. After rebase, task branch should have exactly 2 commits on top of main.",
-      "status": "done",
-      "commit": "a032f1d3"
-    },
-    {
-      "id": "step-18",
-      "type": "test",
-      "description": "Verify all tests pass after rebase: (1) cargo test --package reify-eval \u2014 confirms #[should_panic] tests pass, NaN/zero-axis tests pass, no new failures from main's changes. (2) cargo test --package reify-compiler \u2014 confirms SCC refactor still works with latest main. (3) Spot-check that compile_geometry_op_revolve_nan_axis_returns_none (main's test) coexists with compile_geometry_op_revolve_missing_arg_panics (task's test).",
-      "status": "done",
-      "commit": "a032f1d3"
-    },
-    {
-      "id": "step-19",
-      "type": "impl",
-      "description": "Fast-forward merge task/409 into main. If main advanced again during rebase, re-rebase and retry (up to 2 retries). Verify with git merge-base --is-ancestor that the new HEAD of task/409 is an ancestor of main after merge.",
-      "status": "done",
-      "commit": "a032f1d3"
-    },
-    {
-      "id": "step-20",
-      "type": "test",
-      "description": "Post-merge verification on main: (1) Confirm scc.rs exists in main's tree. (2) Confirm invariant assertions (expect/panic) are present in compile_geometry_op. (3) Confirm .filter(|v| v.is_finite()) is preserved. (4) Run cargo test --package reify-eval and cargo test --package reify-compiler one final time from main HEAD.",
-      "status": "done",
-      "commit": "a032f1d3"
-    },
-    {
-      "id": "step-21",
-      "type": "test",
-      "description": "Write two failing tests in crates/reify-eval/src/lib.rs for the Extrude NaN/Inf gap: (1) `compile_geometry_op_extrude_nan_distance_returns_none` \u2014 constructs an Extrude Sweep with a valid profile and `literal_f64(f64::NAN)` as the distance arg, asserts compile_geometry_op returns None. Will FAIL because current code passes NaN through to GeometryOp::Extrude without checking finiteness. (2) `compile_geometry_op_extrude_inf_distance_returns_none` \u2014 same but with `literal_f64(f64::INFINITY)` as distance. Will also FAIL for the same reason. These mirror the existing `compile_geometry_op_revolve_nan_axis_returns_none` test pattern.",
-      "status": "done",
-      "commit": "42240fef"
-    },
-    {
-      "id": "step-22",
-      "type": "impl",
-      "description": "Add finiteness check to the Extrude arm in compile_geometry_op (crates/reify-eval/src/lib.rs:3226-3234): after the `.expect(\"compiler bug\")` that produces the `distance: Value`, add a guard `distance.as_f64().filter(|v| v.is_finite())?;` before constructing the GeometryOp::Extrude. This returns None when the distance is NaN, Inf, or non-numeric (same pattern as Revolve's eval_arg_f64 closure). The full Value is still passed to the struct when finite. Verify both new tests now pass.",
-      "status": "done",
-      "commit": "4eac9e96"
-    },
-    {
-      "id": "step-23",
-      "type": "test",
-      "description": "Write a unit test in crates/reify-compiler/src/scc.rs inside a new `#[cfg(test)] mod tests` block: `#[test] #[cfg(debug_assertions)] #[should_panic(expected = \"Tarjan algorithm invariant violated\")]` fn `reconstruct_scc_cycle_panics_on_invalid_scc`. Construct 2 minimal TopologyTemplate values (name='A', name='B', all other fields default/empty) and an adjacency list `vec![vec![1], vec![]]` where node 0\u21921 but 1 has no edges \u2014 so find_cycle_back_to(0, {0,1}, adj) returns None. Call `reconstruct_scc_cycle(&[0, 1], &adjacency, &templates)`. This test will FAIL because the current else branch silently falls back instead of asserting.",
-      "status": "done",
-      "commit": "1d815b66"
-    },
-    {
-      "id": "step-24",
-      "type": "impl",
-      "description": "Replace the silent fallback in reconstruct_scc_cycle (crates/reify-compiler/src/scc.rs:178-182): change the else branch from a plain fallback to `debug_assert!(false, \"find_cycle_back_to returned None for valid SCC \u2014 Tarjan algorithm invariant violated\");` followed by the existing fallback code. This makes the invariant violation noisy in debug/test builds (panic via debug_assert) while keeping the degraded-but-safe path for release builds. Add a comment explaining the intentional lossy fallback in release mode.",
-      "status": "done",
-      "commit": "72c367f3"
-    },
-    {
-      "id": "step-25",
-      "type": "test",
-      "description": "Verify all tests pass after both fixes: (1) `cargo test --package reify-eval` \u2014 confirms both new extrude NaN/Inf tests pass alongside existing revolve NaN/zero-axis tests, #[should_panic] invariant tests, and all other eval tests. (2) `cargo test --package reify-compiler` \u2014 confirms new SCC debug_assert test passes (in debug build) alongside all existing recursive_detection_tests and termination_check_tests.",
-      "status": "pending",
-      "commit": null
-    },
-    {
-      "id": "step-26",
-      "type": "impl",
-      "description": "Rebase task/409 onto current main HEAD. Task branch currently has 2 old commits (9efd1ed3, a032f1d3) plus new commits from steps 21-24 on top of merge-base 8348674c. Main has task-351 rebase and status commits. Conflicts expected in crates/reify-eval/src/lib.rs (Extrude/Revolve arm code differs between branches \u2014 main uses `?` for missing args, task uses expect/panic). Resolution: keep all of task's changes (invariant assertions + new NaN/Inf guard + new tests). Conflicts also possible in scc.rs if main touched it \u2014 keep task's version with debug_assert. After rebase, verify commit count and content match expectations.",
-      "status": "pending",
-      "commit": null
-    },
-    {
-      "id": "step-27",
-      "type": "test",
-      "description": "Post-rebase verification: (1) `cargo test --package reify-eval` \u2014 all eval tests pass on rebased branch. (2) `cargo test --package reify-compiler` \u2014 all compiler tests pass on rebased branch. (3) Spot-check: extrude NaN/Inf tests exist, scc.rs has debug_assert, invariant panics are present.",
-      "status": "pending",
-      "commit": null
-    },
-    {
-      "id": "step-28",
-      "type": "impl",
-      "description": "Fast-forward merge task/409 into main. If main advanced during rebase, re-rebase and retry (up to 2 retries). Verify with `git merge-base --is-ancestor` that task/409 HEAD is an ancestor of main after merge.",
-      "status": "pending",
-      "commit": null
-    },
-    {
-      "id": "step-29",
-      "type": "test",
-      "description": "Post-merge verification on main: (1) Confirm scc.rs has debug_assert in reconstruct_scc_cycle. (2) Confirm Extrude arm has `.as_f64().filter(|v| v.is_finite())?` guard. (3) Confirm invariant assertions (expect/panic) remain. (4) Run `cargo test --package reify-eval` and `cargo test --package reify-compiler` from main HEAD \u2014 all tests green.",
-      "status": "pending",
-      "commit": null
+      "commit": "8cedc76e"
     }
   ],
   "design_decisions": [
     {
-      "decision": "Use pub(crate) visibility for detect_recursive_structures in scc.rs",
-      "rationale": "The function is called from lib.rs compile() but is not part of the public API. pub(crate) matches the module-internal usage pattern without leaking implementation details."
+      "decision": "Use child.is_extra() to filter tree-sitter extras (comments) rather than checking specific kind names like 'line_comment' or 'block_comment'",
+      "rationale": "is_extra() is maintained by the tree-sitter grammar's extras array, so if new extras are added to the grammar (e.g., new comment styles), they'll be automatically filtered without updating the parser code. This is more maintainable than hardcoding kind names."
     },
     {
-      "decision": "Keep TarjanState, tarjan_scc_visit, reconstruct_scc_cycle, find_cycle_back_to as private functions within scc.rs",
-      "rationale": "These are implementation details of the SCC algorithm. Only detect_recursive_structures is the public entry point for the module. This mirrors how module_dag.rs exposes ModuleDag/ModuleResolver but keeps helpers private."
+      "decision": "Test the defensive catch-all by deliberately passing a wrong node type (constraint_definition) to lower_connect_body",
+      "rationale": "The catch-all cannot be triggered through the current grammar \u2014 tree-sitter's error recovery always wraps unexpected content in ERROR nodes, which are caught by the explicit ERROR arm. Passing a wrong node type is the only reliable way to produce named non-extra children that hit the catch-all, and it tests the defensive behavior that protects against future grammar changes or unusual error recovery scenarios."
     },
     {
-      "decision": "No new tests needed \u2014 rely on existing integration tests",
-      "rationale": "This is a pure structural refactor (loop merge + module extraction) with zero behavior change. The 12 recursive_detection_tests and 12 termination_check_tests exercise all SCC-related behavior through the public compile() API, which is the correct abstraction boundary for testing."
+      "decision": "Keep scope limited to lower_connect_body only; do NOT fix lower_port_body which has the same issues (no ERROR arm, silent catch-all at line 1267)",
+      "rationale": "The task explicitly targets lower_connect_body. lower_port_body should be addressed in a separate task to maintain clean scope boundaries. Noted for follow-up."
     },
     {
-      "decision": "Both changes (loop merge + extraction) combined in a single commit",
-      "rationale": "The two changes are tightly coupled (both touch the same ~250-line block) and neither is useful without the other. A single atomic commit avoids an intermediate state where the loop is merged but not extracted."
-    },
-    {
-      "decision": "No rebase/re-merge needed for merge_ff_failed feedback",
-      "rationale": "Investigation confirmed commit 2bbe33c6 is already an ancestor of main (git merge-base --is-ancestor exits 0). The review feedback was a false positive \u2014 main advanced with other task merges after our merge landed. Steps 10-11 verify this rather than re-merging."
-    },
-    {
-      "decision": "Restore expect()/panic!() for compiler-invariant arg lookups, keep NaN/Inf filter as Option",
-      "rationale": "Missing args (find returns None) and non-f64 evaluation results (as_f64 returns None) are compiler invariants \u2014 the compiler must always emit these args with the correct types, so their absence is a bug that must be loud per feedback_silent_defaults_pattern.md. NaN/Inf from user expressions is a legitimate runtime edge case (not a compiler bug), so the .filter(|v| v.is_finite()) correctly returns None and lets the caller emit a diagnostic. This separation preserves both the loud-invariant contract and the graceful NaN handling added by ba327379."
-    },
-    {
-      "decision": "Reset task/409 to main rather than rebase stale commits",
-      "rationale": "The two unmerged commits (status update + test adaptation) are both stale \u2014 the status update is ephemeral and the test adaptation endorsed the wrong pattern. Resetting to main and applying fixes fresh avoids rebase conflicts with ade9feaa (which made the same test change on main independently)."
-    },
-    {
-      "decision": "Rebase 2 commits rather than cherry-pick or squash for third merge attempt",
-      "rationale": "The task branch has exactly 2 meaningful commits (b662570e test, 55212594 impl) on top of the already-merged SCC refactor. Rebasing preserves the TDD commit history (test-first, then impl) and produces a clean fast-forward merge. Cherry-pick would duplicate commits; squash would lose the test-impl separation."
-    },
-    {
-      "decision": "Extrude NaN/Inf guard checks Value.as_f64() then filters, preserving the full Value in the struct",
-      "rationale": "GeometryOp::Extrude stores distance as a Value (not f64) to preserve unit/dimension info. The finiteness check uses .as_f64().filter(|v| v.is_finite())? as a gate \u2014 if the underlying number is NaN/Inf, the op is skipped (returns None). If finite, the original Value (with Scalar type, dimension, etc.) is passed through unchanged. This mirrors Revolve's eval_arg_f64 pattern but operates on Value instead of f64."
-    },
-    {
-      "decision": "Use debug_assert!(false, ...) + fallback for SCC invariant, not unreachable!()",
-      "rationale": "unreachable!() would crash release builds if the invariant is ever violated (e.g., due to a subtle bug in the SCC adjacency construction). debug_assert!(false, ...) + fallback gives the best of both worlds: noisy failure in debug/test builds (satisfying feedback_silent_defaults_pattern.md), graceful degradation in release builds (the fallback message is slightly less precise but still useful). The fallback path is documented as intentionally lossy."
-    },
-    {
-      "decision": "Unit test for SCC invariant uses #[cfg(debug_assertions)] gate",
-      "rationale": "The debug_assert only fires in debug builds. The #[should_panic] test must be gated with #[cfg(debug_assertions)] so it doesn't fail in release-mode test runs (where debug_assert is a no-op). This is standard practice for testing debug_assert behavior."
+      "decision": "Use 'unexpected' as the keyword in the catch-all diagnostic message rather than 'syntax error' or 'invalid'",
+      "rationale": "Distinguishes defensive catch-all diagnostics from tree-sitter ERROR node diagnostics ('syntax error in connect body') and has_error() guard diagnostics ('invalid connect parameter'). Each error path produces a uniquely identifiable message, making test assertions precise and debugging clearer."
     }
   ],
   "reuse": [
     {
-      "what": "module_dag.rs extraction precedent",
-      "where": "crates/reify-compiler/src/module_dag.rs",
-      "how": "Follow the same pattern: declare private module in lib.rs with 'mod scc;', expose entry point as pub(crate), keep implementation details private"
+      "what": "find_node_by_kind helper function",
+      "where": "ts_parser.rs tests module, line 2908",
+      "how": "Reuse for finding constraint_definition node in the catch-all test (step-3). Already exists and handles recursive tree traversal."
     },
     {
-      "what": "Existing integration tests for SCC detection",
-      "where": "crates/reify-compiler/tests/recursive_detection_tests.rs",
-      "how": "12 tests covering self-reference, indirect cycles (2-node, 3-node), non-cyclic graphs (linear chains, diamonds), multiple independent cycles, and diagnostic messages \u2014 all exercise detect_recursive_structures through compile()"
+      "what": "lower_body_directly helper function",
+      "where": "ts_parser.rs tests module, line 2926",
+      "how": "Reuse for step-5 test (extras not flagged). Parses source, finds connect_body node, calls lower_connect_body directly, returns errors."
     },
     {
-      "what": "Existing integration tests for termination checking",
-      "where": "crates/reify-compiler/tests/termination_check_tests.rs",
-      "how": "12 tests covering termination condition validation that depend on correct SCC detection output (cyclic_sccs) \u2014 validates the merged loop produces correct cyclic_sccs downstream"
+      "what": "parse_decls helper function",
+      "where": "connect_chain_tests.rs, line 8",
+      "how": "Reuse for step-1 integration test. Parses source and returns (declarations, errors) tuple."
     },
     {
-      "what": "Existing NaN/Inf and zero-axis test patterns",
-      "where": "crates/reify-eval/src/lib.rs (compile_geometry_op_revolve_nan_axis_returns_none, compile_geometry_op_revolve_zero_axis_returns_none)",
-      "how": "These tests verify that NaN/Inf values and zero-length axes correctly return None \u2014 they confirm the NaN/Inf filter is preserved after restoring invariant panics on arg lookups. The new Extrude NaN/Inf tests follow this exact pattern."
+      "what": "Existing ParseError emit pattern from ERROR arm",
+      "where": "ts_parser.rs lines 1405-1412 (ERROR arm in lower_connect_body)",
+      "how": "Follow same pattern for the catch-all diagnostic: push ParseError with descriptive message and span from self.span(child). Keeps error emission consistent across all arms."
     },
     {
-      "what": "Original expect() message patterns from pre-task-351 code",
-      "where": "git diff d5b1123a^1..d5b1123a -- crates/reify-eval/src/lib.rs",
-      "how": "Restore the same message format: 'Extrude Sweep args must contain distance key \u2014 compiler bug', 'Revolve Sweep X arg missing \u2014 compiler bug', 'Revolve X arg must evaluate to f64 \u2014 compiler bug'"
-    },
-    {
-      "what": "literal_f64 test helper for NaN/Inf test construction",
-      "where": "crates/reify-eval/src/lib.rs (test module, line ~3735)",
-      "how": "Reuse existing literal_f64(v) helper to construct CompiledExpr::literal(Value::Real(v)) for NaN and Inf distance values in the new Extrude tests"
+      "what": "Lowering::new constructor for direct unit tests",
+      "where": "ts_parser.rs line 59",
+      "how": "Step-3 test creates a Lowering instance directly (same pattern as lower_body_directly helper) to call lower_connect_body on an arbitrary node type."
     }
   ],
-  "_schema_version": 1,
-  "_session_id": "409-beee0a5a",
-  "_created_at": "2026-03-26T03:17:19.604103+00:00"
+  "_session_id": "396-2b2ea04a",
+  "_created_at": "2026-03-26T02:12:28.418693+00:00"
 }
