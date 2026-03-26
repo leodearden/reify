@@ -17,6 +17,7 @@ import type {
   FileData,
 } from './types';
 import { convertRawMesh, convertRawGuiState } from './types';
+import type { OutboundMessage } from '../sidecar/src/types';
 
 // ── Commands (invoke wrappers) ──────────────────────────────────────
 
@@ -138,6 +139,52 @@ export async function claudeAbort(): Promise<void> {
 /** Clear the Claude session. */
 export async function claudeClearSession(): Promise<void> {
   return invoke('claude_clear_session');
+}
+
+// ── Claude event subscription ───────────────────────────────────────
+
+/**
+ * Subscribe to all Claude sidecar events and map payloads to OutboundMessage.
+ * Returns a combined unlisten function that tears down all 7 subscriptions.
+ */
+export async function subscribeToClaudeEvents(
+  handler: (msg: OutboundMessage) => void,
+): Promise<() => void> {
+  const unlisteners = await Promise.all([
+    listen<{ id: string; content: string }>('claude-text-delta', (event) => {
+      handler({ type: 'text_delta', ...event.payload });
+    }),
+    listen<{ id: string; content: string }>('claude-thinking-delta', (event) => {
+      handler({ type: 'thinking_delta', ...event.payload });
+    }),
+    listen<{ id: string; tool_name: string; tool_input: Record<string, unknown> }>(
+      'claude-tool-call',
+      (event) => {
+        handler({ type: 'tool_call', ...event.payload });
+      },
+    ),
+    listen<{ id: string; tool_name: string; result: unknown }>(
+      'claude-tool-result',
+      (event) => {
+        handler({ type: 'tool_result', ...event.payload });
+      },
+    ),
+    listen<{ id: string }>('claude-done', (event) => {
+      handler({ type: 'done', ...event.payload });
+    }),
+    listen<{ id: string; message: string }>('claude-error', (event) => {
+      handler({ type: 'error', ...event.payload });
+    }),
+    listen('claude-ready', () => {
+      handler({ type: 'ready' });
+    }),
+  ]);
+
+  return () => {
+    for (const unsub of unlisteners) {
+      unsub();
+    }
+  };
 }
 
 // ── Event listeners (listen wrappers) ───────────────────────────────
