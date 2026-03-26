@@ -8437,6 +8437,17 @@
         "dependencies": [],
         "priority": "high",
         "subtasks": []
+      },
+      {
+        "id": 492,
+        "title": "Fix edit_param guard re-elaboration ordering: solver values overwritten by second guard phase",
+        "description": "edit_param has two sequential guard re-elaboration blocks with the solver running between them. The second block can overwrite solver-resolved auto param values.\n\n**What's wrong:**\n- Block A (lib.rs:1562-1646): re-evaluates guard expressions when structure_controlling cells are dirty\n- Solver (lib.rs:1655-1797): resolves auto params and writes values\n- Block B (lib.rs:1799-1881): re-evaluates guard members when guard values changed — overwrites solver values with Undef for members whose guard is now false\n\nIf an auto param lives in a guarded group whose guard transitions to false, Block B sets it to Undef AFTER the solver resolved it. The solver's work is lost.\n\n**Fix:** Merge the two guard re-elaboration blocks into one that runs BEFORE the solver, or ensure Block B does not overwrite auto param values that were set by the solver. The simplest fix: in Block B, skip cells with kind == ValueCellKind::Auto when deactivating guarded members (they should remain at their solver-resolved value or be explicitly invalidated through the dirty cone).\n\n**Memory hints:** search for \"guard re-elaboration\", \"edit_param resolution\", entity names: edit_param, structure_controlling, guard_changed",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -8449,7 +8460,7 @@
       ],
       "created": "2026-03-26T15:04:44.899Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-26T15:05:00.818Z"
+      "updated": "2026-03-26T15:05:09.774Z"
     }
   }
 }
