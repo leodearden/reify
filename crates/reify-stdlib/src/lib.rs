@@ -596,8 +596,11 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
             match normalize_quaternion(r.0, r.1, r.2, r.3) {
                 Some(rot_val) => {
                     // t = origin_to - R * origin_from
+                    if f_dim != t_dim {
+                        return Value::Undef;
+                    }
+                    let dim = f_dim;
                     let (rfx, rfy, rfz) = quat_rotate(r, fx, fy, fz);
-                    let dim = if f_dim == t_dim { f_dim } else { t_dim };
                     let trans = Value::Vector(vec![
                         Value::Scalar { si_value: tx - rfx, dimension: dim },
                         Value::Scalar { si_value: ty - rfy, dimension: dim },
