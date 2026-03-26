@@ -8041,10 +8041,11 @@
         "description": "Follow-up from task-446 review: add 4-5 missing edge-case tests to point_vector_eval_tests.rs.\n\n1. **Vector3+Vector2 mismatched length**: Value::Vector(3 components) + Value::Vector(2 components) → Undef. The existing mismatch test at line 387 uses Value::Tensor, not Value::Vector.\n2. **Undef propagation for Sub**: Value::Vector([1m, Undef, 3m]) - Value::Vector([1m,1m,1m]) → Undef. Task 446 only covered Add direction.\n3. **Vector / Int(0) → Undef**: Confirms the early as_f64() == 0.0 guard catches integer zero for geometric types.\n4. **Point / Int(0) → Undef**: Same as above for Point variant.\n\nmemory_hints: search \"point_vector_eval_tests\" for existing test patterns; search \"eval_div\" for the as_f64 zero-check implementation",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-03-26T08:25:43.493Z"
       },
       {
         "id": "459",
@@ -8209,7 +8210,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-26T08:25:43.386Z",
+      "lastModified": "2026-03-26T08:25:43.493Z",
       "taskCount": 472,
       "completedCount": 249,
       "tags": [
