@@ -7315,11 +7315,11 @@
         "description": "The parse→compile and parse→compile→eval helper patterns are duplicated across 15+ test files in reify-compiler and reify-eval (e.g. meta_e2e.rs, meta_compile_tests.rs, connect_compile_tests.rs, field_compile_tests.rs, field_eval_tests.rs, purpose_eval.rs, m5_integration.rs, occurrence_eval.rs). Each file independently defines compile_source/compile_module and parse_compile_eval/eval_source.\n\nAdd shared helpers to crates/reify-test-support:\n1. `pub fn compile_source(source: &str) -> CompiledModule` — parse + compile\n2. `pub fn eval_source(source: &str) -> (CompiledModule, EvalResult)` — parse + compile + eval with MockConstraintChecker\n\nThe eval helper should also assert no eval-phase diagnostics (result.diagnostics) to prevent silent error swallowing.\n\nThen update all existing test files to import from reify-test-support instead of defining local copies.\n\nmemory_hints: search \"compile_source test helper\" and \"parse_compile_eval\" in crates/reify-compiler/tests and crates/reify-eval/tests",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-03-25T13:21:53.136Z"
+        "updatedAt": "2026-03-26T02:25:37.018Z"
       },
       {
         "id": "402",
@@ -7825,7 +7825,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-26T02:25:36.911Z",
+      "lastModified": "2026-03-26T02:25:37.019Z",
       "taskCount": 441,
       "completedCount": 233,
       "tags": [
