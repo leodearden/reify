@@ -15,7 +15,7 @@ use reify_compiler::ValueCellKind;
 use reify_eval::cache::{CachedResult, EvalOutcome, NodeId};
 use reify_eval::deps::extract_dependency_trace;
 use reify_eval::graph::EvaluationGraph;
-use reify_eval::{CheckResult, ConcurrentEditResult, ConcurrentEditSetup, ConcurrentNodeResult};
+use reify_eval::{CheckResult, ConcurrentEditResult, ConcurrentEditSetup, ConcurrentNodeResult, MetaMap};
 use reify_types::{
     CompiledFunction, ContentHash, DeterminacyState, PersistentMap, Value, ValueCellId, ValueMap,
     VersionId,
@@ -48,7 +48,7 @@ pub struct ConcurrentEvalAdapter {
     /// User-defined functions for evaluating UserFunctionCall nodes.
     functions: Vec<CompiledFunction>,
     /// Template-to-meta-entries mapping for resolving MetaAccess expressions.
-    meta_map: Arc<HashMap<String, HashMap<String, String>>>,
+    meta_map: Arc<MetaMap>,
     /// Version for this evaluation.
     #[allow(dead_code)]
     version: VersionId,

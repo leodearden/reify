@@ -25,6 +25,9 @@ use crate::deps::{extract_dependency_trace, DependencyTrace, ReverseDependencyIn
 use crate::journal::{EvalEvent, EventJournal, EventKind, EventPayload};
 use crate::snapshot::Snapshot;
 
+/// Map from template name to its meta key/value pairs.
+pub type MetaMap = HashMap<String, HashMap<String, String>>;
+
 /// Error returned when an operation requires prior eval() but none has been performed.
 #[derive(Debug)]
 pub enum EngineError {
@@ -97,7 +100,7 @@ pub struct Engine {
     /// Maps template name → meta key/value pairs from the template's meta block.
     /// Populated during eval() so that edit_param() and other incremental paths
     /// can resolve MetaAccess expressions without re-reading the module.
-    meta_map: HashMap<String, HashMap<String, String>>,
+    meta_map: MetaMap,
     /// Template-native optimization objectives from the last eval() call.
     /// Maps template name → optimization objective declared in the template.
     /// Populated during eval() so that edit_param() can look up the objective
@@ -214,7 +217,7 @@ pub struct ConcurrentEditSetup {
     pub functions: Vec<CompiledFunction>,
     /// Template-to-meta-entries mapping, populated from Engine::meta_map.
     /// Used to resolve MetaAccess expressions during concurrent evaluation.
-    pub meta_map: HashMap<String, HashMap<String, String>>,
+    pub meta_map: MetaMap,
     /// Template-native optimization objective for this edit's scope, if any.
     /// Populated from Engine::objectives during prepare_concurrent_edit().
     pub objective: Option<OptimizationObjective>,
@@ -2720,7 +2723,7 @@ impl Engine {
         module: &CompiledModule,
         values: &ValueMap,
         diagnostics: &mut Vec<Diagnostic>,
-        meta_map: &HashMap<String, HashMap<String, String>>,
+        meta_map: &MetaMap,
     ) -> Vec<(String, Mesh)> {
         let mut meshes = Vec::new();
 
@@ -2869,7 +2872,7 @@ fn evaluate_let_bindings(
     snapshot: &mut Snapshot,
     version_id: u64,
     functions: &[CompiledFunction],
-    meta_map: &HashMap<String, HashMap<String, String>>,
+    meta_map: &MetaMap,
 ) {
     let let_cells: HashMap<NodeId, &reify_types::CompiledExpr> = template
         .value_cells
@@ -2936,7 +2939,7 @@ fn compile_geometry_op(
     values: &ValueMap,
     step_handles: &[GeometryHandleId],
     functions: &[CompiledFunction],
-    meta_map: &HashMap<String, HashMap<String, String>>,
+    meta_map: &MetaMap,
 ) -> Option<reify_types::GeometryOp> {
     use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
 
@@ -3291,7 +3294,7 @@ fn unfold_recursive_sub<'t>(
     parent_entity: &str,
     depth: usize,
     max_depth: usize,
-    meta_map: &HashMap<String, HashMap<String, String>>,
+    meta_map: &MetaMap,
     diagnostics: &mut Vec<Diagnostic>,
     templates: &'t [reify_compiler::TopologyTemplate],
     node_budget: &mut usize,
@@ -3476,7 +3479,7 @@ fn elaborate_child_instance(
     child_template: &TopologyTemplate,
     scoped_entity: &str,
     args: &[(String, reify_types::CompiledExpr)],
-    meta_map: &HashMap<String, HashMap<String, String>>,
+    meta_map: &MetaMap,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     let child_values = elaborate_child_params_only(
@@ -3505,7 +3508,7 @@ fn elaborate_child_params_only(
     child_template: &TopologyTemplate,
     scoped_entity: &str,
     args: &[(String, reify_types::CompiledExpr)],
-    meta_map: &HashMap<String, HashMap<String, String>>,
+    meta_map: &MetaMap,
 ) -> ValueMap {
     let mut child_values = ValueMap::new();
 
@@ -3598,7 +3601,7 @@ fn elaborate_child_lets_only<'t>(
     child_template: &'t TopologyTemplate,
     scoped_entity: &str,
     mut child_values: ValueMap,
-    meta_map: &HashMap<String, HashMap<String, String>>,
+    meta_map: &MetaMap,
     recursive_sub_names: &[&str],
     templates: &'t [TopologyTemplate],
     diagnostics: &mut Vec<Diagnostic>,
