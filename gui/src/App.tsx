@@ -32,6 +32,9 @@ import {
   onFileChanged,
   getSourceLocation as bridgeGetSourceLocation,
   focusEntity as bridgeFocusEntity,
+  claudeSendMessage,
+  claudeAbort,
+  subscribeToClaudeEvents,
 } from './bridge';
 import {
   navigateToSource,
@@ -58,8 +61,19 @@ const App: Component = () => {
     onEntityRemoved: (id) => selectionStore.clearIfRemoved(id),
   });
   const claudeStore = createClaudeStore({
-    onSend: () => {}, // Actual sidecar IPC wiring comes from a separate integration task
-    onAbort: () => {},
+    onSend: (_id, text, context) => {
+      claudeSendMessage(text, {
+        selectedEntity: context.selectedEntity,
+        diagnostics: context.diagnostics,
+        constraints: context.constraints,
+      }).catch((err) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        claudeStore.addSystemMessage('ipc_error', `Failed to send message: ${msg}`);
+      });
+    },
+    onAbort: () => {
+      claudeAbort().catch(console.error);
+    },
   });
 
   const savedLayout = loadPanelLayout();
@@ -181,6 +195,7 @@ const App: Component = () => {
   let alive = true;
   let unsub: (() => void) | undefined;
   let fileChangedUnsub: (() => void) | undefined;
+  let claudeEventUnsub: (() => void) | undefined;
 
   async function initApp() {
     // Clean up existing subscriptions before proceeding (defensive against
@@ -189,6 +204,8 @@ const App: Component = () => {
     unsub = undefined;
     fileChangedUnsub?.();
     fileChangedUnsub = undefined;
+    claudeEventUnsub?.();
+    claudeEventUnsub = undefined;
 
     setInitPhase('loading');
 
@@ -238,6 +255,18 @@ const App: Component = () => {
       showToast('File change monitoring unavailable — external edits may not be detected', 'error');
     }
 
+    // Subscribe to Claude sidecar events
+    try {
+      const unlistenClaude = await subscribeToClaudeEvents(claudeStore.handleOutboundMessage);
+      if (!alive) {
+        unlistenClaude();
+        return;
+      }
+      claudeEventUnsub = unlistenClaude;
+    } catch (_err) {
+      showToast('Claude assistant unavailable — chat features may not work', 'error');
+    }
+
     if (!alive) return;
     setInitPhase('ready');
   }
@@ -251,6 +280,7 @@ const App: Component = () => {
     alive = false;
     unsub?.();
     fileChangedUnsub?.();
+    claudeEventUnsub?.();
   });
 
   function handleSetParameter(cellId: string, value: string) {

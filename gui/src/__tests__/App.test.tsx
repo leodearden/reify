@@ -73,6 +73,10 @@ vi.mock('../bridge', () => ({
   onValueRemoved: vi.fn().mockResolvedValue(() => {}),
   onConstraintRemoved: vi.fn().mockResolvedValue(() => {}),
   onFileChanged: vi.fn().mockResolvedValue(() => {}),
+  claudeSendMessage: vi.fn().mockResolvedValue(undefined),
+  claudeAbort: vi.fn().mockResolvedValue(undefined),
+  claudeClearSession: vi.fn().mockResolvedValue(undefined),
+  subscribeToClaudeEvents: vi.fn().mockResolvedValue(() => {}),
 }));
 
 import App from '../App';
@@ -95,6 +99,7 @@ beforeEach(() => {
   vi.mocked(bridge.onValueRemoved).mockResolvedValue(() => {});
   vi.mocked(bridge.onConstraintRemoved).mockResolvedValue(() => {});
   vi.mocked(bridge.onFileChanged).mockResolvedValue(() => {});
+  vi.mocked(bridge.subscribeToClaudeEvents).mockResolvedValue(() => {});
   vi.mocked(bridge.pickSavePath).mockResolvedValue('/user/chosen/path.step');
 });
 
