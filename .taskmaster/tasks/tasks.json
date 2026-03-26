@@ -8137,6 +8137,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 468,
+        "title": "Replace check-then-unwrap with idiomatic if-let/filter_map for default_expr",
+        "description": "Replace is_some() guard + unwrap() patterns with if-let bindings in concurrent_eval.rs and filter_map in evaluate_let_bindings",
+        "details": "1. In crates/reify-runtime/src/concurrent_eval.rs evaluate(): replace is_some() guard + unwrap() with `if let Some(expr) = cell_node.default_expr.as_ref()`\n2. In crates/reify-eval/src/lib.rs evaluate_let_bindings(): replace filter(is_some)+unwrap with filter_map(|c| c.default_expr.as_ref().map(|expr| (NodeId::Value(c.id.clone()), expr)))\n\nFrom review of task 397 (esc-397-121).",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -8149,7 +8160,7 @@
       ],
       "created": "2026-03-26T07:59:21.955Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-26T07:59:41.024Z"
+      "updated": "2026-03-26T07:59:45.344Z"
     }
   }
 }
