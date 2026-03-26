@@ -602,6 +602,15 @@ where
         // Guard dropped here — lock released.
     }
 
+    // Fast-path: on a multi-thread executor the reader task can process the
+    // ready message and call `notify_waiters()` before `notified()` was even
+    // created (line above), so the notification is irrecoverably lost.
+    // `enable()` only covers the window between `notified()` and first poll;
+    // this state check covers the earlier window.
+    if matches!(*state.lock().await, SidecarState::Ready) {
+        return Ok(());
+    }
+
     // Phase 4: wait for the ready notification with timeout.
     let wait_result = tokio::time::timeout(ready_timeout, notified).await.map_err(|_| {
         format!("Sidecar did not become ready within {}ms", ready_timeout.as_millis())
