@@ -8038,6 +8038,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 459,
+        "title": "Fix silent NaN propagation in eval_div for geometric types",
+        "description": "eval_div's early zero-check uses `denom == 0.0` (lib.rs ~line 940). IEEE 754 defines NaN == 0.0 as false, so Value::Real(f64::NAN) bypasses the guard. NaN then flows into scale_components, producing Value::Vector/Point containing NaN si_values rather than Value::Undef. This violates the project's Undef-propagation discipline.\n\nFix: Add `|| denom.is_nan()` to the zero-check condition at the top of eval_div, then add tests for Vector/Real(NaN) and Point/Real(NaN) asserting Value::Undef.\n\nmemory_hints: search \"eval_div\" for the as_f64 zero-check; search \"silent defaults\" for the project convention against silent error swallowing",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -8050,7 +8061,7 @@
       ],
       "created": "2026-03-26T07:33:57.247Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-26T07:35:00.908Z"
+      "updated": "2026-03-26T07:35:02.744Z"
     }
   }
 }
