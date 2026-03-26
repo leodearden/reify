@@ -562,6 +562,85 @@ fn tensor_with_undef_component_in_add_propagates() {
 
 // --- Tensor negation ---
 
+// ─── step-1 (task 398): Value::Point / Value::Vector addition ───
+
+/// Value::Vector + Value::Vector → Value::Vector (component-wise).
+#[test]
+fn value_vector_add_vector_returns_vector() {
+    let left = CompiledExpr::literal(
+        Value::Vector(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]),
+        Type::vec3(Type::length()),
+    );
+    let right = CompiledExpr::literal(
+        Value::Vector(vec![Value::length(4.0), Value::length(5.0), Value::length(6.0)]),
+        Type::vec3(Type::length()),
+    );
+    let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::vec3(Type::length()));
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Vector(vec![Value::length(5.0), Value::length(7.0), Value::length(9.0)])
+    );
+}
+
+/// Value::Point + Value::Vector → Value::Point (point displaced by vector).
+#[test]
+fn value_point_add_vector_returns_point() {
+    let left = CompiledExpr::literal(
+        Value::Point(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]),
+        Type::point3(Type::length()),
+    );
+    let right = CompiledExpr::literal(
+        Value::Vector(vec![Value::length(1.0), Value::length(1.0), Value::length(1.0)]),
+        Type::vec3(Type::length()),
+    );
+    let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::point3(Type::length()));
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Point(vec![Value::length(2.0), Value::length(3.0), Value::length(4.0)])
+    );
+}
+
+/// Value::Vector + Value::Point → Value::Point (commutative).
+#[test]
+fn value_vector_add_point_returns_point() {
+    let left = CompiledExpr::literal(
+        Value::Vector(vec![Value::length(1.0), Value::length(1.0), Value::length(1.0)]),
+        Type::vec3(Type::length()),
+    );
+    let right = CompiledExpr::literal(
+        Value::Point(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]),
+        Type::point3(Type::length()),
+    );
+    let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::point3(Type::length()));
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Point(vec![Value::length(2.0), Value::length(3.0), Value::length(4.0)])
+    );
+}
+
+/// Value::Point + Value::Point → Undef (affine: point addition undefined).
+#[test]
+fn value_point_add_point_returns_undef() {
+    let left = CompiledExpr::literal(
+        Value::Point(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]),
+        Type::point3(Type::length()),
+    );
+    let right = CompiledExpr::literal(
+        Value::Point(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]),
+        Type::point3(Type::length()),
+    );
+    let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::point3(Type::length()));
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::Undef);
+}
+
 /// Negating Vector3<Length> negates all components.
 #[test]
 fn negate_vector3_negates_all_components() {
