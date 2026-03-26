@@ -451,6 +451,24 @@ mod tests {
         assert_eq!(info.kind, ValueCellKind::Param);
     }
 
+    #[test]
+    fn find_member_decl_let_inside_else_block() {
+        let source = r#"structure S {
+    param cond : Bool = true
+    where cond {
+        param a : Scalar = 1mm
+    } else {
+        let fallback = 2
+    }
+}"#;
+        let ctx = AnalysisContext::new(source, &test_uri());
+        let info = ctx
+            .find_member_decl("fallback")
+            .expect("fallback inside else block should be found");
+        assert_eq!(info.name, "fallback");
+        assert_eq!(info.kind, ValueCellKind::Let);
+    }
+
     // --- format_value tests ---
 
     #[test]
