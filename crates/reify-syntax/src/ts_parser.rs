@@ -3542,6 +3542,55 @@ mod tests {
         );
     }
 
+    // ── Constraint def defensive catch-all tests ───────────────
+
+    /// Helper: parse source, find the constraint_definition node, call
+    /// lower_constraint_def directly, and return the errors.
+    fn lower_constraint_def_directly(source: &str) -> Vec<ParseError> {
+        let mut ts_parser = tree_sitter::Parser::new();
+        ts_parser
+            .set_language(&tree_sitter_reify::language().into())
+            .expect("Error loading Reify grammar");
+        let tree = ts_parser.parse(source, None).expect("Failed to parse");
+        let root = tree.root_node();
+
+        let constraint_node = find_node_by_kind(root, "constraint_definition")
+            .expect("no constraint_definition node found in parse tree");
+
+        let mut lowering = Lowering::new(source);
+        lowering.lower_constraint_def(constraint_node);
+        lowering.errors
+    }
+
+    #[test]
+    fn lower_constraint_def_catch_all_emits_for_unexpected_named_children() {
+        // Pass a port_body node to lower_constraint_def. Its named children
+        // (param_declaration, port_direction_setting, etc.) include kinds that
+        // don't match constraint_def arms and should hit the catch-all.
+        let source = "structure S { port a : in T { param x: Scalar = 1  direction = out } }";
+        let mut ts_parser = tree_sitter::Parser::new();
+        ts_parser
+            .set_language(&tree_sitter_reify::language().into())
+            .expect("Error loading Reify grammar");
+        let tree = ts_parser.parse(source, None).expect("Failed to parse");
+        let root = tree.root_node();
+
+        let port_body_node = find_node_by_kind(root, "port_body")
+            .expect("no port_body node found in parse tree");
+
+        let mut lowering = Lowering::new(source);
+        lowering.lower_constraint_def(port_body_node);
+        assert!(
+            !lowering.errors.is_empty(),
+            "expected diagnostics for unexpected named children in constraint def catch-all, got none"
+        );
+        assert!(
+            lowering.errors.iter().any(|e| e.message.contains("unexpected")),
+            "expected at least one error containing 'unexpected', got: {:?}",
+            lowering.errors
+        );
+    }
+
     // ── Doc comment extraction tests ─────────────────────────
 
     #[test]
