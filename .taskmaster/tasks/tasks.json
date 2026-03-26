@@ -7327,11 +7327,11 @@
         "description": "Migrate guard_compilation.rs and collection_sub_tests.rs to use `mod common;` shared helpers, eliminating duplicate inline helper functions.\n\n1. guard_compilation.rs: Add `mod common; use common::compile_first_template;` and remove the inline `compile_first_template` definition (identical to common/mod.rs version).\n\n2. collection_sub_tests.rs: Add `mod common;` and refactor the inline `compile_no_errors` to wrap `common::compile_module` with an error assertion (same pattern as purpose_compile_tests.rs).\n\n3. Consider adding a `compile_no_errors` helper to common/mod.rs that wraps `compile_module` + asserts no error diagnostics, since this pattern appears in collection_sub_tests.rs, collection_compile_tests.rs, and let_scope_tests.rs.\n\nmemory_hints: search \"compile_module test helper common\" in reify project; entity \"common/mod.rs\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-03-26T02:27:39.906Z"
+        "updatedAt": "2026-03-26T02:28:01.824Z"
       },
       {
         "id": "403",
@@ -7826,7 +7826,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-26T02:27:39.907Z",
+      "lastModified": "2026-03-26T02:28:01.824Z",
       "taskCount": 441,
       "completedCount": 233,
       "tags": [
