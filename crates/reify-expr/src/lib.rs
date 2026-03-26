@@ -741,6 +741,64 @@ fn eval_or(left: &CompiledExpr, right: &CompiledExpr, ctx: &EvalContext) -> Valu
     }
 }
 
+/// Apply a binary operation component-wise to two equal-length component slices,
+/// wrapping the result with the given constructor. Returns `Value::Undef` if lengths
+/// differ or any component operation produces `Value::Undef`.
+fn componentwise_binop(
+    a: &[Value],
+    b: &[Value],
+    op: fn(&Value, &Value) -> Value,
+    wrap: fn(Vec<Value>) -> Value,
+) -> Value {
+    if a.len() != b.len() {
+        return Value::Undef;
+    }
+    let results: Vec<Value> = a.iter().zip(b.iter()).map(|(x, y)| op(x, y)).collect();
+    if results.iter().any(|v| v.is_undef()) {
+        Value::Undef
+    } else {
+        wrap(results)
+    }
+}
+
+/// Scale each component of a component slice by a scalar value using the given
+/// binary operation, wrapping the result with the given constructor. Returns
+/// `Value::Undef` if any component operation produces `Value::Undef`.
+fn scale_components(
+    components: &[Value],
+    scalar: &Value,
+    op: fn(&Value, &Value) -> Value,
+    wrap: fn(Vec<Value>) -> Value,
+) -> Value {
+    let results: Vec<Value> = components.iter().map(|c| op(c, scalar)).collect();
+    if results.iter().any(|v| v.is_undef()) {
+        Value::Undef
+    } else {
+        wrap(results)
+    }
+}
+
+/// Negate each component of a component list, wrapping with the given constructor.
+/// Returns `Value::Undef` if any component cannot be negated.
+fn negate_components(components: Vec<Value>, wrap: fn(Vec<Value>) -> Value) -> Value {
+    let results: Vec<Value> = components
+        .into_iter()
+        .map(|c| match c {
+            Value::Int(i) => Value::Int(-i),
+            Value::Real(r) => Value::Real(-r),
+            Value::Scalar { si_value, dimension } => {
+                Value::Scalar { si_value: -si_value, dimension }
+            }
+            _ => Value::Undef,
+        })
+        .collect();
+    if results.iter().any(|x| x.is_undef()) {
+        Value::Undef
+    } else {
+        wrap(results)
+    }
+}
+
 fn eval_add(lv: &Value, rv: &Value) -> Value {
     match (lv, rv) {
         (Value::Int(a), Value::Int(b)) => Value::Int(a + b),
@@ -769,17 +827,15 @@ fn eval_add(lv: &Value, rv: &Value) -> Value {
         }
         (Value::String(a), Value::String(b)) => Value::String(format!("{}{}", a, b)),
         // Component-wise Tensor addition
-        (Value::Tensor(a), Value::Tensor(b)) => {
-            if a.len() != b.len() {
-                return Value::Undef;
-            }
-            let results: Vec<Value> = a.iter().zip(b.iter()).map(|(x, y)| eval_add(x, y)).collect();
-            if results.iter().any(|v| v.is_undef()) {
-                Value::Undef
-            } else {
-                Value::Tensor(results)
-            }
+        (Value::Tensor(a), Value::Tensor(b)) => componentwise_binop(a, b, eval_add, Value::Tensor),
+        // Affine geometry: Vector + Vector → Vector
+        (Value::Vector(a), Value::Vector(b)) => componentwise_binop(a, b, eval_add, Value::Vector),
+        // Affine geometry: Point + Vector or Vector + Point → Point (displacement)
+        (Value::Point(a), Value::Vector(b)) | (Value::Vector(b), Value::Point(a)) => {
+            componentwise_binop(a, b, eval_add, Value::Point)
         }
+        // Affine geometry: Point + Point is undefined
+        (Value::Point(_), Value::Point(_)) => Value::Undef,
         _ => Value::Undef,
     }
 }
@@ -810,17 +866,14 @@ fn eval_sub(lv: &Value, rv: &Value) -> Value {
             }
         }
         // Component-wise Tensor subtraction
-        (Value::Tensor(a), Value::Tensor(b)) => {
-            if a.len() != b.len() {
-                return Value::Undef;
-            }
-            let results: Vec<Value> = a.iter().zip(b.iter()).map(|(x, y)| eval_sub(x, y)).collect();
-            if results.iter().any(|v| v.is_undef()) {
-                Value::Undef
-            } else {
-                Value::Tensor(results)
-            }
-        }
+        (Value::Tensor(a), Value::Tensor(b)) => componentwise_binop(a, b, eval_sub, Value::Tensor),
+        // Affine geometry: Point - Point → Vector (displacement)
+        (Value::Point(a), Value::Point(b)) => componentwise_binop(a, b, eval_sub, Value::Vector),
+        // Affine geometry: Point - Vector → Point (point displaced backwards)
+        (Value::Point(a), Value::Vector(b)) => componentwise_binop(a, b, eval_sub, Value::Point),
+        // Affine geometry: Vector - Vector → Vector
+        (Value::Vector(a), Value::Vector(b)) => componentwise_binop(a, b, eval_sub, Value::Vector),
+        // Vector - Point falls through to Undef (no geometric meaning)
         _ => Value::Undef,
     }
 }
@@ -861,12 +914,21 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
         (Value::Tensor(components), scalar) | (scalar, Value::Tensor(components))
             if !matches!(scalar, Value::Tensor(_)) =>
         {
-            let results: Vec<Value> = components.iter().map(|c| eval_mul(c, scalar)).collect();
-            if results.iter().any(|v| v.is_undef()) {
-                Value::Undef
-            } else {
-                Value::Tensor(results)
-            }
+            scale_components(components, scalar, eval_mul, Value::Tensor)
+        }
+        // Scalar * Vector or Vector * Scalar: scale each component → Vector
+        (Value::Vector(components), scalar) | (scalar, Value::Vector(components))
+            if !matches!(scalar, Value::Vector(_) | Value::Point(_) | Value::Tensor(_)) =>
+        {
+            scale_components(components, scalar, eval_mul, Value::Vector)
+        }
+        // Scalar * Point or Point * Scalar: scale each component → Point
+        // Pragmatic deviation from strict affine rules: needed for weighted
+        // interpolation and barycentric coordinates.
+        (Value::Point(components), scalar) | (scalar, Value::Point(components))
+            if !matches!(scalar, Value::Vector(_) | Value::Point(_) | Value::Tensor(_)) =>
+        {
+            scale_components(components, scalar, eval_mul, Value::Point)
         }
         _ => Value::Undef,
     }
@@ -925,12 +987,20 @@ fn eval_div(lv: &Value, rv: &Value) -> Value {
         },
         // Tensor / Scalar: divide each component by the scalar
         (Value::Tensor(components), scalar) if !matches!(scalar, Value::Tensor(_)) => {
-            let results: Vec<Value> = components.iter().map(|c| eval_div(c, scalar)).collect();
-            if results.iter().any(|v| v.is_undef()) {
-                Value::Undef
-            } else {
-                Value::Tensor(results)
-            }
+            scale_components(components, scalar, eval_div, Value::Tensor)
+        }
+        // Vector / Scalar: divide each component by the scalar → Vector
+        (Value::Vector(components), scalar)
+            if !matches!(scalar, Value::Vector(_) | Value::Point(_) | Value::Tensor(_)) =>
+        {
+            scale_components(components, scalar, eval_div, Value::Vector)
+        }
+        // Point / Scalar: divide each component by the scalar → Point
+        // Pragmatic deviation from strict affine rules (needed for interpolation).
+        (Value::Point(components), scalar)
+            if !matches!(scalar, Value::Vector(_) | Value::Point(_) | Value::Tensor(_)) =>
+        {
+            scale_components(components, scalar, eval_div, Value::Point)
         }
         _ => Value::Undef,
     }
@@ -1090,24 +1160,11 @@ fn eval_unop(op: UnOp, operand: &CompiledExpr, ctx: &EvalContext) -> Value {
                 dimension,
             },
             // Negate all components of a Tensor
-            Value::Tensor(components) => {
-                let results: Vec<Value> = components
-                    .into_iter()
-                    .map(|c| match c {
-                        Value::Int(i) => Value::Int(-i),
-                        Value::Real(r) => Value::Real(-r),
-                        Value::Scalar { si_value, dimension } => {
-                            Value::Scalar { si_value: -si_value, dimension }
-                        }
-                        _ => Value::Undef,
-                    })
-                    .collect();
-                if results.iter().any(|x| x.is_undef()) {
-                    Value::Undef
-                } else {
-                    Value::Tensor(results)
-                }
-            }
+            Value::Tensor(components) => negate_components(components, Value::Tensor),
+            // Affine geometry: negate all components of a Vector
+            Value::Vector(components) => negate_components(components, Value::Vector),
+            // Affine geometry: point negation is undefined (spec 3.3.1)
+            Value::Point(_) => Value::Undef,
             _ => Value::Undef,
         },
         UnOp::Not => match v {
