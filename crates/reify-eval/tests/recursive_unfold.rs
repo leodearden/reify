@@ -830,3 +830,94 @@ fn unfold_recursive_cross_level_three_deep() {
         result.values.get(&child_total)
     );
 }
+
+// ─── step-26: mutual recursion (two-node cycle A ↔ B) ──────────────────────
+
+/// Two mutually-recursive templates:
+///   A { param n: Int = 2; is_recursive = true; sub b = B(n: n-1) where n > 0 }
+///   B { param n: Int = 0; is_recursive = true; sub a = A(n: n-1) where n > 0 }
+///
+/// Starting from entity A with n=2:
+///   A(n=2) → A.b = B(n=1) → A.b.a = A(n=0) → guard false, stop.
+///
+/// Expected: A.b.n == 1, A.b.a.n == 0, A.b.a.b does NOT exist (guard stops at n=0).
+///
+/// This test FAILS against the current implementation because Phase 2 passes A's
+/// all_recursive_subs (containing A's guard expression referencing A's ValueCellId keys)
+/// into the recursive call for B. B's local_values is built from B's value_cells, so
+/// the A-keyed guard refs are absent → Undef → silent return → B's entity is incomplete.
+#[test]
+fn unfold_mutual_recursion_two_node_cycle() {
+    // Template A: param n: Int = 2, sub b = B(n: n-1) where n > 0
+    let guard_a = gt(
+        value_ref_typed("A", "n", Type::Int),
+        literal(Value::Int(0)),
+    );
+    let n_minus_1_a = binop(
+        BinOp::Sub,
+        value_ref_typed("A", "n", Type::Int),
+        literal(Value::Int(1)),
+    );
+    let template_a = TopologyTemplateBuilder::new("A")
+        .param("A", "n", Type::Int, Some(CompiledExpr::literal(Value::Int(2), Type::Int)))
+        .is_recursive(true)
+        .sub_component_with_guard("b", "B", vec![("n".to_string(), n_minus_1_a)], guard_a)
+        .build();
+
+    // Template B: param n: Int = 0 (default irrelevant, overridden by arg), sub a = A(n: n-1) where n > 0
+    let guard_b = gt(
+        value_ref_typed("B", "n", Type::Int),
+        literal(Value::Int(0)),
+    );
+    let n_minus_1_b = binop(
+        BinOp::Sub,
+        value_ref_typed("B", "n", Type::Int),
+        literal(Value::Int(1)),
+    );
+    let template_b = TopologyTemplateBuilder::new("B")
+        .param("B", "n", Type::Int, Some(CompiledExpr::literal(Value::Int(0), Type::Int)))
+        .is_recursive(true)
+        .sub_component_with_guard("a", "A", vec![("n".to_string(), n_minus_1_b)], guard_b)
+        .build();
+
+    // Build module with both templates
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template_a)
+        .template(template_b)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+    let result = engine.eval(&module);
+
+    // A.n should be 2 (top-level default)
+    assert_eq!(
+        result.values.get(&ValueCellId::new("A", "n")),
+        Some(&Value::Int(2)),
+        "A.n should be 2"
+    );
+
+    // A.b should be B with n=1 (= 2 - 1)
+    assert_eq!(
+        result.values.get(&ValueCellId::new("A.b", "n")),
+        Some(&Value::Int(1)),
+        "A.b.n should be 1 (= A.n - 1 = 2 - 1)"
+    );
+
+    // A.b.a should be A with n=0 (= 1 - 1)
+    // THIS IS THE KEY ASSERTION: with the bug, B's sub `a` is never unfolded because
+    // the guard expression references A's ValueCellId keys but local_values has B's keys.
+    assert_eq!(
+        result.values.get(&ValueCellId::new("A.b.a", "n")),
+        Some(&Value::Int(0)),
+        "A.b.a.n should be 0 (= A.b.n - 1 = 1 - 1). \
+         If this fails, mutual recursion is broken: B's sub `a` was not unfolded \
+         because Phase 2 used A's guard/sub declarations instead of B's."
+    );
+
+    // A.b.a.b should NOT exist (guard n > 0 is false at n=0)
+    assert!(
+        !result.values.contains(&ValueCellId::new("A.b.a.b", "n")),
+        "A.b.a.b.n should not exist (guard false at n=0)"
+    );
+}
