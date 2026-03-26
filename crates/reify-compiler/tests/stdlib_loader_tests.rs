@@ -1,7 +1,7 @@
 //! Tests for stdlib_loader — embedded .ri stdlib loading, compilation, and caching.
 
 use reify_compiler::stdlib_loader;
-use reify_types::Severity;
+use reify_types::{ModulePath, Severity};
 
 // ─── step-1: basic loading ──────────────────────────────────────────────
 
@@ -74,5 +74,47 @@ fn load_stdlib_is_cached() {
     assert!(
         std::ptr::eq(first, second),
         "load_stdlib() should return the same slice reference on repeated calls"
+    );
+}
+
+// ─── step-3: compile_with_prelude makes prelude traits visible ──────
+
+/// compile_with_prelude() makes prelude traits visible to user code.
+/// A structure conforming to the prelude's Elastic trait compiles without
+/// errors and has 'Elastic' in trait_bounds.
+#[test]
+fn compile_with_prelude_makes_traits_visible() {
+    let source = r#"
+structure def Steel : Elastic {
+    param youngs_modulus : Real = 200.0
+    param poissons_ratio : Real = 0.3
+    param shear_modulus : Real = 77.0
+}
+"#;
+    let prelude = stdlib_loader::load_stdlib();
+    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = reify_compiler::compile_with_prelude(&parsed, prelude);
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "compile_with_prelude should produce no errors for Elastic-conforming Steel, got: {:?}",
+        errors
+    );
+
+    let template = compiled
+        .templates
+        .first()
+        .expect("expected at least 1 template");
+    assert!(
+        template.trait_bounds.contains(&"Elastic".to_string()),
+        "Steel should have 'Elastic' trait bound, got: {:?}",
+        template.trait_bounds
     );
 }
