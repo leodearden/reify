@@ -1156,6 +1156,64 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
                 Value::Undef
             }
         }
+        // Transform * Transform: composition (R1,t1)*(R2,t2) = (R1*R2, R1*t2+t1)
+        (
+            Value::Transform { rotation: r1, translation: t1 },
+            Value::Transform { rotation: r2, translation: t2 },
+        ) => {
+            if let (
+                Value::Orientation { w: w1, x: x1, y: y1, z: z1 },
+                Value::Orientation { w: w2, x: x2, y: y2, z: z2 },
+            ) = (r1.as_ref(), r2.as_ref())
+            {
+                if let (Value::Vector(t1_items), Value::Vector(t2_items)) =
+                    (t1.as_ref(), t2.as_ref())
+                {
+                    if let (
+                        Some((t1x, t1y, t1z, t1_dim)),
+                        Some((t2x, t2y, t2z, t2_dim)),
+                    ) = (vec3_components(t1_items), vec3_components(t2_items))
+                    {
+                        // Dimension check: both translations must share dimension
+                        if t1_dim != t2_dim {
+                            return Value::Undef;
+                        }
+                        // Compose rotations: R = R1 * R2
+                        let q1 = (*w1, *x1, *y1, *z1);
+                        let (rw, rx, ry, rz) = quat_mul_t(q1, (*w2, *x2, *y2, *z2));
+                        // Normalize result quaternion
+                        let norm = (rw * rw + rx * rx + ry * ry + rz * rz).sqrt();
+                        let (rw, rx, ry, rz) = if norm > 0.0 {
+                            (rw / norm, rx / norm, ry / norm, rz / norm)
+                        } else {
+                            (1.0, 0.0, 0.0, 0.0)
+                        };
+                        // Compose translations: t = R1 * t2 + t1
+                        let (rt2x, rt2y, rt2z) = quat_rotate(q1, t2x, t2y, t2z);
+                        Value::Transform {
+                            rotation: Box::new(Value::Orientation {
+                                w: rw,
+                                x: rx,
+                                y: ry,
+                                z: rz,
+                            }),
+                            translation: Box::new(Value::Vector(make_components_3(
+                                rt2x + t1x,
+                                rt2y + t1y,
+                                rt2z + t1z,
+                                t1_dim,
+                            ))),
+                        }
+                    } else {
+                        Value::Undef
+                    }
+                } else {
+                    Value::Undef
+                }
+            } else {
+                Value::Undef
+            }
+        }
         _ => Value::Undef,
     }
 }
