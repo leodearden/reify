@@ -35,6 +35,9 @@ fn build_parse_error_exits_failure() {
 #[test]
 fn build_violating_bracket_exits_failure() {
     let output_path = "/tmp/reify_test_violating_build_out.step";
+    // Pre-cleanup: remove any stale file from a prior panicked run to avoid
+    // a false positive on the exists() assertion below.
+    let _ = std::fs::remove_file(output_path);
     let output = Command::new(env!("CARGO_BIN_EXE_reify"))
         .args([
             "build",
