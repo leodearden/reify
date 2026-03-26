@@ -8593,10 +8593,11 @@
         "description": "Two issues in stdlib_loader.rs: silent failure caching and missing cross-module dependency support.",
         "details": "1. Add debug_assert! on compile errors in load_stdlib() — currently silently caches broken modules, violating the project's 'no silent failures' convention (feedback_silent_defaults_pattern.md). Add: debug_assert!(module.diagnostics.iter().all(|d| d.severity != Severity::Error), \"stdlib module '{}' failed to compile: {:?}\", module.path, module.diagnostics);\n\n2. Change sequential compilation to accumulate prelude across stdlib modules so cross-module dependencies work when a second stdlib module is added. Currently each module is compiled with bare compile(), which won't resolve references to types/traits from earlier stdlib modules. Fix: iterate sources, compile each with compile_with_prelude(&parsed, &already_compiled), push to already_compiled.\n\nFiles: crates/reify-compiler/src/stdlib_loader.rs\n\nmemory_hints: search \"stdlib loader\" \"load_stdlib\" | entities: stdlib_loader, compile_with_prelude",
         "testStrategy": "",
-        "status": "pending",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "high",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-03-26T22:54:04.658Z"
       },
       {
         "id": "506",
@@ -8722,7 +8723,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-26T22:08:08.958Z",
+      "lastModified": "2026-03-26T22:54:04.658Z",
       "taskCount": 516,
       "completedCount": 253,
       "tags": [
