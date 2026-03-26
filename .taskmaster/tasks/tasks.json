@@ -8597,6 +8597,17 @@
         "dependencies": [],
         "priority": "high",
         "subtasks": []
+      },
+      {
+        "id": 506,
+        "title": "Cache prelude function merging and document shadowing semantics in Engine::eval()",
+        "description": "Two related issues in Engine::eval(): repeated allocation and undocumented invariant.",
+        "details": "1. self.functions is rebuilt on every eval() call by cloning module.functions and extending with prelude functions. Pre-collect prelude functions once at Engine construction time into a prelude_functions field. In eval(), replace the per-call loop with self.functions.extend(self.prelude_functions.iter().cloned()).\n\n2. User functions shadow prelude functions because module functions are stored before prelude functions are appended (first-match lookup). Add a comment explaining this invariant and a regression test proving user definitions take precedence.\n\nFiles: crates/reify-eval/src/lib.rs\n\nmemory_hints: search \"Engine eval prelude functions\" | entities: Engine, eval",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -8609,7 +8620,7 @@
       ],
       "created": "2026-03-26T21:45:39.849Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-26T21:45:46.615Z"
+      "updated": "2026-03-26T21:45:51.938Z"
     }
   }
 }
