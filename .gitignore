@@ -14,3 +14,4 @@ node_modules/
 test_bracket.reify
 .orchestrator/reconciliation/*.db*
 .orchestrator/queue/*.db*
+*.kate-swp
