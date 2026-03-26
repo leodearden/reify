@@ -8423,11 +8423,11 @@
         "description": "compile_guarded_members() at crates/reify-compiler/src/lib.rs:4376-4379 has an empty catch-all that silently drops Sub, Minimize, and Maximize declarations inside guarded (where{}) blocks. No diagnostic is emitted — the user's code is silently ignored.\n\n**What's wrong:**\n- The `_ => {}` arm at line 4376 silently discards these member declarations\n- This is the root cause of the ignored test `recursive_sub_inside_block_guard_no_error` at crates/reify-compiler/tests/termination_check_tests.rs:415\n- Users writing `where condition { sub component(...) }` get no feedback that the sub is ignored\n\n**Fix:** Replace the empty catch-all with a diagnostic error: \"Sub/Minimize/Maximize declarations in guarded blocks are not yet supported\". This turns silent data loss into a visible compiler error. The ignored test should then pass for the right reason (error detected) or be updated accordingly.\n\n**Memory hints:** search for \"guarded block compilation\", entity names: compile_guarded_members, CompiledGuardedGroup",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-03-26T18:17:42.490Z"
+        "updatedAt": "2026-03-26T18:20:40.527Z"
       },
       {
         "id": "491",
@@ -8546,7 +8546,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-26T18:19:31.364Z",
+      "lastModified": "2026-03-26T18:20:40.533Z",
       "taskCount": 500,
       "completedCount": 250,
       "tags": [
