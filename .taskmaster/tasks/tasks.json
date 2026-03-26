@@ -7732,10 +7732,11 @@
         "description": "Move parse_and_compile helper from 3 test files (m9_trait_conformance.rs, m5_integration.rs, purpose_eval.rs) into crates/reify-test-support. Use CARGO_MANIFEST_DIR for fixture paths in m9_trait_conformance.rs (9 occurrences). Bind count_for results to local variables before assertions. (Review followup from task 194)",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-03-26T02:41:58.104Z"
       },
       {
         "id": "434",
@@ -7836,7 +7837,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-26T02:41:57.996Z",
+      "lastModified": "2026-03-26T02:41:58.104Z",
       "taskCount": 441,
       "completedCount": 233,
       "tags": [
