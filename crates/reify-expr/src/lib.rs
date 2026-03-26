@@ -634,6 +634,25 @@ fn eval_method_call(obj: &Value, method: &str, args: &[Value], result_type: &Typ
                 _ => Value::Undef,
             }
         },
+        "re" | "im" => {
+            if !args.is_empty() {
+                return Value::Undef;
+            }
+            match obj {
+                Value::Complex { re, im, dimension } => {
+                    let component = if method == "re" { *re } else { *im };
+                    if dimension.is_dimensionless() {
+                        Value::Real(component)
+                    } else {
+                        Value::Scalar {
+                            si_value: component,
+                            dimension: *dimension,
+                        }
+                    }
+                }
+                _ => Value::Undef,
+            }
+        },
         "x" | "y" | "z" => {
             let index = match method {
                 "x" => 0,
