@@ -921,3 +921,147 @@ fn unfold_mutual_recursion_two_node_cycle() {
         "A.b.a.b.n should not exist (guard false at n=0)"
     );
 }
+
+// ─── step-28a: mutual recursion three-node cycle A → B → C → A ──────────────
+
+/// Three mutually-recursive templates:
+///   A { param n: Int = 3; is_recursive = true; sub b = B(n: n-1) where n > 0 }
+///   B { param n: Int = 0; is_recursive = true; sub c = C(n: n-1) where n > 0 }
+///   C { param n: Int = 0; is_recursive = true; sub a = A(n: n-1) where n > 0 }
+///
+/// Starting from entity A with n=3:
+///   A(n=3) → A.b = B(n=2) → A.b.c = C(n=1) → A.b.c.a = A(n=0) → guard false, stop.
+///
+/// This tests that template lookup chains correctly through a 3-node cycle,
+/// with scope_template alternating A→B→C→A at each depth level.
+#[test]
+fn unfold_mutual_recursion_three_node_cycle() {
+    // Template A: param n=3, sub b = B(n: n-1) where n > 0
+    let template_a = TopologyTemplateBuilder::new("A")
+        .param("A", "n", Type::Int, Some(CompiledExpr::literal(Value::Int(3), Type::Int)))
+        .is_recursive(true)
+        .sub_component_with_guard(
+            "b", "B",
+            vec![("n".to_string(), binop(BinOp::Sub, value_ref_typed("A", "n", Type::Int), literal(Value::Int(1))))],
+            gt(value_ref_typed("A", "n", Type::Int), literal(Value::Int(0))),
+        )
+        .build();
+
+    // Template B: param n=0, sub c = C(n: n-1) where n > 0
+    let template_b = TopologyTemplateBuilder::new("B")
+        .param("B", "n", Type::Int, Some(CompiledExpr::literal(Value::Int(0), Type::Int)))
+        .is_recursive(true)
+        .sub_component_with_guard(
+            "c", "C",
+            vec![("n".to_string(), binop(BinOp::Sub, value_ref_typed("B", "n", Type::Int), literal(Value::Int(1))))],
+            gt(value_ref_typed("B", "n", Type::Int), literal(Value::Int(0))),
+        )
+        .build();
+
+    // Template C: param n=0, sub a = A(n: n-1) where n > 0
+    let template_c = TopologyTemplateBuilder::new("C")
+        .param("C", "n", Type::Int, Some(CompiledExpr::literal(Value::Int(0), Type::Int)))
+        .is_recursive(true)
+        .sub_component_with_guard(
+            "a", "A",
+            vec![("n".to_string(), binop(BinOp::Sub, value_ref_typed("C", "n", Type::Int), literal(Value::Int(1))))],
+            gt(value_ref_typed("C", "n", Type::Int), literal(Value::Int(0))),
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template_a)
+        .template(template_b)
+        .template(template_c)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+    let result = engine.eval(&module);
+
+    // Verify chain: A(3) → A.b=B(2) → A.b.c=C(1) → A.b.c.a=A(0)
+    assert_eq!(result.values.get(&ValueCellId::new("A", "n")), Some(&Value::Int(3)), "A.n should be 3");
+    assert_eq!(result.values.get(&ValueCellId::new("A.b", "n")), Some(&Value::Int(2)), "A.b.n should be 2");
+    assert_eq!(result.values.get(&ValueCellId::new("A.b.c", "n")), Some(&Value::Int(1)), "A.b.c.n should be 1");
+    assert_eq!(result.values.get(&ValueCellId::new("A.b.c.a", "n")), Some(&Value::Int(0)), "A.b.c.a.n should be 0");
+
+    // A.b.c.a.b should NOT exist (guard false at n=0)
+    assert!(
+        !result.values.contains(&ValueCellId::new("A.b.c.a.b", "n")),
+        "A.b.c.a.b.n should not exist (guard false at n=0)"
+    );
+}
+
+// ─── step-28b: mutual recursion with let-bindings ────────────────────────────
+
+/// Two mutually-recursive templates with let-bindings:
+///   A { param n: Int = 2; let val: Int = n * 10; is_recursive = true; sub b = B(n: n-1) where n > 0 }
+///   B { param n: Int = 0; let val: Int = n * 10; is_recursive = true; sub a = A(n: n-1) where n > 0 }
+///
+/// Starting from A(n=2):
+///   A(n=2, val=20) → A.b = B(n=1, val=10) → A.b.a = A(n=0, val=0)
+///
+/// This verifies that Phase 3 (elaborate_child_lets_only) receives the correct
+/// child-scoped recursive_sub_names for BFS traversal at each mutual recursion depth.
+#[test]
+fn unfold_mutual_recursion_with_let_bindings() {
+    // Template A: param n=2, let val = n * 10, sub b = B(n: n-1) where n > 0
+    let template_a = TopologyTemplateBuilder::new("A")
+        .param("A", "n", Type::Int, Some(CompiledExpr::literal(Value::Int(2), Type::Int)))
+        .let_binding(
+            "A", "val", Type::Int,
+            binop(BinOp::Mul, value_ref_typed("A", "n", Type::Int), literal(Value::Int(10))),
+        )
+        .is_recursive(true)
+        .sub_component_with_guard(
+            "b", "B",
+            vec![("n".to_string(), binop(BinOp::Sub, value_ref_typed("A", "n", Type::Int), literal(Value::Int(1))))],
+            gt(value_ref_typed("A", "n", Type::Int), literal(Value::Int(0))),
+        )
+        .build();
+
+    // Template B: param n=0, let val = n * 10, sub a = A(n: n-1) where n > 0
+    let template_b = TopologyTemplateBuilder::new("B")
+        .param("B", "n", Type::Int, Some(CompiledExpr::literal(Value::Int(0), Type::Int)))
+        .let_binding(
+            "B", "val", Type::Int,
+            binop(BinOp::Mul, value_ref_typed("B", "n", Type::Int), literal(Value::Int(10))),
+        )
+        .is_recursive(true)
+        .sub_component_with_guard(
+            "a", "A",
+            vec![("n".to_string(), binop(BinOp::Sub, value_ref_typed("B", "n", Type::Int), literal(Value::Int(1))))],
+            gt(value_ref_typed("B", "n", Type::Int), literal(Value::Int(0))),
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template_a)
+        .template(template_b)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+    let result = engine.eval(&module);
+
+    // A(n=2): val = 2 * 10 = 20
+    assert_eq!(
+        result.values.get(&ValueCellId::new("A", "val")),
+        Some(&Value::Int(20)),
+        "A.val should be 20 (= 2 * 10)"
+    );
+
+    // A.b = B(n=1): val = 1 * 10 = 10
+    assert_eq!(
+        result.values.get(&ValueCellId::new("A.b", "val")),
+        Some(&Value::Int(10)),
+        "A.b.val should be 10 (= 1 * 10)"
+    );
+
+    // A.b.a = A(n=0): val = 0 * 10 = 0
+    assert_eq!(
+        result.values.get(&ValueCellId::new("A.b.a", "val")),
+        Some(&Value::Int(0)),
+        "A.b.a.val should be 0 (= 0 * 10)"
+    );
+}
