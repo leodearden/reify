@@ -8652,6 +8652,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 511,
+        "title": "Add test and doc-comment for Indeterminate-as-success constraint behavior",
+        "description": "Builds with Indeterminate constraints succeed silently — this design choice has no test or documentation.",
+        "details": "In crates/reify-cli/src/main.rs, the Indeterminate arm in the constraint-status match does not set all_satisfied=false, meaning builds with indeterminate constraints succeed. Add a test in cli_build.rs with a fixture that produces Indeterminate satisfaction, and add a doc-comment in main.rs explaining the rationale (indeterminate != violated).\n\nFiles: crates/reify-cli/src/main.rs, crates/reify-cli/tests/cli_build.rs\n\nmemory_hints: search \"Indeterminate Satisfaction constraint\" | entities: cmd_build, Satisfaction",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -8664,7 +8675,7 @@
       ],
       "created": "2026-03-26T21:45:39.849Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-26T21:46:05.240Z"
+      "updated": "2026-03-26T21:46:07.807Z"
     }
   }
 }
