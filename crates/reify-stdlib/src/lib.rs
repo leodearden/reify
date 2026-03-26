@@ -4114,13 +4114,29 @@ mod tests {
         );
         assert_ne!(p3, v3, "point3 and vec3 with identical args must differ");
 
+        // content_hash: Point and Vector with same components produce different hashes
+        assert_ne!(
+            p2.content_hash(), v2.content_hash(),
+            "point2 and vec2 content_hash must differ"
+        );
+        assert_ne!(
+            p3.content_hash(), v3.content_hash(),
+            "point3 and vec3 content_hash must differ"
+        );
+
         // Display: point(...) vs vec(...)
-        if let Value::Point(items) = &p2 {
-            let _ = items; // variants accessible
-        }
-        if let Value::Vector(items) = &v2 {
-            let _ = items;
-        }
+        let p2_display = format!("{}", p2);
+        let v2_display = format!("{}", v2);
+        assert!(
+            p2_display.starts_with("point("),
+            "Point2 Display should start with 'point(', got {:?}",
+            p2_display
+        );
+        assert!(
+            v2_display.starts_with("vec("),
+            "Vector2 Display should start with 'vec(', got {:?}",
+            v2_display
+        );
     }
 
     // ── tensor_components_f64 with Point/Vector inputs (task 398, step-13) ────
