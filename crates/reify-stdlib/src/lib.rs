@@ -4123,6 +4123,56 @@ mod tests {
         }
     }
 
+    // ── tensor_components_f64 with Point/Vector inputs (task 398, step-13) ────
+
+    #[test]
+    fn magnitude_point_dimensioned_3m_4m_0m() {
+        // magnitude(Point([3m,4m,0m])) ≈ Scalar{0.005, LENGTH}
+        // 3mm=0.003m, 4mm=0.004m → |v|=0.005m
+        let p = Value::Point(vec![
+            Value::Scalar { si_value: 0.003, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 0.004, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
+        ]);
+        assert_scalar_approx!(eval_builtin("magnitude", &[p]), 0.005, DimensionVector::LENGTH);
+    }
+
+    #[test]
+    fn normalize_point_returns_point_wrapper() {
+        // normalize(Point([3,4,0])) → Point([0.6,0.8,0.0])
+        let p = Value::Point(vec![Value::Real(3.0), Value::Real(4.0), Value::Real(0.0)]);
+        let result = eval_builtin("normalize", &[p]);
+        match result {
+            Value::Point(items) => {
+                assert_eq!(items.len(), 3);
+                let v: Vec<f64> = items.iter().map(|x| x.as_f64().unwrap()).collect();
+                assert!((v[0] - 0.6).abs() < 1e-12, "x: expected 0.6, got {}", v[0]);
+                assert!((v[1] - 0.8).abs() < 1e-12, "y: expected 0.8, got {}", v[1]);
+                assert!((v[2] - 0.0).abs() < 1e-12, "z: expected 0.0, got {}", v[2]);
+            }
+            other => panic!("expected Value::Point([0.6,0.8,0.0]), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn dot_point_point_returns_scalar() {
+        // dot(Point([1,2,3]), Point([4,5,6])) = 1*4 + 2*5 + 3*6 = 32
+        let a = Value::Point(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
+        let b = Value::Point(vec![Value::Real(4.0), Value::Real(5.0), Value::Real(6.0)]);
+        assert_real_approx!(eval_builtin("dot", &[a, b]), 32.0);
+    }
+
+    #[test]
+    fn cross_point_point_returns_undef() {
+        // cross is semantically invalid for points — only defined for vectors
+        let a = Value::Point(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
+        let b = Value::Point(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
+        assert!(
+            eval_builtin("cross", &[a, b]).is_undef(),
+            "cross of two Points should return Undef"
+        );
+    }
+
     // ── construct_point_or_vector edge cases (task 398, step-11) ──────────────
 
     #[test]
