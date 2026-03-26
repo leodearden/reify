@@ -8050,11 +8050,11 @@
         "description": "eval_div's early zero-check uses `denom == 0.0` (lib.rs ~line 940). IEEE 754 defines NaN == 0.0 as false, so Value::Real(f64::NAN) bypasses the guard. NaN then flows into scale_components, producing Value::Vector/Point containing NaN si_values rather than Value::Undef. This violates the project's Undef-propagation discipline.\n\nFix: Add `|| denom.is_nan()` to the zero-check condition at the top of eval_div, then add tests for Vector/Real(NaN) and Point/Real(NaN) asserting Value::Undef.\n\nmemory_hints: search \"eval_div\" for the as_f64 zero-check; search \"silent defaults\" for the project convention against silent error swallowing",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-26T08:21:13.769Z"
+        "updatedAt": "2026-03-26T08:24:30.454Z"
       },
       {
         "id": "460",
@@ -8207,7 +8207,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-26T08:24:15.216Z",
+      "lastModified": "2026-03-26T08:24:30.454Z",
       "taskCount": 472,
       "completedCount": 249,
       "tags": [
