@@ -8104,6 +8104,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 465,
+        "title": "Fix silent NaN propagation in eval_div for geometric types",
+        "description": "eval_div's zero-check uses denom == 0.0 which is false for NaN (IEEE 754), allowing NaN to silently propagate through scale_components into Vector/Point values instead of returning Value::Undef",
+        "details": "In crates/reify-expr/src/lib.rs, the eval_div zero-check condition `denom == 0.0` should be expanded to `denom == 0.0 || denom.is_nan()` to prevent NaN from silently flowing through scale_components and producing Vector/Point values with NaN si_values instead of Value::Undef. This violates the project's Undef-propagation discipline.\n\nAdd tests: value_vector_div_nan_returns_undef and value_point_div_nan_returns_undef in crates/reify-expr/tests/point_vector_eval_tests.rs.\n\nFrom review of task 446 (esc-446-125).\n\nmemory_hints:\n  search: \"eval_div zero check NaN propagation\"\n  entities: [\"eval_div\", \"scale_components\", \"Value::Undef\"]",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -8116,7 +8127,7 @@
       ],
       "created": "2026-03-26T07:59:21.955Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-26T07:59:21.959Z"
+      "updated": "2026-03-26T07:59:28.463Z"
     }
   }
 }
