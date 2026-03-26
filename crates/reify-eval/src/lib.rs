@@ -1054,78 +1054,45 @@ impl Engine {
                 let guard_is_true = matches!(&guard_val, Value::Bool(true));
                 let guard_is_false = matches!(&guard_val, Value::Bool(false));
 
-                // Evaluate members (active when guard is true)
-                for cell in &group.members {
-                    if guard_is_true {
-                        // Evaluate normally
-                        if cell.kind == ValueCellKind::Param
-                            || cell.kind == ValueCellKind::Let
-                        {
-                            if let Some(ref expr) = cell.default_expr {
-                                let val = reify_expr::eval_expr(expr, &self.make_eval_ctx(&values, functions));
-                                values.insert(cell.id.clone(), val.clone());
-                                snapshot.values.insert(
-                                    cell.id.clone(),
-                                    (val, DeterminacyState::Determined),
-                                );
-                            } else {
+                // Evaluate both branches: members (active when true), else_members (active when false)
+                for (cells, is_active) in [
+                    (group.members.as_slice(), guard_is_true),
+                    (group.else_members.as_slice(), guard_is_false),
+                ] {
+                    for cell in cells {
+                        if is_active {
+                            if cell.kind == ValueCellKind::Param
+                                || cell.kind == ValueCellKind::Let
+                            {
+                                if let Some(ref expr) = cell.default_expr {
+                                    let val = reify_expr::eval_expr(expr, &self.make_eval_ctx(&values, functions));
+                                    values.insert(cell.id.clone(), val.clone());
+                                    snapshot.values.insert(
+                                        cell.id.clone(),
+                                        (val, DeterminacyState::Determined),
+                                    );
+                                } else {
+                                    values.insert(cell.id.clone(), Value::Undef);
+                                    snapshot.values.insert(
+                                        cell.id.clone(),
+                                        (Value::Undef, DeterminacyState::Undetermined),
+                                    );
+                                }
+                            } else if cell.kind == ValueCellKind::Auto {
                                 values.insert(cell.id.clone(), Value::Undef);
                                 snapshot.values.insert(
                                     cell.id.clone(),
-                                    (Value::Undef, DeterminacyState::Undetermined),
+                                    (Value::Undef, DeterminacyState::Auto),
                                 );
                             }
-                        } else if cell.kind == ValueCellKind::Auto {
+                        } else {
+                            // Guard inactive — member is Undef
                             values.insert(cell.id.clone(), Value::Undef);
                             snapshot.values.insert(
                                 cell.id.clone(),
-                                (Value::Undef, DeterminacyState::Auto),
+                                (Value::Undef, DeterminacyState::Undetermined),
                             );
                         }
-                    } else {
-                        // Guard is false or Undef — member is inactive
-                        values.insert(cell.id.clone(), Value::Undef);
-                        snapshot.values.insert(
-                            cell.id.clone(),
-                            (Value::Undef, DeterminacyState::Undetermined),
-                        );
-                    }
-                }
-
-                // Evaluate else_members (active when guard is false)
-                for cell in &group.else_members {
-                    if guard_is_false {
-                        if cell.kind == ValueCellKind::Param
-                            || cell.kind == ValueCellKind::Let
-                        {
-                            if let Some(ref expr) = cell.default_expr {
-                                let val = reify_expr::eval_expr(expr, &self.make_eval_ctx(&values, functions));
-                                values.insert(cell.id.clone(), val.clone());
-                                snapshot.values.insert(
-                                    cell.id.clone(),
-                                    (val, DeterminacyState::Determined),
-                                );
-                            } else {
-                                values.insert(cell.id.clone(), Value::Undef);
-                                snapshot.values.insert(
-                                    cell.id.clone(),
-                                    (Value::Undef, DeterminacyState::Undetermined),
-                                );
-                            }
-                        } else if cell.kind == ValueCellKind::Auto {
-                            values.insert(cell.id.clone(), Value::Undef);
-                            snapshot.values.insert(
-                                cell.id.clone(),
-                                (Value::Undef, DeterminacyState::Auto),
-                            );
-                        }
-                    } else {
-                        // Guard is true or Undef — else member is inactive
-                        values.insert(cell.id.clone(), Value::Undef);
-                        snapshot.values.insert(
-                            cell.id.clone(),
-                            (Value::Undef, DeterminacyState::Undetermined),
-                        );
                     }
                 }
             }
@@ -1823,51 +1790,31 @@ impl Engine {
                     let guard_is_true = matches!(&guard_val, Value::Bool(true));
                     let guard_is_false = matches!(&guard_val, Value::Bool(false));
 
-                    // Process members (active when guard is true)
-                    for member_id in &group.members {
-                        if guard_is_true {
-                            // Re-evaluate member from its default_expr
-                            if let Some(node) = new_snapshot.graph.value_cells.get(member_id)
-                                && let Some(ref expr) = node.default_expr
-                            {
-                                let val = reify_expr::eval_expr(expr, &self.make_eval_ctx(&values, &functions));
-                                values.insert(member_id.clone(), val.clone());
+                    // Process both branches: members (active when true), else_members (active when false)
+                    for (member_ids, is_active) in [
+                        (group.members.as_slice(), guard_is_true),
+                        (group.else_members.as_slice(), guard_is_false),
+                    ] {
+                        for member_id in member_ids {
+                            if is_active {
+                                if let Some(node) = new_snapshot.graph.value_cells.get(member_id)
+                                    && let Some(ref expr) = node.default_expr
+                                {
+                                    let val = reify_expr::eval_expr(expr, &self.make_eval_ctx(&values, &functions));
+                                    values.insert(member_id.clone(), val.clone());
+                                    new_snapshot.values.insert(
+                                        member_id.clone(),
+                                        (val, DeterminacyState::Determined),
+                                    );
+                                }
+                            } else {
+                                // Deactivate: set to Undef
+                                values.insert(member_id.clone(), Value::Undef);
                                 new_snapshot.values.insert(
                                     member_id.clone(),
-                                    (val, DeterminacyState::Determined),
+                                    (Value::Undef, DeterminacyState::Undetermined),
                                 );
                             }
-                        } else {
-                            // Deactivate: set to Undef
-                            values.insert(member_id.clone(), Value::Undef);
-                            new_snapshot.values.insert(
-                                member_id.clone(),
-                                (Value::Undef, DeterminacyState::Undetermined),
-                            );
-                        }
-                    }
-
-                    // Process else_members (active when guard is false)
-                    for member_id in &group.else_members {
-                        if guard_is_false {
-                            // Re-evaluate else member from its default_expr
-                            if let Some(node) = new_snapshot.graph.value_cells.get(member_id)
-                                && let Some(ref expr) = node.default_expr
-                            {
-                                let val = reify_expr::eval_expr(expr, &self.make_eval_ctx(&values, &functions));
-                                values.insert(member_id.clone(), val.clone());
-                                new_snapshot.values.insert(
-                                    member_id.clone(),
-                                    (val, DeterminacyState::Determined),
-                                );
-                            }
-                        } else {
-                            // Deactivate: set to Undef
-                            values.insert(member_id.clone(), Value::Undef);
-                            new_snapshot.values.insert(
-                                member_id.clone(),
-                                (Value::Undef, DeterminacyState::Undetermined),
-                            );
                         }
                     }
                 }
