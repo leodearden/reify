@@ -270,43 +270,43 @@
       "id": "step-37",
       "type": "test",
       "description": "Write failing test `unfold_mutual_recursion_heterogeneous_members` in crates/reify-eval/tests/recursive_unfold.rs. Build two templates with NON-OVERLAPPING member names beyond the shared param `n`: Template A has `{param n: Int = 2, param width: Int = 5, let total: Int = width + A.b.height}` with `sub b = B(n: n-1) where n > 0`. Template B has `{param n: Int = 0, param height: Int = 3}` with `sub a = A(n: n-1) where n > 0`. Both `is_recursive = true`. Eval from A(n=2). Assert: A.width == 5, A.b.height == 3, and critically: A.total == 8 (= width + A.b.height). This test will FAIL because the BFS in `elaborate_child_lets_only` (lib.rs:3644-3665) iterates `child_template.value_cells` (A's members: n, width, total) to scan entity A.b (which is a B). `ValueCellId::new(\"A.b\", \"height\")` is never constructed because `height` is not in A's value_cells \u2014 so A.b.height is never projected into child_values, and A.total evaluates to Undef.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "c2afd42d"
     },
     {
       "id": "step-38",
       "type": "impl",
       "description": "Fix BFS projection in `elaborate_child_lets_only` (lib.rs:3613-3666) to use per-entity template lookups for heterogeneous mutual recursion:\n1. Add `templates: &[TopologyTemplate]` parameter to `elaborate_child_lets_only`.\n2. Change BFS queue from `VecDeque<String>` to `VecDeque<(String, &TopologyTemplate)>` \u2014 each entry carries the entity path AND the template that entity belongs to.\n3. Seed the queue by looking up each recursive sub's target template: for each name in `recursive_sub_names`, find the sub in `child_template.sub_components`, then find the target template in `templates` via `sub.structure_name`. Push `(entity_path, target_template)` tuples.\n4. In the BFS loop body, iterate `entity_template.value_cells` (the entity's OWN template) instead of `child_template.value_cells`.\n5. When enqueuing children, use `entity_template.sub_components` to find child sub names and their target templates (via `templates` lookup), instead of the static `recursive_sub_names`. This ensures each depth level uses the correct template's sub declarations.\n6. Update the call site in `unfold_recursive_sub` (lib.rs:3474) to pass `templates`.\n7. Verify step-37 test now passes, plus all existing mutual recursion tests still pass.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "bd9d0d23"
     },
     {
       "id": "step-39",
       "type": "test",
       "description": "Write failing test `cyclic_let_bindings_emit_diagnostic` in crates/reify-eval/tests/recursive_unfold.rs. Build a recursive template S with `{param n: Int = 2, let a: Int = b + 1, let b: Int = a + 1, sub child = S(n: n-1) where n > 0}` with `is_recursive = true`. Eval the module. Assert: (1) the eval result's `diagnostics` contains at least one error-level diagnostic whose message contains 'circular let-binding dependency' (or similar) and names both `a` and `b`, (2) the values for S.a and S.b are `Value::Undef` (they were never evaluated due to the cycle). This test will FAIL because `elaborate_child_lets_only` currently has no cycle detection \u2014 the sorted output silently omits the cyclic nodes and no diagnostic is emitted.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "7376227b"
     },
     {
       "id": "step-40",
       "type": "impl",
       "description": "Add cyclic let-binding detection in `elaborate_child_lets_only` (lib.rs:3682):\n1. Add `diagnostics: &mut Vec<Diagnostic>` parameter to `elaborate_child_lets_only`.\n2. After `let sorted_child_lets = topological_sort(...)` (line 3682), compare `sorted_child_lets.len()` against `child_let_node_ids.len()`. If `sorted_child_lets.len() < child_let_node_ids.len()`, collect the missing node IDs by computing the set difference `child_let_node_ids - sorted_set`. Extract member names from the missing `NodeId::Value(vcid)` entries.\n3. Emit `Diagnostic::error(format!(\"circular let-binding dependency in '{}': [{}]\", scoped_entity, missing_names.join(\", \")))`. The entity's let-bindings involved in the cycle remain as `Value::Undef` in the snapshot (they are never evaluated, which is the existing behavior \u2014 now it's just reported).\n4. Update the call site in `unfold_recursive_sub` (lib.rs:3474) to pass `diagnostics`.\n5. Verify step-39 test now passes, plus all existing tests still pass.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "862acbf0"
     },
     {
       "id": "step-41",
       "type": "impl",
       "description": "Run full test suite for both affected crates: `cargo test -p reify-compiler` and `cargo test -p reify-eval`. Run `cargo clippy -p reify-eval` to verify no new warnings from the signature changes. Confirm all existing self-recursion, mutual recursion (homogeneous), detection, and termination tests still pass (no regression from the two fixes).",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "862acbf0"
     },
     {
       "id": "step-42",
       "type": "impl",
       "description": "Rebase task/351 onto latest main and fast-forward merge. Run: `git checkout task/351 && git rebase main && git checkout main && git merge --ff-only task/351`. If main advanced during the operation, repeat rebase. Verify merge with `git log --oneline -5 main` and `cargo test -p reify-eval --test recursive_unfold`.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "695dd125"
     }
   ],
   "design_decisions": [
