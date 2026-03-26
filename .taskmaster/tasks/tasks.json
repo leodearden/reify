@@ -8159,6 +8159,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 470,
+        "title": "Eliminate redundant computation in evaluate_let_bindings",
+        "description": "Remove duplicate extract_dependency_trace call and consider pre-computing topological order at compile time",
+        "details": "In crates/reify-eval/src/lib.rs:\n1. Replace duplicate extract_dependency_trace call at line ~2950 with let_traces[&node_id].clone() — the identical trace already exists in the let_traces HashMap built at lines 2919-2922\n2. Consider pre-computing let_cells/let_traces/topological order at compile time in TopologyTemplate since the expression graph is static after compilation. Store sorted_let_ids on TopologyTemplate to make evaluate_let_bindings a single linear pass with no per-call allocations.\n\nFrom review of task 397 (esc-397-121).\n\nmemory_hints:\n  search: \"evaluate_let_bindings extract_dependency_trace topological sort\"\n  entities: [\"evaluate_let_bindings\", \"TopologyTemplate\", \"extract_dependency_trace\"]",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -8171,7 +8182,7 @@
       ],
       "created": "2026-03-26T07:59:21.955Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-26T07:59:50.664Z"
+      "updated": "2026-03-26T07:59:56.561Z"
     }
   }
 }
