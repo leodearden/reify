@@ -297,7 +297,7 @@ mod occt_tests {
             .unwrap();
         match result {
             Value::String(s) => {
-                // Parse centroid JSON and check x ≈ 0.05
+                // Parse centroid JSON and check x ≈ 0.05, y ≈ 0, z ≈ 0
                 assert!(s.contains("\"x\":"), "centroid should contain x coordinate");
                 // Extract x value from JSON string
                 let x_start = s.find("\"x\":").unwrap() + 4;
@@ -307,6 +307,109 @@ mod occt_tests {
                     (x - 0.05).abs() < 1e-9,
                     "centroid x should be ≈ 0.05, got {}",
                     x
+                );
+
+                // Assert y ≈ 0
+                let y_start = s.find("\"y\":").unwrap() + 4;
+                let y_end = s[y_start..].find([',', '}']).unwrap() + y_start;
+                let y: f64 = s[y_start..y_end].parse().unwrap();
+                assert!(
+                    y.abs() < 1e-9,
+                    "centroid y should be ≈ 0, got {}",
+                    y
+                );
+
+                // Assert z ≈ 0
+                let z_start = s.find("\"z\":").unwrap() + 4;
+                let z_end = s[z_start..].find([',', '}']).unwrap() + z_start;
+                let z: f64 = s[z_start..z_end].parse().unwrap();
+                assert!(
+                    z.abs() < 1e-9,
+                    "centroid z should be ≈ 0, got {}",
+                    z
+                );
+            }
+            other => panic!("expected String (centroid JSON), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn rotate_centroid_displacement() {
+        if !reify_kernel_occt::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        // Create a box and translate it off-origin so rotation moves its centroid
+        let handle = kernel
+            .execute(&GeometryOp::Box {
+                width: mm(10.0),
+                height: mm(10.0),
+                depth: mm(10.0),
+            })
+            .unwrap();
+
+        let offset = kernel
+            .execute(&GeometryOp::Translate {
+                target: handle.id,
+                dx: 0.05,
+                dy: 0.0,
+                dz: 0.0,
+            })
+            .unwrap();
+
+        // Rotate 90 degrees around Z axis — centroid should move from (0.05,0,0) to (0,0.05,0)
+        let rotated = kernel
+            .execute(&GeometryOp::Rotate {
+                target: offset.id,
+                axis: [0.0, 0.0, 1.0],
+                angle_rad: std::f64::consts::FRAC_PI_2,
+            })
+            .unwrap();
+
+        // Volume should be preserved
+        let vol_before = kernel
+            .query(&GeometryQuery::Volume(offset.id))
+            .unwrap();
+        let vol_after = kernel
+            .query(&GeometryQuery::Volume(rotated.id))
+            .unwrap();
+        match (&vol_before, &vol_after) {
+            (Value::Real(vb), Value::Real(va)) => {
+                assert!(
+                    (vb - va).abs() < 1e-12,
+                    "rotation should preserve volume: before={}, after={}",
+                    vb, va
+                );
+            }
+            _ => panic!(
+                "expected Real volumes, got {:?} and {:?}",
+                vol_before, vol_after
+            ),
+        }
+
+        // Centroid should have moved: x ≈ 0, y ≈ 0.05
+        let result = kernel
+            .query(&GeometryQuery::Centroid(rotated.id))
+            .unwrap();
+        match result {
+            Value::String(s) => {
+                let x_start = s.find("\"x\":").unwrap() + 4;
+                let x_end = s[x_start..].find([',', '}']).unwrap() + x_start;
+                let x: f64 = s[x_start..x_end].parse().unwrap();
+                assert!(
+                    x.abs() < 1e-6,
+                    "after 90° Z rotation, centroid x should be ≈ 0, got {}",
+                    x
+                );
+
+                let y_start = s.find("\"y\":").unwrap() + 4;
+                let y_end = s[y_start..].find([',', '}']).unwrap() + y_start;
+                let y: f64 = s[y_start..y_end].parse().unwrap();
+                assert!(
+                    (y - 0.05).abs() < 1e-6,
+                    "after 90° Z rotation, centroid y should be ≈ 0.05, got {}",
+                    y
                 );
             }
             other => panic!("expected String (centroid JSON), got {:?}", other),
