@@ -375,3 +375,92 @@ fn eval_meta_access_cached_eval() {
         "eval_cached let binding with MetaAccess should resolve to the meta value"
     );
 }
+
+/// step-3 (suggestion 13): Guarded group else_members branch with MetaAccess.
+///
+/// Build a structure 'S' with:
+///   - meta {"fallback": "off"}
+///   - param 'active' = false (so guard evaluates to false)
+///   - guarded group:
+///       - members: [mode_label (Let, meta_access "S" "fallback")]
+///       - else_members: [alt_label (Let, meta_access "S" "fallback")]
+///
+/// Since guard=false:
+///   - mode_label (member) should be Undef (guard inactive)
+///   - alt_label (else_member) should be Value::String("off") (guard active for else)
+#[test]
+fn eval_meta_access_in_guarded_group_else_branch() {
+    let guard_id = ValueCellId::new("S", "__guard_0");
+    let mode_label_id = ValueCellId::new("S", "mode_label");
+    let alt_label_id = ValueCellId::new("S", "alt_label");
+
+    let guard_expr = value_ref_typed("S", "active", Type::Bool);
+    let meta_expr_member = CompiledExpr::meta_access("S".to_string(), "fallback".to_string());
+    let meta_expr_else = CompiledExpr::meta_access("S".to_string(), "fallback".to_string());
+
+    // Member: active when guard=true
+    let mode_label_decl = ValueCellDecl {
+        id: mode_label_id.clone(),
+        kind: ValueCellKind::Let,
+        visibility: Visibility::Public,
+        cell_type: Type::String,
+        default_expr: Some(meta_expr_member),
+        span: SourceSpan::new(0, 0),
+    };
+
+    // Else-member: active when guard=false
+    let alt_label_decl = ValueCellDecl {
+        id: alt_label_id.clone(),
+        kind: ValueCellKind::Let,
+        visibility: Visibility::Public,
+        cell_type: Type::String,
+        default_expr: Some(meta_expr_else),
+        span: SourceSpan::new(0, 0),
+    };
+
+    let template = TopologyTemplateBuilder::new("S")
+        .meta(
+            [("fallback".to_string(), "off".to_string())]
+                .into_iter()
+                .collect(),
+        )
+        .param(
+            "S",
+            "active",
+            Type::Bool,
+            Some(CompiledExpr::literal(Value::Bool(false), Type::Bool)),
+        )
+        .guarded_group(
+            guard_expr,
+            guard_id.clone(),
+            vec![mode_label_decl],   // members (active when guard=true)
+            vec![],                   // constraints
+            vec![alt_label_decl],     // else_members (active when guard=false)
+            vec![],                   // else_constraints
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+    let result = engine.eval(&module);
+
+    assert_eq!(
+        result.values.get(&guard_id),
+        Some(&Value::Bool(false)),
+        "guard cell should evaluate to false"
+    );
+    assert_eq!(
+        result.values.get(&mode_label_id),
+        Some(&Value::Undef),
+        "members should be Undef when guard=false"
+    );
+    assert_eq!(
+        result.values.get(&alt_label_id),
+        Some(&Value::String("off".to_string())),
+        "else_members with MetaAccess should resolve to 'off' when guard=false"
+    );
+}
