@@ -3009,6 +3009,21 @@ mod tests {
     }
 
     #[test]
+    fn lower_connect_body_extras_not_flagged() {
+        // Comments are tree-sitter extras — they must NOT trigger the catch-all
+        // diagnostic. Verify that a connect body containing a block comment
+        // produces no errors mentioning "unexpected".
+        let errors = lower_body_directly(
+            "structure S { port a : out T  port b : in T  connect a -> b { /* comment */ grade = 8.8 }  }",
+        );
+        assert!(
+            !errors.iter().any(|e| e.message.contains("unexpected")),
+            "expected no 'unexpected' errors for comment extras, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
     fn lower_connect_body_catch_all_emits_for_unexpected_named_children() {
         // Pass a constraint_definition node to lower_connect_body. Its named
         // children (identifier, param_declaration, constraint_def_predicate)
