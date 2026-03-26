@@ -1823,3 +1823,112 @@ async fn concurrent_eval_meta_access_resolves() {
         "MetaAccess should resolve to 'aluminum' during concurrent eval"
     );
 }
+
+/// F15(a): from_setup correctly transfers all fields from ConcurrentEditSetup.
+#[test]
+fn from_setup_maps_all_fields() {
+    let setup = simple_setup();
+    let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+
+    // Verify values match
+    let adapter_values = adapter.values();
+    assert_eq!(
+        adapter_values.get(&ValueCellId::new("T", "a")),
+        setup.values.get(&ValueCellId::new("T", "a")),
+        "adapter values should contain a from setup"
+    );
+    assert_eq!(
+        adapter_values.get(&ValueCellId::new("T", "b")),
+        setup.values.get(&ValueCellId::new("T", "b")),
+        "adapter values should contain b from setup"
+    );
+
+    // Verify results starts empty
+    let results = adapter.take_results();
+    assert!(results.is_empty(), "results should start empty");
+}
+
+/// F15(b): into_result and build_result_shared produce equivalent output.
+#[tokio::test]
+async fn into_result_and_build_result_shared_equivalent() {
+    let setup = simple_setup();
+    let eval_set = setup.eval_set.clone();
+    let skipped = HashSet::new();
+
+    // Create two adapters from the same setup, evaluate both
+    let adapter1 = ConcurrentEvalAdapter::from_setup(&setup);
+    let adapter2 = ConcurrentEvalAdapter::from_setup(&setup);
+
+    let b_node = NodeId::Value(ValueCellId::new("T", "b"));
+    adapter1.evaluate(b_node.clone()).await;
+    adapter2.evaluate(b_node.clone()).await;
+
+    // Get results via both paths
+    let result_shared = adapter1.build_result_shared(&eval_set, skipped.clone());
+    let result_into = adapter2.into_result(&eval_set, skipped);
+
+    // Compare all fields
+    assert_eq!(result_shared.actual_eval_set, result_into.actual_eval_set, "actual_eval_set should match");
+    assert_eq!(result_shared.skipped, result_into.skipped, "skipped should match");
+    assert_eq!(result_shared.node_results.len(), result_into.node_results.len(), "node_results length should match");
+
+    // Compare values by checking individual entries (ValueMap doesn't impl PartialEq)
+    let a_id = ValueCellId::new("T", "a");
+    let b_id = ValueCellId::new("T", "b");
+    assert_eq!(result_shared.values.get(&a_id), result_into.values.get(&a_id), "values[a] should match");
+    assert_eq!(result_shared.values.get(&b_id), result_into.values.get(&b_id), "values[b] should match");
+
+    // snapshot_values should have the same entries
+    for (k, v) in result_shared.snapshot_values.iter() {
+        assert_eq!(
+            result_into.snapshot_values.get(k),
+            Some(v),
+            "snapshot_values mismatch for {:?}",
+            k
+        );
+    }
+}
+
+/// F15(c): evaluate returns Unchanged for constraint nodes.
+#[tokio::test]
+async fn evaluate_skips_constraint_nodes() {
+    use reify_types::ConstraintNodeId;
+
+    let setup = simple_setup();
+    let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+
+    let constraint_node = NodeId::Constraint(ConstraintNodeId::new("T", 0));
+    let outcome = adapter.evaluate(constraint_node).await;
+
+    assert_eq!(
+        outcome,
+        EvalOutcome::Unchanged,
+        "constraint nodes should return Unchanged"
+    );
+    // No results should be recorded for constraint nodes
+    assert!(
+        adapter.take_results().is_empty(),
+        "no results should be recorded for constraint nodes"
+    );
+}
+
+/// F15(d): evaluate returns Unchanged for nodes not in the graph.
+#[tokio::test]
+async fn evaluate_missing_node_returns_unchanged() {
+    let setup = simple_setup();
+    let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+
+    // A ValueCellId that doesn't exist in the graph
+    let missing_node = NodeId::Value(ValueCellId::new("T", "nonexistent"));
+    let outcome = adapter.evaluate(missing_node).await;
+
+    assert_eq!(
+        outcome,
+        EvalOutcome::Unchanged,
+        "missing nodes should return Unchanged"
+    );
+    assert!(
+        adapter.take_results().is_empty(),
+        "no results should be recorded for missing nodes"
+    );
+}
