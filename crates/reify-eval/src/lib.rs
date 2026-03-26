@@ -3662,8 +3662,13 @@ fn elaborate_child_lets_only<'t>(
             .filter_map(|name| {
                 // Look up the sub declaration to find its target template.
                 let sub_decl = child_template.sub_components.iter().find(|s| s.name == *name)?;
-                let target_tmpl = templates.iter().find(|t| t.name == sub_decl.structure_name)
-                    .unwrap_or(child_template);
+                let target_tmpl = templates.iter().find(|t| t.name == sub_decl.structure_name).or_else(|| {
+                    diagnostics.push(Diagnostic::warning(format!(
+                        "BFS seed: sub \"{}\" in \"{}\" references unknown structure \"{}\"; skipping",
+                        name, scoped_entity, sub_decl.structure_name
+                    )));
+                    None
+                })?;
                 Some((format!("{}.{}", scoped_entity, name), target_tmpl))
             })
             .collect();
@@ -3690,10 +3695,16 @@ fn elaborate_child_lets_only<'t>(
                 // child sub names and their target templates (not the static recursive_sub_names).
                 for sub_decl in &entity_template.sub_components {
                     if sub_decl.guard_expr.is_some() {
-                        let target_tmpl = templates.iter()
+                        if let Some(target_tmpl) = templates.iter()
                             .find(|t| t.name == sub_decl.structure_name)
-                            .unwrap_or(entity_template);
-                        queue.push_back((format!("{}.{}", depth_entity, sub_decl.name), target_tmpl));
+                        {
+                            queue.push_back((format!("{}.{}", depth_entity, sub_decl.name), target_tmpl));
+                        } else {
+                            diagnostics.push(Diagnostic::warning(format!(
+                                "BFS expand: sub \"{}\" in \"{}\" references unknown structure \"{}\"; skipping subtree",
+                                sub_decl.name, depth_entity, sub_decl.structure_name
+                            )));
+                        }
                     }
                 }
             }
