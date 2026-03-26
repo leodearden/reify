@@ -268,3 +268,52 @@ type Energy = Force * Length
 
     assert_eq!(names, vec!["Pressure", "Velocity", "Energy"]);
 }
+
+// ── Malformed dimensional type expressions (should not panic) ────
+
+#[test]
+fn parse_dimensional_type_missing_right_operand_no_panic() {
+    // `type Foo = Force /` — EOF after operator, right operand missing.
+    // Should NOT panic. Should produce parse error(s), no valid TypeAlias emitted.
+    let source = "type Foo = Force /";
+    let (decls, errors) = parse_decls(source);
+    // We don't require a specific number of errors — just that it doesn't panic
+    // and does NOT produce a well-formed TypeAlias (or produces errors).
+    let has_type_alias = decls.iter().any(|d| matches!(d, Declaration::TypeAlias(_)));
+    assert!(
+        !has_type_alias || !errors.is_empty(),
+        "expected either no TypeAlias or at least one error for malformed input, got decls={:?}, errors={:?}",
+        decls,
+        errors,
+    );
+}
+
+#[test]
+fn parse_dimensional_type_missing_left_operand_no_panic() {
+    // `type Foo = / Area` — operator without left operand.
+    // Should NOT panic. Should produce parse error(s).
+    let source = "type Foo = / Area";
+    let (decls, errors) = parse_decls(source);
+    let has_type_alias = decls.iter().any(|d| matches!(d, Declaration::TypeAlias(_)));
+    assert!(
+        !has_type_alias || !errors.is_empty(),
+        "expected either no TypeAlias or at least one error for malformed input, got decls={:?}, errors={:?}",
+        decls,
+        errors,
+    );
+}
+
+#[test]
+fn parse_dimensional_type_missing_both_operands_no_panic() {
+    // `type Foo = /` — only the operator, no operands at all.
+    // Should NOT panic. Should produce parse error(s).
+    let source = "type Foo = /";
+    let (decls, errors) = parse_decls(source);
+    let has_type_alias = decls.iter().any(|d| matches!(d, Declaration::TypeAlias(_)));
+    assert!(
+        !has_type_alias || !errors.is_empty(),
+        "expected either no TypeAlias or at least one error for malformed input, got decls={:?}, errors={:?}",
+        decls,
+        errors,
+    );
+}
