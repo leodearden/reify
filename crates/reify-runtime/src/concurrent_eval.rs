@@ -67,7 +67,7 @@ impl ConcurrentEvalAdapter {
             previous_hashes: Arc::new(setup.previous_hashes.clone()),
             results: Arc::new(Mutex::new(Vec::new())),
             functions: setup.functions.clone(),
-            meta_map: Arc::new(setup.meta_map.clone()),
+            meta_map: Arc::clone(&setup.meta_map),
             version: setup.version,
         }
     }

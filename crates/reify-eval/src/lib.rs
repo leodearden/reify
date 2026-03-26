@@ -7,6 +7,7 @@ pub mod journal;
 pub mod snapshot;
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::time::Instant;
 
 use reify_compiler::{CompiledConstraint, CompiledModule, CompiledPurpose, TopologyTemplate, ValueCellKind};
@@ -217,7 +218,9 @@ pub struct ConcurrentEditSetup {
     pub functions: Vec<CompiledFunction>,
     /// Template-to-meta-entries mapping, populated from Engine::meta_map.
     /// Used to resolve MetaAccess expressions during concurrent evaluation.
-    pub meta_map: MetaMap,
+    /// Wrapped in `Arc` so that `ConcurrentEvalAdapter::from_setup` can share
+    /// the map via cheap `Arc::clone` instead of deep-cloning the HashMap.
+    pub meta_map: Arc<MetaMap>,
     /// Template-native optimization objective for this edit's scope, if any.
     /// Populated from Engine::objectives during prepare_concurrent_edit().
     pub objective: Option<OptimizationObjective>,
@@ -567,7 +570,7 @@ impl Engine {
             parent_snapshot_id: parent_id,
             changed_cells: changed_set,
             functions: self.functions.clone(),
-            meta_map: self.meta_map.clone(),
+            meta_map: Arc::new(self.meta_map.clone()),
             objective: self.objectives.get(&cell.entity).cloned(),
         })
     }
@@ -790,7 +793,7 @@ impl Engine {
                                         && let Some(node) = setup.graph.value_cells.get(vcid)
                                         && let Some(ref expr) = node.default_expr
                                     {
-                                        let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&result.values, &setup.functions).with_meta(&setup.meta_map));
+                                        let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&result.values, &setup.functions).with_meta(&*setup.meta_map));
                                         result.values.insert(vcid.clone(), val.clone());
                                         result.snapshot_values.insert(
                                             vcid.clone(),

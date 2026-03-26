@@ -92,7 +92,7 @@ fn simple_setup() -> ConcurrentEditSetup {
         parent_snapshot_id: SnapshotId(0),
         changed_cells,
         functions: vec![],
-        meta_map: HashMap::new(),
+        meta_map: Arc::new(HashMap::new()),
         objective: None,
     }
 }
@@ -2030,7 +2030,7 @@ async fn concurrent_eval_large_graph_no_quadratic_clone() {
         parent_snapshot_id: SnapshotId(0),
         changed_cells: changed_cells.clone(),
         functions: vec![],
-        meta_map: HashMap::new(),
+        meta_map: Arc::new(HashMap::new()),
         objective: None,
     };
 
