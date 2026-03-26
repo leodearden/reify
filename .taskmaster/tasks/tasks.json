@@ -7548,7 +7548,7 @@
         "description": "Two related issues from task 205 review: (1) Mutual recursion wrong context: in unfold_recursive_sub (crates/reify-eval/src/lib.rs), all_recursive_subs is passed unchanged through recursive calls. For mutual recursion (A→B→A), child_template is B but all_recursive_subs still contains A's sub declarations with A's guard expressions. Fix: rebuild all_recursive_subs from child_template.sub_components in Phase 2. (2) Missing mutual recursion eval test: add unfold_recursive_mutual_recursion_depth_limited with alternating A/B templates. Modules: crates/reify-eval",
         "details": "",
         "testStrategy": "Add eval-level mutual recursion test with A→B→A templates, verify alternating entity levels and Error diagnostic at truncation.",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "205"
         ],
@@ -7560,7 +7560,7 @@
           "milestone": "M9"
         },
         "subtasks": [],
-        "updatedAt": "2026-03-25T21:10:21.264980+00:00"
+        "updatedAt": "2026-03-26T02:21:53.601Z"
       },
       {
         "id": "422",
@@ -7823,7 +7823,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-26T02:21:53.033Z",
+      "lastModified": "2026-03-26T02:21:53.605Z",
       "taskCount": 441,
       "completedCount": 232,
       "tags": [
