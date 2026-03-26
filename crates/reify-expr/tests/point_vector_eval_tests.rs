@@ -641,6 +641,105 @@ fn value_point_add_point_returns_undef() {
     assert_eq!(result, Value::Undef);
 }
 
+// ─── step-3 (task 398): Value::Point / Value::Vector subtraction ───
+
+/// Value::Point - Value::Point → Value::Vector (displacement).
+#[test]
+fn value_point_sub_point_returns_vector() {
+    let left = CompiledExpr::literal(
+        Value::Point(vec![Value::length(3.0), Value::length(4.0), Value::length(5.0)]),
+        Type::point3(Type::length()),
+    );
+    let right = CompiledExpr::literal(
+        Value::Point(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]),
+        Type::point3(Type::length()),
+    );
+    let expr = CompiledExpr::binop(BinOp::Sub, left, right, Type::vec3(Type::length()));
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Vector(vec![Value::length(2.0), Value::length(2.0), Value::length(2.0)])
+    );
+}
+
+/// Value::Point2 - Value::Point2 → Value::Vector (2D displacement).
+#[test]
+fn value_point2_sub_point2_returns_vector() {
+    let left = CompiledExpr::literal(
+        Value::Point(vec![Value::length(5.0), Value::length(8.0)]),
+        Type::point2(Type::length()),
+    );
+    let right = CompiledExpr::literal(
+        Value::Point(vec![Value::length(2.0), Value::length(3.0)]),
+        Type::point2(Type::length()),
+    );
+    let expr = CompiledExpr::binop(BinOp::Sub, left, right, Type::vec2(Type::length()));
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Vector(vec![Value::length(3.0), Value::length(5.0)])
+    );
+}
+
+/// Value::Point - Value::Vector → Value::Point (point displaced backwards).
+#[test]
+fn value_point_sub_vector_returns_point() {
+    let left = CompiledExpr::literal(
+        Value::Point(vec![Value::length(3.0), Value::length(4.0), Value::length(5.0)]),
+        Type::point3(Type::length()),
+    );
+    let right = CompiledExpr::literal(
+        Value::Vector(vec![Value::length(1.0), Value::length(1.0), Value::length(1.0)]),
+        Type::vec3(Type::length()),
+    );
+    let expr = CompiledExpr::binop(BinOp::Sub, left, right, Type::point3(Type::length()));
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Point(vec![Value::length(2.0), Value::length(3.0), Value::length(4.0)])
+    );
+}
+
+/// Value::Vector - Value::Vector → Value::Vector (component-wise).
+#[test]
+fn value_vector_sub_vector_returns_vector() {
+    let left = CompiledExpr::literal(
+        Value::Vector(vec![Value::length(10.0), Value::length(20.0), Value::length(30.0)]),
+        Type::vec3(Type::length()),
+    );
+    let right = CompiledExpr::literal(
+        Value::Vector(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]),
+        Type::vec3(Type::length()),
+    );
+    let expr = CompiledExpr::binop(BinOp::Sub, left, right, Type::vec3(Type::length()));
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Vector(vec![Value::length(9.0), Value::length(18.0), Value::length(27.0)])
+    );
+}
+
+/// Value::Vector - Value::Point → Undef (no geometric meaning).
+#[test]
+fn value_vector_sub_point_returns_undef() {
+    let left = CompiledExpr::literal(
+        Value::Vector(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]),
+        Type::vec3(Type::length()),
+    );
+    let right = CompiledExpr::literal(
+        Value::Point(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]),
+        Type::point3(Type::length()),
+    );
+    let expr = CompiledExpr::binop(BinOp::Sub, left, right, Type::vec3(Type::length()));
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::Undef);
+}
+
 /// Negating Vector3<Length> negates all components.
 #[test]
 fn negate_vector3_negates_all_components() {
