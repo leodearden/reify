@@ -8161,11 +8161,11 @@
         "description": "Replace is_some() guard + unwrap() patterns with if-let bindings in concurrent_eval.rs and filter_map in evaluate_let_bindings",
         "details": "1. In crates/reify-runtime/src/concurrent_eval.rs evaluate(): replace is_some() guard + unwrap() with `if let Some(expr) = cell_node.default_expr.as_ref()`\n2. In crates/reify-eval/src/lib.rs evaluate_let_bindings(): replace filter(is_some)+unwrap with filter_map(|c| c.default_expr.as_ref().map(|expr| (NodeId::Value(c.id.clone()), expr)))\n\nFrom review of task 397 (esc-397-121).",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-03-26T08:28:42.893Z"
+        "updatedAt": "2026-03-26T12:05:54.068Z"
       },
       {
         "id": "469",
@@ -8337,7 +8337,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-26T12:05:54.032Z",
+      "lastModified": "2026-03-26T12:05:54.068Z",
       "taskCount": 482,
       "completedCount": 249,
       "tags": [
