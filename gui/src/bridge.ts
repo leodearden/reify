@@ -107,6 +107,39 @@ export async function lspRequest(method: string, params: unknown): Promise<unkno
   return invoke('lsp_request', { method, params });
 }
 
+// ── Claude commands ─────────────────────────────────────────────────
+
+/** Context for a Claude message (camelCase for TS consumers). */
+export interface ClaudeMessageContext {
+  selectedEntity?: string;
+  diagnostics?: string[];
+  constraints?: string[];
+}
+
+/** Send a message to the Claude sidecar. Maps camelCase context to snake_case for Rust. */
+export async function claudeSendMessage(text: string, context?: ClaudeMessageContext): Promise<void> {
+  return invoke('claude_send_message', {
+    text,
+    context: context
+      ? {
+          selected_entity: context.selectedEntity,
+          diagnostics: context.diagnostics,
+          constraints: context.constraints,
+        }
+      : undefined,
+  });
+}
+
+/** Abort the current Claude response. */
+export async function claudeAbort(): Promise<void> {
+  return invoke('claude_abort');
+}
+
+/** Clear the Claude session. */
+export async function claudeClearSession(): Promise<void> {
+  return invoke('claude_clear_session');
+}
+
 // ── Event listeners (listen wrappers) ───────────────────────────────
 
 /** Subscribe to mesh update events. Converts wire-format number[] to typed arrays. */
