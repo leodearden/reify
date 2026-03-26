@@ -69,6 +69,41 @@ fn build_violating_bracket_exits_failure() {
 }
 
 #[test]
+fn build_valid_bracket_exits_success() {
+    let output_path = "/tmp/reify_test_valid_build_out.step";
+    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
+        .args([
+            "build",
+            &fixture_path("bracket.ri"),
+            "-o",
+            output_path,
+        ])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .expect("failed to execute reify binary");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        output.status.success(),
+        "reify build should exit 0 for valid bracket.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("Wrote"),
+        "stdout should contain 'Wrote', got: {stdout}"
+    );
+    assert!(
+        !stderr.contains("VIOLATED"),
+        "stderr should NOT contain 'VIOLATED' for valid bracket, got: {stderr}"
+    );
+    // Clean up
+    let _ = std::fs::remove_file(output_path);
+}
+
+#[test]
 fn build_compile_error_exits_failure() {
     let output = Command::new(env!("CARGO_BIN_EXE_reify"))
         .args([
