@@ -7351,11 +7351,11 @@
         "description": "Add missing test coverage for trait conformance edge cases in crates/reify-compiler/tests/trait_conformance_tests.rs:\n\n1. **conflicting_sub_requirements assertion tightening** (line 885): Add `assert_eq!(conflict_errors.len(), 1)` to verify no spurious extra errors alongside the conflict diagnostic.\n\n2. **Rename diamond_sub_requirement_deduped** (line 848): Rename to `parallel_traits_duplicate_sub_requirement_deduped` — the test is two independent parallel traits, not a diamond inheritance pattern.\n\n3. **Add sub_conformance_wrong_type test**: Test that providing `sub hole = WrongType()` when trait requires `sub hole = Hole()` correctly produces a 'missing required sub-component' error. Guards the O(1) HashMap lookup refactor.\n\n4. **Add deep_chain_at_limit_passes boundary test**: Generate a chain at exactly MAX_TRAIT_DEPTH (128) levels and assert zero depth-related diagnostics. Confirms the `depth > MAX_TRAIT_DEPTH` boundary is correct and catches future `>` → `>=` regressions.\n\nmemory_hints: search \"trait conformance sub_conformance deep_chain\" in reify project; entity \"check_trait_conformance\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-03-26T02:28:01.893Z"
+        "updatedAt": "2026-03-26T02:35:27.102Z"
       },
       {
         "id": "405",
@@ -7830,7 +7830,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-26T02:35:21.222Z",
+      "lastModified": "2026-03-26T02:35:27.102Z",
       "taskCount": 441,
       "completedCount": 233,
       "tags": [
