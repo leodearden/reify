@@ -7994,6 +7994,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 455,
+        "title": "Apply defensive catch-all pattern to all tree-sitter lowering sites",
+        "description": "Task 396 added a defensive `if child.is_named() && !child.is_extra()` catch-all to `lower_connect_body`. Three other structurally identical lowering sites still have silent `_ => {}` catch-alls:\n\n1. `lower_port_body` (~line 1267 in ts_parser.rs) — silent catch-all swallows unexpected named children\n2. `lower_constraint_def` (~line 679) — same pattern\n3. Top-level declaration handler (~line 195) — same pattern\n\nApply the same defensive pattern to all three. Consider extracting a shared helper `fn warn_unexpected_child(&mut self, child: Node, context: &str)` to reduce duplication across all four sites.\n\nReviewer: architect_reviewer (pattern_consistency suggestion from task 396 review)",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -8006,7 +8017,7 @@
       ],
       "created": "2026-03-26T07:33:57.247Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-26T07:34:10.998Z"
+      "updated": "2026-03-26T07:34:17.289Z"
     }
   }
 }
