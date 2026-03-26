@@ -242,8 +242,8 @@
       "id": "step-33",
       "type": "impl",
       "description": "Fast-forward merge task/351 to main. Run: `git checkout main && git merge --ff-only task/351`. Verify all tests pass with `cargo test -p reify-compiler recursive_detection` and `cargo test -p reify-eval recursive_unfold`. Verify merge with `git log --oneline -3 main`.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "c6e7b7d4"
     }
   ],
   "design_decisions": [
