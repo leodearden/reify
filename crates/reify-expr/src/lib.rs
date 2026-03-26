@@ -640,7 +640,7 @@ fn eval_method_call(obj: &Value, method: &str, args: &[Value], result_type: &Typ
             }
             match obj {
                 Value::Complex { re, im, dimension } => {
-                    let mag = (re * re + im * im).sqrt();
+                    let mag = re.hypot(*im);
                     if dimension.is_dimensionless() {
                         Value::Real(mag)
                     } else {

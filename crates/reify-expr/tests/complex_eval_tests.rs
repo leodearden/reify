@@ -27,12 +27,6 @@ fn scalar_val(v: f64, dim: DimensionVector) -> Value {
     }
 }
 
-/// Evaluate a literal expression and return the result.
-fn eval_lit(v: Value, ty: Type) -> Value {
-    let values = ValueMap::new();
-    eval_expr(&lit(v, ty), &EvalContext::simple(&values))
-}
-
 /// Build and evaluate a binop expression.
 fn eval_binop(op: BinOp, lv: Value, lt: Type, rv: Value, rt: Type, result_ty: Type) -> Value {
     let expr = CompiledExpr::binop(op, lit(lv, lt), lit(rv, rt), result_ty);
