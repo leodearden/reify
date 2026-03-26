@@ -157,13 +157,13 @@
       "type": "impl",
       "description": "Add 'conjugate' arm to eval_method_call for Value::Complex: return Complex{re: *re, im: -im, dimension: *dimension}. Check args.is_empty()",
       "status": "done",
-      "commit": null
+      "commit": "fc35da87"
     },
     {
       "id": "step-21",
       "type": "test",
       "description": "Write edge-case tests: (1) complex_add_non_complex_undef \u2014 Complex + Int/Real/Scalar returns Undef; (2) method_re_on_non_complex_undef \u2014 calling .re on a Scalar returns Undef; (3) method_magnitude_with_args_undef \u2014 .magnitude(1) with unexpected args returns Undef; (4) complex_undef_propagation \u2014 Undef + Complex returns Undef (already handled by eval_binop, but verify)",
-      "status": "pending",
+      "status": "done",
       "commit": null
     },
     {

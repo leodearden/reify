@@ -432,3 +432,62 @@ fn method_conjugate() {
     );
     assert_eq!(result, complex_val(3.0, -4.0, DimensionVector::LENGTH));
 }
+
+// ─── step-21: Edge-case tests ───────────────────────────────────────────────
+
+/// Complex + Int returns Undef (not supported).
+#[test]
+fn complex_add_non_complex_undef() {
+    let result = eval_binop(
+        BinOp::Add,
+        complex_val(1.0, 2.0, DimensionVector::LENGTH),
+        Type::complex(Type::length()),
+        Value::Int(3),
+        Type::Int,
+        Type::complex(Type::length()),
+    );
+    assert!(result.is_undef());
+}
+
+/// Calling .re on a Scalar (non-Complex) returns Undef.
+#[test]
+fn method_re_on_non_complex_undef() {
+    let result = eval_method(
+        scalar_val(5.0, DimensionVector::LENGTH),
+        Type::length(),
+        "re",
+        Type::Real,
+    );
+    assert!(result.is_undef());
+}
+
+/// .magnitude(1) with unexpected args returns Undef.
+#[test]
+fn method_magnitude_with_args_undef() {
+    let expr = CompiledExpr::method_call(
+        lit(
+            complex_val(3.0, 4.0, DimensionVector::DIMENSIONLESS),
+            Type::complex(Type::Real),
+        ),
+        "magnitude".to_string(),
+        vec![lit(Value::Int(1), Type::Int)],
+        Type::Real,
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert!(result.is_undef());
+}
+
+/// Undef + Complex returns Undef (propagation through eval_binop).
+#[test]
+fn complex_undef_propagation() {
+    let result = eval_binop(
+        BinOp::Add,
+        Value::Undef,
+        Type::Real,
+        complex_val(1.0, 2.0, DimensionVector::LENGTH),
+        Type::complex(Type::length()),
+        Type::complex(Type::length()),
+    );
+    assert!(result.is_undef());
+}
