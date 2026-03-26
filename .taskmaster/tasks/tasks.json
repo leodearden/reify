@@ -8514,6 +8514,17 @@
         "dependencies": [],
         "priority": "high",
         "subtasks": []
+      },
+      {
+        "id": 499,
+        "title": "Preserve active_purposes across eval() calls in Engine",
+        "description": "Engine::check(module) calls eval(module) which resets active_purposes at lib.rs:845. Purpose-injected constraints are silently lost. The incremental path (edit_param) preserves purposes, but a cold check() clears them.\n\n**What's wrong:** User activates a purpose via activate_purpose(), then calls check() to verify — injected constraints vanish, check passes incorrectly.\n\n**Fix:** Preserve the active_purposes set across eval() calls. After the fresh eval completes, re-inject constraints for any purposes in self.active_purposes. The re-injection logic already exists in activate_purpose() — extract it into a helper and call it at the end of eval().\n\n**Memory hints:** search for \"purpose activation\", \"activate_purpose\", entity names: active_purposes, eval, check",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -8526,7 +8537,7 @@
       ],
       "created": "2026-03-26T15:04:44.899Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-26T15:21:33.886Z"
+      "updated": "2026-03-26T15:21:38.296Z"
     }
   }
 }
