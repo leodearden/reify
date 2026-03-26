@@ -311,16 +311,21 @@ impl Engine {
         self.max_unfold_nodes = limit;
     }
 
-    /// Build an `EvalContext` with the engine's meta_map already attached.
+    /// Build an `EvalContext` with the engine's `meta_map` already attached.
     ///
-    /// Reduces boilerplate at call sites that would otherwise write:
-    /// `EvalContext::new(values, functions).with_meta(&self.meta_map)`.
+    /// Convenience wrapper around the free function [`eval_ctx`] for Engine
+    /// methods that have `&self` access.  The caller supplies `values` and
+    /// `functions` (which vary per call-site); `meta_map` comes from `self`.
+    ///
+    /// Note: `self.functions` is *not* used — the caller explicitly passes the
+    /// function slice so that different callers can supply module-scoped or
+    /// resolution-scoped function lists.
     fn make_eval_ctx<'a>(
         &'a self,
         values: &'a ValueMap,
         functions: &'a [CompiledFunction],
     ) -> reify_expr::EvalContext<'a> {
-        reify_expr::EvalContext::new(values, functions).with_meta(&self.meta_map)
+        eval_ctx(values, functions, &self.meta_map)
     }
 
     /// Set the constraint solver for resolving auto parameters.
@@ -793,7 +798,7 @@ impl Engine {
                                         && let Some(node) = setup.graph.value_cells.get(vcid)
                                         && let Some(ref expr) = node.default_expr
                                     {
-                                        let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&result.values, &setup.functions).with_meta(&*setup.meta_map));
+                                        let val = reify_expr::eval_expr(expr, &eval_ctx(&result.values, &setup.functions, &setup.meta_map));
                                         result.values.insert(vcid.clone(), val.clone());
                                         result.snapshot_values.insert(
                                             vcid.clone(),
@@ -908,6 +913,8 @@ impl Engine {
         // expressions may reference fields (e.g., `sample(my_field, point)`).
         for field in &module.fields {
             let lambda_value = match &field.source {
+                // Both Analytical and Composed reduce to a single compiled expression
+                // at eval time — the distinction only matters for FieldSourceKind metadata.
                 reify_compiler::CompiledFieldSource::Analytical { expr }
                 | reify_compiler::CompiledFieldSource::Composed { expr } => {
                     let val = reify_expr::eval_expr(expr, &self.make_eval_ctx(&values, functions));
@@ -2849,6 +2856,20 @@ impl Engine {
 
 }
 
+/// Build an `EvalContext` from explicit parts — the free-function counterpart
+/// of `Engine::make_eval_ctx`.
+///
+/// Use this in free functions (e.g. `evaluate_let_bindings`, `compile_geometry_op`)
+/// that don't have `&self` access to an Engine.  Engine methods should prefer
+/// `make_eval_ctx` instead.
+fn eval_ctx<'a>(
+    values: &'a ValueMap,
+    functions: &'a [CompiledFunction],
+    meta_map: &'a MetaMap,
+) -> reify_expr::EvalContext<'a> {
+    reify_expr::EvalContext::new(values, functions).with_meta(meta_map)
+}
+
 /// Evaluate all Let bindings in a template in topological order.
 ///
 /// Free function (not a method on Engine) to avoid borrow conflicts —
@@ -2901,7 +2922,7 @@ fn evaluate_let_bindings(
             payload: None,
         });
 
-        let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions).with_meta(meta_map));
+        let val = reify_expr::eval_expr(expr, &eval_ctx(values, functions, meta_map));
         values.insert(cell_id.clone(), val.clone());
 
         snapshot.values.insert(
@@ -2946,7 +2967,7 @@ fn compile_geometry_op(
             let eval_arg = |name: &str| -> reify_types::Value {
                 args.iter()
                     .find(|(n, _)| n == name)
-                    .map(|(_, expr)| reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions).with_meta(meta_map)))
+                    .map(|(_, expr)| reify_expr::eval_expr(expr, &eval_ctx(values, functions, meta_map)))
                     .unwrap_or(reify_types::Value::Undef)
             };
 
@@ -2997,7 +3018,7 @@ fn compile_geometry_op(
             let eval_arg = |name: &str| -> reify_types::Value {
                 args.iter()
                     .find(|(n, _)| n == name)
-                    .map(|(_, expr)| reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions).with_meta(meta_map)))
+                    .map(|(_, expr)| reify_expr::eval_expr(expr, &eval_ctx(values, functions, meta_map)))
                     .unwrap_or(reify_types::Value::Undef)
             };
             match kind {
@@ -3016,7 +3037,7 @@ fn compile_geometry_op(
                         .iter()
                         .filter(|(n, _)| n.starts_with("face_"))
                         .filter_map(|(_, expr)| {
-                            reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions).with_meta(meta_map)).as_f64().map(|v| v as usize)
+                            reify_expr::eval_expr(expr, &eval_ctx(values, functions, meta_map)).as_f64().map(|v| v as usize)
                         })
                         .collect();
                     Some(reify_types::GeometryOp::Shell {
@@ -3054,7 +3075,7 @@ fn compile_geometry_op(
             let eval_arg_f64 = |name: &str| -> f64 {
                 args.iter()
                     .find(|(n, _)| n == name)
-                    .and_then(|(_, expr)| reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions).with_meta(meta_map)).as_f64())
+                    .and_then(|(_, expr)| reify_expr::eval_expr(expr, &eval_ctx(values, functions, meta_map)).as_f64())
                     .unwrap_or(0.0)
             };
             match kind {
@@ -3105,13 +3126,13 @@ fn compile_geometry_op(
             let eval_arg = |name: &str| -> reify_types::Value {
                 args.iter()
                     .find(|(n, _)| n == name)
-                    .map(|(_, expr)| reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions).with_meta(meta_map)))
+                    .map(|(_, expr)| reify_expr::eval_expr(expr, &eval_ctx(values, functions, meta_map)))
                     .unwrap_or(reify_types::Value::Undef)
             };
             let eval_arg_f64 = |name: &str| -> f64 {
                 args.iter()
                     .find(|(n, _)| n == name)
-                    .and_then(|(_, expr)| reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions).with_meta(meta_map)).as_f64())
+                    .and_then(|(_, expr)| reify_expr::eval_expr(expr, &eval_ctx(values, functions, meta_map)).as_f64())
                     .unwrap_or(0.0)
             };
             // Pattern operations resolve target via step index
@@ -3189,7 +3210,7 @@ fn compile_geometry_op(
                     let distance = args
                         .iter()
                         .find(|(n, _)| n == "distance")
-                        .map(|(_, expr)| reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions).with_meta(meta_map)))
+                        .map(|(_, expr)| reify_expr::eval_expr(expr, &eval_ctx(values, functions, meta_map)))
                         .expect("Extrude Sweep args must contain distance key — compiler bug");
                     // Panic on non-f64 (compiler bug), return None on NaN/Inf (runtime guard)
                     let distance_f64 = distance.as_f64()
@@ -3209,7 +3230,7 @@ fn compile_geometry_op(
                         let (_, expr) = args.iter()
                             .find(|(n, _)| n == name)
                             .unwrap_or_else(|| panic!("Revolve Sweep '{}' arg missing — compiler bug", name));
-                        let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions).with_meta(meta_map))
+                        let val = reify_expr::eval_expr(expr, &eval_ctx(values, functions, meta_map))
                             .as_f64()
                             .unwrap_or_else(|| panic!("Revolve '{}' arg must evaluate to f64 — compiler bug", name));
                         Some(val).filter(|v| v.is_finite())
@@ -3327,7 +3348,7 @@ fn unfold_recursive_sub<'t>(
     // Evaluate the guard in the local context.
     let guard_val = reify_expr::eval_expr(
         guard_expr,
-        &reify_expr::EvalContext::new(&local_values, functions).with_meta(meta_map),
+        &eval_ctx(&local_values, functions, meta_map),
     );
 
     // Differentiate guard outcomes: Bool(true) continues, Bool(false)/Undef terminate
@@ -3363,7 +3384,7 @@ fn unfold_recursive_sub<'t>(
         .map(|(name, arg_expr)| {
             let v = reify_expr::eval_expr(
                 arg_expr,
-                &reify_expr::EvalContext::new(&local_values, functions).with_meta(meta_map),
+                &eval_ctx(&local_values, functions, meta_map),
             );
             let ty = arg_expr.result_type.clone();
             (name.clone(), reify_types::CompiledExpr::literal(v, ty))
@@ -3518,9 +3539,9 @@ fn elaborate_child_params_only(
         let member = &cell.id.member;
 
         let val = if let Some((_name, arg_expr)) = args.iter().find(|(name, _)| name == member) {
-            reify_expr::eval_expr(arg_expr, &reify_expr::EvalContext::new(values, functions).with_meta(meta_map))
+            reify_expr::eval_expr(arg_expr, &eval_ctx(values, functions, meta_map))
         } else if let Some(ref default_expr) = cell.default_expr {
-            reify_expr::eval_expr(default_expr, &reify_expr::EvalContext::new(&child_values, functions).with_meta(meta_map))
+            reify_expr::eval_expr(default_expr, &eval_ctx(&child_values, functions, meta_map))
         } else {
             Value::Undef
         };
@@ -3716,7 +3737,7 @@ fn elaborate_child_lets_only<'t>(
         };
         let member = &child_cell_id.member;
 
-        let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&child_values, functions).with_meta(meta_map));
+        let val = reify_expr::eval_expr(expr, &eval_ctx(&child_values, functions, meta_map));
         child_values.insert(child_cell_id.clone(), val.clone());
 
         let scoped_id = ValueCellId::new(scoped_entity, member);
