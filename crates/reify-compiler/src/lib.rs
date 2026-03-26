@@ -1,4 +1,5 @@
 pub mod module_dag;
+pub mod stdlib_loader;
 mod scc;
 
 use std::collections::{HashMap, HashSet};
