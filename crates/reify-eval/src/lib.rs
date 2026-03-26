@@ -3915,6 +3915,38 @@ mod tests {
     }
 
     #[test]
+    fn compile_geometry_op_extrude_nan_distance_returns_none() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        // Extrude with NaN distance — should return None (runtime edge case, not invariant)
+        let op = CompiledGeometryOp::Sweep {
+            kind: SweepKind::Extrude,
+            profiles: vec![GeomRef::Step(0)],
+            args: vec![("distance".into(), literal_f64(f64::NAN))],
+        };
+
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        assert!(result.is_none(), "NaN extrude distance should return None");
+    }
+
+    #[test]
+    fn compile_geometry_op_extrude_inf_distance_returns_none() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        // Extrude with Inf distance — should return None (runtime edge case, not invariant)
+        let op = CompiledGeometryOp::Sweep {
+            kind: SweepKind::Extrude,
+            profiles: vec![GeomRef::Step(0)],
+            args: vec![("distance".into(), literal_f64(f64::INFINITY))],
+        };
+
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        assert!(result.is_none(), "Inf extrude distance should return None");
+    }
+
+    #[test]
     fn compile_geometry_op_revolve_zero_axis_returns_none() {
         let step_handles = vec![GeometryHandleId(10)];
         let values = ValueMap::new();
