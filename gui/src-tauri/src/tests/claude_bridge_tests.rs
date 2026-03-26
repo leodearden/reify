@@ -1845,3 +1845,75 @@ async fn ensure_sidecar_ready_notified_race_on_multithread() {
         );
     }
 }
+
+// --- enable() regression test (task-440/step-1) ---
+
+/// Regression guard for the `enable()` call on the Notified future in
+/// `ensure_sidecar_ready()`.
+///
+/// Without `enable()`, the Notified future stays in Init state until its first
+/// poll. A `notify_one()` call between subscription and poll would silently
+/// lose the notification. This test exercises that exact window: spawn_fn
+/// returns a handle whose state is set to Ready by a separately-spawned task
+/// that fires `notify_waiters()` after yielding (simulating notification
+/// arriving between subscription in Phase 2 and the timeout poll in Phase 4).
+///
+/// With `enable()` this always succeeds; without it, the notification can be
+/// lost and the timeout fires.
+#[tokio::test]
+async fn ensure_sidecar_ready_receives_notification_fired_before_poll() {
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::io::BufReader;
+    use tokio::sync::Mutex;
+
+    // Hold data_writer alive outside spawn closure to prevent EOF → Crashed race.
+    let held_writer: Arc<Mutex<Option<tokio::io::DuplexStream>>> =
+        Arc::new(Mutex::new(None));
+    let held_clone = Arc::clone(&held_writer);
+
+    let spawn_fn = move || {
+        let held = Arc::clone(&held_clone);
+        async move {
+            let state = Arc::new(Mutex::new(SidecarState::Starting));
+            let (data_writer, data_reader) = tokio::io::duplex(1024);
+            let reader = BufReader::new(data_reader);
+            let (stdin_writer, _stdin_reader) = tokio::io::duplex(1024);
+            // Do NOT write the ready JSON line — the spawned task below will
+            // set Ready manually after yielding, exercising the race window.
+            let handle = SidecarHandle::from_parts(stdin_writer, reader, state);
+
+            // Clone state and notify for the separate task that fires the
+            // notification after a few yields (between subscription and poll).
+            let notify = Arc::clone(handle.ready_notify());
+            let state_for_task = Arc::clone(handle.state());
+            tokio::spawn(async move {
+                // Yield enough times to let ensure_sidecar_ready progress
+                // past Phase 2 (subscription) but before Phase 4 (poll).
+                for _ in 0..10 {
+                    tokio::task::yield_now().await;
+                }
+                *state_for_task.lock().await = SidecarState::Ready;
+                notify.notify_waiters();
+            });
+
+            // Keep data_writer alive to prevent EOF/crash detection.
+            *held.lock().await = Some(data_writer);
+            Ok(handle)
+        }
+    };
+
+    let sidecar: Mutex<Option<SidecarHandle>> = Mutex::new(None);
+    let result = ensure_sidecar_ready(&sidecar, spawn_fn, Duration::from_secs(5)).await;
+
+    assert!(
+        result.is_ok(),
+        "ensure_sidecar_ready should receive notification fired between \
+         subscription and poll (enable() race window): {:?}",
+        result
+    );
+    assert!(
+        sidecar.lock().await.is_some(),
+        "Sidecar slot should contain a Ready handle after ensure_sidecar_ready"
+    );
+}
