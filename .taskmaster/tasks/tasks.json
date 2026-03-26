@@ -8101,10 +8101,11 @@
         "description": "Post-merge test improvements from task 287 reviews. In reify-expr/tests/complex_eval_tests.rs: (S5) Add missing tests: complex_div_by_zero_real, args-guard tests for re/im/phase/conjugate, complete complex_add_non_complex_undef for Real+Scalar cases, complex_div_complex_undef. (S6) Fix misleading Type::Real result_ty in method_phase test. (S7) Decide on .phase() behavior for zero complex (currently returns 0.0 per IEEE 754 atan2 — either return Undef or document+test the current behavior). (S8) Consider extracting shared test helpers to tests/common/mod.rs for cross-file reuse.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-03-26T08:28:27.448Z"
       },
       {
         "id": "464",
@@ -8212,7 +8213,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-26T08:28:27.358Z",
+      "lastModified": "2026-03-26T08:28:27.449Z",
       "taskCount": 472,
       "completedCount": 249,
       "tags": [
