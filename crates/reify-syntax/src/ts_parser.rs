@@ -2997,6 +2997,35 @@ mod tests {
         );
     }
 
+    #[test]
+    fn lower_connect_body_catch_all_emits_for_unexpected_named_children() {
+        // Pass a constraint_definition node to lower_connect_body. Its named
+        // children (identifier, param_declaration, constraint_def_predicate)
+        // don't match any connect_body arm and should hit the catch-all.
+        let source = "constraint def Eq { param x: Scalar  x > 0 }";
+        let mut ts_parser = tree_sitter::Parser::new();
+        ts_parser
+            .set_language(&tree_sitter_reify::language().into())
+            .expect("Error loading Reify grammar");
+        let tree = ts_parser.parse(source, None).expect("Failed to parse");
+        let root = tree.root_node();
+
+        let constraint_node = find_node_by_kind(root, "constraint_definition")
+            .expect("no constraint_definition node found in parse tree");
+
+        let mut lowering = Lowering::new(source);
+        lowering.lower_connect_body(constraint_node);
+        assert!(
+            !lowering.errors.is_empty(),
+            "expected diagnostics for unexpected named children in catch-all, got none"
+        );
+        assert!(
+            lowering.errors.iter().any(|e| e.message.contains("unexpected")),
+            "expected at least one error containing 'unexpected', got: {:?}",
+            lowering.errors
+        );
+    }
+
     // ── Doc comment extraction tests ─────────────────────────
 
     #[test]
