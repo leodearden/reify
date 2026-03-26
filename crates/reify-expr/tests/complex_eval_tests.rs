@@ -376,3 +376,29 @@ fn method_im_dimensioned() {
     );
     assert_eq!(result, scalar_val(4.0, DimensionVector::LENGTH));
 }
+
+// ─── step-15: .magnitude() ─────────────────────────────────────────────────
+
+/// .magnitude() on dimensionless Complex returns Real (3+4i → 5.0).
+#[test]
+fn method_magnitude_dimensionless() {
+    let result = eval_method(
+        complex_val(3.0, 4.0, DimensionVector::DIMENSIONLESS),
+        Type::complex(Type::Real),
+        "magnitude",
+        Type::Real,
+    );
+    assert_eq!(result, Value::Real(5.0));
+}
+
+/// .magnitude() on dimensioned Complex returns Scalar with that dimension.
+#[test]
+fn method_magnitude_dimensioned() {
+    let result = eval_method(
+        complex_val(3.0, 4.0, DimensionVector::LENGTH),
+        Type::complex(Type::length()),
+        "magnitude",
+        Type::length(),
+    );
+    assert_eq!(result, scalar_val(5.0, DimensionVector::LENGTH));
+}
