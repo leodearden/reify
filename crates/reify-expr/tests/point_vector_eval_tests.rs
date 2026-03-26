@@ -740,6 +740,37 @@ fn value_vector_sub_point_returns_undef() {
     assert_eq!(result, Value::Undef);
 }
 
+// ─── step-5 (task 398): Value::Point / Value::Vector negation ───
+
+/// -Value::Vector → Value::Vector with negated components.
+#[test]
+fn value_negate_vector3_returns_negated_vector() {
+    let operand = CompiledExpr::literal(
+        Value::Vector(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]),
+        Type::vec3(Type::length()),
+    );
+    let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::vec3(Type::length()));
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Vector(vec![Value::length(-1.0), Value::length(-2.0), Value::length(-3.0)])
+    );
+}
+
+/// -Value::Point → Undef (affine: point negation is undefined per spec 3.3.1).
+#[test]
+fn value_negate_point3_returns_undef() {
+    let operand = CompiledExpr::literal(
+        Value::Point(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]),
+        Type::point3(Type::length()),
+    );
+    let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::point3(Type::length()));
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::Undef);
+}
+
 /// Negating Vector3<Length> negates all components.
 #[test]
 fn negate_vector3_negates_all_components() {
