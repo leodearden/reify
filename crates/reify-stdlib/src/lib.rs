@@ -3183,10 +3183,10 @@ mod tests {
                 Value::Real(std::f64::consts::FRAC_PI_4),
                 Value::Real(std::f64::consts::FRAC_PI_6),
             ]),
-            0.82236317190599939,
+            0.822_363_171_905_999_4,
             0.02226002671473384,
             0.43967973954090955,
-            0.36042340565035591
+            0.360_423_405_650_355_9
         );
     }
 
@@ -3703,17 +3703,17 @@ mod tests {
         }
 
         // re accessor → Scalar{50, IMPEDANCE}
-        assert_scalar_approx!(eval_builtin("re", &[z.clone()]), 50.0, impedance);
+        assert_scalar_approx!(eval_builtin("re", std::slice::from_ref(&z)), 50.0, impedance);
 
         // im accessor → Scalar{-25, IMPEDANCE}
-        assert_scalar_approx!(eval_builtin("im", &[z.clone()]), -25.0, impedance);
+        assert_scalar_approx!(eval_builtin("im", std::slice::from_ref(&z)), -25.0, impedance);
 
         // magnitude → Scalar{sqrt(50²+25²), IMPEDANCE} = Scalar{sqrt(3125), IMPEDANCE}
         let expected_mag = (50.0_f64 * 50.0 + 25.0 * 25.0).sqrt();
-        assert_scalar_approx!(eval_builtin("magnitude", &[z.clone()]), expected_mag, impedance);
+        assert_scalar_approx!(eval_builtin("magnitude", std::slice::from_ref(&z)), expected_mag, impedance);
 
         // conjugate → Complex{50, 25, IMPEDANCE}
-        let conj = eval_builtin("conjugate", &[z.clone()]);
+        let conj = eval_builtin("conjugate", std::slice::from_ref(&z));
         match &conj {
             Value::Complex { re, im, dimension } => {
                 assert!((re - 50.0).abs() < 1e-12);
@@ -3725,7 +3725,7 @@ mod tests {
 
         // phase → Scalar{atan2(-25, 50), ANGLE}
         let expected_phase = (-25.0_f64).atan2(50.0);
-        assert_scalar_approx!(eval_builtin("phase", &[z.clone()]), expected_phase, DimensionVector::ANGLE);
+        assert_scalar_approx!(eval_builtin("phase", std::slice::from_ref(&z)), expected_phase, DimensionVector::ANGLE);
     }
 
     // ── Voltage dimension spec tests (step-7) ────────────────────────────────
@@ -4601,14 +4601,14 @@ mod tests {
     #[test]
     fn axis_z_with_point3_returns_axis() {
         let origin = make_point3_length();
-        let result = eval_builtin("axis_z", &[origin.clone()]);
+        let result = eval_builtin("axis_z", std::slice::from_ref(&origin));
         assert!(matches!(result, Value::Axis { .. }), "expected Value::Axis, got {:?}", result);
     }
 
     #[test]
     fn axis_z_stores_origin_correctly() {
         let origin = make_point3_length();
-        let result = eval_builtin("axis_z", &[origin.clone()]);
+        let result = eval_builtin("axis_z", std::slice::from_ref(&origin));
         match result {
             Value::Axis { origin: o, .. } => assert_eq!(*o, origin),
             other => panic!("expected Value::Axis, got {:?}", other),
@@ -4709,7 +4709,7 @@ mod tests {
     #[test]
     fn axis_x_with_dimensionless_point3() {
         let origin = Value::Point(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]);
-        let result = eval_builtin("axis_x", &[origin.clone()]);
+        let result = eval_builtin("axis_x", std::slice::from_ref(&origin));
         match result {
             Value::Axis { origin: o, .. } => assert_eq!(*o, origin),
             other => panic!("expected Axis, got {:?}", other),
@@ -5237,7 +5237,7 @@ mod tests {
         assert!(eval_builtin("frame_to_frame", &[]).is_undef());
         // One arg
         let f = make_frame(0.0, 0.0, 0.0, make_identity_orientation());
-        assert!(eval_builtin("frame_to_frame", &[f.clone()]).is_undef());
+        assert!(eval_builtin("frame_to_frame", std::slice::from_ref(&f)).is_undef());
         // Three args
         assert!(eval_builtin("frame_to_frame", &[f.clone(), f.clone(), f.clone()]).is_undef());
         // Non-Frame args

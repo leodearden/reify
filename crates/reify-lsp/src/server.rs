@@ -306,6 +306,7 @@ pub mod test_support {
     /// Use `take_calls()` to inspect what was recorded.
     #[derive(Default)]
     pub struct RecordingSink {
+        #[allow(clippy::type_complexity)]
         calls: Mutex<Vec<(Url, Vec<Diagnostic>, Option<i32>)>>,
     }
 

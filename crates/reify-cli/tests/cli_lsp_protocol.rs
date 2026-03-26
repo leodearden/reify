@@ -146,11 +146,10 @@ fn spawn_reader(
             if reader.read_exact(&mut body).is_err() {
                 return;
             }
-            if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&body) {
-                if tx.send(json).is_err() {
+            if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&body)
+                && tx.send(json).is_err() {
                     return;
                 }
-            }
         }
     });
     rx

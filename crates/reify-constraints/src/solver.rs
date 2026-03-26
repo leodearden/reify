@@ -1069,7 +1069,7 @@ mod tests {
             SolveResult::Solved { values } => {
                 let x = values.get(&x_id).unwrap().as_f64().unwrap();
                 assert!(
-                    x >= 0.001 && x <= 0.050,
+                    (0.001..=0.050).contains(&x),
                     "solution should be within bounds [1mm, 50mm], got {} m",
                     x
                 );

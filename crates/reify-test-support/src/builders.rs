@@ -1870,7 +1870,6 @@ mod module_builder_extension_tests {
 
     #[test]
     fn module_builder_with_field() {
-        use reify_compiler::CompiledFieldSource;
         let body = literal(Value::Real(1.0));
         let f = CompiledFieldBuilder::new("temp", Type::Geometry, Type::Real)
             .analytical(body)

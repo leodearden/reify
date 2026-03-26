@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# reify project-specific checks (called from pre-commit).
+# Receives repo root as $1.
+
+ROOT="${1:?}"
+
+# Ensure cargo and node tooling are on PATH (git hooks get a minimal env).
+[ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
+
+echo "pre-commit: linting (main branch)..."
+
+# ── Rust: clippy ──────────────────────────────────────────────────────
+echo "  clippy: workspace"
+if ! cargo clippy --workspace --all-targets --quiet -- -D warnings 2>&1; then
+    echo "pre-commit: cargo clippy failed. Fix lint errors before committing to main."
+    exit 1
+fi
+
+# ── Rust: tests ───────────────────────────────────────────────────────
+echo "  test: workspace"
+if ! cargo test --workspace --quiet 2>&1; then
+    echo "pre-commit: cargo test failed. Fix test failures before committing to main."
+    exit 1
+fi
+
+# ── GUI: TypeScript typecheck ─────────────────────────────────────────
+if [ -d "$ROOT/gui" ]; then
+    echo "  typecheck: gui"
+    if ! (cd "$ROOT/gui" && npx tsc --noEmit); then
+        echo "pre-commit: tsc --noEmit failed in gui/. Fix type errors before committing to main."
+        exit 1
+    fi
+
+    echo "  test: gui"
+    if ! (cd "$ROOT/gui" && npx vitest run --reporter=dot); then
+        echo "pre-commit: vitest failed in gui/. Fix test failures before committing to main."
+        exit 1
+    fi
+fi
+
+echo "pre-commit: all checks passed."

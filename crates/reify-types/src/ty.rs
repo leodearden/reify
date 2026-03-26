@@ -172,6 +172,49 @@ impl Type {
     }
 }
 
+impl std::fmt::Display for Type {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Type::Bool => write!(f, "Bool"),
+            Type::Int => write!(f, "Int"),
+            Type::Real => write!(f, "Real"),
+            Type::String => write!(f, "String"),
+            Type::Scalar { dimension } => {
+                if dimension.is_dimensionless() {
+                    write!(f, "Scalar")
+                } else {
+                    write!(f, "Scalar[{}]", dimension)
+                }
+            }
+            Type::Enum(name) => write!(f, "Enum({})", name),
+            Type::List(inner) => write!(f, "List<{}>", inner),
+            Type::Set(inner) => write!(f, "Set<{}>", inner),
+            Type::Map(k, v) => write!(f, "Map<{}, {}>", k, v),
+            Type::Option(inner) => write!(f, "Option<{}>", inner),
+            Type::Function { params, return_type } => {
+                let params_str: Vec<String> = params.iter().map(|p| format!("{}", p)).collect();
+                write!(f, "Function({}) -> {}", params_str.join(", "), return_type)
+            }
+            Type::TypeParam(name) => write!(f, "{}", name),
+            Type::StructureRef(name) => write!(f, "{}", name),
+            Type::Field { domain, codomain } => write!(f, "Field<{}, {}>", domain, codomain),
+            Type::Geometry => write!(f, "Geometry"),
+            Type::Point { n, quantity } => write!(f, "Point{}<{}>", n, quantity),
+            Type::Vector { n, quantity } => write!(f, "Vector{}<{}>", n, quantity),
+            Type::Tensor { rank, n, quantity } => write!(f, "Tensor{}x{}<{}>", rank, n, quantity),
+            Type::Complex(inner) => write!(f, "Complex<{}>", inner),
+            Type::Orientation(n) => write!(f, "Orientation{}", n),
+            Type::Frame(n) => write!(f, "Frame{}", n),
+            Type::Transform(n) => write!(f, "Transform{}", n),
+            Type::Range(inner) => write!(f, "Range<{}>", inner),
+            Type::Plane => write!(f, "Plane"),
+            Type::Axis => write!(f, "Axis"),
+            Type::BoundingBox => write!(f, "BoundingBox"),
+            Type::Matrix { m, n, quantity } => write!(f, "Matrix{}x{}<{}>", m, n, quantity),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -966,48 +1009,5 @@ mod tests {
     #[test]
     fn type_bounding_box_as_name_none() {
         assert_eq!(Type::BoundingBox.as_name(), None);
-    }
-}
-
-impl std::fmt::Display for Type {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Type::Bool => write!(f, "Bool"),
-            Type::Int => write!(f, "Int"),
-            Type::Real => write!(f, "Real"),
-            Type::String => write!(f, "String"),
-            Type::Scalar { dimension } => {
-                if dimension.is_dimensionless() {
-                    write!(f, "Scalar")
-                } else {
-                    write!(f, "Scalar[{}]", dimension)
-                }
-            }
-            Type::Enum(name) => write!(f, "Enum({})", name),
-            Type::List(inner) => write!(f, "List<{}>", inner),
-            Type::Set(inner) => write!(f, "Set<{}>", inner),
-            Type::Map(k, v) => write!(f, "Map<{}, {}>", k, v),
-            Type::Option(inner) => write!(f, "Option<{}>", inner),
-            Type::Function { params, return_type } => {
-                let params_str: Vec<String> = params.iter().map(|p| format!("{}", p)).collect();
-                write!(f, "Function({}) -> {}", params_str.join(", "), return_type)
-            }
-            Type::TypeParam(name) => write!(f, "{}", name),
-            Type::StructureRef(name) => write!(f, "{}", name),
-            Type::Field { domain, codomain } => write!(f, "Field<{}, {}>", domain, codomain),
-            Type::Geometry => write!(f, "Geometry"),
-            Type::Point { n, quantity } => write!(f, "Point{}<{}>", n, quantity),
-            Type::Vector { n, quantity } => write!(f, "Vector{}<{}>", n, quantity),
-            Type::Tensor { rank, n, quantity } => write!(f, "Tensor{}x{}<{}>", rank, n, quantity),
-            Type::Complex(inner) => write!(f, "Complex<{}>", inner),
-            Type::Orientation(n) => write!(f, "Orientation{}", n),
-            Type::Frame(n) => write!(f, "Frame{}", n),
-            Type::Transform(n) => write!(f, "Transform{}", n),
-            Type::Range(inner) => write!(f, "Range<{}>", inner),
-            Type::Plane => write!(f, "Plane"),
-            Type::Axis => write!(f, "Axis"),
-            Type::BoundingBox => write!(f, "BoundingBox"),
-            Type::Matrix { m, n, quantity } => write!(f, "Matrix{}x{}<{}>", m, n, quantity),
-        }
     }
 }

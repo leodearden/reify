@@ -685,8 +685,8 @@ mod tests {
 
     #[test]
     fn provisional_returns_correct_state() {
-        let (val, state) = provisional(Value::Real(3.14));
-        assert_eq!(val, Value::Real(3.14));
+        let (val, state) = provisional(Value::Real(2.78));
+        assert_eq!(val, Value::Real(2.78));
         assert_eq!(state, DeterminacyState::Provisional);
     }
 
@@ -705,10 +705,10 @@ mod tests {
 
     #[test]
     fn real_val_produces_real() {
-        let v = real_val(3.14);
+        let v = real_val(2.78);
         assert!(matches!(v, Value::Real(_)));
         if let Value::Real(f) = v {
-            assert!((f - 3.14).abs() < 1e-10);
+            assert!((f - 2.78).abs() < 1e-10);
         }
     }
 
@@ -950,7 +950,7 @@ mod tests {
 
     #[test]
     fn assert_value_approx_reals_pass() {
-        assert_value_approx!(Value::Real(3.14), Value::Real(3.14));
+        assert_value_approx!(Value::Real(2.78), Value::Real(2.78));
     }
 
     #[test]

@@ -361,13 +361,14 @@ async fn from_parts_with_mcp_intercepts_reify_tool_calls() {
     }
 
     // Verify the tool_call event was emitted to the event sink
-    let emitted = events.lock().unwrap();
-    assert!(
-        emitted.iter().any(|(name, _)| name == "claude-tool-call"),
-        "Expected claude-tool-call event in sink, got: {:?}",
-        emitted.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>()
-    );
-    drop(emitted);
+    {
+        let emitted = events.lock().unwrap();
+        assert!(
+            emitted.iter().any(|(name, _)| name == "claude-tool-call"),
+            "Expected claude-tool-call event in sink, got: {:?}",
+            emitted.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>()
+        );
+    }
 
     // Verify tool_result was written back to sidecar stdin
     let mut buf = vec![0u8; 4096];
@@ -1714,7 +1715,7 @@ async fn shutdown_not_blocked_during_ensure_sidecar_ready_spawn() {
 
     // Start ensure_sidecar_ready in the background.
     let ensure_handle = tokio::spawn(async move {
-        ensure_sidecar_ready(&*sidecar_for_spawn, spawn_fn, Duration::from_secs(5)).await
+        ensure_sidecar_ready(&sidecar_for_spawn, spawn_fn, Duration::from_secs(5)).await
     });
 
     // Wait until spawn_fn has been entered (the sidecar lock has been released).
@@ -1727,7 +1728,7 @@ async fn shutdown_not_blocked_during_ensure_sidecar_ready_spawn() {
     // during spawn), this times out.
     let shutdown_result = tokio::time::timeout(
         Duration::from_millis(200),
-        shutdown_sidecar(&*sidecar_for_shutdown),
+        shutdown_sidecar(&sidecar_for_shutdown),
     )
     .await;
     assert!(

@@ -970,7 +970,7 @@ mod tests {
     #[test]
     fn handle_warm_state_returns_some_after_op() {
         use reify_types::WarmStartable;
-        let mut handle = super::OcctKernelHandle::spawn();
+        let handle = super::OcctKernelHandle::spawn();
         let op = GeometryOp::Box {
             width: Value::Real(10.0),
             height: Value::Real(20.0),
@@ -989,7 +989,7 @@ mod tests {
     fn cross_handle_warm_start_transfer() {
         use reify_types::WarmStartable;
         // Handle A: create box
-        let mut handle_a = super::OcctKernelHandle::spawn();
+        let handle_a = super::OcctKernelHandle::spawn();
         let op = GeometryOp::Box {
             width: Value::Real(10.0),
             height: Value::Real(20.0),
@@ -1021,7 +1021,7 @@ mod tests {
 
     #[tokio::test]
     async fn async_warm_start_roundtrip() {
-        let mut handle_a = super::OcctKernelHandle::spawn();
+        let handle_a = super::OcctKernelHandle::spawn();
         let op = GeometryOp::Box {
             width: Value::Real(10.0),
             height: Value::Real(20.0),
@@ -1036,7 +1036,7 @@ mod tests {
             .expect("should have warm state");
 
         // Restore on new handle via async
-        let mut handle_b = super::OcctKernelHandle::spawn();
+        let handle_b = super::OcctKernelHandle::spawn();
         handle_b.with_warm_state_async(state).await;
 
         // Query volume via async
@@ -1070,7 +1070,7 @@ mod tests {
         // Calling the sync WarmStartable trait methods from an async context
         // must not panic (previously used blocking_send/blocking_recv which
         // panicked inside tokio runtime).
-        let mut handle_a = super::OcctKernelHandle::spawn();
+        let handle_a = super::OcctKernelHandle::spawn();
         let op = GeometryOp::Box {
             width: Value::Real(10.0),
             height: Value::Real(20.0),

@@ -457,7 +457,7 @@ mod tests {
         let source = "structure Bracket {\n    /// The width.\n    param width: Scalar = 80mm\n}";
         let ctx = AnalysisContext::new(source, &test_uri());
         let info = ctx.find_member_decl("width").expect("width should exist");
-        assert_eq!(info.doc.as_deref(), Some("The width."));
+        assert_eq!(info.doc, Some("The width."));
     }
 
     // --- format_value tests ---

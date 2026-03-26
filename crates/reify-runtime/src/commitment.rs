@@ -310,7 +310,7 @@ mod tests {
     #[test]
     fn node_commitment_override_clone_and_debug() {
         let override_ = NodeCommitmentOverride::AlwaysCancelWhenStale;
-        let cloned = override_.clone();
+        let cloned = override_;
         assert_eq!(override_, cloned);
         let _ = format!("{:?}", override_);
     }

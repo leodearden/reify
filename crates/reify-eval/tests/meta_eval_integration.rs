@@ -17,6 +17,7 @@ use reify_types::*;
 ///   - 'Part' with meta {"material": "steel"} and a param size
 ///   - 'Assembly' with sub_component 'part' -> 'Part' and a Let binding
 ///     using meta_access("Part", "material")
+///
 /// After eval(), the Assembly's let cell should hold Value::String("steel").
 #[test]
 fn eval_meta_access_sub_structure() {
@@ -147,6 +148,7 @@ fn eval_meta_access_in_let_binding() {
 ///   - Bool param 'active' (default true)
 ///   - Guarded group: guard_expr = ValueRef(active), one Let member 'mode_label'
 ///     whose default_expr is meta_access("S", "mode")
+///
 /// After eval(), mode_label should == Value::String("active").
 #[test]
 fn eval_meta_access_in_guarded_group() {
@@ -218,6 +220,7 @@ fn eval_meta_access_in_guarded_group() {
 ///       - let '__count_bolts' = n (count cell)
 ///       - collection_sub_component 'bolts' -> 'Bolt' (count cell = __count_bolts)
 ///       - let 'grade_label' = meta_access("Bolt", "grade")
+///
 /// After eval(), Plate.grade_label should == Value::String("A2").
 #[test]
 fn eval_meta_access_collection_sub_component() {

@@ -380,8 +380,8 @@ fn integer_constraint_sum_equals_10() {
                 other => panic!("expected Int for y, got {:?}", other),
             };
             assert_eq!(x + y, 10, "expected x + y == 10, got x={x}, y={y}");
-            assert!(x >= 0 && x <= 10, "x out of bounds: {x}");
-            assert!(y >= 0 && y <= 10, "y out of bounds: {y}");
+            assert!((0..=10).contains(&x), "x out of bounds: {x}");
+            assert!((0..=10).contains(&y), "y out of bounds: {y}");
         }
         other => panic!("expected Solved, got {:?}", other),
     }

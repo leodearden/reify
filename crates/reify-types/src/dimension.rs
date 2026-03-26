@@ -277,13 +277,11 @@ mod tests {
 
     #[test]
     fn dimension_div() {
-        let velocity = DimensionVector::LENGTH.div(&DimensionVector {
-            0: {
+        let velocity = DimensionVector::LENGTH.div(&DimensionVector({
                 let mut v = [Rational::ZERO; 9];
                 v[2] = Rational::ONE; // time
                 v
-            },
-        });
+            }));
         assert_eq!(velocity.0[0], Rational::ONE); // m
         assert_eq!(velocity.0[2], Rational::new(-1, 1)); // s^-1
     }

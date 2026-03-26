@@ -699,10 +699,7 @@ mod tests {
 
     #[test]
     fn occt_available_is_true_when_built_with_occt() {
-        assert!(
-            crate::OCCT_AVAILABLE,
-            "OCCT_AVAILABLE should be true on a system with OCCT installed"
-        );
+        const { assert!(crate::OCCT_AVAILABLE, "OCCT_AVAILABLE should be true on a system with OCCT installed") };
     }
 
     #[test]
@@ -2177,7 +2174,7 @@ mod tests {
             .unwrap();
         let mesh = kernel.tessellate(mirrored.id, 0.1).unwrap();
         assert!(!mesh.vertices.is_empty(), "mirrored tessellation should have vertices");
-        assert!(mesh.indices.len() % 3 == 0, "indices should be divisible by 3");
+        assert!(mesh.indices.len().is_multiple_of(3), "indices should be divisible by 3");
 
         // Loft
         let w1 = ffi::ffi::make_circle_wire(10.0, 0.0).unwrap();
@@ -2189,7 +2186,7 @@ mod tests {
             .unwrap();
         let loft_mesh = kernel.tessellate(loft.id, 0.1).unwrap();
         assert!(!loft_mesh.vertices.is_empty(), "loft tessellation should have vertices");
-        assert!(loft_mesh.indices.len() % 3 == 0, "loft indices divisible by 3");
+        assert!(loft_mesh.indices.len().is_multiple_of(3), "loft indices divisible by 3");
     }
 
     #[test]

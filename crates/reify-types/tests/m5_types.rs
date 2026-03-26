@@ -38,6 +38,7 @@ fn port_direction_debug_clone_eq_copy_hash() {
     let d = reify_types::PortDirection::In;
     let d2 = d; // Copy
     assert_eq!(d, d2);
+    #[allow(clippy::clone_on_copy)]
     let d3 = d.clone();
     assert_eq!(d, d3);
     assert_ne!(d, reify_types::PortDirection::Out);

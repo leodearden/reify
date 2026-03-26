@@ -682,6 +682,110 @@ pub fn constrained_structure_module() -> reify_compiler::CompiledModule {
         .build()
 }
 
+/// Create a `CompiledModule` with a parent/child relationship for sub-component testing.
+///
+/// Returns a module with two templates:
+/// - `Child` with `param height: Scalar(LENGTH) = 10mm` (0.01 SI) and
+///   `let half_h = height / 2`
+/// - `Parent` with `param width: Scalar(LENGTH) = 80mm` (0.08 SI) and
+///   `sub rib = Child(height: width * 0.5)`
+///
+/// Child is listed first so it can be found by structure_name lookup.
+pub fn parent_child_module() -> CompiledModule {
+    use reify_types::CompiledExpr;
+
+    let child_entity = "Child";
+    let parent_entity = "Parent";
+
+    // mm literal helper
+    let mm_literal = |v: f64| {
+        CompiledExpr::literal(crate::mm(v), Type::length())
+    };
+
+    // Child template: param height = 10mm, let half_h = height / 2
+    let height_ref = || CompiledExpr::value_ref(crate::vcid(child_entity, "height"), Type::length());
+
+    let half_h_expr = CompiledExpr::binop(
+        BinOp::Div,
+        height_ref(),
+        CompiledExpr::literal(Value::Int(2), Type::Int),
+        Type::length(),
+    );
+
+    let child_template = TopologyTemplateBuilder::new(child_entity)
+        .param(child_entity, "height", Type::length(), Some(mm_literal(10.0)))
+        .let_binding(child_entity, "half_h", Type::length(), half_h_expr)
+        .build();
+
+    // Parent template: param width = 80mm, sub rib = Child(height: width * 0.5)
+    let width_ref = || CompiledExpr::value_ref(crate::vcid(parent_entity, "width"), Type::length());
+
+    let arg_expr = CompiledExpr::binop(
+        BinOp::Mul,
+        width_ref(),
+        CompiledExpr::literal(Value::Real(0.5), Type::Real),
+        Type::length(),
+    );
+
+    let parent_template = TopologyTemplateBuilder::new(parent_entity)
+        .param(parent_entity, "width", Type::length(), Some(mm_literal(80.0)))
+        .sub_component("rib", "Child", vec![("height".to_string(), arg_expr)])
+        .build();
+
+    CompiledModuleBuilder::new(ModulePath::single("parent_child"))
+        .template(child_template)
+        .template(parent_template)
+        .build()
+}
+
+/// Create a `CompiledModule` with a self-referencing `TreeNode` structure.
+///
+/// Structure `TreeNode`:
+///   - `param value: Int = 0`
+///   - `sub left = TreeNode` (recursive left child, no args)
+///   - `sub right = TreeNode` (recursive right child, no args)
+///
+/// Both sub-components reference `"TreeNode"` as their `structure_name`, creating
+/// a self-referencing topology used to test cycle detection and recursive evaluation.
+pub fn recursive_tree_module() -> CompiledModule {
+    let e = "TreeNode";
+
+    let tree_template = TopologyTemplateBuilder::new(e)
+        .param(e, "value", Type::Int, Some(crate::builders::literal(Value::Int(0))))
+        .sub_component("left", "TreeNode", vec![])
+        .sub_component("right", "TreeNode", vec![])
+        .build();
+
+    CompiledModuleBuilder::new(ModulePath::single("recursive_tree"))
+        .template(tree_template)
+        .build()
+}
+
+/// Create a `CompiledModule` with two mutually recursive structures.
+///
+/// Structures:
+///   - `NodeA`: `param a_val: Int = 0`, `sub child = NodeB`
+///   - `NodeB`: `param b_val: Int = 0`, `sub ref_back = NodeA`
+///
+/// The two structures form a mutual recursion cycle (NodeA → NodeB → NodeA),
+/// used to test cycle detection algorithms in the evaluation engine.
+pub fn mutual_recursion_module() -> CompiledModule {
+    let node_a = TopologyTemplateBuilder::new("NodeA")
+        .param("NodeA", "a_val", Type::Int, Some(crate::builders::literal(Value::Int(0))))
+        .sub_component("child", "NodeB", vec![])
+        .build();
+
+    let node_b = TopologyTemplateBuilder::new("NodeB")
+        .param("NodeB", "b_val", Type::Int, Some(crate::builders::literal(Value::Int(0))))
+        .sub_component("ref_back", "NodeA", vec![])
+        .build();
+
+    CompiledModuleBuilder::new(ModulePath::single("mutual_recursion"))
+        .template(node_a)
+        .template(node_b)
+        .build()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -959,108 +1063,4 @@ mod tests {
         assert_eq!(node_b.sub_components[0].name, "ref_back");
         assert_eq!(node_b.sub_components[0].structure_name, "NodeA");
     }
-}
-
-/// Create a `CompiledModule` with a parent/child relationship for sub-component testing.
-///
-/// Returns a module with two templates:
-/// - `Child` with `param height: Scalar(LENGTH) = 10mm` (0.01 SI) and
-///   `let half_h = height / 2`
-/// - `Parent` with `param width: Scalar(LENGTH) = 80mm` (0.08 SI) and
-///   `sub rib = Child(height: width * 0.5)`
-///
-/// Child is listed first so it can be found by structure_name lookup.
-pub fn parent_child_module() -> CompiledModule {
-    use reify_types::CompiledExpr;
-
-    let child_entity = "Child";
-    let parent_entity = "Parent";
-
-    // mm literal helper
-    let mm_literal = |v: f64| {
-        CompiledExpr::literal(crate::mm(v), Type::length())
-    };
-
-    // Child template: param height = 10mm, let half_h = height / 2
-    let height_ref = || CompiledExpr::value_ref(crate::vcid(child_entity, "height"), Type::length());
-
-    let half_h_expr = CompiledExpr::binop(
-        BinOp::Div,
-        height_ref(),
-        CompiledExpr::literal(Value::Int(2), Type::Int),
-        Type::length(),
-    );
-
-    let child_template = TopologyTemplateBuilder::new(child_entity)
-        .param(child_entity, "height", Type::length(), Some(mm_literal(10.0)))
-        .let_binding(child_entity, "half_h", Type::length(), half_h_expr)
-        .build();
-
-    // Parent template: param width = 80mm, sub rib = Child(height: width * 0.5)
-    let width_ref = || CompiledExpr::value_ref(crate::vcid(parent_entity, "width"), Type::length());
-
-    let arg_expr = CompiledExpr::binop(
-        BinOp::Mul,
-        width_ref(),
-        CompiledExpr::literal(Value::Real(0.5), Type::Real),
-        Type::length(),
-    );
-
-    let parent_template = TopologyTemplateBuilder::new(parent_entity)
-        .param(parent_entity, "width", Type::length(), Some(mm_literal(80.0)))
-        .sub_component("rib", "Child", vec![("height".to_string(), arg_expr)])
-        .build();
-
-    CompiledModuleBuilder::new(ModulePath::single("parent_child"))
-        .template(child_template)
-        .template(parent_template)
-        .build()
-}
-
-/// Create a `CompiledModule` with a self-referencing `TreeNode` structure.
-///
-/// Structure `TreeNode`:
-///   - `param value: Int = 0`
-///   - `sub left = TreeNode` (recursive left child, no args)
-///   - `sub right = TreeNode` (recursive right child, no args)
-///
-/// Both sub-components reference `"TreeNode"` as their `structure_name`, creating
-/// a self-referencing topology used to test cycle detection and recursive evaluation.
-pub fn recursive_tree_module() -> CompiledModule {
-    let e = "TreeNode";
-
-    let tree_template = TopologyTemplateBuilder::new(e)
-        .param(e, "value", Type::Int, Some(crate::builders::literal(Value::Int(0))))
-        .sub_component("left", "TreeNode", vec![])
-        .sub_component("right", "TreeNode", vec![])
-        .build();
-
-    CompiledModuleBuilder::new(ModulePath::single("recursive_tree"))
-        .template(tree_template)
-        .build()
-}
-
-/// Create a `CompiledModule` with two mutually recursive structures.
-///
-/// Structures:
-///   - `NodeA`: `param a_val: Int = 0`, `sub child = NodeB`
-///   - `NodeB`: `param b_val: Int = 0`, `sub ref_back = NodeA`
-///
-/// The two structures form a mutual recursion cycle (NodeA → NodeB → NodeA),
-/// used to test cycle detection algorithms in the evaluation engine.
-pub fn mutual_recursion_module() -> CompiledModule {
-    let node_a = TopologyTemplateBuilder::new("NodeA")
-        .param("NodeA", "a_val", Type::Int, Some(crate::builders::literal(Value::Int(0))))
-        .sub_component("child", "NodeB", vec![])
-        .build();
-
-    let node_b = TopologyTemplateBuilder::new("NodeB")
-        .param("NodeB", "b_val", Type::Int, Some(crate::builders::literal(Value::Int(0))))
-        .sub_component("ref_back", "NodeA", vec![])
-        .build();
-
-    CompiledModuleBuilder::new(ModulePath::single("mutual_recursion"))
-        .template(node_a)
-        .template(node_b)
-        .build()
 }
