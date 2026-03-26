@@ -216,3 +216,155 @@ fn transform_mul_point_dimension_mismatch_undef() {
     );
     assert!(result.is_undef(), "dimension mismatch should return Undef, got {:?}", result);
 }
+
+// ── step-5: Transform * Transform (composition) tests ────────────────────────
+
+/// Helper to check a transform's rotation quaternion components.
+fn assert_orientation_approx(val: &Value, ew: f64, ex: f64, ey: f64, ez: f64, label: &str) {
+    match val {
+        Value::Orientation { w, x, y, z } => {
+            // Quaternion sign ambiguity: q and -q represent the same rotation.
+            // Check both signs.
+            let pos_ok = (w - ew).abs() < 1e-10
+                && (x - ex).abs() < 1e-10
+                && (y - ey).abs() < 1e-10
+                && (z - ez).abs() < 1e-10;
+            let neg_ok = (w + ew).abs() < 1e-10
+                && (x + ex).abs() < 1e-10
+                && (y + ey).abs() < 1e-10
+                && (z + ez).abs() < 1e-10;
+            assert!(
+                pos_ok || neg_ok,
+                "{label}: orientation ({w},{x},{y},{z}) != expected ({ew},{ex},{ey},{ez})"
+            );
+        }
+        other => panic!("{label}: expected Orientation, got {:?}", other),
+    }
+}
+
+/// Helper to check a transform's translation vector components.
+fn assert_vector_approx(val: &Value, ex: f64, ey: f64, ez: f64, label: &str) {
+    match val {
+        Value::Vector(items) if items.len() == 3 => {
+            let x = items[0].as_f64().unwrap();
+            let y = items[1].as_f64().unwrap();
+            let z = items[2].as_f64().unwrap();
+            assert!(
+                (x - ex).abs() < 1e-10 && (y - ey).abs() < 1e-10 && (z - ez).abs() < 1e-10,
+                "{label}: translation ({x},{y},{z}) != expected ({ex},{ey},{ez})"
+            );
+        }
+        other => panic!("{label}: expected Vector3, got {:?}", other),
+    }
+}
+
+/// Identity * Transform = Transform.
+#[test]
+fn identity_mul_transform() {
+    let t = make_transform(rotation_90z(), 10.0, 20.0, 30.0);
+    let result = eval_mul_expr(
+        identity_transform(),
+        Type::Transform(3),
+        t.clone(),
+        Type::Transform(3),
+        Type::Transform(3),
+    );
+    match result {
+        Value::Transform { rotation, translation } => {
+            let s = std::f64::consts::FRAC_1_SQRT_2;
+            assert_orientation_approx(&rotation, s, 0.0, 0.0, s, "I*T rotation");
+            assert_vector_approx(&translation, 10.0, 20.0, 30.0, "I*T translation");
+        }
+        other => panic!("expected Transform, got {:?}", other),
+    }
+}
+
+/// Transform * Identity = Transform.
+#[test]
+fn transform_mul_identity() {
+    let t = make_transform(rotation_90z(), 10.0, 20.0, 30.0);
+    let result = eval_mul_expr(
+        t.clone(),
+        Type::Transform(3),
+        identity_transform(),
+        Type::Transform(3),
+        Type::Transform(3),
+    );
+    match result {
+        Value::Transform { rotation, translation } => {
+            let s = std::f64::consts::FRAC_1_SQRT_2;
+            assert_orientation_approx(&rotation, s, 0.0, 0.0, s, "T*I rotation");
+            assert_vector_approx(&translation, 10.0, 20.0, 30.0, "T*I translation");
+        }
+        other => panic!("expected Transform, got {:?}", other),
+    }
+}
+
+/// Two 90-degree Z rotations compose to 180-degree Z rotation.
+/// 90Z quat = (cos45, 0, 0, sin45); composed = (0, 0, 0, 1) (180Z).
+#[test]
+fn compose_two_rotations() {
+    let t1 = make_transform(rotation_90z(), 0.0, 0.0, 0.0);
+    let t2 = make_transform(rotation_90z(), 0.0, 0.0, 0.0);
+    let result = eval_mul_expr(
+        t1,
+        Type::Transform(3),
+        t2,
+        Type::Transform(3),
+        Type::Transform(3),
+    );
+    match result {
+        Value::Transform { rotation, translation } => {
+            // 180-degree Z rotation: quat = (0, 0, 0, 1)
+            assert_orientation_approx(&rotation, 0.0, 0.0, 0.0, 1.0, "90Z*90Z rotation");
+            assert_vector_approx(&translation, 0.0, 0.0, 0.0, "90Z*90Z translation");
+        }
+        other => panic!("expected Transform, got {:?}", other),
+    }
+}
+
+/// Compose (R1,t1)*(R2,t2) = (R1*R2, R1*t2+t1).
+/// R1 = 90Z, t1 = (10,0,0), R2 = identity, t2 = (1,0,0).
+/// Result rotation = 90Z, result translation = 90Z*(1,0,0) + (10,0,0) = (0,1,0) + (10,0,0) = (10,1,0).
+#[test]
+fn compose_rotation_and_translation() {
+    let t1 = make_transform(rotation_90z(), 10.0, 0.0, 0.0);
+    let t2 = make_transform(identity_orientation(), 1.0, 0.0, 0.0);
+    let result = eval_mul_expr(
+        t1,
+        Type::Transform(3),
+        t2,
+        Type::Transform(3),
+        Type::Transform(3),
+    );
+    match result {
+        Value::Transform { rotation, translation } => {
+            let s = std::f64::consts::FRAC_1_SQRT_2;
+            assert_orientation_approx(&rotation, s, 0.0, 0.0, s, "compose rot");
+            assert_vector_approx(&translation, 10.0, 1.0, 0.0, "compose trans");
+        }
+        other => panic!("expected Transform, got {:?}", other),
+    }
+}
+
+/// Translations with different dimensions returns Undef.
+#[test]
+fn compose_dimension_mismatch_undef() {
+    let t1 = make_transform(identity_orientation(), 1.0, 0.0, 0.0); // LENGTH translation
+    let t2 = Value::Transform {
+        rotation: Box::new(identity_orientation()),
+        translation: Box::new(Value::Vector(vec![
+            Value::angle(0.0),
+            Value::angle(0.0),
+            Value::angle(0.0),
+        ])),
+    };
+    let result = eval_mul_expr(
+        t1,
+        Type::Transform(3),
+        t2,
+        Type::Transform(3),
+        Type::Transform(3),
+    );
+    assert!(result.is_undef(), "mismatched translation dimensions should return Undef, got {:?}", result);
+}
