@@ -663,7 +663,21 @@ fn evaluate_const_expr(
         reify_syntax::ExprKind::QuantityLiteral { value, unit } => {
             // Try registry first, then hardcoded fallback.
             if let Some(entry) = registry.lookup(unit) {
-                let si = value * entry.factor + entry.offset.unwrap_or(0.0);
+                // Affine (offset) units cannot be used in unit conversion expressions —
+                // the additive offset only makes sense for runtime value expressions
+                // like '25degC', not for defining conversion factors.
+                if entry.offset.is_some() {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "affine (offset) unit '{}' cannot be used in unit conversion expressions; \
+                             offset units are only valid in value expressions like '25{}'",
+                            unit, unit
+                        ))
+                        .with_label(DiagnosticLabel::new(expr.span, "offset unit used in conversion")),
+                    );
+                    return None;
+                }
+                let si = value * entry.factor;
                 Some(si)
             } else if let Some((scalar_val, _dim)) = unit_to_scalar(*value, unit) {
                 if let Value::Scalar { si_value, .. } = scalar_val {
