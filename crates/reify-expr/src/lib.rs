@@ -1246,6 +1246,11 @@ fn eval_unop(op: UnOp, operand: &CompiledExpr, ctx: &EvalContext) -> Value {
                 si_value: -si_value,
                 dimension,
             },
+            Value::Complex { re, im, dimension } => Value::Complex {
+                re: -re,
+                im: -im,
+                dimension,
+            },
             // Negate all components of a Tensor
             Value::Tensor(components) => negate_components(components, Value::Tensor),
             // Affine geometry: negate all components of a Vector
