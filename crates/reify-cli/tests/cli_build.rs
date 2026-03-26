@@ -33,6 +33,42 @@ fn build_parse_error_exits_failure() {
 }
 
 #[test]
+fn build_violating_bracket_exits_failure() {
+    let output_path = "/tmp/reify_test_violating_build_out.step";
+    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
+        .args([
+            "build",
+            &fixture_path("bracket_violating.ri"),
+            "-o",
+            output_path,
+        ])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .expect("failed to execute reify binary");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        !output.status.success(),
+        "reify build should exit non-zero when constraints are violated.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("VIOLATED"),
+        "stderr should contain 'VIOLATED', got: {stderr}"
+    );
+    // Geometry file should still be written even when constraints are violated
+    assert!(
+        std::path::Path::new(output_path).exists(),
+        "geometry file should still be written even with constraint violations"
+    );
+    // Clean up
+    let _ = std::fs::remove_file(output_path);
+}
+
+#[test]
 fn build_compile_error_exits_failure() {
     let output = Command::new(env!("CARGO_BIN_EXE_reify"))
         .args([
