@@ -8347,6 +8347,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 484,
+        "title": "Fix off-by-one cursor positions and add positive dot-access assertion in LSP completion tests",
+        "description": "Task 481's position-sensitive completion tests have cursor position bugs and a vacuous test that could cause task 2 (implementing position-sensitive filtering) to waste time debugging or pass trivially.",
+        "details": "## Bugs to fix in `crates/reify-lsp/src/completion.rs`:\n\n### 1. Off-by-one in `completion_after_dot_returns_only_members` (line ~334)\nSource line 4: `    let x = part.` = 17 chars (cols 0-16). Dot at col 16. After-dot = col 17.\nTest uses `Position::new(4, 18)` — **two past end of line**. Fix to `Position::new(4, 17)`.\n\n### 2. Out-of-bounds column in `completion_inside_body_excludes_top_level_keywords` (line ~277)\n`bracket_source()` line 6 is an empty line (0 characters). Test uses `Position::new(6, 4)` — col 4 on a 0-char line. Fix to `Position::new(6, 0)`.\n\n### 3. Vacuous dot-access test (line ~329)\n`completion_after_dot_returns_only_members` only has exclusion assertions (keywords/functions/types are empty). If task 2 returns an empty list for unresolved dot-access, all assertions trivially pass without verifying the feature. Add a parallel test using a defined structure (e.g., `sub bracket = Bracket()` where Bracket is defined in the same source) and assert that known member names ARE present.\n\n### 4. Add TODO comments on existing tests\nThe existing test `completions_include_keywords` (line ~104) uses `Position::new(1, 0)` which is inside a structure body, and asserts `structure` is present. This will break when task 2 implements body-position filtering. Add `// TODO(task-2): ...` comments on this and similar tests.\n\n## memory_hints\n- search: \"LSP completion tests position-sensitive\"\n- entity: \"compute_completions\"",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -8359,7 +8370,7 @@
       ],
       "created": "2026-03-26T12:28:32.577Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-26T12:28:32.597Z"
+      "updated": "2026-03-26T12:28:43.718Z"
     }
   }
 }
