@@ -409,6 +409,24 @@ mod tests {
         assert_eq!(info.doc, Some("The width."));
     }
 
+    // --- find_member_decl inside guarded groups ---
+
+    #[test]
+    fn find_member_decl_param_inside_where_block() {
+        let source = r#"structure S {
+    param cond : Bool = true
+    where cond {
+        param guarded_x : Scalar = 5mm
+    }
+}"#;
+        let ctx = AnalysisContext::new(source, &test_uri());
+        let info = ctx
+            .find_member_decl("guarded_x")
+            .expect("guarded_x inside where block should be found");
+        assert_eq!(info.name, "guarded_x");
+        assert_eq!(info.kind, ValueCellKind::Param);
+    }
+
     // --- format_value tests ---
 
     #[test]
