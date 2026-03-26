@@ -6831,11 +6831,11 @@
         "description": "is_recursive is set after content_hash is computed (lib.rs). The hash doesn't capture full semantics — two structures identical except for recursion status will have the same hash, which could cause incorrect incremental compilation cache hits. Re-mix is_recursive into hash after detection.\n\nMemory hints: search \"is_recursive content_hash compile_recursive\", entities: content_hash, is_recursive",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-25T22:30:36.529Z"
+        "updatedAt": "2026-03-26T12:16:31.123Z"
       },
       {
         "id": "368",
@@ -8340,7 +8340,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-26T12:16:30.893Z",
+      "lastModified": "2026-03-26T12:16:31.125Z",
       "taskCount": 482,
       "completedCount": 249,
       "tags": [
