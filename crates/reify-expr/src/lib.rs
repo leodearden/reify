@@ -825,6 +825,21 @@ fn eval_add(lv: &Value, rv: &Value) -> Value {
                 }
             }
         }
+        // Complex + Complex: dimension must match
+        (
+            Value::Complex { re: ar, im: ai, dimension: ad },
+            Value::Complex { re: br, im: bi, dimension: bd },
+        ) => {
+            if ad != bd {
+                Value::Undef
+            } else {
+                Value::Complex {
+                    re: ar + br,
+                    im: ai + bi,
+                    dimension: *ad,
+                }
+            }
+        }
         (Value::String(a), Value::String(b)) => Value::String(format!("{}{}", a, b)),
         // Component-wise Tensor addition
         (Value::Tensor(a), Value::Tensor(b)) => componentwise_binop(a, b, eval_add, Value::Tensor),
