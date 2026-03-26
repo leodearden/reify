@@ -8195,16 +8195,16 @@
         "description": "In crates/reify-eval/src/lib.rs, evaluate_let_bindings (line ~2926) calls topological_sort without cycle detection. Cyclic let-bindings (e.g. `let a = b + 1; let b = a + 1`) in the root entity silently produce Value::Undef with no diagnostic. The child-level elaboration (elaborate_child_lets_only, lines 3730-3748) already has this check — apply the same pattern to evaluate_let_bindings.\n\nFix: After line 2926, compare sorted_lets.len() < let_node_ids.len(), collect missing NodeId::Value member names, push Diagnostic::error. evaluate_let_bindings needs a `diagnostics: &mut Vec<Diagnostic>` parameter added, callers updated. Add a test with cyclic let-binding in a root (non-child) entity.\n\nSource: review finding from esc-409-111 (reviewer_robustness/silent_data_loss).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-26T08:21:14.614Z"
+        "updatedAt": "2026-03-26T08:23:53.227Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-26T08:21:14.614Z",
+      "lastModified": "2026-03-26T08:23:53.227Z",
       "taskCount": 472,
       "completedCount": 249,
       "tags": [
