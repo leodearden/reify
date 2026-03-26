@@ -1933,10 +1933,12 @@ async fn evaluate_missing_node_returns_unchanged() {
     );
 }
 
-/// F1/F3 regression test: concurrent eval on a large linear chain completes
-/// correctly. Establishes a baseline before ValueMap clone optimization.
+/// Regression test: 100-node linear chain evaluates correctly via concurrent
+/// scheduler with targeted O(k) reads per node (not full ValueMap clone).
+/// Validates that the topological ordering guarantee holds at scale and that
+/// no values are lost or stale across a long dependency chain.
 #[tokio::test]
-async fn concurrent_eval_large_graph_no_quadratic_clone() {
+async fn concurrent_eval_large_linear_chain_correctness() {
     use reify_eval::deps::extract_dependency_trace;
 
     let e = "Chain";
