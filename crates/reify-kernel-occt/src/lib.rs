@@ -2438,6 +2438,70 @@ mod tests {
         }
     }
 
+    #[test]
+    fn scale_zero_factor_rejected() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        let result = kernel.execute(&GeometryOp::Scale {
+            target: box_h.id,
+            factor: 0.0,
+        });
+        match result {
+            Err(GeometryError::OperationFailed(msg)) => {
+                assert!(
+                    msg.contains("non-zero") || msg.contains("finite"),
+                    "error should mention non-zero/finite constraint, got: {msg}"
+                );
+            }
+            other => panic!(
+                "expected GeometryError::OperationFailed for zero scale factor, got {:?}",
+                other
+            ),
+        }
+    }
+
+    #[test]
+    fn scale_nan_factor_rejected() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        let result = kernel.execute(&GeometryOp::Scale {
+            target: box_h.id,
+            factor: f64::NAN,
+        });
+        match result {
+            Err(GeometryError::OperationFailed(msg)) => {
+                assert!(
+                    msg.contains("finite") || msg.contains("non-zero"),
+                    "error should mention finite constraint, got: {msg}"
+                );
+            }
+            other => panic!(
+                "expected GeometryError::OperationFailed for NaN scale factor, got {:?}",
+                other
+            ),
+        }
+    }
+
     // --- RotateAround tests (task-311 step-7) ---
 
     #[test]
