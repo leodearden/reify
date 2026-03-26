@@ -153,15 +153,15 @@
       "id": "step-16",
       "type": "test",
       "description": "Write test compile_geometry_op_revolve_nan_axis_returns_none in crates/reify-eval/src/lib.rs tests module. Follows the exact pattern of the existing compile_geometry_op_revolve_zero_axis_returns_none test (line 3882): constructs a CompiledGeometryOp::Sweep with kind=SweepKind::Revolve, profiles=[GeomRef::Step(0)], and all 7 args present \u2014 but sets ax=f64::NAN, ay=0.0, az=0.0. Calls compile_geometry_op and asserts result.is_none(). Uses the existing literal_f64 helper (line 3718). Test FAILS because NaN magnitude bypasses the `mag < 1e-12` guard \u2014 `NaN < 1e-12` is false in IEEE 754, so Some(Revolve{axis_dir: [NaN, 0.0, 0.0], ...}) is returned.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "b443434f"
     },
     {
       "id": "step-17",
       "type": "impl",
       "description": "Fix NaN propagation in Revolve axis guard at crates/reify-eval/src/lib.rs:3265. Change `if mag < 1e-12 {` to `if !mag.is_finite() || mag < 1e-12 {`. This catches both NaN (from NaN axis components) and Inf (from extremely large values), in addition to the existing zero-length check. Step-16 test passes because NaN magnitude is now caught by is_finite() returning false.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "7a6a945e"
     }
   ],
   "design_decisions": [
