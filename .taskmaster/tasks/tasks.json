@@ -7300,14 +7300,14 @@
         "testStrategy": "",
         "priority": "low",
         "dependencies": [],
-        "status": "in-progress",
+        "status": "pending",
         "metadata": {
           "modules": [
             "crates/reify-kernel-occt"
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-03-26T02:25:03.052Z"
+        "updatedAt": "2026-03-26T02:36:50.633Z"
       },
       {
         "id": "401",
@@ -7831,7 +7831,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-26T02:35:27.316Z",
+      "lastModified": "2026-03-26T02:36:50.633Z",
       "taskCount": 441,
       "completedCount": 233,
       "tags": [
