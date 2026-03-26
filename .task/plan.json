@@ -11,7 +11,7 @@
     "gui/src",
     "gui/src/__tests__"
   ],
-  "analysis": "The Claude chat panel UI is fully implemented (claudeStore with state management, ChatPanel component, OutboundMessage types) and the Tauri backend exposes claude_send_message, claude_abort, claude_clear_session commands plus 7 claude-* event types. The gap is the bridge layer: bridge.ts has no Claude IPC functions, App.tsx passes no-op callbacks to createClaudeStore, and there's no subscription to claude-* Tauri events.\n\nExisting patterns are clear and consistent:\n- bridge.ts wraps invoke() calls as typed async functions (lines 21-108) and listen() calls as typed event subscribers returning UnlistenFn (lines 110-191)\n- App.tsx uses an alive flag + try/catch pattern for event subscription with defensive cleanup\n- engineStore.subscribeToEvents() uses Promise.allSettled to subscribe to multiple events and returns a combined unlisten function\n- bridge.test.ts mocks @tauri-apps/api/core invoke and @tauri-apps/api/event listen using vi.mock(), tests invoke args and event payload extraction\n\nThe OutboundMessage type lives at gui/sidecar/src/types.ts with 7 variants: text_delta, thinking_delta, tool_call, tool_result, done, error, ready. The store's MessageContext uses camelCase (selectedEntity) while Rust backend expects snake_case (selected_entity) - the bridge must handle this translation.\n\nThe implementation adds: (1) 3 invoke wrappers for claude commands, (2) a subscribeToClaudeEvents function that subscribes to all 7 event types and maps payloads to OutboundMessage, (3) App.tsx wiring of callbacks and event subscription with proper cleanup.",
+  "analysis": "The Claude chat panel UI is fully implemented (claudeStore with state management, ChatPanel component, OutboundMessage types) and the Tauri backend exposes claude_send_message, claude_abort, claude_clear_session commands plus 7 claude-* event types. The gap is the bridge layer: bridge.ts has no Claude IPC functions, App.tsx passes no-op callbacks to createClaudeStore, and there's no subscription to claude-* Tauri events.\n\nExisting patterns are clear and consistent:\n- bridge.ts wraps invoke() calls as typed async functions (lines 21-108) and listen() calls as typed event subscribers returning UnlistenFn (lines 110-191)\n- App.tsx uses an alive flag + try/catch pattern for event subscription with defensive cleanup\n- engineStore.subscribeToEvents() uses Promise.allSettled to subscribe to multiple events and returns a combined unlisten function\n- bridge.test.ts mocks @tauri-apps/api/core invoke and @tauri-apps/api/event listen using vi.mock(), tests invoke args and event payload extraction\n\nThe OutboundMessage type lives at gui/sidecar/src/types.ts with 7 variants: text_delta, thinking_delta, tool_call, tool_result, done, error, ready. The store's MessageContext uses camelCase (selectedEntity) while Rust backend expects snake_case (selected_entity) - the bridge must handle this translation.\n\nThe implementation adds: (1) 3 invoke wrappers for claude commands, (2) a subscribeToClaudeEvents function that subscribes to all 7 event types and maps payloads to OutboundMessage, (3) App.tsx wiring of callbacks and event subscription with proper cleanup.\n\nPost-review update: subscribeToClaudeEvents had a resource leak — Promise.all over 7 listen() calls could orphan already-registered listeners if a later call fails. Steps 8-9 fix this with a sequential try-catch-with-rollback pattern.",
   "prerequisites": [],
   "steps": [
     {
@@ -62,6 +62,20 @@
       "description": "Run all existing tests (vitest) to verify no regressions. The claudeBridge and integration tests should pass. Existing bridge.test.ts, claudeStore.test.ts, App.test.tsx, ChatPanel.test.tsx should all still pass. Fix any import or type errors that surface.",
       "status": "done",
       "commit": "8fc3e967"
+    },
+    {
+      "id": "step-8",
+      "type": "test",
+      "description": "Add failing test for listener rollback on partial failure in gui/src/__tests__/claudeBridge.test.ts. Mock listen() to succeed for the first 3 calls (returning unlisten fns), then reject on the 4th call. Assert that: (1) subscribeToClaudeEvents rejects with the error from the 4th listen(), (2) all 3 previously-resolved unlisten functions were called (cleaning up orphaned listeners), (3) no listeners are leaked. Add a second test: listen() fails on the very first call — assert subscribeToClaudeEvents rejects and no unlisteners are called (none were registered). Add a third test: listen() fails on the last (7th) call — assert all 6 prior unlisteners are called before the rejection propagates.",
+      "status": "done",
+      "commit": "788c46d4"
+    },
+    {
+      "id": "step-9",
+      "type": "impl",
+      "description": "Replace Promise.all in subscribeToClaudeEvents (bridge.ts lines 153-181) with a sequential try-catch-with-rollback pattern. Define the event-name/mapper entries as an array of tuples. Loop sequentially: const unlisteners: UnlistenFn[] = []; try { for (const [name, mapper] of entries) { unlisteners.push(await listen(name, mapper)); } } catch (err) { unlisteners.forEach(u => u()); throw err; } Return the combined unlisten function as before. This ensures that if any listen() call fails, all already-registered listeners are torn down before the error propagates to the caller.",
+      "status": "done",
+      "commit": null
     }
   ],
   "design_decisions": [
@@ -70,8 +84,8 @@
       "rationale": "The existing engine event listeners (onMeshUpdate etc.) are already in bridge.ts. A single subscribeToClaudeEvents function that combines all 7 listeners is analogous to how engineStore.subscribeToEvents works but kept in the bridge layer where all Tauri IPC lives. This avoids an unnecessary new file while maintaining the established pattern."
     },
     {
-      "decision": "Use Promise.all (not Promise.allSettled) for subscribeToClaudeEvents",
-      "rationale": "All 7 Claude events are essential for correct operation. Unlike engine events where partial subscription is tolerable, missing a claude-error or claude-done listener would leave the store in a broken state. If any listener fails to register, the whole subscription should fail so App.tsx can show a toast."
+      "decision": "Use sequential listen() with try-catch rollback instead of Promise.all for subscribeToClaudeEvents",
+      "rationale": "Promise.all over 7 listen() calls creates a resource leak: if the Nth call rejects, the N-1 already-resolved unlisteners are never captured and cannot be cleaned up. The sequential pattern collects unlisteners as they resolve; on any failure it calls all collected unlisteners before re-throwing. This guarantees no orphaned Tauri event listeners regardless of which call fails. Originally Promise.all was chosen for conciseness, but correctness under failure trumps brevity."
     },
     {
       "decision": "Bridge layer handles camelCase-to-snake_case context mapping",

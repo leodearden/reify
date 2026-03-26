@@ -146,39 +146,37 @@ export async function claudeClearSession(): Promise<void> {
 /**
  * Subscribe to all Claude sidecar events and map payloads to OutboundMessage.
  * Returns a combined unlisten function that tears down all 7 subscriptions.
+ *
+ * Uses sequential registration with rollback: if any listen() call fails,
+ * all previously-registered listeners are torn down before the error propagates.
  */
 export async function subscribeToClaudeEvents(
   handler: (msg: OutboundMessage) => void,
 ): Promise<() => void> {
-  const unlisteners = await Promise.all([
-    listen<{ id: string; content: string }>('claude-text-delta', (event) => {
-      handler({ type: 'text_delta', ...event.payload });
-    }),
-    listen<{ id: string; content: string }>('claude-thinking-delta', (event) => {
-      handler({ type: 'thinking_delta', ...event.payload });
-    }),
-    listen<{ id: string; tool_name: string; tool_input: Record<string, unknown> }>(
-      'claude-tool-call',
-      (event) => {
-        handler({ type: 'tool_call', ...event.payload });
-      },
-    ),
-    listen<{ id: string; tool_name: string; result: unknown }>(
-      'claude-tool-result',
-      (event) => {
-        handler({ type: 'tool_result', ...event.payload });
-      },
-    ),
-    listen<{ id: string }>('claude-done', (event) => {
-      handler({ type: 'done', ...event.payload });
-    }),
-    listen<{ id: string; message: string }>('claude-error', (event) => {
-      handler({ type: 'error', ...event.payload });
-    }),
-    listen('claude-ready', () => {
-      handler({ type: 'ready' });
-    }),
-  ]);
+  type EventEntry = [string, (event: { payload: Record<string, unknown> }) => void];
+
+  const entries: EventEntry[] = [
+    ['claude-text-delta', (event) => handler({ type: 'text_delta', ...event.payload } as OutboundMessage)],
+    ['claude-thinking-delta', (event) => handler({ type: 'thinking_delta', ...event.payload } as OutboundMessage)],
+    ['claude-tool-call', (event) => handler({ type: 'tool_call', ...event.payload } as OutboundMessage)],
+    ['claude-tool-result', (event) => handler({ type: 'tool_result', ...event.payload } as OutboundMessage)],
+    ['claude-done', (event) => handler({ type: 'done', ...event.payload } as OutboundMessage)],
+    ['claude-error', (event) => handler({ type: 'error', ...event.payload } as OutboundMessage)],
+    ['claude-ready', () => handler({ type: 'ready' })],
+  ];
+
+  const unlisteners: UnlistenFn[] = [];
+  try {
+    for (const [name, mapper] of entries) {
+      unlisteners.push(await listen(name, mapper));
+    }
+  } catch (err) {
+    // Roll back all already-registered listeners before re-throwing
+    for (const unsub of unlisteners) {
+      unsub();
+    }
+    throw err;
+  }
 
   return () => {
     for (const unsub of unlisteners) {
