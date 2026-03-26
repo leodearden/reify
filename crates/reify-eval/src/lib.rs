@@ -2877,12 +2877,17 @@ fn evaluate_let_bindings(
     let let_cells: HashMap<NodeId, &reify_types::CompiledExpr> = template
         .value_cells
         .iter()
-        .filter(|c| c.kind == ValueCellKind::Let && c.default_expr.is_some())
-        .map(|c| (NodeId::Value(c.id.clone()), c.default_expr.as_ref().unwrap()))
+        .filter_map(|c| {
+            if c.kind == ValueCellKind::Let {
+                c.default_expr.as_ref().map(|expr| (NodeId::Value(c.id.clone()), expr))
+            } else {
+                None
+            }
+        })
         .collect();
 
     let let_node_ids: HashSet<NodeId> = let_cells.keys().cloned().collect();
-    let let_traces: HashMap<NodeId, DependencyTrace> = let_cells
+    let mut let_traces: HashMap<NodeId, DependencyTrace> = let_cells
         .iter()
         .map(|(nid, expr)| (nid.clone(), extract_dependency_trace(expr)))
         .collect();
@@ -2913,7 +2918,9 @@ fn evaluate_let_bindings(
             (val.clone(), DeterminacyState::Determined),
         );
 
-        let trace = extract_dependency_trace(expr);
+        // Reuse pre-computed trace from let_traces instead of recomputing.
+        let trace = let_traces.remove(&node_id)
+            .unwrap_or_else(|| extract_dependency_trace(expr));
         let cached_result =
             CachedResult::Value(val, DeterminacyState::Determined);
         let outcome = cache.record_evaluation(
