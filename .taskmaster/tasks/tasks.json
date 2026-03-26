@@ -6951,11 +6951,11 @@
         "description": "Missing tests across geometry transform pipeline:\n\nCompiler tests (reify-compiler):\n- User-function shadowing: define fn scale(...), use in let, assert 0 realizations\n- Wrong arg-count error paths: one test per function (translate/rotate/scale/rotate_around) with wrong arg count, assert diagnostic error\n- Arg ordering: destructure args in compile-to-realization tests, assert name pairs (dx/dy/dz etc) not just TransformKind match\n\nEval tests (boundary4_geometry.rs):\n- Rotate test should verify centroid displacement, not just volume preservation\n- Translate test should assert y≈0, z≈0 alongside existing x assertion\n\nKernel tests (reify-kernel-occt):\n- scale_zero_factor_rejected: GeometryOp::Scale{factor:0.0} returns Err\n- scale_nan_factor_rejected: GeometryOp::Scale{factor:f64::NAN} returns Err\n\nMemory hints: search \"geometry transform test boundary4_geometry compile_geometry_call\", entities: compile_geometry_call, is_geometry_let, scale_shape",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-26T18:27:26.155Z"
+        "updatedAt": "2026-03-26T18:28:08.054Z"
       },
       {
         "id": "378",
@@ -8546,7 +8546,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-26T18:27:48.530Z",
+      "lastModified": "2026-03-26T18:28:08.063Z",
       "taskCount": 500,
       "completedCount": 250,
       "tags": [
