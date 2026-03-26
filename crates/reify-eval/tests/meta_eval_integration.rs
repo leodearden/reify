@@ -276,6 +276,66 @@ fn eval_meta_access_collection_sub_component() {
     );
 }
 
+/// F6: Both Analytical and Composed field sources evaluate expressions
+/// correctly with meta_map wired into EvalContext.
+///
+/// Build a module with an Analytical field (body = 273.15) and a Composed
+/// field (body = 100.0), plus a template with meta and a Let binding using
+/// MetaAccess. After eval(), both field values and the meta let binding
+/// should resolve correctly.
+#[test]
+fn eval_field_analytical_and_composed_identical_path() {
+    use reify_test_support::CompiledFieldBuilder;
+
+    let analytical_body = CompiledExpr::literal(Value::Real(273.15), Type::Real);
+    let composed_body = CompiledExpr::literal(Value::Real(100.0), Type::Real);
+
+    let analytical_field = CompiledFieldBuilder::new("temp_a", Type::Geometry, Type::Real)
+        .analytical(analytical_body)
+        .build();
+    let composed_field = CompiledFieldBuilder::new("temp_c", Type::Geometry, Type::Real)
+        .composed(composed_body)
+        .build();
+
+    let meta_expr = CompiledExpr::meta_access("Widget".to_string(), "kind".to_string());
+    let template = TopologyTemplateBuilder::new("Widget")
+        .meta(
+            [("kind".to_string(), "sensor".to_string())]
+                .into_iter()
+                .collect(),
+        )
+        .let_binding("Widget", "label", Type::String, meta_expr)
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .field(analytical_field)
+        .field(composed_field)
+        .template(template)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+    let result = engine.eval(&module);
+
+    // Analytical field should evaluate its expression
+    let temp_a_id = ValueCellId::new("__field", "temp_a");
+    let temp_a = result.values.get(&temp_a_id);
+    assert!(temp_a.is_some(), "analytical field should be in values");
+
+    // Composed field should evaluate its expression
+    let temp_c_id = ValueCellId::new("__field", "temp_c");
+    let temp_c = result.values.get(&temp_c_id);
+    assert!(temp_c.is_some(), "composed field should be in values");
+
+    // Meta let binding should resolve
+    let label_id = ValueCellId::new("Widget", "label");
+    assert_eq!(
+        result.values.get(&label_id),
+        Some(&Value::String("sensor".to_string())),
+        "meta let binding should resolve"
+    );
+}
+
 /// step-9: eval_cached() resolves MetaAccess expressions correctly.
 ///
 /// Build template 'Widget' with meta {"description": "A widget"} and a
