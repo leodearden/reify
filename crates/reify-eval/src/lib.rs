@@ -305,6 +305,18 @@ impl Engine {
         self.max_unfold_nodes = limit;
     }
 
+    /// Build an `EvalContext` with the engine's meta_map already attached.
+    ///
+    /// Reduces boilerplate at call sites that would otherwise write:
+    /// `EvalContext::new(values, functions).with_meta(&self.meta_map)`.
+    fn make_eval_ctx<'a>(
+        &'a self,
+        values: &'a ValueMap,
+        functions: &'a [CompiledFunction],
+    ) -> reify_expr::EvalContext<'a> {
+        reify_expr::EvalContext::new(values, functions).with_meta(&self.meta_map)
+    }
+
     /// Set the constraint solver for resolving auto parameters.
     pub fn with_solver(mut self, solver: Box<dyn ConstraintSolver>) -> Self {
         self.solver = Some(solver);
@@ -892,9 +904,7 @@ impl Engine {
             let lambda_value = match &field.source {
                 reify_compiler::CompiledFieldSource::Analytical { expr }
                 | reify_compiler::CompiledFieldSource::Composed { expr } => {
-                    let ctx = reify_expr::EvalContext::new(&values, functions)
-                        .with_meta(&self.meta_map);
-                    let val = reify_expr::eval_expr(expr, &ctx);
+                    let val = reify_expr::eval_expr(expr, &self.make_eval_ctx(&values, functions));
                     Box::new(val)
                 }
                 reify_compiler::CompiledFieldSource::Sampled { .. }
@@ -986,7 +996,7 @@ impl Engine {
                         payload: None,
                     });
 
-                    let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, functions).with_meta(&self.meta_map));
+                    let val = reify_expr::eval_expr(expr, &self.make_eval_ctx(&values, functions));
                     values.insert(cell.id.clone(), val.clone());
 
                     // Update snapshot values
@@ -1029,7 +1039,7 @@ impl Engine {
             // then conditionally evaluate members based on guard truth value.
             for group in &template.guarded_groups {
                 // Evaluate the guard cell expression
-                let guard_val = reify_expr::eval_expr(&group.guard_expr, &reify_expr::EvalContext::new(&values, functions).with_meta(&self.meta_map));
+                let guard_val = reify_expr::eval_expr(&group.guard_expr, &self.make_eval_ctx(&values, functions));
                 values.insert(group.guard_value_cell.clone(), guard_val.clone());
 
                 let guard_determinacy = match &guard_val {
@@ -1052,7 +1062,7 @@ impl Engine {
                             || cell.kind == ValueCellKind::Let
                         {
                             if let Some(ref expr) = cell.default_expr {
-                                let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, functions).with_meta(&self.meta_map));
+                                let val = reify_expr::eval_expr(expr, &self.make_eval_ctx(&values, functions));
                                 values.insert(cell.id.clone(), val.clone());
                                 snapshot.values.insert(
                                     cell.id.clone(),
@@ -1089,7 +1099,7 @@ impl Engine {
                             || cell.kind == ValueCellKind::Let
                         {
                             if let Some(ref expr) = cell.default_expr {
-                                let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, functions).with_meta(&self.meta_map));
+                                let val = reify_expr::eval_expr(expr, &self.make_eval_ctx(&values, functions));
                                 values.insert(cell.id.clone(), val.clone());
                                 snapshot.values.insert(
                                     cell.id.clone(),
@@ -1494,7 +1504,7 @@ impl Engine {
                     payload: None,
                 });
 
-                let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, &functions).with_meta(&self.meta_map));
+                let val = reify_expr::eval_expr(expr, &self.make_eval_ctx(&values, &functions));
                 values.insert(vcid.clone(), val.clone());
                 new_snapshot.values.insert(
                     vcid.clone(),
@@ -1569,7 +1579,7 @@ impl Engine {
                     // Re-evaluate the guard cell's expression
                     let guard_val = if let Some(node) = graph.value_cells.get(&group.guard_cell) {
                         if let Some(ref expr) = node.default_expr {
-                            reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, &functions).with_meta(&self.meta_map))
+                            reify_expr::eval_expr(expr, &self.make_eval_ctx(&values, &functions))
                         } else {
                             Value::Undef
                         }
@@ -1594,7 +1604,7 @@ impl Engine {
                             if let Some(node) = graph.value_cells.get(mid)
                                 && let Some(ref expr) = node.default_expr
                             {
-                                let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, &functions).with_meta(&self.meta_map));
+                                let val = reify_expr::eval_expr(expr, &self.make_eval_ctx(&values, &functions));
                                 values.insert(mid.clone(), val.clone());
                                 new_snapshot.values.insert(
                                     mid.clone(), (val, DeterminacyState::Determined),
@@ -1612,7 +1622,7 @@ impl Engine {
                             if let Some(node) = graph.value_cells.get(mid)
                                 && let Some(ref expr) = node.default_expr
                             {
-                                let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, &functions).with_meta(&self.meta_map));
+                                let val = reify_expr::eval_expr(expr, &self.make_eval_ctx(&values, &functions));
                                 values.insert(mid.clone(), val.clone());
                                 new_snapshot.values.insert(
                                     mid.clone(), (val, DeterminacyState::Determined),
@@ -1754,7 +1764,7 @@ impl Engine {
                                         && let Some(node) = new_snapshot.graph.value_cells.get(vcid)
                                         && let Some(ref expr) = node.default_expr
                                     {
-                                        let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, &functions).with_meta(&self.meta_map));
+                                        let val = reify_expr::eval_expr(expr, &self.make_eval_ctx(&values, &functions));
                                         values.insert(vcid.clone(), val.clone());
                                         new_snapshot.values.insert(
                                             vcid.clone(),
@@ -1820,7 +1830,7 @@ impl Engine {
                             if let Some(node) = new_snapshot.graph.value_cells.get(member_id)
                                 && let Some(ref expr) = node.default_expr
                             {
-                                let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, &functions).with_meta(&self.meta_map));
+                                let val = reify_expr::eval_expr(expr, &self.make_eval_ctx(&values, &functions));
                                 values.insert(member_id.clone(), val.clone());
                                 new_snapshot.values.insert(
                                     member_id.clone(),
@@ -1844,7 +1854,7 @@ impl Engine {
                             if let Some(node) = new_snapshot.graph.value_cells.get(member_id)
                                 && let Some(ref expr) = node.default_expr
                             {
-                                let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, &functions).with_meta(&self.meta_map));
+                                let val = reify_expr::eval_expr(expr, &self.make_eval_ctx(&values, &functions));
                                 values.insert(member_id.clone(), val.clone());
                                 new_snapshot.values.insert(
                                     member_id.clone(),
@@ -1930,7 +1940,7 @@ impl Engine {
 
                         // Evaluate the cell
                         let val = if let Some(expr) = default_expr {
-                            reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, &functions).with_meta(&self.meta_map))
+                            reify_expr::eval_expr(expr, &self.make_eval_ctx(&values, &functions))
                         } else {
                             Value::Undef
                         };
@@ -2241,7 +2251,7 @@ impl Engine {
                     let val = if let Some(override_val) = self.param_overrides.get(&cell.id) {
                         override_val.clone()
                     } else if let Some(ref expr) = cell.default_expr {
-                        reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, &module.functions).with_meta(&self.meta_map))
+                        reify_expr::eval_expr(expr, &self.make_eval_ctx(&values, &module.functions))
                     } else {
                         reify_types::Value::Undef
                     };
@@ -2334,7 +2344,7 @@ impl Engine {
                         payload: None,
                     });
 
-                    let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, &module.functions).with_meta(&self.meta_map));
+                    let val = reify_expr::eval_expr(expr, &self.make_eval_ctx(&values, &module.functions));
 
                     // Build dependency trace from expression refs
                     let trace = extract_dependency_trace(expr);
