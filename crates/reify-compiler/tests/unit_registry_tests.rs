@@ -541,3 +541,29 @@ fn regression_hardcoded_units_all_still_resolve() {
     check("h", 0.0254);  // 1in (inch = 0.0254m)
     check("i", 1.0);     // 1s (second, SI base unit)
 }
+
+// ─── step-40: affine units rejected in conversion expressions ─────────────────
+
+#[test]
+fn affine_unit_rejected_in_conversion_expression() {
+    // Declaring 'unit mytemp : Temperature = 1.0degC' where degC has an offset
+    // should fail: evaluate_const_expr() must reject affine (offset) units in
+    // conversion expressions. The offset semantics only make sense for runtime
+    // value expressions (e.g., '25degC' → 298.15K), not for defining conversion
+    // factors.
+    let module = parse_and_compile(
+        "unit degC : Temperature = 1 offset 273.15\nunit mytemp : Temperature = 1.0degC"
+    );
+    // mytemp should NOT be registered (compile_unit returns None)
+    assert!(
+        !module.units.iter().any(|u| u.name == "mytemp"),
+        "mytemp should not be registered when conversion references an affine unit"
+    );
+    // An error diagnostic should mention that affine/offset units cannot be used
+    let errors = errors_only(&module);
+    assert!(
+        errors.iter().any(|d| d.message.contains("affine") || d.message.contains("offset")),
+        "expected diagnostic about affine/offset unit in conversion; got: {:?}",
+        errors
+    );
+}
