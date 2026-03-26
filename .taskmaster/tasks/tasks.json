@@ -8393,6 +8393,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 488,
+        "title": "Document forward-reference ordering invariant for is_geometry_let / compile_entity",
+        "description": "The first-pass scope registration in compile_entity (reify-compiler/src/lib.rs ~line 2612-2646) uses is_geometry_let to pre-register let bindings with type hints before expression compilation. The ordering of the functions slice matters for forward references. This invariant is not documented. Add doc comments explaining the two-pass compilation strategy, the forward-reference capability, and shadowing behavior when names collide.\\n\\nMemory hints: search \"is_geometry_let forward reference\", entities: is_geometry_let, compile_entity",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -8405,7 +8416,7 @@
       ],
       "created": "2026-03-26T12:31:49.048Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-26T12:31:49.086Z"
+      "updated": "2026-03-26T12:31:52.618Z"
     }
   }
 }
