@@ -7931,11 +7931,11 @@
         "description": "In crates/reify-compiler/tests: add test compiling `let x = (port @ face(\"top\")) + 5.0` and asserting exactly one diagnostic (the stub error) with no cascading type-mismatch. In crates/reify-expr: add unit test calling eval_expr on CompiledExpr::error() asserting Value::Undef. (Review followup from task 248)",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-03-26T07:21:39.479Z"
+        "updatedAt": "2026-03-26T07:27:53.189Z"
       },
       {
         "id": "450",
@@ -7952,7 +7952,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-26T07:27:21.626Z",
+      "lastModified": "2026-03-26T07:27:53.189Z",
       "taskCount": 450,
       "completedCount": 240,
       "tags": [
