@@ -2141,43 +2141,61 @@ async fn edit_check_concurrent_meta_access_resolves() {
     );
 }
 
-/// Suggestion 14: into_result falls back to clone when Arc has outstanding references.
-///
-/// Keep a live Arc clone of the adapter's internal values, then call into_result.
-/// Arc::try_unwrap should fail for values, triggering the clone fallback.
-/// The result should still be correct.
-#[tokio::test]
-async fn into_result_fallback_on_outstanding_arc_ref() {
-    let setup = simple_setup();
-    let eval_set = setup.eval_set.clone();
+/// Suggestion 14: into_result fallback test — gated behind test-utils because it uses
+/// `hold_arc_refs()` which is only available with that feature.
+#[cfg(feature = "test-utils")]
+mod arc_fallback {
+    use super::*;
 
-    let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+    /// into_result falls back to clone when Arc has outstanding references.
+    ///
+    /// Holds live Arc clones of the adapter's internal fields (values, snapshot_values,
+    /// results) via `hold_arc_refs()`, then calls `into_result`. With strong_count >= 2,
+    /// all three `Arc::try_unwrap` calls fail and the clone-fallback branches execute.
+    /// Compares against `build_result_shared` from a separate adapter to verify correctness.
+    #[tokio::test]
+    async fn into_result_fallback_on_outstanding_arc_ref() {
+        let setup = simple_setup();
+        let eval_set = setup.eval_set.clone();
+        let b_node = NodeId::Value(ValueCellId::new("T", "b"));
 
-    // Evaluate b node so we have a result
-    let b_node = NodeId::Value(ValueCellId::new("T", "b"));
-    adapter.evaluate(b_node.clone()).await;
+        // Build a reference result via build_result_shared (does not consume the adapter)
+        let ref_adapter = ConcurrentEvalAdapter::from_setup(&setup);
+        ref_adapter.evaluate(b_node.clone()).await;
+        let expected = ref_adapter.build_result_shared(&eval_set, HashSet::new());
 
-    // Get reference result via build_result_shared for comparison
-    let expected = adapter.build_result_shared(&eval_set, HashSet::new());
+        // Create the adapter under test and evaluate
+        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+        adapter.evaluate(b_node.clone()).await;
 
-    // Now create a second adapter, evaluate, and test into_result with fallback
-    let adapter2 = ConcurrentEvalAdapter::from_setup(&setup);
-    adapter2.evaluate(b_node.clone()).await;
+        // Hold Arc clones — this increases strong_count to 2 for all three fields,
+        // forcing Arc::try_unwrap to fail inside into_result
+        let (_held_values, _held_snapshot, _held_results) = adapter.hold_arc_refs();
 
-    // into_result consumes adapter2 — Arc::try_unwrap should succeed since no
-    // other references exist
-    let result_clean = adapter2.into_result(&eval_set, HashSet::new());
+        // into_result now takes the fallback clone path for all three fields
+        let fallback_result = adapter.into_result(&eval_set, HashSet::new());
 
-    // Verify both paths produce the same result
-    let b_id = ValueCellId::new("T", "b");
-    assert_eq!(
-        expected.values.get(&b_id),
-        result_clean.values.get(&b_id),
-        "into_result should produce same values as build_result_shared"
-    );
-    assert_eq!(
-        expected.node_results.len(),
-        result_clean.node_results.len(),
-        "node_results count should match"
-    );
+        // Verify the fallback path produces the same result as the shared path
+        let b_id = ValueCellId::new("T", "b");
+        assert_eq!(
+            expected.values.get(&b_id),
+            fallback_result.values.get(&b_id),
+            "into_result fallback should produce same values as build_result_shared"
+        );
+        assert_eq!(
+            expected.snapshot_values.get(&b_id),
+            fallback_result.snapshot_values.get(&b_id),
+            "snapshot_values should match between fallback and shared paths"
+        );
+        assert_eq!(
+            expected.node_results.len(),
+            fallback_result.node_results.len(),
+            "node_results count should match"
+        );
+
+        // Explicitly drop the held refs (for clarity — they're consumed here)
+        drop(_held_values);
+        drop(_held_snapshot);
+        drop(_held_results);
+    }
 }
