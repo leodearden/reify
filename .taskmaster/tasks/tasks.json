@@ -8016,6 +8016,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 457,
+        "title": "Add doc comment and richer errors for compile_geometry_op Option return",
+        "description": "Two suggestions from task 396 review about compile_geometry_op in crates/reify-eval/src/lib.rs:\n\n1. **Doc comment** (architect_reviewer): Add doc comment to `compile_geometry_op` clarifying that returning `None` when evaluation is incomplete (missing args, unresolvable refs) is intentional propagation, not the forbidden silent-default pattern (per feedback_silent_defaults_pattern.md). Location: compile_geometry_op function definition.\n\n2. **Richer error propagation** (robustness): Consider returning `Result<GeometryOp, String>` with the missing arg name so callers can emit specific diagnostics like \"missing required argument 'ox'\" instead of the generic \"failed to compile geometry operation\". Location: compile_geometry_op and its callers.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -8028,7 +8039,7 @@
       ],
       "created": "2026-03-26T07:33:57.247Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-26T07:34:29.523Z"
+      "updated": "2026-03-26T07:34:35.539Z"
     }
   }
 }
