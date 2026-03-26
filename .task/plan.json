@@ -135,14 +135,14 @@
       "id": "step-17",
       "type": "test",
       "description": "Write failing test for .phase(): method_phase \u2014 Complex(1.0, 1.0, LENGTH).phase() returns Scalar with ANGLE dimension and value PI/4 (\u22480.7854). Verify dimension is ANGLE regardless of input dimension",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "fd5b20c2"
     },
     {
       "id": "step-18",
       "type": "impl",
       "description": "Add 'phase' arm to eval_method_call for Value::Complex: compute im.atan2(re), return Scalar{si_value: angle, dimension: DimensionVector::ANGLE}. Check args.is_empty()",
-      "status": "pending",
+      "status": "done",
       "commit": null
     },
     {
