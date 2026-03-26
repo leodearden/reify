@@ -8525,6 +8525,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 500,
+        "title": "Remove orphaned annotation.rs file",
+        "description": "The 2026-03-26 full project review found annotation.rs as an orphaned file — it exists in the codebase but is not referenced or used. This was one of 5 high-severity findings; the other 4 have tasks (489, 490, 491, 493) but this one was missed.",
+        "details": "memory_hints:\\n- search: \"annotation.rs orphaned file review finding\"\\n- search: \"annotation framework parser types compiler\"\\n- entity: \"reify-compiler\"\\n\\nInvestigate whether annotation.rs contains any code that should be integrated (e.g., tasks 264-265 implemented annotation framework — check if this is leftover scaffolding or a genuinely dead file). If dead, remove it. If it has useful code, wire it in.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -8537,7 +8548,7 @@
       ],
       "created": "2026-03-26T15:04:44.899Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-26T15:21:38.296Z"
+      "updated": "2026-03-26T17:10:37.659Z"
     }
   }
 }
