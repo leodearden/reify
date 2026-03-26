@@ -187,6 +187,26 @@ impl ConcurrentEvalAdapter {
 }
 
 impl AsyncNodeEvaluator for ConcurrentEvalAdapter {
+    /// Evaluate a single node's expression against the current shared value state.
+    ///
+    /// # Async safety
+    ///
+    /// **Snapshot reads (F13):** Each node reads only its dependency values from
+    /// the shared `values` map, producing a local snapshot that may not include
+    /// results from concurrently-evaluated peers. This is safe because the
+    /// [`ConcurrentScheduler`] enforces topological ordering — all of a node's
+    /// predecessors complete (and write back) before that node is scheduled.
+    /// The targeted-read approach (reading only `trace.reads` entries) makes
+    /// this guarantee even clearer: we only read values we depend on, and
+    /// those are guaranteed to be final.
+    ///
+    /// **Non-atomic writes (F14):** After evaluation, we perform three separate
+    /// lock acquisitions: `values` write, `snapshot_values` write, and `results`
+    /// lock. These are not atomic, so another task could theoretically read
+    /// `values` between the first and second write. This is safe because:
+    /// - No concurrent task depends on a node that hasn't completed `evaluate()`
+    /// - The scheduler only releases dependents after `evaluate()` returns
+    /// - Only the owning task writes to a given node's slot
     async fn evaluate(&self, node: NodeId) -> EvalOutcome {
         // Only evaluate Value nodes with expressions
         if let NodeId::Value(ref vcid) = node
