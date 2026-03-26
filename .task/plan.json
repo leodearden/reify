@@ -1,0 +1,123 @@
+{
+  "task_id": "476",
+  "title": "Wire Claude chat panel to Tauri sidecar IPC",
+  "files": [
+    "gui/src/bridge.ts",
+    "gui/src/App.tsx",
+    "gui/src/__tests__/claudeBridge.test.ts",
+    "gui/src/__tests__/claudeIntegration.test.ts"
+  ],
+  "modules": [
+    "gui/src",
+    "gui/src/__tests__"
+  ],
+  "analysis": "The Claude chat panel UI is fully implemented (claudeStore with state management, ChatPanel component, OutboundMessage types) and the Tauri backend exposes claude_send_message, claude_abort, claude_clear_session commands plus 7 claude-* event types. The gap is the bridge layer: bridge.ts has no Claude IPC functions, App.tsx passes no-op callbacks to createClaudeStore, and there's no subscription to claude-* Tauri events.\n\nExisting patterns are clear and consistent:\n- bridge.ts wraps invoke() calls as typed async functions (lines 21-108) and listen() calls as typed event subscribers returning UnlistenFn (lines 110-191)\n- App.tsx uses an alive flag + try/catch pattern for event subscription with defensive cleanup\n- engineStore.subscribeToEvents() uses Promise.allSettled to subscribe to multiple events and returns a combined unlisten function\n- bridge.test.ts mocks @tauri-apps/api/core invoke and @tauri-apps/api/event listen using vi.mock(), tests invoke args and event payload extraction\n\nThe OutboundMessage type lives at gui/sidecar/src/types.ts with 7 variants: text_delta, thinking_delta, tool_call, tool_result, done, error, ready. The store's MessageContext uses camelCase (selectedEntity) while Rust backend expects snake_case (selected_entity) - the bridge must handle this translation.\n\nThe implementation adds: (1) 3 invoke wrappers for claude commands, (2) a subscribeToClaudeEvents function that subscribes to all 7 event types and maps payloads to OutboundMessage, (3) App.tsx wiring of callbacks and event subscription with proper cleanup.",
+  "prerequisites": [],
+  "steps": [
+    {
+      "id": "step-1",
+      "type": "test",
+      "description": "Write failing tests for claudeSendMessage, claudeAbort, claudeClearSession invoke wrappers in gui/src/__tests__/claudeBridge.test.ts. Tests import the functions from bridge.ts (which don't exist yet), mock @tauri-apps/api/core invoke, and assert each calls invoke() with the correct command name and arguments. claudeSendMessage must map camelCase context fields to snake_case. Follow existing bridge.test.ts patterns: vi.mock before imports, vi.mocked(invoke), beforeEach vi.clearAllMocks.",
+      "status": "done",
+      "commit": "b19d636d"
+    },
+    {
+      "id": "step-2",
+      "type": "impl",
+      "description": "Add claudeSendMessage, claudeAbort, claudeClearSession invoke wrappers to gui/src/bridge.ts after line 108 (after lspRequest, before event listeners section). claudeSendMessage accepts (text: string, context?: { selectedEntity?, diagnostics?, constraints? }) and maps to invoke('claude_send_message', { text, context: { selected_entity, diagnostics, constraints } }). claudeAbort calls invoke('claude_abort'). claudeClearSession calls invoke('claude_clear_session'). All return typed Promises.",
+      "status": "done",
+      "commit": "164b4daa"
+    },
+    {
+      "id": "step-3",
+      "type": "test",
+      "description": "Add failing tests for subscribeToClaudeEvents in claudeBridge.test.ts. Test that it calls listen() for all 7 event names: claude-text-delta, claude-thinking-delta, claude-tool-call, claude-tool-result, claude-done, claude-error, claude-ready. Test that the combined unlisten function calls all individual unlisteners. Test that firing a mock claude-text-delta event invokes the handler with { type: 'text_delta', id, content }. Test claude-tool-call maps payload to { type: 'tool_call', id, tool_name, tool_input }. Test claude-ready maps to { type: 'ready' }.",
+      "status": "done",
+      "commit": "ad91f9eb"
+    },
+    {
+      "id": "step-4",
+      "type": "impl",
+      "description": "Add subscribeToClaudeEvents(handler: (msg: OutboundMessage) => void): Promise<() => void> to gui/src/bridge.ts after the invoke wrappers. Import OutboundMessage from '../../sidecar/src/types'. Use Promise.all to listen to all 7 claude-* events, mapping each event payload to the correct OutboundMessage variant. Return a combined unlisten function that calls all individual unlisteners. Follow the pattern from engineStore.subscribeToEvents but keep it in bridge.ts since it's a bridge-layer concern.",
+      "status": "done",
+      "commit": "8445c2f0"
+    },
+    {
+      "id": "step-5",
+      "type": "test",
+      "description": "Write failing integration test in gui/src/__tests__/claudeIntegration.test.ts. Mock Tauri invoke/listen. Create a claudeStore with bridge-wired callbacks (onSend calls claudeSendMessage, onAbort calls claudeAbort). Test: calling store.sendMessage triggers invoke('claude_send_message', ...) with correct args. Simulate claude-text-delta and claude-done events via captured listen handlers. Assert store.state.messages contains the assistant message with correct responseText and complete=true.",
+      "status": "done",
+      "commit": "1bc94be7"
+    },
+    {
+      "id": "step-6",
+      "type": "impl",
+      "description": "Wire App.tsx: (1) Add imports for claudeSendMessage, claudeAbort, subscribeToClaudeEvents from './bridge'. (2) Replace no-op callbacks at lines 60-63 with real implementations: onSend calls claudeSendMessage(text, context) with camelCase-to-object mapping, .catch adds system message via claudeStore.addSystemMessage; onAbort calls claudeAbort().catch(console.error). (3) Add claudeEventUnsub variable alongside unsub/fileChangedUnsub. (4) In initApp after engine event subscription (~line 221), add subscribeToClaudeEvents(claudeStore.handleOutboundMessage) with alive guard and error toast. (5) Add claudeEventUnsub?.() to onCleanup and to the defensive cleanup at top of initApp.",
+      "status": "done",
+      "commit": "8fc3e967"
+    },
+    {
+      "id": "step-7",
+      "type": "test",
+      "description": "Run all existing tests (vitest) to verify no regressions. The claudeBridge and integration tests should pass. Existing bridge.test.ts, claudeStore.test.ts, App.test.tsx, ChatPanel.test.tsx should all still pass. Fix any import or type errors that surface.",
+      "status": "done",
+      "commit": "8fc3e967"
+    }
+  ],
+  "design_decisions": [
+    {
+      "decision": "Put subscribeToClaudeEvents in bridge.ts rather than a separate claude bridge module",
+      "rationale": "The existing engine event listeners (onMeshUpdate etc.) are already in bridge.ts. A single subscribeToClaudeEvents function that combines all 7 listeners is analogous to how engineStore.subscribeToEvents works but kept in the bridge layer where all Tauri IPC lives. This avoids an unnecessary new file while maintaining the established pattern."
+    },
+    {
+      "decision": "Use Promise.all (not Promise.allSettled) for subscribeToClaudeEvents",
+      "rationale": "All 7 Claude events are essential for correct operation. Unlike engine events where partial subscription is tolerable, missing a claude-error or claude-done listener would leave the store in a broken state. If any listener fails to register, the whole subscription should fail so App.tsx can show a toast."
+    },
+    {
+      "decision": "Bridge layer handles camelCase-to-snake_case context mapping",
+      "rationale": "The store uses camelCase (selectedEntity) matching TypeScript conventions, while Rust uses snake_case (selected_entity). The bridge is the natural translation boundary between TS and Rust worlds, just as it handles RawMeshData conversion for engine events."
+    },
+    {
+      "decision": "onSend callback uses fire-and-forget with .catch error handling",
+      "rationale": "The store's onSend callback is synchronous (returns void), so we can't await the invoke. Instead, claudeSendMessage is called and .catch adds a system error message to the store. This matches the pattern used for other bridge calls in App.tsx (e.g., bridgeSetParameter at line 257)."
+    },
+    {
+      "decision": "Import OutboundMessage from sidecar types in bridge.ts",
+      "rationale": "The OutboundMessage type at gui/sidecar/src/types.ts is the canonical wire protocol type. The bridge layer maps Tauri event payloads to this type, and the claudeStore already imports it via the same path (../../sidecar/src/types from stores/). From bridge.ts the path is ../sidecar/src/types."
+    }
+  ],
+  "reuse": [
+    {
+      "what": "Tauri invoke/listen mocking pattern",
+      "where": "gui/src/__tests__/bridge.test.ts",
+      "how": "Copy the vi.mock('@tauri-apps/api/core') and vi.mock('@tauri-apps/api/event') pattern, vi.mocked() accessors, and mockImplementation for simulating event delivery. Reuse beforeEach vi.clearAllMocks."
+    },
+    {
+      "what": "Event subscription with alive guard pattern",
+      "where": "gui/src/App.tsx lines 210-221 (engine event subscription)",
+      "how": "Replicate the try { const u = await subscribe(); if (!alive) { u(); return; } unsub = u; } catch pattern for Claude event subscription."
+    },
+    {
+      "what": "Error handling in bridge callbacks",
+      "where": "gui/src/App.tsx line 257-259 (bridgeSetParameter.catch pattern)",
+      "how": "Use the same .catch(err => showToast/addSystemMessage) pattern for claudeSendMessage and claudeAbort error handling."
+    },
+    {
+      "what": "OutboundMessage type definitions",
+      "where": "gui/sidecar/src/types.ts lines 24-74",
+      "how": "Import OutboundMessage type in bridge.ts for the subscribeToClaudeEvents handler parameter and for constructing typed event payloads."
+    },
+    {
+      "what": "createClaudeStore factory for tests",
+      "where": "gui/src/__tests__/claudeStore.test.ts",
+      "how": "The integration test creates a claudeStore with overridable callbacks, similar to how claudeStore.test.ts creates stores for testing state transitions."
+    },
+    {
+      "what": "Defensive cleanup in initApp",
+      "where": "gui/src/App.tsx lines 186-191",
+      "how": "Add claudeEventUnsub cleanup to the same defensive cleanup block at the top of initApp and in onCleanup."
+    }
+  ],
+  "_session_id": "476-62e8650e",
+  "_created_at": "2026-03-26T12:14:16.705881+00:00"
+}
