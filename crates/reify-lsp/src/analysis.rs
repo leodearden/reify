@@ -452,6 +452,25 @@ mod tests {
     }
 
     #[test]
+    fn find_member_decl_nested_where_blocks() {
+        let source = r#"structure S {
+    param a : Bool = true
+    param b : Bool = true
+    where a {
+        where b {
+            param deep_x : Scalar = 1mm
+        }
+    }
+}"#;
+        let ctx = AnalysisContext::new(source, &test_uri());
+        let info = ctx
+            .find_member_decl("deep_x")
+            .expect("deep_x inside nested where blocks should be found");
+        assert_eq!(info.name, "deep_x");
+        assert_eq!(info.kind, ValueCellKind::Param);
+    }
+
+    #[test]
     fn find_member_decl_let_inside_else_block() {
         let source = r#"structure S {
     param cond : Bool = true
