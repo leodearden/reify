@@ -2971,6 +2971,22 @@ impl Engine {
 }
 
 /// Compile a CompiledGeometryOp into a GeometryOp by evaluating expressions.
+/// Translate a compiled geometry operation into a runtime `GeometryOp`.
+///
+/// Returns `None` when a required argument is missing, non-finite, or invalid
+/// (e.g. negative scale factor), which signals the caller to skip this op and
+/// emit a diagnostic.
+///
+/// # Ordering invariant for `functions`
+///
+/// `functions` is the slice of [`CompiledFunction`]s from the module.  The
+/// evaluator passes the *full* module-level slice so that any expression
+/// inside an op's args can reference user-defined functions by index.
+/// Forward references within the same structure are resolved during
+/// compilation (name → index), so the slice must preserve declaration order
+/// to keep indices valid.  Callers that construct a partial functions slice
+/// (e.g. for testing) must ensure indices in compiled expressions stay
+/// in-bounds or the lookup will silently return `Value::Undef`.
 fn compile_geometry_op(
     op: &reify_compiler::CompiledGeometryOp,
     values: &ValueMap,
@@ -3090,52 +3106,58 @@ fn compile_geometry_op(
                 GeomRef::Step(idx) => step_handles.get(*idx).copied()?,
                 GeomRef::Sub(_) => step_handles.last().copied()?,
             };
-            let eval_arg_f64 = |name: &str| -> f64 {
-                args.iter()
-                    .find(|(n, _)| n == name)
-                    .and_then(|(_, expr)| reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions).with_meta(meta_map)).as_f64())
-                    .unwrap_or(0.0)
+            let eval_arg_f64 = |name: &str| -> Option<f64> {
+                let (_, expr) = args.iter().find(|(n, _)| n == name)?;
+                reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions).with_meta(meta_map))
+                    .as_f64()
+                    .filter(|v| v.is_finite())
             };
             match kind {
                 reify_compiler::TransformKind::Translate => {
                     Some(reify_types::GeometryOp::Translate {
                         target: target_id,
-                        dx: eval_arg_f64("dx"),
-                        dy: eval_arg_f64("dy"),
-                        dz: eval_arg_f64("dz"),
+                        dx: eval_arg_f64("dx")?,
+                        dy: eval_arg_f64("dy")?,
+                        dz: eval_arg_f64("dz")?,
                     })
                 }
                 reify_compiler::TransformKind::Rotate => {
                     Some(reify_types::GeometryOp::Rotate {
                         target: target_id,
                         axis: [
-                            eval_arg_f64("axis_x"),
-                            eval_arg_f64("axis_y"),
-                            eval_arg_f64("axis_z"),
+                            eval_arg_f64("axis_x")?,
+                            eval_arg_f64("axis_y")?,
+                            eval_arg_f64("axis_z")?,
                         ],
-                        angle_rad: eval_arg_f64("angle"),
+                        angle_rad: eval_arg_f64("angle")?,
                     })
                 }
                 reify_compiler::TransformKind::Scale => {
+                    let factor = eval_arg_f64("factor")?;
+                    // Reject negative scale: OCCT SetScale with negative factor
+                    // produces inside-out geometry (point-symmetry), not mirroring.
+                    if factor < 0.0 {
+                        return None;
+                    }
                     Some(reify_types::GeometryOp::Scale {
                         target: target_id,
-                        factor: eval_arg_f64("factor"),
+                        factor,
                     })
                 }
                 reify_compiler::TransformKind::RotateAround => {
                     Some(reify_types::GeometryOp::RotateAround {
                         target: target_id,
                         point: [
-                            eval_arg_f64("px"),
-                            eval_arg_f64("py"),
-                            eval_arg_f64("pz"),
+                            eval_arg_f64("px")?,
+                            eval_arg_f64("py")?,
+                            eval_arg_f64("pz")?,
                         ],
                         axis: [
-                            eval_arg_f64("axis_x"),
-                            eval_arg_f64("axis_y"),
-                            eval_arg_f64("axis_z"),
+                            eval_arg_f64("axis_x")?,
+                            eval_arg_f64("axis_y")?,
+                            eval_arg_f64("axis_z")?,
                         ],
-                        angle_rad: eval_arg_f64("angle"),
+                        angle_rad: eval_arg_f64("angle")?,
                     })
                 }
             }
@@ -3147,11 +3169,11 @@ fn compile_geometry_op(
                     .map(|(_, expr)| reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions).with_meta(meta_map)))
                     .unwrap_or(reify_types::Value::Undef)
             };
-            let eval_arg_f64 = |name: &str| -> f64 {
-                args.iter()
-                    .find(|(n, _)| n == name)
-                    .and_then(|(_, expr)| reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions).with_meta(meta_map)).as_f64())
-                    .unwrap_or(0.0)
+            let eval_arg_f64 = |name: &str| -> Option<f64> {
+                let (_, expr) = args.iter().find(|(n, _)| n == name)?;
+                reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions).with_meta(meta_map))
+                    .as_f64()
+                    .filter(|v| v.is_finite())
             };
             // Pattern operations resolve target via step index
             let target_id = match target {
@@ -3163,11 +3185,11 @@ fn compile_geometry_op(
                     Some(reify_types::GeometryOp::LinearPattern {
                         target: target_id,
                         direction: [
-                            eval_arg_f64("dx"),
-                            eval_arg_f64("dy"),
-                            eval_arg_f64("dz"),
+                            eval_arg_f64("dx")?,
+                            eval_arg_f64("dy")?,
+                            eval_arg_f64("dz")?,
                         ],
-                        count: eval_arg_f64("count") as usize,
+                        count: eval_arg_f64("count")? as usize,
                         spacing: eval_arg("spacing"),
                     })
                 }
@@ -3175,16 +3197,16 @@ fn compile_geometry_op(
                     Some(reify_types::GeometryOp::CircularPattern {
                         target: target_id,
                         axis_origin: [
-                            eval_arg_f64("ox"),
-                            eval_arg_f64("oy"),
-                            eval_arg_f64("oz"),
+                            eval_arg_f64("ox")?,
+                            eval_arg_f64("oy")?,
+                            eval_arg_f64("oz")?,
                         ],
                         axis_dir: [
-                            eval_arg_f64("ax"),
-                            eval_arg_f64("ay"),
-                            eval_arg_f64("az"),
+                            eval_arg_f64("ax")?,
+                            eval_arg_f64("ay")?,
+                            eval_arg_f64("az")?,
                         ],
-                        count: eval_arg_f64("count") as usize,
+                        count: eval_arg_f64("count")? as usize,
                         angle: eval_arg("angle"),
                     })
                 }
@@ -3192,14 +3214,14 @@ fn compile_geometry_op(
                     Some(reify_types::GeometryOp::Mirror {
                         target: target_id,
                         plane_origin: [
-                            eval_arg_f64("ox"),
-                            eval_arg_f64("oy"),
-                            eval_arg_f64("oz"),
+                            eval_arg_f64("ox")?,
+                            eval_arg_f64("oy")?,
+                            eval_arg_f64("oz")?,
                         ],
                         plane_normal: [
-                            eval_arg_f64("nx"),
-                            eval_arg_f64("ny"),
-                            eval_arg_f64("nz"),
+                            eval_arg_f64("nx")?,
+                            eval_arg_f64("ny")?,
+                            eval_arg_f64("nz")?,
                         ],
                     })
                 }
@@ -4121,5 +4143,75 @@ mod tests {
             }
             other => panic!("expected GeometryOp::Extrude, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn compile_geometry_op_scale_negative_factor_returns_none() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Transform {
+            kind: TransformKind::Scale,
+            target: GeomRef::Step(0),
+            args: vec![("factor".into(), literal_f64(-1.0))],
+        };
+
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        assert!(result.is_none(), "negative scale factor should return None (inside-out geometry)");
+    }
+
+    #[test]
+    fn compile_geometry_op_translate_missing_arg_returns_none() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        // Translate with only dx — missing dy, dz
+        let op = CompiledGeometryOp::Transform {
+            kind: TransformKind::Translate,
+            target: GeomRef::Step(0),
+            args: vec![("dx".into(), literal_f64(1.0))],
+        };
+
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        assert!(result.is_none(), "missing dy/dz should return None, not silently default to 0.0");
+    }
+
+    #[test]
+    fn compile_geometry_op_scale_nan_factor_returns_none() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Transform {
+            kind: TransformKind::Scale,
+            target: GeomRef::Step(0),
+            args: vec![("factor".into(), literal_f64(f64::NAN))],
+        };
+
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        assert!(result.is_none(), "NaN scale factor should return None");
+    }
+
+    #[test]
+    fn compile_geometry_op_rotate_around_missing_axis_returns_none() {
+        let step_handles = vec![GeometryHandleId(99)];
+        let values = ValueMap::new();
+
+        // RotateAround with missing axis_z
+        let op = CompiledGeometryOp::Transform {
+            kind: TransformKind::RotateAround,
+            target: GeomRef::Step(0),
+            args: vec![
+                ("px".into(), literal_f64(0.0)),
+                ("py".into(), literal_f64(0.0)),
+                ("pz".into(), literal_f64(0.0)),
+                ("axis_x".into(), literal_f64(0.0)),
+                ("axis_y".into(), literal_f64(1.0)),
+                // axis_z deliberately omitted
+                ("angle".into(), literal_f64(1.0)),
+            ],
+        };
+
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        assert!(result.is_none(), "missing axis_z should return None");
     }
 }

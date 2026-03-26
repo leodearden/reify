@@ -5009,6 +5009,12 @@ fn check_field_composition_types(
 }
 
 /// Check if a let declaration's value is a geometry-producing function call.
+///
+/// Used during compilation to determine whether a `let` binding should be
+/// compiled as a geometry operation (feeding into the geometry pipeline) or
+/// as a scalar expression.  The `functions` slice passed to `compile_entity`
+/// alongside this check must preserve the module's declaration order so that
+/// function-index references inside geometry arguments resolve correctly.
 fn is_geometry_let(expr: &reify_syntax::Expr) -> bool {
     matches!(
         &expr.kind,
@@ -5334,7 +5340,7 @@ fn compile_geometry_call(
                 diagnostics.push(Diagnostic::error(format!(
                     "sweep() expects exactly 2 arguments (profile, path), got {}",
                     compiled_args.len()
-                )));
+                )).with_label(DiagnosticLabel::new(expr.span, "wrong number of arguments")));
                 return None;
             }
             let profiles: Vec<GeomRef> = vec![GeomRef::Step(0), GeomRef::Step(1)];
@@ -5356,7 +5362,7 @@ fn compile_geometry_call(
                 diagnostics.push(Diagnostic::error(format!(
                     "shell() expects at least 2 arguments, got {}",
                     compiled_args.len()
-                )));
+                )).with_label(DiagnosticLabel::new(expr.span, "wrong number of arguments")));
                 return None;
             }
             let mut it = compiled_args.into_iter();
@@ -5380,7 +5386,7 @@ fn compile_geometry_call(
                 diagnostics.push(Diagnostic::error(format!(
                     "thicken() expects 2 arguments, got {}",
                     compiled_args.len()
-                )));
+                )).with_label(DiagnosticLabel::new(expr.span, "wrong number of arguments")));
                 return None;
             }
             let mut it = compiled_args.into_iter();
@@ -5399,7 +5405,7 @@ fn compile_geometry_call(
                 diagnostics.push(Diagnostic::error(format!(
                     "draft() expects 3 arguments, got {}",
                     compiled_args.len()
-                )));
+                )).with_label(DiagnosticLabel::new(expr.span, "wrong number of arguments")));
                 return None;
             }
             let mut it = compiled_args.into_iter();
