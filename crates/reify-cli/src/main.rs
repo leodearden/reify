@@ -159,10 +159,14 @@ fn cmd_build(args: &[String]) -> ExitCode {
     }
 
     // Report constraint status
+    let mut all_satisfied = true;
     for entry in &result.constraint_results {
         let status = match entry.satisfaction {
             Satisfaction::Satisfied => "OK",
-            Satisfaction::Violated => "VIOLATED",
+            Satisfaction::Violated => {
+                all_satisfied = false;
+                "VIOLATED"
+            }
             Satisfaction::Indeterminate => "INDETERMINATE",
         };
         let id_str = format!("{}", entry.id);
@@ -177,7 +181,12 @@ fn cmd_build(args: &[String]) -> ExitCode {
                 return ExitCode::FAILURE;
             }
             println!("Wrote {} ({} bytes)", output_path, data.len());
-            ExitCode::SUCCESS
+            if all_satisfied {
+                ExitCode::SUCCESS
+            } else {
+                eprintln!("Some constraints violated.");
+                ExitCode::FAILURE
+            }
         }
         None => {
             eprintln!("No geometry output produced");
