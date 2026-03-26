@@ -1029,10 +1029,7 @@ impl Engine {
             // Second pass: evaluate Let bindings in topological order
             // (handles forward references where a let declared earlier
             //  depends on a let declared later)
-            {
-                let meta_map = self.meta_map.clone();
-                self.evaluate_let_bindings(template, &mut values, &mut snapshot, version_id, functions, &meta_map);
-            }
+            evaluate_let_bindings(&mut self.journal, &mut self.cache, template, &mut values, &mut snapshot, version_id, functions, &self.meta_map);
 
             // Third pass: evaluate guarded groups.
             // Guard cells are Let-kind synthetic cells — evaluate their expressions,
@@ -1218,8 +1215,7 @@ impl Engine {
             // - regular subs create {parent}.{sub}.{member} cells via elaborate_child_instance
             // Both become available only after elaboration, so re-evaluate if any subs exist.
             if !template.sub_components.is_empty() {
-                let meta_map = self.meta_map.clone();
-                self.evaluate_let_bindings(template, &mut values, &mut snapshot, version_id, functions, &meta_map);
+                evaluate_let_bindings(&mut self.journal, &mut self.cache, template, &mut values, &mut snapshot, version_id, functions, &self.meta_map);
             }
         }
 
@@ -1280,8 +1276,7 @@ impl Engine {
 
                 let parent_snap_id = snapshot.id;
                 // Use a temporary borrow of the solver so the reference
-                // doesn't outlive the solve() call — this allows &mut self
-                // for evaluate_let_bindings below.
+                // doesn't outlive the solve() call.
                 let solve_result = self.solver.as_ref().unwrap().solve(&problem);
 
                 match solve_result {
@@ -1348,8 +1343,7 @@ impl Engine {
                         };
 
                         // Re-run let binding evaluation in topological order
-                        let meta_map = self.meta_map.clone();
-                        self.evaluate_let_bindings(template, &mut values, &mut snapshot, res_version_id, &module.functions, &meta_map);
+                        evaluate_let_bindings(&mut self.journal, &mut self.cache, template, &mut values, &mut snapshot, res_version_id, &module.functions, &self.meta_map);
                     }
                     SolveResult::Infeasible { diagnostics: solver_diags } => {
                         diagnostics.extend(solver_diags);
@@ -2859,78 +2853,79 @@ impl Engine {
         })
     }
 
-    /// Evaluate let bindings from a template in topological order.
-    ///
-    /// Collects let cells with expressions, builds dependency traces,
-    /// topologically sorts, and evaluates each in order — recording
-    /// journal events and cache entries. Used by both the initial eval()
-    /// pass and the post-resolution re-evaluation pass.
-    fn evaluate_let_bindings(
-        &mut self,
-        template: &reify_compiler::TopologyTemplate,
-        values: &mut ValueMap,
-        snapshot: &mut Snapshot,
-        version_id: u64,
-        functions: &[CompiledFunction],
-        meta_map: &HashMap<String, HashMap<String, String>>,
-    ) {
-        let let_cells: HashMap<NodeId, &reify_types::CompiledExpr> = template
-            .value_cells
-            .iter()
-            .filter(|c| c.kind == ValueCellKind::Let && c.default_expr.is_some())
-            .map(|c| (NodeId::Value(c.id.clone()), c.default_expr.as_ref().unwrap()))
-            .collect();
+}
 
-        let let_node_ids: HashSet<NodeId> = let_cells.keys().cloned().collect();
-        let let_traces: HashMap<NodeId, DependencyTrace> = let_cells
-            .iter()
-            .map(|(nid, expr)| (nid.clone(), extract_dependency_trace(expr)))
-            .collect();
+/// Evaluate all Let bindings in a template in topological order.
+///
+/// Free function (not a method on Engine) to avoid borrow conflicts —
+/// callers can pass `&self.meta_map` directly without cloning, since
+/// `journal` and `cache` are borrowed separately from `meta_map`.
+fn evaluate_let_bindings(
+    journal: &mut EventJournal,
+    cache: &mut CacheStore,
+    template: &reify_compiler::TopologyTemplate,
+    values: &mut ValueMap,
+    snapshot: &mut Snapshot,
+    version_id: u64,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+) {
+    let let_cells: HashMap<NodeId, &reify_types::CompiledExpr> = template
+        .value_cells
+        .iter()
+        .filter(|c| c.kind == ValueCellKind::Let && c.default_expr.is_some())
+        .map(|c| (NodeId::Value(c.id.clone()), c.default_expr.as_ref().unwrap()))
+        .collect();
 
-        let sorted_lets = topological_sort(&let_node_ids, &let_traces);
+    let let_node_ids: HashSet<NodeId> = let_cells.keys().cloned().collect();
+    let let_traces: HashMap<NodeId, DependencyTrace> = let_cells
+        .iter()
+        .map(|(nid, expr)| (nid.clone(), extract_dependency_trace(expr)))
+        .collect();
 
-        for node_id in sorted_lets {
-            let expr = let_cells[&node_id];
-            let cell_id = match &node_id {
-                NodeId::Value(vcid) => vcid,
-                _ => unreachable!(),
-            };
+    let sorted_lets = topological_sort(&let_node_ids, &let_traces);
 
-            let start = Instant::now();
-            self.journal.record(EvalEvent {
-                timestamp: start,
-                node_id: node_id.clone(),
-                kind: EventKind::Started,
-                version: VersionId(version_id),
-                payload: None,
-            });
+    for node_id in sorted_lets {
+        let expr = let_cells[&node_id];
+        let cell_id = match &node_id {
+            NodeId::Value(vcid) => vcid,
+            _ => unreachable!(),
+        };
 
-            let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions).with_meta(meta_map));
-            values.insert(cell_id.clone(), val.clone());
+        let start = Instant::now();
+        journal.record(EvalEvent {
+            timestamp: start,
+            node_id: node_id.clone(),
+            kind: EventKind::Started,
+            version: VersionId(version_id),
+            payload: None,
+        });
 
-            snapshot.values.insert(
-                cell_id.clone(),
-                (val.clone(), DeterminacyState::Determined),
-            );
+        let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions).with_meta(meta_map));
+        values.insert(cell_id.clone(), val.clone());
 
-            let trace = extract_dependency_trace(expr);
-            let cached_result =
-                CachedResult::Value(val, DeterminacyState::Determined);
-            let outcome = self.cache.record_evaluation(
-                node_id.clone(),
-                cached_result,
-                VersionId(version_id),
-                trace,
-            );
+        snapshot.values.insert(
+            cell_id.clone(),
+            (val.clone(), DeterminacyState::Determined),
+        );
 
-            self.journal.record(EvalEvent {
-                timestamp: Instant::now(),
-                node_id,
-                kind: EventKind::Completed { outcome },
-                version: VersionId(version_id),
-                payload: Some(EventPayload::Duration(start.elapsed())),
-            });
-        }
+        let trace = extract_dependency_trace(expr);
+        let cached_result =
+            CachedResult::Value(val, DeterminacyState::Determined);
+        let outcome = cache.record_evaluation(
+            node_id.clone(),
+            cached_result,
+            VersionId(version_id),
+            trace,
+        );
+
+        journal.record(EvalEvent {
+            timestamp: Instant::now(),
+            node_id,
+            kind: EventKind::Completed { outcome },
+            version: VersionId(version_id),
+            payload: Some(EventPayload::Duration(start.elapsed())),
+        });
     }
 }
 
