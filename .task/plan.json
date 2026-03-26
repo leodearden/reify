@@ -1,0 +1,80 @@
+{
+  "task_id": "493",
+  "title": "Fix cmd_build to exit FAILURE when constraints are violated",
+  "files": [
+    "crates/reify-cli/src/main.rs",
+    "crates/reify-cli/tests/cli_build.rs"
+  ],
+  "modules": [
+    "crates/reify-cli"
+  ],
+  "analysis": "cmd_build (main.rs:117-187) always returns ExitCode::SUCCESS when geometry is produced, regardless of constraint violations. The constraint_results are printed to stderr (lines 162-171) but never checked for Violated entries. In contrast, cmd_check (lines 70-115) correctly tracks all_satisfied and returns ExitCode::FAILURE when any constraint is Violated. The fix is straightforward: after writing the geometry file, check constraint_results for any Violated entries and return ExitCode::FAILURE if found. The fixture bracket_violating.ri already exists with thickness=1mm that violates 'constraint thickness > 2mm', so no new fixture is needed. Existing test patterns in cli_build.rs and cli_check.rs use std::process::Command to invoke the binary and assert on exit code/output.",
+  "prerequisites": [],
+  "steps": [
+    {
+      "id": "step-1",
+      "type": "test",
+      "description": "Write failing test build_violating_bracket_exits_failure: run 'reify build' on fixtures/bracket_violating.ri with -o to a temp file, assert non-zero exit code and stderr contains 'VIOLATED'. Also assert the geometry file was still written (build should produce output even when constraints are violated).",
+      "status": "done",
+      "commit": "283e78b6"
+    },
+    {
+      "id": "step-2",
+      "type": "impl",
+      "description": "In cmd_build, after writing the geometry file successfully (line 179), add a check: if result.constraint_results has any entry with satisfaction == Satisfaction::Violated, print 'Some constraints violated.' to stderr and return ExitCode::FAILURE instead of ExitCode::SUCCESS. Mirror the pattern from cmd_check lines 89-114.",
+      "status": "done",
+      "commit": "9368a76c"
+    },
+    {
+      "id": "step-3",
+      "type": "test",
+      "description": "Write regression test build_valid_bracket_exits_success: run 'reify build' on fixtures/bracket.ri with -o to a temp file, assert exit code 0, assert stdout contains 'Wrote', and assert stderr does NOT contain 'VIOLATED'. Ensures the fix doesn't break the happy path.",
+      "status": "done",
+      "commit": "17607120"
+    },
+    {
+      "id": "step-4",
+      "type": "impl",
+      "description": "Verify build_valid_bracket_exits_success passes without additional code changes (the violation check should only trigger when violations exist). Run all cli_build tests to confirm no regressions.",
+      "status": "done",
+      "commit": "17607120"
+    }
+  ],
+  "design_decisions": [
+    {
+      "decision": "Use ExitCode::FAILURE (exit code 1) rather than a distinct exit code like 2",
+      "rationale": "Consistency with cmd_check which also uses ExitCode::FAILURE for constraint violations. The task description suggests code 2 as optional. Using the same exit code keeps the CLI behavior uniform \u2014 a non-zero exit means 'something is wrong' and CI scripts only need to check for non-zero. If needed later, a distinct code can be introduced for both check and build simultaneously."
+    },
+    {
+      "decision": "Write the geometry file before checking violations (current code order preserved)",
+      "rationale": "The geometry output is still useful even when constraints are violated \u2014 a designer may want to inspect the geometry to understand why constraints fail. The exit code signals to CI that the result is not fully valid, but the file is still available for debugging."
+    },
+    {
+      "decision": "Print violation summary to stderr, not stdout",
+      "rationale": "cmd_build already prints constraint statuses to stderr (lines 162-170). The summary message 'Some constraints violated.' should also go to stderr to match cmd_check's pattern and to keep stdout clean for machine-parseable output (only the 'Wrote ...' line)."
+    },
+    {
+      "decision": "No new fixture files needed",
+      "rationale": "bracket_violating.ri already exists with thickness=1mm that violates 'constraint thickness > 2mm'. This fixture is already used by cli_check tests, proving it produces Violated constraint results."
+    }
+  ],
+  "reuse": [
+    {
+      "what": "cmd_check violation detection pattern (lines 89-114)",
+      "where": "crates/reify-cli/src/main.rs",
+      "how": "Mirror the all_satisfied boolean tracking from cmd_check into cmd_build's constraint_results loop. The same Satisfaction::Violated match arm sets all_satisfied = false."
+    },
+    {
+      "what": "fixture_path helper and Command-based test pattern",
+      "where": "crates/reify-cli/tests/cli_build.rs",
+      "how": "Reuse the existing fixture_path() helper and the Command::new(env!('CARGO_BIN_EXE_reify')) pattern with stdin/stdout/stderr piping, matching existing tests in the same file."
+    },
+    {
+      "what": "bracket_violating.ri fixture",
+      "where": "crates/reify-cli/tests/fixtures/bracket_violating.ri",
+      "how": "Already has thickness=1mm that violates 'constraint thickness > 2mm'. Used by cli_check tests, reuse directly for cli_build violation test."
+    }
+  ],
+  "_session_id": "493-50146efe",
+  "_created_at": "2026-03-26T18:21:05.400326+00:00"
+}
