@@ -824,6 +824,21 @@ fn eval_sub(lv: &Value, rv: &Value) -> Value {
                 }
             }
         }
+        // Complex - Complex: dimension must match
+        (
+            Value::Complex { re: ar, im: ai, dimension: ad },
+            Value::Complex { re: br, im: bi, dimension: bd },
+        ) => {
+            if ad != bd {
+                Value::Undef
+            } else {
+                Value::Complex {
+                    re: ar - br,
+                    im: ai - bi,
+                    dimension: *ad,
+                }
+            }
+        }
         // Component-wise Tensor subtraction
         (Value::Tensor(a), Value::Tensor(b)) => {
             if a.len() != b.len() {
