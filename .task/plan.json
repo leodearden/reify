@@ -1,0 +1,133 @@
+{
+  "task_id": "397",
+  "title": "Review: Eval meta_map performance and refactoring (17 suggestions from task 212)",
+  "files": [
+    "crates/reify-eval/src/lib.rs",
+    "crates/reify-eval/tests/meta_eval_integration.rs",
+    "crates/reify-runtime/src/concurrent_eval.rs",
+    "crates/reify-runtime/tests/concurrent_eval.rs"
+  ],
+  "modules": [
+    "crates/reify-eval",
+    "crates/reify-runtime"
+  ],
+  "analysis": "Task 397 addresses 17 code review suggestions from the task-212 meta_map refactoring review. The suggestions cluster into 5 themes: (A) Performance \u2014 redundant extract_dependency_trace call in evaluate_let_bindings (line 2911 recomputes what let_traces already holds), per-call allocations on hot path, and lifetime coupling in make_eval_ctx. (B) API design \u2014 make_eval_ctx silently ignores self.functions, missing comment on merged Analytical|Composed arm, and a dual-pattern created by the free function evaluate_let_bindings that cannot call self.make_eval_ctx. (C) Incomplete refactoring \u2014 15+ raw EvalContext::new sites remain unconverted in lib.rs (grep confirms at least 15 across lines 790, 2903, 2946, 2997, 3016, 3054, 3105, 3111, 3189, 3203, 3320, 3356, 3507, 3509, 3652), residual guard-eval duplication at lines 1561-1596 (the edit_param path was not consolidated like the eval path at line 1055), and meta_map clone not eliminated in prepare_concurrent_edit (line 567) or from_setup (line 70). (D) Test gaps \u2014 missing edit_check_concurrent meta test, incomplete guarded group branch coverage (else_members+guard=false), untested Arc::try_unwrap fallback in into_result, misleading performance test name, and no unit test for evaluate_let_bindings. (E) Robustness \u2014 check-then-unwrap pattern at line 2876 should use filter_map.\n\nApproach: Group into 8 atomic steps (4 test-first pairs + 4 pure-refactor pairs). Prerequisites handle the standalone eval_ctx free function (suggestion 6) which unlocks the remaining EvalContext::new conversions. Performance fixes are paired: trace reuse + filter_map in one step, guard-eval consolidation in another. The Arc<MetaMap> change spans both crates and is one step. Test gaps are addressed with 5 new tests. Doc/comment fixes are grouped as a final polish step.",
+  "prerequisites": [
+    {
+      "id": "pre-1",
+      "description": "Define MetaMap type alias `pub type MetaMap = HashMap<String, HashMap<String, String>>` in reify-eval/src/lib.rs (near imports) to reduce verbosity across both crates. Update ConcurrentEditSetup.meta_map field type and Engine.meta_map field type to use MetaMap.",
+      "status": "done",
+      "commit": "ff43c817",
+      "tests": []
+    }
+  ],
+  "steps": [
+    {
+      "id": "step-1",
+      "type": "test",
+      "description": "Write test for redundant extract_dependency_trace elimination: add a unit test for evaluate_let_bindings that verifies it produces correct values and cache entries for a 3-node let-binding chain (a=1, b=a+1, c=b+1). This covers suggestion 16 (unit test for free function) and provides a regression harness for step-2 changes.",
+      "status": "done",
+      "commit": "dff6786c"
+    },
+    {
+      "id": "step-2",
+      "type": "impl",
+      "description": "Fix suggestions 1, 17 in evaluate_let_bindings: (a) Reuse trace from let_traces HashMap at line 2911 instead of calling extract_dependency_trace a second time \u2014 change to `let trace = let_traces.remove(&node_id).unwrap_or_else(|| extract_dependency_trace(expr));`. (b) Replace filter+unwrap at line 2875-2876 with filter_map: `.filter_map(|c| if c.kind == ValueCellKind::Let { c.default_expr.as_ref().map(|expr| (NodeId::Value(c.id.clone()), expr)) } else { None })`. Both changes are in evaluate_let_bindings function body.",
+      "status": "done",
+      "commit": "09bb2d6f"
+    },
+    {
+      "id": "step-3",
+      "type": "test",
+      "description": "Write tests for guarded group else_members branch: add test `eval_meta_access_in_guarded_group_else_branch` in meta_eval_integration.rs that builds a guarded group with MetaAccess in else_members, sets guard=false, and asserts the else_members are evaluated with correct meta values while members get Undef. Covers suggestion 13.",
+      "status": "done",
+      "commit": "da33b0de"
+    },
+    {
+      "id": "step-4",
+      "type": "impl",
+      "description": "Consolidate guard-eval duplication in edit_param path (suggestion 9): refactor lines 1561-1596 to use the same `for (cells, is_active) in [(group.members.as_slice(), is_true), (group.else_members.as_slice(), is_false)]` pattern already used at line 1055. This eliminates the two separate for-loops over members and else_members.",
+      "status": "done",
+      "commit": "77ee1935"
+    },
+    {
+      "id": "step-5",
+      "type": "test",
+      "description": "Write tests for Arc<MetaMap> clone elimination: (a) Add `edit_check_concurrent_meta_access_resolves` test in runtime/tests/concurrent_eval.rs (suggestion 12) \u2014 build a template with MetaAccess in a let binding, run edit_check_concurrent, assert meta value propagates. (b) Add test that keeps a live Arc clone while calling into_result to trigger the Arc::try_unwrap fallback path (suggestion 14).",
+      "status": "done",
+      "commit": "768c46bb"
+    },
+    {
+      "id": "step-6",
+      "type": "impl",
+      "description": "Eliminate meta_map hot-path clones (suggestions 10, 11): (a) Change ConcurrentEditSetup.meta_map from `HashMap<String, HashMap<String, String>>` to `Arc<MetaMap>`. (b) In prepare_concurrent_edit (lib.rs:567), wrap with Arc::new once: `meta_map: Arc::new(self.meta_map.clone())` \u2014 this is unavoidable since Engine owns the HashMap, but now downstream gets cheap Arc::clone. (c) In from_setup (concurrent_eval.rs:70), change to `meta_map: Arc::clone(&setup.meta_map)` \u2014 eliminates the full HashMap clone. (d) Update apply_concurrent_edit and any other consumers that read setup.meta_map.",
+      "status": "done",
+      "commit": "ec49f8fa"
+    },
+    {
+      "id": "step-7",
+      "type": "test",
+      "description": "Rename misleading performance test (suggestion 15): rename the test that claims O(n^2) clone prevention to accurately reflect what it tests (e.g., `concurrent_meta_map_shared_via_arc` or similar). Add a doc comment explaining the performance contract it validates.",
+      "status": "done",
+      "commit": "26bd2d15"
+    },
+    {
+      "id": "step-8",
+      "type": "impl",
+      "description": "Complete make_eval_ctx rollout and API cleanup (suggestions 4, 5, 6, 7, 8): (a) Create standalone free function `fn eval_ctx<'v>(values: &'v ValueMap, functions: &'v [CompiledFunction], meta_map: &'v MetaMap) -> reify_expr::EvalContext<'v>` near evaluate_let_bindings. (b) Update make_eval_ctx to delegate to eval_ctx. (c) Convert all 15 remaining raw EvalContext::new call sites in free functions (compile_geometry_op and others at lines 2903, 2946, 2997, 3016, 3054, 3105, 3111, 3189, 3203, 3320, 3356, 3507, 3509, 3652) to use eval_ctx. (d) Convert the 1 remaining site in Engine method context (line 790) to use self.make_eval_ctx. (e) Add doc comment to make_eval_ctx noting it uses self.meta_map but the caller provides values and functions. (f) Add comment on merged Analytical|Composed arm at line 906 explaining both variants reduce to a single compiled expression at eval time.",
+      "status": "done",
+      "commit": "65afaa4d"
+    }
+  ],
+  "design_decisions": [
+    {
+      "decision": "Use Arc<MetaMap> in ConcurrentEditSetup rather than making Engine.meta_map itself Arc-wrapped",
+      "rationale": "Engine.meta_map is rebuilt on every eval() call from module.templates. Making Engine.meta_map an Arc would add Arc overhead to the sequential hot path where it's only borrowed by reference. The clone boundary is prepare_concurrent_edit \u2192 ConcurrentEditSetup, so Arc wrapping at that boundary (once per edit) is the right granularity."
+    },
+    {
+      "decision": "Create a standalone eval_ctx free function rather than making make_eval_ctx a method that passes self.functions",
+      "rationale": "The free function evaluate_let_bindings (and compile_geometry_op, etc.) cannot call self.make_eval_ctx because they don't have &self. Suggestion 6 correctly identifies this creates a permanent dual pattern. A standalone free function that both the method and free functions delegate to eliminates the duplication while keeping the ergonomic make_eval_ctx method for Engine methods."
+    },
+    {
+      "decision": "Do NOT address suggestion 2 (pre-compute let_cells at compile time) or suggestion 3 (split lifetimes) in this task",
+      "rationale": "Suggestion 2 requires changes to reify-compiler's TopologyTemplate, which is outside module scope. Suggestion 3 (lifetime splitting) is a forward-looking concern for async safety that doesn't affect current behavior \u2014 it's better addressed when async-safety work actually begins. Both are out of scope for a triage-and-fix task."
+    },
+    {
+      "decision": "Group the 15 EvalContext::new conversions into a single step rather than individual TDD pairs",
+      "rationale": "Each conversion is a mechanical substitution (EvalContext::new(values, functions).with_meta(meta_map) \u2192 eval_ctx(values, functions, meta_map)). Existing tests already cover all these paths. Writing per-site tests would be redundant \u2014 the value is in the new unit test for evaluate_let_bindings (step-1) and the existing integration tests serving as regression harness."
+    },
+    {
+      "decision": "Use HashMap::remove for trace reuse instead of cloning from let_traces",
+      "rationale": "The let_traces HashMap is consumed only once per node in the sorted iteration. Using remove() transfers ownership without cloning, and the fallback to recomputing (for safety) handles any edge case where a node isn't in the map."
+    }
+  ],
+  "reuse": [
+    {
+      "what": "Existing consolidated guard-eval pattern at line 1055",
+      "where": "crates/reify-eval/src/lib.rs:1055-1057",
+      "how": "Copy the `for (cells, is_active) in [(members, guard_is_true), (else_members, guard_is_false)]` pattern to replace the duplicate code at lines 1561-1596"
+    },
+    {
+      "what": "make_eval_ctx helper method",
+      "where": "crates/reify-eval/src/lib.rs:312-318",
+      "how": "Delegate to new eval_ctx free function internally, keeping the ergonomic &self method for Engine methods"
+    },
+    {
+      "what": "Existing meta_eval_integration.rs test patterns",
+      "where": "crates/reify-eval/tests/meta_eval_integration.rs",
+      "how": "Follow the TopologyTemplateBuilder pattern and assertion style for new guarded-group-else test"
+    },
+    {
+      "what": "Existing concurrent_eval.rs test patterns (simple_setup, edit helpers)",
+      "where": "crates/reify-runtime/tests/concurrent_eval.rs",
+      "how": "Follow existing setup patterns for new edit_check_concurrent test and Arc fallback test"
+    },
+    {
+      "what": "Arc::try_unwrap pattern already in into_result",
+      "where": "crates/reify-runtime/src/concurrent_eval.rs:119-130",
+      "how": "The fallback clone path already exists \u2014 step-5 just tests it by holding a live Arc clone"
+    }
+  ],
+  "_session_id": "397-1a4d4fbb",
+  "_created_at": "2026-03-26T07:31:01.244789+00:00"
+}
