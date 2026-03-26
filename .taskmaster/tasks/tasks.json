@@ -7957,11 +7957,11 @@
         "description": "Address robustness suggestions from task 236 reviews. Three areas:\n\n1. **vec3_components dimension validation** — Only checks items[0] dimension. Add: `if items[1].dimension() != dim || items[2].dimension() != dim { return None; }` (reify-expr/src/lib.rs, vec3_components helper).\n\n2. **NaN finiteness guards on vector/point/translation f64 components** — Rotation quaternion is checked but extracted f64 vector/point components aren't. Add `is_finite()` guards after vec3_components extracts (vx, vy, vz) in Transform*Vector, Transform*Point, and Transform*Transform translation components. Also add to frame_to_frame origin extraction in reify-stdlib.\n\n3. **Normalize input quaternion before quat_rotate** — Transform*Vector and Transform*Point don't normalize the input quaternion, causing drift accumulation. Add normalization before quat_rotate call, matching the pattern in Transform*Transform. Also: use normalized q1 for translation rotation in Transform*Transform. Replace `norm == 0.0` with `norm < f64::EPSILON` threshold.\n\nFiles: crates/reify-expr/src/lib.rs (eval_mul Transform arms), crates/reify-stdlib/src/lib.rs (frame_to_frame).\nReviewers: architect, performance, robustness.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-26T08:21:13.614Z"
+        "updatedAt": "2026-03-26T08:26:25.636Z"
       },
       {
         "id": "452",
@@ -8211,7 +8211,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-26T08:26:07.764Z",
+      "lastModified": "2026-03-26T08:26:25.636Z",
       "taskCount": 472,
       "completedCount": 249,
       "tags": [
