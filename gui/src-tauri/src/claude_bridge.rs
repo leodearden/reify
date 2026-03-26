@@ -566,10 +566,13 @@ where
 
     // Subscribe to the ready notification BEFORE re-locking.  On a multi-thread
     // executor the reader task can call `notify_waiters()` immediately after
-    // spawn_fn returns and before Phase 3 re-acquires the lock.  Creating the
-    // `Notified` future here pre-registers us as a potential waiter so we don't
-    // miss the wakeup.
-    let notified = notify_arc.notified();
+    // spawn_fn returns and before Phase 3 re-acquires the lock.
+    let mut notified = std::pin::pin!(notify_arc.notified());
+    // Eagerly register interest so that a `notify_waiters()` (or `notify_one()`)
+    // call on another thread between now and the first poll of `notified` is not
+    // lost.  Without this, the future stays in Init state and the notification
+    // would be silently missed.
+    notified.as_mut().enable();
 
     // Phase 3: re-lock, double-check for concurrent callers, then store handle.
     {
