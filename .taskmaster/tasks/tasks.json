@@ -7713,11 +7713,11 @@
         "description": "In crates/reify-test-support: (1) Mark assert_value_approx_impl with #[doc(hidden)]. (2) Rename vec3_unit to vec3_dimensionless and update all call sites. (3) Add test for unconfigured handle query error. (Review followup from task 351)",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-03-26T08:23:53.332Z"
+        "updatedAt": "2026-03-26T12:05:53.531Z"
       },
       {
         "id": "432",
@@ -7725,11 +7725,11 @@
         "description": "Extract a private `normalize_range_flags(lower, upper, lower_inclusive, upper_inclusive) -> (bool, bool)` helper in value.rs to replace the duplicated 2-line normalization pattern across content_hash, PartialEq, Ord, and Display impls (5 sites total). Also fix the misleading comment at ~line 2567 that says impls 'must panic via debug_assert!' — tests now assert silent normalization, not panics. (Review followup from task 364)",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-03-26T02:50:00.179Z"
+        "updatedAt": "2026-03-26T12:05:53.565Z"
       },
       {
         "id": "433",
@@ -8337,7 +8337,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-26T12:05:53.499Z",
+      "lastModified": "2026-03-26T12:05:53.565Z",
       "taskCount": 482,
       "completedCount": 249,
       "tags": [
