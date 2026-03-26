@@ -8127,10 +8127,11 @@
         "description": "ConcurrentEditSetup.meta_map clones full HashMap; should use Arc since meta_map is immutable during concurrent eval",
         "details": "Change ConcurrentEditSetup.meta_map from HashMap to Arc<MetaMap>. Update Engine::prepare_concurrent_edit() in crates/reify-eval/src/lib.rs to wrap in Arc, and ConcurrentEvalAdapter::from_setup() in crates/reify-runtime/src/concurrent_eval.rs to Arc::clone instead of clone-then-wrap.\n\nCurrently line 70 does `meta_map: Arc::new(setup.meta_map.clone())` -- a full HashMap clone followed by Arc wrapping. With Arc<MetaMap> in setup, this becomes cheap Arc::clone.\n\nFrom review of task 397 (esc-397-121).\n\nmemory_hints:\n  search: \"ConcurrentEditSetup meta_map clone\"\n  entities: [\"ConcurrentEditSetup\", \"ConcurrentEvalAdapter\", \"MetaMap\"]",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-03-26T08:21:14.206Z"
       },
       {
         "id": "467",
@@ -8201,7 +8202,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-26T08:21:14.090Z",
+      "lastModified": "2026-03-26T08:21:14.206Z",
       "taskCount": 472,
       "completedCount": 249,
       "tags": [
