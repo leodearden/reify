@@ -8459,6 +8459,17 @@
         "dependencies": [],
         "priority": "high",
         "subtasks": []
+      },
+      {
+        "id": 494,
+        "title": "Fix clippy warnings in reify-types: clone_on_copy, init_numbered_fields, items_after_test_module",
+        "description": "5 clippy warnings cause `cargo clippy --workspace -- -D warnings` to fail:\n\n1. crates/reify-types/tests/m5_types.rs:41 — clone_on_copy on PortDirection\n2. crates/reify-types/src/dimension.rs:280 — init_numbered_fields (use tuple syntax for DimensionVector)\n3. crates/reify-types/src/ty.rs:176 — items_after_test_module (move impl Display before #[cfg(test)])\n4. crates/reify-types/src/value.rs:1151 — clone_on_copy on DeterminacyState\n5. crates/reify-types/src/constraint.rs:135 — clone_on_copy on ConstraintDomain\n\nAll are trivial auto-fixes concentrated in reify-types.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -8471,7 +8482,7 @@
       ],
       "created": "2026-03-26T15:04:44.899Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-26T15:05:15.438Z"
+      "updated": "2026-03-26T15:05:23.673Z"
     }
   }
 }
