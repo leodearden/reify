@@ -7755,11 +7755,11 @@
         "description": "Add Declaration::Occurrence arms alongside Declaration::Structure in analysis.rs (find_parsed_member_span, structure_names) and goto_def.rs. Occurrence is structurally identical to Structure, so each match arm can be duplicated or extracted into a helper. Currently, members inside occurrence declarations are invisible to hover, goto-def, and completions. (Review followup from task 216)",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-26T02:05:14.786Z"
+        "updatedAt": "2026-03-26T02:25:36.847Z"
       },
       {
         "id": "437",
@@ -7825,7 +7825,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-26T02:25:36.627Z",
+      "lastModified": "2026-03-26T02:25:36.847Z",
       "taskCount": 441,
       "completedCount": 233,
       "tags": [
