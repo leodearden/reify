@@ -8284,6 +8284,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 479,
+        "title": "Add LSP incremental eval benchmark test",
+        "description": "The LSP diagnostics pipeline (compute_diagnostics_with_state in crates/reify-lsp/src/diagnostics.rs) creates a brand-new Engine on every didChange/didOpen, running the full parse→compile→eval→check pipeline from scratch. The Engine already supports incremental evaluation (eval_cached, edit_param, check_snapshot) but the LSP path doesn't use any of it.\n\nThis task adds a benchmark-style integration test that:\n1. Opens a document and runs the initial full pipeline (cold start)\n2. Makes a small change (e.g., changing a single param default value) and measures re-evaluation time\n3. Asserts that the incremental path (once implemented) is measurably faster than cold-start\n\nThe test should initially demonstrate the problem: both cold-start and re-eval take roughly the same time because both create new Engines. The test will start passing (faster incremental path) after the follow-up implementation task.\n\nDone: A test exists in crates/reify-lsp/tests/ that measures cold-start vs re-eval timing for compute_diagnostics_with_state, and asserts the content_hash of the last_module is preserved across calls when structure doesn't change.\n\nmemory_hints:\n- search: \"Engine eval_cached incremental evaluation\"\n- search: \"EvalState compute_diagnostics_with_state cold start\"\n- entity: \"Engine\"\n- entity: \"EvalState\"",
+        "details": "## Implementation guidance\n\n### Test location\n`crates/reify-lsp/tests/incremental_eval_benchmark.rs`\n\n### What to test\n\n1. **content_hash preservation test**: Call compute_diagnostics_with_state twice with the same source. Assert state.last_module content_hash is the same. Then call with a param-only change (e.g., bracket_source with width=50 vs width=60). Assert the template-level content_hashes for unchanged templates are preserved.\n\n2. **Engine reuse observable test**: After initial eval, check that state.engine.is_initialized() is true. After a second call with a small change, check it's still true and that the engine wasn't replaced (currently it IS replaced — this test documents the gap). This test should assert engine reuse once the implementation task is done.\n\n3. **Timing regression test** (optional, may be flaky in CI): Time 10 cold-start evals vs 10 incremental evals. Assert incremental is at least 2x faster. Gate behind a feature flag or `#[ignore]` to avoid CI flakiness.\n\n### Key files to reference\n- `crates/reify-lsp/src/diagnostics.rs` — EvalState, compute_diagnostics_with_state (lines 52-148)\n- `crates/reify-eval/src/lib.rs` — Engine::eval_cached (line 2082), Engine::edit_param (line 1416), Engine::is_initialized (line 320)\n- `crates/reify-compiler/src/lib.rs` — CompiledModule::content_hash (line 147), TopologyTemplate::content_hash (line 180)\n- `crates/reify-lsp/tests/interactive_edit_loop.rs` — existing pattern for EvalState tests\n\n### Test support\nUse reify_test_support::bracket_source() and bracket_source_violating() which differ only in param values (thickness), making them ideal for testing param-only incremental updates.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -8296,7 +8307,7 @@
       ],
       "created": "2026-03-26T10:24:47.956Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-26T11:29:57.689Z"
+      "updated": "2026-03-26T11:30:00.618Z"
     }
   }
 }
