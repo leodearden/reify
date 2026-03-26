@@ -8223,6 +8223,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 474,
+        "title": "Fix silent NaN propagation in eval_div for Vector/Point division",
+        "description": "Found during task-446 robustness review. The early zero-check in eval_div (crates/reify-expr/src/lib.rs ~line 940) uses `denom == 0.0`, but IEEE 754 `NaN == 0.0` is false, so Value::Real(f64::NAN) passes the guard. NaN then flows into scale_components, producing Value::Vector/Point with NaN si_values instead of Value::Undef. This violates the project's Undef-propagation discipline (feedback_silent_defaults_pattern.md).\n\nFix: add `|| denom.is_nan()` to the zero-check condition at lib.rs:940 (`denom == 0.0 || denom.is_nan()`). Then add tests: `value_vector_div_nan_returns_undef` and `value_point_div_nan_returns_undef`.\n\nModules: crates/reify-expr/src/lib.rs, crates/reify-expr/tests/point_vector_eval_tests.rs\n\nmemory_hints: search \"eval_div NaN\" and \"silent_defaults_pattern\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -8235,7 +8246,7 @@
       ],
       "created": "2026-03-26T10:24:47.956Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-26T10:24:47.961Z"
+      "updated": "2026-03-26T10:24:49.900Z"
     }
   }
 }
