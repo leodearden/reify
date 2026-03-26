@@ -8002,10 +8002,11 @@
         "description": "Task 396 added a defensive `if child.is_named() && !child.is_extra()` catch-all to `lower_connect_body`. Three other structurally identical lowering sites still have silent `_ => {}` catch-alls:\n\n1. `lower_port_body` (~line 1267 in ts_parser.rs) — silent catch-all swallows unexpected named children\n2. `lower_constraint_def` (~line 679) — same pattern\n3. Top-level declaration handler (~line 195) — same pattern\n\nApply the same defensive pattern to all three. Consider extracting a shared helper `fn warn_unexpected_child(&mut self, child: Node, context: &str)` to reduce duplication across all four sites.\n\nReviewer: architect_reviewer (pattern_consistency suggestion from task 396 review)",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-03-26T08:21:13.683Z"
       },
       {
         "id": "456",
@@ -8197,7 +8198,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-26T08:21:13.614Z",
+      "lastModified": "2026-03-26T08:21:13.683Z",
       "taskCount": 472,
       "completedCount": 249,
       "tags": [
