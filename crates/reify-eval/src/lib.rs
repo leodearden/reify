@@ -1129,16 +1129,6 @@ impl Engine {
         // Sub-component elaboration: evaluate child template params/lets
         // for each sub_component in each template.
         for template in &module.templates {
-            // Pre-compute all recursive subs once per template (not per sub) to avoid
-            // O(S²) re-filtering inside the sub iteration loop.
-            let all_recursive_subs: Vec<&reify_compiler::SubComponentDecl> = if template.is_recursive {
-                template.sub_components.iter().filter(|s| s.guard_expr.is_some()).collect()
-            } else {
-                Vec::new()
-            };
-            let all_recursive_sub_names: Vec<&str> =
-                all_recursive_subs.iter().map(|s| s.name.as_str()).collect();
-
             for sub in &template.sub_components {
                 // Find the referenced child template by name
                 let child_template = match module.templates.iter().find(|t| t.name == sub.structure_name) {
@@ -1218,15 +1208,15 @@ impl Engine {
                         &mut self.journal,
                         &mut self.cache,
                         version_id,
-                        child_template,
+                        template,       // scope_template: owns `sub` (guard/arg refs match)
+                        child_template, // target template for Phase 1 instantiation
                         sub,
                         &template.name,
                         0,
                         self.max_unfold_depth,
                         &self.meta_map,
                         &mut diagnostics,
-                        &all_recursive_subs,
-                        &all_recursive_sub_names,
+                        &module.templates,
                         &mut unfold_budget,
                     );
                     continue;
@@ -3298,16 +3288,24 @@ fn compile_geometry_op(
 /// Recursively unfold a recursive sub-component until the guard evaluates to false
 /// or the depth limit is reached.
 ///
-/// The guard expression in `sub.guard_expr` uses the template's own entity name (e.g., "S.n").
+/// The guard expression in `sub.guard_expr` uses the owning template's entity name (e.g., "A.n").
 /// To correctly evaluate the guard at each recursion level, we build a "local" values context
-/// by remapping the current parent entity's values to the template's namespace before evaluation.
+/// by remapping the current parent entity's values to the `scope_template`'s namespace.
+///
+/// For self-recursion (S→S), scope_template == child_template. For mutual recursion
+/// (A→B→A), scope_template is the template that owns `sub` (e.g., A for sub b=B),
+/// while child_template is the target (B). This ensures guard/arg expressions match
+/// local_values keys.
 ///
 /// # Parameters
-/// - `parent_entity`: the entity currently being processed (e.g., "S" at depth 0, "S.child" at depth 1)
+/// - `scope_template`: the template that owns `sub` (used for building local_values that
+///   match the guard/arg expression references)
+/// - `child_template`: the target template instantiated by `sub` (used for Phase 1 elaboration)
+/// - `parent_entity`: the entity currently being processed (e.g., "A" at depth 0, "A.b" at depth 1)
 /// - `depth`: current recursion depth (0 = processing the top-level template)
 /// - `max_depth`: maximum allowed depth before stopping
-/// - `all_recursive_subs`: ALL recursive subs of the template (those with guard_expr.is_some()).
-///   Used in Phase 2 to unfold all sub chains at each child level, not just the spawning sub.
+/// - `templates`: all templates in the module, used to look up target templates for
+///   child_template's recursive subs in Phase 2.
 /// - `node_budget`: remaining total nodes allowed across all branches. Prevents exponential
 ///   blowup when B > 1 recursive subs exist (B^D total without this limit).
 #[allow(clippy::too_many_arguments)]
@@ -3318,6 +3316,7 @@ fn unfold_recursive_sub<'t>(
     journal: &mut EventJournal,
     cache: &mut CacheStore,
     version_id: u64,
+    scope_template: &'t reify_compiler::TopologyTemplate,
     child_template: &'t reify_compiler::TopologyTemplate,
     sub: &reify_compiler::SubComponentDecl,
     parent_entity: &str,
@@ -3325,8 +3324,7 @@ fn unfold_recursive_sub<'t>(
     max_depth: usize,
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
-    all_recursive_subs: &[&'t reify_compiler::SubComponentDecl],
-    all_recursive_sub_names: &[&str],
+    templates: &'t [reify_compiler::TopologyTemplate],
     node_budget: &mut usize,
 ) {
     // Check total node budget before doing any work.
@@ -3345,10 +3343,11 @@ fn unfold_recursive_sub<'t>(
     };
 
     // Build a small overlay map with only the template-scoped entries needed for
-    // guard/arg evaluation. This avoids cloning the entire global ValueMap (O(V))
-    // at every recursion depth — only the template's own cells are remapped (O(C)).
+    // guard/arg evaluation. Uses scope_template (the template that owns `sub`) so
+    // the guard/arg expression references (e.g., A.n) match local_values keys.
+    // For self-recursion scope_template == child_template; for mutual recursion they differ.
     let mut local_values = ValueMap::new();
-    for cell in &child_template.value_cells {
+    for cell in &scope_template.value_cells {
         let scoped_id = ValueCellId::new(parent_entity, &cell.id.member);
         if let Some(v) = values.get(&scoped_id) {
             local_values.insert(cell.id.clone(), v.clone());
@@ -3419,11 +3418,28 @@ fn unfold_recursive_sub<'t>(
         meta_map,
     );
 
-    // Phase 2 (recurse): Unfold ALL recursive subs at the next level first (leaves-first
-    // ordering). Iterating over all_recursive_subs (not just `sub`) ensures that for
-    // templates with multiple recursive subs (e.g., `left` and `right`), cross-sub
-    // children like S.left.right and S.right.left are also created.
-    for next_sub in all_recursive_subs {
+    // Phase 2 (recurse): Unfold ALL of child_template's recursive subs at the next level
+    // first (leaves-first ordering). Recomputing from child_template.sub_components (not
+    // scope_template's) is critical for mutual recursion: when A→B, the next level must
+    // iterate B's subs (not A's), so guard/arg expressions match B's value_cell namespace.
+    let child_recursive_subs: Vec<&reify_compiler::SubComponentDecl> = child_template
+        .sub_components
+        .iter()
+        .filter(|s| s.guard_expr.is_some())
+        .collect();
+    let child_recursive_sub_names: Vec<&str> = child_recursive_subs
+        .iter()
+        .map(|s| s.name.as_str())
+        .collect();
+
+    for next_sub in &child_recursive_subs {
+        // Look up the target template for next_sub from the module's template list.
+        // For self-recursion, this finds the same template. For mutual recursion (A→B→A),
+        // this alternates: B's sub "a" targets A, A's sub "b" targets B.
+        let next_child_template = match templates.iter().find(|t| t.name == next_sub.structure_name) {
+            Some(t) => t,
+            None => continue, // Unknown structure — skip (same as non-recursive path)
+        };
         unfold_recursive_sub(
             values,
             snapshot,
@@ -3431,15 +3447,15 @@ fn unfold_recursive_sub<'t>(
             journal,
             cache,
             version_id,
-            child_template,
+            child_template,       // child_template owns next_sub → becomes scope_template
+            next_child_template,  // target template for next_sub's structure
             next_sub,
             &next_entity,
             depth + 1,
             max_depth,
             meta_map,
             diagnostics,
-            all_recursive_subs,
-            all_recursive_sub_names,
+            templates,
             node_budget,
         );
     }
@@ -3448,7 +3464,7 @@ fn unfold_recursive_sub<'t>(
     // child_values is enriched inside elaborate_child_lets_only with sub-component
     // values projected from the global map — so cross-level references like
     // `S.child.total` resolve to the already-computed deeper-level value.
-    // Pass all recursive sub names so BFS walks all branches (fixes cross-sub projection).
+    // Pass child-scoped recursive sub names so BFS walks the correct branches.
     elaborate_child_lets_only(
         values,
         snapshot,
@@ -3460,7 +3476,7 @@ fn unfold_recursive_sub<'t>(
         &next_entity,
         child_values,
         meta_map,
-        all_recursive_sub_names,
+        &child_recursive_sub_names,
     );
 }
 
