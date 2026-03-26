@@ -413,3 +413,49 @@ fn compose_all_nan_rotation_returns_undef() {
     );
     assert!(result.is_undef(), "all-NaN rotation should return Undef, got {:?}", result);
 }
+
+// ── step-13: Transform * Vector / Point NaN quaternion tests ─────────────────
+
+/// Transform with NaN rotation * vector should return Undef.
+#[test]
+fn nan_rotation_mul_vector_returns_undef() {
+    let nan_transform = Value::Transform {
+        rotation: Box::new(Value::Orientation { w: f64::NAN, x: 0.0, y: 0.0, z: 0.0 }),
+        translation: Box::new(Value::Vector(vec![
+            Value::length(0.0),
+            Value::length(0.0),
+            Value::length(0.0),
+        ])),
+    };
+    let v = Value::Vector(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]);
+    let result = eval_mul_expr(
+        nan_transform,
+        Type::Transform(3),
+        v,
+        Type::vec3(Type::length()),
+        Type::vec3(Type::length()),
+    );
+    assert!(result.is_undef(), "NaN rotation * vector should return Undef, got {:?}", result);
+}
+
+/// Transform with NaN rotation * point should return Undef.
+#[test]
+fn nan_rotation_mul_point_returns_undef() {
+    let nan_transform = Value::Transform {
+        rotation: Box::new(Value::Orientation { w: f64::NAN, x: 0.0, y: 0.0, z: 0.0 }),
+        translation: Box::new(Value::Vector(vec![
+            Value::length(0.0),
+            Value::length(0.0),
+            Value::length(0.0),
+        ])),
+    };
+    let p = Value::Point(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]);
+    let result = eval_mul_expr(
+        nan_transform,
+        Type::Transform(3),
+        p,
+        Type::point3(Type::length()),
+        Type::point3(Type::length()),
+    );
+    assert!(result.is_undef(), "NaN rotation * point should return Undef, got {:?}", result);
+}

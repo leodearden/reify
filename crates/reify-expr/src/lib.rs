@@ -1118,6 +1118,9 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
             Value::Vector(components),
         ) => {
             if let Value::Orientation { w, x, y, z } = rotation.as_ref() {
+                if !w.is_finite() || !x.is_finite() || !y.is_finite() || !z.is_finite() {
+                    return Value::Undef;
+                }
                 if let Some((vx, vy, vz, dim)) = vec3_components(components) {
                     let (rx, ry, rz) = quat_rotate((*w, *x, *y, *z), vx, vy, vz);
                     Value::Vector(make_components_3(rx, ry, rz, dim))
@@ -1134,6 +1137,9 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
             Value::Point(components),
         ) => {
             if let Value::Orientation { w, x, y, z } = rotation.as_ref() {
+                if !w.is_finite() || !x.is_finite() || !y.is_finite() || !z.is_finite() {
+                    return Value::Undef;
+                }
                 if let Some((px, py, pz, p_dim)) = vec3_components(components) {
                     if let Value::Vector(t_items) = translation.as_ref() {
                         if let Some((tx, ty, tz, t_dim)) = vec3_components(t_items) {
