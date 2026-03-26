@@ -1160,3 +1160,85 @@ fn unfold_mutual_recursion_heterogeneous_members() {
          for entity A.b (a B instance), missing B-specific members like 'height'."
     );
 }
+
+// ─── step-39: cyclic let-binding dependency detection ─────────────────────────
+
+/// Recursive template S with mutually-dependent let-bindings:
+///   S { param n: Int = 2; let a: Int = b + 1; let b: Int = a + 1;
+///       sub child = S(n: n-1) where n > 0; is_recursive = true }
+///
+/// The let-bindings `a` and `b` form a circular dependency: a depends on b,
+/// b depends on a. `topological_sort` (Kahn's algorithm) silently drops nodes
+/// in cycles — they never appear in the sorted output.
+///
+/// Currently `elaborate_child_lets_only` has no cycle detection, so a and b
+/// remain `Value::Undef` with no diagnostic. This test asserts that:
+/// 1. An error-level diagnostic is emitted containing 'circular' or 'cycle'
+///    and naming both `a` and `b`.
+/// 2. S.a and S.b are Value::Undef (they can't be evaluated).
+#[test]
+fn cyclic_let_bindings_emit_diagnostic() {
+    // let a = b + 1 (depends on S.b)
+    let a_expr = binop(
+        BinOp::Add,
+        value_ref_typed("S", "b", Type::Int),
+        literal(Value::Int(1)),
+    );
+    // let b = a + 1 (depends on S.a)
+    let b_expr = binop(
+        BinOp::Add,
+        value_ref_typed("S", "a", Type::Int),
+        literal(Value::Int(1)),
+    );
+
+    let guard = gt(
+        value_ref_typed("S", "n", Type::Int),
+        literal(Value::Int(0)),
+    );
+    let n_minus_1 = binop(
+        BinOp::Sub,
+        value_ref_typed("S", "n", Type::Int),
+        literal(Value::Int(1)),
+    );
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param("S", "n", Type::Int, Some(CompiledExpr::literal(Value::Int(2), Type::Int)))
+        .let_binding("S", "a", Type::Int, a_expr)
+        .let_binding("S", "b", Type::Int, b_expr)
+        .is_recursive(true)
+        .sub_component_with_guard("child", "S", vec![("n".to_string(), n_minus_1)], guard)
+        .build();
+
+    let result = eval_single_template(template);
+
+    // The cyclic let-bindings are silently dropped by topological_sort (Kahn's algorithm
+    // omits nodes in cycles). They may be absent (None) or Undef depending on whether
+    // the cycle detection writes Undef explicitly. Either is acceptable — the key is the
+    // diagnostic.
+    let a_val = result.values.get(&ValueCellId::new("S", "a"));
+    assert!(
+        a_val.is_none() || a_val == Some(&Value::Undef),
+        "S.a should be absent or Undef (circular dependency), got {:?}",
+        a_val,
+    );
+    let b_val = result.values.get(&ValueCellId::new("S", "b"));
+    assert!(
+        b_val.is_none() || b_val == Some(&Value::Undef),
+        "S.b should be absent or Undef (circular dependency), got {:?}",
+        b_val,
+    );
+
+    // An error diagnostic should be emitted about the circular dependency.
+    let has_cycle_error = result.diagnostics.iter().any(|d| {
+        d.severity == Severity::Error
+            && (d.message.contains("circular") || d.message.contains("cycle"))
+            && d.message.contains("a")
+            && d.message.contains("b")
+    });
+    assert!(
+        has_cycle_error,
+        "Expected an error diagnostic about circular let-binding dependency naming 'a' and 'b', \
+         got: {:?}",
+        result.diagnostics
+    );
+}
