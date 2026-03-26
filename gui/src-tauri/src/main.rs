@@ -262,11 +262,11 @@ fn mcp_tool_call(
     // Sync state and emit delta events (conservative: runs even after read-only tools,
     // since build_gui_state is cheap for unchanged state and compute_delta produces
     // an empty delta when nothing changed)
-    if let Ok(mut session) = state.engine.lock() {
-        if let Ok(gui_state) = session.build_gui_state() {
-            let delta = compute_delta(&state.last_state, &gui_state);
-            emit_delta(&app, &delta);
-        }
+    if let Ok(mut session) = state.engine.lock()
+        && let Ok(gui_state) = session.build_gui_state()
+    {
+        let delta = compute_delta(&state.last_state, &gui_state);
+        emit_delta(&app, &delta);
     }
 
     result
@@ -280,7 +280,7 @@ async fn lsp_request(
 ) -> Result<String, String> {
     // Diagnostics are emitted automatically by TauriNotificationSink
     // during didOpen/didChange/didClose processing — no manual polling needed.
-    let result = reify_gui::lsp_bridge::lsp_request_impl(&*bridge, &method, params).await?;
+    let result = reify_gui::lsp_bridge::lsp_request_impl(&bridge, &method, params).await?;
     Ok(result)
 }
 
@@ -382,6 +382,7 @@ fn main() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_shell::init())
         .manage(app_state)
         .setup(move |app| {
             // Create LspBridge with TauriNotificationSink now that AppHandle is available

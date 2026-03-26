@@ -1,0 +1,3 @@
+#!/bin/sh
+echo "reify-sidecar stub — not yet implemented"
+exit 1
