@@ -7765,11 +7765,11 @@
         "description": "Make find_parsed_member_span in analysis.rs recurse into GuardedGroupDecl.members and else_members so params/lets inside where-guarded blocks are visible to hover and goto-def. Also affects goto_def.rs which has the same flat traversal. (Review followup from task 216)",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-25T23:28:27.707Z"
+        "updatedAt": "2026-03-26T02:22:18.905Z"
       },
       {
         "id": "438",
@@ -7823,7 +7823,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-26T02:21:53.605Z",
+      "lastModified": "2026-03-26T02:22:18.905Z",
       "taskCount": 441,
       "completedCount": 232,
       "tags": [
