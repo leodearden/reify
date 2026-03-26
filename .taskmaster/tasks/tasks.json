@@ -8503,6 +8503,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 498,
+        "title": "Fix eval() first pass to insert Params without defaults as Undef/Undetermined",
+        "description": "The non-guarded first pass in eval() (crates/reify-eval/src/lib.rs:981-1021) skips Param cells with default_expr: None — they are not inserted into the values map or snapshot. The guarded-group path (lib.rs:1056-1072) correctly handles this case by inserting Value::Undef with DeterminacyState::Undetermined.\n\nThe language spec (docs/reify-language-spec.md, lines 820-823) says: \"Default value optional (if absent, parameter is undef). undef means not yet decided — it is the default state of every unassigned parameter without a default value.\"\n\n**What's wrong:** After eval(), a Param without a default is absent from values/snapshot. edit_param may fail to find it. Let cells referencing it get Undef from EvalContext (correct value but no audit trail in snapshot).\n\n**Fix:** Add an else branch after the `cell.kind == ValueCellKind::Param && let Some(ref expr) = cell.default_expr` block:\n```rust\n} else if cell.kind == ValueCellKind::Param && cell.default_expr.is_none() {\n    values.insert(cell.id.clone(), Value::Undef);\n    snapshot.values.insert(cell.id.clone(), (Value::Undef, DeterminacyState::Undetermined));\n}\n```\nThis matches the guarded-group path at lines 1056-1072. Also check edit_param and resolve_concurrent_edit for the same pattern.\n\n**Memory hints:** search for \"param without default\", \"Undef Undetermined\", entity names: ValueCellKind::Param, default_expr, DeterminacyState",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -8515,7 +8526,7 @@
       ],
       "created": "2026-03-26T15:04:44.899Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-26T15:05:43.966Z"
+      "updated": "2026-03-26T15:21:33.886Z"
     }
   }
 }
