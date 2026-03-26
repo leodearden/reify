@@ -3851,12 +3851,11 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "compiler bug")]
-    fn compile_geometry_op_revolve_missing_arg_panics() {
+    fn compile_geometry_op_revolve_missing_arg_returns_none() {
         let step_handles = vec![GeometryHandleId(10)];
         let values = ValueMap::new();
 
-        // Revolve with missing 'ox' arg — should panic, not silently use 0.0
+        // Revolve with missing 'ox' arg — returns None (not silently 0.0)
         let op = CompiledGeometryOp::Sweep {
             kind: SweepKind::Revolve,
             profiles: vec![GeomRef::Step(0)],
@@ -3871,8 +3870,9 @@ mod tests {
             ],
         };
 
-        // This should panic because 'ox' is missing
-        compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        // Missing 'ox' causes eval_arg_f64("ox") to return None, propagated via ?
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        assert!(result.is_none(), "expected None when required arg 'ox' is missing");
     }
 
     #[test]
