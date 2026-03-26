@@ -1124,7 +1124,7 @@ fn infer_binop_type(op: BinOp, left: &Type, right: &Type) -> Type {
 /// Name scope: maps identifier names to (ValueCellId, Type, Option<guard_cell_id>)
 /// within a structure. The guard cell ID tracks which guard (if any) protects this name.
 #[derive(Clone)]
-struct CompilationScope {
+struct CompilationScope<'u> {
     entity_name: String,
     names: HashMap<String, (ValueCellId, Type, Option<ValueCellId>)>,
     /// Names of ports declared in this structure, for member access disambiguation.
@@ -1137,13 +1137,12 @@ struct CompilationScope {
     collection_sub_member_types: HashMap<String, HashMap<String, Type>>,
     /// Meta block entries for the current entity: key → value.
     meta_entries: HashMap<String, String>,
-    /// Raw pointer to the active unit registry.
-    /// Set by compile_entity/compile_purpose. Null means no registry (functions, fields).
-    /// SAFETY: always points to a `UnitRegistry` that outlives this scope, or is null.
-    unit_registry_ptr: *const UnitRegistry,
+    /// Reference to the active unit registry.
+    /// Set by compile_entity/compile_purpose. None for scopes that don't need it (functions, fields).
+    unit_registry: Option<&'u UnitRegistry>,
 }
 
-impl CompilationScope {
+impl<'u> CompilationScope<'u> {
     fn new(entity_name: &str) -> Self {
         CompilationScope {
             entity_name: entity_name.to_string(),
@@ -1152,28 +1151,19 @@ impl CompilationScope {
             collection_sub_names: HashSet::new(),
             collection_sub_member_types: HashMap::new(),
             meta_entries: HashMap::new(),
-            unit_registry_ptr: std::ptr::null(),
+            unit_registry: None,
         }
     }
 
-    /// Set the unit registry pointer for this scope.
-    ///
-    /// # Safety
-    /// The caller must ensure `registry` outlives this `CompilationScope`.
-    fn set_unit_registry(&mut self, registry: &UnitRegistry) {
-        self.unit_registry_ptr = registry as *const UnitRegistry;
+    /// Set the unit registry reference for this scope.
+    fn set_unit_registry(&mut self, registry: &'u UnitRegistry) {
+        self.unit_registry = Some(registry);
     }
 
     /// Look up a unit by name, applying factor and offset.
     /// Returns None if the unit is not in the registry.
     fn lookup_unit_in_registry(&self, value: f64, unit: &str) -> Option<(Value, DimensionVector)> {
-        if self.unit_registry_ptr.is_null() {
-            return None;
-        }
-        // SAFETY: unit_registry_ptr is non-null and points to a valid UnitRegistry
-        // that outlives this scope (set via set_unit_registry with a proper borrow).
-        let registry = unsafe { &*self.unit_registry_ptr };
-        registry.lookup(unit).map(|entry| {
+        self.unit_registry?.lookup(unit).map(|entry| {
             let si_value = value * entry.factor + entry.offset.unwrap_or(0.0);
             (
                 Value::Scalar {
@@ -1260,8 +1250,9 @@ fn compile_expr_guarded(
                         Diagnostic::error(format!("unknown unit: {}", unit))
                             .with_label(DiagnosticLabel::new(expr.span, "unrecognized unit")),
                     );
-                    // Return an undef literal as a fallback
-                    CompiledExpr::literal(Value::Undef, Type::Real)
+                    // Return an undef literal with dimensionless scalar type as a fallback.
+                    // Using Scalar (not Real) keeps the type system consistent for quantity expressions.
+                    CompiledExpr::literal(Value::Undef, Type::Scalar { dimension: DimensionVector::DIMENSIONLESS })
                 }
             }
         }
@@ -4546,7 +4537,7 @@ struct ConnectAccumulator<'a> {
 struct ConnectContext<'a> {
     entity_name: &'a str,
     ports: &'a [CompiledPort],
-    scope: &'a CompilationScope,
+    scope: &'a CompilationScope<'a>,
     enum_defs: &'a [reify_types::EnumDef],
     functions: &'a [CompiledFunction],
 }
