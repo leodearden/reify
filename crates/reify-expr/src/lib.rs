@@ -989,6 +989,19 @@ fn eval_div(lv: &Value, rv: &Value) -> Value {
         (Value::Tensor(components), scalar) if !matches!(scalar, Value::Tensor(_)) => {
             scale_components(components, scalar, eval_div, Value::Tensor)
         }
+        // Vector / Scalar: divide each component by the scalar → Vector
+        (Value::Vector(components), scalar)
+            if !matches!(scalar, Value::Vector(_) | Value::Point(_) | Value::Tensor(_)) =>
+        {
+            scale_components(components, scalar, eval_div, Value::Vector)
+        }
+        // Point / Scalar: divide each component by the scalar → Point
+        // Pragmatic deviation from strict affine rules (needed for interpolation).
+        (Value::Point(components), scalar)
+            if !matches!(scalar, Value::Vector(_) | Value::Point(_) | Value::Tensor(_)) =>
+        {
+            scale_components(components, scalar, eval_div, Value::Point)
+        }
         _ => Value::Undef,
     }
 }
