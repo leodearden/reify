@@ -6975,13 +6975,13 @@
         "description": "Reduce test boilerplate and fill coverage gaps in reify-stdlib linalg tests.\n\n## Test helpers\n1. Add `assert_vector3_approx!(expr, [x, y, z])` macro — replaces 4+ copy-pasted match+collect+assert blocks for Vector results (see cross_vector_returns_vector_wrapper, normalize_vector_returns_vector_wrapper, etc.)\n2. Add `make_scalar_vec3(vals: [f64; 3], dim: DimensionVector) -> Value` test helper — replaces 3+ inline constructions of dimensioned 3-element Value::Vector\n\n## Design decision: Point input semantics\n3. Decide and test the contract for Value::Point inputs to linalg builtins:\n   - `cross` rejects Point → Undef (already implemented)\n   - `normalize` accepts Point and preserves wrapper (currently implemented but untested)\n   - `dot` silently accepts Point (currently implemented but semantically questionable)\n   - Add tests pinning the decided behavior for dot(Point, _) and normalize(Point)\n\n## Mixed-type wrapper tests\n4. Add test for `cross(Vector, Tensor)` and `cross(Tensor, Vector)` — currently falls through to Value::Tensor wrapper. Pin this contract with an explicit test.\n\n## Memory hints\n- search: \"assert_vector3 test macro stdlib\"\n- search: \"Value::Point dot cross normalize contract\"\n- entities: eval_builtin, cross, dot, normalize, Value::Vector, Value::Point",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "301"
         ],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-03-25T21:56:42.436Z"
+        "updatedAt": "2026-03-26T02:16:19.331Z"
       },
       {
         "id": "380",
@@ -7823,7 +7823,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-26T02:16:19.230Z",
+      "lastModified": "2026-03-26T02:16:19.331Z",
       "taskCount": 441,
       "completedCount": 232,
       "tags": [
