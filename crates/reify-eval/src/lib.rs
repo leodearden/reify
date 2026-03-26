@@ -890,13 +890,8 @@ impl Engine {
         // expressions may reference fields (e.g., `sample(my_field, point)`).
         for field in &module.fields {
             let lambda_value = match &field.source {
-                reify_compiler::CompiledFieldSource::Analytical { expr } => {
-                    let ctx = reify_expr::EvalContext::new(&values, functions)
-                        .with_meta(&self.meta_map);
-                    let val = reify_expr::eval_expr(expr, &ctx);
-                    Box::new(val)
-                }
-                reify_compiler::CompiledFieldSource::Composed { expr } => {
+                reify_compiler::CompiledFieldSource::Analytical { expr }
+                | reify_compiler::CompiledFieldSource::Composed { expr } => {
                     let ctx = reify_expr::EvalContext::new(&values, functions)
                         .with_meta(&self.meta_map);
                     let val = reify_expr::eval_expr(expr, &ctx);
