@@ -974,6 +974,56 @@ fn eval_sub(lv: &Value, rv: &Value) -> Value {
     }
 }
 
+// ── Quaternion math helpers (private, for Transform evaluation) ──────────────
+
+/// Hamilton product of two quaternions (w, x, y, z).
+fn quat_mul_t(a: (f64, f64, f64, f64), b: (f64, f64, f64, f64)) -> (f64, f64, f64, f64) {
+    (
+        a.0 * b.0 - a.1 * b.1 - a.2 * b.2 - a.3 * b.3,
+        a.0 * b.1 + a.1 * b.0 + a.2 * b.3 - a.3 * b.2,
+        a.0 * b.2 - a.1 * b.3 + a.2 * b.0 + a.3 * b.1,
+        a.0 * b.3 + a.1 * b.2 - a.2 * b.1 + a.3 * b.0,
+    )
+}
+
+/// Quaternion conjugate (inverse for unit quaternions).
+fn quat_conj(q: (f64, f64, f64, f64)) -> (f64, f64, f64, f64) {
+    (q.0, -q.1, -q.2, -q.3)
+}
+
+/// Rotate a 3D vector (vx, vy, vz) by unit quaternion q: q * (0,v) * conj(q).
+fn quat_rotate(q: (f64, f64, f64, f64), vx: f64, vy: f64, vz: f64) -> (f64, f64, f64) {
+    let v_quat = (0.0, vx, vy, vz);
+    let result = quat_mul_t(quat_mul_t(q, v_quat), quat_conj(q));
+    (result.1, result.2, result.3)
+}
+
+/// Extract (f64, f64, f64) triple and DimensionVector from a 3-element Value slice.
+/// Returns None if the slice has wrong length or contains non-numeric values.
+fn vec3_components(items: &[Value]) -> Option<(f64, f64, f64, DimensionVector)> {
+    if items.len() != 3 {
+        return None;
+    }
+    let x = items[0].as_f64()?;
+    let y = items[1].as_f64()?;
+    let z = items[2].as_f64()?;
+    let dim = items[0].dimension();
+    Some((x, y, z, dim))
+}
+
+/// Reconstruct a Vec<Value> from a (f64, f64, f64) triple and a DimensionVector.
+fn make_components_3(x: f64, y: f64, z: f64, dim: DimensionVector) -> Vec<Value> {
+    if dim == DimensionVector::DIMENSIONLESS {
+        vec![Value::Real(x), Value::Real(y), Value::Real(z)]
+    } else {
+        vec![
+            Value::Scalar { si_value: x, dimension: dim },
+            Value::Scalar { si_value: y, dimension: dim },
+            Value::Scalar { si_value: z, dimension: dim },
+        ]
+    }
+}
+
 fn eval_mul(lv: &Value, rv: &Value) -> Value {
     match (lv, rv) {
         (Value::Int(a), Value::Int(b)) => Value::Int(a * b),
@@ -1050,7 +1100,7 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
         }
         // Scalar * Vector or Vector * Scalar: scale each component → Vector
         (Value::Vector(components), scalar) | (scalar, Value::Vector(components))
-            if !matches!(scalar, Value::Vector(_) | Value::Point(_) | Value::Tensor(_)) =>
+            if !matches!(scalar, Value::Vector(_) | Value::Point(_) | Value::Tensor(_) | Value::Transform { .. }) =>
         {
             scale_components(components, scalar, eval_mul, Value::Vector)
         }
@@ -1058,9 +1108,119 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
         // Pragmatic deviation from strict affine rules: needed for weighted
         // interpolation and barycentric coordinates.
         (Value::Point(components), scalar) | (scalar, Value::Point(components))
-            if !matches!(scalar, Value::Vector(_) | Value::Point(_) | Value::Tensor(_)) =>
+            if !matches!(scalar, Value::Vector(_) | Value::Point(_) | Value::Tensor(_) | Value::Transform { .. }) =>
         {
             scale_components(components, scalar, eval_mul, Value::Point)
+        }
+        // Transform * Vector: apply rotation only (translation is ignored for vectors)
+        (
+            Value::Transform { rotation, .. },
+            Value::Vector(components),
+        ) => {
+            if let Value::Orientation { w, x, y, z } = rotation.as_ref() {
+                if !w.is_finite() || !x.is_finite() || !y.is_finite() || !z.is_finite() {
+                    return Value::Undef;
+                }
+                if let Some((vx, vy, vz, dim)) = vec3_components(components) {
+                    let (rx, ry, rz) = quat_rotate((*w, *x, *y, *z), vx, vy, vz);
+                    Value::Vector(make_components_3(rx, ry, rz, dim))
+                } else {
+                    Value::Undef
+                }
+            } else {
+                Value::Undef
+            }
+        }
+        // Transform * Point: apply rotation then add translation
+        (
+            Value::Transform { rotation, translation },
+            Value::Point(components),
+        ) => {
+            if let Value::Orientation { w, x, y, z } = rotation.as_ref() {
+                if !w.is_finite() || !x.is_finite() || !y.is_finite() || !z.is_finite() {
+                    return Value::Undef;
+                }
+                if let Some((px, py, pz, p_dim)) = vec3_components(components) {
+                    if let Value::Vector(t_items) = translation.as_ref() {
+                        if let Some((tx, ty, tz, t_dim)) = vec3_components(t_items) {
+                            // Dimension check: point and translation must share dimension
+                            if p_dim != t_dim {
+                                return Value::Undef;
+                            }
+                            let (rx, ry, rz) = quat_rotate((*w, *x, *y, *z), px, py, pz);
+                            Value::Point(make_components_3(rx + tx, ry + ty, rz + tz, p_dim))
+                        } else {
+                            Value::Undef
+                        }
+                    } else {
+                        Value::Undef
+                    }
+                } else {
+                    Value::Undef
+                }
+            } else {
+                Value::Undef
+            }
+        }
+        // Transform * Transform: composition (R1,t1)*(R2,t2) = (R1*R2, R1*t2+t1)
+        (
+            Value::Transform { rotation: r1, translation: t1 },
+            Value::Transform { rotation: r2, translation: t2 },
+        ) => {
+            if let (
+                Value::Orientation { w: w1, x: x1, y: y1, z: z1 },
+                Value::Orientation { w: w2, x: x2, y: y2, z: z2 },
+            ) = (r1.as_ref(), r2.as_ref())
+            {
+                if let (Value::Vector(t1_items), Value::Vector(t2_items)) =
+                    (t1.as_ref(), t2.as_ref())
+                {
+                    if let (
+                        Some((t1x, t1y, t1z, t1_dim)),
+                        Some((t2x, t2y, t2z, t2_dim)),
+                    ) = (vec3_components(t1_items), vec3_components(t2_items))
+                    {
+                        // Dimension check: both translations must share dimension
+                        if t1_dim != t2_dim {
+                            return Value::Undef;
+                        }
+                        // Compose rotations: R = R1 * R2
+                        let q1 = (*w1, *x1, *y1, *z1);
+                        let (rw, rx, ry, rz) = quat_mul_t(q1, (*w2, *x2, *y2, *z2));
+                        // Normalize result quaternion (reject NaN/Inf/zero-length)
+                        if !rw.is_finite() || !rx.is_finite() || !ry.is_finite() || !rz.is_finite() {
+                            return Value::Undef;
+                        }
+                        let norm = (rw * rw + rx * rx + ry * ry + rz * rz).sqrt();
+                        if norm == 0.0 {
+                            return Value::Undef;
+                        }
+                        let (rw, rx, ry, rz) = (rw / norm, rx / norm, ry / norm, rz / norm);
+                        // Compose translations: t = R1 * t2 + t1
+                        let (rt2x, rt2y, rt2z) = quat_rotate(q1, t2x, t2y, t2z);
+                        Value::Transform {
+                            rotation: Box::new(Value::Orientation {
+                                w: rw,
+                                x: rx,
+                                y: ry,
+                                z: rz,
+                            }),
+                            translation: Box::new(Value::Vector(make_components_3(
+                                rt2x + t1x,
+                                rt2y + t1y,
+                                rt2z + t1z,
+                                t1_dim,
+                            ))),
+                        }
+                    } else {
+                        Value::Undef
+                    }
+                } else {
+                    Value::Undef
+                }
+            } else {
+                Value::Undef
+            }
         }
         _ => Value::Undef,
     }
