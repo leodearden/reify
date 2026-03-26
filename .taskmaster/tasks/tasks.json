@@ -7498,11 +7498,11 @@
         "description": "Three correctness bugs in crates/reify-compiler/src/lib.rs:\n\n1. compile_purpose() (~line 1719) doesn't call set_unit_registry(), so QuantityLiterals referencing user-declared units inside purpose constraints silently fail to resolve.\n2. Affine units in conversion expressions (evaluate_const_expr QuantityLiteral branch) incorrectly apply the full transform (value*factor+offset). In conversion-factor context, only the scaling factor should be used.\n3. unwrap_or(1.0) in compile_unit silently uses factor=1.0 when conversion expression fails. Per project convention, logic errors should be noisy.\n\nSource: review suggestions from esc-208-28 (task 208).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "blocked",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-03-26T12:17:54.921Z"
+        "updatedAt": "2026-03-26T13:05:32.236Z"
       },
       {
         "id": "417",
@@ -8408,7 +8408,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-26T12:47:47.117Z",
+      "lastModified": "2026-03-26T13:05:32.236Z",
       "taskCount": 488,
       "completedCount": 250,
       "tags": [
