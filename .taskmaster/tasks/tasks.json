@@ -7017,13 +7017,13 @@
         "description": "Five test improvements for the Frame type added in task 234:\n\n1. **exports.rs**: Add Frame export tests mirroring the existing Orientation section — verify `Type::Frame(3)`, `Type::frame(3)`, and `Value::Frame { .. }` are publicly accessible. File: `crates/reify-types/tests/exports.rs`\n\n2. **Invalid test quaternion**: `value_frame_ord_same_origin_compare_basis` (value.rs:2900) uses an all-zero quaternion `{ w: 0.0, x: 0.0, y: 0.0, z: 0.0 }` which violates the unit quaternion invariant. Replace with a valid unit quaternion like `{ w: 0.0, x: 1.0, y: 0.0, z: 0.0 }` (180° rotation around X).\n\n3. **Point4 boundary test**: Add `frame3_point4_origin_returns_undef` testing that a 4-component Point is rejected by frame3. File: `crates/reify-stdlib/src/lib.rs`\n\n4. **frame3_identity test name/coverage**: `frame3_identity_with_any_args_returns_undef` (lib.rs:4059) only tests 1 and 2 args. Either add a 3-arg assertion or rename to `frame3_identity_with_one_or_two_args_returns_undef`.\n\n5. **Cross-type inequality**: Add tests verifying `Frame != Orientation` and `Frame != Point` (testing the `_ => false` catch-all in PartialEq). File: `crates/reify-types/src/value.rs`\n\nmemory_hints: search \"Frame test coverage\", entity \"Value::Frame\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "234"
         ],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-03-25T22:01:41.414Z"
+        "updatedAt": "2026-03-26T02:19:57.363Z"
       },
       {
         "id": "383",
@@ -7823,7 +7823,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-26T02:19:57.262Z",
+      "lastModified": "2026-03-26T02:19:57.363Z",
       "taskCount": 441,
       "completedCount": 232,
       "tags": [
