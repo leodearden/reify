@@ -6711,11 +6711,11 @@
         "description": "The `complex_magnitude` match arm (lib.rs:427-436) duplicates the Complex branch of `magnitude` (lib.rs:285-291) verbatim. Extract a private `#[inline(always)] fn complex_abs(re: f64, im: f64, dimension: DimensionVector) -> Value` helper shared by both arms. Also add a `complex_magnitude_overflow_returns_undef` test with `f64::MAX` components (paralleling the existing `complex_add_overflow_returns_undef` pattern).\n\nMemory hints: search \"complex_magnitude magnitude duplication\", entities: eval_builtin, sanitize_value",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-03-25T21:48:13.059Z"
+        "updatedAt": "2026-03-26T02:05:09.555Z"
       },
       {
         "id": "358",
@@ -7823,7 +7823,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-26T02:05:09.013Z",
+      "lastModified": "2026-03-26T02:05:09.587Z",
       "taskCount": 441,
       "completedCount": 232,
       "tags": [
