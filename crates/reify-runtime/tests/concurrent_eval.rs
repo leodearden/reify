@@ -1758,3 +1758,68 @@ mod poison_panics {
         assert!(result.is_err(), "into_result() should panic on poisoned values lock, but it returned successfully");
     }
 }
+
+/// F16: MetaAccess expression resolves correctly during concurrent evaluation.
+///
+/// Builds a template with meta block and a Let binding using MetaAccess,
+/// runs through edit_param_concurrent, and verifies the meta value resolves.
+#[tokio::test]
+async fn concurrent_eval_meta_access_resolves() {
+    let e = "W";
+
+    // param 'size' with default 5.0
+    let size_expr = reify_types::CompiledExpr::literal(Value::Real(5.0), Type::Real);
+
+    // let 'area' = size * 2 (depends on size, will be re-evaluated)
+    let size_ref = reify_types::CompiledExpr::value_ref(ValueCellId::new(e, "size"), Type::Real);
+    let two = reify_types::CompiledExpr::literal(Value::Real(2.0), Type::Real);
+    let area_expr = reify_types::CompiledExpr::binop(BinOp::Mul, size_ref, two, Type::Real);
+
+    // let 'tag' = meta_access("W", "material") — should resolve to "aluminum"
+    let meta_expr = reify_types::CompiledExpr::meta_access("W".to_string(), "material".to_string());
+
+    let template = TopologyTemplateBuilder::new(e)
+        .meta(
+            [("material".to_string(), "aluminum".to_string())]
+                .into_iter()
+                .collect(),
+        )
+        .param(e, "size", Type::Real, Some(size_expr))
+        .let_binding(e, "area", Type::Real, area_expr)
+        .let_binding(e, "tag", Type::String, meta_expr)
+        .build();
+
+    let module = build_module(template);
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+    let _initial = engine.eval(&module);
+
+    let size_id = ValueCellId::new(e, "size");
+    let area_id = ValueCellId::new(e, "area");
+    let tag_id = ValueCellId::new(e, "tag");
+    let cancel = CancellationToken::new();
+
+    // Concurrent edit: change size from 5 to 20
+    let (_setup, result) = edit_param_concurrent(
+        &mut engine,
+        size_id.clone(),
+        Value::Real(20.0),
+        &cancel,
+    )
+    .await
+    .unwrap();
+
+    // area should update: 20 * 2 = 40
+    assert_eq!(
+        result.values.get(&area_id),
+        Some(&Value::Real(40.0)),
+        "area should be 40.0 after concurrent edit"
+    );
+
+    // tag should still resolve meta_access("W", "material") = "aluminum"
+    assert_eq!(
+        result.values.get(&tag_id),
+        Some(&Value::String("aluminum".to_string())),
+        "MetaAccess should resolve to 'aluminum' during concurrent eval"
+    );
+}
