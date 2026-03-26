@@ -7785,11 +7785,11 @@
         "description": "Make find_parsed_member_span in analysis.rs recurse into GuardedGroupDecl.members and else_members so params/lets inside where-guarded blocks are visible to hover and goto-def. Also affects goto_def.rs which has the same flat traversal. (Review followup from task 216)",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-26T02:25:36.910Z"
+        "updatedAt": "2026-03-26T12:05:53.675Z"
       },
       {
         "id": "438",
@@ -7835,11 +7835,11 @@
         "description": "Two cleanup items in claude_bridge_tests.rs for the wait_ready_notified_race_on_multithread test (lines 1755-1792):\n\n1. **Simplify Arc<Mutex<Option<DuplexStream>>>**: The held_writer/held_clone pattern is copied from ensure_sidecar_ready_notified_race_on_multithread where the Arc is needed because the writer crosses a spawn_fn closure boundary. In the wait_ready test, everything runs sequentially — a plain `let _data_writer = data_writer;` after write_all keeps the writer alive equally well with zero heap allocation. This matches the pattern already used in wait_ready_returns_err_on_timeout and wait_ready_returns_err_on_crash_during_wait.\n\n2. **Add handle.kill() per iteration**: Each of the 20 iterations drops SidecarHandle without kill(). SidecarHandle has no Drop impl, so the internal reader JoinHandle is detached, not aborted. The reader task continues until it sees EOF from the held_writer dropping at loop-iteration end. This means up to ~20 reader tasks accumulate on the 2-thread pool, risking flaky timeouts under load. Add `handle.kill().await` after asserting the result.\n\nMemory hints: search \"wait_ready race test duplex\", search \"SidecarHandle kill cleanup\", entities: SidecarHandle, wait_ready_notified_race_on_multithread",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-03-26T02:50:00.106Z"
+        "updatedAt": "2026-03-26T12:05:53.705Z"
       },
       {
         "id": "442",
@@ -8337,7 +8337,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-26T12:05:53.629Z",
+      "lastModified": "2026-03-26T12:05:53.705Z",
       "taskCount": 482,
       "completedCount": 249,
       "tags": [
