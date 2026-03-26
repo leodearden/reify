@@ -600,7 +600,13 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
                         return Value::Undef;
                     }
                     let dim = f_dim;
-                    let (rfx, rfy, rfz) = quat_rotate(r, fx, fy, fz);
+                    // Use the normalized quaternion for rotation to ensure
+                    // consistency with the stored rotation in the result Transform
+                    let r_norm = match &rot_val {
+                        Value::Orientation { w, x, y, z } => (*w, *x, *y, *z),
+                        _ => unreachable!(),
+                    };
+                    let (rfx, rfy, rfz) = quat_rotate(r_norm, fx, fy, fz);
                     let trans = Value::Vector(vec![
                         Value::Scalar { si_value: tx - rfx, dimension: dim },
                         Value::Scalar { si_value: ty - rfy, dimension: dim },
