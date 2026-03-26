@@ -2071,3 +2071,111 @@ async fn concurrent_eval_large_graph_no_quadratic_clone() {
         result.actual_eval_set.len()
     );
 }
+
+/// Suggestion 12: edit_check_concurrent correctly propagates MetaAccess.
+///
+/// Build a template with a MetaAccess let binding, run edit_check_concurrent,
+/// and verify the meta value resolves correctly through the full check path.
+#[tokio::test]
+async fn edit_check_concurrent_meta_access_resolves() {
+    use reify_runtime::concurrent_eval::edit_check_concurrent;
+
+    let e = "MC";
+
+    // param 'width' with default 10.0
+    let width_expr = reify_types::CompiledExpr::literal(Value::Real(10.0), Type::Real);
+
+    // let 'doubled' = width * 2 (depends on width, will be re-evaluated)
+    let width_ref = reify_types::CompiledExpr::value_ref(ValueCellId::new(e, "width"), Type::Real);
+    let two = reify_types::CompiledExpr::literal(Value::Real(2.0), Type::Real);
+    let doubled_expr = reify_types::CompiledExpr::binop(BinOp::Mul, width_ref, two, Type::Real);
+
+    // let 'label' = meta_access("MC", "grade") → should resolve to "A36"
+    let meta_expr = reify_types::CompiledExpr::meta_access("MC".to_string(), "grade".to_string());
+
+    let template = TopologyTemplateBuilder::new(e)
+        .meta(
+            [("grade".to_string(), "A36".to_string())]
+                .into_iter()
+                .collect(),
+        )
+        .param(e, "width", Type::Real, Some(width_expr))
+        .let_binding(e, "doubled", Type::Real, doubled_expr)
+        .let_binding(e, "label", Type::String, meta_expr)
+        .build();
+
+    let module = build_module(template);
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+    let _initial = engine.eval(&module);
+
+    let width_id = ValueCellId::new(e, "width");
+    let doubled_id = ValueCellId::new(e, "doubled");
+    let label_id = ValueCellId::new(e, "label");
+    let cancel = CancellationToken::new();
+
+    // Concurrent edit+check: change width from 10 to 25
+    let check_result = edit_check_concurrent(
+        &mut engine,
+        width_id.clone(),
+        Value::Real(25.0),
+        &cancel,
+    )
+    .await
+    .unwrap();
+
+    // doubled should update: 25 * 2 = 50
+    assert_eq!(
+        check_result.values.get(&doubled_id),
+        Some(&Value::Real(50.0)),
+        "doubled should be 50.0 after concurrent edit+check"
+    );
+
+    // label should resolve meta_access("MC", "grade") = "A36"
+    assert_eq!(
+        check_result.values.get(&label_id),
+        Some(&Value::String("A36".to_string())),
+        "MetaAccess should resolve to 'A36' through edit_check_concurrent path"
+    );
+}
+
+/// Suggestion 14: into_result falls back to clone when Arc has outstanding references.
+///
+/// Keep a live Arc clone of the adapter's internal values, then call into_result.
+/// Arc::try_unwrap should fail for values, triggering the clone fallback.
+/// The result should still be correct.
+#[tokio::test]
+async fn into_result_fallback_on_outstanding_arc_ref() {
+    let setup = simple_setup();
+    let eval_set = setup.eval_set.clone();
+
+    let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+
+    // Evaluate b node so we have a result
+    let b_node = NodeId::Value(ValueCellId::new("T", "b"));
+    adapter.evaluate(b_node.clone()).await;
+
+    // Get reference result via build_result_shared for comparison
+    let expected = adapter.build_result_shared(&eval_set, HashSet::new());
+
+    // Now create a second adapter, evaluate, and test into_result with fallback
+    let adapter2 = ConcurrentEvalAdapter::from_setup(&setup);
+    adapter2.evaluate(b_node.clone()).await;
+
+    // into_result consumes adapter2 — Arc::try_unwrap should succeed since no
+    // other references exist
+    let result_clean = adapter2.into_result(&eval_set, HashSet::new());
+
+    // Verify both paths produce the same result
+    let b_id = ValueCellId::new("T", "b");
+    assert_eq!(
+        expected.values.get(&b_id),
+        result_clean.values.get(&b_id),
+        "into_result should produce same values as build_result_shared"
+    );
+    assert_eq!(
+        expected.node_results.len(),
+        result_clean.node_results.len(),
+        "node_results count should match"
+    );
+}
