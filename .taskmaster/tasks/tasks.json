@@ -8170,6 +8170,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 471,
+        "title": "Code clarity: comments, naming fixes, and guard loop consolidation",
+        "description": "Add explanatory comment on merged Analytical|Composed match arm, document values/snapshot_values invariant, rename/strengthen no_quadratic_clone test, consolidate guard loops",
+        "details": "1. crates/reify-eval/src/lib.rs: Add comment on merged Analytical|Composed match arm explaining why they share evaluation path\n2. crates/reify-runtime/src/concurrent_eval.rs: Document values/snapshot_values invariant in edit_check_concurrent\n3. crates/reify-runtime/tests/concurrent_eval.rs: Rename concurrent_eval_large_graph_no_quadratic_clone to concurrent_eval_100_node_chain_correctness (or add allocation/timing guard)\n4. crates/reify-eval/src/lib.rs lines 1561-1594: Consolidate guard member/else_member loops in edit_param re-elaboration to use the same `for (cells, is_active) in [...]` pattern\n\nFrom review of task 397 (esc-397-121).",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -8182,7 +8193,7 @@
       ],
       "created": "2026-03-26T07:59:21.955Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-26T07:59:56.561Z"
+      "updated": "2026-03-26T08:00:02.513Z"
     }
   }
 }
