@@ -418,3 +418,17 @@ fn method_phase() {
     let expected = scalar_val(std::f64::consts::FRAC_PI_4, DimensionVector::ANGLE);
     assert_eq!(result, expected);
 }
+
+// ─── step-19: .conjugate() ──────────────────────────────────────────────────
+
+/// .conjugate() negates the imaginary part, preserves re and dimension.
+#[test]
+fn method_conjugate() {
+    let result = eval_method(
+        complex_val(3.0, 4.0, DimensionVector::LENGTH),
+        Type::complex(Type::length()),
+        "conjugate",
+        Type::complex(Type::length()),
+    );
+    assert_eq!(result, complex_val(3.0, -4.0, DimensionVector::LENGTH));
+}
