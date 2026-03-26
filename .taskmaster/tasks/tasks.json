@@ -7821,11 +7821,11 @@
         "description": "ensure_sidecar_ready() at claude_bridge.rs:572 calls `notify_arc.notified()` without `enable()`, while the sibling method wait_ready() was just fixed (task 363) to use `pin!()` + `enable()` for the same subscribe-before-check idiom. The comment at line 569-571 is also misleading — it claims \"Creating the Notified future here pre-registers us as a potential waiter\" but creation alone leaves the future in Init state; only enable() or first poll transitions to Waiting.\n\nFix: Apply the same pattern as wait_ready(): `let mut notified = std::pin::pin!(notify_arc.notified()); notified.as_mut().enable();` before Phase 3. Correct the comment to say \"enable() registers us as a waiter\". Pass `notified` to timeout() at line 603.\n\nCurrently safe because notify_waiters() uses a generation counter, but if notify_one() were ever used instead, the notification could be silently lost. Fix eliminates the asymmetry and maintenance hazard.\n\nMemory hints: search \"wait_ready Notified enable race condition\", search \"ensure_sidecar_ready subscribe-before-check\", entities: ClaudeBridge, ensure_sidecar_ready, wait_ready",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-26T02:20:53.359Z"
+        "updatedAt": "2026-03-26T07:29:25.947Z"
       },
       {
         "id": "441",
@@ -7952,9 +7952,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-26T07:28:49.737Z",
+      "lastModified": "2026-03-26T07:29:25.948Z",
       "taskCount": 450,
-      "completedCount": 240,
+      "completedCount": 241,
       "tags": [
         "master"
       ]
