@@ -1042,7 +1042,7 @@ impl Engine {
             // Second pass: evaluate Let bindings in topological order
             // (handles forward references where a let declared earlier
             //  depends on a let declared later)
-            evaluate_let_bindings(&mut self.journal, &mut self.cache, template, &mut values, &mut snapshot, version_id, functions, &self.meta_map);
+            evaluate_let_bindings(&mut self.journal, &mut self.cache, template, &mut values, &mut snapshot, version_id, functions, &self.meta_map, &mut diagnostics);
 
             // Third pass: evaluate guarded groups.
             // Guard cells are Let-kind synthetic cells — evaluate their expressions,
@@ -1228,7 +1228,7 @@ impl Engine {
             // - regular subs create {parent}.{sub}.{member} cells via elaborate_child_instance
             // Both become available only after elaboration, so re-evaluate if any subs exist.
             if !template.sub_components.is_empty() {
-                evaluate_let_bindings(&mut self.journal, &mut self.cache, template, &mut values, &mut snapshot, version_id, functions, &self.meta_map);
+                evaluate_let_bindings(&mut self.journal, &mut self.cache, template, &mut values, &mut snapshot, version_id, functions, &self.meta_map, &mut diagnostics);
             }
         }
 
@@ -1356,7 +1356,7 @@ impl Engine {
                         };
 
                         // Re-run let binding evaluation in topological order
-                        evaluate_let_bindings(&mut self.journal, &mut self.cache, template, &mut values, &mut snapshot, res_version_id, &module.functions, &self.meta_map);
+                        evaluate_let_bindings(&mut self.journal, &mut self.cache, template, &mut values, &mut snapshot, res_version_id, &module.functions, &self.meta_map, &mut diagnostics);
                     }
                     SolveResult::Infeasible { diagnostics: solver_diags } => {
                         diagnostics.extend(solver_diags);
@@ -2885,6 +2885,7 @@ fn evaluate_let_bindings(
     version_id: u64,
     functions: &[CompiledFunction],
     meta_map: &MetaMap,
+    diagnostics: &mut Vec<Diagnostic>,
 ) {
     let let_cells: HashMap<NodeId, &reify_types::CompiledExpr> = template
         .value_cells
@@ -2905,6 +2906,26 @@ fn evaluate_let_bindings(
         .collect();
 
     let sorted_lets = topological_sort(&let_node_ids, &let_traces);
+
+    // Detect cyclic let-binding dependencies: if topological_sort dropped nodes
+    // (Kahn's algorithm silently omits nodes in cycles), report them.
+    if sorted_lets.len() < let_node_ids.len() {
+        let sorted_set: HashSet<&NodeId> = sorted_lets.iter().collect();
+        let mut cyclic_members: Vec<&str> = let_node_ids
+            .iter()
+            .filter(|nid| !sorted_set.contains(nid))
+            .filter_map(|nid| match nid {
+                NodeId::Value(vcid) => Some(vcid.member.as_str()),
+                _ => None,
+            })
+            .collect();
+        cyclic_members.sort();
+        diagnostics.push(Diagnostic::error(format!(
+            "circular let-binding dependency in '{}': [{}]",
+            template.name,
+            cyclic_members.join(", "),
+        )));
+    }
 
     for node_id in sorted_lets {
         let expr = let_cells[&node_id];
@@ -3887,6 +3908,7 @@ mod tests {
         };
         let meta_map = MetaMap::new();
 
+        let mut diagnostics = Vec::new();
         evaluate_let_bindings(
             &mut journal,
             &mut cache,
@@ -3896,6 +3918,7 @@ mod tests {
             1,
             &[],
             &meta_map,
+            &mut diagnostics,
         );
 
         // Verify computed values
