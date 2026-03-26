@@ -4120,6 +4120,18 @@ mod tests {
         }
     }
 
+    // ── construct_point_or_vector edge cases (task 398, step-11) ──────────────
+
+    #[test]
+    fn construct_point_or_vector_empty_args_returns_undef() {
+        // When expected_n=0 and args=[], should return Undef, not panic.
+        let result = construct_point_or_vector(&[], 0, true);
+        assert!(result.is_undef(), "expected Undef for empty args with expected_n=0, got {:?}", result);
+
+        let result = construct_point_or_vector(&[], 0, false);
+        assert!(result.is_undef(), "expected Undef for empty vector args with expected_n=0, got {:?}", result);
+    }
+
     // ── frame3 tests (step-5) ────────────────────────────────────────────────
 
     fn make_point3_len() -> Value {
