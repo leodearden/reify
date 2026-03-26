@@ -5235,4 +5235,28 @@ mod tests {
         assert!(eval_builtin("frame_to_frame", &[Value::Real(1.0), f.clone()]).is_undef());
         assert!(eval_builtin("frame_to_frame", &[f, Value::Real(1.0)]).is_undef());
     }
+
+    /// frame_to_frame with mismatched origin dimensions (LENGTH vs ANGLE) returns Undef.
+    #[test]
+    fn frame_to_frame_mismatched_origin_dimensions_undef() {
+        // from-frame: LENGTH-dimensioned origin
+        let from = Value::Frame {
+            origin: Box::new(Value::Point(vec![
+                Value::length(1.0),
+                Value::length(0.0),
+                Value::length(0.0),
+            ])),
+            basis: Box::new(make_identity_orientation()),
+        };
+        // to-frame: ANGLE-dimensioned origin
+        let to = Value::Frame {
+            origin: Box::new(Value::Point(vec![
+                Value::angle(1.0),
+                Value::angle(0.0),
+                Value::angle(0.0),
+            ])),
+            basis: Box::new(make_identity_orientation()),
+        };
+        assert!(eval_builtin("frame_to_frame", &[from, to]).is_undef());
+    }
 }
