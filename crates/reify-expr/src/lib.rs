@@ -846,6 +846,13 @@ fn eval_sub(lv: &Value, rv: &Value) -> Value {
         }
         // Component-wise Tensor subtraction
         (Value::Tensor(a), Value::Tensor(b)) => componentwise_binop(a, b, eval_sub, Value::Tensor),
+        // Affine geometry: Point - Point → Vector (displacement)
+        (Value::Point(a), Value::Point(b)) => componentwise_binop(a, b, eval_sub, Value::Vector),
+        // Affine geometry: Point - Vector → Point (point displaced backwards)
+        (Value::Point(a), Value::Vector(b)) => componentwise_binop(a, b, eval_sub, Value::Point),
+        // Affine geometry: Vector - Vector → Vector
+        (Value::Vector(a), Value::Vector(b)) => componentwise_binop(a, b, eval_sub, Value::Vector),
+        // Vector - Point falls through to Undef (no geometric meaning)
         _ => Value::Undef,
     }
 }
