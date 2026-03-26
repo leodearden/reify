@@ -7435,10 +7435,11 @@
         "description": "Fix naming convention and documentation issues in the gradient implementation:\n\n1. Rename NumericalGradient to GradientOf in FieldSourceKind (crates/reify-types/src/value.rs) — the existing variants describe data provenance, not computation method.\n2. Update Field lambda field doc to cover the NumericalGradient case where it holds a Value::Field.\n3. Fix stale divergence/curl stub comment (crates/reify-expr/src/lib.rs:107-110) that says \"require numeric differentiation infrastructure\" — gradient already proved it exists.\n4. Document O(6^depth) cost of nested gradient fields in compute_numerical_gradient doc comment.\n\nSource: review suggestions from esc-281-11 (task 281).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-03-26T02:34:56.485Z"
       },
       {
         "id": "412",
@@ -7828,7 +7829,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-26T02:34:56.286Z",
+      "lastModified": "2026-03-26T02:34:56.488Z",
       "taskCount": 441,
       "completedCount": 233,
       "tags": [
