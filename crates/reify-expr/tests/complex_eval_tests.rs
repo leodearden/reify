@@ -326,3 +326,53 @@ fn complex_negation() {
     );
     assert_eq!(result, complex_val(-3.0, -4.0, DimensionVector::LENGTH));
 }
+
+// ─── step-13: .re and .im methods ──────────────────────────────────────────
+
+/// .re on dimensionless Complex returns Real.
+#[test]
+fn method_re_dimensionless() {
+    let result = eval_method(
+        complex_val(3.0, 4.0, DimensionVector::DIMENSIONLESS),
+        Type::complex(Type::Real),
+        "re",
+        Type::Real,
+    );
+    assert_eq!(result, Value::Real(3.0));
+}
+
+/// .re on dimensioned Complex returns Scalar with that dimension.
+#[test]
+fn method_re_dimensioned() {
+    let result = eval_method(
+        complex_val(3.0, 4.0, DimensionVector::LENGTH),
+        Type::complex(Type::length()),
+        "re",
+        Type::length(),
+    );
+    assert_eq!(result, scalar_val(3.0, DimensionVector::LENGTH));
+}
+
+/// .im on dimensionless Complex returns Real.
+#[test]
+fn method_im_dimensionless() {
+    let result = eval_method(
+        complex_val(3.0, 4.0, DimensionVector::DIMENSIONLESS),
+        Type::complex(Type::Real),
+        "im",
+        Type::Real,
+    );
+    assert_eq!(result, Value::Real(4.0));
+}
+
+/// .im on dimensioned Complex returns Scalar with that dimension.
+#[test]
+fn method_im_dimensioned() {
+    let result = eval_method(
+        complex_val(3.0, 4.0, DimensionVector::LENGTH),
+        Type::complex(Type::length()),
+        "im",
+        Type::length(),
+    );
+    assert_eq!(result, scalar_val(4.0, DimensionVector::LENGTH));
+}
