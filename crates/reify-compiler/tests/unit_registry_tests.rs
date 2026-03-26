@@ -567,3 +567,47 @@ fn affine_unit_rejected_in_conversion_expression() {
         errors
     );
 }
+
+// ─── step-42: non-affine units in conversion still work; affine in runtime ok ─
+
+#[test]
+fn non_affine_unit_in_conversion_still_works_after_guard() {
+    // Non-affine QuantityLiteral in conversion expressions must still work.
+    // 'thou = 0.0254mm' references mm (no offset) — should produce factor ≈ 0.0000254.
+    let module = parse_and_compile(
+        "unit mm : Length = 0.001\nunit thou : Length = 0.0254mm"
+    );
+    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
+    let thou = module.units.iter().find(|u| u.name == "thou").expect("thou not found");
+    assert!(
+        (thou.factor - 0.0000254).abs() < 1e-12,
+        "thou should have factor 0.0000254, got {}",
+        thou.factor
+    );
+}
+
+#[test]
+fn affine_unit_still_works_in_runtime_value_expression() {
+    // Affine units must still work in runtime value expressions (QuantityLiteral
+    // in structure params). '25degC' → si_value = 25*1 + 273.15 = 298.15K.
+    // This goes through lookup_unit_in_registry(), NOT evaluate_const_expr().
+    let module = parse_and_compile(
+        "unit degC : Temperature = 1 offset 273.15\nstructure S { param t : Temperature = 25degC }"
+    );
+    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
+    let template = module.templates.iter().find(|t| t.name == "S").expect("S not found");
+    let t_cell = template.value_cells.iter().find(|c| c.id.member == "t").expect("t not found");
+    if let Some(expr) = &t_cell.default_expr {
+        if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar { si_value, .. }) = &expr.kind {
+            assert!(
+                (si_value - 298.15).abs() < 1e-9,
+                "25degC should be 298.15K, got {}",
+                si_value
+            );
+        } else {
+            panic!("expected scalar literal for t, got {:?}", expr.kind);
+        }
+    } else {
+        panic!("t has no default_expr");
+    }
+}
