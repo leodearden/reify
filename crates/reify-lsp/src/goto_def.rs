@@ -139,6 +139,22 @@ mod tests {
     }
 
     #[test]
+    fn goto_def_let_inside_else_block() {
+        // Source with fallback declared inside an else block,
+        // referenced by let use_fb = fallback on line 7.
+        let source = "structure S {\n    param cond : Bool = true\n    where cond {\n        param a : Scalar = 1mm\n    } else {\n        let fallback = 10\n    }\n    let use_fb = fallback\n}";
+        // Line 7: "    let use_fb = fallback"
+        //                           ^-- char 17 = start of 'fallback' reference
+        let position = Position::new(7, 17);
+        let loc = compute_goto_definition(source, &test_uri(), position)
+            .expect("goto-def for fallback ref should return location");
+        assert_eq!(loc.uri, test_uri());
+        // Should point to the let declaration on line 5:
+        // "        let fallback = 10"
+        assert_eq!(loc.range.start.line, 5);
+    }
+
+    #[test]
     fn goto_def_unknown_word_returns_none() {
         let source = "structure Foo {\n  param x: Scalar = 5mm\n}";
         // Position past end of meaningful content
