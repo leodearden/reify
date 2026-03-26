@@ -3228,12 +3228,8 @@ fn compile_geometry_op(
                     let distance = args
                         .iter()
                         .find(|(n, _)| n == "distance")
-                        .map(|(_, expr)| reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions).with_meta(meta_map)))
-                        .expect("Extrude Sweep args must contain distance key — compiler bug");
-                    // Panic on non-f64 (compiler bug), return None on NaN/Inf (runtime guard)
-                    let distance_f64 = distance.as_f64()
-                        .unwrap_or_else(|| panic!("Extrude distance must evaluate to f64 — compiler bug"));
-                    if !distance_f64.is_finite() { return None; }
+                        .map(|(_, expr)| reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions).with_meta(meta_map)))?;
+                    let distance_f64 = distance.as_f64().filter(|v| v.is_finite())?;
                     Some(reify_types::GeometryOp::Extrude {
                         profile: profile_handle,
                         distance,
@@ -3246,12 +3242,10 @@ fn compile_geometry_op(
                     };
                     let eval_arg_f64 = |name: &str| -> Option<f64> {
                         let (_, expr) = args.iter()
-                            .find(|(n, _)| n == name)
-                            .unwrap_or_else(|| panic!("Revolve Sweep '{}' arg missing — compiler bug", name));
-                        let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions).with_meta(meta_map))
+                            .find(|(n, _)| n == name)?;
+                        reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions).with_meta(meta_map))
                             .as_f64()
-                            .unwrap_or_else(|| panic!("Revolve '{}' arg must evaluate to f64 — compiler bug", name));
-                        Some(val).filter(|v| v.is_finite())
+                            .filter(|v| v.is_finite())
                     };
                     let axis_dir = [
                         eval_arg_f64("ax")?,
@@ -3940,13 +3934,11 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "compiler bug")]
-    fn compile_geometry_op_revolve_missing_arg_panics() {
+    fn compile_geometry_op_revolve_missing_arg_returns_none() {
         let step_handles = vec![GeometryHandleId(10)];
         let values = ValueMap::new();
 
-        // Revolve with missing 'ox' arg — compiler must always emit all args,
-        // so absence is an invariant violation that should panic
+        // Revolve with missing 'ox' arg — returns None gracefully
         let op = CompiledGeometryOp::Sweep {
             kind: SweepKind::Revolve,
             profiles: vec![GeomRef::Step(0)],
@@ -3961,26 +3953,23 @@ mod tests {
             ],
         };
 
-        // Should panic, not return None
-        compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        assert!(result.is_none(), "expected None for missing 'ox' arg, got {:?}", result);
     }
 
     #[test]
-    #[should_panic(expected = "compiler bug")]
-    fn compile_geometry_op_extrude_missing_distance_panics() {
+    fn compile_geometry_op_extrude_missing_distance_returns_none() {
         let step_handles = vec![GeometryHandleId(10)];
         let values = ValueMap::new();
 
-        // Extrude with no args — compiler must always emit "distance" arg,
-        // so absence is an invariant violation that should panic
         let op = CompiledGeometryOp::Sweep {
             kind: SweepKind::Extrude,
             profiles: vec![GeomRef::Step(0)],
             args: vec![],
         };
 
-        // Should panic, not return None
-        compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        assert!(result.is_none(), "expected None for missing 'distance' arg, got {:?}", result);
     }
 
     #[test]
