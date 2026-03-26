@@ -8630,6 +8630,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 509,
+        "title": "Unify output channel for constraint reporting in CLI commands",
+        "description": "cmd_build prints constraint status to stderr (eprintln!) while cmd_check uses stdout (println!). Inconsistent output channels for the same constraint summary concept.",
+        "details": "In crates/reify-cli/src/main.rs, cmd_build (line ~174) prints constraint status lines to stderr via eprintln!, while cmd_check (line ~101) prints them to stdout via println!. The summary message 'Some constraints violated.' is also sent to different channels. Unify so both commands use the same channel. Stdout is likely correct since constraint results are primary output.\n\nFiles: crates/reify-cli/src/main.rs\n\nmemory_hints: search \"cmd_build cmd_check constraint\" | entities: cmd_build, cmd_check",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -8642,7 +8653,7 @@
       ],
       "created": "2026-03-26T21:45:39.849Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-26T21:45:59.512Z"
+      "updated": "2026-03-26T21:46:02.525Z"
     }
   }
 }
