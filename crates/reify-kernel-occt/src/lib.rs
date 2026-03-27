@@ -698,6 +698,24 @@ mod tests {
         kernel.store_raw(translated)
     }
 
+    /// Create a rect face of given `width` × `height`, rotate it into the XZ plane,
+    /// translate it `offset_r` along X, and store into `kernel`. Returns a
+    /// GeometryHandleId suitable for revolving around the Z axis.
+    fn make_rect_torus_profile(
+        kernel: &mut OcctKernel,
+        width: f64,
+        height: f64,
+        offset_r: f64,
+    ) -> GeometryHandleId {
+        let face = ffi::ffi::make_rect_face(width, height, 0.0, 0.0, 0.0)
+            .expect("make_rect_face should succeed");
+        let rotated = ffi::ffi::rotate_shape(&face, 1.0, 0.0, 0.0, std::f64::consts::FRAC_PI_2)
+            .expect("rotate_shape should succeed");
+        let translated = ffi::ffi::translate_shape(&rotated, offset_r, 0.0, 0.0)
+            .expect("translate_shape should succeed");
+        kernel.store_raw(translated)
+    }
+
     #[test]
     fn occt_available_is_true_when_built_with_occt() {
         const {
