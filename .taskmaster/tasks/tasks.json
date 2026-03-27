@@ -11126,6 +11126,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 573,
+        "title": "Align constraint/diagnostic output ordering in cmd_check vs cmd_build",
+        "description": "cmd_check reports constraint results before diagnostics (line 113, then 115-117), while cmd_build reports diagnostics before constraints (lines 172-174, then 177). The two commands should present the same information in the same order for consistency.\n\nFix: Pick one order (constraints first matches cmd_check) and apply to both.\n\nMemory hints: search \"CLI output ordering consistency\", entity: cmd_check, cmd_build",
+        "details": "Locations:\n- crates/reify-cli/src/main.rs:113 (cmd_check: constraints first)\n- crates/reify-cli/src/main.rs:172-177 (cmd_build: diagnostics first)\n\nRecommended: constraints first, then diagnostics — matching cmd_check's current order. Diagnostics describe evaluation problems; constraint results describe design intent, so leading with constraints is more user-friendly.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -11138,7 +11149,7 @@
       ],
       "created": "2026-03-27T09:20:31.609Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-27T09:24:43.708Z"
+      "updated": "2026-03-27T09:24:50.007Z"
     }
   }
 }
