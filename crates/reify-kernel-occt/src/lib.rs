@@ -448,7 +448,12 @@ impl OcctKernel {
                 axis_dir,
                 angle_rad,
             } => {
-                // Validate finiteness with parameter-specific messages
+                // Revolve validation (Rust layer — DEFENSE-IN-DEPTH)
+                // This Rust layer validates inputs with stricter thresholds (AXIS_MAG_SQ_MIN=1e-12,
+                // ANGLE_ABS_MIN=1e-30) and produces descriptive error messages including parameter
+                // names and values. The C++ FFI layer (occt_wrapper.cpp) has its own validation
+                // with relaxed thresholds (1e-30 for mag_sq) as a safety net for any future code
+                // paths that may call FFI directly, bypassing this Rust layer.
                 if !axis_origin[0].is_finite()
                     || !axis_origin[1].is_finite()
                     || !axis_origin[2].is_finite()
