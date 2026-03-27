@@ -10911,6 +10911,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 559,
+        "title": "Rename poison test modules and fix stale comments in concurrent_eval",
+        "description": "Test module names and comments are stale after C4 reversal from panic-on-poison to graceful recovery.",
+        "details": "1. Rename mod poison_panics to mod poison_recovery_extended (or similar) — it no longer tests panics.\n2. Update 'legacy module, kept for backward compat' comment on mod poison_recovery to accurately describe its role.\n3. Add comment documenting why C4 (panic-on-poison) was reversed in favor of graceful recovery.\n\nFiles: crates/reify-runtime/tests/concurrent_eval.rs",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -10923,7 +10934,7 @@
       ],
       "created": "2026-03-27T09:00:04.578Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-27T09:01:01.250Z"
+      "updated": "2026-03-27T09:01:06.085Z"
     }
   }
 }
