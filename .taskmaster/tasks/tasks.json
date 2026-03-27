@@ -9763,7 +9763,7 @@
         "description": "NelderMeadSolver at crates/reify-constraints/src/solver.rs:401-423 skips the early-exit feasibility check when problem.objective.is_some(). This means optimization problems where constraints are already satisfied at the initial point still run the full 5000 iterations.\n\n**Fix:** When an objective is present and all constraints are already satisfied at the initial point, still run the optimizer but consider using the feasible initial point as a baseline. At minimum, add the feasibility check before the optimizer loop and if already feasible, run a reduced number of iterations or use a tighter convergence criterion.\n\n**Memory hints:** search for \"Nelder-Mead solver\", \"constraint solver architecture\", entity names: NelderMeadSolver, FEASIBILITY_THRESHOLD, MAX_ITERS",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -9782,7 +9782,7 @@
             ]
           }
         },
-        "updatedAt": "2026-03-27T08:04:40.118Z"
+        "updatedAt": "2026-03-27T08:06:33.112Z"
       },
       {
         "id": "496",
@@ -10485,7 +10485,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-27T08:06:31.135Z",
+      "lastModified": "2026-03-27T08:06:33.112Z",
       "taskCount": 531,
       "completedCount": 256,
       "tags": [
