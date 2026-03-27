@@ -661,6 +661,46 @@ impl TopologyTemplateBuilder {
 }
 
 #[cfg(test)]
+mod reexport_contract_tests {
+    //! Guard tests: verify that core builder functions remain accessible
+    //! via the `crate::builders` module path after submodule extraction.
+    use crate::builders::{
+        binop, conditional_expr, eq, fn_call, ge, gt, lambda_expr, le, list_expr, literal, lt,
+        map_expr, method_call_expr, ne, neg, not, sample_call, set_expr, user_fn_call, value_ref,
+        value_ref_typed,
+    };
+    use reify_types::{BinOp, Type, Value};
+
+    #[test]
+    fn expr_builders_accessible_via_module_path() {
+        // Compilation-only: if this compiles, the re-export contract holds.
+        let _ = literal(Value::Int(1));
+        let _ = value_ref("E", "m");
+        let _ = value_ref_typed("E", "m", Type::Real);
+        let a = literal(Value::Int(1));
+        let b = literal(Value::Int(2));
+        let _ = binop(BinOp::Add, a.clone(), b.clone());
+        let _ = gt(a.clone(), b.clone());
+        let _ = lt(a.clone(), b.clone());
+        let _ = ge(a.clone(), b.clone());
+        let _ = le(a.clone(), b.clone());
+        let _ = eq(a.clone(), b.clone());
+        let _ = ne(a.clone(), b.clone());
+        let _ = not(literal(Value::Bool(true)));
+        let _ = neg(literal(Value::Int(1)));
+        let _ = list_expr(vec![literal(Value::Int(1))]);
+        let _ = set_expr(vec![literal(Value::Int(1))]);
+        let _ = map_expr(vec![(literal(Value::String("k".into())), literal(Value::Int(1)))]);
+        let _ = conditional_expr(literal(Value::Bool(true)), literal(Value::Int(1)), literal(Value::Int(2)));
+        let _ = fn_call("f", "q::f", vec![], Type::Real);
+        let _ = user_fn_call("f", vec![], Type::Real);
+        let _ = method_call_expr(literal(Value::Int(1)), "m", vec![], Type::Int);
+        let _ = sample_call(literal(Value::Real(0.0)), literal(Value::Real(1.0)), Type::Real);
+        let _ = lambda_expr(vec![("x", Type::Real)], literal(Value::Real(1.0)));
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use reify_types::CompiledExprKind;
