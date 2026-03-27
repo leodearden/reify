@@ -110,9 +110,7 @@ fn lsp_initialize_returns_capabilities() {
 /// Read all JSON-RPC messages from stdout in a background thread.
 /// Returns a receiver that collects all messages.
 /// This prevents the server from blocking on stdout when it sends notifications.
-fn spawn_reader(
-    stdout: std::process::ChildStdout,
-) -> mpsc::Receiver<serde_json::Value> {
+fn spawn_reader(stdout: std::process::ChildStdout) -> mpsc::Receiver<serde_json::Value> {
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
         let mut reader = BufReader::new(stdout);
@@ -147,9 +145,10 @@ fn spawn_reader(
                 return;
             }
             if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&body)
-                && tx.send(json).is_err() {
-                    return;
-                }
+                && tx.send(json).is_err()
+            {
+                return;
+            }
         }
     });
     rx

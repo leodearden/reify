@@ -4,24 +4,38 @@
 
 /// Helper: parse and compile source, return compiled module.
 fn compile_module(source: &str) -> reify_compiler::CompiledModule {
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("field_compile_test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    let parsed = reify_syntax::parse(
+        source,
+        reify_types::ModulePath::single("field_compile_test"),
+    );
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
     reify_compiler::compile(&parsed)
 }
 
 /// Helper: return only error-severity diagnostics (ignoring warnings).
 fn errors_only(module: &reify_compiler::CompiledModule) -> Vec<&reify_types::Diagnostic> {
-    module.diagnostics.iter().filter(|d| d.severity == reify_types::Severity::Error).collect()
+    module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_types::Severity::Error)
+        .collect()
 }
 
 // ── Step 13: compile analytical field ──────────────────────────────────
 
 #[test]
 fn compile_field_analytical() {
-    let module = compile_module(
-        "field def temp : Point3 -> Scalar { source = analytical { |p| p } }",
+    let module =
+        compile_module("field def temp : Point3 -> Scalar { source = analytical { |p| p } }");
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
     );
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
     assert_eq!(module.fields.len(), 1, "expected 1 compiled field");
 
     let field = &module.fields[0];
@@ -55,7 +69,11 @@ fn compile_field_sampled() {
     let module = compile_module(
         "field def pressure : Point3 -> Scalar { source = sampled { resolution = 100 interpolation = linear } }",
     );
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
     assert_eq!(module.fields.len(), 1, "expected 1 compiled field");
 
     let field = &module.fields[0];
@@ -87,7 +105,11 @@ field def composed : Point3 -> Scalar { source = composed { |p| f2(f1(p)) } }
 "#,
     );
     // Should compile without type errors (warnings for StructureRef types are OK)
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
     assert_eq!(module.fields.len(), 3, "expected 3 compiled fields");
 
     let composed = &module.fields[2];
@@ -128,7 +150,9 @@ field def bad_compose : Point3 -> Scalar { source = composed { |p| f2(f1(p)) } }
         "expected a type mismatch diagnostic for mismatched field composition"
     );
     let has_mismatch_error = module.diagnostics.iter().any(|d| {
-        d.message.contains("mismatch") || d.message.contains("compose") || d.message.contains("field")
+        d.message.contains("mismatch")
+            || d.message.contains("compose")
+            || d.message.contains("field")
     });
     assert!(
         has_mismatch_error,
@@ -157,7 +181,9 @@ field def bad_nested : Point3 -> Scalar {
     );
     // Should detect the type mismatch even though it's inside a match arm
     let has_mismatch_error = module.diagnostics.iter().any(|d| {
-        d.message.contains("mismatch") || d.message.contains("compose") || d.message.contains("field")
+        d.message.contains("mismatch")
+            || d.message.contains("compose")
+            || d.message.contains("field")
     });
     assert!(
         has_mismatch_error,
@@ -178,9 +204,10 @@ field def temp : Scalar -> Scalar { source = analytical { |x| x } }
     );
     // Should emit a diagnostic about duplicate entity definition (covers field-vs-field collision
     // now that fields participate in the unified entity namespace per spec §4.2.1).
-    let has_dup_error = module.diagnostics.iter().any(|d| {
-        d.message.contains("duplicate entity definition") && d.message.contains("temp")
-    });
+    let has_dup_error = module
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("duplicate entity definition") && d.message.contains("temp"));
     assert!(
         has_dup_error,
         "expected 'duplicate entity definition' diagnostic for 'temp', got: {:?}",

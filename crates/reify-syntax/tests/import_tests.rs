@@ -1,6 +1,6 @@
 //! Tests for import declaration parsing with dot-path syntax.
 
-use reify_syntax::{ImportKind, ImportDecl};
+use reify_syntax::{ImportDecl, ImportKind};
 
 // ── Step 1: Basic dot-path module import ──────────────────────────
 
@@ -8,7 +8,11 @@ use reify_syntax::{ImportKind, ImportDecl};
 fn parse_basic_module_import() {
     let source = "import std.math";
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let imports: Vec<&ImportDecl> = parsed
         .declarations
@@ -32,7 +36,11 @@ fn parse_basic_module_import() {
 fn parse_deep_module_import() {
     let source = "import std.mechanical.fasteners";
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let import = parsed
         .declarations
@@ -58,7 +66,11 @@ fn parse_deep_module_import() {
 fn parse_entity_import() {
     let source = "import std.math.Sqrt";
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let import = parsed
         .declarations
@@ -82,7 +94,11 @@ fn parse_entity_import() {
 fn parse_destructured_import() {
     let source = "import std.mech.{Bolt, Nut}";
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let import = parsed
         .declarations
@@ -107,7 +123,11 @@ fn parse_destructured_import() {
 fn parse_destructured_import_single_item() {
     let source = "import std.mech.{Bolt}";
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let import = parsed
         .declarations
@@ -121,7 +141,10 @@ fn parse_destructured_import_single_item() {
         })
         .expect("should have an import");
 
-    assert_eq!(import.kind, ImportKind::Destructured(vec!["Bolt".to_string()]));
+    assert_eq!(
+        import.kind,
+        ImportKind::Destructured(vec!["Bolt".to_string()])
+    );
 }
 
 // ── Step 7: Aliased module import ─────────────────────────────────
@@ -130,7 +153,11 @@ fn parse_destructured_import_single_item() {
 fn parse_aliased_module_import() {
     let source = "import std.mech as m";
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let import = parsed
         .declarations
@@ -159,7 +186,11 @@ fn parse_aliased_module_import() {
 fn parse_entity_aliased_import() {
     let source = "import std.mech.Bolt as StdBolt";
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let import = parsed
         .declarations
@@ -189,7 +220,11 @@ fn parse_entity_aliased_import() {
 fn parse_pub_import() {
     let source = "pub import internal.Helper";
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let import = parsed
         .declarations
@@ -212,7 +247,11 @@ fn parse_pub_import() {
 fn parse_pub_module_import() {
     let source = "pub import std.math";
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let import = parsed
         .declarations
@@ -237,7 +276,11 @@ fn parse_pub_module_import() {
 fn import_has_content_hash() {
     let source = "import std.math";
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let import = parsed
         .declarations

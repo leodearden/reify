@@ -432,10 +432,7 @@ pub enum ExprKind {
     /// Numeric literal: `42`, `3.14`
     NumberLiteral(f64),
     /// Quantity literal: `80mm`, `45deg`
-    QuantityLiteral {
-        value: f64,
-        unit: String,
-    },
+    QuantityLiteral { value: f64, unit: String },
     /// String literal: `"hello"`
     StringLiteral(String),
     /// Boolean literal: `true`, `false`
@@ -449,25 +446,13 @@ pub enum ExprKind {
         right: Box<Expr>,
     },
     /// Unary operation: `-a`, `!b`
-    UnOp {
-        op: String,
-        operand: Box<Expr>,
-    },
+    UnOp { op: String, operand: Box<Expr> },
     /// Function call: `sin(x)`
-    FunctionCall {
-        name: String,
-        args: Vec<Expr>,
-    },
+    FunctionCall { name: String, args: Vec<Expr> },
     /// Member access: `self.width`
-    MemberAccess {
-        object: Box<Expr>,
-        member: String,
-    },
+    MemberAccess { object: Box<Expr>, member: String },
     /// Enum variant access: `Direction.In`
-    EnumAccess {
-        type_name: String,
-        variant: String,
-    },
+    EnumAccess { type_name: String, variant: String },
     /// Conditional: `if cond then a else b`
     Conditional {
         condition: Box<Expr>,
@@ -481,10 +466,7 @@ pub enum ExprKind {
     /// Map literal: `map{"a" => 1, "b" => 2}`
     MapLiteral(Vec<(Expr, Expr)>),
     /// Index access: `expr[index]`
-    IndexAccess {
-        object: Box<Expr>,
-        index: Box<Expr>,
-    },
+    IndexAccess { object: Box<Expr>, index: Box<Expr> },
     /// Match expression: `match d { In => 1, Out => 2 }`
     Match {
         discriminant: Box<Expr>,

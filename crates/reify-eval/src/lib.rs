@@ -9,19 +9,21 @@ pub mod snapshot;
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
-use reify_compiler::{CompiledConstraint, CompiledModule, CompiledPurpose, TopologyTemplate, ValueCellKind};
+use reify_compiler::{
+    CompiledConstraint, CompiledModule, CompiledPurpose, TopologyTemplate, ValueCellKind,
+};
 use reify_types::{
     AutoParam, CompiledFunction, ConstraintChecker, ConstraintInput, ConstraintNodeId,
-    ConstraintSolver, ContentHash, DeterminacyState, Diagnostic, ExportFormat,
+    ConstraintSolver, ContentHash, DeterminacyState, Diagnostic, ExportFormat, FIELD_ENTITY_PREFIX,
     GeometryHandleId, GeometryKernel, Mesh, OptimizationObjective, PersistentMap,
     ResolutionProblem, Satisfaction, SnapshotId, SnapshotProvenance, SolveResult, Value,
-    ValueCellId, ValueMap, VersionId, FIELD_ENTITY_PREFIX,
+    ValueCellId, ValueMap, VersionId,
 };
 
 use crate::cache::{CacheStore, CachedResult, EvalOutcome, NodeId};
-use crate::dirty::topological_sort;
 use crate::demand::DemandRegistry;
-use crate::deps::{extract_dependency_trace, DependencyTrace, ReverseDependencyIndex};
+use crate::deps::{DependencyTrace, ReverseDependencyIndex, extract_dependency_trace};
+use crate::dirty::topological_sort;
 use crate::journal::{EvalEvent, EventJournal, EventKind, EventPayload};
 use crate::snapshot::Snapshot;
 
@@ -36,7 +38,10 @@ impl std::fmt::Display for EngineError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             EngineError::NotInitialized => {
-                write!(f, "engine not initialized: call eval() before this operation")
+                write!(
+                    f,
+                    "engine not initialized: call eval() before this operation"
+                )
             }
         }
     }
@@ -365,7 +370,11 @@ impl Engine {
         }
 
         // Look up the compiled purpose
-        let purpose = match self.compiled_purposes.iter().find(|p| p.name == purpose_name) {
+        let purpose = match self
+            .compiled_purposes
+            .iter()
+            .find(|p| p.name == purpose_name)
+        {
             Some(p) => p.clone(),
             None => return, // Purpose not found — silently ignore
         };
@@ -389,8 +398,7 @@ impl Engine {
 
         let rewritten_objective = purpose.objective.clone().map(|mut obj| {
             match &mut obj {
-                OptimizationObjective::Minimize(expr)
-                | OptimizationObjective::Maximize(expr) => {
+                OptimizationObjective::Minimize(expr) | OptimizationObjective::Maximize(expr) => {
                     expr.remap_entity(purpose_name, entity_ref);
                 }
             }
@@ -410,7 +418,11 @@ impl Engine {
                     purpose_name, i
                 )),
             };
-            state.snapshot.graph.constraints.insert(constraint_id.clone(), node);
+            state
+                .snapshot
+                .graph
+                .constraints
+                .insert(constraint_id.clone(), node);
             injected_ids.push(constraint_id);
         }
 
@@ -419,7 +431,8 @@ impl Engine {
             self.demand.add_demand(NodeId::Constraint(id.clone()));
         }
 
-        self.active_purposes.insert(purpose_name.to_string(), injected_ids);
+        self.active_purposes
+            .insert(purpose_name.to_string(), injected_ids);
 
         // Rebuild infrastructure so incremental eval (edit_param) propagates
         // through purpose constraint dependencies correctly.
@@ -427,8 +440,7 @@ impl Engine {
         // We reborrow eval_state mutably here — the immutable borrow (`state`)
         // created earlier was already released after inserting into the graph.
         if let Some(state) = self.eval_state.as_mut() {
-            state.reverse_index =
-                ReverseDependencyIndex::build_from_graph(&state.snapshot.graph);
+            state.reverse_index = ReverseDependencyIndex::build_from_graph(&state.snapshot.graph);
             state.trace_map = crate::deps::build_trace_map(&state.snapshot.graph);
         }
         if let Some(state) = self.eval_state.as_ref() {
@@ -465,8 +477,7 @@ impl Engine {
             for constraint_id in &injected_ids {
                 state.snapshot.graph.constraints.remove(constraint_id);
             }
-            state.reverse_index =
-                ReverseDependencyIndex::build_from_graph(&state.snapshot.graph);
+            state.reverse_index = ReverseDependencyIndex::build_from_graph(&state.snapshot.graph);
             state.trace_map = crate::deps::build_trace_map(&state.snapshot.graph);
         }
         if let Some(state) = self.eval_state.as_ref() {
@@ -500,7 +511,9 @@ impl Engine {
         cell: ValueCellId,
         new_value: Value,
     ) -> Result<ConcurrentEditSetup, EngineError> {
-        let state = self.eval_state.as_ref()
+        let state = self
+            .eval_state
+            .as_ref()
             .ok_or(EngineError::NotInitialized)?;
 
         // Clone snapshot (O(1) via PersistentMap)
@@ -610,10 +623,8 @@ impl Engine {
             });
 
             let trace = node_result.trace.clone();
-            let cached_result = CachedResult::Value(
-                node_result.value.clone(),
-                node_result.determinacy,
-            );
+            let cached_result =
+                CachedResult::Value(node_result.value.clone(), node_result.determinacy);
             self.cache.record_evaluation(
                 node_result.node.clone(),
                 cached_result,
@@ -624,7 +635,9 @@ impl Engine {
             self.journal.record(EvalEvent {
                 timestamp: Instant::now(),
                 node_id: node_result.node.clone(),
-                kind: EventKind::Completed { outcome: node_result.outcome },
+                kind: EventKind::Completed {
+                    outcome: node_result.outcome,
+                },
                 version: setup.version,
                 payload: Some(EventPayload::Duration(start.elapsed())),
             });
@@ -643,7 +656,9 @@ impl Engine {
         }
 
         // Update current snapshot
-        let state = self.eval_state.as_mut()
+        let state = self
+            .eval_state
+            .as_mut()
             .expect("apply_concurrent_edit requires eval_state from eval()");
         let mut new_snapshot = state.snapshot.clone();
         new_snapshot.id = setup.snapshot_id;
@@ -680,7 +695,9 @@ impl Engine {
         let mut diagnostics = Vec::new();
 
         if let Some(ref solver) = self.solver {
-            let state = self.eval_state.as_ref()
+            let state = self
+                .eval_state
+                .as_ref()
                 .expect("resolve_concurrent_edit requires eval_state from eval()");
             let reverse_index = &state.reverse_index;
             let trace_map = &state.trace_map;
@@ -707,7 +724,10 @@ impl Engine {
 
             if !auto_ids.is_empty() {
                 // Find constraints referencing auto params
-                let filtered_constraints: Vec<_> = setup.graph.constraints.iter()
+                let filtered_constraints: Vec<_> = setup
+                    .graph
+                    .constraints
+                    .iter()
                     .filter(|(_, cnode)| {
                         let trace = extract_dependency_trace(&cnode.expr);
                         trace.reads.iter().any(|r| auto_ids.contains(r))
@@ -716,14 +736,12 @@ impl Engine {
                     .collect();
 
                 // Compute dirty cone from changed cells
-                let dirty_cone = crate::dirty::compute_dirty_cone(
-                    &setup.changed_cells,
-                    reverse_index,
-                );
+                let dirty_cone =
+                    crate::dirty::compute_dirty_cone(&setup.changed_cells, reverse_index);
 
-                let constraints_dirty = filtered_constraints.iter().any(|(cid, _)| {
-                    dirty_cone.contains(&NodeId::Constraint(cid.clone()))
-                });
+                let constraints_dirty = filtered_constraints
+                    .iter()
+                    .any(|(cid, _)| dirty_cone.contains(&NodeId::Constraint(cid.clone())));
 
                 if constraints_dirty {
                     // Look up the template-native objective by scope_name.
@@ -740,7 +758,9 @@ impl Engine {
                     };
 
                     match solver.solve(&problem) {
-                        SolveResult::Solved { values: solver_values } => {
+                        SolveResult::Solved {
+                            values: solver_values,
+                        } => {
                             let mut resolved_ids = HashSet::new();
                             for (id, val) in &solver_values {
                                 result.values.insert(id.clone(), val.clone());
@@ -754,10 +774,8 @@ impl Engine {
 
                                 let node_id = NodeId::Value(id.clone());
                                 let trace = DependencyTrace::default();
-                                let cached_result = CachedResult::Value(
-                                    val.clone(),
-                                    DeterminacyState::Determined,
-                                );
+                                let cached_result =
+                                    CachedResult::Value(val.clone(), DeterminacyState::Determined);
                                 self.cache.record_evaluation(
                                     node_id,
                                     cached_result,
@@ -768,10 +786,8 @@ impl Engine {
 
                             // Second propagation wave: re-evaluate dependents of resolved auto params
                             if !resolved_ids.is_empty() {
-                                let wave2_dirty = crate::dirty::compute_dirty_cone(
-                                    &resolved_ids,
-                                    reverse_index,
-                                );
+                                let wave2_dirty =
+                                    crate::dirty::compute_dirty_cone(&resolved_ids, reverse_index);
                                 let wave2_eval = crate::dirty::compute_eval_set(
                                     &wave2_dirty,
                                     &self.demand,
@@ -783,7 +799,14 @@ impl Engine {
                                         && let Some(node) = setup.graph.value_cells.get(vcid)
                                         && let Some(ref expr) = node.default_expr
                                     {
-                                        let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&result.values, &setup.functions).with_meta(&setup.meta_map));
+                                        let val = reify_expr::eval_expr(
+                                            expr,
+                                            &reify_expr::EvalContext::new(
+                                                &result.values,
+                                                &setup.functions,
+                                            )
+                                            .with_meta(&setup.meta_map),
+                                        );
                                         result.values.insert(vcid.clone(), val.clone());
                                         result.snapshot_values.insert(
                                             vcid.clone(),
@@ -791,10 +814,8 @@ impl Engine {
                                         );
 
                                         let trace = extract_dependency_trace(expr);
-                                        let cached_result = CachedResult::Value(
-                                            val,
-                                            DeterminacyState::Determined,
-                                        );
+                                        let cached_result =
+                                            CachedResult::Value(val, DeterminacyState::Determined);
                                         self.cache.record_evaluation(
                                             node_id.clone(),
                                             cached_result,
@@ -805,7 +826,9 @@ impl Engine {
                                 }
                             }
                         }
-                        SolveResult::Infeasible { diagnostics: solver_diags } => {
+                        SolveResult::Infeasible {
+                            diagnostics: solver_diags,
+                        } => {
                             diagnostics.extend(solver_diags);
                         }
                         SolveResult::NoProgress { reason } => {
@@ -823,17 +846,14 @@ impl Engine {
     }
 
     /// Set a parameter override and invalidate cache entries that depend on it.
-    pub fn set_param_and_invalidate(
-        &mut self,
-        param: &ValueCellId,
-        value: reify_types::Value,
-    ) {
+    pub fn set_param_and_invalidate(&mut self, param: &ValueCellId, value: reify_types::Value) {
         self.param_overrides.insert(param.clone(), value);
         // Mark the param's own cache entry as dirty
         let param_node = NodeId::Value(param.clone());
         self.cache.invalidate(&param_node);
         // Mark all nodes that depend on this param as dirty
-        self.cache.invalidate_dependents(std::slice::from_ref(param));
+        self.cache
+            .invalidate_dependents(std::slice::from_ref(param));
     }
 
     /// Evaluate a compiled module, returning computed values.
@@ -841,10 +861,7 @@ impl Engine {
     /// This is a cold-start evaluation that builds a new Snapshot and
     /// dependency structures. Subsequent calls to edit_param() can perform
     /// incremental re-evaluation using these structures.
-    pub fn eval(
-        &mut self,
-        module: &CompiledModule,
-    ) -> EvalResult {
+    pub fn eval(&mut self, module: &CompiledModule) -> EvalResult {
         // Store functions and purposes for this module (used by edit_param and purpose activation)
         self.functions = module.functions.clone();
         // Extend with prelude functions so user expressions can call stdlib functions.
@@ -903,21 +920,19 @@ impl Engine {
         for field in &module.fields {
             let lambda_value = match &field.source {
                 reify_compiler::CompiledFieldSource::Analytical { expr } => {
-                    let ctx = reify_expr::EvalContext::new(&values, functions)
-                        .with_meta(&self.meta_map);
+                    let ctx =
+                        reify_expr::EvalContext::new(&values, functions).with_meta(&self.meta_map);
                     let val = reify_expr::eval_expr(expr, &ctx);
                     Box::new(val)
                 }
                 reify_compiler::CompiledFieldSource::Composed { expr } => {
-                    let ctx = reify_expr::EvalContext::new(&values, functions)
-                        .with_meta(&self.meta_map);
+                    let ctx =
+                        reify_expr::EvalContext::new(&values, functions).with_meta(&self.meta_map);
                     let val = reify_expr::eval_expr(expr, &ctx);
                     Box::new(val)
                 }
                 reify_compiler::CompiledFieldSource::Sampled { .. }
-                | reify_compiler::CompiledFieldSource::Imported => {
-                    Box::new(Value::Undef)
-                }
+                | reify_compiler::CompiledFieldSource::Imported => Box::new(Value::Undef),
             };
 
             let source_kind = match &field.source {
@@ -944,10 +959,9 @@ impl Engine {
 
             let field_id = ValueCellId::new(FIELD_ENTITY_PREFIX, &field.name);
             values.insert(field_id.clone(), field_value.clone());
-            snapshot.values.insert(
-                field_id,
-                (field_value, DeterminacyState::Determined),
-            );
+            snapshot
+                .values
+                .insert(field_id, (field_value, DeterminacyState::Determined));
         }
 
         // Two-pass evaluation (same logic as before)
@@ -1003,19 +1017,20 @@ impl Engine {
                         payload: None,
                     });
 
-                    let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, functions).with_meta(&self.meta_map));
+                    let val = reify_expr::eval_expr(
+                        expr,
+                        &reify_expr::EvalContext::new(&values, functions).with_meta(&self.meta_map),
+                    );
                     values.insert(cell.id.clone(), val.clone());
 
                     // Update snapshot values
-                    snapshot.values.insert(
-                        cell.id.clone(),
-                        (val.clone(), DeterminacyState::Determined),
-                    );
+                    snapshot
+                        .values
+                        .insert(cell.id.clone(), (val.clone(), DeterminacyState::Determined));
 
                     // Record in cache
                     let trace = DependencyTrace::default();
-                    let cached_result =
-                        CachedResult::Value(val, DeterminacyState::Determined);
+                    let cached_result = CachedResult::Value(val, DeterminacyState::Determined);
                     let outcome = self.cache.record_evaluation(
                         node_id.clone(),
                         cached_result,
@@ -1038,7 +1053,14 @@ impl Engine {
             //  depends on a let declared later)
             {
                 let meta_map = self.meta_map.clone();
-                self.evaluate_let_bindings(template, &mut values, &mut snapshot, version_id, functions, &meta_map);
+                self.evaluate_let_bindings(
+                    template,
+                    &mut values,
+                    &mut snapshot,
+                    version_id,
+                    functions,
+                    &meta_map,
+                );
             }
 
             // Third pass: evaluate guarded groups.
@@ -1046,7 +1068,10 @@ impl Engine {
             // then conditionally evaluate members based on guard truth value.
             for group in &template.guarded_groups {
                 // Evaluate the guard cell expression
-                let guard_val = reify_expr::eval_expr(&group.guard_expr, &reify_expr::EvalContext::new(&values, functions).with_meta(&self.meta_map));
+                let guard_val = reify_expr::eval_expr(
+                    &group.guard_expr,
+                    &reify_expr::EvalContext::new(&values, functions).with_meta(&self.meta_map),
+                );
                 values.insert(group.guard_value_cell.clone(), guard_val.clone());
 
                 let guard_determinacy = match &guard_val {
@@ -1065,16 +1090,17 @@ impl Engine {
                 for cell in &group.members {
                     if guard_is_true {
                         // Evaluate normally
-                        if cell.kind == ValueCellKind::Param
-                            || cell.kind == ValueCellKind::Let
-                        {
+                        if cell.kind == ValueCellKind::Param || cell.kind == ValueCellKind::Let {
                             if let Some(ref expr) = cell.default_expr {
-                                let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, functions).with_meta(&self.meta_map));
-                                values.insert(cell.id.clone(), val.clone());
-                                snapshot.values.insert(
-                                    cell.id.clone(),
-                                    (val, DeterminacyState::Determined),
+                                let val = reify_expr::eval_expr(
+                                    expr,
+                                    &reify_expr::EvalContext::new(&values, functions)
+                                        .with_meta(&self.meta_map),
                                 );
+                                values.insert(cell.id.clone(), val.clone());
+                                snapshot
+                                    .values
+                                    .insert(cell.id.clone(), (val, DeterminacyState::Determined));
                             } else {
                                 values.insert(cell.id.clone(), Value::Undef);
                                 snapshot.values.insert(
@@ -1084,10 +1110,9 @@ impl Engine {
                             }
                         } else if cell.kind == ValueCellKind::Auto {
                             values.insert(cell.id.clone(), Value::Undef);
-                            snapshot.values.insert(
-                                cell.id.clone(),
-                                (Value::Undef, DeterminacyState::Auto),
-                            );
+                            snapshot
+                                .values
+                                .insert(cell.id.clone(), (Value::Undef, DeterminacyState::Auto));
                         }
                     } else {
                         // Guard is false or Undef — member is inactive
@@ -1102,16 +1127,17 @@ impl Engine {
                 // Evaluate else_members (active when guard is false)
                 for cell in &group.else_members {
                     if guard_is_false {
-                        if cell.kind == ValueCellKind::Param
-                            || cell.kind == ValueCellKind::Let
-                        {
+                        if cell.kind == ValueCellKind::Param || cell.kind == ValueCellKind::Let {
                             if let Some(ref expr) = cell.default_expr {
-                                let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, functions).with_meta(&self.meta_map));
-                                values.insert(cell.id.clone(), val.clone());
-                                snapshot.values.insert(
-                                    cell.id.clone(),
-                                    (val, DeterminacyState::Determined),
+                                let val = reify_expr::eval_expr(
+                                    expr,
+                                    &reify_expr::EvalContext::new(&values, functions)
+                                        .with_meta(&self.meta_map),
                                 );
+                                values.insert(cell.id.clone(), val.clone());
+                                snapshot
+                                    .values
+                                    .insert(cell.id.clone(), (val, DeterminacyState::Determined));
                             } else {
                                 values.insert(cell.id.clone(), Value::Undef);
                                 snapshot.values.insert(
@@ -1121,10 +1147,9 @@ impl Engine {
                             }
                         } else if cell.kind == ValueCellKind::Auto {
                             values.insert(cell.id.clone(), Value::Undef);
-                            snapshot.values.insert(
-                                cell.id.clone(),
-                                (Value::Undef, DeterminacyState::Auto),
-                            );
+                            snapshot
+                                .values
+                                .insert(cell.id.clone(), (Value::Undef, DeterminacyState::Auto));
                         }
                     } else {
                         // Guard is true or Undef — else member is inactive
@@ -1143,7 +1168,11 @@ impl Engine {
         for template in &module.templates {
             for sub in &template.sub_components {
                 // Find the referenced child template by name
-                let child_template = match module.templates.iter().find(|t| t.name == sub.structure_name) {
+                let child_template = match module
+                    .templates
+                    .iter()
+                    .find(|t| t.name == sub.structure_name)
+                {
                     Some(t) => t,
                     None => {
                         diagnostics.push(Diagnostic::warning(format!(
@@ -1259,7 +1288,14 @@ impl Engine {
             // Both become available only after elaboration, so re-evaluate if any subs exist.
             if !template.sub_components.is_empty() {
                 let meta_map = self.meta_map.clone();
-                self.evaluate_let_bindings(template, &mut values, &mut snapshot, version_id, functions, &meta_map);
+                self.evaluate_let_bindings(
+                    template,
+                    &mut values,
+                    &mut snapshot,
+                    version_id,
+                    functions,
+                    &meta_map,
+                );
             }
         }
 
@@ -1325,7 +1361,9 @@ impl Engine {
                 let solve_result = self.solver.as_ref().unwrap().solve(&problem);
 
                 match solve_result {
-                    SolveResult::Solved { values: solver_values } => {
+                    SolveResult::Solved {
+                        values: solver_values,
+                    } => {
                         // Allocate new snapshot/version IDs BEFORE recording cache
                         // entries so all resolution-phase entries share the same
                         // basis_version as the snapshot. This preserves the invariant
@@ -1353,10 +1391,9 @@ impl Engine {
                             resolved_ids.insert(id.clone());
 
                             // Update snapshot values with (resolved_val, Determined)
-                            snapshot.values.insert(
-                                id.clone(),
-                                (val.clone(), DeterminacyState::Determined),
-                            );
+                            snapshot
+                                .values
+                                .insert(id.clone(), (val.clone(), DeterminacyState::Determined));
 
                             // Update cache with res_version_id (matches snapshot)
                             let trace = DependencyTrace::default();
@@ -1389,9 +1426,18 @@ impl Engine {
 
                         // Re-run let binding evaluation in topological order
                         let meta_map = self.meta_map.clone();
-                        self.evaluate_let_bindings(template, &mut values, &mut snapshot, res_version_id, &module.functions, &meta_map);
+                        self.evaluate_let_bindings(
+                            template,
+                            &mut values,
+                            &mut snapshot,
+                            res_version_id,
+                            &module.functions,
+                            &meta_map,
+                        );
                     }
-                    SolveResult::Infeasible { diagnostics: solver_diags } => {
+                    SolveResult::Infeasible {
+                        diagnostics: solver_diags,
+                    } => {
                         diagnostics.extend(solver_diags);
                     }
                     SolveResult::NoProgress { reason } => {
@@ -1413,7 +1459,11 @@ impl Engine {
         self.demand = demand;
         self.last_eval_set = Vec::new(); // Cold start: no incremental eval set
 
-        EvalResult { values, diagnostics, resolved_params }
+        EvalResult {
+            values,
+            diagnostics,
+            resolved_params,
+        }
     }
 
     /// Incrementally re-evaluate after changing a parameter value.
@@ -1431,7 +1481,9 @@ impl Engine {
         new_value: reify_types::Value,
     ) -> Result<EvalResult, EngineError> {
         let functions = self.functions.clone();
-        let state = self.eval_state.as_ref()
+        let state = self
+            .eval_state
+            .as_ref()
             .ok_or(EngineError::NotInitialized)?;
 
         // Clone snapshot and extract references (O(1) via PersistentMap)
@@ -1511,17 +1563,18 @@ impl Engine {
                     payload: None,
                 });
 
-                let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, &functions).with_meta(&self.meta_map));
-                values.insert(vcid.clone(), val.clone());
-                new_snapshot.values.insert(
-                    vcid.clone(),
-                    (val.clone(), DeterminacyState::Determined),
+                let val = reify_expr::eval_expr(
+                    expr,
+                    &reify_expr::EvalContext::new(&values, &functions).with_meta(&self.meta_map),
                 );
+                values.insert(vcid.clone(), val.clone());
+                new_snapshot
+                    .values
+                    .insert(vcid.clone(), (val.clone(), DeterminacyState::Determined));
 
                 // Record in cache and check for early cutoff
                 let trace = extract_dependency_trace(expr);
-                let cached_result =
-                    CachedResult::Value(val, DeterminacyState::Determined);
+                let cached_result = CachedResult::Value(val, DeterminacyState::Determined);
                 let outcome = self.cache.record_evaluation(
                     node_id.clone(),
                     cached_result,
@@ -1544,8 +1597,12 @@ impl Engine {
                 // - Unchanged: only add dependents to skipped if they do NOT
                 //   have a Changed parent (i.e., not in has_changed_parent).
                 {
-                    let dependents = self.eval_state.as_ref().unwrap()
-                        .reverse_index.dependents_of(vcid);
+                    let dependents = self
+                        .eval_state
+                        .as_ref()
+                        .unwrap()
+                        .reverse_index
+                        .dependents_of(vcid);
                     if outcome == EvalOutcome::Changed {
                         for dependent in dependents {
                             has_changed_parent.insert(dependent.clone());
@@ -1577,8 +1634,7 @@ impl Engine {
         {
             let graph = &new_snapshot.graph;
             let has_dirty_guards = graph.structure_controlling.iter().any(|sc_id| {
-                dirty_cone.contains(&NodeId::Value(sc_id.clone()))
-                    || changed_set.contains(sc_id)
+                dirty_cone.contains(&NodeId::Value(sc_id.clone())) || changed_set.contains(sc_id)
             });
 
             if has_dirty_guards {
@@ -1586,7 +1642,11 @@ impl Engine {
                     // Re-evaluate the guard cell's expression
                     let guard_val = if let Some(node) = graph.value_cells.get(&group.guard_cell) {
                         if let Some(ref expr) = node.default_expr {
-                            reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, &functions).with_meta(&self.meta_map))
+                            reify_expr::eval_expr(
+                                expr,
+                                &reify_expr::EvalContext::new(&values, &functions)
+                                    .with_meta(&self.meta_map),
+                            )
                         } else {
                             Value::Undef
                         }
@@ -1599,9 +1659,9 @@ impl Engine {
                     } else {
                         DeterminacyState::Undetermined
                     };
-                    new_snapshot.values.insert(
-                        group.guard_cell.clone(), (guard_val.clone(), guard_det),
-                    );
+                    new_snapshot
+                        .values
+                        .insert(group.guard_cell.clone(), (guard_val.clone(), guard_det));
 
                     let is_true = matches!(&guard_val, Value::Bool(true));
                     let is_false = matches!(&guard_val, Value::Bool(false));
@@ -1611,16 +1671,21 @@ impl Engine {
                             if let Some(node) = graph.value_cells.get(mid)
                                 && let Some(ref expr) = node.default_expr
                             {
-                                let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, &functions).with_meta(&self.meta_map));
-                                values.insert(mid.clone(), val.clone());
-                                new_snapshot.values.insert(
-                                    mid.clone(), (val, DeterminacyState::Determined),
+                                let val = reify_expr::eval_expr(
+                                    expr,
+                                    &reify_expr::EvalContext::new(&values, &functions)
+                                        .with_meta(&self.meta_map),
                                 );
+                                values.insert(mid.clone(), val.clone());
+                                new_snapshot
+                                    .values
+                                    .insert(mid.clone(), (val, DeterminacyState::Determined));
                             }
                         } else {
                             values.insert(mid.clone(), Value::Undef);
                             new_snapshot.values.insert(
-                                mid.clone(), (Value::Undef, DeterminacyState::Undetermined),
+                                mid.clone(),
+                                (Value::Undef, DeterminacyState::Undetermined),
                             );
                         }
                     }
@@ -1629,16 +1694,21 @@ impl Engine {
                             if let Some(node) = graph.value_cells.get(mid)
                                 && let Some(ref expr) = node.default_expr
                             {
-                                let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, &functions).with_meta(&self.meta_map));
-                                values.insert(mid.clone(), val.clone());
-                                new_snapshot.values.insert(
-                                    mid.clone(), (val, DeterminacyState::Determined),
+                                let val = reify_expr::eval_expr(
+                                    expr,
+                                    &reify_expr::EvalContext::new(&values, &functions)
+                                        .with_meta(&self.meta_map),
                                 );
+                                values.insert(mid.clone(), val.clone());
+                                new_snapshot
+                                    .values
+                                    .insert(mid.clone(), (val, DeterminacyState::Determined));
                             }
                         } else {
                             values.insert(mid.clone(), Value::Undef);
                             new_snapshot.values.insert(
-                                mid.clone(), (Value::Undef, DeterminacyState::Undetermined),
+                                mid.clone(),
+                                (Value::Undef, DeterminacyState::Undetermined),
                             );
                         }
                     }
@@ -1687,7 +1757,10 @@ impl Engine {
 
             if !auto_ids.is_empty() {
                 // Find constraints whose dependency traces reference auto params
-                let filtered_constraints: Vec<_> = new_snapshot.graph.constraints.iter()
+                let filtered_constraints: Vec<_> = new_snapshot
+                    .graph
+                    .constraints
+                    .iter()
                     .filter(|(_, cnode)| {
                         let trace = extract_dependency_trace(&cnode.expr);
                         trace.reads.iter().any(|r| auto_ids.contains(r))
@@ -1696,9 +1769,9 @@ impl Engine {
                     .collect();
 
                 // Check if any of those constraints are in the dirty cone
-                let constraints_dirty = filtered_constraints.iter().any(|(cid, _)| {
-                    dirty_cone.contains(&NodeId::Constraint(cid.clone()))
-                });
+                let constraints_dirty = filtered_constraints
+                    .iter()
+                    .any(|(cid, _)| dirty_cone.contains(&NodeId::Constraint(cid.clone())));
 
                 if constraints_dirty {
                     // Look up the template-native objective by scope_name.
@@ -1716,7 +1789,9 @@ impl Engine {
                     };
 
                     match solver.solve(&problem) {
-                        SolveResult::Solved { values: solver_values } => {
+                        SolveResult::Solved {
+                            values: solver_values,
+                        } => {
                             let mut resolved_ids = HashSet::new();
                             for (id, val) in &solver_values {
                                 values.insert(id.clone(), val.clone());
@@ -1736,10 +1811,8 @@ impl Engine {
                                 // Update cache
                                 let node_id = NodeId::Value(id.clone());
                                 let trace = DependencyTrace::default();
-                                let cached_result = CachedResult::Value(
-                                    val.clone(),
-                                    DeterminacyState::Determined,
-                                );
+                                let cached_result =
+                                    CachedResult::Value(val.clone(), DeterminacyState::Determined);
                                 self.cache.record_evaluation(
                                     node_id,
                                     cached_result,
@@ -1771,7 +1844,11 @@ impl Engine {
                                         && let Some(node) = new_snapshot.graph.value_cells.get(vcid)
                                         && let Some(ref expr) = node.default_expr
                                     {
-                                        let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, &functions).with_meta(&self.meta_map));
+                                        let val = reify_expr::eval_expr(
+                                            expr,
+                                            &reify_expr::EvalContext::new(&values, &functions)
+                                                .with_meta(&self.meta_map),
+                                        );
                                         values.insert(vcid.clone(), val.clone());
                                         new_snapshot.values.insert(
                                             vcid.clone(),
@@ -1780,10 +1857,8 @@ impl Engine {
 
                                         // Update cache for re-evaluated node
                                         let trace = extract_dependency_trace(expr);
-                                        let cached_result = CachedResult::Value(
-                                            val,
-                                            DeterminacyState::Determined,
-                                        );
+                                        let cached_result =
+                                            CachedResult::Value(val, DeterminacyState::Determined);
                                         self.cache.record_evaluation(
                                             node_id.clone(),
                                             cached_result,
@@ -1794,7 +1869,9 @@ impl Engine {
                                 }
                             }
                         }
-                        SolveResult::Infeasible { diagnostics: solver_diags } => {
+                        SolveResult::Infeasible {
+                            diagnostics: solver_diags,
+                        } => {
                             diagnostics.extend(solver_diags);
                         }
                         SolveResult::NoProgress { reason } => {
@@ -1816,7 +1893,9 @@ impl Engine {
         {
             let guard_changed = new_snapshot.graph.guarded_groups.iter().any(|group| {
                 let new_val = values.get(&group.guard_cell);
-                let old_val = self.eval_state.as_ref()
+                let old_val = self
+                    .eval_state
+                    .as_ref()
                     .and_then(|s| s.snapshot.values.get(&group.guard_cell))
                     .map(|(v, _)| v);
                 new_val != old_val
@@ -1825,7 +1904,9 @@ impl Engine {
             if guard_changed {
                 // Re-evaluate each guarded group based on current guard values
                 for group in new_snapshot.graph.guarded_groups.clone() {
-                    let guard_val = values.get(&group.guard_cell).cloned()
+                    let guard_val = values
+                        .get(&group.guard_cell)
+                        .cloned()
                         .unwrap_or(Value::Undef);
                     let guard_is_true = matches!(&guard_val, Value::Bool(true));
                     let guard_is_false = matches!(&guard_val, Value::Bool(false));
@@ -1837,12 +1918,15 @@ impl Engine {
                             if let Some(node) = new_snapshot.graph.value_cells.get(member_id)
                                 && let Some(ref expr) = node.default_expr
                             {
-                                let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, &functions).with_meta(&self.meta_map));
-                                values.insert(member_id.clone(), val.clone());
-                                new_snapshot.values.insert(
-                                    member_id.clone(),
-                                    (val, DeterminacyState::Determined),
+                                let val = reify_expr::eval_expr(
+                                    expr,
+                                    &reify_expr::EvalContext::new(&values, &functions)
+                                        .with_meta(&self.meta_map),
                                 );
+                                values.insert(member_id.clone(), val.clone());
+                                new_snapshot
+                                    .values
+                                    .insert(member_id.clone(), (val, DeterminacyState::Determined));
                             }
                         } else {
                             // Deactivate: set to Undef
@@ -1861,12 +1945,15 @@ impl Engine {
                             if let Some(node) = new_snapshot.graph.value_cells.get(member_id)
                                 && let Some(ref expr) = node.default_expr
                             {
-                                let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, &functions).with_meta(&self.meta_map));
-                                values.insert(member_id.clone(), val.clone());
-                                new_snapshot.values.insert(
-                                    member_id.clone(),
-                                    (val, DeterminacyState::Determined),
+                                let val = reify_expr::eval_expr(
+                                    expr,
+                                    &reify_expr::EvalContext::new(&values, &functions)
+                                        .with_meta(&self.meta_map),
                                 );
+                                values.insert(member_id.clone(), val.clone());
+                                new_snapshot
+                                    .values
+                                    .insert(member_id.clone(), (val, DeterminacyState::Determined));
                             }
                         } else {
                             // Deactivate: set to Undef
@@ -1881,7 +1968,10 @@ impl Engine {
 
                 // Recompute topology fingerprint to include guard states
                 let base_fingerprint = new_snapshot.graph.topology_fingerprint();
-                let guard_state_hashes: Vec<ContentHash> = new_snapshot.graph.guarded_groups.iter()
+                let guard_state_hashes: Vec<ContentHash> = new_snapshot
+                    .graph
+                    .guarded_groups
+                    .iter()
                     .map(|g| {
                         let val = values.get(&g.guard_cell).cloned().unwrap_or(Value::Undef);
                         ContentHash::of_str(&format!("guard:{}={:?}", g.guard_cell, val))
@@ -1898,8 +1988,13 @@ impl Engine {
         {
             let collection_subs = new_snapshot.graph.collection_subs.clone();
             for col_sub in &collection_subs {
-                let new_count_val = values.get(&col_sub.count_cell).cloned().unwrap_or(Value::Undef);
-                let old_count_val = self.eval_state.as_ref()
+                let new_count_val = values
+                    .get(&col_sub.count_cell)
+                    .cloned()
+                    .unwrap_or(Value::Undef);
+                let old_count_val = self
+                    .eval_state
+                    .as_ref()
                     .and_then(|s| s.snapshot.values.get(&col_sub.count_cell))
                     .map(|(v, _)| v.clone())
                     .unwrap_or(Value::Undef);
@@ -1914,7 +2009,8 @@ impl Engine {
                     _ => 0,
                 };
                 for i in 0..old_count {
-                    let scoped_entity = format!("{}.{}[{}]", col_sub.parent_entity, col_sub.sub_name, i);
+                    let scoped_entity =
+                        format!("{}.{}[{}]", col_sub.parent_entity, col_sub.sub_name, i);
                     for (member, _, _, _) in &col_sub.child_value_cells {
                         let scoped_id = ValueCellId::new(&scoped_entity, member);
                         new_snapshot.graph.value_cells.remove(&scoped_id);
@@ -1929,11 +2025,13 @@ impl Engine {
                     _ => 0,
                 };
                 for i in 0..new_count {
-                    let scoped_entity = format!("{}.{}[{}]", col_sub.parent_entity, col_sub.sub_name, i);
+                    let scoped_entity =
+                        format!("{}.{}[{}]", col_sub.parent_entity, col_sub.sub_name, i);
                     for (member, kind, cell_type, default_expr) in &col_sub.child_value_cells {
                         let scoped_id = ValueCellId::new(&scoped_entity, member);
                         let id_hash = ContentHash::of_str(&format!("{}", scoped_id));
-                        let expr_hash = default_expr.as_ref()
+                        let expr_hash = default_expr
+                            .as_ref()
                             .map(|e| e.content_hash)
                             .unwrap_or(ContentHash(0));
                         let node = crate::graph::ValueCellNode {
@@ -1943,19 +2041,25 @@ impl Engine {
                             default_expr: default_expr.clone(),
                             content_hash: id_hash.combine(expr_hash),
                         };
-                        new_snapshot.graph.value_cells.insert(scoped_id.clone(), node);
+                        new_snapshot
+                            .graph
+                            .value_cells
+                            .insert(scoped_id.clone(), node);
 
                         // Evaluate the cell
                         let val = if let Some(expr) = default_expr {
-                            reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, &functions).with_meta(&self.meta_map))
+                            reify_expr::eval_expr(
+                                expr,
+                                &reify_expr::EvalContext::new(&values, &functions)
+                                    .with_meta(&self.meta_map),
+                            )
                         } else {
                             Value::Undef
                         };
                         values.insert(scoped_id.clone(), val.clone());
-                        new_snapshot.values.insert(
-                            scoped_id,
-                            (val, DeterminacyState::Determined),
-                        );
+                        new_snapshot
+                            .values
+                            .insert(scoped_id, (val, DeterminacyState::Determined));
                     }
                 }
 
@@ -2023,11 +2127,14 @@ impl Engine {
         let mut constraint_results = Vec::new();
         let mut diagnostics = Vec::new();
 
-        let state = self.eval_state.as_ref()
+        let state = self
+            .eval_state
+            .as_ref()
             .ok_or(EngineError::NotInitialized)?;
 
         let active_ids = state.snapshot.graph.active_constraint_ids(values);
-        let constraint_nodes: Vec<_> = state.snapshot
+        let constraint_nodes: Vec<_> = state
+            .snapshot
             .graph
             .constraints
             .iter()
@@ -2091,11 +2198,7 @@ impl Engine {
     /// On subsequent calls with the same version, uses version fast path.
     /// On calls with a new version after invalidation, re-evaluates dirty nodes
     /// and uses early cutoff to avoid propagating unchanged results.
-    pub fn eval_cached(
-        &mut self,
-        module: &CompiledModule,
-        version: VersionId,
-    ) -> CachedEvalResult {
+    pub fn eval_cached(&mut self, module: &CompiledModule, version: VersionId) -> CachedEvalResult {
         let mut values = ValueMap::new();
         let diagnostics = Vec::new();
         let mut stats = CacheStats::default();
@@ -2142,12 +2245,8 @@ impl Engine {
                         values.insert(cell.id.clone(), val);
                         let trace = entry.dependency_trace.clone();
                         let result = entry.result.clone();
-                        self.cache.record_evaluation(
-                            node_id.clone(),
-                            result,
-                            version,
-                            trace,
-                        );
+                        self.cache
+                            .record_evaluation(node_id.clone(), result, version, trace);
                         self.journal.record(EvalEvent {
                             timestamp: Instant::now(),
                             node_id,
@@ -2171,7 +2270,8 @@ impl Engine {
                     });
 
                     // Use override if available, otherwise Undef with Auto determinacy
-                    let (val, det) = if let Some(override_val) = self.param_overrides.get(&cell.id) {
+                    let (val, det) = if let Some(override_val) = self.param_overrides.get(&cell.id)
+                    {
                         (override_val.clone(), DeterminacyState::Determined)
                     } else {
                         (reify_types::Value::Undef, DeterminacyState::Auto)
@@ -2179,9 +2279,12 @@ impl Engine {
 
                     let trace = DependencyTrace::default();
                     let cached_result = CachedResult::Value(val.clone(), det);
-                    let outcome =
-                        self.cache
-                            .record_evaluation(node_id.clone(), cached_result, version, trace);
+                    let outcome = self.cache.record_evaluation(
+                        node_id.clone(),
+                        cached_result,
+                        version,
+                        trace,
+                    );
 
                     self.journal.record(EvalEvent {
                         timestamp: Instant::now(),
@@ -2226,12 +2329,8 @@ impl Engine {
                         values.insert(cell.id.clone(), val);
                         let trace = entry.dependency_trace.clone();
                         let result = entry.result.clone();
-                        self.cache.record_evaluation(
-                            node_id.clone(),
-                            result,
-                            version,
-                            trace,
-                        );
+                        self.cache
+                            .record_evaluation(node_id.clone(), result, version, trace);
                         self.journal.record(EvalEvent {
                             timestamp: Instant::now(),
                             node_id,
@@ -2258,7 +2357,11 @@ impl Engine {
                     let val = if let Some(override_val) = self.param_overrides.get(&cell.id) {
                         override_val.clone()
                     } else if let Some(ref expr) = cell.default_expr {
-                        reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, &module.functions).with_meta(&self.meta_map))
+                        reify_expr::eval_expr(
+                            expr,
+                            &reify_expr::EvalContext::new(&values, &module.functions)
+                                .with_meta(&self.meta_map),
+                        )
                     } else {
                         reify_types::Value::Undef
                     };
@@ -2268,9 +2371,12 @@ impl Engine {
 
                     let cached_result =
                         CachedResult::Value(val.clone(), DeterminacyState::Determined);
-                    let outcome =
-                        self.cache
-                            .record_evaluation(node_id.clone(), cached_result, version, trace);
+                    let outcome = self.cache.record_evaluation(
+                        node_id.clone(),
+                        cached_result,
+                        version,
+                        trace,
+                    );
 
                     self.journal.record(EvalEvent {
                         timestamp: Instant::now(),
@@ -2322,12 +2428,8 @@ impl Engine {
                         values.insert(cell.id.clone(), val);
                         let trace = entry.dependency_trace.clone();
                         let result = entry.result.clone();
-                        self.cache.record_evaluation(
-                            node_id.clone(),
-                            result,
-                            version,
-                            trace,
-                        );
+                        self.cache
+                            .record_evaluation(node_id.clone(), result, version, trace);
                         self.journal.record(EvalEvent {
                             timestamp: Instant::now(),
                             node_id,
@@ -2351,16 +2453,23 @@ impl Engine {
                         payload: None,
                     });
 
-                    let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&values, &module.functions).with_meta(&self.meta_map));
+                    let val = reify_expr::eval_expr(
+                        expr,
+                        &reify_expr::EvalContext::new(&values, &module.functions)
+                            .with_meta(&self.meta_map),
+                    );
 
                     // Build dependency trace from expression refs
                     let trace = extract_dependency_trace(expr);
 
                     let cached_result =
                         CachedResult::Value(val.clone(), DeterminacyState::Determined);
-                    let outcome =
-                        self.cache
-                            .record_evaluation(node_id.clone(), cached_result, version, trace);
+                    let outcome = self.cache.record_evaluation(
+                        node_id.clone(),
+                        cached_result,
+                        version,
+                        trace,
+                    );
 
                     self.journal.record(EvalEvent {
                         timestamp: Instant::now(),
@@ -2383,7 +2492,11 @@ impl Engine {
         }
 
         CachedEvalResult {
-            eval_result: EvalResult { values, diagnostics, resolved_params: HashMap::new() },
+            eval_result: EvalResult {
+                values,
+                diagnostics,
+                resolved_params: HashMap::new(),
+            },
             stats,
         }
     }
@@ -2395,10 +2508,7 @@ impl Engine {
     /// and returns constraint results. This is the incremental companion to check():
     /// after edit_param() updates values, call check_snapshot() to see constraint
     /// status without destroying the incremental state.
-    pub fn check_snapshot(
-        &self,
-        module: &CompiledModule,
-    ) -> Option<CheckResult> {
+    pub fn check_snapshot(&self, module: &CompiledModule) -> Option<CheckResult> {
         let state = self.eval_state.as_ref()?;
 
         // Build ValueMap from snapshot values
@@ -2492,17 +2602,15 @@ impl Engine {
     /// Checks top-level (unguarded) constraints unconditionally, plus
     /// guarded constraints whose guard is active (true→group.constraints,
     /// false→group.else_constraints, Undef→neither).
-    pub fn check(
-        &mut self,
-        module: &CompiledModule,
-    ) -> CheckResult {
+    pub fn check(&mut self, module: &CompiledModule) -> CheckResult {
         let eval_result = self.eval(module);
         let mut constraint_results = Vec::new();
         let mut diagnostics = eval_result.diagnostics;
 
         for template in &module.templates {
             // Collect active constraints: top-level + guard-aware guarded
-            let active_constraints = Self::collect_active_constraints(template, &eval_result.values);
+            let active_constraints =
+                Self::collect_active_constraints(template, &eval_result.values);
 
             if active_constraints.is_empty() {
                 continue;
@@ -2601,16 +2709,21 @@ impl Engine {
                     let handle_start = step_handles.len();
                     for op in &realization.operations {
                         total_ops += 1;
-                        let geom_op = compile_geometry_op(op, &values, &step_handles[handle_start..], &module.functions, &self.meta_map);
+                        let geom_op = compile_geometry_op(
+                            op,
+                            &values,
+                            &step_handles[handle_start..],
+                            &module.functions,
+                            &self.meta_map,
+                        );
                         match geom_op {
                             Some(geom_op) => match kernel.execute(&geom_op) {
                                 Ok(handle) => {
                                     step_handles.push(handle.id);
                                 }
                                 Err(e) => {
-                                    diagnostics.push(Diagnostic::error(
-                                        format!("geometry error: {}", e),
-                                    ));
+                                    diagnostics
+                                        .push(Diagnostic::error(format!("geometry error: {}", e)));
                                 }
                             },
                             None => {
@@ -2636,9 +2749,7 @@ impl Engine {
                 match kernel.export(export_handle, format, &mut output) {
                     Ok(()) => Some(output),
                     Err(e) => {
-                        diagnostics.push(Diagnostic::error(
-                            format!("export error: {}", e),
-                        ));
+                        diagnostics.push(Diagnostic::error(format!("export error: {}", e)));
                         None
                     }
                 }
@@ -2657,11 +2768,7 @@ impl Engine {
     }
 
     /// Full build: evaluate, check constraints, produce geometry.
-    pub fn build(
-        &mut self,
-        module: &CompiledModule,
-        format: ExportFormat,
-    ) -> BuildResult {
+    pub fn build(&mut self, module: &CompiledModule, format: ExportFormat) -> BuildResult {
         let check_result = self.check(module);
         let mut diagnostics = check_result.diagnostics;
 
@@ -2675,17 +2782,21 @@ impl Engine {
                     let handle_start = step_handles.len();
                     for op in &realization.operations {
                         total_ops += 1;
-                        let geom_op =
-                            compile_geometry_op(op, &check_result.values, &step_handles[handle_start..], &module.functions, &self.meta_map);
+                        let geom_op = compile_geometry_op(
+                            op,
+                            &check_result.values,
+                            &step_handles[handle_start..],
+                            &module.functions,
+                            &self.meta_map,
+                        );
                         match geom_op {
                             Some(geom_op) => match kernel.execute(&geom_op) {
                                 Ok(handle) => {
                                     step_handles.push(handle.id);
                                 }
                                 Err(e) => {
-                                    diagnostics.push(Diagnostic::error(
-                                        format!("geometry error: {}", e),
-                                    ));
+                                    diagnostics
+                                        .push(Diagnostic::error(format!("geometry error: {}", e)));
                                 }
                             },
                             None => {
@@ -2711,9 +2822,7 @@ impl Engine {
                 match kernel.export(export_handle, format, &mut output) {
                     Ok(()) => Some(output),
                     Err(e) => {
-                        diagnostics.push(Diagnostic::error(
-                            format!("export error: {}", e),
-                        ));
+                        diagnostics.push(Diagnostic::error(format!("export error: {}", e)));
                         None
                     }
                 }
@@ -2740,10 +2849,7 @@ impl Engine {
     ///
     /// When no geometry kernel is configured, returns empty meshes with no
     /// error diagnostics (matching the pattern in [`build()`]).
-    pub fn tessellate_realizations(
-        &mut self,
-        module: &CompiledModule,
-    ) -> TessellateResult {
+    pub fn tessellate_realizations(&mut self, module: &CompiledModule) -> TessellateResult {
         let check_result = self.check(module);
         let mut diagnostics = check_result.diagnostics;
         let meshes = Self::tessellate_from_values(
@@ -2803,15 +2909,13 @@ impl Engine {
                                 step_handles.push(handle.id);
                             }
                             Err(e) => {
-                                diagnostics.push(Diagnostic::error(
-                                    format!("geometry error: {}", e),
-                                ));
+                                diagnostics
+                                    .push(Diagnostic::error(format!("geometry error: {}", e)));
                             }
                         },
                         None => {
-                            diagnostics.push(Diagnostic::error(
-                                "failed to compile geometry operation",
-                            ));
+                            diagnostics
+                                .push(Diagnostic::error("failed to compile geometry operation"));
                         }
                     }
                 }
@@ -2824,9 +2928,8 @@ impl Engine {
                             meshes.push((realization.id.to_string(), mesh));
                         }
                         Err(e) => {
-                            diagnostics.push(Diagnostic::error(
-                                format!("tessellation error: {}", e),
-                            ));
+                            diagnostics
+                                .push(Diagnostic::error(format!("tessellation error: {}", e)));
                         }
                     }
                 }
@@ -2845,10 +2948,7 @@ impl Engine {
     /// companion to `tessellate_realizations()`: after `edit_param()` updates
     /// values, call `tessellate_snapshot()` to get updated meshes without a
     /// cold restart.
-    pub fn tessellate_snapshot(
-        &mut self,
-        module: &CompiledModule,
-    ) -> Option<TessellateResult> {
+    pub fn tessellate_snapshot(&mut self, module: &CompiledModule) -> Option<TessellateResult> {
         let state = self.eval_state.as_ref()?;
 
         // Build ValueMap from snapshot values
@@ -2926,7 +3026,12 @@ impl Engine {
             .value_cells
             .iter()
             .filter(|c| c.kind == ValueCellKind::Let && c.default_expr.is_some())
-            .map(|c| (NodeId::Value(c.id.clone()), c.default_expr.as_ref().unwrap()))
+            .map(|c| {
+                (
+                    NodeId::Value(c.id.clone()),
+                    c.default_expr.as_ref().unwrap(),
+                )
+            })
             .collect();
 
         let let_node_ids: HashSet<NodeId> = let_cells.keys().cloned().collect();
@@ -2953,17 +3058,18 @@ impl Engine {
                 payload: None,
             });
 
-            let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions).with_meta(meta_map));
+            let val = reify_expr::eval_expr(
+                expr,
+                &reify_expr::EvalContext::new(values, functions).with_meta(meta_map),
+            );
             values.insert(cell_id.clone(), val.clone());
 
-            snapshot.values.insert(
-                cell_id.clone(),
-                (val.clone(), DeterminacyState::Determined),
-            );
+            snapshot
+                .values
+                .insert(cell_id.clone(), (val.clone(), DeterminacyState::Determined));
 
             let trace = extract_dependency_trace(expr);
-            let cached_result =
-                CachedResult::Value(val, DeterminacyState::Determined);
+            let cached_result = CachedResult::Value(val, DeterminacyState::Determined);
             let outcome = self.cache.record_evaluation(
                 node_id.clone(),
                 cached_result,
@@ -3013,7 +3119,12 @@ fn compile_geometry_op(
             let eval_arg = |name: &str| -> reify_types::Value {
                 args.iter()
                     .find(|(n, _)| n == name)
-                    .map(|(_, expr)| reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions).with_meta(meta_map)))
+                    .map(|(_, expr)| {
+                        reify_expr::eval_expr(
+                            expr,
+                            &reify_expr::EvalContext::new(values, functions).with_meta(meta_map),
+                        )
+                    })
                     .unwrap_or(reify_types::Value::Undef)
             };
 
@@ -3064,7 +3175,12 @@ fn compile_geometry_op(
             let eval_arg = |name: &str| -> reify_types::Value {
                 args.iter()
                     .find(|(n, _)| n == name)
-                    .map(|(_, expr)| reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions).with_meta(meta_map)))
+                    .map(|(_, expr)| {
+                        reify_expr::eval_expr(
+                            expr,
+                            &reify_expr::EvalContext::new(values, functions).with_meta(meta_map),
+                        )
+                    })
                     .unwrap_or(reify_types::Value::Undef)
             };
             match kind {
@@ -3083,7 +3199,13 @@ fn compile_geometry_op(
                         .iter()
                         .filter(|(n, _)| n.starts_with("face_"))
                         .filter_map(|(_, expr)| {
-                            reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions).with_meta(meta_map)).as_f64().map(|v| v as usize)
+                            reify_expr::eval_expr(
+                                expr,
+                                &reify_expr::EvalContext::new(values, functions)
+                                    .with_meta(meta_map),
+                            )
+                            .as_f64()
+                            .map(|v| v as usize)
                         })
                         .collect();
                     Some(reify_types::GeometryOp::Shell {
@@ -3120,9 +3242,12 @@ fn compile_geometry_op(
             };
             let eval_arg_f64 = |name: &str| -> Option<f64> {
                 let (_, expr) = args.iter().find(|(n, _)| n == name)?;
-                reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions).with_meta(meta_map))
-                    .as_f64()
-                    .filter(|v| v.is_finite())
+                reify_expr::eval_expr(
+                    expr,
+                    &reify_expr::EvalContext::new(values, functions).with_meta(meta_map),
+                )
+                .as_f64()
+                .filter(|v| v.is_finite())
             };
             match kind {
                 reify_compiler::TransformKind::Translate => {
@@ -3133,17 +3258,15 @@ fn compile_geometry_op(
                         dz: eval_arg_f64("dz")?,
                     })
                 }
-                reify_compiler::TransformKind::Rotate => {
-                    Some(reify_types::GeometryOp::Rotate {
-                        target: target_id,
-                        axis: [
-                            eval_arg_f64("axis_x")?,
-                            eval_arg_f64("axis_y")?,
-                            eval_arg_f64("axis_z")?,
-                        ],
-                        angle_rad: eval_arg_f64("angle")?,
-                    })
-                }
+                reify_compiler::TransformKind::Rotate => Some(reify_types::GeometryOp::Rotate {
+                    target: target_id,
+                    axis: [
+                        eval_arg_f64("axis_x")?,
+                        eval_arg_f64("axis_y")?,
+                        eval_arg_f64("axis_z")?,
+                    ],
+                    angle_rad: eval_arg_f64("angle")?,
+                }),
                 reify_compiler::TransformKind::Scale => {
                     let factor = eval_arg_f64("factor")?;
                     // Reject negative scale: OCCT SetScale with negative factor
@@ -3178,14 +3301,22 @@ fn compile_geometry_op(
             let eval_arg = |name: &str| -> reify_types::Value {
                 args.iter()
                     .find(|(n, _)| n == name)
-                    .map(|(_, expr)| reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions).with_meta(meta_map)))
+                    .map(|(_, expr)| {
+                        reify_expr::eval_expr(
+                            expr,
+                            &reify_expr::EvalContext::new(values, functions).with_meta(meta_map),
+                        )
+                    })
                     .unwrap_or(reify_types::Value::Undef)
             };
             let eval_arg_f64 = |name: &str| -> Option<f64> {
                 let (_, expr) = args.iter().find(|(n, _)| n == name)?;
-                reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions).with_meta(meta_map))
-                    .as_f64()
-                    .filter(|v| v.is_finite())
+                reify_expr::eval_expr(
+                    expr,
+                    &reify_expr::EvalContext::new(values, functions).with_meta(meta_map),
+                )
+                .as_f64()
+                .filter(|v| v.is_finite())
             };
             // Pattern operations resolve target via step index
             let target_id = match target {
@@ -3222,24 +3353,26 @@ fn compile_geometry_op(
                         angle: eval_arg("angle"),
                     })
                 }
-                reify_compiler::PatternKind::Mirror => {
-                    Some(reify_types::GeometryOp::Mirror {
-                        target: target_id,
-                        plane_origin: [
-                            eval_arg_f64("ox")?,
-                            eval_arg_f64("oy")?,
-                            eval_arg_f64("oz")?,
-                        ],
-                        plane_normal: [
-                            eval_arg_f64("nx")?,
-                            eval_arg_f64("ny")?,
-                            eval_arg_f64("nz")?,
-                        ],
-                    })
-                }
+                reify_compiler::PatternKind::Mirror => Some(reify_types::GeometryOp::Mirror {
+                    target: target_id,
+                    plane_origin: [
+                        eval_arg_f64("ox")?,
+                        eval_arg_f64("oy")?,
+                        eval_arg_f64("oz")?,
+                    ],
+                    plane_normal: [
+                        eval_arg_f64("nx")?,
+                        eval_arg_f64("ny")?,
+                        eval_arg_f64("nz")?,
+                    ],
+                }),
             }
         }
-        CompiledGeometryOp::Sweep { kind, profiles, args } => {
+        CompiledGeometryOp::Sweep {
+            kind,
+            profiles,
+            args,
+        } => {
             match kind {
                 reify_compiler::SweepKind::Loft => {
                     // Resolve each profile GeomRef to a handle via step_handles
@@ -3259,10 +3392,16 @@ fn compile_geometry_op(
                         GeomRef::Step(idx) => step_handles.get(*idx).copied()?,
                         GeomRef::Sub(_) => step_handles.last().copied()?,
                     };
-                    let distance = args
-                        .iter()
-                        .find(|(n, _)| n == "distance")
-                        .map(|(_, expr)| reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions).with_meta(meta_map)))?;
+                    let distance =
+                        args.iter()
+                            .find(|(n, _)| n == "distance")
+                            .map(|(_, expr)| {
+                                reify_expr::eval_expr(
+                                    expr,
+                                    &reify_expr::EvalContext::new(values, functions)
+                                        .with_meta(meta_map),
+                                )
+                            })?;
                     let _distance_f64 = distance.as_f64().filter(|v| v.is_finite())?;
                     Some(reify_types::GeometryOp::Extrude {
                         profile: profile_handle,
@@ -3275,11 +3414,13 @@ fn compile_geometry_op(
                         GeomRef::Sub(_) => step_handles.last().copied()?,
                     };
                     let eval_arg_f64 = |name: &str| -> Option<f64> {
-                        let (_, expr) = args.iter()
-                            .find(|(n, _)| n == name)?;
-                        reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions).with_meta(meta_map))
-                            .as_f64()
-                            .filter(|v| v.is_finite())
+                        let (_, expr) = args.iter().find(|(n, _)| n == name)?;
+                        reify_expr::eval_expr(
+                            expr,
+                            &reify_expr::EvalContext::new(values, functions).with_meta(meta_map),
+                        )
+                        .as_f64()
+                        .filter(|v| v.is_finite())
                     };
                     let axis_dir = [
                         eval_arg_f64("ax")?,
@@ -3473,7 +3614,8 @@ fn unfold_recursive_sub<'t>(
         // Look up the target template for next_sub from the module's template list.
         // For self-recursion, this finds the same template. For mutual recursion (A→B→A),
         // this alternates: B's sub "a" targets A, A's sub "b" targets B.
-        let next_child_template = match templates.iter().find(|t| t.name == next_sub.structure_name) {
+        let next_child_template = match templates.iter().find(|t| t.name == next_sub.structure_name)
+        {
             Some(t) => t,
             None => {
                 diagnostics.push(Diagnostic::warning(format!(
@@ -3490,8 +3632,8 @@ fn unfold_recursive_sub<'t>(
             journal,
             cache,
             version_id,
-            child_template,       // child_template owns next_sub → becomes scope_template
-            next_child_template,  // target template for next_sub's structure
+            child_template, // child_template owns next_sub → becomes scope_template
+            next_child_template, // target template for next_sub's structure
             next_sub,
             &next_entity,
             depth + 1,
@@ -3548,12 +3690,30 @@ fn elaborate_child_instance(
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     let child_values = elaborate_child_params_only(
-        values, snapshot, functions, journal, cache, version_id,
-        child_template, scoped_entity, args, meta_map,
+        values,
+        snapshot,
+        functions,
+        journal,
+        cache,
+        version_id,
+        child_template,
+        scoped_entity,
+        args,
+        meta_map,
     );
     elaborate_child_lets_only(
-        values, snapshot, functions, journal, cache, version_id,
-        child_template, scoped_entity, child_values, meta_map, &[], &[],
+        values,
+        snapshot,
+        functions,
+        journal,
+        cache,
+        version_id,
+        child_template,
+        scoped_entity,
+        child_values,
+        meta_map,
+        &[],
+        &[],
         diagnostics,
     );
 }
@@ -3585,9 +3745,15 @@ fn elaborate_child_params_only(
         let member = &cell.id.member;
 
         let val = if let Some((_name, arg_expr)) = args.iter().find(|(name, _)| name == member) {
-            reify_expr::eval_expr(arg_expr, &reify_expr::EvalContext::new(values, functions).with_meta(meta_map))
+            reify_expr::eval_expr(
+                arg_expr,
+                &reify_expr::EvalContext::new(values, functions).with_meta(meta_map),
+            )
         } else if let Some(ref default_expr) = cell.default_expr {
-            reify_expr::eval_expr(default_expr, &reify_expr::EvalContext::new(&child_values, functions).with_meta(meta_map))
+            reify_expr::eval_expr(
+                default_expr,
+                &reify_expr::EvalContext::new(&child_values, functions).with_meta(meta_map),
+            )
         } else {
             Value::Undef
         };
@@ -3613,12 +3779,8 @@ fn elaborate_child_params_only(
 
         let trace = DependencyTrace::default();
         let cached_result = CachedResult::Value(val, DeterminacyState::Determined);
-        let outcome = cache.record_evaluation(
-            node_id.clone(),
-            cached_result,
-            VersionId(version_id),
-            trace,
-        );
+        let outcome =
+            cache.record_evaluation(node_id.clone(), cached_result, VersionId(version_id), trace);
 
         journal.record(EvalEvent {
             timestamp: Instant::now(),
@@ -3723,10 +3885,13 @@ fn elaborate_child_lets_only<'t>(
                 // child sub names and their target templates (not the static recursive_sub_names).
                 for sub_decl in &entity_template.sub_components {
                     if sub_decl.guard_expr.is_some() {
-                        if let Some(target_tmpl) = templates.iter()
-                            .find(|t| t.name == sub_decl.structure_name)
+                        if let Some(target_tmpl) =
+                            templates.iter().find(|t| t.name == sub_decl.structure_name)
                         {
-                            queue.push_back((format!("{}.{}", depth_entity, sub_decl.name), target_tmpl));
+                            queue.push_back((
+                                format!("{}.{}", depth_entity, sub_decl.name),
+                                target_tmpl,
+                            ));
                         } else {
                             diagnostics.push(Diagnostic::warning(format!(
                                 "BFS expand: sub \"{}\" in \"{}\" references unknown structure \"{}\"; skipping subtree",
@@ -3744,7 +3909,12 @@ fn elaborate_child_lets_only<'t>(
         .value_cells
         .iter()
         .filter(|c| c.kind == ValueCellKind::Let && c.default_expr.is_some())
-        .map(|c| (NodeId::Value(c.id.clone()), c.default_expr.as_ref().unwrap()))
+        .map(|c| {
+            (
+                NodeId::Value(c.id.clone()),
+                c.default_expr.as_ref().unwrap(),
+            )
+        })
         .collect();
 
     let child_let_node_ids: HashSet<NodeId> = child_let_cells.keys().cloned().collect();
@@ -3783,7 +3953,10 @@ fn elaborate_child_lets_only<'t>(
         };
         let member = &child_cell_id.member;
 
-        let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&child_values, functions).with_meta(meta_map));
+        let val = reify_expr::eval_expr(
+            expr,
+            &reify_expr::EvalContext::new(&child_values, functions).with_meta(meta_map),
+        );
         child_values.insert(child_cell_id.clone(), val.clone());
 
         let scoped_id = ValueCellId::new(scoped_entity, member);
@@ -3805,12 +3978,8 @@ fn elaborate_child_lets_only<'t>(
 
         let trace = extract_dependency_trace(expr);
         let cached_result = CachedResult::Value(val, DeterminacyState::Determined);
-        let outcome = cache.record_evaluation(
-            node_id.clone(),
-            cached_result,
-            VersionId(version_id),
-            trace,
-        );
+        let outcome =
+            cache.record_evaluation(node_id.clone(), cached_result, VersionId(version_id), trace);
 
         journal.record(EvalEvent {
             timestamp: Instant::now(),
@@ -3956,11 +4125,21 @@ mod tests {
                 assert_eq!(profile, GeometryHandleId(10));
                 // The distance must preserve Scalar type (not be converted to Value::Real)
                 match distance {
-                    reify_types::Value::Scalar { si_value, dimension } => {
+                    reify_types::Value::Scalar {
+                        si_value,
+                        dimension,
+                    } => {
                         assert!((si_value - 0.05).abs() < 1e-12, "SI value should be 0.05m");
-                        assert_eq!(dimension, reify_types::DimensionVector::LENGTH, "dimension should be LENGTH");
+                        assert_eq!(
+                            dimension,
+                            reify_types::DimensionVector::LENGTH,
+                            "dimension should be LENGTH"
+                        );
                     }
-                    other => panic!("expected Value::Scalar, got {:?} — Extrude distance must preserve SI unit info", other),
+                    other => panic!(
+                        "expected Value::Scalar, got {:?} — Extrude distance must preserve SI unit info",
+                        other
+                    ),
                 }
             }
             other => panic!("expected GeometryOp::Extrude, got {:?}", other),
@@ -3988,7 +4167,11 @@ mod tests {
         };
 
         let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
-        assert!(result.is_none(), "expected None for missing 'ox' arg, got {:?}", result);
+        assert!(
+            result.is_none(),
+            "expected None for missing 'ox' arg, got {:?}",
+            result
+        );
     }
 
     #[test]
@@ -4003,7 +4186,11 @@ mod tests {
         };
 
         let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
-        assert!(result.is_none(), "expected None for missing 'distance' arg, got {:?}", result);
+        assert!(
+            result.is_none(),
+            "expected None for missing 'distance' arg, got {:?}",
+            result
+        );
     }
 
     #[test]
@@ -4059,7 +4246,10 @@ mod tests {
         };
 
         let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
-        assert!(result.is_none(), "zero-length rotation axis should return None");
+        assert!(
+            result.is_none(),
+            "zero-length rotation axis should return None"
+        );
     }
 
     #[test]
@@ -4106,7 +4296,8 @@ mod tests {
         };
 
         let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
-        let result = result.expect("compile_geometry_op should return Some for Revolve with valid axis");
+        let result =
+            result.expect("compile_geometry_op should return Some for Revolve with valid axis");
 
         match result {
             reify_types::GeometryOp::Revolve {
@@ -4146,8 +4337,14 @@ mod tests {
             reify_types::GeometryOp::Extrude { profile, distance } => {
                 assert_eq!(profile, GeometryHandleId(77));
                 match distance {
-                    reify_types::Value::Scalar { si_value, dimension } => {
-                        assert!((si_value - 0.03).abs() < 1e-12, "SI value should be 0.03m (30mm)");
+                    reify_types::Value::Scalar {
+                        si_value,
+                        dimension,
+                    } => {
+                        assert!(
+                            (si_value - 0.03).abs() < 1e-12,
+                            "SI value should be 0.03m (30mm)"
+                        );
                         assert_eq!(dimension, reify_types::DimensionVector::LENGTH);
                     }
                     other => panic!("expected Value::Scalar for distance, got {:?}", other),
@@ -4169,7 +4366,10 @@ mod tests {
         };
 
         let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
-        assert!(result.is_none(), "negative scale factor should return None (inside-out geometry)");
+        assert!(
+            result.is_none(),
+            "negative scale factor should return None (inside-out geometry)"
+        );
     }
 
     #[test]
@@ -4185,7 +4385,10 @@ mod tests {
         };
 
         let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
-        assert!(result.is_none(), "missing dy/dz should return None, not silently default to 0.0");
+        assert!(
+            result.is_none(),
+            "missing dy/dz should return None, not silently default to 0.0"
+        );
     }
 
     #[test]

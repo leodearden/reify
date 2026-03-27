@@ -4,14 +4,22 @@
 //! into And-chains of pairwise comparisons: `And(Lt(a,b), Lt(b,c))`.
 
 use reify_compiler::*;
-use reify_types::{CompiledExprKind, BinOp, Diagnostic, ModulePath, Severity};
+use reify_types::{BinOp, CompiledExprKind, Diagnostic, ModulePath, Severity};
 
 /// Helper: parse source and compile, returning first template.
 fn compile_first_template(source: &str) -> (TopologyTemplate, Vec<Diagnostic>) {
     let parsed = reify_syntax::parse(source, ModulePath::single("test_chain"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
     let compiled = reify_compiler::compile(&parsed);
-    let template = compiled.templates.into_iter().next().expect("expected 1 template");
+    let template = compiled
+        .templates
+        .into_iter()
+        .next()
+        .expect("expected 1 template");
     (template, compiled.diagnostics)
 }
 
@@ -29,10 +37,16 @@ structure S {
     let (template, diagnostics) = compile_first_template(source);
 
     // No error diagnostics expected
-    let errors: Vec<_> = diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
 
-    assert!(!template.constraints.is_empty(), "should have at least one constraint");
+    assert!(
+        !template.constraints.is_empty(),
+        "should have at least one constraint"
+    );
 
     let expr = &template.constraints[0].expr;
     match &expr.kind {
@@ -40,19 +54,39 @@ structure S {
             assert_eq!(*op, BinOp::And, "top-level op should be And, got {:?}", op);
             // left should be Lt(a, b)
             match &left.kind {
-                CompiledExprKind::BinOp { op: lop, left: ll, right: lr } => {
+                CompiledExprKind::BinOp {
+                    op: lop,
+                    left: ll,
+                    right: lr,
+                } => {
                     assert_eq!(*lop, BinOp::Lt, "left pairwise op should be Lt");
-                    assert!(matches!(&ll.kind, CompiledExprKind::ValueRef(_)), "left.left should be value ref a");
-                    assert!(matches!(&lr.kind, CompiledExprKind::ValueRef(_)), "left.right should be value ref b");
+                    assert!(
+                        matches!(&ll.kind, CompiledExprKind::ValueRef(_)),
+                        "left.left should be value ref a"
+                    );
+                    assert!(
+                        matches!(&lr.kind, CompiledExprKind::ValueRef(_)),
+                        "left.right should be value ref b"
+                    );
                 }
                 other => panic!("expected BinOp(Lt) for left, got {:?}", other),
             }
             // right should be Lt(b, c)
             match &right.kind {
-                CompiledExprKind::BinOp { op: rop, left: rl, right: rr } => {
+                CompiledExprKind::BinOp {
+                    op: rop,
+                    left: rl,
+                    right: rr,
+                } => {
                     assert_eq!(*rop, BinOp::Lt, "right pairwise op should be Lt");
-                    assert!(matches!(&rl.kind, CompiledExprKind::ValueRef(_)), "right.left should be value ref b");
-                    assert!(matches!(&rr.kind, CompiledExprKind::ValueRef(_)), "right.right should be value ref c");
+                    assert!(
+                        matches!(&rl.kind, CompiledExprKind::ValueRef(_)),
+                        "right.left should be value ref b"
+                    );
+                    assert!(
+                        matches!(&rr.kind, CompiledExprKind::ValueRef(_)),
+                        "right.right should be value ref c"
+                    );
                 }
                 other => panic!("expected BinOp(Lt) for right, got {:?}", other),
             }
@@ -75,10 +109,16 @@ structure S {
 "#;
     let (template, diagnostics) = compile_first_template(source);
 
-    let errors: Vec<_> = diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
 
-    assert!(!template.constraints.is_empty(), "should have at least one constraint");
+    assert!(
+        !template.constraints.is_empty(),
+        "should have at least one constraint"
+    );
 
     let expr = &template.constraints[0].expr;
     match &expr.kind {
@@ -118,10 +158,16 @@ structure S {
 "#;
     let (template, diagnostics) = compile_first_template(source);
 
-    let errors: Vec<_> = diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
 
-    assert!(!template.constraints.is_empty(), "should have at least one constraint");
+    assert!(
+        !template.constraints.is_empty(),
+        "should have at least one constraint"
+    );
 
     let expr = &template.constraints[0].expr;
     // Outer: And(And(...), Lt(c,d))
@@ -137,7 +183,11 @@ structure S {
             }
             // left should be And(Lt(a,b), Lt(b,c))
             match &left.kind {
-                CompiledExprKind::BinOp { op: lop, left: ll, right: lr } => {
+                CompiledExprKind::BinOp {
+                    op: lop,
+                    left: ll,
+                    right: lr,
+                } => {
                     assert_eq!(*lop, BinOp::And, "inner left op should be And");
                     match &ll.kind {
                         CompiledExprKind::BinOp { op: llop, .. } => {
@@ -173,10 +223,16 @@ structure S {
 "#;
     let (template, diagnostics) = compile_first_template(source);
 
-    let errors: Vec<_> = diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
 
-    assert!(!template.constraints.is_empty(), "should have at least one constraint");
+    assert!(
+        !template.constraints.is_empty(),
+        "should have at least one constraint"
+    );
 
     let expr = &template.constraints[0].expr;
     match &expr.kind {
@@ -216,10 +272,16 @@ structure S {
 "#;
     let (template, diagnostics) = compile_first_template(source);
 
-    let errors: Vec<_> = diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
 
-    assert!(!template.constraints.is_empty(), "should have at least one constraint");
+    assert!(
+        !template.constraints.is_empty(),
+        "should have at least one constraint"
+    );
 
     let expr = &template.constraints[0].expr;
     match &expr.kind {
@@ -227,26 +289,36 @@ structure S {
             assert_eq!(*op, BinOp::And, "top-level op should be And");
             // left: Lt(a, b+c) — extract right side (b+c)
             let left_rhs_hash = match &left.kind {
-                CompiledExprKind::BinOp { op: lop, right: lr, .. } => {
+                CompiledExprKind::BinOp {
+                    op: lop, right: lr, ..
+                } => {
                     assert_eq!(*lop, BinOp::Lt);
-                    assert!(matches!(&lr.kind, CompiledExprKind::BinOp { op: addop, .. } if *addop == BinOp::Add),
-                        "left rhs should be Add(b,c)");
+                    assert!(
+                        matches!(&lr.kind, CompiledExprKind::BinOp { op: addop, .. } if *addop == BinOp::Add),
+                        "left rhs should be Add(b,c)"
+                    );
                     lr.content_hash
                 }
                 other => panic!("expected BinOp(Lt) for left, got {:?}", other),
             };
             // right: Lt(b+c, d) — extract left side (b+c)
             let right_lhs_hash = match &right.kind {
-                CompiledExprKind::BinOp { op: rop, left: rl, .. } => {
+                CompiledExprKind::BinOp {
+                    op: rop, left: rl, ..
+                } => {
                     assert_eq!(*rop, BinOp::Lt);
-                    assert!(matches!(&rl.kind, CompiledExprKind::BinOp { op: addop, .. } if *addop == BinOp::Add),
-                        "right lhs should be Add(b,c)");
+                    assert!(
+                        matches!(&rl.kind, CompiledExprKind::BinOp { op: addop, .. } if *addop == BinOp::Add),
+                        "right lhs should be Add(b,c)"
+                    );
                     rl.content_hash
                 }
                 other => panic!("expected BinOp(Lt) for right, got {:?}", other),
             };
-            assert_eq!(left_rhs_hash, right_lhs_hash,
-                "middle expression b+c should have identical content_hash in both comparisons");
+            assert_eq!(
+                left_rhs_hash, right_lhs_hash,
+                "middle expression b+c should have identical content_hash in both comparisons"
+            );
         }
         other => panic!("expected BinOp(And) at step-9 top level, got {:?}", other),
     }
@@ -266,19 +338,29 @@ structure S {
 "#;
     let (template, diagnostics) = compile_first_template(source);
 
-    let errors: Vec<_> = diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
 
-    assert!(!template.constraints.is_empty(), "should have at least one constraint");
+    assert!(
+        !template.constraints.is_empty(),
+        "should have at least one constraint"
+    );
 
     let expr = &template.constraints[0].expr;
     match &expr.kind {
         CompiledExprKind::BinOp { op, left, right } => {
             assert_eq!(*op, BinOp::Lt, "should be plain Lt, not And");
-            assert!(matches!(&left.kind, CompiledExprKind::BinOp { op: addop, .. } if *addop == BinOp::Add),
-                "left should be Add(a,b), not an And-chain");
-            assert!(matches!(&right.kind, CompiledExprKind::ValueRef(_)),
-                "right should be value ref c");
+            assert!(
+                matches!(&left.kind, CompiledExprKind::BinOp { op: addop, .. } if *addop == BinOp::Add),
+                "left should be Add(a,b), not an And-chain"
+            );
+            assert!(
+                matches!(&right.kind, CompiledExprKind::ValueRef(_)),
+                "right should be value ref c"
+            );
         }
         other => panic!("expected plain BinOp(Lt), got {:?}", other),
     }
@@ -297,17 +379,33 @@ structure S {
 "#;
     let (template, diagnostics) = compile_first_template(source);
 
-    let errors: Vec<_> = diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
 
-    assert!(!template.constraints.is_empty(), "should have at least one constraint");
+    assert!(
+        !template.constraints.is_empty(),
+        "should have at least one constraint"
+    );
 
     let expr = &template.constraints[0].expr;
     match &expr.kind {
         CompiledExprKind::BinOp { op, left, right } => {
-            assert_eq!(*op, BinOp::Lt, "single comparison should stay as Lt, not wrapped in And");
-            assert!(matches!(&left.kind, CompiledExprKind::ValueRef(_)), "left should be value ref a");
-            assert!(matches!(&right.kind, CompiledExprKind::ValueRef(_)), "right should be value ref b");
+            assert_eq!(
+                *op,
+                BinOp::Lt,
+                "single comparison should stay as Lt, not wrapped in And"
+            );
+            assert!(
+                matches!(&left.kind, CompiledExprKind::ValueRef(_)),
+                "left should be value ref a"
+            );
+            assert!(
+                matches!(&right.kind, CompiledExprKind::ValueRef(_)),
+                "right should be value ref b"
+            );
         }
         other => panic!("expected plain BinOp(Lt), got {:?}", other),
     }
@@ -326,14 +424,24 @@ structure S {
 "#;
     let (template, diagnostics) = compile_first_template(source);
 
-    let errors: Vec<_> = diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
 
-    assert!(!template.constraints.is_empty(), "should have at least one constraint");
+    assert!(
+        !template.constraints.is_empty(),
+        "should have at least one constraint"
+    );
 
     let expr = &template.constraints[0].expr;
     // Result type should be Bool
-    assert_eq!(expr.result_type, reify_types::Type::Bool, "constraint expression should have type Bool");
+    assert_eq!(
+        expr.result_type,
+        reify_types::Type::Bool,
+        "constraint expression should have type Bool"
+    );
 
     // Should be And(Lt(2mm, thickness), Lt(thickness, 10mm))
     match &expr.kind {
@@ -357,7 +465,10 @@ structure S {
 "#;
     let (template, diagnostics) = compile_first_template(source);
 
-    let errors: Vec<_> = diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
 
     // Find the `in_range` value cell
@@ -368,12 +479,22 @@ structure S {
         .expect("should have 'in_range' value cell");
 
     // Its default_expr should be desugared to And-chain
-    let init = in_range_cell.default_expr.as_ref().expect("in_range should have default_expr");
-    assert_eq!(init.result_type, reify_types::Type::Bool, "in_range should have type Bool");
+    let init = in_range_cell
+        .default_expr
+        .as_ref()
+        .expect("in_range should have default_expr");
+    assert_eq!(
+        init.result_type,
+        reify_types::Type::Bool,
+        "in_range should have type Bool"
+    );
     match &init.kind {
         CompiledExprKind::BinOp { op, .. } => {
             assert_eq!(op, &BinOp::And, "in_range default_expr should be And-chain");
         }
-        other => panic!("expected BinOp(And) for in_range default_expr, got {:?}", other),
+        other => panic!(
+            "expected BinOp(And) for in_range default_expr, got {:?}",
+            other
+        ),
     }
 }

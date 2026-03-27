@@ -13,9 +13,13 @@ use std::path::PathBuf;
 /// Load and compile stdlib/materials_mechanical.ri from the crate root.
 /// Panics on parse errors or if the file doesn't exist.
 fn load_stdlib_module() -> CompiledModule {
-    let path: PathBuf = [env!("CARGO_MANIFEST_DIR"), "stdlib", "materials_mechanical.ri"]
-        .iter()
-        .collect();
+    let path: PathBuf = [
+        env!("CARGO_MANIFEST_DIR"),
+        "stdlib",
+        "materials_mechanical.ri",
+    ]
+    .iter()
+    .collect();
     let source = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("failed to read {}: {}", path.display(), e));
     let parsed = reify_syntax::parse(&source, ModulePath::single("stdlib"));
@@ -30,7 +34,11 @@ fn load_stdlib_module() -> CompiledModule {
 /// Compile inline source, returning the CompiledModule.
 fn compile_module(source: &str) -> CompiledModule {
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
     reify_compiler::compile(&parsed)
 }
 
@@ -88,7 +96,11 @@ fn elastic_trait_has_three_real_members() {
         elastic.required_members.len(),
         3,
         "Elastic should have exactly 3 required members, got: {:?}",
-        elastic.required_members.iter().map(|r| &r.name).collect::<Vec<_>>()
+        elastic
+            .required_members
+            .iter()
+            .map(|r| &r.name)
+            .collect::<Vec<_>>()
     );
 
     let member_names: Vec<&str> = elastic
@@ -149,7 +161,11 @@ fn strong_trait_has_members_and_constraint_default() {
         strong.required_members.len(),
         3,
         "Strong should have exactly 3 required members, got: {:?}",
-        strong.required_members.iter().map(|r| &r.name).collect::<Vec<_>>()
+        strong
+            .required_members
+            .iter()
+            .map(|r| &r.name)
+            .collect::<Vec<_>>()
     );
 
     let member_names: Vec<&str> = strong
@@ -230,7 +246,10 @@ fn hardness_scale_enum_and_hard_trait() {
         hard.required_members.len(),
         2,
         "Hard should have exactly 2 required members, got: {:?}",
-        hard.required_members.iter().map(|r| &r.name).collect::<Vec<_>>()
+        hard.required_members
+            .iter()
+            .map(|r| &r.name)
+            .collect::<Vec<_>>()
     );
 
     let hardness_value = hard
@@ -344,11 +363,7 @@ structure def Steel : Strong {
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
-    assert!(
-        errors.is_empty(),
-        "expected no errors, got: {:?}",
-        errors
-    );
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
 
     assert!(
         !template.constraints.is_empty(),
@@ -415,7 +430,10 @@ fn remaining_five_traits_exist() {
         "FatigueRated should have 1 required member"
     );
     assert!(
-        fatigue.required_members.iter().any(|r| r.name == "endurance_limit"),
+        fatigue
+            .required_members
+            .iter()
+            .any(|r| r.name == "endurance_limit"),
         "FatigueRated should have 'endurance_limit' member"
     );
 
@@ -431,7 +449,10 @@ fn remaining_five_traits_exist() {
         "FractureTough should have 1 required member"
     );
     assert!(
-        fracture.required_members.iter().any(|r| r.name == "fracture_toughness"),
+        fracture
+            .required_members
+            .iter()
+            .any(|r| r.name == "fracture_toughness"),
         "FractureTough should have 'fracture_toughness' member"
     );
 
@@ -447,11 +468,17 @@ fn remaining_five_traits_exist() {
         "Ductile should have 2 required members"
     );
     assert!(
-        ductile.required_members.iter().any(|r| r.name == "elongation"),
+        ductile
+            .required_members
+            .iter()
+            .any(|r| r.name == "elongation"),
         "Ductile should have 'elongation' member"
     );
     assert!(
-        ductile.required_members.iter().any(|r| r.name == "reduction_of_area"),
+        ductile
+            .required_members
+            .iter()
+            .any(|r| r.name == "reduction_of_area"),
         "Ductile should have 'reduction_of_area' member"
     );
 
@@ -467,7 +494,10 @@ fn remaining_five_traits_exist() {
         "ImpactResistant should have 1 required member"
     );
     assert!(
-        impact.required_members.iter().any(|r| r.name == "impact_energy"),
+        impact
+            .required_members
+            .iter()
+            .any(|r| r.name == "impact_energy"),
         "ImpactResistant should have 'impact_energy' member"
     );
 
@@ -483,11 +513,17 @@ fn remaining_five_traits_exist() {
         "Damping should have 2 required members"
     );
     assert!(
-        damping.required_members.iter().any(|r| r.name == "damping_ratio"),
+        damping
+            .required_members
+            .iter()
+            .any(|r| r.name == "damping_ratio"),
         "Damping should have 'damping_ratio' member"
     );
     assert!(
-        damping.required_members.iter().any(|r| r.name == "loss_factor"),
+        damping
+            .required_members
+            .iter()
+            .any(|r| r.name == "loss_factor"),
         "Damping should have 'loss_factor' member"
     );
 }
@@ -515,7 +551,11 @@ fn full_module_has_nine_traits_and_one_enum() {
         module.trait_defs.len(),
         9,
         "expected exactly 9 traits, got: {:?}",
-        module.trait_defs.iter().map(|t| &t.name).collect::<Vec<_>>()
+        module
+            .trait_defs
+            .iter()
+            .map(|t| &t.name)
+            .collect::<Vec<_>>()
     );
 
     assert_eq!(

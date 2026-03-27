@@ -23,9 +23,15 @@ pub enum Value {
     Real(f64),
     String(String),
     /// Dimensioned scalar: value in SI base units, with dimension.
-    Scalar { si_value: f64, dimension: DimensionVector },
+    Scalar {
+        si_value: f64,
+        dimension: DimensionVector,
+    },
     /// Enum variant value: type_name::variant.
-    Enum { type_name: String, variant: String },
+    Enum {
+        type_name: String,
+        variant: String,
+    },
     /// Ordered list of values.
     List(Vec<Value>),
     /// Ordered set of unique values.
@@ -55,19 +61,43 @@ pub enum Value {
     /// Geometric vector with n components (all sharing the same dimension).
     Vector(Vec<Value>),
     /// Complex number: re and im share one dimension (e.g., complex impedance in ohms).
-    Complex { re: f64, im: f64, dimension: DimensionVector },
+    Complex {
+        re: f64,
+        im: f64,
+        dimension: DimensionVector,
+    },
     /// Orientation as a unit quaternion (w + xi + yj + zk).
-    Orientation { w: f64, x: f64, y: f64, z: f64 },
+    Orientation {
+        w: f64,
+        x: f64,
+        y: f64,
+        z: f64,
+    },
     /// Coordinate frame: an origin point and a basis orientation.
-    Frame { origin: Box<Value>, basis: Box<Value> },
+    Frame {
+        origin: Box<Value>,
+        basis: Box<Value>,
+    },
     /// Rigid-body transformation: a rotation (Orientation) and a translation (Vector).
-    Transform { rotation: Box<Value>, translation: Box<Value> },
+    Transform {
+        rotation: Box<Value>,
+        translation: Box<Value>,
+    },
     /// 3D plane: an origin Point3 and a unit normal Vector3 (dimensionless).
-    Plane { origin: Box<Value>, normal: Box<Value> },
+    Plane {
+        origin: Box<Value>,
+        normal: Box<Value>,
+    },
     /// 3D axis (ray): an origin Point3 and a unit direction Vector3 (dimensionless).
-    Axis { origin: Box<Value>, direction: Box<Value> },
+    Axis {
+        origin: Box<Value>,
+        direction: Box<Value>,
+    },
     /// 3D axis-aligned bounding box: min and max corner Point3 values.
-    BoundingBox { min: Box<Value>, max: Box<Value> },
+    BoundingBox {
+        min: Box<Value>,
+        max: Box<Value>,
+    },
     /// Range with optional inclusive/exclusive bounds.
     Range {
         lower: Option<Box<Value>>,
@@ -137,9 +167,7 @@ impl Value {
     /// nested-Tensor representation.
     pub fn canonicalize_matrix(self) -> Self {
         match self {
-            Value::Matrix(rows) => {
-                Value::Tensor(rows.into_iter().map(Value::Tensor).collect())
-            }
+            Value::Matrix(rows) => Value::Tensor(rows.into_iter().map(Value::Tensor).collect()),
             other => other,
         }
     }
@@ -182,9 +210,10 @@ impl Value {
             Value::Scalar { dimension, .. } => *dimension,
             Value::Complex { dimension, .. } => *dimension,
             // Point/Vector: dimension derives from the first component (all components share one dimension).
-            Value::Point(items) | Value::Vector(items) => {
-                items.first().map(|v| v.dimension()).unwrap_or(DimensionVector::DIMENSIONLESS)
-            }
+            Value::Point(items) | Value::Vector(items) => items
+                .first()
+                .map(|v| v.dimension())
+                .unwrap_or(DimensionVector::DIMENSIONLESS),
             _ => DimensionVector::DIMENSIONLESS,
         }
     }
@@ -212,7 +241,10 @@ impl Value {
                 ContentHash::of(&buf)
             }
             Value::String(s) => ContentHash::of(&[3]).combine(ContentHash::of_str(s)),
-            Value::Scalar { si_value, dimension } => {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
                 // Canonicalize NaN but preserve -0.0 (PartialEq uses to_bits)
                 let bits = if si_value.is_nan() {
                     f64::NAN.to_bits()
@@ -224,11 +256,9 @@ impl Value {
                 buf[1..].copy_from_slice(&bits.to_le_bytes());
                 ContentHash::of(&buf).combine(dimension.content_hash())
             }
-            Value::Enum { type_name, variant } => {
-                ContentHash::of(&[6])
-                    .combine(ContentHash::of_str(type_name))
-                    .combine(ContentHash::of_str(variant))
-            }
+            Value::Enum { type_name, variant } => ContentHash::of(&[6])
+                .combine(ContentHash::of_str(type_name))
+                .combine(ContentHash::of_str(variant)),
             Value::List(items) => {
                 let mut h = ContentHash::of(&[7]);
                 h = h.combine(ContentHash::of(&(items.len() as u64).to_le_bytes()));
@@ -258,7 +288,12 @@ impl Value {
                 None => ContentHash::of(&[11, 0]),
                 Some(v) => ContentHash::of(&[11, 1]).combine(v.content_hash()),
             },
-            Value::Field { domain_type, codomain_type, source, lambda } => {
+            Value::Field {
+                domain_type,
+                codomain_type,
+                source,
+                lambda,
+            } => {
                 let mut h = ContentHash::of(&[13]);
                 h = h.combine(ContentHash::of_str(&format!("{}", domain_type)));
                 h = h.combine(ContentHash::of_str(&format!("{}", codomain_type)));
@@ -266,7 +301,11 @@ impl Value {
                 h = h.combine(lambda.content_hash());
                 h
             }
-            Value::Lambda { params, body, captures } => {
+            Value::Lambda {
+                params,
+                body,
+                captures,
+            } => {
                 let mut h = ContentHash::of(&[12]);
                 h = h.combine(ContentHash::of(&(params.len() as u64).to_le_bytes()));
                 for (name, id) in params {
@@ -306,8 +345,16 @@ impl Value {
             }
             Value::Complex { re, im, dimension } => {
                 // tag=15; NaN canonicalization for both re and im; combine with dimension hash
-                let re_bits = if re.is_nan() { f64::NAN.to_bits() } else { re.to_bits() };
-                let im_bits = if im.is_nan() { f64::NAN.to_bits() } else { im.to_bits() };
+                let re_bits = if re.is_nan() {
+                    f64::NAN.to_bits()
+                } else {
+                    re.to_bits()
+                };
+                let im_bits = if im.is_nan() {
+                    f64::NAN.to_bits()
+                } else {
+                    im.to_bits()
+                };
                 let mut buf = [0u8; 17];
                 buf[0] = 15;
                 buf[1..9].copy_from_slice(&re_bits.to_le_bytes());
@@ -317,7 +364,11 @@ impl Value {
             Value::Orientation { w, x, y, z } => {
                 // tag=16; NaN canonicalization for all 4 components
                 let canon = |v: &f64| -> u64 {
-                    if v.is_nan() { f64::NAN.to_bits() } else { v.to_bits() }
+                    if v.is_nan() {
+                        f64::NAN.to_bits()
+                    } else {
+                        v.to_bits()
+                    }
                 };
                 let mut buf = [0u8; 33];
                 buf[0] = 16;
@@ -329,25 +380,43 @@ impl Value {
             }
             Value::Frame { origin, basis } => {
                 // tag=20; combine origin and basis content hashes
-                ContentHash::of(&[20]).combine(origin.content_hash()).combine(basis.content_hash())
+                ContentHash::of(&[20])
+                    .combine(origin.content_hash())
+                    .combine(basis.content_hash())
             }
-            Value::Transform { rotation, translation } => {
+            Value::Transform {
+                rotation,
+                translation,
+            } => {
                 // tag=21; combine rotation and translation content hashes
-                ContentHash::of(&[21]).combine(rotation.content_hash()).combine(translation.content_hash())
+                ContentHash::of(&[21])
+                    .combine(rotation.content_hash())
+                    .combine(translation.content_hash())
             }
             Value::Plane { origin, normal } => {
                 // tag=22; combine origin and normal content hashes
-                ContentHash::of(&[22]).combine(origin.content_hash()).combine(normal.content_hash())
+                ContentHash::of(&[22])
+                    .combine(origin.content_hash())
+                    .combine(normal.content_hash())
             }
             Value::Axis { origin, direction } => {
                 // tag=23; combine origin and direction content hashes
-                ContentHash::of(&[23]).combine(origin.content_hash()).combine(direction.content_hash())
+                ContentHash::of(&[23])
+                    .combine(origin.content_hash())
+                    .combine(direction.content_hash())
             }
             Value::BoundingBox { min, max } => {
                 // tag=24; combine min and max content hashes
-                ContentHash::of(&[24]).combine(min.content_hash()).combine(max.content_hash())
+                ContentHash::of(&[24])
+                    .combine(min.content_hash())
+                    .combine(max.content_hash())
             }
-            Value::Range { lower, upper, lower_inclusive, upper_inclusive } => {
+            Value::Range {
+                lower,
+                upper,
+                lower_inclusive,
+                upper_inclusive,
+            } => {
                 // Defensive re-normalization: None bounds → inclusive=false
                 let lower_inclusive = *lower_inclusive && lower.is_some();
                 let upper_inclusive = *upper_inclusive && upper.is_some();
@@ -387,12 +456,26 @@ impl PartialEq for Value {
             (Value::Int(a), Value::Int(b)) => a == b,
             (Value::Real(a), Value::Real(b)) => a.to_bits() == b.to_bits(),
             (Value::String(a), Value::String(b)) => a == b,
-            (Value::Scalar { si_value: a, dimension: ad }, Value::Scalar { si_value: b, dimension: bd }) => {
-                a.to_bits() == b.to_bits() && ad == bd
-            }
-            (Value::Enum { type_name: a, variant: av }, Value::Enum { type_name: b, variant: bv }) => {
-                a == b && av == bv
-            }
+            (
+                Value::Scalar {
+                    si_value: a,
+                    dimension: ad,
+                },
+                Value::Scalar {
+                    si_value: b,
+                    dimension: bd,
+                },
+            ) => a.to_bits() == b.to_bits() && ad == bd,
+            (
+                Value::Enum {
+                    type_name: a,
+                    variant: av,
+                },
+                Value::Enum {
+                    type_name: b,
+                    variant: bv,
+                },
+            ) => a == b && av == bv,
             (Value::List(a), Value::List(b)) => a == b,
             (Value::Tensor(a), Value::Tensor(b)) => a == b,
             (Value::Point(a), Value::Point(b)) => a == b,
@@ -401,29 +484,66 @@ impl PartialEq for Value {
             (Value::Map(a), Value::Map(b)) => a == b,
             (Value::Option(a), Value::Option(b)) => a == b,
             (
-                Value::Field { domain_type: ad, codomain_type: ac, source: as_, lambda: al },
-                Value::Field { domain_type: bd, codomain_type: bc, source: bs, lambda: bl },
+                Value::Field {
+                    domain_type: ad,
+                    codomain_type: ac,
+                    source: as_,
+                    lambda: al,
+                },
+                Value::Field {
+                    domain_type: bd,
+                    codomain_type: bc,
+                    source: bs,
+                    lambda: bl,
+                },
             ) => ad == bd && ac == bc && as_ == bs && al == bl,
             (
-                Value::Lambda { params: ap, body: ab, captures: ac },
-                Value::Lambda { params: bp, body: bb, captures: bc },
+                Value::Lambda {
+                    params: ap,
+                    body: ab,
+                    captures: ac,
+                },
+                Value::Lambda {
+                    params: bp,
+                    body: bb,
+                    captures: bc,
+                },
             ) => {
                 ap == bp && ab.content_hash == bb.content_hash && {
                     let a_caps = sorted_captures(ac);
                     let b_caps = sorted_captures(bc);
                     a_caps.len() == b_caps.len()
-                        && a_caps.iter().zip(b_caps.iter()).all(|((aid, av), (bid, bv))| {
-                            aid == bid && av == bv
-                        })
+                        && a_caps
+                            .iter()
+                            .zip(b_caps.iter())
+                            .all(|((aid, av), (bid, bv))| aid == bid && av == bv)
                 }
             }
             (
-                Value::Complex { re: ar, im: ai, dimension: ad },
-                Value::Complex { re: br, im: bi, dimension: bd },
+                Value::Complex {
+                    re: ar,
+                    im: ai,
+                    dimension: ad,
+                },
+                Value::Complex {
+                    re: br,
+                    im: bi,
+                    dimension: bd,
+                },
             ) => ar.to_bits() == br.to_bits() && ai.to_bits() == bi.to_bits() && ad == bd,
             (
-                Value::Orientation { w: aw, x: ax, y: ay, z: az },
-                Value::Orientation { w: bw, x: bx, y: by, z: bz },
+                Value::Orientation {
+                    w: aw,
+                    x: ax,
+                    y: ay,
+                    z: az,
+                },
+                Value::Orientation {
+                    w: bw,
+                    x: bx,
+                    y: by,
+                    z: bz,
+                },
             ) => {
                 aw.to_bits() == bw.to_bits()
                     && ax.to_bits() == bx.to_bits()
@@ -431,28 +551,68 @@ impl PartialEq for Value {
                     && az.to_bits() == bz.to_bits()
             }
             (
-                Value::Frame { origin: ao, basis: ab },
-                Value::Frame { origin: bo, basis: bb },
+                Value::Frame {
+                    origin: ao,
+                    basis: ab,
+                },
+                Value::Frame {
+                    origin: bo,
+                    basis: bb,
+                },
             ) => ao == bo && ab == bb,
             (
-                Value::Transform { rotation: ar, translation: at },
-                Value::Transform { rotation: br, translation: bt },
+                Value::Transform {
+                    rotation: ar,
+                    translation: at,
+                },
+                Value::Transform {
+                    rotation: br,
+                    translation: bt,
+                },
             ) => ar == br && at == bt,
             (
-                Value::Plane { origin: ao, normal: an },
-                Value::Plane { origin: bo, normal: bn },
+                Value::Plane {
+                    origin: ao,
+                    normal: an,
+                },
+                Value::Plane {
+                    origin: bo,
+                    normal: bn,
+                },
             ) => ao == bo && an == bn,
             (
-                Value::Axis { origin: ao, direction: ad },
-                Value::Axis { origin: bo, direction: bd },
+                Value::Axis {
+                    origin: ao,
+                    direction: ad,
+                },
+                Value::Axis {
+                    origin: bo,
+                    direction: bd,
+                },
             ) => ao == bo && ad == bd,
             (
-                Value::BoundingBox { min: amin, max: amax },
-                Value::BoundingBox { min: bmin, max: bmax },
+                Value::BoundingBox {
+                    min: amin,
+                    max: amax,
+                },
+                Value::BoundingBox {
+                    min: bmin,
+                    max: bmax,
+                },
             ) => amin == bmin && amax == bmax,
             (
-                Value::Range { lower: al, upper: au, lower_inclusive: ali, upper_inclusive: aui },
-                Value::Range { lower: bl, upper: bu, lower_inclusive: bli, upper_inclusive: bui },
+                Value::Range {
+                    lower: al,
+                    upper: au,
+                    lower_inclusive: ali,
+                    upper_inclusive: aui,
+                },
+                Value::Range {
+                    lower: bl,
+                    upper: bu,
+                    lower_inclusive: bli,
+                    upper_inclusive: bui,
+                },
             ) => {
                 // Defensive re-normalization: None bounds → inclusive=false
                 let ali = *ali && al.is_some();
@@ -528,14 +688,30 @@ impl Ord for Value {
                 // Total order via to_bits(), consistent with PartialEq
                 a.to_bits().cmp(&b.to_bits())
             }
-            (Value::Scalar { si_value: a, dimension: ad }, Value::Scalar { si_value: b, dimension: bd }) => {
+            (
+                Value::Scalar {
+                    si_value: a,
+                    dimension: ad,
+                },
+                Value::Scalar {
+                    si_value: b,
+                    dimension: bd,
+                },
+            ) => {
                 // Compare by dimension first, then by value bits
                 ad.cmp(bd).then_with(|| a.to_bits().cmp(&b.to_bits()))
             }
             (Value::String(a), Value::String(b)) => a.cmp(b),
-            (Value::Enum { type_name: a, variant: av }, Value::Enum { type_name: b, variant: bv }) => {
-                a.cmp(b).then_with(|| av.cmp(bv))
-            }
+            (
+                Value::Enum {
+                    type_name: a,
+                    variant: av,
+                },
+                Value::Enum {
+                    type_name: b,
+                    variant: bv,
+                },
+            ) => a.cmp(b).then_with(|| av.cmp(bv)),
             (Value::List(a), Value::List(b)) => a.cmp(b),
             (Value::Tensor(a), Value::Tensor(b)) => a.cmp(b),
             (Value::Point(a), Value::Point(b)) => a.cmp(b),
@@ -547,44 +723,85 @@ impl Ord for Value {
             }
             (Value::Option(a), Value::Option(b)) => a.cmp(b),
             (
-                Value::Field { domain_type: ad, codomain_type: ac, source: as_, lambda: al },
-                Value::Field { domain_type: bd, codomain_type: bc, source: bs, lambda: bl },
-            ) => {
-                format!("{}", ad).cmp(&format!("{}", bd))
-                    .then_with(|| format!("{}", ac).cmp(&format!("{}", bc)))
-                    .then_with(|| format!("{:?}", as_).cmp(&format!("{:?}", bs)))
-                    .then_with(|| al.cmp(bl))
-            }
+                Value::Field {
+                    domain_type: ad,
+                    codomain_type: ac,
+                    source: as_,
+                    lambda: al,
+                },
+                Value::Field {
+                    domain_type: bd,
+                    codomain_type: bc,
+                    source: bs,
+                    lambda: bl,
+                },
+            ) => format!("{}", ad)
+                .cmp(&format!("{}", bd))
+                .then_with(|| format!("{}", ac).cmp(&format!("{}", bc)))
+                .then_with(|| format!("{:?}", as_).cmp(&format!("{:?}", bs)))
+                .then_with(|| al.cmp(bl)),
             (
-                Value::Lambda { params: ap, body: ab, captures: ac },
-                Value::Lambda { params: bp, body: bb, captures: bc },
-            ) => {
-                ap.cmp(bp)
-                    .then_with(|| ab.content_hash.0.cmp(&bb.content_hash.0))
-                    .then_with(|| {
-                        sorted_captures(ac).cmp(&sorted_captures(bc))
-                    })
-            }
+                Value::Lambda {
+                    params: ap,
+                    body: ab,
+                    captures: ac,
+                },
+                Value::Lambda {
+                    params: bp,
+                    body: bb,
+                    captures: bc,
+                },
+            ) => ap
+                .cmp(bp)
+                .then_with(|| ab.content_hash.0.cmp(&bb.content_hash.0))
+                .then_with(|| sorted_captures(ac).cmp(&sorted_captures(bc))),
             (
-                Value::Complex { re: ar, im: ai, dimension: ad },
-                Value::Complex { re: br, im: bi, dimension: bd },
-            ) => {
-                ad.cmp(bd)
-                    .then_with(|| ar.to_bits().cmp(&br.to_bits()))
-                    .then_with(|| ai.to_bits().cmp(&bi.to_bits()))
-            }
+                Value::Complex {
+                    re: ar,
+                    im: ai,
+                    dimension: ad,
+                },
+                Value::Complex {
+                    re: br,
+                    im: bi,
+                    dimension: bd,
+                },
+            ) => ad
+                .cmp(bd)
+                .then_with(|| ar.to_bits().cmp(&br.to_bits()))
+                .then_with(|| ai.to_bits().cmp(&bi.to_bits())),
             (
-                Value::Orientation { w: aw, x: ax, y: ay, z: az },
-                Value::Orientation { w: bw, x: bx, y: by, z: bz },
-            ) => {
-                aw.to_bits().cmp(&bw.to_bits())
-                    .then_with(|| ax.to_bits().cmp(&bx.to_bits()))
-                    .then_with(|| ay.to_bits().cmp(&by.to_bits()))
-                    .then_with(|| az.to_bits().cmp(&bz.to_bits()))
-            }
+                Value::Orientation {
+                    w: aw,
+                    x: ax,
+                    y: ay,
+                    z: az,
+                },
+                Value::Orientation {
+                    w: bw,
+                    x: bx,
+                    y: by,
+                    z: bz,
+                },
+            ) => aw
+                .to_bits()
+                .cmp(&bw.to_bits())
+                .then_with(|| ax.to_bits().cmp(&bx.to_bits()))
+                .then_with(|| ay.to_bits().cmp(&by.to_bits()))
+                .then_with(|| az.to_bits().cmp(&bz.to_bits())),
             (
-                Value::Range { lower: al, upper: au, lower_inclusive: ali, upper_inclusive: aui },
-                Value::Range { lower: bl, upper: bu, lower_inclusive: bli, upper_inclusive: bui },
+                Value::Range {
+                    lower: al,
+                    upper: au,
+                    lower_inclusive: ali,
+                    upper_inclusive: aui,
+                },
+                Value::Range {
+                    lower: bl,
+                    upper: bu,
+                    lower_inclusive: bli,
+                    upper_inclusive: bui,
+                },
             ) => {
                 // Defensive re-normalization: None bounds → inclusive=false
                 let ali = *ali && al.is_some();
@@ -598,24 +815,54 @@ impl Ord for Value {
             }
             (Value::Matrix(a), Value::Matrix(b)) => a.cmp(b),
             (
-                Value::Frame { origin: ao, basis: ab },
-                Value::Frame { origin: bo, basis: bb },
+                Value::Frame {
+                    origin: ao,
+                    basis: ab,
+                },
+                Value::Frame {
+                    origin: bo,
+                    basis: bb,
+                },
             ) => ao.cmp(bo).then_with(|| ab.cmp(bb)),
             (
-                Value::Transform { rotation: ar, translation: at },
-                Value::Transform { rotation: br, translation: bt },
+                Value::Transform {
+                    rotation: ar,
+                    translation: at,
+                },
+                Value::Transform {
+                    rotation: br,
+                    translation: bt,
+                },
             ) => ar.cmp(br).then_with(|| at.cmp(bt)),
             (
-                Value::Plane { origin: ao, normal: an },
-                Value::Plane { origin: bo, normal: bn },
+                Value::Plane {
+                    origin: ao,
+                    normal: an,
+                },
+                Value::Plane {
+                    origin: bo,
+                    normal: bn,
+                },
             ) => ao.cmp(bo).then_with(|| an.cmp(bn)),
             (
-                Value::Axis { origin: ao, direction: ad },
-                Value::Axis { origin: bo, direction: bd },
+                Value::Axis {
+                    origin: ao,
+                    direction: ad,
+                },
+                Value::Axis {
+                    origin: bo,
+                    direction: bd,
+                },
             ) => ao.cmp(bo).then_with(|| ad.cmp(bd)),
             (
-                Value::BoundingBox { min: amin, max: amax },
-                Value::BoundingBox { min: bmin, max: bmax },
+                Value::BoundingBox {
+                    min: amin,
+                    max: amax,
+                },
+                Value::BoundingBox {
+                    min: bmin,
+                    max: bmax,
+                },
             ) => amin.cmp(bmin).then_with(|| amax.cmp(bmax)),
             _ => unreachable!("same type tag but different variants"),
         }
@@ -638,7 +885,10 @@ impl std::fmt::Display for Value {
                 }
             }
             Value::String(s) => write!(f, "\"{}\"", s),
-            Value::Scalar { si_value, dimension } => {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
                 write!(f, "{} {}", si_value, dimension)
             }
             Value::Enum { type_name, variant } => write!(f, "{}::{}", type_name, variant),
@@ -704,7 +954,12 @@ impl std::fmt::Display for Value {
             }
             Value::Option(None) => write!(f, "None"),
             Value::Option(Some(v)) => write!(f, "Some({})", v),
-            Value::Field { domain_type, codomain_type, source, .. } => {
+            Value::Field {
+                domain_type,
+                codomain_type,
+                source,
+                ..
+            } => {
                 write!(f, "Field<{}, {}>({:?})", domain_type, codomain_type, source)
             }
             Value::Lambda { params, .. } => {
@@ -745,12 +1000,22 @@ impl std::fmt::Display for Value {
                         format!("{}", v)
                     }
                 };
-                write!(f, "[{}, {}, {}, {}]q", fmt_f64(*w), fmt_f64(*x), fmt_f64(*y), fmt_f64(*z))
+                write!(
+                    f,
+                    "[{}, {}, {}, {}]q",
+                    fmt_f64(*w),
+                    fmt_f64(*x),
+                    fmt_f64(*y),
+                    fmt_f64(*z)
+                )
             }
             Value::Frame { origin, basis } => {
                 write!(f, "frame({}, {})", origin, basis)
             }
-            Value::Transform { rotation, translation } => {
+            Value::Transform {
+                rotation,
+                translation,
+            } => {
                 write!(f, "transform({}, {})", rotation, translation)
             }
             Value::Plane { origin, normal } => {
@@ -762,7 +1027,12 @@ impl std::fmt::Display for Value {
             Value::BoundingBox { min, max } => {
                 write!(f, "bbox({}, {})", min, max)
             }
-            Value::Range { lower, upper, lower_inclusive, upper_inclusive } => {
+            Value::Range {
+                lower,
+                upper,
+                lower_inclusive,
+                upper_inclusive,
+            } => {
                 // Defensive re-normalization: if someone bypassed Value::range(),
                 // ensure None bounds never appear as inclusive.
                 let lower_inclusive = *lower_inclusive && lower.is_some();
@@ -862,7 +1132,9 @@ pub enum Freshness {
     Intermediate { generation: u64 },
     /// Value has been requested but not yet computed.
     /// `last_substantive` holds the content hash of the last known-good value, if any.
-    Pending { last_substantive: Option<ContentHash> },
+    Pending {
+        last_substantive: Option<ContentHash>,
+    },
     /// Evaluation failed with an error.
     Failed { error: EvalError },
 }
@@ -957,8 +1229,14 @@ mod tests {
 
     #[test]
     fn scalar_neg_zero_hash_differs_from_pos_zero() {
-        let pos = Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH };
-        let neg = Value::Scalar { si_value: -0.0, dimension: DimensionVector::LENGTH };
+        let pos = Value::Scalar {
+            si_value: 0.0,
+            dimension: DimensionVector::LENGTH,
+        };
+        let neg = Value::Scalar {
+            si_value: -0.0,
+            dimension: DimensionVector::LENGTH,
+        };
         // PartialEq uses to_bits(), so -0.0 != 0.0
         assert_ne!(pos, neg);
         // Therefore content_hash must also differ (cache invariant)
@@ -1027,7 +1305,9 @@ mod tests {
 
     #[test]
     fn test_freshness_pending_none() {
-        let f = Freshness::Pending { last_substantive: None };
+        let f = Freshness::Pending {
+            last_substantive: None,
+        };
         let f2 = f.clone();
         assert_eq!(f, f2);
         match &f {
@@ -1039,7 +1319,9 @@ mod tests {
     #[test]
     fn test_freshness_pending_some() {
         let hash = ContentHash::of(b"test");
-        let f = Freshness::Pending { last_substantive: Some(hash) };
+        let f = Freshness::Pending {
+            last_substantive: Some(hash),
+        };
         let f2 = f.clone();
         assert_eq!(f, f2);
         match &f {
@@ -1077,7 +1359,10 @@ mod tests {
         let id = ValueCellId::new("Bracket", "width");
         map.insert(id.clone(), Value::length(0.08));
         assert!(!map.get_or_undef(&id).is_undef());
-        assert!(map.get_or_undef(&ValueCellId::new("Bracket", "missing")).is_undef());
+        assert!(
+            map.get_or_undef(&ValueCellId::new("Bracket", "missing"))
+                .is_undef()
+        );
     }
 
     #[test]
@@ -1319,7 +1604,10 @@ mod tests {
         m2.insert(Value::String("a".into()), Value::Int(1));
         let mut m3 = BTreeMap::new();
         m3.insert(Value::String("a".into()), Value::Int(2));
-        assert_eq!(Value::Map(m1).content_hash(), Value::Map(m2.clone()).content_hash());
+        assert_eq!(
+            Value::Map(m1).content_hash(),
+            Value::Map(m2.clone()).content_hash()
+        );
         assert_ne!(Value::Map(m2).content_hash(), Value::Map(m3).content_hash());
     }
 
@@ -1426,7 +1714,10 @@ mod tests {
         assert!(short < long);
 
         // List sorts after Enum
-        let enum_val = Value::Enum { type_name: "Z".into(), variant: "Z".into() };
+        let enum_val = Value::Enum {
+            type_name: "Z".into(),
+            variant: "Z".into(),
+        };
         assert!(enum_val < Value::List(vec![]));
     }
 
@@ -1454,10 +1745,22 @@ mod tests {
 
     #[test]
     fn value_enum_equality() {
-        let a = Value::Enum { type_name: "Color".into(), variant: "Red".into() };
-        let b = Value::Enum { type_name: "Color".into(), variant: "Red".into() };
-        let c = Value::Enum { type_name: "Color".into(), variant: "Blue".into() };
-        let d = Value::Enum { type_name: "Shape".into(), variant: "Red".into() };
+        let a = Value::Enum {
+            type_name: "Color".into(),
+            variant: "Red".into(),
+        };
+        let b = Value::Enum {
+            type_name: "Color".into(),
+            variant: "Red".into(),
+        };
+        let c = Value::Enum {
+            type_name: "Color".into(),
+            variant: "Blue".into(),
+        };
+        let d = Value::Enum {
+            type_name: "Shape".into(),
+            variant: "Red".into(),
+        };
         assert_eq!(a, b);
         assert_ne!(a, c);
         assert_ne!(a, d);
@@ -1465,24 +1768,45 @@ mod tests {
 
     #[test]
     fn value_enum_ordering() {
-        let enum_val = Value::Enum { type_name: "Color".into(), variant: "Red".into() };
+        let enum_val = Value::Enum {
+            type_name: "Color".into(),
+            variant: "Red".into(),
+        };
         let string_val = Value::String("zzz".into());
         // Enum sorts after String
         assert!(enum_val > string_val);
 
         // Within Enum: sort by type_name then variant
-        let a = Value::Enum { type_name: "Color".into(), variant: "Blue".into() };
-        let b = Value::Enum { type_name: "Color".into(), variant: "Red".into() };
-        let c = Value::Enum { type_name: "Shape".into(), variant: "A".into() };
+        let a = Value::Enum {
+            type_name: "Color".into(),
+            variant: "Blue".into(),
+        };
+        let b = Value::Enum {
+            type_name: "Color".into(),
+            variant: "Red".into(),
+        };
+        let c = Value::Enum {
+            type_name: "Shape".into(),
+            variant: "A".into(),
+        };
         assert!(a < b); // same type_name, Blue < Red
         assert!(b < c); // Color < Shape
     }
 
     #[test]
     fn value_enum_content_hash() {
-        let a = Value::Enum { type_name: "Color".into(), variant: "Red".into() };
-        let b = Value::Enum { type_name: "Color".into(), variant: "Red".into() };
-        let c = Value::Enum { type_name: "Color".into(), variant: "Blue".into() };
+        let a = Value::Enum {
+            type_name: "Color".into(),
+            variant: "Red".into(),
+        };
+        let b = Value::Enum {
+            type_name: "Color".into(),
+            variant: "Red".into(),
+        };
+        let c = Value::Enum {
+            type_name: "Color".into(),
+            variant: "Blue".into(),
+        };
         assert_eq!(a.content_hash(), b.content_hash()); // deterministic
         assert_ne!(a.content_hash(), c.content_hash()); // distinct
     }
@@ -1587,18 +1911,12 @@ mod tests {
     fn value_display_real_large_positive() {
         // 1e20 is beyond i64::MAX (~9.2e18), so `*r as i64` saturates to i64::MAX.
         // Expected: the full float representation, not the saturated i64 value.
-        assert_eq!(
-            format!("{}", Value::Real(1e20)),
-            "100000000000000000000"
-        );
+        assert_eq!(format!("{}", Value::Real(1e20)), "100000000000000000000");
     }
 
     #[test]
     fn value_display_real_large_negative() {
-        assert_eq!(
-            format!("{}", Value::Real(-1e20)),
-            "-100000000000000000000"
-        );
+        assert_eq!(format!("{}", Value::Real(-1e20)), "-100000000000000000000");
     }
 
     #[test]
@@ -1627,8 +1945,7 @@ mod tests {
     #[test]
     fn value_option_some_hash_not_equal_satisfaction_violated() {
         // Value::Option(Some(Bool(true))) and Satisfaction::Violated must not collide.
-        let value_hash =
-            Value::Option(Some(Box::new(Value::Bool(true)))).content_hash();
+        let value_hash = Value::Option(Some(Box::new(Value::Bool(true)))).content_hash();
         let satisfaction_hash = Satisfaction::Violated.content_hash();
         assert_ne!(
             value_hash, satisfaction_hash,
@@ -1703,8 +2020,14 @@ mod tests {
     #[test]
     fn scalar_neg_zero_hash_consistency() {
         // si_value -0.0 and 0.0 are different via PartialEq (to_bits), so content_hash must differ
-        let pos = Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH };
-        let neg = Value::Scalar { si_value: -0.0, dimension: DimensionVector::LENGTH };
+        let pos = Value::Scalar {
+            si_value: 0.0,
+            dimension: DimensionVector::LENGTH,
+        };
+        let neg = Value::Scalar {
+            si_value: -0.0,
+            dimension: DimensionVector::LENGTH,
+        };
         assert_ne!(pos, neg);
         assert_ne!(pos.content_hash(), neg.content_hash());
     }
@@ -1722,7 +2045,11 @@ mod tests {
         };
         // Display
         let display = format!("{}", field_val);
-        assert!(display.contains("Field"), "expected display to contain 'Field', got: {}", display);
+        assert!(
+            display.contains("Field"),
+            "expected display to contain 'Field', got: {}",
+            display
+        );
         // Content hash determinism
         let field_val2 = Value::Field {
             domain_type: Type::Real,
@@ -1768,8 +2095,16 @@ mod tests {
 
         assert_eq!(map.len(), 2);
         assert!(map.get(&id_b).is_none(), "removed entry should be gone");
-        assert_eq!(map.get(&id_a), Some(&Value::Int(1)), "other entries should remain");
-        assert_eq!(map.get(&id_c), Some(&Value::Int(3)), "other entries should remain");
+        assert_eq!(
+            map.get(&id_a),
+            Some(&Value::Int(1)),
+            "other entries should remain"
+        );
+        assert_eq!(
+            map.get(&id_c),
+            Some(&Value::Int(3)),
+            "other entries should remain"
+        );
     }
 
     // --- Value::Tensor tests ---
@@ -1866,7 +2201,10 @@ mod tests {
         // Instead, use List (tag=7) as a reference: Tensor (13) > List (7).
         let tensor = Value::Tensor(vec![Value::Int(1)]);
         let list = Value::List(vec![Value::Int(99)]);
-        assert!(tensor > list, "Tensor (tag 13) should order after List (tag 7)");
+        assert!(
+            tensor > list,
+            "Tensor (tag 13) should order after List (tag 7)"
+        );
 
         // (b) within-type lexicographic comparison of elements
         let ta = Value::Tensor(vec![Value::Int(1), Value::Int(2)]);
@@ -1883,37 +2221,61 @@ mod tests {
 
     #[test]
     fn value_complex_display_positive_imaginary() {
-        let v = Value::Complex { re: 3.0, im: 4.0, dimension: DimensionVector::DIMENSIONLESS };
+        let v = Value::Complex {
+            re: 3.0,
+            im: 4.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
         assert_eq!(format!("{}", v), "3+4i");
     }
 
     #[test]
     fn value_complex_display_negative_imaginary() {
-        let v = Value::Complex { re: 3.0, im: -4.0, dimension: DimensionVector::DIMENSIONLESS };
+        let v = Value::Complex {
+            re: 3.0,
+            im: -4.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
         assert_eq!(format!("{}", v), "3-4i");
     }
 
     #[test]
     fn value_complex_display_fractional() {
-        let v = Value::Complex { re: 3.5, im: 4.2, dimension: DimensionVector::DIMENSIONLESS };
+        let v = Value::Complex {
+            re: 3.5,
+            im: 4.2,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
         assert_eq!(format!("{}", v), "3.5+4.2i");
     }
 
     #[test]
     fn value_complex_display_dimensioned() {
-        let v = Value::Complex { re: 3.0, im: 4.0, dimension: DimensionVector::LENGTH };
+        let v = Value::Complex {
+            re: 3.0,
+            im: 4.0,
+            dimension: DimensionVector::LENGTH,
+        };
         assert_eq!(format!("{}", v), "(3+4i) m");
     }
 
     #[test]
     fn value_complex_display_zero_imaginary() {
-        let v = Value::Complex { re: 3.0, im: 0.0, dimension: DimensionVector::DIMENSIONLESS };
+        let v = Value::Complex {
+            re: 3.0,
+            im: 0.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
         assert_eq!(format!("{}", v), "3+0i");
     }
 
     #[test]
     fn value_complex_display_negative_real() {
-        let v = Value::Complex { re: -3.0, im: -4.0, dimension: DimensionVector::DIMENSIONLESS };
+        let v = Value::Complex {
+            re: -3.0,
+            im: -4.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
         assert_eq!(format!("{}", v), "-3-4i");
     }
 
@@ -1921,52 +2283,107 @@ mod tests {
 
     #[test]
     fn value_complex_eq_same() {
-        let a = Value::Complex { re: 3.0, im: 4.0, dimension: DimensionVector::DIMENSIONLESS };
-        let b = Value::Complex { re: 3.0, im: 4.0, dimension: DimensionVector::DIMENSIONLESS };
+        let a = Value::Complex {
+            re: 3.0,
+            im: 4.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let b = Value::Complex {
+            re: 3.0,
+            im: 4.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
         assert_eq!(a, b);
     }
 
     #[test]
     fn value_complex_neq_different_re() {
-        let a = Value::Complex { re: 3.0, im: 4.0, dimension: DimensionVector::DIMENSIONLESS };
-        let b = Value::Complex { re: 5.0, im: 4.0, dimension: DimensionVector::DIMENSIONLESS };
+        let a = Value::Complex {
+            re: 3.0,
+            im: 4.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let b = Value::Complex {
+            re: 5.0,
+            im: 4.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
         assert_ne!(a, b);
     }
 
     #[test]
     fn value_complex_neq_different_im() {
-        let a = Value::Complex { re: 3.0, im: 4.0, dimension: DimensionVector::DIMENSIONLESS };
-        let b = Value::Complex { re: 3.0, im: 5.0, dimension: DimensionVector::DIMENSIONLESS };
+        let a = Value::Complex {
+            re: 3.0,
+            im: 4.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let b = Value::Complex {
+            re: 3.0,
+            im: 5.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
         assert_ne!(a, b);
     }
 
     #[test]
     fn value_complex_neq_different_dimension() {
-        let a = Value::Complex { re: 3.0, im: 4.0, dimension: DimensionVector::DIMENSIONLESS };
-        let b = Value::Complex { re: 3.0, im: 4.0, dimension: DimensionVector::LENGTH };
+        let a = Value::Complex {
+            re: 3.0,
+            im: 4.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let b = Value::Complex {
+            re: 3.0,
+            im: 4.0,
+            dimension: DimensionVector::LENGTH,
+        };
         assert_ne!(a, b);
     }
 
     #[test]
     fn value_complex_neg_zero_distinguished() {
         // -0.0 vs 0.0 distinguished via to_bits()
-        let pos = Value::Complex { re: 0.0, im: 0.0, dimension: DimensionVector::DIMENSIONLESS };
-        let neg_re = Value::Complex { re: -0.0, im: 0.0, dimension: DimensionVector::DIMENSIONLESS };
-        let neg_im = Value::Complex { re: 0.0, im: -0.0, dimension: DimensionVector::DIMENSIONLESS };
+        let pos = Value::Complex {
+            re: 0.0,
+            im: 0.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let neg_re = Value::Complex {
+            re: -0.0,
+            im: 0.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let neg_im = Value::Complex {
+            re: 0.0,
+            im: -0.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
         assert_ne!(pos, neg_re);
         assert_ne!(pos, neg_im);
     }
 
     #[test]
     fn value_complex_neq_real() {
-        let c = Value::Complex { re: 3.0, im: 0.0, dimension: DimensionVector::DIMENSIONLESS };
+        let c = Value::Complex {
+            re: 3.0,
+            im: 0.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
         assert_ne!(c, Value::Real(3.0));
     }
 
     #[test]
     fn value_complex_neq_scalar() {
-        let c = Value::Complex { re: 3.0, im: 0.0, dimension: DimensionVector::LENGTH };
-        let s = Value::Scalar { si_value: 3.0, dimension: DimensionVector::LENGTH };
+        let c = Value::Complex {
+            re: 3.0,
+            im: 0.0,
+            dimension: DimensionVector::LENGTH,
+        };
+        let s = Value::Scalar {
+            si_value: 3.0,
+            dimension: DimensionVector::LENGTH,
+        };
         assert_ne!(c, s);
     }
 
@@ -1975,9 +2392,16 @@ mod tests {
     #[test]
     fn value_complex_sorts_after_tensor() {
         // Complex type_tag=14 > Tensor type_tag=13
-        let complex = Value::Complex { re: 0.0, im: 0.0, dimension: DimensionVector::DIMENSIONLESS };
+        let complex = Value::Complex {
+            re: 0.0,
+            im: 0.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
         let tensor = Value::Tensor(vec![Value::Int(99)]);
-        assert!(complex > tensor, "Complex (tag 14) should order after Tensor (tag 13)");
+        assert!(
+            complex > tensor,
+            "Complex (tag 14) should order after Tensor (tag 13)"
+        );
     }
 
     #[test]
@@ -1986,17 +2410,32 @@ mod tests {
         // (lower tag sorts first, so Undef=0 < Complex=14)
         // But also test vs something with tag > 14 doesn't exist yet,
         // so just verify cross-type ordering is consistent
-        let complex = Value::Complex { re: 0.0, im: 0.0, dimension: DimensionVector::DIMENSIONLESS };
+        let complex = Value::Complex {
+            re: 0.0,
+            im: 0.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
         let undef = Value::Undef;
-        assert!(complex > undef, "Complex (tag 14) should order after Undef (tag 0)");
+        assert!(
+            complex > undef,
+            "Complex (tag 14) should order after Undef (tag 0)"
+        );
     }
 
     #[test]
     fn value_complex_ord_dimension_first() {
         // Same re/im, different dimension — dimension compared first
         // LENGTH > DIMENSIONLESS in DimensionVector ordering
-        let a = Value::Complex { re: 1.0, im: 1.0, dimension: DimensionVector::DIMENSIONLESS };
-        let b = Value::Complex { re: 1.0, im: 1.0, dimension: DimensionVector::LENGTH };
+        let a = Value::Complex {
+            re: 1.0,
+            im: 1.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let b = Value::Complex {
+            re: 1.0,
+            im: 1.0,
+            dimension: DimensionVector::LENGTH,
+        };
         // They should not be equal; whichever dimension ordering, they differ
         assert_ne!(a.cmp(&b), std::cmp::Ordering::Equal);
     }
@@ -2004,23 +2443,47 @@ mod tests {
     #[test]
     fn value_complex_ord_re_second() {
         // Same dimension, different re — re bits compared second
-        let a = Value::Complex { re: 1.0, im: 0.0, dimension: DimensionVector::DIMENSIONLESS };
-        let b = Value::Complex { re: 2.0, im: 0.0, dimension: DimensionVector::DIMENSIONLESS };
+        let a = Value::Complex {
+            re: 1.0,
+            im: 0.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let b = Value::Complex {
+            re: 2.0,
+            im: 0.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
         assert!(a < b);
     }
 
     #[test]
     fn value_complex_ord_im_third() {
         // Same dimension+re, different im — im bits compared third
-        let a = Value::Complex { re: 1.0, im: 1.0, dimension: DimensionVector::DIMENSIONLESS };
-        let b = Value::Complex { re: 1.0, im: 2.0, dimension: DimensionVector::DIMENSIONLESS };
+        let a = Value::Complex {
+            re: 1.0,
+            im: 1.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let b = Value::Complex {
+            re: 1.0,
+            im: 2.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
         assert!(a < b);
     }
 
     #[test]
     fn value_complex_partial_ord_consistent() {
-        let a = Value::Complex { re: 1.0, im: 2.0, dimension: DimensionVector::DIMENSIONLESS };
-        let b = Value::Complex { re: 1.0, im: 3.0, dimension: DimensionVector::DIMENSIONLESS };
+        let a = Value::Complex {
+            re: 1.0,
+            im: 2.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let b = Value::Complex {
+            re: 1.0,
+            im: 3.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
         assert_eq!(a.partial_cmp(&b), Some(std::cmp::Ordering::Less));
         assert_eq!(b.partial_cmp(&a), Some(std::cmp::Ordering::Greater));
     }
@@ -2029,46 +2492,93 @@ mod tests {
 
     #[test]
     fn value_complex_hash_determinism() {
-        let a = Value::Complex { re: 3.0, im: 4.0, dimension: DimensionVector::DIMENSIONLESS };
-        let b = Value::Complex { re: 3.0, im: 4.0, dimension: DimensionVector::DIMENSIONLESS };
+        let a = Value::Complex {
+            re: 3.0,
+            im: 4.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let b = Value::Complex {
+            re: 3.0,
+            im: 4.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
         assert_eq!(a.content_hash(), b.content_hash());
     }
 
     #[test]
     fn value_complex_nan_re_canonicalized() {
-        let a = Value::Complex { re: f64::NAN, im: 0.0, dimension: DimensionVector::DIMENSIONLESS };
-        let b = Value::Complex { re: f64::NAN, im: 0.0, dimension: DimensionVector::DIMENSIONLESS };
+        let a = Value::Complex {
+            re: f64::NAN,
+            im: 0.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let b = Value::Complex {
+            re: f64::NAN,
+            im: 0.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
         assert_eq!(a.content_hash(), b.content_hash());
     }
 
     #[test]
     fn value_complex_hash_eq_implies_same_hash() {
         // Equal values produce equal hashes
-        let a = Value::Complex { re: 1.0, im: 2.0, dimension: DimensionVector::LENGTH };
-        let b = Value::Complex { re: 1.0, im: 2.0, dimension: DimensionVector::LENGTH };
+        let a = Value::Complex {
+            re: 1.0,
+            im: 2.0,
+            dimension: DimensionVector::LENGTH,
+        };
+        let b = Value::Complex {
+            re: 1.0,
+            im: 2.0,
+            dimension: DimensionVector::LENGTH,
+        };
         assert_eq!(a, b);
         assert_eq!(a.content_hash(), b.content_hash());
     }
 
     #[test]
     fn value_complex_different_re_different_hash() {
-        let a = Value::Complex { re: 1.0, im: 0.0, dimension: DimensionVector::DIMENSIONLESS };
-        let b = Value::Complex { re: 2.0, im: 0.0, dimension: DimensionVector::DIMENSIONLESS };
+        let a = Value::Complex {
+            re: 1.0,
+            im: 0.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let b = Value::Complex {
+            re: 2.0,
+            im: 0.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
         assert_ne!(a.content_hash(), b.content_hash());
     }
 
     #[test]
     fn value_complex_different_dimension_different_hash() {
-        let a = Value::Complex { re: 3.0, im: 0.0, dimension: DimensionVector::DIMENSIONLESS };
-        let b = Value::Complex { re: 3.0, im: 0.0, dimension: DimensionVector::LENGTH };
+        let a = Value::Complex {
+            re: 3.0,
+            im: 0.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let b = Value::Complex {
+            re: 3.0,
+            im: 0.0,
+            dimension: DimensionVector::LENGTH,
+        };
         assert_ne!(a.content_hash(), b.content_hash());
     }
 
     #[test]
     fn value_complex_hash_differs_from_scalar() {
         // Complex tag=15 vs Scalar tag=4 — hashes must differ even with same numeric value
-        let c = Value::Complex { re: 3.0, im: 0.0, dimension: DimensionVector::DIMENSIONLESS };
-        let s = Value::Scalar { si_value: 3.0, dimension: DimensionVector::DIMENSIONLESS };
+        let c = Value::Complex {
+            re: 3.0,
+            im: 0.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let s = Value::Scalar {
+            si_value: 3.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
         assert_ne!(c.content_hash(), s.content_hash());
     }
 
@@ -2076,13 +2586,21 @@ mod tests {
 
     #[test]
     fn value_complex_dimension_returns_stored() {
-        let v = Value::Complex { re: 1.0, im: 2.0, dimension: DimensionVector::LENGTH };
+        let v = Value::Complex {
+            re: 1.0,
+            im: 2.0,
+            dimension: DimensionVector::LENGTH,
+        };
         assert_eq!(v.dimension(), DimensionVector::LENGTH);
     }
 
     #[test]
     fn value_complex_dimensionless_returns_dimensionless() {
-        let v = Value::Complex { re: 1.0, im: 2.0, dimension: DimensionVector::DIMENSIONLESS };
+        let v = Value::Complex {
+            re: 1.0,
+            im: 2.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
         assert_eq!(v.dimension(), DimensionVector::DIMENSIONLESS);
     }
 
@@ -2090,72 +2608,156 @@ mod tests {
 
     #[test]
     fn value_orientation_construction() {
-        let o = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+        let o = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
         // Should not be undef
         assert!(!o.is_undef());
     }
 
     #[test]
     fn value_orientation_eq_same() {
-        let a = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
-        let b = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+        let a = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        let b = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
         assert_eq!(a, b);
     }
 
     #[test]
     fn value_orientation_eq_different() {
-        let a = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
-        let b = Value::Orientation { w: 0.0, x: 1.0, y: 0.0, z: 0.0 };
+        let a = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        let b = Value::Orientation {
+            w: 0.0,
+            x: 1.0,
+            y: 0.0,
+            z: 0.0,
+        };
         assert_ne!(a, b);
     }
 
     #[test]
     fn value_orientation_eq_nan_bitwise() {
         // NaN == NaN via to_bits (bitwise equality)
-        let a = Value::Orientation { w: f64::NAN, x: 0.0, y: 0.0, z: 0.0 };
-        let b = Value::Orientation { w: f64::NAN, x: 0.0, y: 0.0, z: 0.0 };
+        let a = Value::Orientation {
+            w: f64::NAN,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        let b = Value::Orientation {
+            w: f64::NAN,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
         assert_eq!(a, b);
     }
 
     #[test]
     fn value_orientation_eq_neg_zero() {
         // -0.0 != 0.0 via to_bits
-        let a = Value::Orientation { w: -0.0, x: 0.0, y: 0.0, z: 0.0 };
-        let b = Value::Orientation { w: 0.0, x: 0.0, y: 0.0, z: 0.0 };
+        let a = Value::Orientation {
+            w: -0.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        let b = Value::Orientation {
+            w: 0.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
         assert_ne!(a, b);
     }
 
     #[test]
     fn value_orientation_ord_cross_type() {
         // Orientation should sort after Complex (tag 14), so Orientation tag = 15
-        let complex = Value::Complex { re: 0.0, im: 0.0, dimension: DimensionVector::DIMENSIONLESS };
-        let orient = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+        let complex = Value::Complex {
+            re: 0.0,
+            im: 0.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let orient = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
         assert!(complex < orient);
     }
 
     #[test]
     fn value_orientation_ord_within_type() {
         // Lexicographic on w, x, y, z via to_bits
-        let a = Value::Orientation { w: 0.0, x: 0.0, y: 0.0, z: 0.0 };
-        let b = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+        let a = Value::Orientation {
+            w: 0.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        let b = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
         assert!(a < b);
 
         // Same w, different x
-        let c = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
-        let d = Value::Orientation { w: 1.0, x: 1.0, y: 0.0, z: 0.0 };
+        let c = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        let d = Value::Orientation {
+            w: 1.0,
+            x: 1.0,
+            y: 0.0,
+            z: 0.0,
+        };
         assert!(c < d);
     }
 
     #[test]
     fn value_orientation_display() {
-        let o = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+        let o = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
         assert_eq!(format!("{}", o), "[1, 0, 0, 0]q");
     }
 
     #[test]
     fn value_orientation_display_fractional() {
         let s = std::f64::consts::FRAC_1_SQRT_2;
-        let o = Value::Orientation { w: s, x: 0.0, y: 0.0, z: s };
+        let o = Value::Orientation {
+            w: s,
+            x: 0.0,
+            y: 0.0,
+            z: s,
+        };
         let display = format!("{}", o);
         assert!(display.starts_with('['));
         assert!(display.ends_with("]q"));
@@ -2163,42 +2765,91 @@ mod tests {
 
     #[test]
     fn value_orientation_content_hash_deterministic() {
-        let a = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
-        let b = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+        let a = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        let b = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
         assert_eq!(a.content_hash(), b.content_hash());
     }
 
     #[test]
     fn value_orientation_content_hash_nan_canonical() {
-        let a = Value::Orientation { w: f64::NAN, x: 0.0, y: 0.0, z: 0.0 };
-        let b = Value::Orientation { w: f64::NAN, x: 0.0, y: 0.0, z: 0.0 };
+        let a = Value::Orientation {
+            w: f64::NAN,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        let b = Value::Orientation {
+            w: f64::NAN,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
         assert_eq!(a.content_hash(), b.content_hash());
     }
 
     #[test]
     fn value_orientation_content_hash_distinct_from_complex() {
         // Tag 16 for Orientation vs tag 15 for Complex
-        let o = Value::Orientation { w: 0.0, x: 0.0, y: 0.0, z: 0.0 };
-        let c = Value::Complex { re: 0.0, im: 0.0, dimension: DimensionVector::DIMENSIONLESS };
+        let o = Value::Orientation {
+            w: 0.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        let c = Value::Complex {
+            re: 0.0,
+            im: 0.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
         assert_ne!(o.content_hash(), c.content_hash());
     }
 
     #[test]
     fn value_orientation_content_hash_neg_zero() {
-        let a = Value::Orientation { w: -0.0, x: 0.0, y: 0.0, z: 0.0 };
-        let b = Value::Orientation { w: 0.0, x: 0.0, y: 0.0, z: 0.0 };
+        let a = Value::Orientation {
+            w: -0.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        let b = Value::Orientation {
+            w: 0.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
         assert_ne!(a.content_hash(), b.content_hash());
     }
 
     #[test]
     fn value_orientation_as_f64_none() {
-        let o = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+        let o = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
         assert_eq!(o.as_f64(), None);
     }
 
     #[test]
     fn value_orientation_dimension_dimensionless() {
-        let o = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+        let o = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
         assert_eq!(o.dimension(), DimensionVector::DIMENSIONLESS);
     }
 
@@ -2289,7 +2940,12 @@ mod tests {
     fn value_range_content_hash_no_collision_with_orientation() {
         // Range tag=17 should not collide with Orientation tag=16
         let range = make_range(None, None, false, false);
-        let orient = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+        let orient = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
         assert_ne!(range.content_hash(), orient.content_hash());
     }
 
@@ -2306,7 +2962,12 @@ mod tests {
     fn value_range_ord_cross_type_after_orientation() {
         // Range has type_tag=16, Orientation=15 → Range > Orientation
         let range = make_range(None, None, false, false);
-        let orient = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+        let orient = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
         assert!(range > orient);
         assert!(orient < range);
     }
@@ -2439,7 +3100,9 @@ mod tests {
     fn value_range_normalize_lower_inclusive_when_none() {
         let r = Value::range(None, Some(Value::Int(10)), true, true);
         match r {
-            Value::Range { lower_inclusive, .. } => assert!(!lower_inclusive),
+            Value::Range {
+                lower_inclusive, ..
+            } => assert!(!lower_inclusive),
             _ => panic!("expected Range"),
         }
     }
@@ -2448,7 +3111,9 @@ mod tests {
     fn value_range_normalize_upper_inclusive_when_none() {
         let r = Value::range(Some(Value::Int(0)), None, true, true);
         match r {
-            Value::Range { upper_inclusive, .. } => assert!(!upper_inclusive),
+            Value::Range {
+                upper_inclusive, ..
+            } => assert!(!upper_inclusive),
             _ => panic!("expected Range"),
         }
     }
@@ -2457,7 +3122,11 @@ mod tests {
     fn value_range_normalize_both_when_none() {
         let r = Value::range(None, None, true, true);
         match r {
-            Value::Range { lower_inclusive, upper_inclusive, .. } => {
+            Value::Range {
+                lower_inclusive,
+                upper_inclusive,
+                ..
+            } => {
                 assert!(!lower_inclusive);
                 assert!(!upper_inclusive);
             }
@@ -2469,7 +3138,11 @@ mod tests {
     fn value_range_no_normalize_when_some() {
         let r = Value::range(Some(Value::Int(0)), Some(Value::Int(10)), true, true);
         match r {
-            Value::Range { lower_inclusive, upper_inclusive, .. } => {
+            Value::Range {
+                lower_inclusive,
+                upper_inclusive,
+                ..
+            } => {
                 assert!(lower_inclusive);
                 assert!(upper_inclusive);
             }
@@ -2741,11 +3414,17 @@ mod tests {
 
         // cross-variant: Matrix != List
         let list = Value::List(vec![Value::Int(1), Value::Int(2)]);
-        assert_ne!(Value::Matrix(vec![vec![Value::Int(1), Value::Int(2)]]), list);
+        assert_ne!(
+            Value::Matrix(vec![vec![Value::Int(1), Value::Int(2)]]),
+            list
+        );
 
         // cross-variant: Matrix != Tensor
         let tensor = Value::Tensor(vec![Value::Int(1), Value::Int(2)]);
-        assert_ne!(Value::Matrix(vec![vec![Value::Int(1), Value::Int(2)]]), tensor);
+        assert_ne!(
+            Value::Matrix(vec![vec![Value::Int(1), Value::Int(2)]]),
+            tensor
+        );
     }
 
     #[test]
@@ -2853,11 +3532,19 @@ mod tests {
     }
 
     fn make_orientation_identity() -> Value {
-        Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 }
+        Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        }
     }
 
     fn make_frame(origin: Value, basis: Value) -> Value {
-        Value::Frame { origin: Box::new(origin), basis: Box::new(basis) }
+        Value::Frame {
+            origin: Box::new(origin),
+            basis: Box::new(basis),
+        }
     }
 
     #[test]
@@ -2866,7 +3553,10 @@ mod tests {
         let basis = make_orientation_identity();
         let frame = make_frame(origin.clone(), basis.clone());
         match frame {
-            Value::Frame { origin: o, basis: b } => {
+            Value::Frame {
+                origin: o,
+                basis: b,
+            } => {
                 assert_eq!(*o, origin);
                 assert_eq!(*b, basis);
             }
@@ -2883,8 +3573,16 @@ mod tests {
 
     #[test]
     fn value_frame_partial_eq_different_origin() {
-        let origin_a = Value::Point(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]);
-        let origin_b = Value::Point(vec![Value::length(9.0), Value::length(2.0), Value::length(3.0)]);
+        let origin_a = Value::Point(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]);
+        let origin_b = Value::Point(vec![
+            Value::length(9.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]);
         let basis = make_orientation_identity();
         let f1 = make_frame(origin_a, basis.clone());
         let f2 = make_frame(origin_b, basis);
@@ -2894,8 +3592,18 @@ mod tests {
     #[test]
     fn value_frame_partial_eq_different_basis() {
         let origin = make_point3_length();
-        let basis_a = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
-        let basis_b = Value::Orientation { w: 0.0, x: 1.0, y: 0.0, z: 0.0 };
+        let basis_a = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        let basis_b = Value::Orientation {
+            w: 0.0,
+            x: 1.0,
+            y: 0.0,
+            z: 0.0,
+        };
         let f1 = make_frame(origin.clone(), basis_a);
         let f2 = make_frame(origin, basis_b);
         assert_ne!(f1, f2);
@@ -2908,7 +3616,12 @@ mod tests {
             Value::length(0.0),
             Value::length(0.0),
         ]);
-        let basis = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+        let basis = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
         let frame = make_frame(origin, basis);
         let s = format!("{}", frame);
         assert_eq!(s, "frame(point(0 m, 0 m, 0 m), [1, 0, 0, 0]q)");
@@ -2952,8 +3665,16 @@ mod tests {
     #[test]
     fn value_frame_ord_same_type_compare_origin_first() {
         // Two frames with same basis but different origin should order by origin
-        let origin_a = Value::Point(vec![Value::length(1.0), Value::length(0.0), Value::length(0.0)]);
-        let origin_b = Value::Point(vec![Value::length(2.0), Value::length(0.0), Value::length(0.0)]);
+        let origin_a = Value::Point(vec![
+            Value::length(1.0),
+            Value::length(0.0),
+            Value::length(0.0),
+        ]);
+        let origin_b = Value::Point(vec![
+            Value::length(2.0),
+            Value::length(0.0),
+            Value::length(0.0),
+        ]);
         let basis = make_orientation_identity();
         let f1 = make_frame(origin_a, basis.clone());
         let f2 = make_frame(origin_b, basis);
@@ -2965,8 +3686,18 @@ mod tests {
         // Same origin, different basis: order by basis quaternion
         let origin = make_point3_length();
         // Orientation {w:0} < {w:1} by to_bits ordering (0.0 < 1.0)
-        let basis_a = Value::Orientation { w: 0.0, x: 0.0, y: 0.0, z: 0.0 };
-        let basis_b = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+        let basis_a = Value::Orientation {
+            w: 0.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        let basis_b = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
         let f1 = make_frame(origin.clone(), basis_a);
         let f2 = make_frame(origin, basis_b);
         assert!(f1 < f2);
@@ -2975,8 +3706,22 @@ mod tests {
     #[test]
     fn value_frame_content_hash_neg_zero_origin_differs() {
         // neg-zero and pos-zero in origin produce different hashes
-        let origin_pos = Value::Point(vec![Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH }, Value::length(0.0), Value::length(0.0)]);
-        let origin_neg = Value::Point(vec![Value::Scalar { si_value: -0.0, dimension: DimensionVector::LENGTH }, Value::length(0.0), Value::length(0.0)]);
+        let origin_pos = Value::Point(vec![
+            Value::Scalar {
+                si_value: 0.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::length(0.0),
+            Value::length(0.0),
+        ]);
+        let origin_neg = Value::Point(vec![
+            Value::Scalar {
+                si_value: -0.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::length(0.0),
+            Value::length(0.0),
+        ]);
         let basis = make_orientation_identity();
         let f1 = make_frame(origin_pos, basis.clone());
         let f2 = make_frame(origin_neg, basis);
@@ -2994,7 +3739,10 @@ mod tests {
     }
 
     fn make_transform(rotation: Value, translation: Value) -> Value {
-        Value::Transform { rotation: Box::new(rotation), translation: Box::new(translation) }
+        Value::Transform {
+            rotation: Box::new(rotation),
+            translation: Box::new(translation),
+        }
     }
 
     #[test]
@@ -3003,7 +3751,10 @@ mod tests {
         let translation = make_vector3_length();
         let transform = make_transform(rotation.clone(), translation.clone());
         match transform {
-            Value::Transform { rotation: r, translation: t } => {
+            Value::Transform {
+                rotation: r,
+                translation: t,
+            } => {
                 assert_eq!(*r, rotation);
                 assert_eq!(*t, translation);
             }
@@ -3020,8 +3771,18 @@ mod tests {
 
     #[test]
     fn value_transform_partial_eq_different_rotation() {
-        let rot_a = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
-        let rot_b = Value::Orientation { w: 0.0, x: 1.0, y: 0.0, z: 0.0 };
+        let rot_a = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        let rot_b = Value::Orientation {
+            w: 0.0,
+            x: 1.0,
+            y: 0.0,
+            z: 0.0,
+        };
         let translation = make_vector3_length();
         let t1 = make_transform(rot_a, translation.clone());
         let t2 = make_transform(rot_b, translation);
@@ -3031,8 +3792,16 @@ mod tests {
     #[test]
     fn value_transform_partial_eq_different_translation() {
         let rotation = make_orientation_identity();
-        let trans_a = Value::Vector(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]);
-        let trans_b = Value::Vector(vec![Value::length(9.0), Value::length(2.0), Value::length(3.0)]);
+        let trans_a = Value::Vector(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]);
+        let trans_b = Value::Vector(vec![
+            Value::length(9.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]);
         let t1 = make_transform(rotation.clone(), trans_a);
         let t2 = make_transform(rotation, trans_b);
         assert_ne!(t1, t2);
@@ -3040,7 +3809,12 @@ mod tests {
 
     #[test]
     fn value_transform_display() {
-        let rotation = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+        let rotation = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
         let translation = Value::Vector(vec![
             Value::length(0.0),
             Value::length(0.0),
@@ -3049,8 +3823,16 @@ mod tests {
         let transform = make_transform(rotation, translation);
         let s = format!("{}", transform);
         // Expected: transform([1, 0, 0, 0]q, vec(0 m, 0 m, 0 m))
-        assert!(s.starts_with("transform("), "display should start with 'transform(', got: {}", s);
-        assert!(s.contains("[1, 0, 0, 0]q"), "display should contain rotation, got: {}", s);
+        assert!(
+            s.starts_with("transform("),
+            "display should start with 'transform(', got: {}",
+            s
+        );
+        assert!(
+            s.contains("[1, 0, 0, 0]q"),
+            "display should contain rotation, got: {}",
+            s
+        );
     }
 
     #[test]
@@ -3098,8 +3880,18 @@ mod tests {
     #[test]
     fn value_transform_ord_same_type_compare_rotation_first() {
         // Two transforms with same translation but different rotation: order by rotation
-        let rot_a = Value::Orientation { w: 0.0, x: 0.0, y: 0.0, z: 0.0 };
-        let rot_b = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+        let rot_a = Value::Orientation {
+            w: 0.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        let rot_b = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
         let translation = make_vector3_length();
         let t1 = make_transform(rot_a, translation.clone());
         let t2 = make_transform(rot_b, translation);
@@ -3110,8 +3902,16 @@ mod tests {
     fn value_transform_ord_same_rotation_compare_translation() {
         // Same rotation, different translation: order by translation
         let rotation = make_orientation_identity();
-        let trans_a = Value::Vector(vec![Value::length(1.0), Value::length(0.0), Value::length(0.0)]);
-        let trans_b = Value::Vector(vec![Value::length(2.0), Value::length(0.0), Value::length(0.0)]);
+        let trans_a = Value::Vector(vec![
+            Value::length(1.0),
+            Value::length(0.0),
+            Value::length(0.0),
+        ]);
+        let trans_b = Value::Vector(vec![
+            Value::length(2.0),
+            Value::length(0.0),
+            Value::length(0.0),
+        ]);
         let t1 = make_transform(rotation.clone(), trans_a);
         let t2 = make_transform(rotation, trans_b);
         assert!(t1 < t2);
@@ -3120,8 +3920,22 @@ mod tests {
     #[test]
     fn value_transform_content_hash_neg_zero_translation_differs() {
         // neg-zero and pos-zero in translation produce different hashes
-        let trans_pos = Value::Vector(vec![Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH }, Value::length(0.0), Value::length(0.0)]);
-        let trans_neg = Value::Vector(vec![Value::Scalar { si_value: -0.0, dimension: DimensionVector::LENGTH }, Value::length(0.0), Value::length(0.0)]);
+        let trans_pos = Value::Vector(vec![
+            Value::Scalar {
+                si_value: 0.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::length(0.0),
+            Value::length(0.0),
+        ]);
+        let trans_neg = Value::Vector(vec![
+            Value::Scalar {
+                si_value: -0.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::length(0.0),
+            Value::length(0.0),
+        ]);
         let rotation = make_orientation_identity();
         let t1 = make_transform(rotation.clone(), trans_pos);
         let t2 = make_transform(rotation, trans_neg);
@@ -3131,11 +3945,18 @@ mod tests {
     // ── Value::Plane tests (pre-2) ────────────────────────────────────────────
 
     fn make_plane(origin: Value, normal: Value) -> Value {
-        Value::Plane { origin: Box::new(origin), normal: Box::new(normal) }
+        Value::Plane {
+            origin: Box::new(origin),
+            normal: Box::new(normal),
+        }
     }
 
     fn make_point3_origin() -> Value {
-        Value::Point(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)])
+        Value::Point(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ])
     }
 
     fn make_normal_z() -> Value {
@@ -3148,7 +3969,10 @@ mod tests {
         let normal = make_normal_z();
         let plane = make_plane(origin.clone(), normal.clone());
         match plane {
-            Value::Plane { origin: o, normal: n } => {
+            Value::Plane {
+                origin: o,
+                normal: n,
+            } => {
                 assert_eq!(*o, origin);
                 assert_eq!(*n, normal);
             }
@@ -3173,11 +3997,19 @@ mod tests {
 
     #[test]
     fn value_plane_display() {
-        let origin = Value::Point(vec![Value::length(0.0), Value::length(0.0), Value::length(0.0)]);
+        let origin = Value::Point(vec![
+            Value::length(0.0),
+            Value::length(0.0),
+            Value::length(0.0),
+        ]);
         let normal = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
         let plane = make_plane(origin, normal);
         let s = format!("{}", plane);
-        assert!(s.starts_with("plane("), "display should start with 'plane(', got: {}", s);
+        assert!(
+            s.starts_with("plane("),
+            "display should start with 'plane(', got: {}",
+            s
+        );
     }
 
     #[test]
@@ -3211,7 +4043,10 @@ mod tests {
     // ── Value::Axis tests (pre-3) ─────────────────────────────────────────────
 
     fn make_axis(origin: Value, direction: Value) -> Value {
-        Value::Axis { origin: Box::new(origin), direction: Box::new(direction) }
+        Value::Axis {
+            origin: Box::new(origin),
+            direction: Box::new(direction),
+        }
     }
 
     fn make_direction_z() -> Value {
@@ -3224,7 +4059,10 @@ mod tests {
         let direction = make_direction_z();
         let axis = make_axis(origin.clone(), direction.clone());
         match axis {
-            Value::Axis { origin: o, direction: d } => {
+            Value::Axis {
+                origin: o,
+                direction: d,
+            } => {
                 assert_eq!(*o, origin);
                 assert_eq!(*d, direction);
             }
@@ -3249,11 +4087,19 @@ mod tests {
 
     #[test]
     fn value_axis_display() {
-        let origin = Value::Point(vec![Value::length(0.0), Value::length(0.0), Value::length(0.0)]);
+        let origin = Value::Point(vec![
+            Value::length(0.0),
+            Value::length(0.0),
+            Value::length(0.0),
+        ]);
         let direction = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
         let axis = make_axis(origin, direction);
         let s = format!("{}", axis);
-        assert!(s.starts_with("axis("), "display should start with 'axis(', got: {}", s);
+        assert!(
+            s.starts_with("axis("),
+            "display should start with 'axis(', got: {}",
+            s
+        );
     }
 
     #[test]
@@ -3288,15 +4134,26 @@ mod tests {
     // ── Value::BoundingBox tests (pre-4) ──────────────────────────────────────
 
     fn make_bbox(min: Value, max: Value) -> Value {
-        Value::BoundingBox { min: Box::new(min), max: Box::new(max) }
+        Value::BoundingBox {
+            min: Box::new(min),
+            max: Box::new(max),
+        }
     }
 
     fn make_point3_min() -> Value {
-        Value::Point(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)])
+        Value::Point(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ])
     }
 
     fn make_point3_max() -> Value {
-        Value::Point(vec![Value::length(4.0), Value::length(6.0), Value::length(9.0)])
+        Value::Point(vec![
+            Value::length(4.0),
+            Value::length(6.0),
+            Value::length(9.0),
+        ])
     }
 
     #[test]
@@ -3323,7 +4180,11 @@ mod tests {
     #[test]
     fn value_bbox_partial_eq_different() {
         let b1 = make_bbox(make_point3_min(), make_point3_max());
-        let max2 = Value::Point(vec![Value::length(5.0), Value::length(6.0), Value::length(9.0)]);
+        let max2 = Value::Point(vec![
+            Value::length(5.0),
+            Value::length(6.0),
+            Value::length(9.0),
+        ]);
         let b2 = make_bbox(make_point3_min(), max2);
         assert_ne!(b1, b2);
     }
@@ -3332,7 +4193,11 @@ mod tests {
     fn value_bbox_display() {
         let bbox = make_bbox(make_point3_min(), make_point3_max());
         let s = format!("{}", bbox);
-        assert!(s.starts_with("bbox("), "display should start with 'bbox(', got: {}", s);
+        assert!(
+            s.starts_with("bbox("),
+            "display should start with 'bbox(', got: {}",
+            s
+        );
     }
 
     #[test]

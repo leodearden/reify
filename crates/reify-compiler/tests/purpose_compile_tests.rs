@@ -9,7 +9,11 @@ use reify_types::*;
 /// Asserts no parse errors and no compile-level Severity::Error diagnostics.
 fn compile_module(source: &str) -> CompiledModule {
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
     let compiled = reify_compiler::compile(&parsed);
     let errors: Vec<_> = compiled
         .diagnostics
@@ -40,7 +44,11 @@ purpose mfg_ready(subject : Structure) {
 
     // Should have 1 template (Bracket) and 1 compiled purpose
     assert_eq!(module.templates.len(), 1, "expected 1 template");
-    assert_eq!(module.compiled_purposes.len(), 1, "expected 1 compiled purpose");
+    assert_eq!(
+        module.compiled_purposes.len(),
+        1,
+        "expected 1 compiled purpose"
+    );
 
     let purpose = &module.compiled_purposes[0];
     assert_eq!(purpose.name, "mfg_ready");
@@ -71,7 +79,11 @@ purpose check_params(subject : Widget) {
 
     let module = compile_module(source);
 
-    assert_eq!(module.compiled_purposes.len(), 1, "expected 1 compiled purpose");
+    assert_eq!(
+        module.compiled_purposes.len(),
+        1,
+        "expected 1 compiled purpose"
+    );
     let purpose = &module.compiled_purposes[0];
     assert_eq!(purpose.name, "check_params");
     assert_eq!(purpose.params[0].entity_kind, "Widget");
@@ -147,7 +159,11 @@ purpose check(subject : Structure) {
 /// asserting on compile errors. Used to inspect diagnostics directly.
 fn compile_module_with_diagnostics(source: &str) -> CompiledModule {
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
     reify_compiler::compile(&parsed)
 }
 
@@ -179,9 +195,10 @@ purpose check(subject : Structure) {
         !errors.is_empty(),
         "expected compile error for guarded block in purpose, but got none"
     );
-    let has_guarded_error = errors
-        .iter()
-        .any(|d| d.message.contains("guarded blocks in purpose bodies are not yet supported"));
+    let has_guarded_error = errors.iter().any(|d| {
+        d.message
+            .contains("guarded blocks in purpose bodies are not yet supported")
+    });
     assert!(
         has_guarded_error,
         "expected diagnostic about unsupported guarded blocks, got: {:?}",

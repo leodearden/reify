@@ -6,7 +6,10 @@ use reify_syntax::*;
 
 /// Helper: parse source and return declarations and errors.
 fn parse_decls(source: &str) -> (Vec<Declaration>, Vec<ParseError>) {
-    let module = reify_syntax::parse(source, reify_types::ModulePath::single("constraint_def_test"));
+    let module = reify_syntax::parse(
+        source,
+        reify_types::ModulePath::single("constraint_def_test"),
+    );
     (module.declarations, module.errors)
 }
 
@@ -99,7 +102,11 @@ fn parse_constraint_def_multiple_predicates() {
         other => panic!("expected Constraint, got {:?}", other),
     };
 
-    assert_eq!(cd.predicates.len(), 3, "expected 3 predicates (conjunction)");
+    assert_eq!(
+        cd.predicates.len(),
+        3,
+        "expected 3 predicates (conjunction)"
+    );
 }
 
 // ── Step 9: pub constraint def ────────────────────────────────────
@@ -183,16 +190,25 @@ fn parse_constraint_def_body_syntax_error() {
         "expected parse errors for invalid syntax inside constraint body, got none"
     );
     assert!(
-        errors.iter().any(|e| e.message.contains("syntax error in constraint body")),
+        errors
+            .iter()
+            .any(|e| e.message.contains("syntax error in constraint body")),
         "expected an error message containing 'syntax error in constraint body', got: {:?}",
         errors
     );
     // The constraint def should still be constructed (with empty predicates).
-    assert_eq!(decls.len(), 1, "expected constraint decl to be constructed despite body error");
+    assert_eq!(
+        decls.len(),
+        1,
+        "expected constraint decl to be constructed despite body error"
+    );
     match &decls[0] {
         Declaration::Constraint(c) => {
             assert_eq!(c.name, "Bad");
-            assert!(c.predicates.is_empty(), "expected no predicates due to body error");
+            assert!(
+                c.predicates.is_empty(),
+                "expected no predicates due to body error"
+            );
         }
         other => panic!("expected Declaration::Constraint, got {:?}", other),
     }
@@ -219,16 +235,26 @@ fn parse_constraint_def_error_param() {
         "expected parse errors for malformed param_declaration (Box<> has MISSING type arg), got none"
     );
     assert!(
-        errors.iter().any(|e| e.message.contains("invalid constraint param")),
+        errors
+            .iter()
+            .any(|e| e.message.contains("invalid constraint param")),
         "expected an error message containing 'invalid constraint param', got: {:?}",
         errors
     );
     // The constraint should still be constructed: 0 params (bad param skipped), 1 valid predicate.
-    assert_eq!(decls.len(), 1, "expected constraint decl to be constructed despite param error");
+    assert_eq!(
+        decls.len(),
+        1,
+        "expected constraint decl to be constructed despite param error"
+    );
     match &decls[0] {
         Declaration::Constraint(c) => {
             assert_eq!(c.name, "Bad");
-            assert_eq!(c.params.len(), 0, "expected 0 params (malformed param skipped by check_and_lower!)");
+            assert_eq!(
+                c.params.len(),
+                0,
+                "expected 0 params (malformed param skipped by check_and_lower!)"
+            );
             assert_eq!(c.predicates.len(), 1, "expected 1 valid predicate (x > 0)");
         }
         other => panic!("expected Declaration::Constraint, got {:?}", other),

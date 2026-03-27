@@ -7,8 +7,10 @@
 
 /// Helper: parse and compile source, return compiled module.
 fn compile_module(source: &str) -> reify_compiler::CompiledModule {
-    let parsed =
-        reify_syntax::parse(source, reify_types::ModulePath::single("entity_overload_test"));
+    let parsed = reify_syntax::parse(
+        source,
+        reify_types::ModulePath::single("entity_overload_test"),
+    );
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -164,7 +166,11 @@ occurrence Widget {
         "expected 2 labels, got {:?}",
         errors[0].labels
     );
-    let label_msgs: Vec<&str> = errors[0].labels.iter().map(|l| l.message.as_str()).collect();
+    let label_msgs: Vec<&str> = errors[0]
+        .labels
+        .iter()
+        .map(|l| l.message.as_str())
+        .collect();
     // One label should mention "occurrence", the other "structure"
     assert!(
         label_msgs.iter().any(|m| m.contains("occurrence")),
@@ -205,7 +211,9 @@ structure Sensor {
     // Should have at least one duplicate-entity error (may have other warnings)
     let dup_errors: Vec<_> = errors
         .iter()
-        .filter(|d| d.message.contains("duplicate entity definition") && d.message.contains("Sensor"))
+        .filter(|d| {
+            d.message.contains("duplicate entity definition") && d.message.contains("Sensor")
+        })
         .collect();
     assert_eq!(
         dup_errors.len(),
@@ -249,7 +257,9 @@ structure Shape {
 
     let dup_errors: Vec<_> = errors
         .iter()
-        .filter(|d| d.message.contains("duplicate entity definition") && d.message.contains("Shape"))
+        .filter(|d| {
+            d.message.contains("duplicate entity definition") && d.message.contains("Shape")
+        })
         .collect();
     assert_eq!(
         dup_errors.len(),

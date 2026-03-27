@@ -6,7 +6,12 @@
 //! Handle types use `#[repr(transparent)]` newtypes around `u32` to prevent
 //! accidental mixing of param, entity, constraint, and group handles.
 
-#![allow(non_camel_case_types, non_upper_case_globals, non_snake_case, dead_code)]
+#![allow(
+    non_camel_case_types,
+    non_upper_case_globals,
+    non_snake_case,
+    dead_code
+)]
 
 use std::os::raw::c_int;
 
@@ -193,24 +198,46 @@ unsafe extern "C" {
     pub fn Slvs_Solve(sys: *mut Slvs_System, hg: Slvs_hGroup);
 
     pub fn Slvs_QuaternionU(
-        qw: f64, qx: f64, qy: f64, qz: f64,
-        x: *mut f64, y: *mut f64, z: *mut f64,
+        qw: f64,
+        qx: f64,
+        qy: f64,
+        qz: f64,
+        x: *mut f64,
+        y: *mut f64,
+        z: *mut f64,
     );
 
     pub fn Slvs_QuaternionV(
-        qw: f64, qx: f64, qy: f64, qz: f64,
-        x: *mut f64, y: *mut f64, z: *mut f64,
+        qw: f64,
+        qx: f64,
+        qy: f64,
+        qz: f64,
+        x: *mut f64,
+        y: *mut f64,
+        z: *mut f64,
     );
 
     pub fn Slvs_QuaternionN(
-        qw: f64, qx: f64, qy: f64, qz: f64,
-        x: *mut f64, y: *mut f64, z: *mut f64,
+        qw: f64,
+        qx: f64,
+        qy: f64,
+        qz: f64,
+        x: *mut f64,
+        y: *mut f64,
+        z: *mut f64,
     );
 
     pub fn Slvs_MakeQuaternion(
-        ux: f64, uy: f64, uz: f64,
-        vx: f64, vy: f64, vz: f64,
-        qw: *mut f64, qx: *mut f64, qy: *mut f64, qz: *mut f64,
+        ux: f64,
+        uy: f64,
+        uz: f64,
+        vx: f64,
+        vy: f64,
+        vz: f64,
+        qw: *mut f64,
+        qx: *mut f64,
+        qy: *mut f64,
+        qz: *mut f64,
     );
 }
 

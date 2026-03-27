@@ -220,10 +220,26 @@ fn cardinality_at_most_2_of_4() {
 
     let problem = ResolutionProblem {
         auto_params: vec![
-            AutoParam { id: a_id.clone(), param_type: Type::Bool, bounds: None },
-            AutoParam { id: b_id.clone(), param_type: Type::Bool, bounds: None },
-            AutoParam { id: c_id.clone(), param_type: Type::Bool, bounds: None },
-            AutoParam { id: d_id.clone(), param_type: Type::Bool, bounds: None },
+            AutoParam {
+                id: a_id.clone(),
+                param_type: Type::Bool,
+                bounds: None,
+            },
+            AutoParam {
+                id: b_id.clone(),
+                param_type: Type::Bool,
+                bounds: None,
+            },
+            AutoParam {
+                id: c_id.clone(),
+                param_type: Type::Bool,
+                bounds: None,
+            },
+            AutoParam {
+                id: d_id.clone(),
+                param_type: Type::Bool,
+                bounds: None,
+            },
         ],
         constraints: vec![
             (cnid("Part", 0), c1),
@@ -243,10 +259,7 @@ fn cardinality_at_most_2_of_4() {
                 .iter()
                 .filter(|id| values.get(id) == Some(&Value::Bool(true)))
                 .count();
-            assert!(
-                count_true <= 2,
-                "expected at most 2 true, got {count_true}"
-            );
+            assert!(count_true <= 2, "expected at most 2 true, got {count_true}");
         }
         other => panic!("expected Solved, got {:?}", other),
     }
@@ -268,15 +281,24 @@ fn enum_constraint_excludes_one_variant() {
 
     // Enum literals
     let enum_a = CompiledExpr::literal(
-        Value::Enum { type_name: "Material".into(), variant: "A".into() },
+        Value::Enum {
+            type_name: "Material".into(),
+            variant: "A".into(),
+        },
         Type::Enum("Material".into()),
     );
     let enum_b = CompiledExpr::literal(
-        Value::Enum { type_name: "Material".into(), variant: "B".into() },
+        Value::Enum {
+            type_name: "Material".into(),
+            variant: "B".into(),
+        },
         Type::Enum("Material".into()),
     );
     let enum_c = CompiledExpr::literal(
-        Value::Enum { type_name: "Material".into(), variant: "C".into() },
+        Value::Enum {
+            type_name: "Material".into(),
+            variant: "C".into(),
+        },
         Type::Enum("Material".into()),
     );
 
@@ -411,9 +433,21 @@ fn all_different_3_ints() {
 
     let problem = ResolutionProblem {
         auto_params: vec![
-            AutoParam { id: x_id.clone(), param_type: Type::Int, bounds: Some((1.0, 3.0)) },
-            AutoParam { id: y_id.clone(), param_type: Type::Int, bounds: Some((1.0, 3.0)) },
-            AutoParam { id: z_id.clone(), param_type: Type::Int, bounds: Some((1.0, 3.0)) },
+            AutoParam {
+                id: x_id.clone(),
+                param_type: Type::Int,
+                bounds: Some((1.0, 3.0)),
+            },
+            AutoParam {
+                id: y_id.clone(),
+                param_type: Type::Int,
+                bounds: Some((1.0, 3.0)),
+            },
+            AutoParam {
+                id: z_id.clone(),
+                param_type: Type::Int,
+                bounds: Some((1.0, 3.0)),
+            },
         ],
         constraints: vec![
             (cnid("Part", 0), c1),
@@ -436,7 +470,12 @@ fn all_different_3_ints() {
                 })
                 .collect();
             vals.sort();
-            assert_eq!(vals, vec![1, 2, 3], "expected permutation of [1,2,3], got {:?}", vals);
+            assert_eq!(
+                vals,
+                vec![1, 2, 3],
+                "expected permutation of [1,2,3], got {:?}",
+                vals
+            );
         }
         other => panic!("expected Solved, got {:?}", other),
     }
@@ -570,7 +609,10 @@ fn int_domain_exceeds_i64_range_returns_error() {
         SolveResult::NoProgress { reason } => {
             assert!(!reason.is_empty(), "expected non-empty reason");
         }
-        other => panic!("expected NoProgress for out-of-range bounds, got {:?}", other),
+        other => panic!(
+            "expected NoProgress for out-of-range bounds, got {:?}",
+            other
+        ),
     }
 }
 
@@ -602,8 +644,16 @@ fn registry_integration_logical_solver() {
 
     let problem = ResolutionProblem {
         auto_params: vec![
-            AutoParam { id: a_id.clone(), param_type: Type::Bool, bounds: None },
-            AutoParam { id: b_id.clone(), param_type: Type::Bool, bounds: None },
+            AutoParam {
+                id: a_id.clone(),
+                param_type: Type::Bool,
+                bounds: None,
+            },
+            AutoParam {
+                id: b_id.clone(),
+                param_type: Type::Bool,
+                bounds: None,
+            },
         ],
         constraints: vec![(cnid("Part", 0), constraint_expr)],
         current_values: ValueMap::new(),

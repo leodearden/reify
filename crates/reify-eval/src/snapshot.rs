@@ -58,7 +58,7 @@ impl Snapshot {
 
 #[cfg(test)]
 mod tests {
-    use reify_types::{ValueCellId};
+    use reify_types::ValueCellId;
 
     use super::*;
 

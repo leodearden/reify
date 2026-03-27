@@ -51,7 +51,10 @@ pub fn topological_sort(
     nodes: &HashSet<NodeId>,
     traces: &HashMap<NodeId, DependencyTrace>,
 ) -> Vec<NodeId> {
-    compute_levels(nodes, traces).into_iter().flatten().collect()
+    compute_levels(nodes, traces)
+        .into_iter()
+        .flatten()
+        .collect()
 }
 
 /// Compute topological levels from a set of nodes using Kahn's algorithm.
@@ -219,7 +222,11 @@ mod tests {
 
         assert!(dirty.contains(&NodeId::Value(ValueCellId::new(e, "volume"))));
         assert!(dirty.contains(&NodeId::Constraint(ConstraintNodeId::new(e, 1))));
-        assert!(dirty.contains(&NodeId::Realization(reify_types::RealizationNodeId::new(e, 0))));
+        assert!(
+            dirty.contains(&NodeId::Realization(reify_types::RealizationNodeId::new(
+                e, 0
+            )))
+        );
         assert!(!dirty.contains(&NodeId::Value(ValueCellId::new(e, "fillet_radius"))));
         assert!(!dirty.contains(&NodeId::Constraint(ConstraintNodeId::new(e, 0))));
         assert!(!dirty.contains(&NodeId::Constraint(ConstraintNodeId::new(e, 2))));
@@ -247,7 +254,11 @@ mod tests {
         assert!(dirty.contains(&NodeId::Constraint(ConstraintNodeId::new(e, 0))));
         assert!(dirty.contains(&NodeId::Constraint(ConstraintNodeId::new(e, 1))));
         assert!(dirty.contains(&NodeId::Constraint(ConstraintNodeId::new(e, 2))));
-        assert!(dirty.contains(&NodeId::Realization(reify_types::RealizationNodeId::new(e, 0))));
+        assert!(
+            dirty.contains(&NodeId::Realization(reify_types::RealizationNodeId::new(
+                e, 0
+            )))
+        );
         assert!(!dirty.contains(&NodeId::Value(ValueCellId::new(e, "fillet_radius"))));
         assert_eq!(dirty.len(), 5);
     }
@@ -281,23 +292,29 @@ mod tests {
 
         // Param 'a'
         let a = ValueCellId::new("A", "a");
-        graph.value_cells.insert(a.clone(), ValueCellNode {
-            id: a.clone(),
-            kind: ValueCellKind::Param,
-            cell_type: Type::Real,
-            default_expr: None,
-            content_hash: ContentHash::of_str("a"),
-        });
+        graph.value_cells.insert(
+            a.clone(),
+            ValueCellNode {
+                id: a.clone(),
+                kind: ValueCellKind::Param,
+                cell_type: Type::Real,
+                default_expr: None,
+                content_hash: ContentHash::of_str("a"),
+            },
+        );
 
         // Resolution R0 with auto_params=['a']
         let r0_id = ResolutionNodeId::new("A", 0);
-        graph.resolutions.insert(r0_id.clone(), ResolutionNodeData {
-            id: r0_id.clone(),
-            scope: "A".to_string(),
-            auto_params: vec![a.clone()],
-            constraint_deps: vec![],
-            content_hash: ContentHash::of_str("r0"),
-        });
+        graph.resolutions.insert(
+            r0_id.clone(),
+            ResolutionNodeData {
+                id: r0_id.clone(),
+                scope: "A".to_string(),
+                auto_params: vec![a.clone()],
+                constraint_deps: vec![],
+                content_hash: ContentHash::of_str("r0"),
+            },
+        );
 
         let index = ReverseDependencyIndex::build_from_graph(&graph);
 
@@ -307,7 +324,8 @@ mod tests {
 
         assert!(
             dirty.contains(&NodeId::Resolution(r0_id)),
-            "dirty cone should include Resolution(R0) when 'a' changes, got: {:?}", dirty
+            "dirty cone should include Resolution(R0) when 'a' changes, got: {:?}",
+            dirty
         );
     }
 
@@ -526,15 +544,17 @@ mod tests {
         traces.insert(
             sq.clone(),
             DependencyTrace {
-                reads: vec![
-                    ValueCellId::new(e, "a"),
-                    ValueCellId::new(e, "a"),
-                ],
+                reads: vec![ValueCellId::new(e, "a"), ValueCellId::new(e, "a")],
             },
         );
 
         let sorted = topological_sort(&nodes, &traces);
-        assert_eq!(sorted.len(), 2, "both nodes must appear in sorted output, got: {:?}", sorted);
+        assert_eq!(
+            sorted.len(),
+            2,
+            "both nodes must appear in sorted output, got: {:?}",
+            sorted
+        );
         // sq must appear after a
         let a_pos = sorted.iter().position(|n| n == &a).unwrap();
         let sq_pos = sorted.iter().position(|n| n == &sq).unwrap();
@@ -847,5 +867,4 @@ mod tests {
         assert_eq!(levels[1], vec![b]);
         assert_eq!(levels[2], vec![c]);
     }
-
 }

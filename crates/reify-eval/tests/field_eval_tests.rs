@@ -4,12 +4,16 @@
 //! and applying field operations (sample, gradient, etc.).
 
 use reify_test_support::mocks::MockConstraintChecker;
-use reify_types::{ModulePath, Severity, Value, ValueCellId, FIELD_ENTITY_PREFIX};
+use reify_types::{FIELD_ENTITY_PREFIX, ModulePath, Severity, Value, ValueCellId};
 
 /// Helper: parse, compile, and eval source, return eval result.
 fn eval_source(source: &str) -> reify_eval::EvalResult {
     let parsed = reify_syntax::parse(source, ModulePath::single("field_eval_test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
     let compiled = reify_compiler::compile(&parsed);
     let errors: Vec<_> = compiled
         .diagnostics
@@ -27,9 +31,7 @@ fn eval_source(source: &str) -> reify_eval::EvalResult {
 
 #[test]
 fn eval_analytical_field_at_point() {
-    let result = eval_source(
-        "field def temp : Point3 -> Scalar { source = analytical { |p| p } }",
-    );
+    let result = eval_source("field def temp : Point3 -> Scalar { source = analytical { |p| p } }");
 
     // The field should be stored in the values map
     let field_id = ValueCellId::new(FIELD_ENTITY_PREFIX, "temp");
@@ -40,7 +42,12 @@ fn eval_analytical_field_at_point() {
 
     // Should be a Value::Field with correct types
     match field_val {
-        Value::Field { domain_type, codomain_type, source, lambda } => {
+        Value::Field {
+            domain_type,
+            codomain_type,
+            source,
+            lambda,
+        } => {
             // Domain should be Point3 (StructureRef)
             assert_eq!(format!("{}", domain_type), "Point3");
             // Codomain should be Scalar[m] (length-dimensioned)
@@ -116,7 +123,11 @@ fn eval_field_snapshot_consistency() {
     // can see field values.
     let source = "field def temp : Point3 -> Scalar { source = analytical { |p| p } }";
     let parsed = reify_syntax::parse(source, ModulePath::single("field_snapshot_test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
     let compiled = reify_compiler::compile(&parsed);
     let errors: Vec<_> = compiled
         .diagnostics

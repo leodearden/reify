@@ -306,7 +306,10 @@ impl CacheStore {
 
     /// Get the dirty reasons for a node, if any. Returns None if the node
     /// is not dirty.
-    pub fn get_dirty_reasons(&self, node: &NodeId) -> Option<&std::collections::HashSet<ValueCellId>> {
+    pub fn get_dirty_reasons(
+        &self,
+        node: &NodeId,
+    ) -> Option<&std::collections::HashSet<ValueCellId>> {
         self.dirty_reasons.get(node)
     }
 
@@ -432,7 +435,10 @@ mod tests {
         // Differs from other variants
         assert_ne!(res_node, NodeId::Value(ValueCellId::new("A", "x")));
         assert_ne!(res_node, NodeId::Constraint(ConstraintNodeId::new("A", 0)));
-        assert_ne!(res_node, NodeId::Realization(RealizationNodeId::new("A", 0)));
+        assert_ne!(
+            res_node,
+            NodeId::Realization(RealizationNodeId::new("A", 0))
+        );
 
         // From<ResolutionNodeId> conversion
         let from_node: NodeId = NodeId::from(res_id.clone());
@@ -574,7 +580,12 @@ mod tests {
 
         // First evaluation
         let result1 = CachedResult::Value(Value::Int(42), DeterminacyState::Determined);
-        store.record_evaluation(node.clone(), result1, VersionId(1), DependencyTrace::default());
+        store.record_evaluation(
+            node.clone(),
+            result1,
+            VersionId(1),
+            DependencyTrace::default(),
+        );
 
         // Second evaluation: different result
         let result2 = CachedResult::Value(Value::Int(99), DeterminacyState::Determined);
@@ -739,7 +750,9 @@ mod tests {
         let expected_hash = result.content_hash();
 
         let version = VersionId(1);
-        let trace = DependencyTrace { reads: vec![ValueCellId::new("A", "x")] };
+        let trace = DependencyTrace {
+            reads: vec![ValueCellId::new("A", "x")],
+        };
 
         let outcome = store.record_evaluation(node.clone(), result, version, trace);
         assert_eq!(outcome, EvalOutcome::Changed);
@@ -778,8 +791,8 @@ mod tests {
 
     #[test]
     fn node_cache_construction() {
-        use reify_types::{DeterminacyState, Freshness, Value, VersionId};
         use crate::deps::DependencyTrace;
+        use reify_types::{DeterminacyState, Freshness, Value, VersionId};
 
         let result = CachedResult::Value(Value::Int(42), DeterminacyState::Determined);
         let expected_hash = result.content_hash();
@@ -797,8 +810,8 @@ mod tests {
 
     #[test]
     fn node_cache_clone_and_debug() {
-        use reify_types::{DeterminacyState, Freshness, Value, VersionId};
         use crate::deps::DependencyTrace;
+        use reify_types::{DeterminacyState, Freshness, Value, VersionId};
 
         let result = CachedResult::Value(Value::Int(42), DeterminacyState::Determined);
         let cache = NodeCache::new(
@@ -817,8 +830,8 @@ mod tests {
 
     #[test]
     fn node_cache_result_hash_matches_content_hash() {
-        use reify_types::{Freshness, Satisfaction, VersionId};
         use crate::deps::DependencyTrace;
+        use reify_types::{Freshness, Satisfaction, VersionId};
 
         let result = CachedResult::Satisfaction(Satisfaction::Violated);
         let expected = result.content_hash();
@@ -901,8 +914,8 @@ mod tests {
 
     #[test]
     fn cached_result_resolution_variant() {
-        use std::collections::HashMap;
         use reify_types::Value;
+        use std::collections::HashMap;
 
         let mut values1 = HashMap::new();
         values1.insert(ValueCellId::new("A", "x"), Value::Real(1.0));
@@ -919,7 +932,11 @@ mod tests {
         let mut values2 = HashMap::new();
         values2.insert(ValueCellId::new("A", "x"), Value::Real(2.0));
         let r2 = CachedResult::Resolution(values2);
-        assert_ne!(r1.content_hash(), r2.content_hash(), "different values → different hash");
+        assert_ne!(
+            r1.content_hash(),
+            r2.content_hash(),
+            "different values → different hash"
+        );
     }
 
     #[test]
@@ -1080,10 +1097,7 @@ mod tests {
         assert_eq!(result1.stats.cache_misses, 4); // a, b, x, y
 
         // Change param a -> invalidate its dependents
-        engine.set_param_and_invalidate(
-            &ValueCellId::new(e, "a"),
-            Value::Int(15),
-        );
+        engine.set_param_and_invalidate(&ValueCellId::new(e, "a"), Value::Int(15));
 
         // Re-evaluate with new version
         let result2 = engine.eval_cached(&module, VersionId(2));
@@ -1124,10 +1138,7 @@ mod tests {
         let e = "T";
 
         // Build conditional: if a > 0 then 1 else 1 (always 1)
-        let condition = gt(
-            value_ref_typed(e, "a", Type::Int),
-            literal(Value::Int(0)),
-        );
+        let condition = gt(value_ref_typed(e, "a", Type::Int), literal(Value::Int(0)));
         let then_branch = literal(Value::Int(1));
         let else_branch = literal(Value::Int(1));
         let conditional = CompiledExpr {
@@ -1173,20 +1184,23 @@ mod tests {
         );
 
         // Change a from 5 to 10 (still > 0, so x still = 1)
-        engine.set_param_and_invalidate(
-            &ValueCellId::new(e, "a"),
-            Value::Int(10),
-        );
+        engine.set_param_and_invalidate(&ValueCellId::new(e, "a"), Value::Int(10));
 
         // Re-evaluate
         let result2 = engine.eval_cached(&module, VersionId(2));
 
         // x should be re-evaluated but result unchanged (early cutoff)
-        assert!(result2.stats.early_cutoffs >= 1, "expected early cutoff for x");
+        assert!(
+            result2.stats.early_cutoffs >= 1,
+            "expected early cutoff for x"
+        );
 
         // y should NOT be re-evaluated (served from cache because x didn't change)
         // The total cache_hits should include y
-        assert!(result2.stats.cache_hits >= 1, "expected y served from cache");
+        assert!(
+            result2.stats.cache_hits >= 1,
+            "expected y served from cache"
+        );
 
         // Results still correct
         assert_eq!(
@@ -1214,10 +1228,7 @@ mod tests {
         let e = "T";
 
         // Build conditional: if a > 0 then 1 else 1 (always 1, reads: [a])
-        let condition = gt(
-            value_ref_typed(e, "a", Type::Int),
-            literal(Value::Int(0)),
-        );
+        let condition = gt(value_ref_typed(e, "a", Type::Int), literal(Value::Int(0)));
         let then_branch = literal(Value::Int(1));
         let else_branch = literal(Value::Int(1));
         let conditional = CompiledExpr {
@@ -1267,16 +1278,16 @@ mod tests {
         );
 
         // Change a from 5 to 10 (still > 0, so x still = 1)
-        engine.set_param_and_invalidate(
-            &ValueCellId::new(e, "a"),
-            Value::Int(10),
-        );
+        engine.set_param_and_invalidate(&ValueCellId::new(e, "a"), Value::Int(10));
 
         // Re-evaluate
         let result2 = engine.eval_cached(&module, VersionId(2));
 
         // x should early-cutoff (result unchanged: still 1)
-        assert!(result2.stats.early_cutoffs >= 1, "expected early cutoff for x");
+        assert!(
+            result2.stats.early_cutoffs >= 1,
+            "expected early cutoff for x"
+        );
 
         // CRITICAL: y MUST be re-evaluated because it reads a directly,
         // even though x early-cutoff'd. y = 10 + 1 = 11 (not stale 6).
@@ -1305,10 +1316,7 @@ mod tests {
         let e = "T";
 
         // Build conditional: if a > 0 then 1 else 1 (always 1, reads: [a])
-        let condition = gt(
-            value_ref_typed(e, "a", Type::Int),
-            literal(Value::Int(0)),
-        );
+        let condition = gt(value_ref_typed(e, "a", Type::Int), literal(Value::Int(0)));
         let then_branch = literal(Value::Int(1));
         let else_branch = literal(Value::Int(1));
         let conditional = CompiledExpr {
@@ -1358,13 +1366,13 @@ mod tests {
         // y reads [a, b, x]. Dirty reason for y: {a}.
         // x early-cutoff removes x-reason (but x wasn't a reason).
         // y stays dirty because reason {a} is unresolved.
-        engine.set_param_and_invalidate(
-            &ValueCellId::new(e, "a"),
-            Value::Int(10),
-        );
+        engine.set_param_and_invalidate(&ValueCellId::new(e, "a"), Value::Int(10));
 
         let result2 = engine.eval_cached(&module, VersionId(2));
-        assert!(result2.stats.early_cutoffs >= 1, "expected early cutoff for x");
+        assert!(
+            result2.stats.early_cutoffs >= 1,
+            "expected early cutoff for x"
+        );
         // y must be re-evaluated: y = 10 + 100 + 1 = 111
         assert_eq!(
             result2.eval_result.values.get(&ValueCellId::new(e, "y")),
@@ -1373,10 +1381,7 @@ mod tests {
 
         // Now change b from 100 to 200. x doesn't depend on b.
         // y reads [a, b, x]. Dirty reason for y: {b}.
-        engine.set_param_and_invalidate(
-            &ValueCellId::new(e, "b"),
-            Value::Int(200),
-        );
+        engine.set_param_and_invalidate(&ValueCellId::new(e, "b"), Value::Int(200));
 
         let result3 = engine.eval_cached(&module, VersionId(3));
         // y must be re-evaluated because of b: y = 10 + 200 + 1 = 211

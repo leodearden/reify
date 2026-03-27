@@ -7,8 +7,15 @@ use reify_types::Severity;
 
 /// Helper: parse and compile source, return compiled module.
 fn compile_module(source: &str) -> reify_compiler::CompiledModule {
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("silent_defaults_test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    let parsed = reify_syntax::parse(
+        source,
+        reify_types::ModulePath::single("silent_defaults_test"),
+    );
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
     reify_compiler::compile(&parsed)
 }
 
@@ -41,9 +48,7 @@ fn collection_member_typo_produces_diagnostic() {
     let module = compile_module(source);
     let errors = error_diagnostics(&module);
 
-    let has_unknown_member = errors
-        .iter()
-        .any(|d| d.message.contains("unknown member"));
+    let has_unknown_member = errors.iter().any(|d| d.message.contains("unknown member"));
     assert!(
         has_unknown_member,
         "expected diagnostic about 'unknown member', got: {:?}",

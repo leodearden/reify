@@ -32,7 +32,11 @@ fn compile_no_errors(source: &str) -> reify_compiler::CompiledModule {
 fn parse_collection_sub_form() {
     let source = "structure S { sub bolts : List<Bolt> }";
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let structure = match &parsed.declarations[0] {
         reify_syntax::Declaration::Structure(s) => s,
@@ -44,7 +48,10 @@ fn parse_collection_sub_form() {
     };
     assert_eq!(sub.name, "bolts");
     assert_eq!(sub.structure_name, "Bolt");
-    assert!(sub.is_collection, "expected is_collection=true for List<Bolt>");
+    assert!(
+        sub.is_collection,
+        "expected is_collection=true for List<Bolt>"
+    );
     assert!(sub.args.is_empty(), "collection sub should have no args");
 }
 
@@ -52,7 +59,11 @@ fn parse_collection_sub_form() {
 fn parse_instantiation_sub_form() {
     let source = "structure S { sub rib = Rib() }";
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let structure = match &parsed.declarations[0] {
         reify_syntax::Declaration::Structure(s) => s,
@@ -64,7 +75,10 @@ fn parse_instantiation_sub_form() {
     };
     assert_eq!(sub.name, "rib");
     assert_eq!(sub.structure_name, "Rib");
-    assert!(!sub.is_collection, "expected is_collection=false for = form");
+    assert!(
+        !sub.is_collection,
+        "expected is_collection=false for = form"
+    );
 }
 
 // ─── step-3: compile collection sub ───
@@ -85,7 +99,10 @@ fn compile_collection_sub() {
     let sub = &s_template.sub_components[0];
     assert_eq!(sub.name, "bolts");
     assert_eq!(sub.structure_name, "Bolt");
-    assert!(sub.is_collection, "compiled SubComponentDecl should have is_collection=true");
+    assert!(
+        sub.is_collection,
+        "compiled SubComponentDecl should have is_collection=true"
+    );
 }
 
 #[test]
@@ -103,7 +120,10 @@ fn compile_instantiation_sub() {
     let sub = &s_template.sub_components[0];
     assert_eq!(sub.name, "rib");
     assert_eq!(sub.structure_name, "Rib");
-    assert!(!sub.is_collection, "compiled SubComponentDecl should have is_collection=false");
+    assert!(
+        !sub.is_collection,
+        "compiled SubComponentDecl should have is_collection=false"
+    );
 }
 
 // ─── step-5: count constraint recognition ───
@@ -141,7 +161,10 @@ fn compile_count_constraint() {
     );
 
     // Verify count cell's default_expr is a ValueRef to 'n'
-    let expr = count_cell.default_expr.as_ref().expect("should have default_expr");
+    let expr = count_cell
+        .default_expr
+        .as_ref()
+        .expect("should have default_expr");
     match &expr.kind {
         reify_types::CompiledExprKind::ValueRef(id) => {
             assert_eq!(id.member, "n", "count expression should reference param n");
@@ -182,16 +205,16 @@ fn compile_indexed_collection_member_access() {
         .expect("should have let binding 'd'");
 
     // The expression should compile to a ValueRef with scoped ID S.bolts[0].diameter
-    let expr = d_cell.default_expr.as_ref().expect("d should have an expression");
+    let expr = d_cell
+        .default_expr
+        .as_ref()
+        .expect("d should have an expression");
     match &expr.kind {
         CompiledExprKind::ValueRef(id) => {
             assert_eq!(id.entity, "S.bolts[0]", "entity should be S.bolts[0]");
             assert_eq!(id.member, "diameter", "member should be diameter");
         }
-        other => panic!(
-            "expected ValueRef(S.bolts[0].diameter), got {:?}",
-            other
-        ),
+        other => panic!("expected ValueRef(S.bolts[0].diameter), got {:?}", other),
     }
     // Result type should be Scalar (length) — resolved from child template's member type
     assert_eq!(
@@ -226,7 +249,10 @@ fn compile_indexed_collection_member_access_preserves_type() {
         .find(|vc| vc.id.member == "c")
         .expect("should have let binding 'c'");
 
-    let expr = c_cell.default_expr.as_ref().expect("c should have an expression");
+    let expr = c_cell
+        .default_expr
+        .as_ref()
+        .expect("c should have an expression");
     // The result_type should be Int (matching Bolt.count_per_row's type), not Real
     assert_eq!(
         expr.result_type,
@@ -307,19 +333,23 @@ fn compile_bolts_count_expression() {
         .expect("should have let binding 'n'");
 
     // The expression should compile to a ValueRef to the __count_bolts cell
-    let expr = n_cell.default_expr.as_ref().expect("n should have an expression");
+    let expr = n_cell
+        .default_expr
+        .as_ref()
+        .expect("n should have an expression");
     match &expr.kind {
         CompiledExprKind::ValueRef(id) => {
             assert_eq!(id.entity, "S", "entity should be S");
             assert_eq!(id.member, "__count_bolts", "member should be __count_bolts");
         }
-        other => panic!(
-            "expected ValueRef(S.__count_bolts), got {:?}",
-            other
-        ),
+        other => panic!("expected ValueRef(S.__count_bolts), got {:?}", other),
     }
     // Result type should be Int
-    assert_eq!(expr.result_type, reify_types::Type::Int, "bolts.count type should be Int");
+    assert_eq!(
+        expr.result_type,
+        reify_types::Type::Int,
+        "bolts.count type should be Int"
+    );
 }
 
 // ─── step-27: dynamic index collection member access ───
@@ -351,7 +381,10 @@ fn compile_dynamic_index_collection_member_access() {
         .find(|vc| vc.id.member == "d")
         .expect("should have let binding 'd'");
 
-    let expr = d_cell.default_expr.as_ref().expect("d should have an expression");
+    let expr = d_cell
+        .default_expr
+        .as_ref()
+        .expect("d should have an expression");
 
     // The expression should be IndexAccess(ValueRef(__list_bolts__diameter), idx)
     // where __list_bolts__diameter is a per-member synthetic list
@@ -416,18 +449,21 @@ fn compile_collection_sub_as_standalone_identifier() {
         .find(|vc| vc.id.member == "grades")
         .expect("should have let binding 'grades'");
 
-    let expr = grades_cell.default_expr.as_ref().expect("grades should have an expression");
+    let expr = grades_cell
+        .default_expr
+        .as_ref()
+        .expect("grades should have an expression");
 
     // Should be a ValueRef to __list_bolts__grade (first member's per-member list), not Literal(Undef)
     match &expr.kind {
         CompiledExprKind::ValueRef(id) => {
             assert_eq!(id.entity, "S", "entity should be S");
-            assert_eq!(id.member, "__list_bolts__grade", "member should be __list_bolts__grade");
+            assert_eq!(
+                id.member, "__list_bolts__grade",
+                "member should be __list_bolts__grade"
+            );
         }
-        other => panic!(
-            "expected ValueRef(S.__list_bolts__grade), got {:?}",
-            other
-        ),
+        other => panic!("expected ValueRef(S.__list_bolts__grade), got {:?}", other),
     }
 
     // Result type should be List

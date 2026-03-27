@@ -28,7 +28,8 @@ fn all_stdlib_modules_have_no_errors() {
         assert!(
             errors.is_empty(),
             "stdlib module '{}' has error diagnostics: {:?}",
-            module.path, errors
+            module.path,
+            errors
         );
     }
 }
@@ -61,7 +62,8 @@ fn materials_mechanical_traits_present() {
         assert!(
             all_traits.contains(name),
             "expected trait '{}' in stdlib, found: {:?}",
-            name, all_traits
+            name,
+            all_traits
         );
     }
 }
@@ -93,7 +95,11 @@ structure def Steel : Elastic {
 "#;
     let prelude = stdlib_loader::load_stdlib();
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile_with_prelude(&parsed, prelude);
 
@@ -135,7 +141,11 @@ structure def Steel : Strong {
 "#;
     let prelude = stdlib_loader::load_stdlib();
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile_with_prelude(&parsed, prelude);
 

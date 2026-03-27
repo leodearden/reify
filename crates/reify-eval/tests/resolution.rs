@@ -7,10 +7,12 @@ use reify_eval::cache::NodeId;
 use reify_eval::{ConcurrentEditResult, Engine};
 use reify_test_support::{
     CompiledModuleBuilder, MockConstraintChecker, MockConstraintSolver, SpyConstraintSolver,
-    TopologyTemplateBuilder,
-    binop, gt, lt, literal, value_ref, mm,
+    TopologyTemplateBuilder, binop, gt, literal, lt, mm, value_ref,
 };
-use reify_types::{DeterminacyState, ModulePath, OptimizationObjective, SnapshotId, SnapshotProvenance, Type, Value, ValueCellId};
+use reify_types::{
+    DeterminacyState, ModulePath, OptimizationObjective, SnapshotId, SnapshotProvenance, Type,
+    Value, ValueCellId,
+};
 
 #[test]
 fn engine_with_solver_accepts_solver() {
@@ -27,8 +29,8 @@ fn engine_with_solver_accepts_solver() {
         .template(template)
         .build();
 
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
-        .with_solver(Box::new(solver));
+    let mut engine =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
 
     let result = engine.eval(&module);
     // No panic, x is in values (may still be Undef until resolution phase is added)
@@ -47,22 +49,35 @@ fn resolve_single_auto_param() {
     let template = TopologyTemplateBuilder::new("S")
         .auto_param("S", "thickness", Type::length())
         // constraint: thickness > 2mm
-        .constraint("S", 0, None, gt(value_ref("S", "thickness"), literal(mm(2.0))))
+        .constraint(
+            "S",
+            0,
+            None,
+            gt(value_ref("S", "thickness"), literal(mm(2.0))),
+        )
         // constraint: thickness < 20mm
-        .constraint("S", 1, None, lt(value_ref("S", "thickness"), literal(mm(20.0))))
+        .constraint(
+            "S",
+            1,
+            None,
+            lt(value_ref("S", "thickness"), literal(mm(20.0))),
+        )
         .build();
 
     let module = CompiledModuleBuilder::new(ModulePath::single("test"))
         .template(template)
         .build();
 
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
-        .with_solver(Box::new(solver));
+    let mut engine =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
 
     let result = engine.eval(&module);
 
     // thickness should be resolved to mm(5.0), not Undef
-    let thickness_val = result.values.get(&thickness_id).expect("thickness should be in values");
+    let thickness_val = result
+        .values
+        .get(&thickness_id)
+        .expect("thickness should be in values");
     // mm(5.0) = 0.005 SI
     assert!(
         matches!(thickness_val, Value::Scalar { si_value, .. } if (*si_value - 0.005).abs() < 1e-10),
@@ -82,21 +97,29 @@ fn resolved_param_determinacy_and_provenance() {
 
     let template = TopologyTemplateBuilder::new("S")
         .auto_param("S", "thickness", Type::length())
-        .constraint("S", 0, None, gt(value_ref("S", "thickness"), literal(mm(2.0))))
+        .constraint(
+            "S",
+            0,
+            None,
+            gt(value_ref("S", "thickness"), literal(mm(2.0))),
+        )
         .build();
 
     let module = CompiledModuleBuilder::new(ModulePath::single("test"))
         .template(template)
         .build();
 
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
-        .with_solver(Box::new(solver));
+    let mut engine =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
 
     let _result = engine.eval(&module);
     let snap = engine.snapshot().expect("snapshot should exist");
 
     // Snapshot values: thickness should be (mm(5.0), Determined)
-    let (val, det) = snap.values.get(&thickness_id).expect("thickness in snapshot");
+    let (val, det) = snap
+        .values
+        .get(&thickness_id)
+        .expect("thickness in snapshot");
     assert!(
         matches!(val, Value::Scalar { si_value, .. } if (*si_value - 0.005).abs() < 1e-10),
         "expected mm(5.0) in snapshot, got {:?}",
@@ -148,8 +171,8 @@ fn let_binding_re_evaluated_after_resolution() {
         .template(template)
         .build();
 
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
-        .with_solver(Box::new(solver));
+    let mut engine =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
 
     let result = engine.eval(&module);
 
@@ -177,15 +200,20 @@ fn check_reports_satisfied_after_resolution() {
     let template = TopologyTemplateBuilder::new("S")
         .auto_param("S", "thickness", Type::length())
         // constraint: thickness > 2mm
-        .constraint("S", 0, None, gt(value_ref("S", "thickness"), literal(mm(2.0))))
+        .constraint(
+            "S",
+            0,
+            None,
+            gt(value_ref("S", "thickness"), literal(mm(2.0))),
+        )
         .build();
 
     let module = CompiledModuleBuilder::new(ModulePath::single("test"))
         .template(template)
         .build();
 
-    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None)
-        .with_solver(Box::new(solver));
+    let mut engine =
+        Engine::new(Box::new(SimpleConstraintChecker), None).with_solver(Box::new(solver));
 
     let result = engine.check(&module);
 
@@ -221,8 +249,8 @@ fn resolve_multiple_auto_params() {
         .template(template)
         .build();
 
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
-        .with_solver(Box::new(solver));
+    let mut engine =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
 
     let result = engine.eval(&module);
 
@@ -251,31 +279,45 @@ fn solver_infeasible_produces_diagnostics() {
 
     let thickness_id = ValueCellId::new("S", "thickness");
 
-    let solver = MockConstraintSolver::new_infeasible(vec![
-        Diagnostic::error("constraints are infeasible"),
-    ]);
+    let solver =
+        MockConstraintSolver::new_infeasible(vec![Diagnostic::error("constraints are infeasible")]);
 
     let template = TopologyTemplateBuilder::new("S")
         .auto_param("S", "thickness", Type::length())
-        .constraint("S", 0, None, gt(value_ref("S", "thickness"), literal(mm(2.0))))
+        .constraint(
+            "S",
+            0,
+            None,
+            gt(value_ref("S", "thickness"), literal(mm(2.0))),
+        )
         .build();
 
     let module = CompiledModuleBuilder::new(ModulePath::single("test"))
         .template(template)
         .build();
 
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
-        .with_solver(Box::new(solver));
+    let mut engine =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
 
     let result = engine.eval(&module);
 
     // thickness should remain Undef
-    let thickness_val = result.values.get(&thickness_id).expect("thickness in values");
-    assert!(thickness_val.is_undef(), "expected Undef, got {:?}", thickness_val);
+    let thickness_val = result
+        .values
+        .get(&thickness_id)
+        .expect("thickness in values");
+    assert!(
+        thickness_val.is_undef(),
+        "expected Undef, got {:?}",
+        thickness_val
+    );
 
     // diagnostics should contain infeasible message
     assert!(
-        result.diagnostics.iter().any(|d| d.message.contains("infeasible")),
+        result
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("infeasible")),
         "expected infeasible diagnostic, got {:?}",
         result.diagnostics
     );
@@ -292,25 +334,40 @@ fn solver_no_progress_produces_warning() {
 
     let template = TopologyTemplateBuilder::new("S")
         .auto_param("S", "thickness", Type::length())
-        .constraint("S", 0, None, gt(value_ref("S", "thickness"), literal(mm(2.0))))
+        .constraint(
+            "S",
+            0,
+            None,
+            gt(value_ref("S", "thickness"), literal(mm(2.0))),
+        )
         .build();
 
     let module = CompiledModuleBuilder::new(ModulePath::single("test"))
         .template(template)
         .build();
 
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
-        .with_solver(Box::new(solver));
+    let mut engine =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
 
     let result = engine.eval(&module);
 
     // thickness should remain Undef
-    let thickness_val = result.values.get(&thickness_id).expect("thickness in values");
-    assert!(thickness_val.is_undef(), "expected Undef, got {:?}", thickness_val);
+    let thickness_val = result
+        .values
+        .get(&thickness_id)
+        .expect("thickness in values");
+    assert!(
+        thickness_val.is_undef(),
+        "expected Undef, got {:?}",
+        thickness_val
+    );
 
     // diagnostics should contain a warning about no progress
     assert!(
-        result.diagnostics.iter().any(|d| d.message.contains("iteration limit reached")),
+        result
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("iteration limit reached")),
         "expected no-progress warning, got {:?}",
         result.diagnostics
     );
@@ -339,7 +396,11 @@ fn no_solver_backward_compatible() {
 
     // x should be Undef with Auto determinacy in snapshot
     let x_val = result.values.get(&x_id).expect("x in values");
-    assert!(x_val.is_undef(), "expected Undef without solver, got {:?}", x_val);
+    assert!(
+        x_val.is_undef(),
+        "expected Undef without solver, got {:?}",
+        x_val
+    );
 
     let snap = engine.snapshot().expect("snapshot should exist");
     let (val, det) = snap.values.get(&x_id).expect("x in snapshot");
@@ -365,7 +426,12 @@ fn eval_result_tracks_resolved_params() {
 
     let template = TopologyTemplateBuilder::new("S")
         .auto_param("S", "thickness", Type::length())
-        .constraint("S", 0, None, gt(value_ref("S", "thickness"), literal(mm(2.0))))
+        .constraint(
+            "S",
+            0,
+            None,
+            gt(value_ref("S", "thickness"), literal(mm(2.0))),
+        )
         .build();
 
     let module = CompiledModuleBuilder::new(ModulePath::single("test"))
@@ -373,23 +439,25 @@ fn eval_result_tracks_resolved_params() {
         .build();
 
     // Test eval() resolved_params
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
-        .with_solver(Box::new(MockConstraintSolver::new_solved({
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(
+        Box::new(MockConstraintSolver::new_solved({
             let mut m = HashMap::new();
             m.insert(thickness_id.clone(), mm(5.0));
             m
-        })));
+        })),
+    );
     let eval_result = engine.eval(&module);
     assert_eq!(eval_result.resolved_params.len(), 1);
     assert!(eval_result.resolved_params.contains_key(&thickness_id));
 
     // Test check() resolved_params
-    let mut engine2 = Engine::new(Box::new(MockConstraintChecker::new()), None)
-        .with_solver(Box::new(MockConstraintSolver::new_solved({
+    let mut engine2 = Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(
+        Box::new(MockConstraintSolver::new_solved({
             let mut m = HashMap::new();
             m.insert(thickness_id.clone(), mm(5.0));
             m
-        })));
+        })),
+    );
     let check_result = engine2.check(&module);
     assert_eq!(check_result.resolved_params.len(), 1);
     assert!(check_result.resolved_params.contains_key(&thickness_id));
@@ -398,7 +466,8 @@ fn eval_result_tracks_resolved_params() {
     let mut engine3 = Engine::new(
         Box::new(MockConstraintChecker::new()),
         Some(Box::new(MockGeometryKernel::new())),
-    ).with_solver(Box::new(MockConstraintSolver::new_solved({
+    )
+    .with_solver(Box::new(MockConstraintSolver::new_solved({
         let mut m = HashMap::new();
         m.insert(thickness_id.clone(), mm(5.0));
         m
@@ -438,8 +507,8 @@ fn resolution_cache_version_matches_snapshot() {
         .template(template)
         .build();
 
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
-        .with_solver(Box::new(solver));
+    let mut engine =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
 
     let _result = engine.eval(&module);
 
@@ -522,8 +591,8 @@ fn incremental_fast_path_works_after_resolution() {
         .template(template)
         .build();
 
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
-        .with_solver(Box::new(solver));
+    let mut engine =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
 
     // Cold-start eval: x resolved to mm(5.0), y = 0.01, z = mm(1.0), w = 0.003
     let result = engine.eval(&module);
@@ -590,7 +659,12 @@ fn objective_forwarded_to_solver_in_eval() {
 
     let template = TopologyTemplateBuilder::new("S")
         .auto_param("S", "thickness", Type::length())
-        .constraint("S", 0, None, gt(value_ref("S", "thickness"), literal(mm(2.0))))
+        .constraint(
+            "S",
+            0,
+            None,
+            gt(value_ref("S", "thickness"), literal(mm(2.0))),
+        )
         .objective(OptimizationObjective::Minimize(value_ref("S", "thickness")))
         .build();
 
@@ -598,13 +672,15 @@ fn objective_forwarded_to_solver_in_eval() {
         .template(template)
         .build();
 
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
-        .with_solver(Box::new(spy));
+    let mut engine =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
 
     engine.eval(&module);
 
     let guard = captured.lock().unwrap();
-    let problem = guard.as_ref().expect("solver should have been called during eval");
+    let problem = guard
+        .as_ref()
+        .expect("solver should have been called during eval");
     assert!(
         matches!(&problem.objective, Some(OptimizationObjective::Minimize(_))),
         "expected Minimize objective forwarded to solver, got {:?}",
@@ -633,7 +709,12 @@ fn objective_forwarded_in_edit_param() {
     let template = TopologyTemplateBuilder::new("S")
         .auto_param("S", "thickness", Type::length())
         .param("S", "limit", Type::length(), Some(literal(mm(2.0))))
-        .constraint("S", 0, None, gt(value_ref("S", "thickness"), value_ref("S", "limit")))
+        .constraint(
+            "S",
+            0,
+            None,
+            gt(value_ref("S", "thickness"), value_ref("S", "limit")),
+        )
         .objective(OptimizationObjective::Minimize(value_ref("S", "thickness")))
         .build();
 
@@ -641,8 +722,8 @@ fn objective_forwarded_in_edit_param() {
         .template(template)
         .build();
 
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
-        .with_solver(Box::new(spy));
+    let mut engine =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
 
     // Initial eval: solver called with objective=Some(Minimize(...))
     engine.eval(&module);
@@ -653,7 +734,9 @@ fn objective_forwarded_in_edit_param() {
 
     // The spy should now hold the problem from the edit_param() call.
     let guard = captured.lock().unwrap();
-    let problem = guard.as_ref().expect("solver should have been called during edit_param");
+    let problem = guard
+        .as_ref()
+        .expect("solver should have been called during edit_param");
     assert!(
         matches!(&problem.objective, Some(OptimizationObjective::Minimize(_))),
         "expected Minimize objective forwarded to solver in edit_param, got {:?}",
@@ -682,7 +765,12 @@ fn objective_forwarded_in_concurrent_edit() {
     let template = TopologyTemplateBuilder::new("S")
         .auto_param("S", "thickness", Type::length())
         .param("S", "limit", Type::length(), Some(literal(mm(2.0))))
-        .constraint("S", 0, None, gt(value_ref("S", "thickness"), value_ref("S", "limit")))
+        .constraint(
+            "S",
+            0,
+            None,
+            gt(value_ref("S", "thickness"), value_ref("S", "limit")),
+        )
         .objective(OptimizationObjective::Minimize(value_ref("S", "thickness")))
         .build();
 
@@ -690,14 +778,16 @@ fn objective_forwarded_in_concurrent_edit() {
         .template(template)
         .build();
 
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
-        .with_solver(Box::new(spy));
+    let mut engine =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
 
     // Initial eval: solver is called, objectives are cached on the engine
     engine.eval(&module);
 
     // Prepare a concurrent edit: change limit to 3mm
-    let setup = engine.prepare_concurrent_edit(limit_id.clone(), mm(3.0)).unwrap();
+    let setup = engine
+        .prepare_concurrent_edit(limit_id.clone(), mm(3.0))
+        .unwrap();
 
     // Build a minimal ConcurrentEditResult from the setup values
     let mut result = ConcurrentEditResult {
@@ -715,7 +805,9 @@ fn objective_forwarded_in_concurrent_edit() {
 
     // The spy should now hold the problem from resolve_concurrent_edit
     let guard = captured.lock().unwrap();
-    let problem = guard.as_ref().expect("solver should have been called during resolve_concurrent_edit");
+    let problem = guard
+        .as_ref()
+        .expect("solver should have been called during resolve_concurrent_edit");
     assert!(
         matches!(&problem.objective, Some(OptimizationObjective::Minimize(_))),
         "expected Minimize objective forwarded to solver in resolve_concurrent_edit, got {:?}",
@@ -740,21 +832,28 @@ fn no_objective_backward_compatible() {
     let template = TopologyTemplateBuilder::new("S")
         .auto_param("S", "thickness", Type::length())
         .param("S", "limit", Type::length(), Some(literal(mm(2.0))))
-        .constraint("S", 0, None, gt(value_ref("S", "thickness"), value_ref("S", "limit")))
+        .constraint(
+            "S",
+            0,
+            None,
+            gt(value_ref("S", "thickness"), value_ref("S", "limit")),
+        )
         .build();
 
     let module = CompiledModuleBuilder::new(ModulePath::single("test"))
         .template(template)
         .build();
 
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
-        .with_solver(Box::new(spy));
+    let mut engine =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
 
     // eval() with no objective: spy should capture problem with objective=None
     engine.eval(&module);
     {
         let guard = captured.lock().unwrap();
-        let problem = guard.as_ref().expect("solver should have been called during eval");
+        let problem = guard
+            .as_ref()
+            .expect("solver should have been called during eval");
         assert!(
             problem.objective.is_none(),
             "expected None objective for template without objective, got {:?}",
@@ -766,7 +865,9 @@ fn no_objective_backward_compatible() {
     let _result = engine.edit_param(limit_id.clone(), mm(3.0)).unwrap();
     {
         let guard = captured.lock().unwrap();
-        let problem = guard.as_ref().expect("solver should have been called during edit_param");
+        let problem = guard
+            .as_ref()
+            .expect("solver should have been called during edit_param");
         assert!(
             problem.objective.is_none(),
             "expected None objective in edit_param for template without objective, got {:?}",
@@ -792,7 +893,12 @@ fn e2e_minimize_through_real_solver() {
     // Single upper-bound constraint avoids floating-point boundary issues at the lower bound.
     let template = TopologyTemplateBuilder::new("S")
         .auto_param("S", "thickness", Type::length())
-        .constraint("S", 0, None, lt(value_ref("S", "thickness"), literal(mm(20.0))))
+        .constraint(
+            "S",
+            0,
+            None,
+            lt(value_ref("S", "thickness"), literal(mm(20.0))),
+        )
         .objective(OptimizationObjective::Minimize(value_ref("S", "thickness")))
         .build();
 
@@ -813,7 +919,9 @@ fn e2e_minimize_through_real_solver() {
     );
 
     // Thickness should be in values (auto param resolved by the solver)
-    let thickness_val = result.values.get(&thickness_id)
+    let thickness_val = result
+        .values
+        .get(&thickness_id)
         .expect("thickness should be in values after resolution");
 
     let si_value = match thickness_val {

@@ -118,22 +118,34 @@ impl SharedPriorityPromoter {
 
     /// Register an in-flight task with its initial priority.
     pub fn register(&self, node_id: NodeId, priority: Priority) {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner()).register(node_id, priority);
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .register(node_id, priority);
     }
 
     /// Get the current effective priority for a node.
     pub fn effective_priority(&self, node_id: &NodeId) -> Option<Priority> {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner()).effective_priority(node_id)
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .effective_priority(node_id)
     }
 
     /// Promote a node to a higher priority (lower enum value).
     pub fn promote(&self, node_id: &NodeId, new_priority: Priority) {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner()).promote(node_id, new_priority);
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .promote(node_id, new_priority);
     }
 
     /// Remove a node from the promoter.
     pub fn remove(&self, node_id: &NodeId) {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner()).remove(node_id);
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(node_id);
     }
 
     /// Promote all in-flight dependencies of a demanded node transitively.
@@ -189,10 +201,7 @@ mod tests {
         let node = make_node("a");
         promoter.register(node.clone(), Priority::P3Speculative);
         promoter.promote(&node, Priority::P1Slow);
-        assert_eq!(
-            promoter.effective_priority(&node),
-            Some(Priority::P1Slow)
-        );
+        assert_eq!(promoter.effective_priority(&node), Some(Priority::P1Slow));
     }
 
     #[test]
@@ -202,16 +211,10 @@ mod tests {
         promoter.register(node.clone(), Priority::P1Slow);
         // Promote to same priority → no-op
         promoter.promote(&node, Priority::P1Slow);
-        assert_eq!(
-            promoter.effective_priority(&node),
-            Some(Priority::P1Slow)
-        );
+        assert_eq!(promoter.effective_priority(&node), Some(Priority::P1Slow));
         // Promote to lower priority → no-op
         promoter.promote(&node, Priority::P3Speculative);
-        assert_eq!(
-            promoter.effective_priority(&node),
-            Some(Priority::P1Slow)
-        );
+        assert_eq!(promoter.effective_priority(&node), Some(Priority::P1Slow));
     }
 
     #[test]
@@ -240,10 +243,7 @@ mod tests {
 
         promoter.promote_for_demand(&demanded, Priority::P1Slow, &deps);
 
-        assert_eq!(
-            promoter.effective_priority(&dep),
-            Some(Priority::P1Slow)
-        );
+        assert_eq!(promoter.effective_priority(&dep), Some(Priority::P1Slow));
     }
 
     #[test]
@@ -333,10 +333,7 @@ mod tests {
         });
         handle.join().unwrap();
 
-        assert_eq!(
-            shared.effective_priority(&node),
-            Some(Priority::P1Slow)
-        );
+        assert_eq!(shared.effective_priority(&node), Some(Priority::P1Slow));
     }
 
     #[test]
@@ -362,10 +359,7 @@ mod tests {
         }
 
         // All promotions should result in P1Fast
-        assert_eq!(
-            shared.effective_priority(&node),
-            Some(Priority::P1Fast)
-        );
+        assert_eq!(shared.effective_priority(&node), Some(Priority::P1Fast));
     }
 
     // --- Integration test: commitment + priority promotion ---
@@ -373,8 +367,8 @@ mod tests {
     #[test]
     fn integration_commitment_and_priority_promotion() {
         use crate::commitment::{
-            CommitmentPolicy, CommitmentTracker, CommitmentTransition,
-            NodeCommitmentOverride, TaskProgress,
+            CommitmentPolicy, CommitmentTracker, CommitmentTransition, NodeCommitmentOverride,
+            TaskProgress,
         };
         use std::time::Duration;
 

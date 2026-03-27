@@ -11,11 +11,13 @@ pub struct DependencyTrace {
 
 /// Extract a dependency trace from a compiled expression by collecting all ValueRef ids.
 pub fn extract_dependency_trace(expr: &CompiledExpr) -> DependencyTrace {
-    DependencyTrace { reads: expr.collect_value_refs() }
+    DependencyTrace {
+        reads: expr.collect_value_refs(),
+    }
 }
 
-use std::collections::{HashMap, HashSet};
 use crate::cache::NodeId;
+use std::collections::{HashMap, HashSet};
 
 /// Reverse dependency index: maps ValueCellId → set of NodeIds that depend on it.
 ///
@@ -27,8 +29,7 @@ pub struct ReverseDependencyIndex {
 }
 
 /// Empty set constant for returning references to unknown cells.
-static EMPTY_SET: std::sync::LazyLock<HashSet<NodeId>> =
-    std::sync::LazyLock::new(HashSet::new);
+static EMPTY_SET: std::sync::LazyLock<HashSet<NodeId>> = std::sync::LazyLock::new(HashSet::new);
 
 impl Default for ReverseDependencyIndex {
     fn default() -> Self {
@@ -112,9 +113,7 @@ impl ReverseDependencyIndex {
 ///
 /// Returns a HashMap<NodeId, DependencyTrace> that maps each node to
 /// the set of ValueCellIds it reads. Used by topological sort and demand cone.
-pub fn build_trace_map(
-    graph: &crate::graph::EvaluationGraph,
-) -> HashMap<NodeId, DependencyTrace> {
+pub fn build_trace_map(graph: &crate::graph::EvaluationGraph) -> HashMap<NodeId, DependencyTrace> {
     use reify_compiler::ValueCellKind;
 
     let mut traces = HashMap::new();
@@ -237,32 +236,44 @@ mod tests {
 
         // Add auto param 'a'
         let a = ValueCellId::new("A", "a");
-        graph.value_cells.insert(a.clone(), ValueCellNode {
-            id: a.clone(),
-            kind: ValueCellKind::Param,
-            cell_type: Type::Real,
-            default_expr: None,
-            content_hash: ContentHash::of_str("a"),
-        });
+        graph.value_cells.insert(
+            a.clone(),
+            ValueCellNode {
+                id: a.clone(),
+                kind: ValueCellKind::Param,
+                cell_type: Type::Real,
+                default_expr: None,
+                content_hash: ContentHash::of_str("a"),
+            },
+        );
 
         // Add constraint C0 (with literal expr, for completeness)
         let c0_id = ConstraintNodeId::new("A", 0);
-        graph.constraints.insert(c0_id.clone(), crate::graph::ConstraintNodeData {
-            id: c0_id.clone(),
-            label: None,
-            expr: reify_types::CompiledExpr::literal(reify_types::Value::Bool(true), reify_types::Type::Bool),
-            content_hash: ContentHash::of_str("c0"),
-        });
+        graph.constraints.insert(
+            c0_id.clone(),
+            crate::graph::ConstraintNodeData {
+                id: c0_id.clone(),
+                label: None,
+                expr: reify_types::CompiledExpr::literal(
+                    reify_types::Value::Bool(true),
+                    reify_types::Type::Bool,
+                ),
+                content_hash: ContentHash::of_str("c0"),
+            },
+        );
 
         // Add ResolutionNodeData R0 with auto_params=['a']
         let r0_id = ResolutionNodeId::new("A", 0);
-        graph.resolutions.insert(r0_id.clone(), ResolutionNodeData {
-            id: r0_id.clone(),
-            scope: "A".to_string(),
-            auto_params: vec![a.clone()],
-            constraint_deps: vec![c0_id.clone()],
-            content_hash: ContentHash::of_str("r0"),
-        });
+        graph.resolutions.insert(
+            r0_id.clone(),
+            ResolutionNodeData {
+                id: r0_id.clone(),
+                scope: "A".to_string(),
+                auto_params: vec![a.clone()],
+                constraint_deps: vec![c0_id.clone()],
+                content_hash: ContentHash::of_str("r0"),
+            },
+        );
 
         let index = ReverseDependencyIndex::build_from_graph(&graph);
 
@@ -270,7 +281,8 @@ mod tests {
         let a_deps = index.dependents_of(&a);
         assert!(
             a_deps.contains(&NodeId::Resolution(r0_id)),
-            "dependents_of('a') should include Resolution(R0), got: {:?}", a_deps
+            "dependents_of('a') should include Resolution(R0), got: {:?}",
+            a_deps
         );
     }
 
@@ -285,32 +297,38 @@ mod tests {
         // Add params 'a' and 'b'
         for name in &["a", "b"] {
             let id = ValueCellId::new("A", *name);
-            graph.value_cells.insert(id.clone(), ValueCellNode {
-                id: id.clone(),
-                kind: ValueCellKind::Param,
-                cell_type: Type::Real,
-                default_expr: None,
-                content_hash: ContentHash::of_str(name),
-            });
+            graph.value_cells.insert(
+                id.clone(),
+                ValueCellNode {
+                    id: id.clone(),
+                    kind: ValueCellKind::Param,
+                    cell_type: Type::Real,
+                    default_expr: None,
+                    content_hash: ContentHash::of_str(name),
+                },
+            );
         }
 
         // Add ResolutionNodeData R0 with auto_params=['a','b']
         let r0_id = ResolutionNodeId::new("A", 0);
-        graph.resolutions.insert(r0_id.clone(), ResolutionNodeData {
-            id: r0_id.clone(),
-            scope: "A".to_string(),
-            auto_params: vec![
-                ValueCellId::new("A", "a"),
-                ValueCellId::new("A", "b"),
-            ],
-            constraint_deps: vec![],
-            content_hash: ContentHash::of_str("r0"),
-        });
+        graph.resolutions.insert(
+            r0_id.clone(),
+            ResolutionNodeData {
+                id: r0_id.clone(),
+                scope: "A".to_string(),
+                auto_params: vec![ValueCellId::new("A", "a"), ValueCellId::new("A", "b")],
+                constraint_deps: vec![],
+                content_hash: ContentHash::of_str("r0"),
+            },
+        );
 
         let traces = build_trace_map(&graph);
 
         let res_node = NodeId::Resolution(r0_id);
-        assert!(traces.contains_key(&res_node), "trace_map should contain Resolution(R0)");
+        assert!(
+            traces.contains_key(&res_node),
+            "trace_map should contain Resolution(R0)"
+        );
         let trace = &traces[&res_node];
         assert_eq!(trace.reads.len(), 2);
         assert!(trace.reads.contains(&ValueCellId::new("A", "a")));
@@ -333,11 +351,20 @@ mod tests {
         assert_eq!(width_deps.len(), 3, "width dependents: {:?}", width_deps);
         assert!(width_deps.contains(&NodeId::Value(ValueCellId::new(e, "volume"))));
         assert!(width_deps.contains(&NodeId::Constraint(ConstraintNodeId::new(e, 1))));
-        assert!(width_deps.contains(&NodeId::Realization(reify_types::RealizationNodeId::new(e, 0))));
+        assert!(
+            width_deps.contains(&NodeId::Realization(reify_types::RealizationNodeId::new(
+                e, 0
+            )))
+        );
 
         // thickness is read by: volume (let), C0, C1, C2 (all three constraints), R0 (box depth)
         let thickness_deps = index.dependents_of(&ValueCellId::new(e, "thickness"));
-        assert_eq!(thickness_deps.len(), 5, "thickness dependents: {:?}", thickness_deps);
+        assert_eq!(
+            thickness_deps.len(),
+            5,
+            "thickness dependents: {:?}",
+            thickness_deps
+        );
         assert!(thickness_deps.contains(&NodeId::Value(ValueCellId::new(e, "volume"))));
         assert!(thickness_deps.contains(&NodeId::Constraint(ConstraintNodeId::new(e, 0))));
         assert!(thickness_deps.contains(&NodeId::Constraint(ConstraintNodeId::new(e, 1))));
@@ -345,17 +372,30 @@ mod tests {
 
         // fillet_radius is not read by anything in bracket
         let fillet_deps = index.dependents_of(&ValueCellId::new(e, "fillet_radius"));
-        assert!(fillet_deps.is_empty(), "fillet_radius dependents: {:?}", fillet_deps);
+        assert!(
+            fillet_deps.is_empty(),
+            "fillet_radius dependents: {:?}",
+            fillet_deps
+        );
 
         // hole_diameter is read by: C2 (constraint: hole_diameter < thickness*2)
         let hole_deps = index.dependents_of(&ValueCellId::new(e, "hole_diameter"));
-        assert_eq!(hole_deps.len(), 1, "hole_diameter dependents: {:?}", hole_deps);
+        assert_eq!(
+            hole_deps.len(),
+            1,
+            "hole_diameter dependents: {:?}",
+            hole_deps
+        );
         assert!(hole_deps.contains(&NodeId::Constraint(ConstraintNodeId::new(e, 2))));
 
         // height is read by: volume (let), R0 (box realization)
         let height_deps = index.dependents_of(&ValueCellId::new(e, "height"));
         assert_eq!(height_deps.len(), 2, "height dependents: {:?}", height_deps);
         assert!(height_deps.contains(&NodeId::Value(ValueCellId::new(e, "volume"))));
-        assert!(height_deps.contains(&NodeId::Realization(reify_types::RealizationNodeId::new(e, 0))));
+        assert!(
+            height_deps.contains(&NodeId::Realization(reify_types::RealizationNodeId::new(
+                e, 0
+            )))
+        );
     }
 }

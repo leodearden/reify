@@ -14,7 +14,11 @@ fn compile_param_visibility_public() {
     let compiled = reify_compiler::compile(&parsed);
 
     let template = &compiled.templates[0];
-    let w_cell = template.value_cells.iter().find(|vc| vc.id.member == "w").unwrap();
+    let w_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "w")
+        .unwrap();
     assert_eq!(w_cell.visibility, reify_compiler::Visibility::Public);
 }
 
@@ -28,7 +32,11 @@ fn compile_let_visibility_private_by_default() {
     let compiled = reify_compiler::compile(&parsed);
 
     let template = &compiled.templates[0];
-    let vol_cell = template.value_cells.iter().find(|vc| vc.id.member == "vol").unwrap();
+    let vol_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "vol")
+        .unwrap();
     assert_eq!(vol_cell.visibility, reify_compiler::Visibility::Private);
 }
 
@@ -42,11 +50,19 @@ fn compile_pub_let_visibility_public() {
     pub let volume = w * h
 }"#;
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("vis_test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
     let compiled = reify_compiler::compile(&parsed);
 
     let template = &compiled.templates[0];
-    let vol_cell = template.value_cells.iter().find(|vc| vc.id.member == "volume").unwrap();
+    let vol_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "volume")
+        .unwrap();
     assert_eq!(vol_cell.visibility, reify_compiler::Visibility::Public);
 }
 
@@ -61,7 +77,11 @@ structure Internal {
     param x: Scalar = 1mm
 }"#;
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("vis_test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
     let compiled = reify_compiler::compile(&parsed);
 
     assert_eq!(compiled.templates.len(), 2);
@@ -87,10 +107,18 @@ structure Parent {
     sub rib = Child(h: w)
 }"#;
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("vis_test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
     let compiled = reify_compiler::compile(&parsed);
 
-    let parent = compiled.templates.iter().find(|t| t.name == "Parent").unwrap();
+    let parent = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Parent")
+        .unwrap();
     assert_eq!(parent.sub_components.len(), 1);
     let rib = &parent.sub_components[0];
     assert_eq!(rib.name, "rib");
@@ -105,15 +133,25 @@ fn backward_compat_bracket_compiles_cleanly() {
     // with zero error diagnostics and correct visibility defaults.
     let source = reify_test_support::bracket_source();
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("bracket"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
 
     // No error diagnostics
-    let errors: Vec<_> = compiled.diagnostics.iter()
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
         .filter(|d| d.severity == reify_types::Severity::Error)
         .collect();
-    assert!(errors.is_empty(), "unexpected error diagnostics: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "unexpected error diagnostics: {:?}",
+        errors
+    );
 
     let template = &compiled.templates[0];
     assert_eq!(template.name, "Bracket");
@@ -128,13 +166,19 @@ fn backward_compat_bracket_compiles_cleanly() {
     // All params should be Public
     for vc in &template.value_cells {
         if vc.kind == reify_compiler::ValueCellKind::Param {
-            assert_eq!(vc.visibility, reify_compiler::Visibility::Public,
-                "param {} should be Public", vc.id.member);
+            assert_eq!(
+                vc.visibility,
+                reify_compiler::Visibility::Public,
+                "param {} should be Public",
+                vc.id.member
+            );
         }
     }
 
     // The volume let should be Private
-    let volume = template.value_cells.iter()
+    let volume = template
+        .value_cells
+        .iter()
         .find(|vc| vc.id.member == "volume")
         .expect("should have 'volume' value cell");
     assert_eq!(volume.kind, reify_compiler::ValueCellKind::Let);

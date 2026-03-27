@@ -31,7 +31,11 @@ structure def Steel : Elastic {
 "#;
     let prelude = stdlib_loader::load_stdlib();
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile_with_prelude(&parsed, prelude);
     let errors: Vec<_> = compiled
@@ -83,7 +87,11 @@ structure def Steel : Material + Elastic {
 "#;
     let prelude = stdlib_loader::load_stdlib();
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     // (1) No error diagnostics from compilation
     let compiled = reify_compiler::compile_with_prelude(&parsed, prelude);
@@ -133,7 +141,13 @@ structure def Steel : Material + Elastic {
 
     // Check that all 5 params have values in the result
     let entity = "Steel";
-    let expected_params = ["density", "name", "youngs_modulus", "poissons_ratio", "shear_modulus"];
+    let expected_params = [
+        "density",
+        "name",
+        "youngs_modulus",
+        "poissons_ratio",
+        "shear_modulus",
+    ];
     for param in &expected_params {
         let cell_id = reify_types::ValueCellId::new(entity, *param);
         assert!(
@@ -141,7 +155,11 @@ structure def Steel : Material + Elastic {
             "eval should produce a value for param '{}', but it was missing. \
              Available values: {:?}",
             param,
-            result.values.iter().map(|(k, _)| k.to_string()).collect::<Vec<_>>()
+            result
+                .values
+                .iter()
+                .map(|(k, _)| k.to_string())
+                .collect::<Vec<_>>()
         );
     }
 }

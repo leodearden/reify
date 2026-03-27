@@ -29,24 +29,36 @@ fn prepare_concurrent_edit_returns_correct_setup() {
     let width_id = ValueCellId::new(e, "width");
 
     // Prepare concurrent edit: change width from 80mm to 100mm
-    let setup = engine.prepare_concurrent_edit(width_id.clone(), Value::length(0.1)).unwrap();
+    let setup = engine
+        .prepare_concurrent_edit(width_id.clone(), Value::length(0.1))
+        .unwrap();
 
     // (1) eval_set should match sequential dirty∩demand set for width change
     // width change → dirty = {volume, C1, R0}; all are demanded → eval_set = {volume, C1, R0}
     assert_eq!(
-        setup.eval_set.len(), 3,
-        "eval_set should have 3 nodes (volume + C1 + R0), got: {:?}", setup.eval_set
+        setup.eval_set.len(),
+        3,
+        "eval_set should have 3 nodes (volume + C1 + R0), got: {:?}",
+        setup.eval_set
     );
     assert!(
-        setup.eval_set.contains(&NodeId::Value(ValueCellId::new(e, "volume"))),
+        setup
+            .eval_set
+            .contains(&NodeId::Value(ValueCellId::new(e, "volume"))),
         "eval_set should contain volume"
     );
     assert!(
-        setup.eval_set.contains(&NodeId::Constraint(ConstraintNodeId::new(e, 1))),
+        setup
+            .eval_set
+            .contains(&NodeId::Constraint(ConstraintNodeId::new(e, 1))),
         "eval_set should contain C1"
     );
     assert!(
-        setup.eval_set.contains(&NodeId::Realization(reify_types::RealizationNodeId::new(e, 0))),
+        setup
+            .eval_set
+            .contains(&NodeId::Realization(reify_types::RealizationNodeId::new(
+                e, 0
+            ))),
         "eval_set should contain R0"
     );
 
@@ -71,14 +83,16 @@ fn prepare_concurrent_edit_returns_correct_setup() {
 
     // (4) graph should have correct number of value cells
     assert_eq!(
-        setup.graph.value_cells.len(), 6,
+        setup.graph.value_cells.len(),
+        6,
         "graph should have 6 value cells"
     );
 
     // (5) version should be bumped from initial (initial eval uses version 0)
     assert!(
         setup.version.0 > 0,
-        "version should be bumped from initial, got: {:?}", setup.version
+        "version should be bumped from initial, got: {:?}",
+        setup.version
     );
 
     // Verify changed_cells contains the edited parameter
@@ -104,7 +118,9 @@ fn apply_concurrent_edit_updates_engine_state() {
     let volume_node = NodeId::Value(volume_id.clone());
 
     // Prepare concurrent edit
-    let setup = engine.prepare_concurrent_edit(width_id.clone(), Value::length(0.1)).unwrap();
+    let setup = engine
+        .prepare_concurrent_edit(width_id.clone(), Value::length(0.1))
+        .unwrap();
 
     // Simulate what ConcurrentEvalAdapter would produce:
     // Volume = width * height * thickness = 0.1 * 0.1 * 0.005 = 5e-5
@@ -185,7 +201,11 @@ fn apply_concurrent_edit_updates_engine_state() {
         .iter()
         .filter(|e| e.version == setup.version)
         .collect();
-    assert_eq!(new_events.len(), 2, "should have Started+Completed for volume");
+    assert_eq!(
+        new_events.len(),
+        2,
+        "should have Started+Completed for volume"
+    );
 }
 
 /// step-19: Engine::rollback_concurrent_edit() restores all eval_set nodes
@@ -210,13 +230,16 @@ fn rollback_concurrent_edit_restores_pending_to_final() {
     let pre_volume_hash = engine.cache_store().get(&volume_node).unwrap().result_hash;
 
     // Prepare concurrent edit — marks eval_set nodes as Pending
-    let setup = engine.prepare_concurrent_edit(width_id.clone(), Value::length(0.1)).unwrap();
+    let setup = engine
+        .prepare_concurrent_edit(width_id.clone(), Value::length(0.1))
+        .unwrap();
 
     // Verify nodes are in Pending state after prepare
     let volume_entry = engine.cache_store().get(&volume_node).unwrap();
     assert!(
         matches!(volume_entry.freshness, Freshness::Pending { .. }),
-        "volume should be Pending after prepare, got: {:?}", volume_entry.freshness
+        "volume should be Pending after prepare, got: {:?}",
+        volume_entry.freshness
     );
 
     // Rollback the concurrent edit
@@ -225,14 +248,16 @@ fn rollback_concurrent_edit_restores_pending_to_final() {
     // (1) All nodes in eval_set should have freshness=Final (not Pending)
     let volume_entry = engine.cache_store().get(&volume_node).unwrap();
     assert_eq!(
-        volume_entry.freshness, Freshness::Final,
+        volume_entry.freshness,
+        Freshness::Final,
         "volume should be Final after rollback"
     );
     // C1 may not have a cache entry (constraint nodes might not be cached),
     // but if it does, it should be Final
     if let Some(c1_entry) = engine.cache_store().get(&c1_node) {
         assert_eq!(
-            c1_entry.freshness, Freshness::Final,
+            c1_entry.freshness,
+            Freshness::Final,
             "C1 should be Final after rollback"
         );
     }
@@ -249,7 +274,9 @@ fn rollback_concurrent_edit_restores_pending_to_final() {
     // prepare/edit uses the same IDs (no gaps).
     // We can verify this indirectly: calling edit_param should produce the
     // same version/snapshot IDs that the failed prepare would have used.
-    let seq_result = engine.edit_param(width_id.clone(), Value::length(0.1)).unwrap();
+    let seq_result = engine
+        .edit_param(width_id.clone(), Value::length(0.1))
+        .unwrap();
 
     // The snapshot after edit_param should have the same IDs as the setup had
     let post_snapshot = engine.snapshot().unwrap();
@@ -264,5 +291,8 @@ fn rollback_concurrent_edit_restores_pending_to_final() {
 
     // (4) Subsequent edit_param produces correct values (engine not corrupted)
     let volume_val = seq_result.values.get(&ValueCellId::new(e, "volume"));
-    assert!(volume_val.is_some(), "volume should have a value after sequential edit");
+    assert!(
+        volume_val.is_some(),
+        "volume should have a value after sequential edit"
+    );
 }

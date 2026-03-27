@@ -23,7 +23,11 @@ fn parse_simple_unit() {
         Declaration::Unit(u) => {
             assert_eq!(u.name, "meter");
             assert_eq!(u.dimension_type.name, "Length");
-            assert!(u.conversion.is_none(), "expected no conversion, got {:?}", u.conversion);
+            assert!(
+                u.conversion.is_none(),
+                "expected no conversion, got {:?}",
+                u.conversion
+            );
             assert!(u.offset.is_none(), "expected no offset, got {:?}", u.offset);
         }
         other => panic!("expected Declaration::Unit, got {:?}", other),
@@ -173,7 +177,11 @@ fn parse_unit_quantity_literal_conversion() {
     match &u.conversion {
         Some(expr) => match &expr.kind {
             ExprKind::QuantityLiteral { value, unit } => {
-                assert!((value - 0.0254).abs() < 1e-9, "expected value=0.0254, got {}", value);
+                assert!(
+                    (value - 0.0254).abs() < 1e-9,
+                    "expected value=0.0254, got {}",
+                    value
+                );
                 assert_eq!(unit, "mm");
             }
             other => panic!("expected QuantityLiteral, got {:?}", other),
@@ -197,7 +205,11 @@ fn parse_unit_offset_only() {
     };
 
     assert_eq!(u.name, "kelvin");
-    assert!(u.conversion.is_none(), "expected no conversion, got {:?}", u.conversion);
+    assert!(
+        u.conversion.is_none(),
+        "expected no conversion, got {:?}",
+        u.conversion
+    );
 
     match &u.offset {
         Some(expr) => match &expr.kind {
@@ -239,10 +251,13 @@ fn parse_multiple_unit_declarations() {
     assert!(errors.is_empty(), "parse errors: {:?}", errors);
     assert_eq!(decls.len(), 3, "expected 3 declarations");
 
-    let names: Vec<&str> = decls.iter().map(|d| match d {
-        Declaration::Unit(u) => u.name.as_str(),
-        other => panic!("expected Declaration::Unit, got {:?}", other),
-    }).collect();
+    let names: Vec<&str> = decls
+        .iter()
+        .map(|d| match d {
+            Declaration::Unit(u) => u.name.as_str(),
+            other => panic!("expected Declaration::Unit, got {:?}", other),
+        })
+        .collect();
 
     assert_eq!(names, vec!["meter", "mm", "inch"]);
 }

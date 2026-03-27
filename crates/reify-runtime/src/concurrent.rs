@@ -290,8 +290,8 @@ mod tests {
         use reify_eval::deps::DependencyTrace;
         use reify_types::ValueCellId;
         use std::collections::HashMap;
-        use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
 
         let e = "C";
         let a = NodeId::Value(ValueCellId::new(e, "a"));
@@ -336,7 +336,13 @@ mod tests {
         let scheduler = ConcurrentScheduler;
         let eval_set = vec![a.clone(), b.clone()];
         let result = scheduler
-            .execute(eval_set, evaluator.clone(), &traces, &cancel, &changed_cells)
+            .execute(
+                eval_set,
+                evaluator.clone(),
+                &traces,
+                &cancel,
+                &changed_cells,
+            )
             .await
             .unwrap();
 
@@ -363,12 +369,7 @@ mod tests {
         let volume = NodeId::Value(ValueCellId::new(e, "volume"));
         let c1 = NodeId::Constraint(ConstraintNodeId::new(e, 1));
 
-        let eval_set = vec![
-            width.clone(),
-            thickness.clone(),
-            volume.clone(),
-            c1.clone(),
-        ];
+        let eval_set = vec![width.clone(), thickness.clone(), volume.clone(), c1.clone()];
 
         let mut traces = HashMap::new();
         traces.insert(width.clone(), DependencyTrace::default());
@@ -467,11 +468,15 @@ mod tests {
         let mut traces = HashMap::new();
         traces.insert(
             dirty_node.clone(),
-            DependencyTrace { reads: vec![changed_param.clone()] },
+            DependencyTrace {
+                reads: vec![changed_param.clone()],
+            },
         );
         traces.insert(
             clean_node.clone(),
-            DependencyTrace { reads: vec![other_param] },
+            DependencyTrace {
+                reads: vec![other_param],
+            },
         );
 
         let mut changed_cells = HashSet::new();
@@ -530,10 +535,7 @@ mod tests {
         traces.insert(
             c.clone(),
             DependencyTrace {
-                reads: vec![
-                    ValueCellId::new(e, "a"),
-                    ValueCellId::new(e, "b"),
-                ],
+                reads: vec![ValueCellId::new(e, "a"), ValueCellId::new(e, "b")],
             },
         );
 
@@ -588,7 +590,10 @@ mod tests {
         // Empty reads → dirty by default
         let changed_cells = HashSet::new();
 
-        let result = scheduler.execute(eval_set, evaluator, &traces, &cancel, &changed_cells).await.unwrap();
+        let result = scheduler
+            .execute(eval_set, evaluator, &traces, &cancel, &changed_cells)
+            .await
+            .unwrap();
         assert_eq!(result.changed.len(), 1);
         assert!(result.changed.contains(&node));
     }
@@ -690,7 +695,10 @@ mod tests {
         let eval_set = vec![];
         let changed_cells = HashSet::new();
 
-        let result = scheduler.execute(eval_set, evaluator, &traces, &cancel, &changed_cells).await.unwrap();
+        let result = scheduler
+            .execute(eval_set, evaluator, &traces, &cancel, &changed_cells)
+            .await
+            .unwrap();
         assert!(result.changed.is_empty());
         assert!(result.skipped.is_empty());
     }
@@ -720,9 +728,24 @@ mod tests {
 
         // Traces: p1/p2/p3 read a (level 0), d reads p1+p2+p3 (level 1)
         let mut traces = HashMap::new();
-        traces.insert(p1.clone(), DependencyTrace { reads: vec![a.clone()] });
-        traces.insert(p2.clone(), DependencyTrace { reads: vec![a.clone()] });
-        traces.insert(p3.clone(), DependencyTrace { reads: vec![a.clone()] });
+        traces.insert(
+            p1.clone(),
+            DependencyTrace {
+                reads: vec![a.clone()],
+            },
+        );
+        traces.insert(
+            p2.clone(),
+            DependencyTrace {
+                reads: vec![a.clone()],
+            },
+        );
+        traces.insert(
+            p3.clone(),
+            DependencyTrace {
+                reads: vec![a.clone()],
+            },
+        );
         traces.insert(
             d.clone(),
             DependencyTrace {
@@ -743,7 +766,10 @@ mod tests {
 
         impl AsyncNodeEvaluator for MixedOutcomeEvaluator {
             async fn evaluate(&self, node: NodeId) -> EvalOutcome {
-                self.outcomes.get(&node).copied().unwrap_or(EvalOutcome::Unchanged)
+                self.outcomes
+                    .get(&node)
+                    .copied()
+                    .unwrap_or(EvalOutcome::Unchanged)
             }
         }
 
@@ -800,8 +826,18 @@ mod tests {
 
         // Traces: p1/p2 read a (level 0), d reads p1+p2 (level 1)
         let mut traces = HashMap::new();
-        traces.insert(p1.clone(), DependencyTrace { reads: vec![a.clone()] });
-        traces.insert(p2.clone(), DependencyTrace { reads: vec![a.clone()] });
+        traces.insert(
+            p1.clone(),
+            DependencyTrace {
+                reads: vec![a.clone()],
+            },
+        );
+        traces.insert(
+            p2.clone(),
+            DependencyTrace {
+                reads: vec![a.clone()],
+            },
+        );
         traces.insert(
             d.clone(),
             DependencyTrace {
@@ -820,7 +856,10 @@ mod tests {
 
         impl AsyncNodeEvaluator for UnchangedEvaluator {
             async fn evaluate(&self, node: NodeId) -> EvalOutcome {
-                self.outcomes.get(&node).copied().unwrap_or(EvalOutcome::Unchanged)
+                self.outcomes
+                    .get(&node)
+                    .copied()
+                    .unwrap_or(EvalOutcome::Unchanged)
             }
         }
 
@@ -874,9 +913,24 @@ mod tests {
 
         // b reads a (level 0), c reads b (level 1), d reads c (level 2)
         let mut traces = HashMap::new();
-        traces.insert(b.clone(), DependencyTrace { reads: vec![a.clone()] });
-        traces.insert(c.clone(), DependencyTrace { reads: vec![b_vcid.clone()] });
-        traces.insert(d.clone(), DependencyTrace { reads: vec![c_vcid.clone()] });
+        traces.insert(
+            b.clone(),
+            DependencyTrace {
+                reads: vec![a.clone()],
+            },
+        );
+        traces.insert(
+            c.clone(),
+            DependencyTrace {
+                reads: vec![b_vcid.clone()],
+            },
+        );
+        traces.insert(
+            d.clone(),
+            DependencyTrace {
+                reads: vec![c_vcid.clone()],
+            },
+        );
 
         // All return Changed
         struct AllChangedAsync;
@@ -903,7 +957,11 @@ mod tests {
         assert!(result.changed.contains(&b), "b should be changed");
         assert!(result.changed.contains(&c), "c should be changed");
         assert!(result.changed.contains(&d), "d should be changed");
-        assert!(result.skipped.is_empty(), "nothing should be skipped: {:?}", result.skipped);
+        assert!(
+            result.skipped.is_empty(),
+            "nothing should be skipped: {:?}",
+            result.skipped
+        );
     }
 
     /// Verify that reify_eval::dirty::compute_levels produces correct levels

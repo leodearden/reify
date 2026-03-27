@@ -79,7 +79,7 @@ fn bracket_source_to_step_e2e() {
     run_bracket_e2e(reify_test_support::bracket_source());
 
     // Test with the actual file
-    let file_source =
-        std::fs::read_to_string("../../examples/bracket.ri").expect("examples/bracket.ri should exist");
+    let file_source = std::fs::read_to_string("../../examples/bracket.ri")
+        .expect("examples/bracket.ri should exist");
     run_bracket_e2e(&file_source);
 }

@@ -8,14 +8,22 @@ use reify_types::*;
 /// Helper: parse source and compile, returning the CompiledModule.
 fn compile_module(source: &str) -> CompiledModule {
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
     reify_compiler::compile(&parsed)
 }
 
 /// Helper: parse source and compile, returning first template + diagnostics.
 fn compile_first_template(source: &str) -> (TopologyTemplate, Vec<Diagnostic>) {
     let module = compile_module(source);
-    let template = module.templates.into_iter().next().expect("expected 1 template");
+    let template = module
+        .templates
+        .into_iter()
+        .next()
+        .expect("expected 1 template");
     (template, module.diagnostics)
 }
 
@@ -83,7 +91,11 @@ structure def S {
         .iter()
         .filter(|d| d.message.contains("unknown port type"))
         .collect();
-    assert!(type_warnings.is_empty(), "unexpected type warnings: {:?}", type_warnings);
+    assert!(
+        type_warnings.is_empty(),
+        "unexpected type warnings: {:?}",
+        type_warnings
+    );
 }
 
 #[test]
@@ -103,7 +115,12 @@ structure def S {
         .iter()
         .filter(|d| d.message.contains("unknown port type"))
         .collect();
-    assert_eq!(type_warnings.len(), 1, "expected 1 unknown port type warning, got: {:?}", diagnostics);
+    assert_eq!(
+        type_warnings.len(),
+        1,
+        "expected 1 unknown port type warning, got: {:?}",
+        diagnostics
+    );
 }
 
 // ── Step 15: port member access via dot notation ────────────────────

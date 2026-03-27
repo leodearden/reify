@@ -8,12 +8,12 @@ use reify_eval::deps::{DependencyTrace, ReverseDependencyIndex};
 use reify_eval::graph::EvaluationGraph;
 use reify_eval::{ConcurrentEditSetup, Engine};
 use reify_runtime::concurrent::{AsyncNodeEvaluator, CancellationToken, ConcurrentScheduler};
-use reify_runtime::concurrent_eval::{edit_param_concurrent, ConcurrentEvalAdapter};
-use reify_test_support::mocks::MockConstraintChecker;
+use reify_runtime::concurrent_eval::{ConcurrentEvalAdapter, edit_param_concurrent};
 use reify_test_support::TopologyTemplateBuilder;
+use reify_test_support::mocks::MockConstraintChecker;
 use reify_types::{
-    BinOp, DeterminacyState, PersistentMap, SnapshotId, Type, Value,
-    ValueCellId, ValueMap, VersionId,
+    BinOp, DeterminacyState, PersistentMap, SnapshotId, Type, Value, ValueCellId, ValueMap,
+    VersionId,
 };
 
 /// Helper: build a simple topology (param a, let b = a * 2) and return
@@ -27,7 +27,15 @@ fn simple_setup() -> ConcurrentEditSetup {
     let b_expr = reify_types::CompiledExpr::binop(BinOp::Mul, a_ref, two, Type::Real);
 
     let template = TopologyTemplateBuilder::new(e)
-        .param(e, "a", Type::Real, Some(reify_types::CompiledExpr::literal(Value::Real(5.0), Type::Real)))
+        .param(
+            e,
+            "a",
+            Type::Real,
+            Some(reify_types::CompiledExpr::literal(
+                Value::Real(5.0),
+                Type::Real,
+            )),
+        )
         .let_binding(e, "b", Type::Real, b_expr)
         .build();
 
@@ -66,10 +74,8 @@ fn simple_setup() -> ConcurrentEditSetup {
     let reverse_index = ReverseDependencyIndex::build_from_graph(&graph);
 
     // Previous hashes: b had hash for old value (Real(10.0))
-    let old_hash = CachedResult::Value(
-        Value::Real(10.0),
-        DeterminacyState::Determined,
-    ).content_hash();
+    let old_hash =
+        CachedResult::Value(Value::Real(10.0), DeterminacyState::Determined).content_hash();
     let mut previous_hashes = HashMap::new();
     previous_hashes.insert(NodeId::Value(ValueCellId::new(e, "b")), old_hash);
 
@@ -141,7 +147,15 @@ async fn edit_param_concurrent_linear_chain() {
     let b_expr = reify_types::CompiledExpr::binop(BinOp::Mul, a_ref, two, Type::Real);
 
     let template = TopologyTemplateBuilder::new(e)
-        .param(e, "a", Type::Real, Some(reify_types::CompiledExpr::literal(Value::Real(5.0), Type::Real)))
+        .param(
+            e,
+            "a",
+            Type::Real,
+            Some(reify_types::CompiledExpr::literal(
+                Value::Real(5.0),
+                Type::Real,
+            )),
+        )
         .let_binding(e, "b", Type::Real, b_expr)
         .build();
 
@@ -157,12 +171,10 @@ async fn edit_param_concurrent_linear_chain() {
     let cancel = CancellationToken::new();
 
     // Concurrent edit: change a from 5 to 50
-    let (_setup, result) = edit_param_concurrent(
-        &mut engine,
-        a_id.clone(),
-        Value::Real(50.0),
-        &cancel,
-    ).await.unwrap();
+    let (_setup, result) =
+        edit_param_concurrent(&mut engine, a_id.clone(), Value::Real(50.0), &cancel)
+            .await
+            .unwrap();
 
     // Verify values: a=50, b=100 (50*2)
     assert_eq!(result.values.get(&a_id), Some(&Value::Real(50.0)));
@@ -183,23 +195,34 @@ async fn concurrent_three_independent_lets() {
     // param a, let x = a+1, let y = a+2, let z = a+3
     let a_ref = || reify_types::CompiledExpr::value_ref(ValueCellId::new(e, "a"), Type::Real);
     let x_expr = reify_types::CompiledExpr::binop(
-        BinOp::Add, a_ref(),
+        BinOp::Add,
+        a_ref(),
         reify_types::CompiledExpr::literal(Value::Real(1.0), Type::Real),
         Type::Real,
     );
     let y_expr = reify_types::CompiledExpr::binop(
-        BinOp::Add, a_ref(),
+        BinOp::Add,
+        a_ref(),
         reify_types::CompiledExpr::literal(Value::Real(2.0), Type::Real),
         Type::Real,
     );
     let z_expr = reify_types::CompiledExpr::binop(
-        BinOp::Add, a_ref(),
+        BinOp::Add,
+        a_ref(),
         reify_types::CompiledExpr::literal(Value::Real(3.0), Type::Real),
         Type::Real,
     );
 
     let template = TopologyTemplateBuilder::new(e)
-        .param(e, "a", Type::Real, Some(reify_types::CompiledExpr::literal(Value::Real(5.0), Type::Real)))
+        .param(
+            e,
+            "a",
+            Type::Real,
+            Some(reify_types::CompiledExpr::literal(
+                Value::Real(5.0),
+                Type::Real,
+            )),
+        )
         .let_binding(e, "x", Type::Real, x_expr)
         .let_binding(e, "y", Type::Real, y_expr)
         .let_binding(e, "z", Type::Real, z_expr)
@@ -214,21 +237,38 @@ async fn concurrent_three_independent_lets() {
     let cancel = CancellationToken::new();
 
     // Change a from 5 to 10
-    let (_setup, result) = edit_param_concurrent(
-        &mut engine,
-        a_id.clone(),
-        Value::Real(10.0),
-        &cancel,
-    ).await.unwrap();
+    let (_setup, result) =
+        edit_param_concurrent(&mut engine, a_id.clone(), Value::Real(10.0), &cancel)
+            .await
+            .unwrap();
 
     // All three should be correct: x=11, y=12, z=13
-    assert_eq!(result.values.get(&ValueCellId::new(e, "x")), Some(&Value::Real(11.0)));
-    assert_eq!(result.values.get(&ValueCellId::new(e, "y")), Some(&Value::Real(12.0)));
-    assert_eq!(result.values.get(&ValueCellId::new(e, "z")), Some(&Value::Real(13.0)));
+    assert_eq!(
+        result.values.get(&ValueCellId::new(e, "x")),
+        Some(&Value::Real(11.0))
+    );
+    assert_eq!(
+        result.values.get(&ValueCellId::new(e, "y")),
+        Some(&Value::Real(12.0))
+    );
+    assert_eq!(
+        result.values.get(&ValueCellId::new(e, "z")),
+        Some(&Value::Real(13.0))
+    );
 
     // All three should appear in actual_eval_set and node_results
-    assert_eq!(result.actual_eval_set.len(), 3, "actual_eval_set: {:?}", result.actual_eval_set);
-    assert_eq!(result.node_results.len(), 3, "node_results: {:?}", result.node_results);
+    assert_eq!(
+        result.actual_eval_set.len(),
+        3,
+        "actual_eval_set: {:?}",
+        result.actual_eval_set
+    );
+    assert_eq!(
+        result.node_results.len(),
+        3,
+        "node_results: {:?}",
+        result.node_results
+    );
 }
 
 /// step-9: multi-level diamond dependency.
@@ -242,19 +282,29 @@ async fn concurrent_diamond_dependency() {
     let c_ref = || reify_types::CompiledExpr::value_ref(ValueCellId::new(e, "c"), Type::Real);
 
     let b_expr = reify_types::CompiledExpr::binop(
-        BinOp::Mul, a_ref(),
+        BinOp::Mul,
+        a_ref(),
         reify_types::CompiledExpr::literal(Value::Real(2.0), Type::Real),
         Type::Real,
     );
     let c_expr = reify_types::CompiledExpr::binop(
-        BinOp::Add, a_ref(),
+        BinOp::Add,
+        a_ref(),
         reify_types::CompiledExpr::literal(Value::Real(1.0), Type::Real),
         Type::Real,
     );
     let d_expr = reify_types::CompiledExpr::binop(BinOp::Add, b_ref(), c_ref(), Type::Real);
 
     let template = TopologyTemplateBuilder::new(e)
-        .param(e, "a", Type::Real, Some(reify_types::CompiledExpr::literal(Value::Real(5.0), Type::Real)))
+        .param(
+            e,
+            "a",
+            Type::Real,
+            Some(reify_types::CompiledExpr::literal(
+                Value::Real(5.0),
+                Type::Real,
+            )),
+        )
         .let_binding(e, "b", Type::Real, b_expr)
         .let_binding(e, "c", Type::Real, c_expr)
         .let_binding(e, "d", Type::Real, d_expr)
@@ -269,16 +319,20 @@ async fn concurrent_diamond_dependency() {
     let cancel = CancellationToken::new();
 
     // Change a from 5 to 10
-    let (_setup, result) = edit_param_concurrent(
-        &mut engine,
-        a_id.clone(),
-        Value::Real(10.0),
-        &cancel,
-    ).await.unwrap();
+    let (_setup, result) =
+        edit_param_concurrent(&mut engine, a_id.clone(), Value::Real(10.0), &cancel)
+            .await
+            .unwrap();
 
     // b = 10 * 2 = 20, c = 10 + 1 = 11, d = 20 + 11 = 31
-    assert_eq!(result.values.get(&ValueCellId::new(e, "b")), Some(&Value::Real(20.0)));
-    assert_eq!(result.values.get(&ValueCellId::new(e, "c")), Some(&Value::Real(11.0)));
+    assert_eq!(
+        result.values.get(&ValueCellId::new(e, "b")),
+        Some(&Value::Real(20.0))
+    );
+    assert_eq!(
+        result.values.get(&ValueCellId::new(e, "c")),
+        Some(&Value::Real(11.0))
+    );
     assert_eq!(
         result.values.get(&ValueCellId::new(e, "d")),
         Some(&Value::Real(31.0)),
@@ -297,13 +351,22 @@ async fn concurrent_early_cutoff() {
 
     let x_expr = reify_types::CompiledExpr::binop(BinOp::Sub, a_ref(), a_ref(), Type::Real);
     let y_expr = reify_types::CompiledExpr::binop(
-        BinOp::Add, x_ref(),
+        BinOp::Add,
+        x_ref(),
         reify_types::CompiledExpr::literal(Value::Real(1.0), Type::Real),
         Type::Real,
     );
 
     let template = TopologyTemplateBuilder::new(e)
-        .param(e, "a", Type::Real, Some(reify_types::CompiledExpr::literal(Value::Real(5.0), Type::Real)))
+        .param(
+            e,
+            "a",
+            Type::Real,
+            Some(reify_types::CompiledExpr::literal(
+                Value::Real(5.0),
+                Type::Real,
+            )),
+        )
         .let_binding(e, "x", Type::Real, x_expr)
         .let_binding(e, "y", Type::Real, y_expr)
         .build();
@@ -317,12 +380,10 @@ async fn concurrent_early_cutoff() {
     let cancel = CancellationToken::new();
 
     // Change a from 5 to 7 — x = a - a = 0 (same as before) → Unchanged
-    let (_setup, result) = edit_param_concurrent(
-        &mut engine,
-        a_id.clone(),
-        Value::Real(7.0),
-        &cancel,
-    ).await.unwrap();
+    let (_setup, result) =
+        edit_param_concurrent(&mut engine, a_id.clone(), Value::Real(7.0), &cancel)
+            .await
+            .unwrap();
 
     // (1) x should appear in actual_eval_set with outcome Unchanged
     let x_node = NodeId::Value(ValueCellId::new(e, "x"));
@@ -330,15 +391,25 @@ async fn concurrent_early_cutoff() {
 
     assert!(
         result.actual_eval_set.contains(&x_node),
-        "x should be in actual_eval_set: {:?}", result.actual_eval_set
+        "x should be in actual_eval_set: {:?}",
+        result.actual_eval_set
     );
-    let x_result = result.node_results.iter().find(|r| r.node == x_node).unwrap();
-    assert_eq!(x_result.outcome, EvalOutcome::Unchanged, "x should be Unchanged");
+    let x_result = result
+        .node_results
+        .iter()
+        .find(|r| r.node == x_node)
+        .unwrap();
+    assert_eq!(
+        x_result.outcome,
+        EvalOutcome::Unchanged,
+        "x should be Unchanged"
+    );
 
     // (2) y should be in skipped set
     assert!(
         result.skipped.contains(&y_node),
-        "y should be in skipped set: {:?}", result.skipped
+        "y should be in skipped set: {:?}",
+        result.skipped
     );
 
     // (3) y should NOT appear in node_results
@@ -365,18 +436,28 @@ async fn concurrent_cancellation_between_levels() {
     let b_ref = || reify_types::CompiledExpr::value_ref(ValueCellId::new(e, "b"), Type::Real);
 
     let b_expr = reify_types::CompiledExpr::binop(
-        BinOp::Mul, a_ref(),
+        BinOp::Mul,
+        a_ref(),
         reify_types::CompiledExpr::literal(Value::Real(2.0), Type::Real),
         Type::Real,
     );
     let c_expr = reify_types::CompiledExpr::binop(
-        BinOp::Add, b_ref(),
+        BinOp::Add,
+        b_ref(),
         reify_types::CompiledExpr::literal(Value::Real(1.0), Type::Real),
         Type::Real,
     );
 
     let template = TopologyTemplateBuilder::new(e)
-        .param(e, "a", Type::Real, Some(reify_types::CompiledExpr::literal(Value::Real(5.0), Type::Real)))
+        .param(
+            e,
+            "a",
+            Type::Real,
+            Some(reify_types::CompiledExpr::literal(
+                Value::Real(5.0),
+                Type::Real,
+            )),
+        )
         .let_binding(e, "b", Type::Real, b_expr)
         .let_binding(e, "c", Type::Real, c_expr)
         .build();
@@ -391,7 +472,9 @@ async fn concurrent_cancellation_between_levels() {
 
     // Use the lower-level API to control cancellation timing
     let a_id = ValueCellId::new(e, "a");
-    let setup = engine.prepare_concurrent_edit(a_id, Value::Real(10.0)).unwrap();
+    let setup = engine
+        .prepare_concurrent_edit(a_id, Value::Real(10.0))
+        .unwrap();
     let eval_set = setup.eval_set.clone();
     let traces = setup.traces.clone();
 
@@ -418,7 +501,13 @@ async fn concurrent_cancellation_between_levels() {
 
     let scheduler = ConcurrentScheduler;
     let _result = scheduler
-        .execute(eval_set.clone(), cancelling.clone(), &traces, &cancel, &setup.changed_cells)
+        .execute(
+            eval_set.clone(),
+            cancelling.clone(),
+            &traces,
+            &cancel,
+            &setup.changed_cells,
+        )
         .await
         .unwrap();
 
@@ -432,7 +521,10 @@ async fn concurrent_cancellation_between_levels() {
 
     // (2) c should NOT appear in results (level 1 was cancelled)
     let c_evaluated = results.iter().any(|r| r.node == c_node);
-    assert!(!c_evaluated, "c should NOT have been evaluated (cancelled between levels)");
+    assert!(
+        !c_evaluated,
+        "c should NOT have been evaluated (cancelled between levels)"
+    );
 
     // (3) Function returned Ok (cooperative cancellation)
     // (verified by the .unwrap() above)
@@ -459,7 +551,9 @@ async fn bracket_concurrent_matches_sequential() {
     let width_id = ValueCellId::new(e, "width");
 
     // Sequential edit
-    let seq_result = engine_seq.edit_param(width_id.clone(), Value::length(0.1)).unwrap();
+    let seq_result = engine_seq
+        .edit_param(width_id.clone(), Value::length(0.1))
+        .unwrap();
 
     // Concurrent edit
     let cancel = CancellationToken::new();
@@ -468,15 +562,14 @@ async fn bracket_concurrent_matches_sequential() {
         width_id.clone(),
         Value::length(0.1),
         &cancel,
-    ).await.unwrap();
+    )
+    .await
+    .unwrap();
 
     // (1) All values should match exactly
     for (id, seq_val) in seq_result.values.iter() {
         let con_val = con_result.values.get(id);
-        assert_eq!(
-            Some(seq_val), con_val,
-            "values should match for {:?}", id
-        );
+        assert_eq!(Some(seq_val), con_val, "values should match for {:?}", id);
     }
 
     // (2) Both should report the same evaluated nodes
@@ -487,11 +580,13 @@ async fn bracket_concurrent_matches_sequential() {
     // Both should have volume in their eval sets
     assert!(
         seq_eval_set.contains(&volume_node),
-        "sequential eval set should contain volume: {:?}", seq_eval_set
+        "sequential eval set should contain volume: {:?}",
+        seq_eval_set
     );
     assert!(
         con_result.actual_eval_set.contains(&volume_node),
-        "concurrent eval set should contain volume: {:?}", con_result.actual_eval_set
+        "concurrent eval set should contain volume: {:?}",
+        con_result.actual_eval_set
     );
 }
 
@@ -507,7 +602,15 @@ async fn rollback_on_task_panicked_restores_engine_state() {
     let b_expr = reify_types::CompiledExpr::binop(BinOp::Mul, a_ref, two, Type::Real);
 
     let template = TopologyTemplateBuilder::new(e)
-        .param(e, "a", Type::Real, Some(reify_types::CompiledExpr::literal(Value::Real(5.0), Type::Real)))
+        .param(
+            e,
+            "a",
+            Type::Real,
+            Some(reify_types::CompiledExpr::literal(
+                Value::Real(5.0),
+                Type::Real,
+            )),
+        )
         .let_binding(e, "b", Type::Real, b_expr)
         .build();
 
@@ -520,7 +623,9 @@ async fn rollback_on_task_panicked_restores_engine_state() {
     let b_node = NodeId::Value(ValueCellId::new(e, "b"));
 
     // Prepare concurrent edit — marks b as Pending
-    let setup = engine.prepare_concurrent_edit(a_id.clone(), Value::Real(50.0)).unwrap();
+    let setup = engine
+        .prepare_concurrent_edit(a_id.clone(), Value::Real(50.0))
+        .unwrap();
 
     // Verify b is Pending
     let entry = engine.cache_store().get(&b_node).unwrap();
@@ -543,7 +648,13 @@ async fn rollback_on_task_panicked_restores_engine_state() {
 
     // Execute — should return Err(TaskPanicked)
     let result = scheduler
-        .execute(setup.eval_set.clone(), panicking, &setup.traces, &cancel, &setup.changed_cells)
+        .execute(
+            setup.eval_set.clone(),
+            panicking,
+            &setup.traces,
+            &cancel,
+            &setup.changed_cells,
+        )
         .await;
 
     assert!(result.is_err(), "scheduler should return error on panic");
@@ -558,8 +669,10 @@ async fn rollback_on_task_panicked_restores_engine_state() {
     // (1) All nodes in eval_set should have freshness=Final (not stuck in Pending)
     let entry = engine.cache_store().get(&b_node).unwrap();
     assert_eq!(
-        entry.freshness, Freshness::Final,
-        "b should be Final after rollback, got: {:?}", entry.freshness
+        entry.freshness,
+        Freshness::Final,
+        "b should be Final after rollback, got: {:?}",
+        entry.freshness
     );
 
     // (2) Sequential edit_param should succeed with correct values
@@ -584,18 +697,28 @@ async fn repeated_error_then_success_cycle() {
     let b_ref = || reify_types::CompiledExpr::value_ref(ValueCellId::new(e, "b"), Type::Real);
 
     let b_expr = reify_types::CompiledExpr::binop(
-        BinOp::Mul, a_ref(),
+        BinOp::Mul,
+        a_ref(),
         reify_types::CompiledExpr::literal(Value::Real(2.0), Type::Real),
         Type::Real,
     );
     let c_expr = reify_types::CompiledExpr::binop(
-        BinOp::Add, b_ref(),
+        BinOp::Add,
+        b_ref(),
         reify_types::CompiledExpr::literal(Value::Real(1.0), Type::Real),
         Type::Real,
     );
 
     let template = TopologyTemplateBuilder::new(e)
-        .param(e, "a", Type::Real, Some(reify_types::CompiledExpr::literal(Value::Real(5.0), Type::Real)))
+        .param(
+            e,
+            "a",
+            Type::Real,
+            Some(reify_types::CompiledExpr::literal(
+                Value::Real(5.0),
+                Type::Real,
+            )),
+        )
         .let_binding(e, "b", Type::Real, b_expr)
         .let_binding(e, "c", Type::Real, c_expr)
         .build();
@@ -610,7 +733,9 @@ async fn repeated_error_then_success_cycle() {
     let c_node = NodeId::Value(ValueCellId::new(e, "c"));
 
     // === First cycle: prepare → panicking scheduler → rollback ===
-    let setup1 = engine.prepare_concurrent_edit(a_id.clone(), Value::Real(20.0)).unwrap();
+    let setup1 = engine
+        .prepare_concurrent_edit(a_id.clone(), Value::Real(20.0))
+        .unwrap();
 
     struct PanickingEvaluator;
     impl AsyncNodeEvaluator for PanickingEvaluator {
@@ -622,7 +747,13 @@ async fn repeated_error_then_success_cycle() {
     let cancel = CancellationToken::new();
     let scheduler = ConcurrentScheduler;
     let err_result = scheduler
-        .execute(setup1.eval_set.clone(), Arc::new(PanickingEvaluator), &setup1.traces, &cancel, &setup1.changed_cells)
+        .execute(
+            setup1.eval_set.clone(),
+            Arc::new(PanickingEvaluator),
+            &setup1.traces,
+            &cancel,
+            &setup1.changed_cells,
+        )
         .await;
     assert!(matches!(err_result, Err(SchedulerError::TaskPanicked(_))));
 
@@ -631,35 +762,61 @@ async fn repeated_error_then_success_cycle() {
 
     // Verify engine is in clean state
     let entry_b = engine.cache_store().get(&b_node).unwrap();
-    assert_eq!(entry_b.freshness, Freshness::Final, "b should be Final after rollback");
+    assert_eq!(
+        entry_b.freshness,
+        Freshness::Final,
+        "b should be Final after rollback"
+    );
     let entry_c = engine.cache_store().get(&c_node).unwrap();
-    assert_eq!(entry_c.freshness, Freshness::Final, "c should be Final after rollback");
+    assert_eq!(
+        entry_c.freshness,
+        Freshness::Final,
+        "c should be Final after rollback"
+    );
 
     // === Second cycle: edit_param_concurrent should succeed normally ===
-    let (setup2, result2) = edit_param_concurrent(
-        &mut engine,
-        a_id.clone(),
-        Value::Real(20.0),
-        &cancel,
-    ).await.unwrap();
+    let (setup2, result2) =
+        edit_param_concurrent(&mut engine, a_id.clone(), Value::Real(20.0), &cancel)
+            .await
+            .unwrap();
 
     // Values should be correct: a=20, b=40, c=41
-    assert_eq!(result2.values.get(&ValueCellId::new(e, "a")), Some(&Value::Real(20.0)));
-    assert_eq!(result2.values.get(&ValueCellId::new(e, "b")), Some(&Value::Real(40.0)));
-    assert_eq!(result2.values.get(&ValueCellId::new(e, "c")), Some(&Value::Real(41.0)));
+    assert_eq!(
+        result2.values.get(&ValueCellId::new(e, "a")),
+        Some(&Value::Real(20.0))
+    );
+    assert_eq!(
+        result2.values.get(&ValueCellId::new(e, "b")),
+        Some(&Value::Real(40.0))
+    );
+    assert_eq!(
+        result2.values.get(&ValueCellId::new(e, "c")),
+        Some(&Value::Real(41.0))
+    );
 
     // === Third: apply and verify engine state is fully correct ===
     engine.apply_concurrent_edit(&setup2, result2);
 
     // Cache freshness should be Final for all evaluated nodes
     let entry_b = engine.cache_store().get(&b_node).unwrap();
-    assert_eq!(entry_b.freshness, Freshness::Final, "b should be Final after apply");
+    assert_eq!(
+        entry_b.freshness,
+        Freshness::Final,
+        "b should be Final after apply"
+    );
     let entry_c = engine.cache_store().get(&c_node).unwrap();
-    assert_eq!(entry_c.freshness, Freshness::Final, "c should be Final after apply");
+    assert_eq!(
+        entry_c.freshness,
+        Freshness::Final,
+        "c should be Final after apply"
+    );
 
     // Snapshot should have correct version
     let snapshot = engine.snapshot().unwrap();
-    assert_eq!(snapshot.version, setup2.version, "version should match setup2");
+    assert_eq!(
+        snapshot.version, setup2.version,
+        "version should match setup2"
+    );
 
     // Values in snapshot should be correct
     let (b_val, _) = snapshot.values.get(&ValueCellId::new(e, "b")).unwrap();
@@ -710,7 +867,12 @@ async fn mixed_fan_in_concurrent_unchanged_upstream_does_not_skip_shared_downstr
     );
 
     let template = TopologyTemplateBuilder::new(e)
-        .param(e, "a", Type::Int, Some(CompiledExpr::literal(Value::Int(5), Type::Int)))
+        .param(
+            e,
+            "a",
+            Type::Int,
+            Some(CompiledExpr::literal(Value::Int(5), Type::Int)),
+        )
         .let_binding(e, "x", Type::Int, conditional)
         .let_binding(e, "y", Type::Int, y_expr)
         .build();
@@ -724,12 +886,10 @@ async fn mixed_fan_in_concurrent_unchanged_upstream_does_not_skip_shared_downstr
     let cancel = CancellationToken::new();
 
     // Concurrent edit: change a from 5 to 10
-    let (_setup, result) = edit_param_concurrent(
-        &mut engine,
-        a_id.clone(),
-        Value::Int(10),
-        &cancel,
-    ).await.unwrap();
+    let (_setup, result) =
+        edit_param_concurrent(&mut engine, a_id.clone(), Value::Int(10), &cancel)
+            .await
+            .unwrap();
 
     let y_node = NodeId::Value(ValueCellId::new(e, "y"));
 
@@ -814,7 +974,12 @@ async fn concurrent_triple_fan_in_mixed_early_cutoff() {
     );
 
     let template = TopologyTemplateBuilder::new(e)
-        .param(e, "a", Type::Int, Some(CompiledExpr::literal(Value::Int(5), Type::Int)))
+        .param(
+            e,
+            "a",
+            Type::Int,
+            Some(CompiledExpr::literal(Value::Int(5), Type::Int)),
+        )
         .let_binding(e, "x", Type::Int, x_expr)
         .let_binding(e, "z", Type::Int, z_expr)
         .let_binding(e, "y", Type::Int, y_expr)
@@ -829,12 +994,10 @@ async fn concurrent_triple_fan_in_mixed_early_cutoff() {
     let cancel = CancellationToken::new();
 
     // Concurrent edit: change a from 5 to 10
-    let (_setup, result) = edit_param_concurrent(
-        &mut engine,
-        a_id.clone(),
-        Value::Int(10),
-        &cancel,
-    ).await.unwrap();
+    let (_setup, result) =
+        edit_param_concurrent(&mut engine, a_id.clone(), Value::Int(10), &cancel)
+            .await
+            .unwrap();
 
     let y_node = NodeId::Value(ValueCellId::new(e, "y"));
 
@@ -866,8 +1029,8 @@ async fn concurrent_triple_fan_in_mixed_early_cutoff() {
 #[tokio::test]
 async fn edit_param_concurrent_re_resolves_auto_params() {
     use reify_test_support::builders::{binop, gt, literal, value_ref};
-    use reify_test_support::mocks::SequencedMockConstraintSolver;
     use reify_test_support::mm;
+    use reify_test_support::mocks::SequencedMockConstraintSolver;
     use reify_types::SolveResult;
 
     let a_id = ValueCellId::new("S", "a");
@@ -899,8 +1062,7 @@ async fn edit_param_concurrent_re_resolves_auto_params() {
 
     let module = build_module(template);
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None)
-        .with_solver(Box::new(solver));
+    let mut engine = Engine::new(Box::new(checker), None).with_solver(Box::new(solver));
 
     // Cold eval: x resolved to mm(5.0), y = 0.005*2 = 0.01
     let cold = engine.eval(&module);
@@ -912,12 +1074,9 @@ async fn edit_param_concurrent_re_resolves_auto_params() {
     let cancel = CancellationToken::new();
 
     // Concurrent edit: change a from mm(3.0) to mm(8.0)
-    let (setup, result) = edit_param_concurrent(
-        &mut engine,
-        a_id.clone(),
-        mm(8.0),
-        &cancel,
-    ).await.unwrap();
+    let (setup, result) = edit_param_concurrent(&mut engine, a_id.clone(), mm(8.0), &cancel)
+        .await
+        .unwrap();
 
     // Apply the concurrent edit
     engine.apply_concurrent_edit(&setup, result);
@@ -954,8 +1113,8 @@ async fn edit_param_concurrent_re_resolves_auto_params() {
 #[tokio::test]
 async fn concurrent_edit_result_includes_resolved_params() {
     use reify_test_support::builders::{binop, gt, literal, value_ref};
-    use reify_test_support::mocks::SequencedMockConstraintSolver;
     use reify_test_support::mm;
+    use reify_test_support::mocks::SequencedMockConstraintSolver;
     use reify_types::SolveResult;
 
     let a_id = ValueCellId::new("S", "a");
@@ -986,29 +1145,30 @@ async fn concurrent_edit_result_includes_resolved_params() {
 
     let module = build_module(template);
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None)
-        .with_solver(Box::new(solver));
+    let mut engine = Engine::new(Box::new(checker), None).with_solver(Box::new(solver));
 
     // Cold eval: x resolved to mm(5.0)
     let cold = engine.eval(&module);
-    assert!(!cold.resolved_params.is_empty(), "cold eval should resolve auto params");
+    assert!(
+        !cold.resolved_params.is_empty(),
+        "cold eval should resolve auto params"
+    );
 
     let cancel = CancellationToken::new();
 
     // Concurrent edit: change a from mm(3.0) to mm(8.0)
-    let (_setup, result) = edit_param_concurrent(
-        &mut engine,
-        a_id.clone(),
-        mm(8.0),
-        &cancel,
-    ).await.unwrap();
+    let (_setup, result) = edit_param_concurrent(&mut engine, a_id.clone(), mm(8.0), &cancel)
+        .await
+        .unwrap();
 
     // The ConcurrentEditResult should carry resolved_params
     assert!(
         !result.resolved_params.is_empty(),
         "ConcurrentEditResult should include resolved_params after re-resolution"
     );
-    let resolved_x = result.resolved_params.get(&x_id)
+    let resolved_x = result
+        .resolved_params
+        .get(&x_id)
         .expect("resolved_params should contain x");
     assert!(
         matches!(resolved_x, Value::Scalar { si_value, .. } if (*si_value - 0.02).abs() < 1e-10),
@@ -1036,8 +1196,8 @@ async fn concurrent_edit_result_includes_resolved_params() {
 #[tokio::test]
 async fn concurrent_edit_result_includes_diagnostics_on_infeasible() {
     use reify_test_support::builders::{gt, literal, value_ref};
-    use reify_test_support::mocks::SequencedMockConstraintSolver;
     use reify_test_support::mm;
+    use reify_test_support::mocks::SequencedMockConstraintSolver;
     use reify_types::{Diagnostic, Severity, SolveResult};
 
     let a_id = ValueCellId::new("S", "a");
@@ -1066,22 +1226,21 @@ async fn concurrent_edit_result_includes_diagnostics_on_infeasible() {
 
     let module = build_module(template);
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None)
-        .with_solver(Box::new(solver));
+    let mut engine = Engine::new(Box::new(checker), None).with_solver(Box::new(solver));
 
     // Cold eval: x resolved to mm(5.0)
     let cold = engine.eval(&module);
-    assert!(!cold.resolved_params.is_empty(), "cold eval should resolve auto params");
+    assert!(
+        !cold.resolved_params.is_empty(),
+        "cold eval should resolve auto params"
+    );
 
     let cancel = CancellationToken::new();
 
     // Concurrent edit: change a from mm(1.0) to mm(10.0) — triggers infeasible solve
-    let (_setup, result) = edit_param_concurrent(
-        &mut engine,
-        a_id.clone(),
-        mm(10.0),
-        &cancel,
-    ).await.unwrap();
+    let (_setup, result) = edit_param_concurrent(&mut engine, a_id.clone(), mm(10.0), &cancel)
+        .await
+        .unwrap();
 
     // resolved_params should be empty (infeasible solve doesn't produce resolved values)
     assert!(
@@ -1096,7 +1255,10 @@ async fn concurrent_edit_result_includes_diagnostics_on_infeasible() {
         "diagnostics should be non-empty on infeasible solve"
     );
     assert!(
-        result.diagnostics.iter().any(|d| d.message.contains("infeasible")),
+        result
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("infeasible")),
         "diagnostics should contain infeasibility message, got {:?}",
         result.diagnostics
     );
@@ -1110,9 +1272,9 @@ async fn concurrent_edit_result_includes_diagnostics_on_infeasible() {
 /// Also verifies values and empty resolved_params (no auto params).
 #[tokio::test]
 async fn edit_check_concurrent_reports_constraint_satisfaction() {
+    use reify_runtime::concurrent_eval::edit_check_concurrent;
     use reify_test_support::builders::{gt, literal, value_ref};
     use reify_test_support::mm;
-    use reify_runtime::concurrent_eval::edit_check_concurrent;
     use reify_types::Satisfaction;
 
     let width_id = ValueCellId::new("S", "width");
@@ -1137,12 +1299,9 @@ async fn edit_check_concurrent_reports_constraint_satisfaction() {
     let cancel = CancellationToken::new();
 
     // Concurrent edit: width=mm(2.0) < mm(5.0) → Violated
-    let check_result = edit_check_concurrent(
-        &mut engine,
-        width_id.clone(),
-        mm(2.0),
-        &cancel,
-    ).await.unwrap();
+    let check_result = edit_check_concurrent(&mut engine, width_id.clone(), mm(2.0), &cancel)
+        .await
+        .unwrap();
 
     assert_eq!(
         check_result.constraint_results[0].satisfaction,
@@ -1151,7 +1310,9 @@ async fn edit_check_concurrent_reports_constraint_satisfaction() {
     );
 
     // values should reflect the new width
-    let width_val = check_result.values.get(&width_id)
+    let width_val = check_result
+        .values
+        .get(&width_id)
         .expect("values should contain width");
     assert!(
         matches!(width_val, Value::Scalar { si_value, .. } if (*si_value - 0.002).abs() < 1e-10),
@@ -1174,9 +1335,9 @@ async fn edit_check_concurrent_reports_constraint_satisfaction() {
 /// edit_check_concurrent(width, mm(8.0)) → Satisfied.
 #[tokio::test]
 async fn edit_check_concurrent_constraint_transitions() {
+    use reify_runtime::concurrent_eval::edit_check_concurrent;
     use reify_test_support::builders::{gt, literal, value_ref};
     use reify_test_support::mm;
-    use reify_runtime::concurrent_eval::edit_check_concurrent;
     use reify_types::Satisfaction;
 
     let width_id = ValueCellId::new("S", "width");
@@ -1201,12 +1362,9 @@ async fn edit_check_concurrent_constraint_transitions() {
     let cancel = CancellationToken::new();
 
     // First concurrent edit: width=mm(2.0) < mm(5.0) → Violated
-    let result1 = edit_check_concurrent(
-        &mut engine,
-        width_id.clone(),
-        mm(2.0),
-        &cancel,
-    ).await.unwrap();
+    let result1 = edit_check_concurrent(&mut engine, width_id.clone(), mm(2.0), &cancel)
+        .await
+        .unwrap();
     assert_eq!(
         result1.constraint_results[0].satisfaction,
         Satisfaction::Violated,
@@ -1214,12 +1372,9 @@ async fn edit_check_concurrent_constraint_transitions() {
     );
 
     // Second concurrent edit: width=mm(8.0) > mm(5.0) → Satisfied
-    let result2 = edit_check_concurrent(
-        &mut engine,
-        width_id.clone(),
-        mm(8.0),
-        &cancel,
-    ).await.unwrap();
+    let result2 = edit_check_concurrent(&mut engine, width_id.clone(), mm(8.0), &cancel)
+        .await
+        .unwrap();
     assert_eq!(
         result2.constraint_results[0].satisfaction,
         Satisfaction::Satisfied,
@@ -1242,10 +1397,10 @@ async fn edit_check_concurrent_constraint_transitions() {
 ///         (4) constraint `y < mm(100)` Satisfied.
 #[tokio::test]
 async fn edit_check_concurrent_with_resolution_and_constraints() {
-    use reify_test_support::builders::{binop, gt, literal, lt, value_ref};
-    use reify_test_support::mocks::SequencedMockConstraintSolver;
-    use reify_test_support::mm;
     use reify_runtime::concurrent_eval::edit_check_concurrent;
+    use reify_test_support::builders::{binop, gt, literal, lt, value_ref};
+    use reify_test_support::mm;
+    use reify_test_support::mocks::SequencedMockConstraintSolver;
     use reify_types::{Satisfaction, SolveResult};
 
     let a_id = ValueCellId::new("S", "a");
@@ -1280,31 +1435,35 @@ async fn edit_check_concurrent_with_resolution_and_constraints() {
 
     let module = build_module(template);
     let checker = reify_constraints::SimpleConstraintChecker;
-    let mut engine = Engine::new(Box::new(checker), None)
-        .with_solver(Box::new(solver));
+    let mut engine = Engine::new(Box::new(checker), None).with_solver(Box::new(solver));
 
     // Cold check: x=mm(5.0), y=mm(10.0), both constraints satisfied
     let cold = engine.check(&module);
     assert_eq!(cold.constraint_results.len(), 2);
-    assert_eq!(cold.constraint_results[0].satisfaction, Satisfaction::Satisfied);
-    assert_eq!(cold.constraint_results[1].satisfaction, Satisfaction::Satisfied);
+    assert_eq!(
+        cold.constraint_results[0].satisfaction,
+        Satisfaction::Satisfied
+    );
+    assert_eq!(
+        cold.constraint_results[1].satisfaction,
+        Satisfaction::Satisfied
+    );
 
     let cancel = CancellationToken::new();
 
     // edit_check_concurrent: a → mm(8.0) → solver re-resolves x to mm(20.0)
-    let result = edit_check_concurrent(
-        &mut engine,
-        a_id.clone(),
-        mm(8.0),
-        &cancel,
-    ).await.unwrap();
+    let result = edit_check_concurrent(&mut engine, a_id.clone(), mm(8.0), &cancel)
+        .await
+        .unwrap();
 
     // (1) resolved_params contains x→mm(20.0)
     assert!(
         !result.resolved_params.is_empty(),
         "resolved_params should contain re-resolved auto params"
     );
-    let resolved_x = result.resolved_params.get(&x_id)
+    let resolved_x = result
+        .resolved_params
+        .get(&x_id)
         .expect("resolved_params should contain x");
     assert!(
         matches!(resolved_x, Value::Scalar { si_value, .. } if (*si_value - 0.02).abs() < 1e-10),
@@ -1346,9 +1505,9 @@ async fn edit_check_concurrent_with_resolution_and_constraints() {
 /// check_constraints_with_values which was fixed to use cnode.label.clone().
 #[tokio::test]
 async fn edit_check_concurrent_preserves_constraint_labels() {
+    use reify_runtime::concurrent_eval::edit_check_concurrent;
     use reify_test_support::builders::{gt, literal, value_ref};
     use reify_test_support::mm;
-    use reify_runtime::concurrent_eval::edit_check_concurrent;
     use reify_types::{ConstraintNodeId, Satisfaction};
 
     let width_id = ValueCellId::new("S", "width");
@@ -1384,12 +1543,9 @@ async fn edit_check_concurrent_preserves_constraint_labels() {
     let cancel = CancellationToken::new();
 
     // edit_check_concurrent: width=mm(2.0) → Violated, label preserved
-    let result = edit_check_concurrent(
-        &mut engine,
-        width_id.clone(),
-        mm(2.0),
-        &cancel,
-    ).await.unwrap();
+    let result = edit_check_concurrent(&mut engine, width_id.clone(), mm(2.0), &cancel)
+        .await
+        .unwrap();
 
     assert_eq!(result.constraint_results.len(), 1);
 
@@ -1419,7 +1575,7 @@ async fn edit_check_concurrent_preserves_constraint_labels() {
 #[cfg(feature = "test-utils")]
 mod poison_recovery {
     use super::*;
-    use std::panic::{catch_unwind, AssertUnwindSafe};
+    use std::panic::{AssertUnwindSafe, catch_unwind};
 
     /// After the C4 fix, values() panics on poisoned lock (no silent recovery).
     #[test]
@@ -1429,10 +1585,11 @@ mod poison_recovery {
 
         adapter.poison_values();
 
-        let result = catch_unwind(AssertUnwindSafe(|| {
-            adapter.values()
-        }));
-        assert!(result.is_err(), "values() must panic on poisoned lock after C4 fix");
+        let result = catch_unwind(AssertUnwindSafe(|| adapter.values()));
+        assert!(
+            result.is_err(),
+            "values() must panic on poisoned lock after C4 fix"
+        );
     }
 
     /// After the C4 fix, take_results() panics on poisoned lock.
@@ -1443,10 +1600,11 @@ mod poison_recovery {
 
         adapter.poison_results();
 
-        let result = catch_unwind(AssertUnwindSafe(|| {
-            adapter.take_results()
-        }));
-        assert!(result.is_err(), "take_results() must panic on poisoned lock after C4 fix");
+        let result = catch_unwind(AssertUnwindSafe(|| adapter.take_results()));
+        assert!(
+            result.is_err(),
+            "take_results() must panic on poisoned lock after C4 fix"
+        );
     }
 }
 
@@ -1526,7 +1684,12 @@ async fn three_plus_parent_mixed_fan_in_no_direct_param_read() {
     );
 
     let template = TopologyTemplateBuilder::new(e)
-        .param(e, "a", Type::Int, Some(CompiledExpr::literal(Value::Int(5), Type::Int)))
+        .param(
+            e,
+            "a",
+            Type::Int,
+            Some(CompiledExpr::literal(Value::Int(5), Type::Int)),
+        )
         .let_binding(e, "p1", Type::Int, p1_expr)
         .let_binding(e, "p2", Type::Int, p2_expr)
         .let_binding(e, "p3", Type::Int, p3_expr)
@@ -1542,12 +1705,10 @@ async fn three_plus_parent_mixed_fan_in_no_direct_param_read() {
     let cancel = CancellationToken::new();
 
     // Edit a: 5 → 10
-    let (_setup, result) = edit_param_concurrent(
-        &mut engine,
-        a_id.clone(),
-        Value::Int(10),
-        &cancel,
-    ).await.unwrap();
+    let (_setup, result) =
+        edit_param_concurrent(&mut engine, a_id.clone(), Value::Int(10), &cancel)
+            .await
+            .unwrap();
 
     let d_node = NodeId::Value(ValueCellId::new(e, "d"));
 
@@ -1640,7 +1801,12 @@ async fn five_parent_fan_in_one_changed() {
     );
 
     let template = TopologyTemplateBuilder::new(e)
-        .param(e, "a", Type::Int, Some(CompiledExpr::literal(Value::Int(5), Type::Int)))
+        .param(
+            e,
+            "a",
+            Type::Int,
+            Some(CompiledExpr::literal(Value::Int(5), Type::Int)),
+        )
         .let_binding(e, "p1", Type::Int, p1_expr)
         .let_binding(e, "p2", Type::Int, p2_expr)
         .let_binding(e, "p3", Type::Int, p3_expr)
@@ -1658,12 +1824,10 @@ async fn five_parent_fan_in_one_changed() {
     let cancel = CancellationToken::new();
 
     // Edit a: 5 → 10
-    let (_setup, result) = edit_param_concurrent(
-        &mut engine,
-        a_id.clone(),
-        Value::Int(10),
-        &cancel,
-    ).await.unwrap();
+    let (_setup, result) =
+        edit_param_concurrent(&mut engine, a_id.clone(), Value::Int(10), &cancel)
+            .await
+            .unwrap();
 
     let d_node = NodeId::Value(ValueCellId::new(e, "d"));
 
@@ -1690,7 +1854,7 @@ async fn five_parent_fan_in_one_changed() {
 #[cfg(feature = "test-utils")]
 mod poison_panics {
     use super::*;
-    use std::panic::{catch_unwind, AssertUnwindSafe};
+    use std::panic::{AssertUnwindSafe, catch_unwind};
 
     /// values() must panic when the values RwLock is poisoned.
     #[test]
@@ -1702,10 +1866,11 @@ mod poison_panics {
         adapter.poison_values();
 
         // values() should panic, not silently recover
-        let result = catch_unwind(AssertUnwindSafe(|| {
-            adapter.values()
-        }));
-        assert!(result.is_err(), "values() should panic on poisoned lock, but it returned successfully");
+        let result = catch_unwind(AssertUnwindSafe(|| adapter.values()));
+        assert!(
+            result.is_err(),
+            "values() should panic on poisoned lock, but it returned successfully"
+        );
     }
 
     /// take_results() must panic when the results Mutex is poisoned.
@@ -1718,10 +1883,11 @@ mod poison_panics {
         adapter.poison_results();
 
         // take_results() should panic, not silently recover
-        let result = catch_unwind(AssertUnwindSafe(|| {
-            adapter.take_results()
-        }));
-        assert!(result.is_err(), "take_results() should panic on poisoned lock, but it returned successfully");
+        let result = catch_unwind(AssertUnwindSafe(|| adapter.take_results()));
+        assert!(
+            result.is_err(),
+            "take_results() should panic on poisoned lock, but it returned successfully"
+        );
     }
 
     /// build_result_shared() must panic when the values RwLock is poisoned.
@@ -1738,7 +1904,10 @@ mod poison_panics {
         let result = catch_unwind(AssertUnwindSafe(|| {
             adapter.build_result_shared(&eval_set, HashSet::new())
         }));
-        assert!(result.is_err(), "build_result_shared() should panic on poisoned values lock, but it returned successfully");
+        assert!(
+            result.is_err(),
+            "build_result_shared() should panic on poisoned values lock, but it returned successfully"
+        );
     }
 
     /// into_result() must panic when the values RwLock is poisoned.
@@ -1755,6 +1924,9 @@ mod poison_panics {
         let result = catch_unwind(AssertUnwindSafe(|| {
             adapter.into_result(&eval_set, HashSet::new())
         }));
-        assert!(result.is_err(), "into_result() should panic on poisoned values lock, but it returned successfully");
+        assert!(
+            result.is_err(),
+            "into_result() should panic on poisoned values lock, but it returned successfully"
+        );
     }
 }

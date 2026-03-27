@@ -124,9 +124,7 @@ pub enum GeometryOp {
         plane_normal: [f64; 3],
     },
     /// Loft through a sequence of profiles.
-    Loft {
-        profiles: Vec<GeometryHandleId>,
-    },
+    Loft { profiles: Vec<GeometryHandleId> },
     /// Extrude a 2D profile along Z axis by distance.
     Extrude {
         profile: GeometryHandleId,
@@ -308,11 +306,7 @@ pub trait GeometryKernel: Send + Sync {
     ) -> Result<(), ExportError>;
 
     /// Tessellate a handle into a mesh.
-    fn tessellate(
-        &self,
-        handle: GeometryHandleId,
-        tolerance: f64,
-    ) -> Result<Mesh, TessError>;
+    fn tessellate(&self, handle: GeometryHandleId, tolerance: f64) -> Result<Mesh, TessError>;
 }
 
 #[cfg(test)]

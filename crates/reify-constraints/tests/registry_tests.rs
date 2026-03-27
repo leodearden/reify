@@ -3,7 +3,7 @@
 use reify_constraints::{DimensionalSolver, SolveSpaceSolver, SolverRegistry};
 use reify_test_support::*;
 use reify_types::{
-    AutoParam, BinOp, CompiledExpr, CompiledExprKind, ContentHash, ConstraintSolver,
+    AutoParam, BinOp, CompiledExpr, CompiledExprKind, ConstraintSolver, ContentHash,
     DimensionVector, OptimizationObjective, ResolutionProblem, ResolvedFunction, SolveResult, Type,
     Value, ValueMap,
 };
@@ -28,10 +28,7 @@ fn registry_matches_dimensional_solver_simple_feasibility() {
             param_type: Type::length(),
             bounds: Some((0.001, 0.1)),
         }],
-        constraints: vec![
-            (cnid("Bracket", 0), gt_expr),
-            (cnid("Bracket", 1), lt_expr),
-        ],
+        constraints: vec![(cnid("Bracket", 0), gt_expr), (cnid("Bracket", 1), lt_expr)],
         current_values: ValueMap::new(),
         objective: None,
         functions: vec![],
@@ -83,10 +80,7 @@ fn registry_solves_independent_subproblems() {
                 bounds: Some((0.001, 0.1)),
             },
         ],
-        constraints: vec![
-            (cnid("Part", 0), c1),
-            (cnid("Part", 1), c2),
-        ],
+        constraints: vec![(cnid("Part", 0), c1), (cnid("Part", 1), c2)],
         current_values: ValueMap::new(),
         objective: None,
         functions: vec![],
@@ -125,10 +119,7 @@ fn registry_uses_fallback_for_all_domains() {
             param_type: Type::length(),
             bounds: Some((0.001, 0.1)),
         }],
-        constraints: vec![
-            (cnid("Part", 0), c1),
-            (cnid("Part", 1), c2),
-        ],
+        constraints: vec![(cnid("Part", 0), c1), (cnid("Part", 1), c2)],
         current_values: ValueMap::new(),
         objective: None,
         functions: vec![],
@@ -272,10 +263,7 @@ fn registry_compat_infeasible_bounds() {
         SolveResult::Infeasible { diagnostics } => {
             assert!(!diagnostics.is_empty(), "should have diagnostics");
         }
-        other => panic!(
-            "expected Infeasible through registry, got {:?}",
-            other
-        ),
+        other => panic!("expected Infeasible through registry, got {:?}", other),
     }
 }
 
@@ -340,10 +328,7 @@ fn registry_compat_maximize_objective() {
             param_type: Type::length(),
             bounds: Some((0.001, 0.1)),
         }],
-        constraints: vec![
-            (cnid("Bracket", 0), gt_expr),
-            (cnid("Bracket", 1), lt_expr),
-        ],
+        constraints: vec![(cnid("Bracket", 0), gt_expr), (cnid("Bracket", 1), lt_expr)],
         current_values: ValueMap::new(),
         objective: Some(objective),
         functions: vec![],
@@ -355,7 +340,11 @@ fn registry_compat_maximize_objective() {
     match result {
         SolveResult::Solved { values } => {
             let si = values.get(&thickness_id).unwrap().as_f64().unwrap();
-            assert!(si > 0.017, "maximized value should be near 20mm, got {}", si);
+            assert!(
+                si > 0.017,
+                "maximized value should be near 20mm, got {}",
+                si
+            );
         }
         SolveResult::Infeasible { .. } => {
             // Acceptable for optimization-against-boundary
@@ -422,11 +411,7 @@ fn objective_spanning_independent_components_merges_them() {
     let c4 = lt(value_ref("Part", "b"), literal(mm(20.0)));
 
     // Objective: Maximize(a + b) — references BOTH params
-    let obj_expr = binop(
-        BinOp::Add,
-        value_ref("Part", "a"),
-        value_ref("Part", "b"),
-    );
+    let obj_expr = binop(BinOp::Add, value_ref("Part", "a"), value_ref("Part", "b"));
     let objective = OptimizationObjective::Maximize(obj_expr);
 
     let problem = ResolutionProblem {

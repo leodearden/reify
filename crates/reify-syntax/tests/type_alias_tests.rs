@@ -208,7 +208,10 @@ fn parse_type_alias_default_type_param() {
             assert_eq!(ta.type_params[0].name, "K");
             assert!(ta.type_params[0].default.is_none());
             assert_eq!(ta.type_params[1].name, "V");
-            let default = ta.type_params[1].default.as_ref().expect("expected default type");
+            let default = ta.type_params[1]
+                .default
+                .as_ref()
+                .expect("expected default type");
             assert_eq!(default.name, "String");
         }
         other => panic!("expected Declaration::TypeAlias, got {:?}", other),

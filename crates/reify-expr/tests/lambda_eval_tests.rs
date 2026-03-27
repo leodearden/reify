@@ -1,6 +1,6 @@
 //! Lambda evaluation tests.
 
-use reify_expr::{eval_expr, EvalContext};
+use reify_expr::{EvalContext, eval_expr};
 use reify_types::{BinOp, CompiledExpr, Type, Value, ValueCellId, ValueMap};
 
 /// Helper to build a Value::Lambda with (name, id) param pairs.
@@ -215,17 +215,17 @@ fn apply_lambda_arity_mismatch_returns_undef() {
         Type::Real,
     );
 
-    let lambda = make_value_lambda(
-        vec![("x", x_id), ("y", y_id)],
-        body,
-        ValueMap::new(),
-    );
+    let lambda = make_value_lambda(vec![("x", x_id), ("y", y_id)], body, ValueMap::new());
 
     let empty = ValueMap::new();
     let result = apply_lambda(&lambda, &[Value::Int(5)], &EvalContext::simple(&empty));
     assert!(result.is_undef(), "arity mismatch should return Undef");
 
-    let result = apply_lambda(&lambda, &[Value::Int(1), Value::Int(2), Value::Int(3)], &EvalContext::simple(&empty));
+    let result = apply_lambda(
+        &lambda,
+        &[Value::Int(1), Value::Int(2), Value::Int(3)],
+        &EvalContext::simple(&empty),
+    );
     assert!(result.is_undef(), "too many args should return Undef");
 }
 
@@ -241,7 +241,10 @@ fn apply_lambda_zero_params() {
     assert_eq!(result, Value::Bool(true));
 
     let result = apply_lambda(&lambda, &[Value::Int(1)], &EvalContext::simple(&empty));
-    assert!(result.is_undef(), "0-param lambda with args should return Undef");
+    assert!(
+        result.is_undef(),
+        "0-param lambda with args should return Undef"
+    );
 }
 
 /// step-25: Value::Lambda content_hash is deterministic and distinct from other variants.
@@ -272,8 +275,16 @@ fn lambda_content_hash_deterministic_and_distinct() {
     let lambda2 = make_value_lambda(vec![("x", x_id.clone())], body2, ValueMap::new());
     let lambda3 = make_value_lambda(vec![("x", x_id.clone())], body3, ValueMap::new());
 
-    assert_eq!(lambda1.content_hash(), lambda2.content_hash(), "identical lambdas should have same hash");
-    assert_ne!(lambda1.content_hash(), lambda3.content_hash(), "different lambdas should have different hash");
+    assert_eq!(
+        lambda1.content_hash(),
+        lambda2.content_hash(),
+        "identical lambdas should have same hash"
+    );
+    assert_ne!(
+        lambda1.content_hash(),
+        lambda3.content_hash(),
+        "different lambdas should have different hash"
+    );
     assert_ne!(lambda1.content_hash(), Value::Undef.content_hash());
     assert_ne!(lambda1.content_hash(), Value::Int(0).content_hash());
     assert_ne!(lambda1.content_hash(), Value::Bool(false).content_hash());
@@ -290,7 +301,11 @@ fn lambda_content_hash_deterministic_and_distinct() {
         ),
         ValueMap::new(),
     );
-    assert_ne!(lambda1.content_hash(), lambda_y.content_hash(), "different param names should produce different hash");
+    assert_ne!(
+        lambda1.content_hash(),
+        lambda_y.content_hash(),
+        "different param names should produce different hash"
+    );
 }
 
 /// step-29: Two Value::Lambda instances with identical params and body but with
@@ -325,8 +340,15 @@ fn lambda_content_hash_invariant_capture_insertion_order() {
 
     let lambda_b = make_value_lambda(vec![("x", x_id)], body, captures_b);
 
-    assert_eq!(lambda_a, lambda_b, "lambdas with same captures in different insertion order should be equal");
-    assert_eq!(lambda_a.content_hash(), lambda_b.content_hash(), "content_hash invariant violated: equal lambdas must have equal hashes");
+    assert_eq!(
+        lambda_a, lambda_b,
+        "lambdas with same captures in different insertion order should be equal"
+    );
+    assert_eq!(
+        lambda_a.content_hash(),
+        lambda_b.content_hash(),
+        "content_hash invariant violated: equal lambdas must have equal hashes"
+    );
 }
 
 /// step-27: Integration test — full pipeline parse → compile → eval for a structure
@@ -342,7 +364,11 @@ structure S {
 }
 "#;
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_integration"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
     let errors: Vec<_> = compiled
@@ -366,7 +392,10 @@ structure S {
         .expect("should have 'f'");
 
     let mut values = ValueMap::new();
-    let factor_expr = factor_cell.default_expr.as_ref().expect("factor should have expr");
+    let factor_expr = factor_cell
+        .default_expr
+        .as_ref()
+        .expect("factor should have expr");
     let factor_val = eval_expr(factor_expr, &EvalContext::simple(&values));
     values.insert(factor_cell.id.clone(), factor_val);
 
@@ -383,11 +412,7 @@ structure S {
     let empty = ValueMap::new();
     let result = apply_lambda(&f_val, &[Value::Real(5.0)], &EvalContext::simple(&empty));
     match result {
-        Value::Real(v) => assert!(
-            (v - 15.0).abs() < 1e-12,
-            "expected 15.0, got {}",
-            v
-        ),
+        Value::Real(v) => assert!((v - 15.0).abs() < 1e-12, "expected 15.0, got {}", v),
         other => panic!("expected Real(15.0), got {:?}", other),
     }
 }
@@ -563,7 +588,10 @@ fn nested_lambda_calls_user_function() {
         Value::Lambda { captures, .. } => {
             assert_eq!(captures.get(&x_id), Some(&Value::Int(3)));
         }
-        other => panic!("expected inner Lambda after outer application, got {:?}", other),
+        other => panic!(
+            "expected inner Lambda after outer application, got {:?}",
+            other
+        ),
     }
 
     // Apply inner with y=4 → double(3) + 4 = 6 + 4 = 10

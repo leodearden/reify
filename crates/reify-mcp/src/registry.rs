@@ -4,8 +4,11 @@ use crate::context::ReifyToolContext;
 use crate::types::{ToolError, ToolInfo};
 
 /// Handler function type for MCP tools.
-type ToolHandler =
-    Box<dyn Fn(serde_json::Value, &dyn ReifyToolContext) -> Result<serde_json::Value, ToolError> + Send + Sync>;
+type ToolHandler = Box<
+    dyn Fn(serde_json::Value, &dyn ReifyToolContext) -> Result<serde_json::Value, ToolError>
+        + Send
+        + Sync,
+>;
 
 /// An entry in the tool registry.
 struct ToolEntry {
@@ -30,10 +33,13 @@ impl ToolRegistry {
         name: &str,
         description: &str,
         input_schema: serde_json::Value,
-        handler: impl Fn(serde_json::Value, &dyn ReifyToolContext) -> Result<serde_json::Value, ToolError>
-            + Send
-            + Sync
-            + 'static,
+        handler: impl Fn(
+            serde_json::Value,
+            &dyn ReifyToolContext,
+        ) -> Result<serde_json::Value, ToolError>
+        + Send
+        + Sync
+        + 'static,
     ) {
         if self.tools.iter().any(|e| e.info.name == name) {
             panic!("duplicate tool registration: '{name}'");

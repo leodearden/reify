@@ -174,7 +174,8 @@ fn parse_pub_trait() {
 
 #[test]
 fn parse_structure_with_trait_bounds() {
-    let (decls, errors) = parse_decls("structure def Bolt : Fastener + Rigid { param length : Length = 20mm }");
+    let (decls, errors) =
+        parse_decls("structure def Bolt : Fastener + Rigid { param length : Length = 20mm }");
     assert!(errors.is_empty(), "parse errors: {:?}", errors);
     assert_eq!(decls.len(), 1);
 
@@ -184,7 +185,11 @@ fn parse_structure_with_trait_bounds() {
     };
 
     assert_eq!(structure.name, "Bolt");
-    let bound_names: Vec<&str> = structure.trait_bounds.iter().map(|b| b.name.as_str()).collect();
+    let bound_names: Vec<&str> = structure
+        .trait_bounds
+        .iter()
+        .map(|b| b.name.as_str())
+        .collect();
     assert_eq!(bound_names, vec!["Fastener", "Rigid"]);
     assert!(!structure.is_pub);
     assert!(structure.type_params.is_empty());
@@ -267,9 +272,7 @@ fn backward_compat_no_def_keyword() {
 #[test]
 fn parse_type_expr_with_type_args() {
     // param whose type annotation is a parameterized type: Box<T>
-    let (decls, errors) = parse_decls(
-        "structure def S { param contents : Box<Bolt> }",
-    );
+    let (decls, errors) = parse_decls("structure def S { param contents : Box<Bolt> }");
     assert!(errors.is_empty(), "parse errors: {:?}", errors);
 
     let structure = match &decls[0] {
@@ -282,7 +285,10 @@ fn parse_type_expr_with_type_args() {
         other => panic!("expected Param, got {:?}", other),
     };
 
-    let te = param.type_expr.as_ref().expect("type_expr should be present");
+    let te = param
+        .type_expr
+        .as_ref()
+        .expect("type_expr should be present");
     assert_eq!(te.name, "Box");
     assert_eq!(te.type_args.len(), 1);
     assert_eq!(te.type_args[0].name, "Bolt");
@@ -292,9 +298,7 @@ fn parse_type_expr_with_type_args() {
 #[test]
 fn parse_type_expr_nested_type_args() {
     // Nested parameterized types: Container<Box<T>>
-    let (decls, errors) = parse_decls(
-        "structure def S { param x : Container<Box<T>> }",
-    );
+    let (decls, errors) = parse_decls("structure def S { param x : Container<Box<T>> }");
     assert!(errors.is_empty(), "parse errors: {:?}", errors);
 
     let structure = match &decls[0] {
@@ -319,9 +323,8 @@ fn parse_type_expr_nested_type_args() {
 
 #[test]
 fn parse_type_param_with_default() {
-    let (decls, errors) = parse_decls(
-        "structure def Box<T: Rigid = Steel> { param w : Length = 10mm }",
-    );
+    let (decls, errors) =
+        parse_decls("structure def Box<T: Rigid = Steel> { param w : Length = 10mm }");
     assert!(errors.is_empty(), "parse errors: {:?}", errors);
 
     let structure = match &decls[0] {
@@ -342,9 +345,7 @@ fn parse_type_param_with_default() {
 
 #[test]
 fn parse_sub_with_type_args() {
-    let (decls, errors) = parse_decls(
-        "structure def Asm { sub part = Box<Bolt>() }",
-    );
+    let (decls, errors) = parse_decls("structure def Asm { sub part = Box<Bolt>() }");
     assert!(errors.is_empty(), "parse errors: {:?}", errors);
 
     let structure = match &decls[0] {
@@ -368,9 +369,8 @@ fn parse_sub_with_type_args() {
 #[test]
 fn parse_trait_bound_with_type_args() {
     // Structure conforming to a parameterized trait bound
-    let (decls, errors) = parse_decls(
-        "structure def Crate : Container<Bolt> { param count : Int = 5 }",
-    );
+    let (decls, errors) =
+        parse_decls("structure def Crate : Container<Bolt> { param count : Int = 5 }");
     assert!(errors.is_empty(), "parse errors: {:?}", errors);
 
     let structure = match &decls[0] {

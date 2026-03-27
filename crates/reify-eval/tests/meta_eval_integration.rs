@@ -6,9 +6,9 @@
 
 use reify_compiler::{ValueCellDecl, ValueCellKind, Visibility};
 use reify_eval::Engine;
+use reify_test_support::builders::value_ref_typed;
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
-use reify_test_support::builders::value_ref_typed;
 use reify_types::*;
 
 /// step-3: Parent can access child template meta via meta_access("Child", key).
@@ -255,11 +255,7 @@ fn eval_meta_access_collection_sub_component() {
         )
         .let_binding("Plate", "__count_bolts", Type::Int, count_expr)
         .structure_controlling_cell(ValueCellId::new("Plate", "__count_bolts"))
-        .collection_sub_component(
-            "bolts",
-            "Bolt",
-            ValueCellId::new("Plate", "__count_bolts"),
-        )
+        .collection_sub_component("bolts", "Bolt", ValueCellId::new("Plate", "__count_bolts"))
         .let_binding("Plate", "grade_label", Type::String, meta_expr)
         .build();
 

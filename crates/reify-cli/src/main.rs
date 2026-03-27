@@ -78,7 +78,11 @@ fn cmd_check(args: &[String]) -> ExitCode {
         Err(code) => return code,
     };
 
-    if compiled.diagnostics.iter().any(|d| d.severity == Severity::Error) {
+    if compiled
+        .diagnostics
+        .iter()
+        .any(|d| d.severity == Severity::Error)
+    {
         return ExitCode::FAILURE;
     }
 
@@ -143,7 +147,11 @@ fn cmd_build(args: &[String]) -> ExitCode {
         Err(code) => return code,
     };
 
-    if compiled.diagnostics.iter().any(|d| d.severity == Severity::Error) {
+    if compiled
+        .diagnostics
+        .iter()
+        .any(|d| d.severity == Severity::Error)
+    {
         return ExitCode::FAILURE;
     }
 
@@ -221,9 +229,7 @@ fn cmd_gui(args: &[String]) -> ExitCode {
 
     // Check if launch is suppressed (for testing / CI)
     if std::env::var("REIFY_GUI_SKIP_LAUNCH").is_ok() {
-        eprintln!(
-            "Error: could not launch reify-gui (launch skipped via REIFY_GUI_SKIP_LAUNCH)"
-        );
+        eprintln!("Error: could not launch reify-gui (launch skipped via REIFY_GUI_SKIP_LAUNCH)");
         return ExitCode::FAILURE;
     }
 

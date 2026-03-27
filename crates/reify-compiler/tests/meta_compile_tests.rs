@@ -6,7 +6,11 @@ use reify_types::{CompiledExpr, CompiledExprKind, Diagnostic, ModulePath, Severi
 /// Helper: parse source and compile, returning the CompiledModule.
 fn compile_module(source: &str) -> CompiledModule {
     let parsed = reify_syntax::parse(source, ModulePath::single("meta_test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
     reify_compiler::compile(&parsed)
 }
 
@@ -22,7 +26,10 @@ fn compile_first_template(source: &str) -> (TopologyTemplate, Vec<Diagnostic>) {
 }
 
 /// Helper: get the default_expr for a value cell by member name.
-fn get_cell_expr<'a>(template: &'a TopologyTemplate, member: &str) -> &'a reify_types::CompiledExpr {
+fn get_cell_expr<'a>(
+    template: &'a TopologyTemplate,
+    member: &str,
+) -> &'a reify_types::CompiledExpr {
     let cell = template
         .value_cells
         .iter()
@@ -173,7 +180,9 @@ fn duplicate_meta_block_error() {
         .collect();
     assert!(!errors.is_empty(), "expected at least one error");
     assert!(
-        errors.iter().any(|d| d.message.contains("duplicate meta block")),
+        errors
+            .iter()
+            .any(|d| d.message.contains("duplicate meta block")),
         "expected 'duplicate meta block' error, got: {:?}",
         errors
     );
@@ -212,7 +221,10 @@ fn meta_access_in_constraint_context() {
         .collect();
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
 
-    assert!(!template.constraints.is_empty(), "should have at least one constraint");
+    assert!(
+        !template.constraints.is_empty(),
+        "should have at least one constraint"
+    );
 
     let constraint_expr = &template.constraints[0].expr;
     assert!(

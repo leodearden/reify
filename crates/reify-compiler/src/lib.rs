@@ -1,13 +1,13 @@
 pub mod module_dag;
-pub mod stdlib_loader;
 mod scc;
+pub mod stdlib_loader;
 
 use std::collections::{HashMap, HashSet};
 
 use reify_types::{
     BinOp, CompiledExpr, CompiledExprKind, ConstraintDomain, ConstraintNodeId, ContentHash,
-    DimensionVector, Diagnostic, DiagnosticLabel, OptimizationObjective, RealizationNodeId,
-    ResolvedFunction, SourceSpan, Type, UnOp, Value, ValueCellId, FIELD_ENTITY_PREFIX,
+    Diagnostic, DiagnosticLabel, DimensionVector, FIELD_ENTITY_PREFIX, OptimizationObjective,
+    RealizationNodeId, ResolvedFunction, SourceSpan, Type, UnOp, Value, ValueCellId,
 };
 
 /// A compiled import declaration.
@@ -403,7 +403,8 @@ pub enum GeomRef {
 fn is_geometry_function(name: &str) -> bool {
     matches!(
         name,
-        "box" | "cylinder"
+        "box"
+            | "cylinder"
             | "sphere"
             | "linear_pattern"
             | "circular_pattern"
@@ -548,8 +549,7 @@ fn convert_type_params(decls: &[reify_syntax::TypeParamDecl]) -> Vec<reify_types
             // Resolve defaults: try builtin types first, then preserve
             // structure names as StructureRef (concrete names, not type variables).
             let default = d.default.as_ref().map(|te| {
-                resolve_type_name(&te.name)
-                    .unwrap_or_else(|| Type::StructureRef(te.name.clone()))
+                resolve_type_name(&te.name).unwrap_or_else(|| Type::StructureRef(te.name.clone()))
             });
             reify_types::TypeParam {
                 name: d.name.clone(),
@@ -582,33 +582,63 @@ pub fn implicitly_converts_to(from: &Type, to: &Type) -> bool {
     match (from, to) {
         // Rule 1a: Vector<N,Q> -> Tensor<1,N,Q>
         (
-            Type::Vector { n: vn, quantity: vq },
-            Type::Tensor { rank: 1, n: tn, quantity: tq },
+            Type::Vector {
+                n: vn,
+                quantity: vq,
+            },
+            Type::Tensor {
+                rank: 1,
+                n: tn,
+                quantity: tq,
+            },
         ) => vn == tn && vq == tq,
 
         // Rule 1b: Tensor<1,N,Q> -> Vector<N,Q>
         (
-            Type::Tensor { rank: 1, n: tn, quantity: tq },
-            Type::Vector { n: vn, quantity: vq },
+            Type::Tensor {
+                rank: 1,
+                n: tn,
+                quantity: tq,
+            },
+            Type::Vector {
+                n: vn,
+                quantity: vq,
+            },
         ) => tn == vn && tq == vq,
 
         // Rule 2a: Q -> Tensor<0,_,Q>  (N is irrelevant for rank-0)
         (
             from_ty,
-            Type::Tensor { rank: 0, quantity: tq, .. },
+            Type::Tensor {
+                rank: 0,
+                quantity: tq,
+                ..
+            },
         ) => from_ty == tq.as_ref(),
 
         // Rule 2b: Tensor<0,_,Q> -> Q  (N is irrelevant for rank-0)
         (
-            Type::Tensor { rank: 0, quantity: tq, .. },
+            Type::Tensor {
+                rank: 0,
+                quantity: tq,
+                ..
+            },
             to_ty,
         ) => tq.as_ref() == to_ty,
 
         // Rule 3: Tensor<2,N,Q> -> Matrix<N,N,Q>  (one-way, square matrices only)
         // Note: Matrix->Tensor is NOT allowed; the default `false` arm handles that.
         (
-            Type::Tensor { rank: 2, n: tn, quantity: tq },
-            Type::Matrix { m, n: mn, quantity: mq },
+            Type::Tensor {
+                rank: 2,
+                n: tn,
+                quantity: tq,
+            },
+            Type::Matrix {
+                m,
+                n: mn,
+                quantity: mq,
+            },
         ) => tn == m && tn == mn && tq == mq,
 
         _ => false,
@@ -661,10 +691,7 @@ fn resolve_function_overload<'a>(
     functions: &'a [CompiledFunction],
 ) -> OverloadResolution<'a> {
     // All user functions with the given name (for error reporting).
-    let named: Vec<&CompiledFunction> = functions
-        .iter()
-        .filter(|f| f.name == name)
-        .collect();
+    let named: Vec<&CompiledFunction> = functions.iter().filter(|f| f.name == name).collect();
 
     if named.is_empty() {
         return OverloadResolution::NoUserFunctions;
@@ -724,9 +751,11 @@ fn flatten_comparison_chain<'a>(
     right: &'a reify_syntax::Expr,
 ) -> (Vec<&'a reify_syntax::Expr>, Vec<&'a str>) {
     match &left.kind {
-        reify_syntax::ExprKind::BinOp { op: inner_op, left: ll, right: lr }
-            if is_comparison_op(inner_op) =>
-        {
+        reify_syntax::ExprKind::BinOp {
+            op: inner_op,
+            left: ll,
+            right: lr,
+        } if is_comparison_op(inner_op) => {
             // Recurse: flatten the left subtree first, then append current right and op
             let (mut operands, mut ops) = flatten_comparison_chain(inner_op, ll, lr);
             operands.push(right);
@@ -777,14 +806,17 @@ fn resolve_unop(op: &str) -> Option<UnOp> {
 /// Infer the result type of a binary operation given operand types.
 fn infer_binop_type(op: BinOp, left: &Type, right: &Type) -> Type {
     match op {
-        BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge
-        | BinOp::And | BinOp::Or => Type::Bool,
+        BinOp::Eq
+        | BinOp::Ne
+        | BinOp::Lt
+        | BinOp::Le
+        | BinOp::Gt
+        | BinOp::Ge
+        | BinOp::And
+        | BinOp::Or => Type::Bool,
         BinOp::Add | BinOp::Sub => left.clone(), // same dimension required
         BinOp::Mul => match (left, right) {
-            (
-                Type::Scalar { dimension: ld },
-                Type::Scalar { dimension: rd },
-            ) => Type::Scalar {
+            (Type::Scalar { dimension: ld }, Type::Scalar { dimension: rd }) => Type::Scalar {
                 dimension: ld.mul(rd),
             },
             (Type::Scalar { .. }, _) | (_, Type::Scalar { .. }) => {
@@ -799,10 +831,7 @@ fn infer_binop_type(op: BinOp, left: &Type, right: &Type) -> Type {
             _ => Type::Int,
         },
         BinOp::Div => match (left, right) {
-            (
-                Type::Scalar { dimension: ld },
-                Type::Scalar { dimension: rd },
-            ) => {
+            (Type::Scalar { dimension: ld }, Type::Scalar { dimension: rd }) => {
                 let result = ld.div(rd);
                 if result.is_dimensionless() {
                     Type::Real
@@ -864,7 +893,6 @@ impl CompilationScope {
     fn resolve(&self, name: &str) -> Option<(&ValueCellId, &Type)> {
         self.names.get(name).map(|(id, ty, _)| (id, ty))
     }
-
 }
 
 /// Compile an `Expr` from the AST into a `CompiledExpr`.
@@ -878,7 +906,15 @@ fn compile_expr(
     diagnostics: &mut Vec<Diagnostic>,
 ) -> CompiledExpr {
     let mut lambda_counter = 0u32;
-    compile_expr_guarded(expr, scope, enum_defs, functions, diagnostics, None, &mut lambda_counter)
+    compile_expr_guarded(
+        expr,
+        scope,
+        enum_defs,
+        functions,
+        diagnostics,
+        None,
+        &mut lambda_counter,
+    )
 }
 
 /// Compile an `Expr` from the AST into a `CompiledExpr`, with guard context.
@@ -928,22 +964,25 @@ fn compile_expr_guarded(
         }
         reify_syntax::ExprKind::Ident(name) => {
             match scope.resolve(name) {
-                Some((id, ty)) => {
-                    CompiledExpr::value_ref(id.clone(), ty.clone())
-                }
+                Some((id, ty)) => CompiledExpr::value_ref(id.clone(), ty.clone()),
                 None => {
                     // Check if this is a collection sub name — resolve to per-member __list_{name}__{member}
                     if scope.collection_sub_names.contains(name.as_str()) {
-                        if let Some(members) = scope.collection_sub_member_types.get(name.as_str()) {
+                        if let Some(members) = scope.collection_sub_member_types.get(name.as_str())
+                        {
                             // Resolve to the first member's per-member list
                             if let Some((first_member, member_ty)) = members.iter().next() {
-                                let list_id = ValueCellId::new(&scope.entity_name, format!("__list_{}__{}", name, first_member));
+                                let list_id = ValueCellId::new(
+                                    &scope.entity_name,
+                                    format!("__list_{}__{}", name, first_member),
+                                );
                                 let list_type = Type::List(Box::new(member_ty.clone()));
                                 return CompiledExpr::value_ref(list_id, list_type);
                             }
                         }
                         // Fallback: no member types available
-                        let list_id = ValueCellId::new(&scope.entity_name, format!("__list_{}", name));
+                        let list_id =
+                            ValueCellId::new(&scope.entity_name, format!("__list_{}", name));
                         let list_type = Type::List(Box::new(Type::StructureRef(name.clone())));
                         return CompiledExpr::value_ref(list_id, list_type);
                     }
@@ -966,7 +1005,17 @@ fn compile_expr_guarded(
                 // Compile each operand exactly once
                 let compiled_operands: Vec<CompiledExpr> = operands
                     .iter()
-                    .map(|e| compile_expr_guarded(e, scope, enum_defs, functions, diagnostics, current_guard, lambda_counter))
+                    .map(|e| {
+                        compile_expr_guarded(
+                            e,
+                            scope,
+                            enum_defs,
+                            functions,
+                            diagnostics,
+                            current_guard,
+                            lambda_counter,
+                        )
+                    })
                     .collect();
                 // Build pairwise comparison nodes
                 let mut pairs: Vec<CompiledExpr> = Vec::new();
@@ -975,13 +1024,17 @@ fn compile_expr_guarded(
                         Some(bin_op) => {
                             let lhs = compiled_operands[i].clone();
                             let rhs = compiled_operands[i + 1].clone();
-                            let result_type = infer_binop_type(bin_op, &lhs.result_type, &rhs.result_type);
+                            let result_type =
+                                infer_binop_type(bin_op, &lhs.result_type, &rhs.result_type);
                             pairs.push(CompiledExpr::binop(bin_op, lhs, rhs, result_type));
                         }
                         None => {
                             diagnostics.push(
                                 Diagnostic::error(format!("unknown operator: {}", op_str))
-                                    .with_label(DiagnosticLabel::new(expr.span, "unrecognized operator")),
+                                    .with_label(DiagnosticLabel::new(
+                                        expr.span,
+                                        "unrecognized operator",
+                                    )),
                             );
                             return CompiledExpr::literal(Value::Undef, Type::Real);
                         }
@@ -995,8 +1048,24 @@ fn compile_expr_guarded(
                 return acc;
             }
 
-            let compiled_left = compile_expr_guarded(left, scope, enum_defs, functions, diagnostics, current_guard, lambda_counter);
-            let compiled_right = compile_expr_guarded(right, scope, enum_defs, functions, diagnostics, current_guard, lambda_counter);
+            let compiled_left = compile_expr_guarded(
+                left,
+                scope,
+                enum_defs,
+                functions,
+                diagnostics,
+                current_guard,
+                lambda_counter,
+            );
+            let compiled_right = compile_expr_guarded(
+                right,
+                scope,
+                enum_defs,
+                functions,
+                diagnostics,
+                current_guard,
+                lambda_counter,
+            );
             match resolve_binop(op) {
                 Some(bin_op) => {
                     let result_type = infer_binop_type(
@@ -1007,13 +1076,16 @@ fn compile_expr_guarded(
 
                     // Dimension compatibility check for Add/Sub
                     if matches!(bin_op, BinOp::Add | BinOp::Sub) {
-                        let op_name = if bin_op == BinOp::Add { "addition" } else { "subtraction" };
+                        let op_name = if bin_op == BinOp::Add {
+                            "addition"
+                        } else {
+                            "subtraction"
+                        };
                         match (&compiled_left.result_type, &compiled_right.result_type) {
                             // Scalar + Scalar with different dimensions
-                            (
-                                Type::Scalar { dimension: ld },
-                                Type::Scalar { dimension: rd },
-                            ) if ld != rd => {
+                            (Type::Scalar { dimension: ld }, Type::Scalar { dimension: rd })
+                                if ld != rd =>
+                            {
                                 diagnostics.push(
                                     Diagnostic::error(format!(
                                         "dimension mismatch in {}: {} vs {}",
@@ -1021,10 +1093,9 @@ fn compile_expr_guarded(
                                         compiled_left.result_type,
                                         compiled_right.result_type,
                                     ))
-                                    .with_label(DiagnosticLabel::new(
-                                        expr.span,
-                                        "incompatible dimensions",
-                                    )),
+                                    .with_label(
+                                        DiagnosticLabel::new(expr.span, "incompatible dimensions"),
+                                    ),
                                 );
                             }
                             // Scalar + Int/Real or Int/Real + Scalar (dimensioned + dimensionless)
@@ -1037,10 +1108,12 @@ fn compile_expr_guarded(
                                         compiled_left.result_type,
                                         compiled_right.result_type,
                                     ))
-                                    .with_label(DiagnosticLabel::new(
-                                        expr.span,
-                                        "dimensioned + dimensionless",
-                                    )),
+                                    .with_label(
+                                        DiagnosticLabel::new(
+                                            expr.span,
+                                            "dimensioned + dimensionless",
+                                        ),
+                                    ),
                                 );
                             }
                             _ => {}
@@ -1059,7 +1132,15 @@ fn compile_expr_guarded(
             }
         }
         reify_syntax::ExprKind::UnOp { op, operand } => {
-            let compiled_operand = compile_expr_guarded(operand, scope, enum_defs, functions, diagnostics, current_guard, lambda_counter);
+            let compiled_operand = compile_expr_guarded(
+                operand,
+                scope,
+                enum_defs,
+                functions,
+                diagnostics,
+                current_guard,
+                lambda_counter,
+            );
             match resolve_unop(op) {
                 Some(un_op) => {
                     let result_type = match un_op {
@@ -1080,18 +1161,30 @@ fn compile_expr_guarded(
         reify_syntax::ExprKind::FunctionCall { name, args } => {
             let compiled_args: Vec<CompiledExpr> = args
                 .iter()
-                .map(|arg| compile_expr_guarded(arg, scope, enum_defs, functions, diagnostics, current_guard, lambda_counter))
+                .map(|arg| {
+                    compile_expr_guarded(
+                        arg,
+                        scope,
+                        enum_defs,
+                        functions,
+                        diagnostics,
+                        current_guard,
+                        lambda_counter,
+                    )
+                })
                 .collect();
 
-            let arg_types: Vec<Type> = compiled_args.iter().map(|a| a.result_type.clone()).collect();
+            let arg_types: Vec<Type> = compiled_args
+                .iter()
+                .map(|a| a.result_type.clone())
+                .collect();
 
             match resolve_function_overload(name, &arg_types, functions) {
                 OverloadResolution::Resolved(matched_fn) => {
                     // Exactly one user fn matches — emit UserFunctionCall
                     let result_type = matched_fn.return_type.clone();
                     let content_hash = {
-                        let mut h = ContentHash::of(&[6])
-                            .combine(ContentHash::of_str(name));
+                        let mut h = ContentHash::of(&[6]).combine(ContentHash::of_str(name));
                         for arg in &compiled_args {
                             h = h.combine(arg.content_hash);
                         }
@@ -1128,8 +1221,10 @@ fn compile_expr_guarded(
                 }
                 OverloadResolution::NoMatch(named_candidates) => {
                     // User functions with this name exist, but none match — error with candidates
-                    let candidate_sigs: Vec<String> =
-                        named_candidates.iter().map(|f| format_fn_signature(f)).collect();
+                    let candidate_sigs: Vec<String> = named_candidates
+                        .iter()
+                        .map(|f| format_fn_signature(f))
+                        .collect();
                     diagnostics.push(
                         Diagnostic::error(format!(
                             "no matching overload for {}({}), candidates: {}",
@@ -1185,31 +1280,33 @@ fn compile_expr_guarded(
         reify_syntax::ExprKind::MemberAccess { object, member } => {
             // Check if this is a port member access (port_name.member_name)
             if let reify_syntax::ExprKind::Ident(name) = &object.kind
-                && scope.port_names.contains(name.as_str()) {
-                    let composite_key = format!("{}.{}", name, member);
-                    if let Some((id, ty)) = scope.resolve(&composite_key) {
-                        let id = id.clone();
-                        let ty = ty.clone();
-                        return CompiledExpr::value_ref(id, ty);
-                    } else {
-                        diagnostics.push(
-                            Diagnostic::error(format!(
-                                "port '{}' has no member '{}'",
-                                name, member
-                            ))
+                && scope.port_names.contains(name.as_str())
+            {
+                let composite_key = format!("{}.{}", name, member);
+                if let Some((id, ty)) = scope.resolve(&composite_key) {
+                    let id = id.clone();
+                    let ty = ty.clone();
+                    return CompiledExpr::value_ref(id, ty);
+                } else {
+                    diagnostics.push(
+                        Diagnostic::error(format!("port '{}' has no member '{}'", name, member))
                             .with_label(DiagnosticLabel::new(expr.span, "unknown port member")),
-                        );
-                        return CompiledExpr::literal(Value::Undef, Type::Real);
-                    }
+                    );
+                    return CompiledExpr::literal(Value::Undef, Type::Real);
                 }
+            }
 
             // Check if this is an indexed collection member access: collection[i].member
-            if let reify_syntax::ExprKind::IndexAccess { object: idx_obj, index } = &object.kind
+            if let reify_syntax::ExprKind::IndexAccess {
+                object: idx_obj,
+                index,
+            } = &object.kind
                 && let reify_syntax::ExprKind::Ident(name) = &idx_obj.kind
                 && scope.collection_sub_names.contains(name.as_str())
             {
                 // Resolve member type from pre-populated collection_sub_member_types
-                let member_type = match scope.collection_sub_member_types
+                let member_type = match scope
+                    .collection_sub_member_types
                     .get(name.as_str())
                     .and_then(|m| m.get(member.as_str()))
                     .cloned()
@@ -1231,8 +1328,10 @@ fn compile_expr_guarded(
                 if let reify_syntax::ExprKind::NumberLiteral(n) = &index.kind {
                     if n.fract() != 0.0 || *n < 0.0 {
                         diagnostics.push(
-                            Diagnostic::error("collection index must be a non-negative integer literal")
-                                .with_label(DiagnosticLabel::new(expr.span, "invalid index")),
+                            Diagnostic::error(
+                                "collection index must be a non-negative integer literal",
+                            )
+                            .with_label(DiagnosticLabel::new(expr.span, "invalid index")),
                         );
                         return CompiledExpr::literal(Value::Undef, member_type);
                     }
@@ -1246,17 +1345,23 @@ fn compile_expr_guarded(
                 // instance's member value into a List, so indexing gives the right value.
                 let list_member = format!("__list_{}__{}", name, member);
                 let list_id = ValueCellId::new(&scope.entity_name, &list_member);
-                let collection_ref = CompiledExpr::value_ref(
-                    list_id,
-                    Type::List(Box::new(member_type.clone())),
-                );
+                let collection_ref =
+                    CompiledExpr::value_ref(list_id, Type::List(Box::new(member_type.clone())));
                 diagnostics.push(
                     Diagnostic::info(format!(
                         "dynamic collection index: {}[<expr>].{} — result depends on runtime list assembly",
                         name, member
                     ))
                 );
-                let compiled_idx = compile_expr_guarded(index, scope, enum_defs, functions, diagnostics, current_guard, lambda_counter);
+                let compiled_idx = compile_expr_guarded(
+                    index,
+                    scope,
+                    enum_defs,
+                    functions,
+                    diagnostics,
+                    current_guard,
+                    lambda_counter,
+                );
                 return CompiledExpr::index_access(collection_ref, compiled_idx, member_type);
             }
 
@@ -1283,10 +1388,7 @@ fn compile_expr_guarded(
                     return CompiledExpr::literal(Value::Undef, Type::String);
                 }
                 if scope.meta_entries.contains_key(member.as_str()) {
-                    return CompiledExpr::meta_access(
-                        scope.entity_name.clone(),
-                        member.clone(),
-                    );
+                    return CompiledExpr::meta_access(scope.entity_name.clone(), member.clone());
                 } else {
                     diagnostics.push(
                         Diagnostic::error(format!("meta block has no key: {}", member))
@@ -1297,7 +1399,15 @@ fn compile_expr_guarded(
             }
 
             // For non-port member access, check if it's a known collection method
-            let compiled_obj = compile_expr_guarded(object, scope, enum_defs, functions, diagnostics, current_guard, lambda_counter);
+            let compiled_obj = compile_expr_guarded(
+                object,
+                scope,
+                enum_defs,
+                functions,
+                diagnostics,
+                current_guard,
+                lambda_counter,
+            );
             let collection_methods = ["count", "sum", "keys", "values"];
             if collection_methods.contains(&member.as_str()) {
                 // Infer result type from method and object type
@@ -1329,19 +1439,45 @@ fn compile_expr_guarded(
         reify_syntax::ExprKind::ListLiteral(elements) => {
             let compiled_elems: Vec<CompiledExpr> = elements
                 .iter()
-                .map(|e| compile_expr_guarded(e, scope, enum_defs, functions, diagnostics, current_guard, lambda_counter))
+                .map(|e| {
+                    compile_expr_guarded(
+                        e,
+                        scope,
+                        enum_defs,
+                        functions,
+                        diagnostics,
+                        current_guard,
+                        lambda_counter,
+                    )
+                })
                 .collect();
             // Infer element type from first element, default to Real for empty lists
-            let elem_type = compiled_elems.first().map(|e| e.result_type.clone()).unwrap_or(Type::Real);
+            let elem_type = compiled_elems
+                .first()
+                .map(|e| e.result_type.clone())
+                .unwrap_or(Type::Real);
             let result_type = Type::List(Box::new(elem_type));
             CompiledExpr::list_literal(compiled_elems, result_type)
         }
         reify_syntax::ExprKind::SetLiteral(elements) => {
             let compiled_elems: Vec<CompiledExpr> = elements
                 .iter()
-                .map(|e| compile_expr_guarded(e, scope, enum_defs, functions, diagnostics, current_guard, lambda_counter))
+                .map(|e| {
+                    compile_expr_guarded(
+                        e,
+                        scope,
+                        enum_defs,
+                        functions,
+                        diagnostics,
+                        current_guard,
+                        lambda_counter,
+                    )
+                })
                 .collect();
-            let elem_type = compiled_elems.first().map(|e| e.result_type.clone()).unwrap_or(Type::Real);
+            let elem_type = compiled_elems
+                .first()
+                .map(|e| e.result_type.clone())
+                .unwrap_or(Type::Real);
             let result_type = Type::Set(Box::new(elem_type));
             CompiledExpr::set_literal(compiled_elems, result_type)
         }
@@ -1349,19 +1485,57 @@ fn compile_expr_guarded(
             let compiled_entries: Vec<(CompiledExpr, CompiledExpr)> = entries
                 .iter()
                 .map(|(k, v)| {
-                    let ck = compile_expr_guarded(k, scope, enum_defs, functions, diagnostics, current_guard, lambda_counter);
-                    let cv = compile_expr_guarded(v, scope, enum_defs, functions, diagnostics, current_guard, lambda_counter);
+                    let ck = compile_expr_guarded(
+                        k,
+                        scope,
+                        enum_defs,
+                        functions,
+                        diagnostics,
+                        current_guard,
+                        lambda_counter,
+                    );
+                    let cv = compile_expr_guarded(
+                        v,
+                        scope,
+                        enum_defs,
+                        functions,
+                        diagnostics,
+                        current_guard,
+                        lambda_counter,
+                    );
                     (ck, cv)
                 })
                 .collect();
-            let key_type = compiled_entries.first().map(|(k, _)| k.result_type.clone()).unwrap_or(Type::String);
-            let val_type = compiled_entries.first().map(|(_, v)| v.result_type.clone()).unwrap_or(Type::Real);
+            let key_type = compiled_entries
+                .first()
+                .map(|(k, _)| k.result_type.clone())
+                .unwrap_or(Type::String);
+            let val_type = compiled_entries
+                .first()
+                .map(|(_, v)| v.result_type.clone())
+                .unwrap_or(Type::Real);
             let result_type = Type::Map(Box::new(key_type), Box::new(val_type));
             CompiledExpr::map_literal(compiled_entries, result_type)
         }
         reify_syntax::ExprKind::IndexAccess { object, index } => {
-            let compiled_obj = compile_expr_guarded(object, scope, enum_defs, functions, diagnostics, current_guard, lambda_counter);
-            let compiled_idx = compile_expr_guarded(index, scope, enum_defs, functions, diagnostics, current_guard, lambda_counter);
+            let compiled_obj = compile_expr_guarded(
+                object,
+                scope,
+                enum_defs,
+                functions,
+                diagnostics,
+                current_guard,
+                lambda_counter,
+            );
+            let compiled_idx = compile_expr_guarded(
+                index,
+                scope,
+                enum_defs,
+                functions,
+                diagnostics,
+                current_guard,
+                lambda_counter,
+            );
             // Infer result type from collection's element type
             let result_type = match &compiled_obj.result_type {
                 Type::List(inner) => (**inner).clone(),
@@ -1400,11 +1574,27 @@ fn compile_expr_guarded(
             }
         }
         reify_syntax::ExprKind::Match { discriminant, arms } => {
-            let compiled_discriminant = compile_expr_guarded(discriminant, scope, enum_defs, functions, diagnostics, current_guard, lambda_counter);
+            let compiled_discriminant = compile_expr_guarded(
+                discriminant,
+                scope,
+                enum_defs,
+                functions,
+                diagnostics,
+                current_guard,
+                lambda_counter,
+            );
             let compiled_arms: Vec<reify_types::CompiledMatchArm> = arms
                 .iter()
                 .map(|arm| {
-                    let body = compile_expr_guarded(&arm.body, scope, enum_defs, functions, diagnostics, current_guard, lambda_counter);
+                    let body = compile_expr_guarded(
+                        &arm.body,
+                        scope,
+                        enum_defs,
+                        functions,
+                        diagnostics,
+                        current_guard,
+                        lambda_counter,
+                    );
                     reify_types::CompiledMatchArm {
                         patterns: arm.patterns.clone(),
                         body,
@@ -1447,17 +1637,15 @@ fn compile_expr_guarded(
                                 enum_name,
                                 missing.join(", ")
                             ))
-                            .with_label(DiagnosticLabel::new(
-                                expr.span,
-                                "missing variants",
-                            )),
+                            .with_label(DiagnosticLabel::new(expr.span, "missing variants")),
                         );
                     }
                 }
             }
 
             // Content hash: tag [6] + discriminant + all arms
-            let mut content_hash = ContentHash::of(&[6]).combine(compiled_discriminant.content_hash);
+            let mut content_hash =
+                ContentHash::of(&[6]).combine(compiled_discriminant.content_hash);
             for arm in &compiled_arms {
                 for pattern in &arm.patterns {
                     content_hash = content_hash.combine(ContentHash::of_str(pattern));
@@ -1485,9 +1673,33 @@ fn compile_expr_guarded(
             then_branch,
             else_branch,
         } => {
-            let compiled_cond = compile_expr_guarded(condition, scope, enum_defs, functions, diagnostics, current_guard, lambda_counter);
-            let compiled_then = compile_expr_guarded(then_branch, scope, enum_defs, functions, diagnostics, current_guard, lambda_counter);
-            let compiled_else = compile_expr_guarded(else_branch, scope, enum_defs, functions, diagnostics, current_guard, lambda_counter);
+            let compiled_cond = compile_expr_guarded(
+                condition,
+                scope,
+                enum_defs,
+                functions,
+                diagnostics,
+                current_guard,
+                lambda_counter,
+            );
+            let compiled_then = compile_expr_guarded(
+                then_branch,
+                scope,
+                enum_defs,
+                functions,
+                diagnostics,
+                current_guard,
+                lambda_counter,
+            );
+            let compiled_else = compile_expr_guarded(
+                else_branch,
+                scope,
+                enum_defs,
+                functions,
+                diagnostics,
+                current_guard,
+                lambda_counter,
+            );
             let result_type = compiled_then.result_type.clone();
 
             let content_hash = ContentHash::of(&[5])
@@ -1541,8 +1753,15 @@ fn compile_expr_guarded(
             }
 
             // Compile body in the nested scope
-            let compiled_body =
-                compile_expr_guarded(body, &lambda_scope, enum_defs, functions, diagnostics, current_guard, lambda_counter);
+            let compiled_body = compile_expr_guarded(
+                body,
+                &lambda_scope,
+                enum_defs,
+                functions,
+                diagnostics,
+                current_guard,
+                lambda_counter,
+            );
 
             // Capture analysis: collect ValueRefs in body, filter out lambda params
             let lambda_param_set: HashSet<ValueCellId> = param_ids.iter().cloned().collect();
@@ -1561,15 +1780,33 @@ fn compile_expr_guarded(
                 return_type: Box::new(return_type),
             };
 
-            CompiledExpr::lambda(compiled_params, param_ids, compiled_body, captures, result_type)
+            CompiledExpr::lambda(
+                compiled_params,
+                param_ids,
+                compiled_body,
+                captures,
+                result_type,
+            )
         }
-        reify_syntax::ExprKind::Quantifier { kind, variable, collection, predicate } => {
+        reify_syntax::ExprKind::Quantifier {
+            kind,
+            variable,
+            collection,
+            predicate,
+        } => {
             let quant_entity = format!("$quant{}.{}", lambda_counter, scope.entity_name);
             *lambda_counter += 1;
 
             // Compile collection in the outer scope
-            let compiled_collection =
-                compile_expr_guarded(collection, scope, enum_defs, functions, diagnostics, current_guard, lambda_counter);
+            let compiled_collection = compile_expr_guarded(
+                collection,
+                scope,
+                enum_defs,
+                functions,
+                diagnostics,
+                current_guard,
+                lambda_counter,
+            );
 
             // Create a nested scope with the bound variable
             let mut quant_scope = scope.clone();
@@ -1584,8 +1821,15 @@ fn compile_expr_guarded(
                 .insert(variable.clone(), (variable_id.clone(), elem_type, None));
 
             // Compile predicate in the nested scope
-            let compiled_predicate =
-                compile_expr_guarded(predicate, &quant_scope, enum_defs, functions, diagnostics, current_guard, lambda_counter);
+            let compiled_predicate = compile_expr_guarded(
+                predicate,
+                &quant_scope,
+                enum_defs,
+                functions,
+                diagnostics,
+                current_guard,
+                lambda_counter,
+            );
 
             let compiled_kind = match kind {
                 reify_syntax::QuantifierKind::ForAll => reify_types::QuantifierKind::ForAll,
@@ -1635,10 +1879,7 @@ fn compile_trait(
                                 "unresolved type in trait '{}': {}",
                                 trait_decl.name, type_expr.name
                             ))
-                            .with_label(DiagnosticLabel::new(
-                                type_expr.span,
-                                "unknown type name",
-                            )),
+                            .with_label(DiagnosticLabel::new(type_expr.span, "unknown type name")),
                         );
                         Type::Real // fallback
                     }
@@ -1889,8 +2130,7 @@ fn compile_purpose(
             reify_syntax::MemberDecl::MetaBlock(m) => {
                 diagnostics.push(
                     Diagnostic::error(
-                        "meta blocks in purpose bodies are not supported"
-                            .to_string(),
+                        "meta blocks in purpose bodies are not supported".to_string(),
                     )
                     .with_label(DiagnosticLabel::new(
                         m.span,
@@ -1947,9 +2187,7 @@ fn compile_purpose(
 ///
 /// Performs name resolution, type checking, and expression compilation.
 /// Equivalent to `compile_with_prelude(parsed, &[])`.
-pub fn compile(
-    parsed: &reify_syntax::ParsedModule,
-) -> CompiledModule {
+pub fn compile(parsed: &reify_syntax::ParsedModule) -> CompiledModule {
     compile_with_prelude(parsed, &[])
 }
 
@@ -2011,10 +2249,7 @@ pub fn compile_with_prelude(
                             "duplicate entity definition '{}'",
                             field_def.name
                         ))
-                        .with_label(DiagnosticLabel::new(
-                            field_def.span,
-                            "field defined here",
-                        ))
+                        .with_label(DiagnosticLabel::new(field_def.span, "field defined here"))
                         .with_label(DiagnosticLabel::new(
                             *first_span,
                             format!("first defined as {} here", first_kind),
@@ -2064,7 +2299,8 @@ pub fn compile_with_prelude(
                         )),
                     );
                 } else {
-                    seen_entity_names.insert(occurrence.name.clone(), (occurrence.span, "occurrence"));
+                    seen_entity_names
+                        .insert(occurrence.name.clone(), (occurrence.span, "occurrence"));
                 }
             }
             reify_syntax::Declaration::Constraint(constraint) => {
@@ -2086,7 +2322,8 @@ pub fn compile_with_prelude(
                         )),
                     );
                 } else {
-                    seen_entity_names.insert(constraint.name.clone(), (constraint.span, "constraint"));
+                    seen_entity_names
+                        .insert(constraint.name.clone(), (constraint.span, "constraint"));
                 }
             }
             // Import, Purpose handled in pass 2 / purpose pass
@@ -2106,7 +2343,8 @@ pub fn compile_with_prelude(
     // Compile in dependency order after collecting all references:
     // 1. Functions (need all resolution_enums, plus prior compiled functions for self-reference)
     for fn_def in &fn_refs {
-        if let Some(compiled_fn) = compile_function(fn_def, &resolution_enums, &functions, &mut diagnostics)
+        if let Some(compiled_fn) =
+            compile_function(fn_def, &resolution_enums, &functions, &mut diagnostics)
         {
             functions.push(compiled_fn);
         }
@@ -2124,10 +2362,8 @@ pub fn compile_with_prelude(
     let mut trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
     // Collect prelude trait references. We need to hold the prelude trait_defs
     // in scope so trait_registry can borrow from them.
-    let prelude_trait_defs: Vec<&CompiledTrait> = prelude
-        .iter()
-        .flat_map(|m| m.trait_defs.iter())
-        .collect();
+    let prelude_trait_defs: Vec<&CompiledTrait> =
+        prelude.iter().flat_map(|m| m.trait_defs.iter()).collect();
     for t in &prelude_trait_defs {
         trait_registry.insert(t.name.clone(), t);
     }
@@ -2143,10 +2379,8 @@ pub fn compile_with_prelude(
     }
 
     // Build a field registry so entity scopes can resolve field names.
-    let field_registry: HashMap<String, &CompiledField> = fields
-        .iter()
-        .map(|f| (f.name.clone(), f))
-        .collect();
+    let field_registry: HashMap<String, &CompiledField> =
+        fields.iter().map(|f| (f.name.clone(), f)).collect();
 
     let mut pending_bound_checks: Vec<PendingBoundCheck> = Vec::new();
 
@@ -2160,7 +2394,17 @@ pub fn compile_with_prelude(
                     .is_none_or(|(first_span, _)| *first_span == structure.span);
                 if is_first_def {
                     let entity_ref = EntityDefRef::from(structure);
-                    let template = compile_entity(&entity_ref, EntityKind::Structure, &resolution_enums, &functions, &trait_registry, &field_registry, &mut pending_bound_checks, &mut diagnostics, &templates);
+                    let template = compile_entity(
+                        &entity_ref,
+                        EntityKind::Structure,
+                        &resolution_enums,
+                        &functions,
+                        &trait_registry,
+                        &field_registry,
+                        &mut pending_bound_checks,
+                        &mut diagnostics,
+                        &templates,
+                    );
                     templates.push(template);
                 }
             }
@@ -2196,7 +2440,17 @@ pub fn compile_with_prelude(
                     .is_none_or(|(first_span, _)| *first_span == occurrence.span);
                 if is_first_def {
                     let entity_ref = EntityDefRef::from(occurrence);
-                    let template = compile_entity(&entity_ref, EntityKind::Occurrence, &resolution_enums, &functions, &trait_registry, &field_registry, &mut pending_bound_checks, &mut diagnostics, &templates);
+                    let template = compile_entity(
+                        &entity_ref,
+                        EntityKind::Occurrence,
+                        &resolution_enums,
+                        &functions,
+                        &trait_registry,
+                        &field_registry,
+                        &mut pending_bound_checks,
+                        &mut diagnostics,
+                        &templates,
+                    );
                     templates.push(template);
                 }
             }
@@ -2228,18 +2482,23 @@ pub fn compile_with_prelude(
 
         for check in pending_bound_checks {
             match check {
-                PendingBoundCheck::SubComponent { type_args, target_name, span } => {
+                PendingBoundCheck::SubComponent {
+                    type_args,
+                    target_name,
+                    span,
+                } => {
                     // Resolve type_params from the template registry now that
                     // all structures are compiled.
-                    let type_params = if let Some(target) = template_registry.get(target_name.as_str()) {
-                        if target.type_params.is_empty() {
-                            continue; // target has no type params, nothing to check
-                        }
-                        &target.type_params
-                    } else {
-                        // Target structure not found — skip (may be an external/unknown structure)
-                        continue;
-                    };
+                    let type_params =
+                        if let Some(target) = template_registry.get(target_name.as_str()) {
+                            if target.type_params.is_empty() {
+                                continue; // target has no type params, nothing to check
+                            }
+                            &target.type_params
+                        } else {
+                            // Target structure not found — skip (may be an external/unknown structure)
+                            continue;
+                        };
 
                     check_type_param_bounds(
                         type_params,
@@ -2251,7 +2510,12 @@ pub fn compile_with_prelude(
                         span,
                     );
                 }
-                PendingBoundCheck::TraitConformance { type_params, type_args, target_name, span } => {
+                PendingBoundCheck::TraitConformance {
+                    type_params,
+                    type_args,
+                    target_name,
+                    span,
+                } => {
                     check_type_param_bounds(
                         &type_params,
                         &type_args,
@@ -2286,17 +2550,15 @@ pub fn compile_with_prelude(
             if let std::collections::hash_map::Entry::Vacant(e) = seen.entry(key) {
                 e.insert(idx);
             } else {
-                diagnostics.push(
-                    Diagnostic::error(format!(
-                        "duplicate function signature: {}({})",
-                        f.name,
-                        f.params
-                            .iter()
-                            .map(|(_, t)| format!("{}", t))
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    )),
-                );
+                diagnostics.push(Diagnostic::error(format!(
+                    "duplicate function signature: {}({})",
+                    f.name,
+                    f.params
+                        .iter()
+                        .map(|(_, t)| format!("{}", t))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )));
             }
         }
     }
@@ -2305,18 +2567,12 @@ pub fn compile_with_prelude(
     // For composed fields, if the body references other fields, verify that
     // the codomain of the inner field matches the domain of the outer field.
     {
-        let field_registry: HashMap<&str, &CompiledField> = fields
-            .iter()
-            .map(|f| (f.name.as_str(), f))
-            .collect();
+        let field_registry: HashMap<&str, &CompiledField> =
+            fields.iter().map(|f| (f.name.as_str(), f)).collect();
 
         for field in &fields {
             if let CompiledFieldSource::Composed { expr } = &field.source {
-                check_field_composition_types(
-                    expr,
-                    &field_registry,
-                    &mut diagnostics,
-                );
+                check_field_composition_types(expr, &field_registry, &mut diagnostics);
             }
         }
     }
@@ -2648,7 +2904,9 @@ fn compile_entity(
             domain: Box::new(field.domain_type.clone()),
             codomain: Box::new(field.codomain_type.clone()),
         };
-        scope.names.insert(field_name.clone(), (field_id, field_type, None));
+        scope
+            .names
+            .insert(field_name.clone(), (field_id, field_type, None));
     }
 
     // First pass: register all param and let names into the scope so they can
@@ -2662,14 +2920,11 @@ fn compile_entity(
                         Some(t) => t,
                         None => {
                             diagnostics.push(
-                                Diagnostic::error(format!(
-                                    "unresolved type: {}",
-                                    type_expr.name
-                                ))
-                                .with_label(DiagnosticLabel::new(
-                                    type_expr.span,
-                                    "unknown type name",
-                                )),
+                                Diagnostic::error(format!("unresolved type: {}", type_expr.name))
+                                    .with_label(DiagnosticLabel::new(
+                                        type_expr.span,
+                                        "unknown type name",
+                                    )),
                             );
                             Type::Real // fallback
                         }
@@ -2701,18 +2956,12 @@ fn compile_entity(
                 if let Some(first_span) = port_names.get(&port_decl.name) {
                     // Duplicate port name — emit error and skip registration
                     diagnostics.push(
-                        Diagnostic::error(format!(
-                            "duplicate port name '{}'",
-                            port_decl.name
-                        ))
-                        .with_label(DiagnosticLabel::new(
-                            port_decl.span,
-                            "duplicate defined here",
-                        ))
-                        .with_label(DiagnosticLabel::new(
-                            *first_span,
-                            "first defined here",
-                        )),
+                        Diagnostic::error(format!("duplicate port name '{}'", port_decl.name))
+                            .with_label(DiagnosticLabel::new(
+                                port_decl.span,
+                                "duplicate defined here",
+                            ))
+                            .with_label(DiagnosticLabel::new(*first_span, "first defined here")),
                     );
                     duplicate_port_names.insert(port_decl.name.clone());
                     continue;
@@ -2745,13 +2994,18 @@ fn compile_entity(
                 if sub.is_collection {
                     scope.collection_sub_names.insert(sub.name.clone());
                     // Populate member types from already-compiled child template
-                    if let Some(child_tmpl) = compiled_templates.iter().find(|t| t.name == sub.structure_name) {
+                    if let Some(child_tmpl) = compiled_templates
+                        .iter()
+                        .find(|t| t.name == sub.structure_name)
+                    {
                         let member_types: HashMap<String, Type> = child_tmpl
                             .value_cells
                             .iter()
                             .map(|vc| (vc.id.member.clone(), vc.cell_type.clone()))
                             .collect();
-                        scope.collection_sub_member_types.insert(sub.name.clone(), member_types);
+                        scope
+                            .collection_sub_member_types
+                            .insert(sub.name.clone(), member_types);
                     }
                 }
             }
@@ -2832,7 +3086,10 @@ fn compile_entity(
                 // Check if the default is ExprKind::Auto
                 let is_auto = matches!(
                     param.default.as_ref(),
-                    Some(reify_syntax::Expr { kind: reify_syntax::ExprKind::Auto, .. })
+                    Some(reify_syntax::Expr {
+                        kind: reify_syntax::ExprKind::Auto,
+                        ..
+                    })
                 );
 
                 let decl = if is_auto {
@@ -2883,7 +3140,8 @@ fn compile_entity(
                     continue;
                 }
 
-                let compiled_expr = compile_expr(&let_decl.value, &scope, enum_defs, functions, diagnostics);
+                let compiled_expr =
+                    compile_expr(&let_decl.value, &scope, enum_defs, functions, diagnostics);
                 let cell_type = compiled_expr.result_type.clone();
                 let id = ValueCellId::new(entity_name, &let_decl.name);
 
@@ -2925,8 +3183,11 @@ fn compile_entity(
             reify_syntax::MemberDecl::Constraint(constraint) => {
                 // Detect collection count constraint pattern:
                 //   `collection_name.count == expr`  or  `expr == collection_name.count`
-                if let Some((coll_name, count_expr)) = extract_count_constraint(&constraint.expr, &scope.collection_sub_names) {
-                    let compiled_rhs = compile_expr(count_expr, &scope, enum_defs, functions, diagnostics);
+                if let Some((coll_name, count_expr)) =
+                    extract_count_constraint(&constraint.expr, &scope.collection_sub_names)
+                {
+                    let compiled_rhs =
+                        compile_expr(count_expr, &scope, enum_defs, functions, diagnostics);
                     let count_member = format!("__count_{}", coll_name);
                     let count_id = ValueCellId::new(entity_name, &count_member);
                     value_cells.push(ValueCellDecl {
@@ -2943,7 +3204,8 @@ fn compile_entity(
                         sub.count_cell = Some(count_id);
                     }
                 } else {
-                    let compiled_expr = compile_expr(&constraint.expr, &scope, enum_defs, functions, diagnostics);
+                    let compiled_expr =
+                        compile_expr(&constraint.expr, &scope, enum_defs, functions, diagnostics);
 
                     // Check that the constraint expression produces Bool
                     if compiled_expr.result_type != Type::Bool {
@@ -2992,7 +3254,10 @@ fn compile_entity(
                     .args
                     .iter()
                     .map(|(name, expr)| {
-                        (name.clone(), compile_expr(expr, &scope, enum_defs, functions, diagnostics))
+                        (
+                            name.clone(),
+                            compile_expr(expr, &scope, enum_defs, functions, diagnostics),
+                        )
                     })
                     .collect();
 
@@ -3043,11 +3308,13 @@ fn compile_entity(
                 });
             }
             reify_syntax::MemberDecl::Minimize(min_decl) => {
-                let compiled_expr = compile_expr(&min_decl.expr, &scope, enum_defs, functions, diagnostics);
+                let compiled_expr =
+                    compile_expr(&min_decl.expr, &scope, enum_defs, functions, diagnostics);
                 objective = Some(OptimizationObjective::Minimize(compiled_expr));
             }
             reify_syntax::MemberDecl::Maximize(max_decl) => {
-                let compiled_expr = compile_expr(&max_decl.expr, &scope, enum_defs, functions, diagnostics);
+                let compiled_expr =
+                    compile_expr(&max_decl.expr, &scope, enum_defs, functions, diagnostics);
                 objective = Some(OptimizationObjective::Maximize(compiled_expr));
             }
             reify_syntax::MemberDecl::GuardedGroup(g) => {
@@ -3072,11 +3339,15 @@ fn compile_entity(
                 // Skip duplicate port names (already reported in first pass).
                 // The first occurrence is compiled; subsequent duplicates are skipped.
                 if duplicate_port_names.contains(&port_decl.name)
-                    && !port_names.get(&port_decl.name).is_some_and(|&span| span == port_decl.span)
+                    && !port_names
+                        .get(&port_decl.name)
+                        .is_some_and(|&span| span == port_decl.span)
                 {
                     continue;
                 }
-                let direction = port_decl.direction.unwrap_or(reify_types::PortDirection::Bidi);
+                let direction = port_decl
+                    .direction
+                    .unwrap_or(reify_types::PortDirection::Bidi);
 
                 // Verify port type_name exists in the trait registry
                 if !trait_registry.contains_key(&port_decl.type_name) {
@@ -3107,7 +3378,10 @@ fn compile_entity(
 
                             let is_auto = matches!(
                                 param.default.as_ref(),
-                                Some(reify_syntax::Expr { kind: reify_syntax::ExprKind::Auto, .. })
+                                Some(reify_syntax::Expr {
+                                    kind: reify_syntax::ExprKind::Auto,
+                                    ..
+                                })
                             );
 
                             let decl = if is_auto {
@@ -3120,10 +3394,9 @@ fn compile_entity(
                                     span: param.span,
                                 }
                             } else {
-                                let default_expr = param
-                                    .default
-                                    .as_ref()
-                                    .map(|expr| compile_expr(expr, &scope, enum_defs, functions, diagnostics));
+                                let default_expr = param.default.as_ref().map(|expr| {
+                                    compile_expr(expr, &scope, enum_defs, functions, diagnostics)
+                                });
 
                                 ValueCellDecl {
                                     id,
@@ -3138,11 +3411,19 @@ fn compile_entity(
                         }
                         reify_syntax::MemberDecl::Let(let_decl) => {
                             let composite_name = format!("{}.{}", port_decl.name, let_decl.name);
-                            let compiled_expr = compile_expr(&let_decl.value, &scope, enum_defs, functions, diagnostics);
+                            let compiled_expr = compile_expr(
+                                &let_decl.value,
+                                &scope,
+                                enum_defs,
+                                functions,
+                                diagnostics,
+                            );
                             let cell_type = compiled_expr.result_type.clone();
                             let id = ValueCellId::new(entity_name, &composite_name);
 
-                            scope.names.insert(composite_name, (id.clone(), cell_type.clone(), None));
+                            scope
+                                .names
+                                .insert(composite_name, (id.clone(), cell_type.clone(), None));
 
                             let visibility = if let_decl.is_pub {
                                 Visibility::Public
@@ -3160,7 +3441,13 @@ fn compile_entity(
                             });
                         }
                         reify_syntax::MemberDecl::Constraint(constraint) => {
-                            let compiled_expr = compile_expr(&constraint.expr, &scope, enum_defs, functions, diagnostics);
+                            let compiled_expr = compile_expr(
+                                &constraint.expr,
+                                &scope,
+                                enum_defs,
+                                functions,
+                                diagnostics,
+                            );
                             let id = ConstraintNodeId::new(entity_name, constraint_index);
                             port_constraints.push(CompiledConstraint {
                                 id,
@@ -3175,9 +3462,10 @@ fn compile_entity(
                     }
                 }
 
-                let frame_expr = port_decl.frame_expr.as_ref().map(|expr| {
-                    compile_expr(expr, &scope, enum_defs, functions, diagnostics)
-                });
+                let frame_expr = port_decl
+                    .frame_expr
+                    .as_ref()
+                    .map(|expr| compile_expr(expr, &scope, enum_defs, functions, diagnostics));
 
                 ports.push(CompiledPort {
                     name: port_decl.name.clone(),
@@ -3220,9 +3508,10 @@ fn compile_entity(
             }
             reify_syntax::MemberDecl::Chain(chain_decl) => {
                 if chain_decl.elements.len() < 2 {
-                    diagnostics.push(Diagnostic::error(
-                        "chain statement requires at least two elements",
-                    ).with_label(DiagnosticLabel::new(chain_decl.span, "too few elements")));
+                    diagnostics.push(
+                        Diagnostic::error("chain statement requires at least two elements")
+                            .with_label(DiagnosticLabel::new(chain_decl.span, "too few elements")),
+                    );
                 }
                 let ctx = ConnectContext {
                     entity_name,
@@ -3269,7 +3558,14 @@ fn compile_entity(
     for member in structure.members {
         if let reify_syntax::MemberDecl::Let(let_decl) = member
             && is_geometry_let(&let_decl.value, functions)
-            && let Some(ops) = compile_geometry_call(&let_decl.value, &scope, enum_defs, functions, diagnostics, 0)
+            && let Some(ops) = compile_geometry_call(
+                &let_decl.value,
+                &scope,
+                enum_defs,
+                functions,
+                diagnostics,
+                0,
+            )
         {
             realizations.push(RealizationDecl {
                 id: RealizationNodeId::new(entity_name, realization_index),
@@ -3321,20 +3617,23 @@ fn compile_entity(
         let port_hashes = ports.iter().flat_map(|p| {
             // Port identity fields: name, direction, type_name
             std::iter::once(ContentHash::of_str(&p.name))
-            .chain(std::iter::once(ContentHash::of(&[p.direction as u8])))
-            .chain(std::iter::once(ContentHash::of_str(&p.type_name)))
-            // Port member default_expr hashes
-            .chain(p.members.iter().map(|m| {
-                m.default_expr
-                    .as_ref()
-                    .map(|e| e.content_hash)
-                    .unwrap_or(ContentHash(0))
-            }))
-            .chain(p.constraints.iter().map(|c| c.expr.content_hash))
-            // Frame expression hash
-            .chain(std::iter::once(
-                p.frame_expr.as_ref().map(|e| e.content_hash).unwrap_or(ContentHash(0))
-            ))
+                .chain(std::iter::once(ContentHash::of(&[p.direction as u8])))
+                .chain(std::iter::once(ContentHash::of_str(&p.type_name)))
+                // Port member default_expr hashes
+                .chain(p.members.iter().map(|m| {
+                    m.default_expr
+                        .as_ref()
+                        .map(|e| e.content_hash)
+                        .unwrap_or(ContentHash(0))
+                }))
+                .chain(p.constraints.iter().map(|c| c.expr.content_hash))
+                // Frame expression hash
+                .chain(std::iter::once(
+                    p.frame_expr
+                        .as_ref()
+                        .map(|e| e.content_hash)
+                        .unwrap_or(ContentHash(0)),
+                ))
         });
 
         // Connection identity hashes: left_port, operator, right_port, port_mappings, connector_sub
@@ -3527,7 +3826,9 @@ fn compile_entity(
     // Match __count_{name} cells in value_cells to sub_components where count_cell is None.
     for vc in &value_cells {
         if let Some(coll_name) = vc.id.member.strip_prefix("__count_")
-            && let Some(sub) = sub_components.iter_mut().find(|s| s.name == coll_name && s.count_cell.is_none())
+            && let Some(sub) = sub_components
+                .iter_mut()
+                .find(|s| s.name == coll_name && s.count_cell.is_none())
         {
             sub.count_cell = Some(vc.id.clone());
         }
@@ -3544,8 +3845,12 @@ fn compile_entity(
 
     // Port direction validation for occurrences: warn if missing in/out ports.
     if entity_kind == EntityKind::Occurrence {
-        let has_in = ports.iter().any(|p| p.direction == reify_types::PortDirection::In);
-        let has_out = ports.iter().any(|p| p.direction == reify_types::PortDirection::Out);
+        let has_in = ports
+            .iter()
+            .any(|p| p.direction == reify_types::PortDirection::In);
+        let has_out = ports
+            .iter()
+            .any(|p| p.direction == reify_types::PortDirection::Out);
         if !has_in {
             diagnostics.push(
                 Diagnostic::warning(format!(
@@ -3637,11 +3942,17 @@ fn check_type_param_bounds(
         diagnostics.push(
             Diagnostic::error(format!(
                 "too many type arguments for '{}': expected {}, got {}",
-                target_structure_name, type_params.len(), type_args.len()
+                target_structure_name,
+                type_params.len(),
+                type_args.len()
             ))
             .with_label(DiagnosticLabel::new(
                 span,
-                format!("'{}' declares {} type parameter(s)", target_structure_name, type_params.len()),
+                format!(
+                    "'{}' declares {} type parameter(s)",
+                    target_structure_name,
+                    type_params.len()
+                ),
             )),
         );
     }
@@ -3659,7 +3970,10 @@ fn check_type_param_bounds(
                 ))
                 .with_label(DiagnosticLabel::new(
                     span,
-                    format!("'{}' requires a type argument for '{}'", target_structure_name, tp.name),
+                    format!(
+                        "'{}' requires a type argument for '{}'",
+                        target_structure_name, tp.name
+                    ),
                 )),
             );
             continue;
@@ -3749,12 +4063,10 @@ fn trait_satisfies(
 fn resolve_port_name(expr: &reify_syntax::Expr) -> Option<String> {
     match &expr.kind {
         reify_syntax::ExprKind::Ident(name) => Some(name.clone()),
-        reify_syntax::ExprKind::MemberAccess { object, member } => {
-            match &object.kind {
-                reify_syntax::ExprKind::Ident(obj_name) => Some(format!("{}.{}", obj_name, member)),
-                _ => None,
-            }
-        }
+        reify_syntax::ExprKind::MemberAccess { object, member } => match &object.kind {
+            reify_syntax::ExprKind::Ident(obj_name) => Some(format!("{}.{}", obj_name, member)),
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -3837,11 +4149,17 @@ fn auto_match_port_members(
     }
 
     // All members match — produce sorted identity mappings
-    left_names.into_iter().map(|name| (name.clone(), name)).collect()
+    left_names
+        .into_iter()
+        .map(|name| (name.clone(), name))
+        .collect()
 }
 
 /// Check if a source port direction is forward-compatible with a destination port direction.
-fn is_forward_compatible(source: reify_types::PortDirection, dest: reify_types::PortDirection) -> bool {
+fn is_forward_compatible(
+    source: reify_types::PortDirection,
+    dest: reify_types::PortDirection,
+) -> bool {
     use reify_types::PortDirection::*;
     matches!(
         (source, dest),
@@ -3896,8 +4214,9 @@ fn compile_connection(
         Some(name) => name,
         None => {
             diagnostics.push(
-                Diagnostic::error("invalid port reference in connect statement")
-                    .with_label(DiagnosticLabel::new(left_expr.span, "unsupported expression")),
+                Diagnostic::error("invalid port reference in connect statement").with_label(
+                    DiagnosticLabel::new(left_expr.span, "unsupported expression"),
+                ),
             );
             return;
         }
@@ -3906,15 +4225,21 @@ fn compile_connection(
         Some(name) => name,
         None => {
             diagnostics.push(
-                Diagnostic::error("invalid port reference in connect statement")
-                    .with_label(DiagnosticLabel::new(right_expr.span, "unsupported expression")),
+                Diagnostic::error("invalid port reference in connect statement").with_label(
+                    DiagnosticLabel::new(right_expr.span, "unsupported expression"),
+                ),
             );
             return;
         }
     };
 
     // Look up port directions for compatibility checking
-    let dir_of = |name: &str| ctx.ports.iter().find(|p| p.name == name).map(|p| p.direction);
+    let dir_of = |name: &str| {
+        ctx.ports
+            .iter()
+            .find(|p| p.name == name)
+            .map(|p| p.direction)
+    };
     let left_dir = dir_of(&left_port);
     let right_dir = dir_of(&right_port);
 
@@ -3922,14 +4247,20 @@ fn compile_connection(
     let is_bare = |name: &str| !name.contains('.');
     if is_bare(&left_port) && left_dir.is_none() {
         diagnostics.push(
-            Diagnostic::error(format!("undefined port '{}' in connect statement", left_port))
-                .with_label(DiagnosticLabel::new(span, "undefined port")),
+            Diagnostic::error(format!(
+                "undefined port '{}' in connect statement",
+                left_port
+            ))
+            .with_label(DiagnosticLabel::new(span, "undefined port")),
         );
     }
     if is_bare(&right_port) && right_dir.is_none() {
         diagnostics.push(
-            Diagnostic::error(format!("undefined port '{}' in connect statement", right_port))
-                .with_label(DiagnosticLabel::new(span, "undefined port")),
+            Diagnostic::error(format!(
+                "undefined port '{}' in connect statement",
+                right_port
+            ))
+            .with_label(DiagnosticLabel::new(span, "undefined port")),
         );
     }
 
@@ -3954,52 +4285,45 @@ fn compile_connection(
                 _ => true, // Can't check unknown/dotted ports
             }
         }
-        reify_syntax::ConnectOp::Reverse => {
-            match (left_dir, right_dir) {
-                (Some(l), Some(r)) => {
-                    if is_forward_compatible(r, l) {
-                        true
-                    } else {
-                        diagnostics.push(
-                            Diagnostic::error(format!(
-                                "incompatible port directions for connect: {:?} <- {:?}",
-                                l, r
-                            ))
-                            .with_label(DiagnosticLabel::new(span, "incompatible directions")),
-                        );
-                        false
-                    }
+        reify_syntax::ConnectOp::Reverse => match (left_dir, right_dir) {
+            (Some(l), Some(r)) => {
+                if is_forward_compatible(r, l) {
+                    true
+                } else {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "incompatible port directions for connect: {:?} <- {:?}",
+                            l, r
+                        ))
+                        .with_label(DiagnosticLabel::new(span, "incompatible directions")),
+                    );
+                    false
                 }
-                _ => true,
             }
-        }
-        reify_syntax::ConnectOp::Bidirectional => {
-            match (left_dir, right_dir) {
-                (Some(l), Some(r)) => {
-                    if l == reify_types::PortDirection::Bidi && r == reify_types::PortDirection::Bidi {
-                        true
-                    } else {
-                        diagnostics.push(
+            _ => true,
+        },
+        reify_syntax::ConnectOp::Bidirectional => match (left_dir, right_dir) {
+            (Some(l), Some(r)) => {
+                if l == reify_types::PortDirection::Bidi && r == reify_types::PortDirection::Bidi {
+                    true
+                } else {
+                    diagnostics.push(
                             Diagnostic::error(format!(
                                 "bidirectional connect requires both ports to be bidi, got {:?} <-> {:?}",
                                 l, r
                             ))
                             .with_label(DiagnosticLabel::new(span, "both ports must be bidi")),
                         );
-                        false
-                    }
+                    false
                 }
-                _ => true,
             }
-        }
+            _ => true,
+        },
     };
 
     // Create compatibility constraint
     let compat_id = ConstraintNodeId::new(ctx.entity_name, *acc.constraint_index);
-    let compat_expr = CompiledExpr::literal(
-        Value::Bool(compatible),
-        Type::Bool,
-    );
+    let compat_expr = CompiledExpr::literal(Value::Bool(compatible), Type::Bool);
     acc.constraints.push(CompiledConstraint {
         id: compat_id.clone(),
         label: Some(format!("connect_compat_{}_{}", left_port, right_port)),
@@ -4017,7 +4341,10 @@ fn compile_connection(
         let compiled_args: Vec<(String, CompiledExpr)> = params
             .iter()
             .map(|(name, expr)| {
-                (name.clone(), compile_expr(expr, ctx.scope, ctx.enum_defs, ctx.functions, diagnostics))
+                (
+                    name.clone(),
+                    compile_expr(expr, ctx.scope, ctx.enum_defs, ctx.functions, diagnostics),
+                )
             })
             .collect();
 
@@ -4090,7 +4417,11 @@ fn collect_body_refs_inner(expr: &CompiledExpr, refs: &mut Vec<ValueCellId>) {
                 collect_body_refs_inner(arg, refs);
             }
         }
-        CompiledExprKind::Conditional { condition, then_branch, else_branch } => {
+        CompiledExprKind::Conditional {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
             collect_body_refs_inner(condition, refs);
             collect_body_refs_inner(then_branch, refs);
             collect_body_refs_inner(else_branch, refs);
@@ -4109,7 +4440,12 @@ fn collect_body_refs_inner(expr: &CompiledExpr, refs: &mut Vec<ValueCellId>) {
         CompiledExprKind::Lambda { body, .. } => {
             collect_body_refs_inner(body, refs);
         }
-        CompiledExprKind::Quantifier { variable_id, collection, predicate, .. } => {
+        CompiledExprKind::Quantifier {
+            variable_id,
+            collection,
+            predicate,
+            ..
+        } => {
             collect_body_refs_inner(collection, refs);
             // Filter out the quantifier's bound variable from predicate refs,
             // mirroring collect_value_refs_inner in reify-types/src/expr.rs.
@@ -4174,7 +4510,10 @@ fn register_guarded_names(
                     resolve_type_name(&type_expr.name).unwrap_or_else(|| {
                         diagnostics.push(
                             Diagnostic::error(format!("unresolved type: {}", type_expr.name))
-                                .with_label(DiagnosticLabel::new(type_expr.span, "unknown type name")),
+                                .with_label(DiagnosticLabel::new(
+                                    type_expr.span,
+                                    "unknown type name",
+                                )),
                         );
                         Type::Real
                     })
@@ -4322,7 +4661,10 @@ fn compile_guarded_members(
 
                 let is_auto = matches!(
                     param.default.as_ref(),
-                    Some(reify_syntax::Expr { kind: reify_syntax::ExprKind::Auto, .. })
+                    Some(reify_syntax::Expr {
+                        kind: reify_syntax::ExprKind::Auto,
+                        ..
+                    })
                 );
 
                 let decl = if is_auto {
@@ -4335,10 +4677,18 @@ fn compile_guarded_members(
                         span: param.span,
                     }
                 } else {
-                    let default_expr = param
-                        .default
-                        .as_ref()
-                        .map(|expr| { let mut lc = 0u32; compile_expr_guarded(expr, scope, enum_defs, functions, diagnostics, guard_ctx, &mut lc) });
+                    let default_expr = param.default.as_ref().map(|expr| {
+                        let mut lc = 0u32;
+                        compile_expr_guarded(
+                            expr,
+                            scope,
+                            enum_defs,
+                            functions,
+                            diagnostics,
+                            guard_ctx,
+                            &mut lc,
+                        )
+                    });
                     ValueCellDecl {
                         id,
                         kind: ValueCellKind::Param,
@@ -4354,7 +4704,18 @@ fn compile_guarded_members(
                 if is_geometry_let(&let_decl.value, functions) {
                     continue;
                 }
-                let compiled_expr = { let mut lc = 0u32; compile_expr_guarded(&let_decl.value, scope, enum_defs, functions, diagnostics, guard_ctx, &mut lc) };
+                let compiled_expr = {
+                    let mut lc = 0u32;
+                    compile_expr_guarded(
+                        &let_decl.value,
+                        scope,
+                        enum_defs,
+                        functions,
+                        diagnostics,
+                        guard_ctx,
+                        &mut lc,
+                    )
+                };
                 let cell_type = compiled_expr.result_type.clone();
                 let id = ValueCellId::new(entity_name, &let_decl.name);
 
@@ -4374,17 +4735,25 @@ fn compile_guarded_members(
                 });
             }
             reify_syntax::MemberDecl::Constraint(constraint) => {
-                let compiled_expr = { let mut lc = 0u32; compile_expr_guarded(&constraint.expr, scope, enum_defs, functions, diagnostics, guard_ctx, &mut lc) };
+                let compiled_expr = {
+                    let mut lc = 0u32;
+                    compile_expr_guarded(
+                        &constraint.expr,
+                        scope,
+                        enum_defs,
+                        functions,
+                        diagnostics,
+                        guard_ctx,
+                        &mut lc,
+                    )
+                };
                 if compiled_expr.result_type != Type::Bool {
                     diagnostics.push(
                         Diagnostic::warning(format!(
                             "constraint expression has type {}, expected Bool",
                             compiled_expr.result_type,
                         ))
-                        .with_label(DiagnosticLabel::new(
-                            constraint.expr.span,
-                            "expected Bool",
-                        )),
+                        .with_label(DiagnosticLabel::new(constraint.expr.span, "expected Bool")),
                     );
                 }
                 let id = ConstraintNodeId::new(entity_name, *constraint_index);
@@ -4580,10 +4949,7 @@ fn check_trait_conformance(
                                     "type mismatch for trait member '{}': expected {}, got {}",
                                     req.name, expected_type, actual_type
                                 ))
-                                .with_label(DiagnosticLabel::new(
-                                    structure.span,
-                                    "type mismatch",
-                                )),
+                                .with_label(DiagnosticLabel::new(structure.span, "type mismatch")),
                             );
                         }
                     }
@@ -4593,10 +4959,7 @@ fn check_trait_conformance(
                                 "missing required member '{}' (expected type: {})",
                                 req.name, expected_type
                             ))
-                            .with_label(DiagnosticLabel::new(
-                                structure.span,
-                                "required by trait",
-                            )),
+                            .with_label(DiagnosticLabel::new(structure.span, "required by trait")),
                         );
                     }
                 }
@@ -4615,10 +4978,7 @@ fn check_trait_conformance(
                             "missing required sub-component '{}' of type '{}'",
                             req.name, structure_name
                         ))
-                        .with_label(DiagnosticLabel::new(
-                            structure.span,
-                            "required by trait",
-                        )),
+                        .with_label(DiagnosticLabel::new(structure.span, "required by trait")),
                     );
                 }
             }
@@ -4643,8 +5003,14 @@ fn check_trait_conformance(
     // Inject defaults for members not overridden by the structure.
     for default in &all_defaults {
         match &default.kind {
-            DefaultKind::Param { cell_type, default_decl } => {
-                let name = default.name.as_deref().expect("DefaultKind::Param always has Some(name)");
+            DefaultKind::Param {
+                cell_type,
+                default_decl,
+            } => {
+                let name = default
+                    .name
+                    .as_deref()
+                    .expect("DefaultKind::Param always has Some(name)");
                 if !structure_members.contains_key(name) {
                     // Inject default param into value_cells
                     let cell_id = ValueCellId {
@@ -4652,9 +5018,10 @@ fn check_trait_conformance(
                         member: name.to_string(),
                     };
 
-                    let default_expr = default_decl.default.as_ref().map(|expr| {
-                        compile_expr(expr, scope, enum_defs, functions, diagnostics)
-                    });
+                    let default_expr = default_decl
+                        .default
+                        .as_ref()
+                        .map(|expr| compile_expr(expr, scope, enum_defs, functions, diagnostics));
 
                     value_cells.push(ValueCellDecl {
                         id: cell_id,
@@ -4667,20 +5034,18 @@ fn check_trait_conformance(
                 }
             }
             DefaultKind::Let(let_decl) => {
-                let name = default.name.as_deref().expect("DefaultKind::Let always has Some(name)");
+                let name = default
+                    .name
+                    .as_deref()
+                    .expect("DefaultKind::Let always has Some(name)");
                 if !structure_members.contains_key(name) {
                     let cell_id = ValueCellId {
                         entity: structure.name.to_string(),
                         member: name.to_string(),
                     };
 
-                    let compiled_expr = compile_expr(
-                        &let_decl.value,
-                        scope,
-                        enum_defs,
-                        functions,
-                        diagnostics,
-                    );
+                    let compiled_expr =
+                        compile_expr(&let_decl.value, scope, enum_defs, functions, diagnostics);
 
                     value_cells.push(ValueCellDecl {
                         id: cell_id,
@@ -4743,11 +5108,8 @@ fn collect_all_requirements(
 
     let Some(compiled_trait) = trait_registry.get(trait_name) else {
         diagnostics.push(
-            Diagnostic::error(format!(
-                "unresolved trait: '{}'",
-                trait_name
-            ))
-            .with_label(DiagnosticLabel::new(span, "unknown trait")),
+            Diagnostic::error(format!("unresolved trait: '{}'", trait_name))
+                .with_label(DiagnosticLabel::new(span, "unknown trait")),
         );
         return;
     };
@@ -4808,8 +5170,7 @@ fn collect_all_requirements(
             };
 
             if let Some(existing_type) = seen_defaults.get(name.as_str()) {
-                if existing_type != &default_type
-                    && !structure_members.contains_key(name.as_str())
+                if existing_type != &default_type && !structure_members.contains_key(name.as_str())
                 {
                     // Same name + different type + not overridden → conflict
                     diagnostics.push(
@@ -4876,7 +5237,8 @@ fn compile_function(
     // Compile body let bindings
     let mut compiled_lets = Vec::new();
     for let_decl in &fn_def.body.let_bindings {
-        let compiled_expr = compile_expr(&let_decl.value, &scope, enum_defs, functions, diagnostics);
+        let compiled_expr =
+            compile_expr(&let_decl.value, &scope, enum_defs, functions, diagnostics);
         let let_type = compiled_expr.result_type.clone();
         // Register the let binding in scope for subsequent bindings
         scope.register(&let_decl.name, let_type);
@@ -4884,14 +5246,20 @@ fn compile_function(
     }
 
     // Compile result expression
-    let result_expr = compile_expr(&fn_def.body.result_expr, &scope, enum_defs, functions, diagnostics);
+    let result_expr = compile_expr(
+        &fn_def.body.result_expr,
+        &scope,
+        enum_defs,
+        functions,
+        diagnostics,
+    );
 
     // Compute content hash
     let content_hash = {
         let name_hash = ContentHash::of_str(&fn_def.name);
-        let param_hashes = params.iter().map(|(n, t)| {
-            ContentHash::of_str(n).combine(ContentHash::of_str(&format!("{}", t)))
-        });
+        let param_hashes = params
+            .iter()
+            .map(|(n, t)| ContentHash::of_str(n).combine(ContentHash::of_str(&format!("{}", t))));
         let body_hash = result_expr.content_hash;
         let let_hashes = compiled_lets.iter().map(|(_, e)| e.content_hash);
 
@@ -4927,8 +5295,11 @@ fn resolve_field_type_name(
 ) -> Type {
     resolve_type_name(name).unwrap_or_else(|| {
         diagnostics.push(
-            Diagnostic::warning(format!("unresolved field type '{}', treating as structure reference", name))
-                .with_label(DiagnosticLabel::new(span, "unknown type name")),
+            Diagnostic::warning(format!(
+                "unresolved field type '{}', treating as structure reference",
+                name
+            ))
+            .with_label(DiagnosticLabel::new(span, "unknown type name")),
         );
         Type::StructureRef(name.to_string())
     })
@@ -4941,8 +5312,16 @@ fn compile_field(
     functions: &[CompiledFunction],
     diagnostics: &mut Vec<Diagnostic>,
 ) -> CompiledField {
-    let domain_type = resolve_field_type_name(&field_def.domain_type.name, field_def.domain_type.span, diagnostics);
-    let codomain_type = resolve_field_type_name(&field_def.codomain_type.name, field_def.codomain_type.span, diagnostics);
+    let domain_type = resolve_field_type_name(
+        &field_def.domain_type.name,
+        field_def.domain_type.span,
+        diagnostics,
+    );
+    let codomain_type = resolve_field_type_name(
+        &field_def.codomain_type.name,
+        field_def.codomain_type.span,
+        diagnostics,
+    );
 
     // Create a scope for compiling field source expressions
     let scope = CompilationScope::new(&field_def.name);
@@ -4950,7 +5329,9 @@ fn compile_field(
     let source = match &field_def.source {
         reify_syntax::FieldSource::Analytical { expr } => {
             let compiled_expr = compile_expr(expr, &scope, enum_defs, functions, diagnostics);
-            CompiledFieldSource::Analytical { expr: compiled_expr }
+            CompiledFieldSource::Analytical {
+                expr: compiled_expr,
+            }
         }
         reify_syntax::FieldSource::Sampled { config } => {
             let compiled_config: Vec<(String, CompiledExpr)> = config
@@ -4970,15 +5351,17 @@ fn compile_field(
                     (key.clone(), compiled)
                 })
                 .collect();
-            CompiledFieldSource::Sampled { config: compiled_config }
+            CompiledFieldSource::Sampled {
+                config: compiled_config,
+            }
         }
         reify_syntax::FieldSource::Composed { expr } => {
             let compiled_expr = compile_expr(expr, &scope, enum_defs, functions, diagnostics);
-            CompiledFieldSource::Composed { expr: compiled_expr }
+            CompiledFieldSource::Composed {
+                expr: compiled_expr,
+            }
         }
-        reify_syntax::FieldSource::Imported { .. } => {
-            CompiledFieldSource::Imported
-        }
+        reify_syntax::FieldSource::Imported { .. } => CompiledFieldSource::Imported,
     };
 
     // Compute content hash
@@ -4989,9 +5372,9 @@ fn compile_field(
         let source_hash = match &source {
             CompiledFieldSource::Analytical { expr } => expr.content_hash,
             CompiledFieldSource::Sampled { config } => {
-                let hashes = config.iter().map(|(k, e)| {
-                    ContentHash::of_str(k).combine(e.content_hash)
-                });
+                let hashes = config
+                    .iter()
+                    .map(|(k, e)| ContentHash::of_str(k).combine(e.content_hash));
                 ContentHash::combine_all(hashes)
             }
             CompiledFieldSource::Composed { expr } => expr.content_hash,
@@ -5107,7 +5490,12 @@ fn compile_geometry_call(
             };
             // Compile left arg recursively.
             let left_ops = match compile_geometry_call(
-                &args[0], scope, enum_defs, functions, diagnostics, step_offset,
+                &args[0],
+                scope,
+                enum_defs,
+                functions,
+                diagnostics,
+                step_offset,
             ) {
                 Some(ops) => ops,
                 None => {
@@ -5126,7 +5514,12 @@ fn compile_geometry_call(
             let right_offset = step_offset + left_ops.len();
             // Compile right arg recursively.
             let right_ops = match compile_geometry_call(
-                &args[1], scope, enum_defs, functions, diagnostics, right_offset,
+                &args[1],
+                scope,
+                enum_defs,
+                functions,
+                diagnostics,
+                right_offset,
             ) {
                 Some(ops) => ops,
                 None => {
@@ -5171,7 +5564,12 @@ fn compile_geometry_call(
 
             // Compile first arg.
             let first_ops = match compile_geometry_call(
-                &args[0], scope, enum_defs, functions, diagnostics, current_offset,
+                &args[0],
+                scope,
+                enum_defs,
+                functions,
+                diagnostics,
+                current_offset,
             ) {
                 Some(ops) => ops,
                 None => {
@@ -5191,7 +5589,12 @@ fn compile_geometry_call(
             // Fold remaining args left-to-right.
             for (i, arg) in args.iter().enumerate().skip(1) {
                 let arg_ops = match compile_geometry_call(
-                    arg, scope, enum_defs, functions, diagnostics, current_offset,
+                    arg,
+                    scope,
+                    enum_defs,
+                    functions,
+                    diagnostics,
+                    current_offset,
                 ) {
                     Some(ops) => ops,
                     None => {
@@ -5274,7 +5677,10 @@ fn compile_geometry_call(
             }
             Some(vec![CompiledGeometryOp::Primitive {
                 kind: PrimitiveKind::Sphere,
-                args: vec![("radius".to_string(), compiled_args.into_iter().next().unwrap())],
+                args: vec![(
+                    "radius".to_string(),
+                    compiled_args.into_iter().next().unwrap(),
+                )],
             }])
         }
         // --- Patterns ---
@@ -5361,9 +5767,7 @@ fn compile_geometry_call(
                 )));
                 return None;
             }
-            let profiles: Vec<GeomRef> = (0..compiled_args.len())
-                .map(GeomRef::Step)
-                .collect();
+            let profiles: Vec<GeomRef> = (0..compiled_args.len()).map(GeomRef::Step).collect();
             let args: Vec<(String, CompiledExpr)> = compiled_args
                 .into_iter()
                 .enumerate()
@@ -5378,10 +5782,13 @@ fn compile_geometry_call(
         // sweep(profile, path)
         "sweep" => {
             if compiled_args.len() != 2 {
-                diagnostics.push(Diagnostic::error(format!(
-                    "sweep() expects exactly 2 arguments (profile, path), got {}",
-                    compiled_args.len()
-                )).with_label(DiagnosticLabel::new(expr.span, "wrong number of arguments")));
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "sweep() expects exactly 2 arguments (profile, path), got {}",
+                        compiled_args.len()
+                    ))
+                    .with_label(DiagnosticLabel::new(expr.span, "wrong number of arguments")),
+                );
                 return None;
             }
             let profiles: Vec<GeomRef> = vec![GeomRef::Step(0), GeomRef::Step(1)];
@@ -5488,10 +5895,13 @@ fn compile_geometry_call(
         // shell(target, thickness, ...)
         "shell" => {
             if compiled_args.len() < 2 {
-                diagnostics.push(Diagnostic::error(format!(
-                    "shell() expects at least 2 arguments, got {}",
-                    compiled_args.len()
-                )).with_label(DiagnosticLabel::new(expr.span, "wrong number of arguments")));
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "shell() expects at least 2 arguments, got {}",
+                        compiled_args.len()
+                    ))
+                    .with_label(DiagnosticLabel::new(expr.span, "wrong number of arguments")),
+                );
                 return None;
             }
             let mut it = compiled_args.into_iter();
@@ -5512,10 +5922,13 @@ fn compile_geometry_call(
         // thicken(target, offset)
         "thicken" => {
             if compiled_args.len() != 2 {
-                diagnostics.push(Diagnostic::error(format!(
-                    "thicken() expects 2 arguments, got {}",
-                    compiled_args.len()
-                )).with_label(DiagnosticLabel::new(expr.span, "wrong number of arguments")));
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "thicken() expects 2 arguments, got {}",
+                        compiled_args.len()
+                    ))
+                    .with_label(DiagnosticLabel::new(expr.span, "wrong number of arguments")),
+                );
                 return None;
             }
             let mut it = compiled_args.into_iter();
@@ -5531,10 +5944,13 @@ fn compile_geometry_call(
         // draft(target, angle, plane)
         "draft" => {
             if compiled_args.len() != 3 {
-                diagnostics.push(Diagnostic::error(format!(
-                    "draft() expects 3 arguments, got {}",
-                    compiled_args.len()
-                )).with_label(DiagnosticLabel::new(expr.span, "wrong number of arguments")));
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "draft() expects 3 arguments, got {}",
+                        compiled_args.len()
+                    ))
+                    .with_label(DiagnosticLabel::new(expr.span, "wrong number of arguments")),
+                );
                 return None;
             }
             let mut it = compiled_args.into_iter();
@@ -5646,7 +6062,11 @@ mod tests {
     let pattern = linear_pattern(w, 1, 0, 0, 4, 20)
 }"#;
         let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_linpat"));
-        assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:?}",
+            parsed.errors
+        );
         let compiled = compile(&parsed);
         let template = &compiled.templates[0];
         // linear_pattern is a geometry function, so should produce a realization
@@ -5659,7 +6079,13 @@ mod tests {
         // Verify it's a Pattern op with Linear kind
         let op = &template.realizations[0].operations[0];
         assert!(
-            matches!(op, CompiledGeometryOp::Pattern { kind: PatternKind::Linear, .. }),
+            matches!(
+                op,
+                CompiledGeometryOp::Pattern {
+                    kind: PatternKind::Linear,
+                    ..
+                }
+            ),
             "expected Pattern(Linear), got {:?}",
             op
         );
@@ -5672,7 +6098,11 @@ mod tests {
     let mirrored = mirror(w, 0, 0, 0, 1, 0, 0)
 }"#;
         let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_mirror"));
-        assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:?}",
+            parsed.errors
+        );
         let compiled = compile(&parsed);
         let template = &compiled.templates[0];
         assert_eq!(
@@ -5683,7 +6113,13 @@ mod tests {
         );
         let op = &template.realizations[0].operations[0];
         assert!(
-            matches!(op, CompiledGeometryOp::Pattern { kind: PatternKind::Mirror, .. }),
+            matches!(
+                op,
+                CompiledGeometryOp::Pattern {
+                    kind: PatternKind::Mirror,
+                    ..
+                }
+            ),
             "expected Pattern(Mirror), got {:?}",
             op
         );
@@ -5696,7 +6132,11 @@ mod tests {
     let swept = loft(r, r)
 }"#;
         let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_loft"));
-        assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:?}",
+            parsed.errors
+        );
         let compiled = compile(&parsed);
         let template = &compiled.templates[0];
         assert_eq!(
@@ -5707,7 +6147,13 @@ mod tests {
         );
         let op = &template.realizations[0].operations[0];
         assert!(
-            matches!(op, CompiledGeometryOp::Sweep { kind: SweepKind::Loft, .. }),
+            matches!(
+                op,
+                CompiledGeometryOp::Sweep {
+                    kind: SweepKind::Loft,
+                    ..
+                }
+            ),
             "expected Sweep(Loft), got {:?}",
             op
         );
@@ -5720,7 +6166,11 @@ mod tests {
     let hollowed = shell(w, 1)
 }"#;
         let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_shell"));
-        assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:?}",
+            parsed.errors
+        );
         let compiled = compile(&parsed);
         let template = &compiled.templates[0];
         assert_eq!(
@@ -5731,7 +6181,13 @@ mod tests {
         );
         let op = &template.realizations[0].operations[0];
         assert!(
-            matches!(op, CompiledGeometryOp::Modify { kind: ModifyKind::Shell, .. }),
+            matches!(
+                op,
+                CompiledGeometryOp::Modify {
+                    kind: ModifyKind::Shell,
+                    ..
+                }
+            ),
             "expected Modify(Shell), got {:?}",
             op
         );
@@ -5744,7 +6200,11 @@ mod tests {
     let thickened = thicken(w, 2)
 }"#;
         let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_thicken"));
-        assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:?}",
+            parsed.errors
+        );
         let compiled = compile(&parsed);
         let template = &compiled.templates[0];
         assert_eq!(
@@ -5755,7 +6215,13 @@ mod tests {
         );
         let op = &template.realizations[0].operations[0];
         assert!(
-            matches!(op, CompiledGeometryOp::Modify { kind: ModifyKind::Thicken, .. }),
+            matches!(
+                op,
+                CompiledGeometryOp::Modify {
+                    kind: ModifyKind::Thicken,
+                    ..
+                }
+            ),
             "expected Modify(Thicken), got {:?}",
             op
         );
@@ -5768,7 +6234,11 @@ mod tests {
     let drafted = draft(w, 0.1, w)
 }"#;
         let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_draft"));
-        assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:?}",
+            parsed.errors
+        );
         let compiled = compile(&parsed);
         let template = &compiled.templates[0];
         assert_eq!(
@@ -5779,7 +6249,13 @@ mod tests {
         );
         let op = &template.realizations[0].operations[0];
         assert!(
-            matches!(op, CompiledGeometryOp::Modify { kind: ModifyKind::Draft, .. }),
+            matches!(
+                op,
+                CompiledGeometryOp::Modify {
+                    kind: ModifyKind::Draft,
+                    ..
+                }
+            ),
             "expected Modify(Draft), got {:?}",
             op
         );
@@ -5792,7 +6268,11 @@ mod tests {
     let pattern = circular_pattern(w, 0, 0, 0, 0, 0, 1, 6, 360)
 }"#;
         let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_circpat"));
-        assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:?}",
+            parsed.errors
+        );
         let compiled = compile(&parsed);
         let template = &compiled.templates[0];
         assert_eq!(
@@ -5803,7 +6283,13 @@ mod tests {
         );
         let op = &template.realizations[0].operations[0];
         assert!(
-            matches!(op, CompiledGeometryOp::Pattern { kind: PatternKind::Circular, .. }),
+            matches!(
+                op,
+                CompiledGeometryOp::Pattern {
+                    kind: PatternKind::Circular,
+                    ..
+                }
+            ),
             "expected Pattern(Circular), got {:?}",
             op
         );
@@ -5844,7 +6330,11 @@ mod tests {
     let r = union(box(10mm, 10mm, 10mm), box(20mm, 20mm, 20mm))
 }"#;
         let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_union"));
-        assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:?}",
+            parsed.errors
+        );
         let compiled = compile(&parsed);
         let template = &compiled.templates[0];
         // union(box, box) should produce 1 realization with 3 ops
@@ -5855,14 +6345,31 @@ mod tests {
             template.realizations.len()
         );
         let ops = &template.realizations[0].operations;
-        assert_eq!(ops.len(), 3, "expected 3 ops (box, box, union), got {}", ops.len());
+        assert_eq!(
+            ops.len(),
+            3,
+            "expected 3 ops (box, box, union), got {}",
+            ops.len()
+        );
         assert!(
-            matches!(ops[0], CompiledGeometryOp::Primitive { kind: PrimitiveKind::Box, .. }),
+            matches!(
+                ops[0],
+                CompiledGeometryOp::Primitive {
+                    kind: PrimitiveKind::Box,
+                    ..
+                }
+            ),
             "expected Primitive::Box at ops[0], got {:?}",
             ops[0]
         );
         assert!(
-            matches!(ops[1], CompiledGeometryOp::Primitive { kind: PrimitiveKind::Box, .. }),
+            matches!(
+                ops[1],
+                CompiledGeometryOp::Primitive {
+                    kind: PrimitiveKind::Box,
+                    ..
+                }
+            ),
             "expected Primitive::Box at ops[1], got {:?}",
             ops[1]
         );
@@ -5894,42 +6401,80 @@ mod tests {
         let source = r#"structure S {
     let r = union(difference(box(20mm, 20mm, 20mm), cylinder(5mm, 20mm)), sphere(10mm))
 }"#;
-        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_nested_bool"));
-        assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+        let parsed =
+            reify_syntax::parse(source, reify_types::ModulePath::single("test_nested_bool"));
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:?}",
+            parsed.errors
+        );
         let compiled = compile(&parsed);
         let template = &compiled.templates[0];
         assert_eq!(template.realizations.len(), 1, "expected 1 realization");
         let ops = &template.realizations[0].operations;
         assert_eq!(
-            ops.len(), 5,
+            ops.len(),
+            5,
             "expected 5 ops for nested boolean, got {}: {:?}",
-            ops.len(), ops
+            ops.len(),
+            ops
         );
         assert!(
-            matches!(ops[0], CompiledGeometryOp::Primitive { kind: PrimitiveKind::Box, .. }),
-            "ops[0] expected Box, got {:?}", ops[0]
+            matches!(
+                ops[0],
+                CompiledGeometryOp::Primitive {
+                    kind: PrimitiveKind::Box,
+                    ..
+                }
+            ),
+            "ops[0] expected Box, got {:?}",
+            ops[0]
         );
         assert!(
-            matches!(ops[1], CompiledGeometryOp::Primitive { kind: PrimitiveKind::Cylinder, .. }),
-            "ops[1] expected Cylinder, got {:?}", ops[1]
+            matches!(
+                ops[1],
+                CompiledGeometryOp::Primitive {
+                    kind: PrimitiveKind::Cylinder,
+                    ..
+                }
+            ),
+            "ops[1] expected Cylinder, got {:?}",
+            ops[1]
         );
         assert!(
             matches!(
                 ops[2],
-                CompiledGeometryOp::Boolean { op: BooleanOp::Difference, left: GeomRef::Step(0), right: GeomRef::Step(1) }
+                CompiledGeometryOp::Boolean {
+                    op: BooleanOp::Difference,
+                    left: GeomRef::Step(0),
+                    right: GeomRef::Step(1)
+                }
             ),
-            "ops[2] expected Boolean{{Difference,0,1}}, got {:?}", ops[2]
+            "ops[2] expected Boolean{{Difference,0,1}}, got {:?}",
+            ops[2]
         );
         assert!(
-            matches!(ops[3], CompiledGeometryOp::Primitive { kind: PrimitiveKind::Sphere, .. }),
-            "ops[3] expected Sphere, got {:?}", ops[3]
+            matches!(
+                ops[3],
+                CompiledGeometryOp::Primitive {
+                    kind: PrimitiveKind::Sphere,
+                    ..
+                }
+            ),
+            "ops[3] expected Sphere, got {:?}",
+            ops[3]
         );
         assert!(
             matches!(
                 ops[4],
-                CompiledGeometryOp::Boolean { op: BooleanOp::Union, left: GeomRef::Step(2), right: GeomRef::Step(3) }
+                CompiledGeometryOp::Boolean {
+                    op: BooleanOp::Union,
+                    left: GeomRef::Step(2),
+                    right: GeomRef::Step(3)
+                }
             ),
-            "ops[4] expected Boolean{{Union,2,3}}, got {:?}", ops[4]
+            "ops[4] expected Boolean{{Union,2,3}}, got {:?}",
+            ops[4]
         );
     }
 
@@ -5941,19 +6486,28 @@ mod tests {
         let source = r#"structure S {
     let r = union(box(10mm, 10mm, 10mm))
 }"#;
-        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_union_arity"));
-        assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+        let parsed =
+            reify_syntax::parse(source, reify_types::ModulePath::single("test_union_arity"));
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:?}",
+            parsed.errors
+        );
         let compiled = compile(&parsed);
         let template = &compiled.templates[0];
         // Should produce no realization (compilation failed)
         assert_eq!(
-            template.realizations.len(), 0,
+            template.realizations.len(),
+            0,
             "expected 0 realizations for wrong-arity union, got {}",
             template.realizations.len()
         );
         // Should have a diagnostic mentioning "expects 2 arguments"
         assert!(
-            compiled.diagnostics.iter().any(|d| d.message.contains("expects 2 arguments")),
+            compiled
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains("expects 2 arguments")),
             "expected 'expects 2 arguments' diagnostic, got: {:?}",
             compiled.diagnostics
         );
@@ -5968,13 +6522,21 @@ mod tests {
     param w: Scalar = 10mm
     let r = union(w, box(10mm, 10mm, 10mm))
 }"#;
-        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_union_nongeom"));
-        assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+        let parsed = reify_syntax::parse(
+            source,
+            reify_types::ModulePath::single("test_union_nongeom"),
+        );
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:?}",
+            parsed.errors
+        );
         let compiled = compile(&parsed);
         let template = &compiled.templates[0];
         // Should produce no realization (compilation failed)
         assert_eq!(
-            template.realizations.len(), 0,
+            template.realizations.len(),
+            0,
             "expected 0 realizations for non-geometry arg union, got {}",
             template.realizations.len()
         );
@@ -5995,46 +6557,80 @@ mod tests {
     let r = union_all(box(10mm, 10mm, 10mm), box(10mm, 10mm, 10mm), box(10mm, 10mm, 10mm))
 }"#;
         let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_union_all"));
-        assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:?}",
+            parsed.errors
+        );
         let compiled = compile(&parsed);
         let template = &compiled.templates[0];
         assert_eq!(template.realizations.len(), 1, "expected 1 realization");
         let ops = &template.realizations[0].operations;
         assert_eq!(
-            ops.len(), 5,
+            ops.len(),
+            5,
             "expected 5 ops for union_all(3 args), got {}: {:?}",
-            ops.len(), ops
+            ops.len(),
+            ops
         );
         // ops[0]: Box
         assert!(
-            matches!(ops[0], CompiledGeometryOp::Primitive { kind: PrimitiveKind::Box, .. }),
+            matches!(
+                ops[0],
+                CompiledGeometryOp::Primitive {
+                    kind: PrimitiveKind::Box,
+                    ..
+                }
+            ),
             "expected Box at ops[0]"
         );
         // ops[1]: Box
         assert!(
-            matches!(ops[1], CompiledGeometryOp::Primitive { kind: PrimitiveKind::Box, .. }),
+            matches!(
+                ops[1],
+                CompiledGeometryOp::Primitive {
+                    kind: PrimitiveKind::Box,
+                    ..
+                }
+            ),
             "expected Box at ops[1]"
         );
         // ops[2]: Union(Step(0), Step(1))
         assert!(
             matches!(
                 ops[2],
-                CompiledGeometryOp::Boolean { op: BooleanOp::Union, left: GeomRef::Step(0), right: GeomRef::Step(1) }
+                CompiledGeometryOp::Boolean {
+                    op: BooleanOp::Union,
+                    left: GeomRef::Step(0),
+                    right: GeomRef::Step(1)
+                }
             ),
-            "expected Boolean{{Union,Step(0),Step(1)}} at ops[2], got {:?}", ops[2]
+            "expected Boolean{{Union,Step(0),Step(1)}} at ops[2], got {:?}",
+            ops[2]
         );
         // ops[3]: Box
         assert!(
-            matches!(ops[3], CompiledGeometryOp::Primitive { kind: PrimitiveKind::Box, .. }),
+            matches!(
+                ops[3],
+                CompiledGeometryOp::Primitive {
+                    kind: PrimitiveKind::Box,
+                    ..
+                }
+            ),
             "expected Box at ops[3]"
         );
         // ops[4]: Union(Step(2), Step(3))
         assert!(
             matches!(
                 ops[4],
-                CompiledGeometryOp::Boolean { op: BooleanOp::Union, left: GeomRef::Step(2), right: GeomRef::Step(3) }
+                CompiledGeometryOp::Boolean {
+                    op: BooleanOp::Union,
+                    left: GeomRef::Step(2),
+                    right: GeomRef::Step(3)
+                }
             ),
-            "expected Boolean{{Union,Step(2),Step(3)}} at ops[4], got {:?}", ops[4]
+            "expected Boolean{{Union,Step(2),Step(3)}} at ops[4], got {:?}",
+            ops[4]
         );
     }
 
@@ -6046,18 +6642,34 @@ mod tests {
     let r = difference(box(20mm, 20mm, 20mm), box(10mm, 10mm, 10mm))
 }"#;
         let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_diff"));
-        assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:?}",
+            parsed.errors
+        );
         let compiled = compile(&parsed);
         let template = &compiled.templates[0];
         assert_eq!(template.realizations.len(), 1, "expected 1 realization");
         let ops = &template.realizations[0].operations;
         assert_eq!(ops.len(), 3, "expected 3 ops (box, box, difference)");
         assert!(
-            matches!(ops[0], CompiledGeometryOp::Primitive { kind: PrimitiveKind::Box, .. }),
+            matches!(
+                ops[0],
+                CompiledGeometryOp::Primitive {
+                    kind: PrimitiveKind::Box,
+                    ..
+                }
+            ),
             "expected Box at ops[0]"
         );
         assert!(
-            matches!(ops[1], CompiledGeometryOp::Primitive { kind: PrimitiveKind::Box, .. }),
+            matches!(
+                ops[1],
+                CompiledGeometryOp::Primitive {
+                    kind: PrimitiveKind::Box,
+                    ..
+                }
+            ),
             "expected Box at ops[1]"
         );
         assert!(
@@ -6080,7 +6692,11 @@ mod tests {
     let r = intersection(box(10mm, 10mm, 10mm), box(10mm, 10mm, 10mm))
 }"#;
         let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_isect"));
-        assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:?}",
+            parsed.errors
+        );
         let compiled = compile(&parsed);
         let template = &compiled.templates[0];
         assert_eq!(template.realizations.len(), 1, "expected 1 realization");
@@ -6122,11 +6738,17 @@ mod tests {
         let functions: Vec<CompiledFunction> = vec![];
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
-        let result = compile_geometry_call(&expr, &scope, &enum_defs, &functions, &mut diagnostics, 0);
+        let result =
+            compile_geometry_call(&expr, &scope, &enum_defs, &functions, &mut diagnostics, 0);
 
-        assert!(result.is_none(), "unrecognized geometry fn should return None");
         assert!(
-            diagnostics.iter().any(|d| d.message.contains("unsupported geometry function")),
+            result.is_none(),
+            "unrecognized geometry fn should return None"
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.message.contains("unsupported geometry function")),
             "expected 'unsupported geometry function' diagnostic, got: {:?}",
             diagnostics
         );
@@ -6191,8 +6813,7 @@ mod tests {
     param p: Scalar = 5mm
     let result = sweep(p)
 }"#;
-        let parsed =
-            reify_syntax::parse(source, reify_types::ModulePath::single("test_sweep_bad"));
+        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_sweep_bad"));
         assert!(
             parsed.errors.is_empty(),
             "parse errors: {:?}",
@@ -6240,8 +6861,10 @@ structure S {
     param p: Scalar = 5mm
     let result = translate(p, p)
 }"#;
-        let parsed =
-            reify_syntax::parse(source, reify_types::ModulePath::single("test_translate_bad"));
+        let parsed = reify_syntax::parse(
+            source,
+            reify_types::ModulePath::single("test_translate_bad"),
+        );
         assert!(
             parsed.errors.is_empty(),
             "parse errors: {:?}",
@@ -6249,7 +6872,10 @@ structure S {
         );
         let compiled = compile(&parsed);
         assert!(
-            compiled.diagnostics.iter().any(|d| d.message.contains("translate()")),
+            compiled
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains("translate()")),
             "expected translate() arg-count diagnostic, got: {:?}",
             compiled.diagnostics
         );
@@ -6270,7 +6896,10 @@ structure S {
         );
         let compiled = compile(&parsed);
         assert!(
-            compiled.diagnostics.iter().any(|d| d.message.contains("rotate()")),
+            compiled
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains("rotate()")),
             "expected rotate() arg-count diagnostic, got: {:?}",
             compiled.diagnostics
         );
@@ -6282,8 +6911,7 @@ structure S {
     param p: Scalar = 5mm
     let result = scale(p, p, p)
 }"#;
-        let parsed =
-            reify_syntax::parse(source, reify_types::ModulePath::single("test_scale_bad"));
+        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_scale_bad"));
         assert!(
             parsed.errors.is_empty(),
             "parse errors: {:?}",
@@ -6291,7 +6919,10 @@ structure S {
         );
         let compiled = compile(&parsed);
         assert!(
-            compiled.diagnostics.iter().any(|d| d.message.contains("scale()")),
+            compiled
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains("scale()")),
             "expected scale() arg-count diagnostic, got: {:?}",
             compiled.diagnostics
         );
@@ -6314,7 +6945,10 @@ structure S {
         );
         let compiled = compile(&parsed);
         assert!(
-            compiled.diagnostics.iter().any(|d| d.message.contains("rotate_around()")),
+            compiled
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains("rotate_around()")),
             "expected rotate_around() arg-count diagnostic, got: {:?}",
             compiled.diagnostics
         );
@@ -6354,10 +6988,8 @@ structure S {
     param p: Scalar = 5mm
     let result = rotate(p, p, p, p, p)
 }"#;
-        let parsed = reify_syntax::parse(
-            source,
-            reify_types::ModulePath::single("test_rotate_args"),
-        );
+        let parsed =
+            reify_syntax::parse(source, reify_types::ModulePath::single("test_rotate_args"));
         assert!(
             parsed.errors.is_empty(),
             "parse errors: {:?}",
@@ -6382,10 +7014,8 @@ structure S {
     param p: Scalar = 5mm
     let result = scale(p, p)
 }"#;
-        let parsed = reify_syntax::parse(
-            source,
-            reify_types::ModulePath::single("test_scale_args"),
-        );
+        let parsed =
+            reify_syntax::parse(source, reify_types::ModulePath::single("test_scale_args"));
         assert!(
             parsed.errors.is_empty(),
             "parse errors: {:?}",

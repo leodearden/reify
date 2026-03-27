@@ -57,7 +57,10 @@ fn parse_let_with_where_clause() {
     };
     assert_eq!(let_decl.name, "y");
 
-    let wc = let_decl.where_clause.as_ref().expect("expected where_clause");
+    let wc = let_decl
+        .where_clause
+        .as_ref()
+        .expect("expected where_clause");
     match &wc.condition.kind {
         ExprKind::Ident(name) => assert_eq!(name, "active"),
         other => panic!("expected Ident('active'), got {:?}", other),
@@ -82,7 +85,10 @@ fn parse_constraint_with_where_clause() {
         other => panic!("expected Constraint, got {:?}", other),
     };
 
-    let wc = constraint.where_clause.as_ref().expect("expected where_clause");
+    let wc = constraint
+        .where_clause
+        .as_ref()
+        .expect("expected where_clause");
     match &wc.condition.kind {
         ExprKind::Ident(name) => assert_eq!(name, "active"),
         other => panic!("expected Ident('active'), got {:?}", other),
@@ -290,7 +296,11 @@ fn parse_guarded_block_complex_expression() {
 fn bracket_backward_compat_no_guards() {
     let source = reify_test_support::bracket_source();
     let module = reify_syntax::parse(source, reify_types::ModulePath::single("bracket"));
-    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+    assert!(
+        module.errors.is_empty(),
+        "parse errors: {:?}",
+        module.errors
+    );
 
     let structure = match &module.declarations[0] {
         Declaration::Structure(s) => s,
@@ -300,13 +310,19 @@ fn bracket_backward_compat_no_guards() {
     // Member count unchanged
     assert_eq!(structure.members.len(), 10);
 
-    let params: Vec<_> = structure.members.iter()
+    let params: Vec<_> = structure
+        .members
+        .iter()
         .filter(|m| matches!(m, MemberDecl::Param(_)))
         .collect();
-    let lets: Vec<_> = structure.members.iter()
+    let lets: Vec<_> = structure
+        .members
+        .iter()
         .filter(|m| matches!(m, MemberDecl::Let(_)))
         .collect();
-    let constraints: Vec<_> = structure.members.iter()
+    let constraints: Vec<_> = structure
+        .members
+        .iter()
         .filter(|m| matches!(m, MemberDecl::Constraint(_)))
         .collect();
 
@@ -318,13 +334,27 @@ fn bracket_backward_compat_no_guards() {
     for (i, member) in structure.members.iter().enumerate() {
         match member {
             MemberDecl::Param(p) => {
-                assert!(p.where_clause.is_none(), "param {} ({}) should have no where_clause", i, p.name);
+                assert!(
+                    p.where_clause.is_none(),
+                    "param {} ({}) should have no where_clause",
+                    i,
+                    p.name
+                );
             }
             MemberDecl::Let(l) => {
-                assert!(l.where_clause.is_none(), "let {} ({}) should have no where_clause", i, l.name);
+                assert!(
+                    l.where_clause.is_none(),
+                    "let {} ({}) should have no where_clause",
+                    i,
+                    l.name
+                );
             }
             MemberDecl::Constraint(c) => {
-                assert!(c.where_clause.is_none(), "constraint {} should have no where_clause", i);
+                assert!(
+                    c.where_clause.is_none(),
+                    "constraint {} should have no where_clause",
+                    i
+                );
             }
             _ => {}
         }

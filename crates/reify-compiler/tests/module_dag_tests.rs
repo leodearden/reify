@@ -63,11 +63,7 @@ fn diamond_import_compiles_each_module_once() {
     let dir = test_dir("diamond");
 
     // D (leaf) — no imports
-    fs::write(
-        dir.join("d.ri"),
-        "structure D { param v: Scalar = 1mm }",
-    )
-    .unwrap();
+    fs::write(dir.join("d.ri"), "structure D { param v: Scalar = 1mm }").unwrap();
 
     // B depends on D
     fs::write(
@@ -119,11 +115,7 @@ fn topological_order_leaves_first() {
     let dir = test_dir("topo");
 
     // C (leaf)
-    fs::write(
-        dir.join("c.ri"),
-        "structure C { param v: Scalar = 1mm }",
-    )
-    .unwrap();
+    fs::write(dir.join("c.ri"), "structure C { param v: Scalar = 1mm }").unwrap();
 
     // B depends on C
     fs::write(
@@ -155,11 +147,7 @@ fn topological_order_diamond() {
     let dir = test_dir("topo_diamond");
 
     // D (leaf)
-    fs::write(
-        dir.join("d.ri"),
-        "structure D { param v: Scalar = 1mm }",
-    )
-    .unwrap();
+    fs::write(dir.join("d.ri"), "structure D { param v: Scalar = 1mm }").unwrap();
 
     // B depends on D
     fs::write(
@@ -223,10 +211,7 @@ fn entity_import_resolves_structure_name() {
 
     // Compile through the DAG
     let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
-    let result = reify_compiler::module_dag::compile_project(
-        &dir.join("b.ri"),
-        &resolver,
-    );
+    let result = reify_compiler::module_dag::compile_project(&dir.join("b.ri"), &resolver);
     assert!(result.is_ok(), "expected Ok, got {:?}", result.unwrap_err());
 
     let modules = result.unwrap();
@@ -266,10 +251,7 @@ fn local_definition_shadows_import_with_warning() {
 
     // Should compile without errors (local takes precedence)
     let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
-    let result = reify_compiler::module_dag::compile_project(
-        &dir.join("b.ri"),
-        &resolver,
-    );
+    let result = reify_compiler::module_dag::compile_project(&dir.join("b.ri"), &resolver);
     assert!(result.is_ok(), "expected Ok, got {:?}", result.unwrap_err());
 
     let modules = result.unwrap();
@@ -310,10 +292,7 @@ fn pub_import_re_exports_entity() {
 
     // Compile through the DAG
     let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
-    let result = reify_compiler::module_dag::compile_project(
-        &dir.join("c.ri"),
-        &resolver,
-    );
+    let result = reify_compiler::module_dag::compile_project(&dir.join("c.ri"), &resolver);
     assert!(result.is_ok(), "expected Ok, got {:?}", result.unwrap_err());
 
     let modules = result.unwrap();
@@ -322,7 +301,11 @@ fn pub_import_re_exports_entity() {
 
     // c should have a sub_component referencing Helper
     let c_module = modules.last().unwrap();
-    let template = c_module.templates.iter().find(|t| t.name == "User").unwrap();
+    let template = c_module
+        .templates
+        .iter()
+        .find(|t| t.name == "User")
+        .unwrap();
     assert_eq!(template.sub_components.len(), 1);
     assert_eq!(template.sub_components[0].structure_name, "Helper");
 
@@ -353,10 +336,7 @@ fn backward_compatible_single_module_no_imports() {
     fs::write(dir.join("bracket.ri"), source).unwrap();
 
     let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
-    let result = reify_compiler::module_dag::compile_project(
-        &dir.join("bracket.ri"),
-        &resolver,
-    );
+    let result = reify_compiler::module_dag::compile_project(&dir.join("bracket.ri"), &resolver);
     assert!(result.is_ok(), "expected Ok, got {:?}", result.unwrap_err());
 
     let modules = result.unwrap();
@@ -404,11 +384,7 @@ fn dag_recovers_after_parse_error_in_dependency() {
     );
 
     // Fix module b on disk
-    fs::write(
-        dir.join("b.ri"),
-        "structure B { param y: Scalar = 2mm }",
-    )
-    .unwrap();
+    fs::write(dir.join("b.ri"), "structure B { param y: Scalar = 2mm }").unwrap();
 
     // Second attempt on the SAME dag instance: should succeed
     // This proves in_progress was cleaned up after the first failure
@@ -458,7 +434,10 @@ fn compiled_import_preserves_kind_and_is_pub() {
 
     // First import: `pub import a.Helper` → Entity("Helper"), is_pub=true
     let imp0 = &b_module.imports[0];
-    assert_eq!(imp0.kind, reify_syntax::ImportKind::Entity("Helper".to_string()));
+    assert_eq!(
+        imp0.kind,
+        reify_syntax::ImportKind::Entity("Helper".to_string())
+    );
     assert!(imp0.is_pub, "first import should be pub");
 
     // Second import: `import a` → Module, is_pub=false

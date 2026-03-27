@@ -58,10 +58,10 @@ fn eval_guard_true_includes_members() {
         .guarded_group(
             guard_expr,
             guard_id.clone(),
-            vec![x_decl],       // members
-            vec![],             // constraints
-            vec![],             // else_members
-            vec![],             // else_constraints
+            vec![x_decl], // members
+            vec![],       // constraints
+            vec![],       // else_members
+            vec![],       // else_constraints
         )
         .build();
 
@@ -115,10 +115,10 @@ fn eval_guard_false_includes_else() {
         .guarded_group(
             guard_expr,
             guard_id.clone(),
-            vec![x_decl],       // members (active when true)
-            vec![],             // constraints
-            vec![y_decl],       // else_members (active when false)
-            vec![],             // else_constraints
+            vec![x_decl], // members (active when true)
+            vec![],       // constraints
+            vec![y_decl], // else_members (active when false)
+            vec![],       // else_constraints
         )
         .build();
 
@@ -170,10 +170,10 @@ fn eval_guard_undef_members_indeterminate() {
         .guarded_group(
             guard_expr,
             guard_id.clone(),
-            vec![x_decl],       // members
-            vec![],             // constraints
-            vec![y_decl],       // else_members
-            vec![],             // else_constraints
+            vec![x_decl], // members
+            vec![],       // constraints
+            vec![y_decl], // else_members
+            vec![],       // else_constraints
         )
         .build();
 
@@ -208,12 +208,14 @@ fn eval_guard_undef_members_indeterminate() {
     let snapshot = engine.snapshot().expect("snapshot should exist after eval");
     let (_, x_det) = snapshot.values.get(&x_id).expect("x in snapshot");
     assert_eq!(
-        *x_det, DeterminacyState::Undetermined,
+        *x_det,
+        DeterminacyState::Undetermined,
         "guarded member x determinacy should be Undetermined when guard is Undef"
     );
     let (_, y_det) = snapshot.values.get(&y_id).expect("y in snapshot");
     assert_eq!(
-        *y_det, DeterminacyState::Undetermined,
+        *y_det,
+        DeterminacyState::Undetermined,
         "else member y determinacy should be Undetermined when guard is Undef"
     );
 }
@@ -246,10 +248,10 @@ fn guard_change_triggers_re_elaboration() {
         .guarded_group(
             guard_expr,
             guard_id.clone(),
-            vec![x_decl],       // members (active when true)
-            vec![],             // constraints
-            vec![y_decl],       // else_members (active when false)
-            vec![],             // else_constraints
+            vec![x_decl], // members (active when true)
+            vec![],       // constraints
+            vec![y_decl], // else_members (active when false)
+            vec![],       // else_constraints
         )
         .build();
 
@@ -277,7 +279,8 @@ fn guard_change_triggers_re_elaboration() {
     );
 
     // Edit 'active' from true to false
-    let edit_result = engine.edit_param(active_id.clone(), Value::Bool(false))
+    let edit_result = engine
+        .edit_param(active_id.clone(), Value::Bool(false))
         .expect("edit_param should succeed");
 
     // (1) Topology fingerprint should change (guard state flipped)
@@ -351,10 +354,10 @@ fn eval_guarded_constraint_enforced_only_when_active() {
         .guarded_group(
             guard_expr.clone(),
             guard_id.clone(),
-            vec![x_decl.clone()],          // members
+            vec![x_decl.clone()],             // members
             vec![guarded_constraint.clone()], // constraints
-            vec![],                         // else_members
-            vec![],                         // else_constraints
+            vec![],                           // else_members
+            vec![],                           // else_constraints
         )
         .build();
 
@@ -362,13 +365,15 @@ fn eval_guarded_constraint_enforced_only_when_active() {
         .template(template_true)
         .build();
 
-    let checker_true = MockConstraintChecker::new()
-        .with_result(constraint_id.clone(), Satisfaction::Violated);
+    let checker_true =
+        MockConstraintChecker::new().with_result(constraint_id.clone(), Satisfaction::Violated);
     let mut engine_true = Engine::new(Box::new(checker_true), None);
     let check_result_true = engine_true.check(&module_true);
 
     // When guard=true, the constraint should be in results
-    let has_constraint = check_result_true.constraint_results.iter()
+    let has_constraint = check_result_true
+        .constraint_results
+        .iter()
         .any(|cr| cr.id == constraint_id);
     assert!(
         has_constraint,
@@ -399,10 +404,10 @@ fn eval_guarded_constraint_enforced_only_when_active() {
         .guarded_group(
             guard_expr2,
             guard_id.clone(),
-            vec![x_decl2],                    // members
-            vec![guarded_constraint2],        // constraints
-            vec![],                           // else_members
-            vec![],                           // else_constraints
+            vec![x_decl2],             // members
+            vec![guarded_constraint2], // constraints
+            vec![],                    // else_members
+            vec![],                    // else_constraints
         )
         .build();
 
@@ -410,17 +415,23 @@ fn eval_guarded_constraint_enforced_only_when_active() {
         .template(template_false)
         .build();
 
-    let checker_false = MockConstraintChecker::new()
-        .with_result(constraint_id.clone(), Satisfaction::Violated);
+    let checker_false =
+        MockConstraintChecker::new().with_result(constraint_id.clone(), Satisfaction::Violated);
     let mut engine_false = Engine::new(Box::new(checker_false), None);
     let check_result_false = engine_false.check(&module_false);
 
     // When guard=false, the guarded constraint should NOT be in results
-    let has_constraint_false = check_result_false.constraint_results.iter()
+    let has_constraint_false = check_result_false
+        .constraint_results
+        .iter()
         .any(|cr| cr.id == constraint_id);
     assert!(
         !has_constraint_false,
         "when guard is false, guarded constraint should NOT be checked or appear in results, but got: {:?}",
-        check_result_false.constraint_results.iter().map(|cr| (&cr.id, &cr.satisfaction)).collect::<Vec<_>>()
+        check_result_false
+            .constraint_results
+            .iter()
+            .map(|cr| (&cr.id, &cr.satisfaction))
+            .collect::<Vec<_>>()
     );
 }

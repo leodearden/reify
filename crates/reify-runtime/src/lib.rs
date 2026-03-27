@@ -283,7 +283,7 @@ mod tests {
         // 7. Execute via SequentialScheduler
         use reify_eval::cache::{EvalOutcome, NodeId};
         use reify_eval::demand::DemandRegistry;
-        use reify_eval::deps::{build_trace_map, ReverseDependencyIndex};
+        use reify_eval::deps::{ReverseDependencyIndex, build_trace_map};
         use reify_eval::dirty::{compute_dirty_cone, compute_eval_set};
         use reify_eval::graph::EvaluationGraph;
         use reify_test_support::bracket_compiled_module;
@@ -319,7 +319,11 @@ mod tests {
         // Verify dirty cone: volume, c1, and the realization (depends on width)
         assert!(dirty.contains(&NodeId::Value(ValueCellId::new(e, "volume"))));
         assert!(dirty.contains(&c1));
-        assert!(dirty.contains(&NodeId::Realization(reify_types::RealizationNodeId::new(e, 0))));
+        assert!(
+            dirty.contains(&NodeId::Realization(reify_types::RealizationNodeId::new(
+                e, 0
+            )))
+        );
         assert_eq!(dirty.len(), 3);
 
         // 5. Compute eval set

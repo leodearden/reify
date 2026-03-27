@@ -36,7 +36,12 @@ fn eval_auto_param_undef_auto() {
 
     let template = TopologyTemplateBuilder::new("S")
         .auto_param("S", "x", Type::length())
-        .param("S", "y", Type::length(), Some(CompiledExpr::literal(mm(5.0), Type::length())))
+        .param(
+            "S",
+            "y",
+            Type::length(),
+            Some(CompiledExpr::literal(mm(5.0), Type::length())),
+        )
         .build();
 
     let module = CompiledModuleBuilder::new(ModulePath::single("test"))
@@ -50,7 +55,11 @@ fn eval_auto_param_undef_auto() {
     // x should be Undef in the values map
     let x_id = ValueCellId::new("S", "x");
     let x_val = result.values.get(&x_id).expect("x should be in values");
-    assert!(x_val.is_undef(), "auto param x should be Undef, got {:?}", x_val);
+    assert!(
+        x_val.is_undef(),
+        "auto param x should be Undef, got {:?}",
+        x_val
+    );
 
     // y should be evaluated to 0.005 (5mm in SI)
     let y_id = ValueCellId::new("S", "y");
@@ -61,10 +70,18 @@ fn eval_auto_param_undef_auto() {
     let snapshot = engine.snapshot().expect("snapshot should exist after eval");
     let (x_snap_val, x_det) = snapshot.values.get(&x_id).expect("x in snapshot");
     assert!(x_snap_val.is_undef(), "snapshot x should be Undef");
-    assert_eq!(*x_det, DeterminacyState::Auto, "snapshot x determinacy should be Auto");
+    assert_eq!(
+        *x_det,
+        DeterminacyState::Auto,
+        "snapshot x determinacy should be Auto"
+    );
 
     let (_, y_det) = snapshot.values.get(&y_id).expect("y in snapshot");
-    assert_eq!(*y_det, DeterminacyState::Determined, "snapshot y determinacy should be Determined");
+    assert_eq!(
+        *y_det,
+        DeterminacyState::Determined,
+        "snapshot y determinacy should be Determined"
+    );
 }
 
 /// eval_cached: auto param gets (Undef, Auto), and override applies Determined.
@@ -74,7 +91,12 @@ fn eval_cached_auto_param() {
 
     let template = TopologyTemplateBuilder::new("S")
         .auto_param("S", "x", Type::length())
-        .param("S", "y", Type::length(), Some(CompiledExpr::literal(mm(5.0), Type::length())))
+        .param(
+            "S",
+            "y",
+            Type::length(),
+            Some(CompiledExpr::literal(mm(5.0), Type::length())),
+        )
         .build();
 
     let module = CompiledModuleBuilder::new(ModulePath::single("test"))
@@ -87,14 +109,28 @@ fn eval_cached_auto_param() {
     // First eval_cached: auto param should be (Undef, Auto)
     let result = engine.eval_cached(&module, VersionId(1));
     let x_id = ValueCellId::new("S", "x");
-    let x_val = result.eval_result.values.get(&x_id).expect("x should be in values");
-    assert!(x_val.is_undef(), "auto param x should be Undef on cold start");
+    let x_val = result
+        .eval_result
+        .values
+        .get(&x_id)
+        .expect("x should be in values");
+    assert!(
+        x_val.is_undef(),
+        "auto param x should be Undef on cold start"
+    );
 
     // Now set an override for the auto param and re-evaluate
     engine.set_param_and_invalidate(&x_id, mm(10.0));
     let result2 = engine.eval_cached(&module, VersionId(2));
-    let x_val2 = result2.eval_result.values.get(&x_id).expect("x should be in values");
-    assert!(!x_val2.is_undef(), "auto param x should have override value");
+    let x_val2 = result2
+        .eval_result
+        .values
+        .get(&x_id)
+        .expect("x should be in values");
+    assert!(
+        !x_val2.is_undef(),
+        "auto param x should have override value"
+    );
 }
 
 /// Constraint on auto param → Indeterminate (Undef propagates).
@@ -143,7 +179,11 @@ fn e2e_parse_compile_eval_auto_param() {
     constraint x > 2mm
 }"#;
     let parsed = reify_syntax::parse(source, ModulePath::single("e2e_auto"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
     // Check that x is ValueCellKind::Auto
@@ -163,19 +203,31 @@ fn e2e_parse_compile_eval_auto_param() {
     // x should be Undef
     let x_id = ValueCellId::new("S", "x");
     let x_val = result.values.get(&x_id).expect("x should be in values");
-    assert!(x_val.is_undef(), "auto param x should be Undef, got {:?}", x_val);
+    assert!(
+        x_val.is_undef(),
+        "auto param x should be Undef, got {:?}",
+        x_val
+    );
 
     // y should be ~0.005 SI (5mm)
     let y_id = ValueCellId::new("S", "y");
     let y_val = result.values.get(&y_id).expect("y should be in values");
     let y_f64 = y_val.as_f64().expect("y should be a number");
-    assert!((y_f64 - 0.005).abs() < 1e-10, "y should be 0.005 SI, got {}", y_f64);
+    assert!(
+        (y_f64 - 0.005).abs() < 1e-10,
+        "y should be 0.005 SI, got {}",
+        y_f64
+    );
 
     // z = y * 2 ≈ 0.01 SI
     let z_id = ValueCellId::new("S", "z");
     let z_val = result.values.get(&z_id).expect("z should be in values");
     let z_f64 = z_val.as_f64().expect("z should be a number");
-    assert!((z_f64 - 0.01).abs() < 1e-10, "z should be 0.01 SI, got {}", z_f64);
+    assert!(
+        (z_f64 - 0.01).abs() < 1e-10,
+        "z should be 0.01 SI, got {}",
+        z_f64
+    );
 
     // Constraint on x should be Indeterminate
     assert_eq!(result.constraint_results.len(), 1);
@@ -199,8 +251,8 @@ fn e2e_parse_compile_eval_auto_param() {
 
 fn engine_reports_violations() {
     let module = bracket_compiled_module();
-    let checker = MockConstraintChecker::new()
-        .with_result(cnid("Bracket", 0), Satisfaction::Violated);
+    let checker =
+        MockConstraintChecker::new().with_result(cnid("Bracket", 0), Satisfaction::Violated);
     let mut engine = reify_eval::Engine::new(Box::new(checker), None);
     let result = engine.check(&module);
 
@@ -254,8 +306,18 @@ fn eval_state_available_atomically_after_eval() {
     use reify_types::{CompiledExpr, ModulePath, Type, ValueCellId};
 
     let template = TopologyTemplateBuilder::new("S")
-        .param("S", "w", Type::length(), Some(CompiledExpr::literal(mm(10.0), Type::length())))
-        .param("S", "h", Type::length(), Some(CompiledExpr::literal(mm(20.0), Type::length())))
+        .param(
+            "S",
+            "w",
+            Type::length(),
+            Some(CompiledExpr::literal(mm(10.0), Type::length())),
+        )
+        .param(
+            "S",
+            "h",
+            Type::length(),
+            Some(CompiledExpr::literal(mm(20.0), Type::length())),
+        )
         .build();
 
     let module = CompiledModuleBuilder::new(ModulePath::single("test"))
@@ -268,17 +330,28 @@ fn eval_state_available_atomically_after_eval() {
 
     // eval_state should be available
     assert!(engine.is_initialized());
-    let state = engine.eval_state().expect("eval_state should be Some after eval()");
+    let state = engine
+        .eval_state()
+        .expect("eval_state should be Some after eval()");
 
     // snapshot should contain the values
     let w_id = ValueCellId::new("S", "w");
     let h_id = ValueCellId::new("S", "h");
-    assert!(state.snapshot.values.get(&w_id).is_some(), "snapshot should contain w");
-    assert!(state.snapshot.values.get(&h_id).is_some(), "snapshot should contain h");
+    assert!(
+        state.snapshot.values.get(&w_id).is_some(),
+        "snapshot should contain w"
+    );
+    assert!(
+        state.snapshot.values.get(&h_id).is_some(),
+        "snapshot should contain h"
+    );
 
     // reverse_index should be populated (has entries for value cells)
     // trace_map should be populated
-    assert!(!state.trace_map.is_empty(), "trace_map should be populated after eval");
+    assert!(
+        !state.trace_map.is_empty(),
+        "trace_map should be populated after eval"
+    );
 
     // snapshot() accessor should also work and return the same snapshot
     let snap = engine.snapshot().expect("snapshot should be Some");
@@ -297,11 +370,18 @@ fn let_binding_evaluation_produces_same_results_with_helper() {
     // Expected: b = 3*2 = 6, a = 6+1 = 7
     let template = TopologyTemplateBuilder::new("S")
         .param(
-            "S", "p", Type::Real,
-            Some(CompiledExpr::literal(reify_types::Value::Real(3.0), Type::Real)),
+            "S",
+            "p",
+            Type::Real,
+            Some(CompiledExpr::literal(
+                reify_types::Value::Real(3.0),
+                Type::Real,
+            )),
         )
         .let_binding(
-            "S", "a", Type::Real,
+            "S",
+            "a",
+            Type::Real,
             binop(
                 BinOp::Add,
                 value_ref("S", "b"),
@@ -309,7 +389,9 @@ fn let_binding_evaluation_produces_same_results_with_helper() {
             ),
         )
         .let_binding(
-            "S", "b", Type::Real,
+            "S",
+            "b",
+            Type::Real,
             binop(
                 BinOp::Mul,
                 value_ref("S", "p"),
@@ -341,7 +423,9 @@ fn let_binding_evaluation_produces_same_results_with_helper() {
     assert_eq!(a_val.as_f64().unwrap(), 7.0, "a should be b+1 = 7.0");
 
     // Verify values also correct after edit_param
-    let result2 = engine.edit_param(p_id.clone(), reify_types::Value::Real(5.0)).unwrap();
+    let result2 = engine
+        .edit_param(p_id.clone(), reify_types::Value::Real(5.0))
+        .unwrap();
 
     let p_val2 = result2.values.get(&p_id).expect("p should be in values");
     assert_eq!(p_val2.as_f64().unwrap(), 5.0, "p should be 5.0 after edit");
@@ -350,10 +434,18 @@ fn let_binding_evaluation_produces_same_results_with_helper() {
     // Let bindings b and a should be re-evaluated since they depend on p.
     // b = 5*2 = 10, a = 10+1 = 11
     let b_val2 = result2.values.get(&b_id).expect("b should be in values");
-    assert_eq!(b_val2.as_f64().unwrap(), 10.0, "b should be p*2 = 10.0 after edit");
+    assert_eq!(
+        b_val2.as_f64().unwrap(),
+        10.0,
+        "b should be p*2 = 10.0 after edit"
+    );
 
     let a_val2 = result2.values.get(&a_id).expect("a should be in values");
-    assert_eq!(a_val2.as_f64().unwrap(), 11.0, "a should be b+1 = 11.0 after edit");
+    assert_eq!(
+        a_val2.as_f64().unwrap(),
+        11.0,
+        "a should be b+1 = 11.0 after edit"
+    );
 }
 
 /// Sub-component param values appear in the eval result with scoped IDs.
@@ -368,7 +460,9 @@ fn sub_component_params_appear_in_eval_result() {
 
     // Parent.rib.height should be width * 0.5 = 80mm * 0.5 = 40mm = 0.04 SI
     let scoped_id = ValueCellId::new("Parent.rib", "height");
-    let val = result.values.get(&scoped_id)
+    let val = result
+        .values
+        .get(&scoped_id)
         .expect("Parent.rib.height should be in eval result values");
     let f = val.as_f64().expect("should be numeric");
     assert!(
@@ -390,7 +484,9 @@ fn sub_component_child_lets_evaluated() {
 
     // Parent.rib.half_h should be height / 2 = 40mm / 2 = 20mm = 0.02 SI
     let scoped_id = ValueCellId::new("Parent.rib", "half_h");
-    let val = result.values.get(&scoped_id)
+    let val = result
+        .values
+        .get(&scoped_id)
         .expect("Parent.rib.half_h should be in eval result values");
     let f = val.as_f64().expect("should be numeric");
     assert!(
@@ -407,12 +503,22 @@ fn sub_component_default_param_when_no_arg() {
 
     // Child: param height = 10mm
     let child_template = TopologyTemplateBuilder::new("Child")
-        .param("Child", "height", Type::length(), Some(CompiledExpr::literal(mm(10.0), Type::length())))
+        .param(
+            "Child",
+            "height",
+            Type::length(),
+            Some(CompiledExpr::literal(mm(10.0), Type::length())),
+        )
         .build();
 
     // Parent: param width = 80mm, sub rib = Child() — no args
     let parent_template = TopologyTemplateBuilder::new("Parent")
-        .param("Parent", "width", Type::length(), Some(CompiledExpr::literal(mm(80.0), Type::length())))
+        .param(
+            "Parent",
+            "width",
+            Type::length(),
+            Some(CompiledExpr::literal(mm(80.0), Type::length())),
+        )
         .sub_component("rib", "Child", vec![])
         .build();
 
@@ -427,7 +533,9 @@ fn sub_component_default_param_when_no_arg() {
 
     // Parent.rib.height should use Child's default: 10mm = 0.01 SI
     let scoped_id = ValueCellId::new("Parent.rib", "height");
-    let val = result.values.get(&scoped_id)
+    let val = result
+        .values
+        .get(&scoped_id)
         .expect("Parent.rib.height should be in eval result values");
     let f = val.as_f64().expect("should be numeric");
     assert!(
@@ -444,7 +552,12 @@ fn sub_component_missing_structure_skipped_gracefully() {
 
     // Parent template with sub referencing nonexistent "NonExistent"
     let parent_template = TopologyTemplateBuilder::new("Parent")
-        .param("Parent", "width", Type::length(), Some(CompiledExpr::literal(mm(80.0), Type::length())))
+        .param(
+            "Parent",
+            "width",
+            Type::length(),
+            Some(CompiledExpr::literal(mm(80.0), Type::length())),
+        )
         .sub_component("thing", "NonExistent", vec![])
         .build();
 
@@ -458,7 +571,9 @@ fn sub_component_missing_structure_skipped_gracefully() {
 
     // Should not panic; Parent's own param should be evaluated correctly
     let width_id = ValueCellId::new("Parent", "width");
-    let val = result.values.get(&width_id)
+    let val = result
+        .values
+        .get(&width_id)
         .expect("Parent.width should be in values");
     let f = val.as_f64().expect("should be numeric");
     assert!(
@@ -468,10 +583,14 @@ fn sub_component_missing_structure_skipped_gracefully() {
     );
 
     // No scoped entries for "Parent.thing" should exist
-    let has_scoped = result.values.iter().any(|(id, _)| {
-        format!("{}", id).contains("Parent.thing")
-    });
-    assert!(!has_scoped, "no Parent.thing entries should exist when structure is missing");
+    let has_scoped = result
+        .values
+        .iter()
+        .any(|(id, _)| format!("{}", id).contains("Parent.thing"));
+    assert!(
+        !has_scoped,
+        "no Parent.thing entries should exist when structure is missing"
+    );
 }
 
 /// Engine-level verification: stdlib functions evaluate correctly in let-bindings.
@@ -485,7 +604,11 @@ fn engine_eval_stdlib_function_in_let() {
     let diag = sqrt(w * w + h * h)
 }"#;
     let parsed = reify_syntax::parse(source, ModulePath::single("stdlib_test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
     let checker = MockConstraintChecker::new();
@@ -494,14 +617,17 @@ fn engine_eval_stdlib_function_in_let() {
 
     // diag = sqrt(0.08^2 + 0.1^2) = sqrt(0.0064 + 0.01) = sqrt(0.0164) ≈ 0.128062
     let diag_id = ValueCellId::new("S", "diag");
-    let val = result.values.get(&diag_id)
+    let val = result
+        .values
+        .get(&diag_id)
         .expect("S.diag should be in eval result");
     let f = val.as_f64().expect("should be numeric");
     let expected = (0.08_f64.powi(2) + 0.1_f64.powi(2)).sqrt();
     assert!(
         (f - expected).abs() < 1e-10,
         "S.diag should be ~{} (sqrt of w²+h²), got {}",
-        expected, f
+        expected,
+        f
     );
 }
 
@@ -511,7 +637,12 @@ fn engine_eval_with_import() {
     use reify_types::{CompiledExpr, ModulePath, Type, ValueCellId};
 
     let template = TopologyTemplateBuilder::new("S")
-        .param("S", "x", Type::length(), Some(CompiledExpr::literal(mm(50.0), Type::length())))
+        .param(
+            "S",
+            "x",
+            Type::length(),
+            Some(CompiledExpr::literal(mm(50.0), Type::length())),
+        )
         .build();
 
     let module = CompiledModuleBuilder::new(ModulePath::single("test"))
@@ -558,7 +689,11 @@ structure Parent {
 }"#;
 
     let parsed = reify_syntax::parse(source, ModulePath::single("e2e_all_three"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
 
@@ -575,33 +710,69 @@ structure Parent {
     let w_id = ValueCellId::new("Parent", "w");
     let w_val = result.values.get(&w_id).expect("Parent.w should exist");
     let w_f = w_val.as_f64().expect("numeric");
-    assert!((w_f - 0.08).abs() < 1e-10, "Parent.w should be ~0.08, got {}", w_f);
+    assert!(
+        (w_f - 0.08).abs() < 1e-10,
+        "Parent.w should be ~0.08, got {}",
+        w_f
+    );
 
     let diag_id = ValueCellId::new("Parent", "diag");
-    let diag_val = result.values.get(&diag_id).expect("Parent.diag should exist");
+    let diag_val = result
+        .values
+        .get(&diag_id)
+        .expect("Parent.diag should exist");
     let diag_f = diag_val.as_f64().expect("numeric");
     // sqrt(0.08^2) = 0.08
-    assert!((diag_f - 0.08).abs() < 1e-10, "Parent.diag should be ~0.08, got {}", diag_f);
+    assert!(
+        (diag_f - 0.08).abs() < 1e-10,
+        "Parent.diag should be ~0.08, got {}",
+        diag_f
+    );
 
     // (c) Sub-component param: Parent.part.size = w / 2 = 0.04
     let size_id = ValueCellId::new("Parent.part", "size");
-    let size_val = result.values.get(&size_id).expect("Parent.part.size should exist");
+    let size_val = result
+        .values
+        .get(&size_id)
+        .expect("Parent.part.size should exist");
     let size_f = size_val.as_f64().expect("numeric");
-    assert!((size_f - 0.04).abs() < 1e-10, "Parent.part.size should be ~0.04, got {}", size_f);
+    assert!(
+        (size_f - 0.04).abs() < 1e-10,
+        "Parent.part.size should be ~0.04, got {}",
+        size_f
+    );
 
     // (d) Sub-component let: Parent.part.half = size / 2 = 0.02
     let half_id = ValueCellId::new("Parent.part", "half");
-    let half_val = result.values.get(&half_id).expect("Parent.part.half should exist");
+    let half_val = result
+        .values
+        .get(&half_id)
+        .expect("Parent.part.half should exist");
     let half_f = half_val.as_f64().expect("numeric");
-    assert!((half_f - 0.02).abs() < 1e-10, "Parent.part.half should be ~0.02, got {}", half_f);
+    assert!(
+        (half_f - 0.02).abs() < 1e-10,
+        "Parent.part.half should be ~0.02, got {}",
+        half_f
+    );
 
     // (e) Constraint check
-    let (constraint_results, _check_diags) = engine.check_constraints_with_values(&result.values).unwrap();
-    assert!(!constraint_results.is_empty(), "should have at least one constraint result");
+    let (constraint_results, _check_diags) = engine
+        .check_constraints_with_values(&result.values)
+        .unwrap();
+    assert!(
+        !constraint_results.is_empty(),
+        "should have at least one constraint result"
+    );
 
     // (f) No error-level diagnostics (only import warning is allowed)
-    let errors: Vec<_> = result.diagnostics.iter()
+    let errors: Vec<_> = result
+        .diagnostics
+        .iter()
         .filter(|d| d.severity == reify_types::Severity::Error)
         .collect();
-    assert!(errors.is_empty(), "no error diagnostics expected, got {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "no error diagnostics expected, got {:?}",
+        errors
+    );
 }

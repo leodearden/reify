@@ -5,7 +5,7 @@
 
 use std::fs;
 
-use reify_compiler::module_dag::{compile_project, ModuleResolver};
+use reify_compiler::module_dag::{ModuleResolver, compile_project};
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_types::{ExportFormat, ModulePath, Satisfaction, Severity, ValueCellId};
 
@@ -51,7 +51,10 @@ fn trait_implementing_structure() {
     let compiled = parse_and_compile(&source);
 
     // Should have one template (Rod)
-    assert!(!compiled.templates.is_empty(), "expected at least one template");
+    assert!(
+        !compiled.templates.is_empty(),
+        "expected at least one template"
+    );
 
     // Eval
     let checker = MockConstraintChecker::new();
@@ -225,7 +228,11 @@ structure S {
         .values
         .get(&n_id)
         .unwrap_or_else(|| panic!("value for {:?} not found", n_id));
-    assert_eq!(*n_val, reify_types::Value::Int(3), "items.count should be 3");
+    assert_eq!(
+        *n_val,
+        reify_types::Value::Int(3),
+        "items.count should be 3"
+    );
 
     // total = items.sum = 60
     let total_id = ValueCellId::new("S", "total");
@@ -332,7 +339,10 @@ fn guarded_enum_declarations() {
     let compiled = parse_and_compile(&source);
 
     // Should have a template for Fitting
-    assert!(!compiled.templates.is_empty(), "expected at least one template");
+    assert!(
+        !compiled.templates.is_empty(),
+        "expected at least one template"
+    );
 
     // Eval
     let checker = MockConstraintChecker::new();
@@ -447,11 +457,7 @@ fn user_fn_with_constraint() {
         .unwrap_or_else(|| panic!("value for {:?} not found", width_id));
     match width_val {
         reify_types::Value::Real(v) => {
-            assert!(
-                (v - 200.0).abs() < 1e-12,
-                "expected 200.0, got {}",
-                v
-            );
+            assert!((v - 200.0).abs() < 1e-12, "expected 200.0, got {}", v);
         }
         reify_types::Value::Int(v) => {
             assert_eq!(*v, 200, "expected 200, got {}", v);
@@ -467,11 +473,7 @@ fn user_fn_with_constraint() {
         .unwrap_or_else(|| panic!("value for {:?} not found", sa_id));
     match sa_val {
         reify_types::Value::Real(v) => {
-            assert!(
-                (v - 20000.0).abs() < 1e-9,
-                "expected 20000.0, got {}",
-                v
-            );
+            assert!((v - 20000.0).abs() < 1e-9, "expected 20000.0, got {}", v);
         }
         reify_types::Value::Int(v) => {
             assert_eq!(*v, 20000, "expected 20000, got {}", v);
@@ -686,7 +688,11 @@ structure def Widget : Sizable {
         .values
         .get(&n_id)
         .unwrap_or_else(|| panic!("value for {:?} not found", n_id));
-    assert_eq!(*n_val, reify_types::Value::Int(5), "items.count should be 5");
+    assert_eq!(
+        *n_val,
+        reify_types::Value::Int(5),
+        "items.count should be 5"
+    );
 
     // Check constraints
     let result = engine.check(&compiled);
@@ -721,7 +727,10 @@ fn trait_rigid_mass_conformance() {
     let compiled = parse_and_compile(&source);
 
     // Should have one template (Bracket)
-    assert!(!compiled.templates.is_empty(), "expected at least one template");
+    assert!(
+        !compiled.templates.is_empty(),
+        "expected at least one template"
+    );
     let bracket = compiled
         .templates
         .iter()
@@ -884,7 +893,10 @@ fn guarded_enum_multi_branch() {
     let compiled = parse_and_compile(&source);
 
     // Should have a Bolt template
-    assert!(!compiled.templates.is_empty(), "expected at least one template");
+    assert!(
+        !compiled.templates.is_empty(),
+        "expected at least one template"
+    );
     let bolt = compiled
         .templates
         .iter()
@@ -990,7 +1002,10 @@ fn collection_with_quantifier() {
     let compiled = parse_and_compile(&source);
 
     // Should have an Inventory template
-    assert!(!compiled.templates.is_empty(), "expected at least one template");
+    assert!(
+        !compiled.templates.is_empty(),
+        "expected at least one template"
+    );
 
     // Eval
     let checker = MockConstraintChecker::new();
@@ -1020,7 +1035,11 @@ fn collection_with_quantifier() {
         .values
         .get(&n_id)
         .unwrap_or_else(|| panic!("value for {:?} not found", n_id));
-    assert_eq!(*n_val, reify_types::Value::Int(4), "items.count should be 4");
+    assert_eq!(
+        *n_val,
+        reify_types::Value::Int(4),
+        "items.count should be 4"
+    );
 
     // Check total = items.sum = 50
     let total_id = ValueCellId::new("Inventory", "total");
@@ -1153,7 +1172,10 @@ fn occurrence_manufacturing_chain() {
         reify_types::Value::Int(v) => {
             assert_eq!(*v, 100, "expected 100, got {}", v);
         }
-        other => panic!("expected Real(100) or Int(100) for feed_rate, got {:?}", other),
+        other => panic!(
+            "expected Real(100) or Int(100) for feed_rate, got {:?}",
+            other
+        ),
     }
 
     // Check temperature = 850
@@ -1169,7 +1191,10 @@ fn occurrence_manufacturing_chain() {
         reify_types::Value::Int(v) => {
             assert_eq!(*v, 850, "expected 850, got {}", v);
         }
-        other => panic!("expected Real(850) or Int(850) for temperature, got {:?}", other),
+        other => panic!(
+            "expected Real(850) or Int(850) for temperature, got {:?}",
+            other
+        ),
     }
 
     // All compatibility constraints should be Satisfied
@@ -1203,7 +1228,10 @@ fn user_fn_safety_factor() {
     let compiled = parse_and_compile(&source);
 
     // Should have a Beam template
-    assert!(!compiled.templates.is_empty(), "expected at least one template");
+    assert!(
+        !compiled.templates.is_empty(),
+        "expected at least one template"
+    );
     let beam = compiled
         .templates
         .iter()
@@ -1240,11 +1268,7 @@ fn user_fn_safety_factor() {
         .unwrap_or_else(|| panic!("value for {:?} not found", sf_id));
     match sf_val {
         reify_types::Value::Real(v) => {
-            assert!(
-                (v - 2.5).abs() < 1e-9,
-                "expected 2.5, got {}",
-                v
-            );
+            assert!((v - 2.5).abs() < 1e-9, "expected 2.5, got {}", v);
         }
         other => panic!("expected Real(2.5) for sf, got {:?}", other),
     }
@@ -1421,10 +1445,7 @@ fn combined_all_features() {
     // Check premium_label from guard (quality == Premium -> label = 1)
     let pl_id = ValueCellId::new("Widget", "premium_label");
     let pl_val = result.values.get(&pl_id);
-    assert!(
-        pl_val.is_some(),
-        "premium_label should be present"
-    );
+    assert!(pl_val.is_some(), "premium_label should be present");
     match pl_val.unwrap() {
         reify_types::Value::Int(v) => {
             assert_eq!(*v, 1, "premium_label should be 1 for Premium");

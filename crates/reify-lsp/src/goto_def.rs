@@ -9,11 +9,7 @@ use crate::convert::{find_word_at_offset, position_to_offset, span_to_range};
 /// Returns the `Location` of the symbol's declaration, or `None` if
 /// the position is not on a navigable identifier (keywords, structure
 /// names, and unknown words return `None`).
-pub fn compute_goto_definition(
-    source: &str,
-    uri: &Url,
-    position: Position,
-) -> Option<Location> {
+pub fn compute_goto_definition(source: &str, uri: &Url, position: Position) -> Option<Location> {
     let offset = position_to_offset(source, position);
     let (_word_start, word) = find_word_at_offset(source, offset)?;
 

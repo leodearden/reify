@@ -136,13 +136,19 @@ mod tests {
     #[test]
     fn literal_int_is_numeric() {
         let expr = CompiledExpr::literal(Value::Int(42), Type::Int);
-        assert_eq!(ConstraintClassifier::classify(&expr), ConstraintDomain::Dimensional);
+        assert_eq!(
+            ConstraintClassifier::classify(&expr),
+            ConstraintDomain::Dimensional
+        );
     }
 
     #[test]
     fn literal_bool_is_logical() {
         let expr = CompiledExpr::literal(Value::Bool(true), Type::Bool);
-        assert_eq!(ConstraintClassifier::classify(&expr), ConstraintDomain::Logical);
+        assert_eq!(
+            ConstraintClassifier::classify(&expr),
+            ConstraintDomain::Logical
+        );
     }
 
     #[test]
@@ -154,14 +160,20 @@ mod tests {
             },
             Type::length(),
         );
-        assert_eq!(ConstraintClassifier::classify(&expr), ConstraintDomain::Dimensional);
+        assert_eq!(
+            ConstraintClassifier::classify(&expr),
+            ConstraintDomain::Dimensional
+        );
     }
 
     #[test]
     fn empty_undef_defaults_to_dimensional() {
         let expr = CompiledExpr::literal(Value::Undef, Type::Bool);
         // Undef doesn't set any flags → default is Dimensional
-        assert_eq!(ConstraintClassifier::classify(&expr), ConstraintDomain::Dimensional);
+        assert_eq!(
+            ConstraintClassifier::classify(&expr),
+            ConstraintDomain::Dimensional
+        );
     }
 
     #[test]
@@ -178,7 +190,10 @@ mod tests {
             result_type: Type::Real,
             content_hash: ContentHash::of(b"test"),
         };
-        assert_eq!(ConstraintClassifier::classify(&expr), ConstraintDomain::Geometric);
+        assert_eq!(
+            ConstraintClassifier::classify(&expr),
+            ConstraintDomain::Geometric
+        );
     }
 
     #[test]
@@ -186,7 +201,10 @@ mod tests {
         let num = CompiledExpr::literal(Value::Int(1), Type::Int);
         let boolean = CompiledExpr::literal(Value::Bool(true), Type::Bool);
         let expr = CompiledExpr::binop(BinOp::And, num, boolean, Type::Bool);
-        assert_eq!(ConstraintClassifier::classify(&expr), ConstraintDomain::CrossDomain);
+        assert_eq!(
+            ConstraintClassifier::classify(&expr),
+            ConstraintDomain::CrossDomain
+        );
     }
 
     #[test]
@@ -202,7 +220,10 @@ mod tests {
             },
             Type::complex(Type::Real),
         );
-        assert_eq!(ConstraintClassifier::classify(&expr), ConstraintDomain::Dimensional);
+        assert_eq!(
+            ConstraintClassifier::classify(&expr),
+            ConstraintDomain::Dimensional
+        );
     }
 
     #[test]
@@ -220,6 +241,9 @@ mod tests {
         );
         let bool_expr = CompiledExpr::literal(Value::Bool(true), Type::Bool);
         let expr = CompiledExpr::binop(BinOp::And, complex_expr, bool_expr, Type::Bool);
-        assert_eq!(ConstraintClassifier::classify(&expr), ConstraintDomain::Logical);
+        assert_eq!(
+            ConstraintClassifier::classify(&expr),
+            ConstraintDomain::Logical
+        );
     }
 }

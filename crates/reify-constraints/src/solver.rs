@@ -90,30 +90,58 @@ fn extract_initial_point(problem: &ResolutionProblem) -> Vec<f64> {
 /// Returns the absolute distance by which the constraint is violated,
 /// or 0.0 if satisfied. No squaring, no epsilon offset. Used for
 /// accurate feasibility checking (not for optimization cost).
-fn comparison_residual(op: BinOp, left: &CompiledExpr, right: &CompiledExpr, values: &ValueMap, functions: &[CompiledFunction]) -> f64 {
-    let lhs = reify_expr::eval_expr(left, &reify_expr::EvalContext::new(values, functions)).as_f64();
-    let rhs = reify_expr::eval_expr(right, &reify_expr::EvalContext::new(values, functions)).as_f64();
+fn comparison_residual(
+    op: BinOp,
+    left: &CompiledExpr,
+    right: &CompiledExpr,
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+) -> f64 {
+    let lhs =
+        reify_expr::eval_expr(left, &reify_expr::EvalContext::new(values, functions)).as_f64();
+    let rhs =
+        reify_expr::eval_expr(right, &reify_expr::EvalContext::new(values, functions)).as_f64();
 
     match (lhs, rhs) {
         (Some(l), Some(r)) => match op {
             BinOp::Gt => {
-                if l > r { 0.0 } else { r - l }
+                if l > r {
+                    0.0
+                } else {
+                    r - l
+                }
             }
             BinOp::Ge => {
-                if l >= r { 0.0 } else { r - l }
+                if l >= r {
+                    0.0
+                } else {
+                    r - l
+                }
             }
             BinOp::Lt => {
-                if l < r { 0.0 } else { l - r }
+                if l < r {
+                    0.0
+                } else {
+                    l - r
+                }
             }
             BinOp::Le => {
-                if l <= r { 0.0 } else { l - r }
+                if l <= r {
+                    0.0
+                } else {
+                    l - r
+                }
             }
             BinOp::Eq => {
                 let d = (l - r).abs();
                 if d < 1e-15 { 0.0 } else { d }
             }
             BinOp::Ne => {
-                if (l - r).abs() > 1e-15 { 0.0 } else { 1.0 }
+                if (l - r).abs() > 1e-15 {
+                    0.0
+                } else {
+                    1.0
+                }
             }
             _ => 1.0,
         },
@@ -127,27 +155,51 @@ fn comparison_residual(op: BinOp, left: &CompiledExpr, right: &CompiledExpr, val
 /// sub-expressions to get numeric values and computes a continuous violation.
 /// Returns 0.0 if satisfied. For non-decomposable boolean constraints,
 /// uses a fixed penalty when violated.
-fn comparison_violation(op: BinOp, left: &CompiledExpr, right: &CompiledExpr, values: &ValueMap, functions: &[CompiledFunction]) -> f64 {
-    let lhs = reify_expr::eval_expr(left, &reify_expr::EvalContext::new(values, functions)).as_f64();
-    let rhs = reify_expr::eval_expr(right, &reify_expr::EvalContext::new(values, functions)).as_f64();
+fn comparison_violation(
+    op: BinOp,
+    left: &CompiledExpr,
+    right: &CompiledExpr,
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+) -> f64 {
+    let lhs =
+        reify_expr::eval_expr(left, &reify_expr::EvalContext::new(values, functions)).as_f64();
+    let rhs =
+        reify_expr::eval_expr(right, &reify_expr::EvalContext::new(values, functions)).as_f64();
 
     match (lhs, rhs) {
         (Some(l), Some(r)) => match op {
             // For l > r: violation when l <= r, magnitude = (r - l)
             BinOp::Gt => {
-                if l > r { 0.0 } else { (r - l + 1e-12).powi(2) }
+                if l > r {
+                    0.0
+                } else {
+                    (r - l + 1e-12).powi(2)
+                }
             }
             // For l >= r: violation when l < r
             BinOp::Ge => {
-                if l >= r { 0.0 } else { (r - l + 1e-12).powi(2) }
+                if l >= r {
+                    0.0
+                } else {
+                    (r - l + 1e-12).powi(2)
+                }
             }
             // For l < r: violation when l >= r, magnitude = (l - r)
             BinOp::Lt => {
-                if l < r { 0.0 } else { (l - r + 1e-12).powi(2) }
+                if l < r {
+                    0.0
+                } else {
+                    (l - r + 1e-12).powi(2)
+                }
             }
             // For l <= r: violation when l > r
             BinOp::Le => {
-                if l <= r { 0.0 } else { (l - r + 1e-12).powi(2) }
+                if l <= r {
+                    0.0
+                } else {
+                    (l - r + 1e-12).powi(2)
+                }
             }
             // For equality: distance squared
             BinOp::Eq => {
@@ -155,7 +207,11 @@ fn comparison_violation(op: BinOp, left: &CompiledExpr, right: &CompiledExpr, va
                 if d.abs() < 1e-15 { 0.0 } else { d.powi(2) }
             }
             BinOp::Ne => {
-                if (l - r).abs() > 1e-15 { 0.0 } else { 1.0 }
+                if (l - r).abs() > 1e-15 {
+                    0.0
+                } else {
+                    1.0
+                }
             }
             // Not a comparison
             _ => 1.0,
@@ -170,7 +226,11 @@ fn comparison_violation(op: BinOp, left: &CompiledExpr, right: &CompiledExpr, va
 /// Same decomposition structure as `constraint_violation` but returns
 /// absolute residual values. For And composites, returns the max of
 /// sub-residuals (both must hold). For Or, returns the min (one suffices).
-fn constraint_residual(expr: &CompiledExpr, values: &ValueMap, functions: &[CompiledFunction]) -> f64 {
+fn constraint_residual(
+    expr: &CompiledExpr,
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+) -> f64 {
     match &expr.kind {
         CompiledExprKind::BinOp { op, left, right } => {
             match op {
@@ -190,7 +250,10 @@ fn constraint_residual(expr: &CompiledExpr, values: &ValueMap, functions: &[Comp
                     lr.min(rr)
                 }
                 _ => {
-                    match reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions)) {
+                    match reify_expr::eval_expr(
+                        expr,
+                        &reify_expr::EvalContext::new(values, functions),
+                    ) {
                         Value::Bool(true) => 0.0,
                         Value::Bool(false) => 1.0,
                         Value::Undef => 10.0,
@@ -199,14 +262,12 @@ fn constraint_residual(expr: &CompiledExpr, values: &ValueMap, functions: &[Comp
                 }
             }
         }
-        _ => {
-            match reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions)) {
-                Value::Bool(true) => 0.0,
-                Value::Bool(false) => 1.0,
-                Value::Undef => 10.0,
-                _ => 1.0,
-            }
-        }
+        _ => match reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions)) {
+            Value::Bool(true) => 0.0,
+            Value::Bool(false) => 1.0,
+            Value::Undef => 10.0,
+            _ => 1.0,
+        },
     }
 }
 
@@ -214,7 +275,11 @@ fn constraint_residual(expr: &CompiledExpr, values: &ValueMap, functions: &[Comp
 ///
 /// Tries to decompose comparison expressions for continuous violation.
 /// Falls back to binary penalty for non-decomposable expressions.
-fn constraint_violation(expr: &CompiledExpr, values: &ValueMap, functions: &[CompiledFunction]) -> f64 {
+fn constraint_violation(
+    expr: &CompiledExpr,
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+) -> f64 {
     // First try decomposing into a comparison
     match &expr.kind {
         CompiledExprKind::BinOp { op, left, right } => {
@@ -224,7 +289,8 @@ fn constraint_violation(expr: &CompiledExpr, values: &ValueMap, functions: &[Com
                 }
                 BinOp::And => {
                     // AND: sum violations of both sides
-                    constraint_violation(left, values, functions) + constraint_violation(right, values, functions)
+                    constraint_violation(left, values, functions)
+                        + constraint_violation(right, values, functions)
                 }
                 BinOp::Or => {
                     // OR: minimum violation of both sides
@@ -234,7 +300,10 @@ fn constraint_violation(expr: &CompiledExpr, values: &ValueMap, functions: &[Com
                 }
                 _ => {
                     // Not a logical/comparison op; evaluate as boolean
-                    match reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions)) {
+                    match reify_expr::eval_expr(
+                        expr,
+                        &reify_expr::EvalContext::new(values, functions),
+                    ) {
                         Value::Bool(true) => 0.0,
                         Value::Bool(false) => 1.0,
                         Value::Undef => 10.0,
@@ -302,15 +371,23 @@ struct ConstraintCostFunction<'a> {
 /// For Minimize, returns the value directly. For Maximize, negates it.
 /// Returns None if the expression evaluates to a non-numeric value (Undef)
 /// or a non-finite float (NaN, Inf).
-fn eval_objective(objective: &OptimizationObjective, values: &ValueMap, functions: &[CompiledFunction]) -> Option<f64> {
+fn eval_objective(
+    objective: &OptimizationObjective,
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+) -> Option<f64> {
     match objective {
-        OptimizationObjective::Minimize(expr) => reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions))
-            .as_f64()
-            .filter(|v| v.is_finite()),
-        OptimizationObjective::Maximize(expr) => reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions))
-            .as_f64()
-            .filter(|v| v.is_finite())
-            .map(|v| -v),
+        OptimizationObjective::Minimize(expr) => {
+            reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions))
+                .as_f64()
+                .filter(|v| v.is_finite())
+        }
+        OptimizationObjective::Maximize(expr) => {
+            reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions))
+                .as_f64()
+                .filter(|v| v.is_finite())
+                .map(|v| -v)
+        }
     }
 }
 
@@ -335,8 +412,8 @@ impl CostFunction for ConstraintCostFunction<'_> {
         let cost = match self.objective {
             Some(obj) => {
                 // Combine objective with penalty for constraint violations and bounds
-                let obj_value = eval_objective(obj, &values, self.functions)
-                    .unwrap_or(UNDEF_OBJECTIVE_PENALTY);
+                let obj_value =
+                    eval_objective(obj, &values, self.functions).unwrap_or(UNDEF_OBJECTIVE_PENALTY);
                 obj_value + PENALTY_WEIGHT * violation + PENALTY_WEIGHT * bound_penalty
             }
             None => {
@@ -385,7 +462,9 @@ fn default_bounds_for(ty: &Type) -> (f64, f64) {
 
 /// Get effective bounds for an AutoParam, falling back to dimension-based defaults.
 fn effective_bounds(param: &AutoParam) -> (f64, f64) {
-    param.bounds.unwrap_or_else(|| default_bounds_for(&param.param_type))
+    param
+        .bounds
+        .unwrap_or_else(|| default_bounds_for(&param.param_type))
 }
 
 impl ConstraintSolver for DimensionalSolver {
@@ -401,12 +480,10 @@ impl ConstraintSolver for DimensionalSolver {
         // return current auto param values without running the optimizer
         if problem.objective.is_none() {
             let initial = extract_initial_point(problem);
-            let trial_values = build_trial_values(
-                &problem.current_values,
-                &problem.auto_params,
-                &initial,
-            );
-            let max_residual = max_constraint_residual(&problem.constraints, &trial_values, &problem.functions);
+            let trial_values =
+                build_trial_values(&problem.current_values, &problem.auto_params, &initial);
+            let max_residual =
+                max_constraint_residual(&problem.constraints, &trial_values, &problem.functions);
             if max_residual <= FEASIBILITY_THRESHOLD {
                 let mut values = HashMap::new();
                 for (param, &val) in problem.auto_params.iter().zip(initial.iter()) {
@@ -439,8 +516,7 @@ impl ConstraintSolver for DimensionalSolver {
             .with_sd_tolerance(1e-15)
             .expect("sd_tolerance 1e-15 is always valid");
 
-        let executor = Executor::new(cost_fn, solver)
-            .configure(|state| state.max_iters(MAX_ITERS));
+        let executor = Executor::new(cost_fn, solver).configure(|state| state.max_iters(MAX_ITERS));
 
         let result = match executor.run() {
             Ok(res) => res,
@@ -472,12 +548,10 @@ impl ConstraintSolver for DimensionalSolver {
 
         // Check feasibility by re-evaluating constraint violations
         // (best_cost may include the objective term, so we check violations separately)
-        let final_values = build_trial_values(
-            &problem.current_values,
-            &problem.auto_params,
-            &clamped,
-        );
-        let final_max_residual = max_constraint_residual(&problem.constraints, &final_values, &problem.functions);
+        let final_values =
+            build_trial_values(&problem.current_values, &problem.auto_params, &clamped);
+        let final_max_residual =
+            max_constraint_residual(&problem.constraints, &final_values, &problem.functions);
         if final_max_residual > FEASIBILITY_THRESHOLD {
             return SolveResult::Infeasible {
                 diagnostics: vec![reify_types::Diagnostic {
@@ -497,8 +571,7 @@ impl ConstraintSolver for DimensionalSolver {
             && eval_objective(obj, &final_values, &problem.functions).is_none()
         {
             return SolveResult::NoProgress {
-                reason: "objective expression evaluated to undefined at solution point"
-                    .to_string(),
+                reason: "objective expression evaluated to undefined at solution point".to_string(),
             };
         }
 
@@ -520,9 +593,7 @@ impl ConstraintSolver for DimensionalSolver {
 
 #[cfg(test)]
 mod tests {
-    use reify_types::{
-        ConstraintSolver, ResolutionProblem, SolveResult, ValueMap,
-    };
+    use reify_types::{ConstraintSolver, ResolutionProblem, SolveResult, ValueMap};
 
     #[test]
     fn dimensional_solver_exists_and_implements_trait() {
@@ -580,10 +651,7 @@ mod tests {
         let width = trial.get(&width_id).expect("width should be preserved");
         match width {
             &Value::Scalar { si_value, .. } => {
-                assert!(
-                    (si_value - 0.080).abs() < 1e-15,
-                    "width should be 0.080"
-                );
+                assert!((si_value - 0.080).abs() < 1e-15, "width should be 0.080");
             }
             other => panic!("expected Scalar, got {:?}", other),
         }
@@ -737,7 +805,10 @@ mod tests {
         let result = solver.solve(&problem);
         match result {
             SolveResult::Solved { values } => {
-                assert!(values.is_empty(), "empty problem should return empty values");
+                assert!(
+                    values.is_empty(),
+                    "empty problem should return empty values"
+                );
             }
             other => panic!("expected Solved, got {:?}", other),
         }
@@ -964,11 +1035,11 @@ mod tests {
             },
             Type::length(),
         );
-        let gt_width = CompiledExpr::binop(BinOp::Gt, width_ref.clone(), fifty_mm.clone(), Type::Bool);
+        let gt_width =
+            CompiledExpr::binop(BinOp::Gt, width_ref.clone(), fifty_mm.clone(), Type::Bool);
 
         // height > 50mm
-        let gt_height =
-            CompiledExpr::binop(BinOp::Gt, height_ref.clone(), fifty_mm, Type::Bool);
+        let gt_height = CompiledExpr::binop(BinOp::Gt, height_ref.clone(), fifty_mm, Type::Bool);
 
         // width + height < 200mm
         let sum = CompiledExpr::binop(BinOp::Add, width_ref, height_ref, Type::length());
@@ -1147,11 +1218,17 @@ mod tests {
 
         // l=1.9999999, r=2.0: violated by 1e-7
         let l_expr = CompiledExpr::literal(
-            Value::Scalar { si_value: 1.9999999, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 1.9999999,
+                dimension: DimensionVector::LENGTH,
+            },
             Type::length(),
         );
         let r_expr = CompiledExpr::literal(
-            Value::Scalar { si_value: 2.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 2.0,
+                dimension: DimensionVector::LENGTH,
+            },
             Type::length(),
         );
         let values = ValueMap::new();
@@ -1169,11 +1246,17 @@ mod tests {
         use reify_types::{BinOp, CompiledExpr, DimensionVector, Type, Value};
 
         let l_expr = CompiledExpr::literal(
-            Value::Scalar { si_value: 2.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 2.0,
+                dimension: DimensionVector::LENGTH,
+            },
             Type::length(),
         );
         let r_expr = CompiledExpr::literal(
-            Value::Scalar { si_value: 2.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 2.0,
+                dimension: DimensionVector::LENGTH,
+            },
             Type::length(),
         );
         let values = ValueMap::new();
@@ -1188,11 +1271,17 @@ mod tests {
 
         // l=0.010, r=0.005: Lt violated by 0.005
         let l_expr = CompiledExpr::literal(
-            Value::Scalar { si_value: 0.010, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 0.010,
+                dimension: DimensionVector::LENGTH,
+            },
             Type::length(),
         );
         let r_expr = CompiledExpr::literal(
-            Value::Scalar { si_value: 0.005, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 0.005,
+                dimension: DimensionVector::LENGTH,
+            },
             Type::length(),
         );
         let values = ValueMap::new();
@@ -1210,11 +1299,17 @@ mod tests {
         use reify_types::{BinOp, CompiledExpr, DimensionVector, Type, Value};
 
         let l_expr = CompiledExpr::literal(
-            Value::Scalar { si_value: 0.003, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 0.003,
+                dimension: DimensionVector::LENGTH,
+            },
             Type::length(),
         );
         let r_expr = CompiledExpr::literal(
-            Value::Scalar { si_value: 0.005, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 0.005,
+                dimension: DimensionVector::LENGTH,
+            },
             Type::length(),
         );
         let values = ValueMap::new();
@@ -1228,11 +1323,17 @@ mod tests {
         use reify_types::{BinOp, CompiledExpr, DimensionVector, Type, Value};
 
         let l_expr = CompiledExpr::literal(
-            Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::LENGTH,
+            },
             Type::length(),
         );
         let r_expr = CompiledExpr::literal(
-            Value::Scalar { si_value: 1.000001, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 1.000001,
+                dimension: DimensionVector::LENGTH,
+            },
             Type::length(),
         );
         let values = ValueMap::new();
@@ -1252,7 +1353,10 @@ mod tests {
         // thickness > 2mm, thickness=1.9999999m (violated by 1e-7)
         let thickness_ref = CompiledExpr::value_ref(ValueCellId::new("B", "t"), Type::length());
         let two = CompiledExpr::literal(
-            Value::Scalar { si_value: 2.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 2.0,
+                dimension: DimensionVector::LENGTH,
+            },
             Type::length(),
         );
         let expr = CompiledExpr::binop(BinOp::Gt, thickness_ref, two, Type::Bool);
@@ -1260,7 +1364,10 @@ mod tests {
         let mut values = ValueMap::new();
         values.insert(
             ValueCellId::new("B", "t"),
-            Value::Scalar { si_value: 1.9999999, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 1.9999999,
+                dimension: DimensionVector::LENGTH,
+            },
         );
 
         let res = constraint_residual(&expr, &values, &[]);
@@ -1279,14 +1386,20 @@ mod tests {
         // And(x > 2.0 [violated by 1e-7], y > 1.0 [violated by 1e-5])
         let x_ref = CompiledExpr::value_ref(ValueCellId::new("P", "x"), Type::length());
         let two = CompiledExpr::literal(
-            Value::Scalar { si_value: 2.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 2.0,
+                dimension: DimensionVector::LENGTH,
+            },
             Type::length(),
         );
         let gt_x = CompiledExpr::binop(BinOp::Gt, x_ref, two, Type::Bool);
 
         let y_ref = CompiledExpr::value_ref(ValueCellId::new("P", "y"), Type::length());
         let one = CompiledExpr::literal(
-            Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::LENGTH,
+            },
             Type::length(),
         );
         let gt_y = CompiledExpr::binop(BinOp::Gt, y_ref, one, Type::Bool);
@@ -1296,11 +1409,17 @@ mod tests {
         let mut values = ValueMap::new();
         values.insert(
             ValueCellId::new("P", "x"),
-            Value::Scalar { si_value: 1.9999999, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 1.9999999,
+                dimension: DimensionVector::LENGTH,
+            },
         );
         values.insert(
             ValueCellId::new("P", "y"),
-            Value::Scalar { si_value: 0.99999, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 0.99999,
+                dimension: DimensionVector::LENGTH,
+            },
         );
 
         let res = constraint_residual(&and_expr, &values, &[]);
@@ -1320,14 +1439,20 @@ mod tests {
         // Or(x > 2.0 [violated by 1e-3], y > 1.0 [satisfied])
         let x_ref = CompiledExpr::value_ref(ValueCellId::new("P", "x"), Type::length());
         let two = CompiledExpr::literal(
-            Value::Scalar { si_value: 2.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 2.0,
+                dimension: DimensionVector::LENGTH,
+            },
             Type::length(),
         );
         let gt_x = CompiledExpr::binop(BinOp::Gt, x_ref, two, Type::Bool);
 
         let y_ref = CompiledExpr::value_ref(ValueCellId::new("P", "y"), Type::length());
         let one = CompiledExpr::literal(
-            Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::LENGTH,
+            },
             Type::length(),
         );
         let gt_y = CompiledExpr::binop(BinOp::Gt, y_ref, one, Type::Bool);
@@ -1337,11 +1462,17 @@ mod tests {
         let mut values = ValueMap::new();
         values.insert(
             ValueCellId::new("P", "x"),
-            Value::Scalar { si_value: 1.999, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 1.999,
+                dimension: DimensionVector::LENGTH,
+            },
         );
         values.insert(
             ValueCellId::new("P", "y"),
-            Value::Scalar { si_value: 2.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 2.0,
+                dimension: DimensionVector::LENGTH,
+            },
         );
 
         let res = constraint_residual(&or_expr, &values, &[]);
@@ -1351,26 +1482,37 @@ mod tests {
     #[test]
     fn max_constraint_residual_picks_worst() {
         use super::max_constraint_residual;
-        use reify_types::{BinOp, CompiledExpr, ConstraintNodeId, DimensionVector, Type, Value, ValueCellId};
+        use reify_types::{
+            BinOp, CompiledExpr, ConstraintNodeId, DimensionVector, Type, Value, ValueCellId,
+        };
 
         // Three constraints: satisfied, violated by 1e-7, violated by 1e-5
         let x_ref = CompiledExpr::value_ref(ValueCellId::new("P", "x"), Type::length());
         let one = CompiledExpr::literal(
-            Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::LENGTH,
+            },
             Type::length(),
         );
         // x > 1.0, x=2.0 → satisfied
         let c1 = CompiledExpr::binop(BinOp::Gt, x_ref.clone(), one, Type::Bool);
 
         let two = CompiledExpr::literal(
-            Value::Scalar { si_value: 2.0000001, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 2.0000001,
+                dimension: DimensionVector::LENGTH,
+            },
             Type::length(),
         );
         // x > 2.0000001, x=2.0 → violated by 1e-7
         let c2 = CompiledExpr::binop(BinOp::Gt, x_ref.clone(), two, Type::Bool);
 
         let three = CompiledExpr::literal(
-            Value::Scalar { si_value: 2.00001, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 2.00001,
+                dimension: DimensionVector::LENGTH,
+            },
             Type::length(),
         );
         // x > 2.00001, x=2.0 → violated by 1e-5
@@ -1385,7 +1527,10 @@ mod tests {
         let mut values = ValueMap::new();
         values.insert(
             ValueCellId::new("P", "x"),
-            Value::Scalar { si_value: 2.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 2.0,
+                dimension: DimensionVector::LENGTH,
+            },
         );
 
         let res = max_constraint_residual(&constraints, &values, &[]);
@@ -1399,11 +1544,16 @@ mod tests {
     #[test]
     fn max_constraint_residual_all_satisfied() {
         use super::max_constraint_residual;
-        use reify_types::{BinOp, CompiledExpr, ConstraintNodeId, DimensionVector, Type, Value, ValueCellId};
+        use reify_types::{
+            BinOp, CompiledExpr, ConstraintNodeId, DimensionVector, Type, Value, ValueCellId,
+        };
 
         let x_ref = CompiledExpr::value_ref(ValueCellId::new("P", "x"), Type::length());
         let one = CompiledExpr::literal(
-            Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::LENGTH,
+            },
             Type::length(),
         );
         let c1 = CompiledExpr::binop(BinOp::Gt, x_ref, one, Type::Bool);
@@ -1413,7 +1563,10 @@ mod tests {
         let mut values = ValueMap::new();
         values.insert(
             ValueCellId::new("P", "x"),
-            Value::Scalar { si_value: 5.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 5.0,
+                dimension: DimensionVector::LENGTH,
+            },
         );
 
         let res = max_constraint_residual(&constraints, &values, &[]);
@@ -1472,7 +1625,10 @@ mod tests {
         let x_id = ValueCellId::new("Part", "x");
         let x_ref = CompiledExpr::value_ref(x_id.clone(), Type::length());
         let zero = CompiledExpr::literal(
-            Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 0.0,
+                dimension: DimensionVector::LENGTH,
+            },
             Type::length(),
         );
         // Trivially satisfied constraint: x > 0.0
@@ -1502,7 +1658,8 @@ mod tests {
         assert!(
             cost_out > cost_in,
             "out-of-bounds param should have higher cost (in={:.2e}, out={:.2e})",
-            cost_in, cost_out
+            cost_in,
+            cost_out
         );
     }
 

@@ -12,7 +12,11 @@ structure S {
 }
 "#;
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_lambda"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
 
@@ -21,7 +25,11 @@ structure S {
         .iter()
         .filter(|d| d.severity == reify_types::Severity::Error)
         .collect();
-    assert!(errors.is_empty(), "expected no error diagnostics, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "expected no error diagnostics, got: {:?}",
+        errors
+    );
 
     let template = &compiled.templates[0];
     let f_cell = template
@@ -42,7 +50,10 @@ structure S {
             assert_eq!(params[0].0, "x");
             assert!(params[0].1.is_none(), "untyped param");
             assert_eq!(param_ids.len(), 1);
-            assert!(param_ids[0].entity.starts_with("$lambda"), "param entity should start with $lambda");
+            assert!(
+                param_ids[0].entity.starts_with("$lambda"),
+                "param entity should start with $lambda"
+            );
             assert_eq!(param_ids[0].member, "x");
             assert!(captures.is_empty(), "no captures for simple lambda");
             match &body.kind {
@@ -67,7 +78,11 @@ structure S {
 }
 "#;
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_capture"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
 
@@ -109,7 +124,11 @@ structure S {
 }
 "#;
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_typed"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
 
@@ -164,7 +183,11 @@ structure S {
 }
 "#;
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_shadow"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
     let errors: Vec<_> = compiled
@@ -203,7 +226,11 @@ structure MyStruct {
 }
 "#;
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_synth"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
     let template = &compiled.templates[0];

@@ -3,8 +3,8 @@
 //! Tests for evaluating collection sub-components (`sub bolts : List<Bolt>`),
 //! count-based elaboration, and count re-elaboration.
 
-use reify_eval::graph::EvaluationGraph;
 use reify_eval::Engine;
+use reify_eval::graph::EvaluationGraph;
 use reify_test_support::builders::value_ref_typed;
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
@@ -35,11 +35,7 @@ fn from_templates_creates_collection_instances() {
         )
         .let_binding("Parent", "__count_bolts", Type::Int, count_expr)
         .structure_controlling_cell(ValueCellId::new("Parent", "__count_bolts"))
-        .collection_sub_component(
-            "bolts",
-            "Bolt",
-            ValueCellId::new("Parent", "__count_bolts"),
-        )
+        .collection_sub_component("bolts", "Bolt", ValueCellId::new("Parent", "__count_bolts"))
         .build();
 
     let graph = EvaluationGraph::from_templates(&[parent, bolt]);
@@ -88,11 +84,7 @@ fn eval_collection_sub_produces_instances() {
         )
         .let_binding("Parent", "__count_bolts", Type::Int, count_expr)
         .structure_controlling_cell(ValueCellId::new("Parent", "__count_bolts"))
-        .collection_sub_component(
-            "bolts",
-            "Bolt",
-            ValueCellId::new("Parent", "__count_bolts"),
-        )
+        .collection_sub_component("bolts", "Bolt", ValueCellId::new("Parent", "__count_bolts"))
         .build();
 
     let module = CompiledModuleBuilder::new(ModulePath::single("test"))
@@ -154,11 +146,7 @@ fn eval_collection_sub_undef_count_no_instances() {
         .param("Parent", "n", Type::Int, None) // no default -> Undef
         .let_binding("Parent", "__count_bolts", Type::Int, count_expr)
         .structure_controlling_cell(ValueCellId::new("Parent", "__count_bolts"))
-        .collection_sub_component(
-            "bolts",
-            "Bolt",
-            ValueCellId::new("Parent", "__count_bolts"),
-        )
+        .collection_sub_component("bolts", "Bolt", ValueCellId::new("Parent", "__count_bolts"))
         .build();
 
     let module = CompiledModuleBuilder::new(ModulePath::single("test"))
@@ -216,11 +204,7 @@ fn edit_param_count_change_re_elaborates_collection() {
         )
         .let_binding("Parent", "__count_bolts", Type::Int, count_expr)
         .structure_controlling_cell(ValueCellId::new("Parent", "__count_bolts"))
-        .collection_sub_component(
-            "bolts",
-            "Bolt",
-            ValueCellId::new("Parent", "__count_bolts"),
-        )
+        .collection_sub_component("bolts", "Bolt", ValueCellId::new("Parent", "__count_bolts"))
         .build();
 
     let module = CompiledModuleBuilder::new(ModulePath::single("test"))
@@ -303,11 +287,7 @@ fn edit_param_count_decrease_removes_stale_instances() {
         )
         .let_binding("Parent", "__count_bolts", Type::Int, count_expr)
         .structure_controlling_cell(ValueCellId::new("Parent", "__count_bolts"))
-        .collection_sub_component(
-            "bolts",
-            "Bolt",
-            ValueCellId::new("Parent", "__count_bolts"),
-        )
+        .collection_sub_component("bolts", "Bolt", ValueCellId::new("Parent", "__count_bolts"))
         .build();
 
     let module = CompiledModuleBuilder::new(ModulePath::single("test"))
@@ -373,11 +353,7 @@ fn eval_collection_list_aggregation() {
         )
         .let_binding("Parent", "__count_bolts", Type::Int, count_expr)
         .structure_controlling_cell(ValueCellId::new("Parent", "__count_bolts"))
-        .collection_sub_component(
-            "bolts",
-            "Bolt",
-            ValueCellId::new("Parent", "__count_bolts"),
-        )
+        .collection_sub_component("bolts", "Bolt", ValueCellId::new("Parent", "__count_bolts"))
         // Let binding that references the per-member synthetic list of bolt grades
         .let_binding(
             "Parent",
@@ -421,10 +397,7 @@ fn eval_collection_list_aggregation() {
     // The grades let binding (which references __list_bolts__grade) should have the same value
     let grades_id = ValueCellId::new("Parent", "grades");
     let grades_val = result.values.get(&grades_id);
-    assert!(
-        grades_val.is_some(),
-        "should have grades value cell"
-    );
+    assert!(grades_val.is_some(), "should have grades value cell");
     match grades_val.unwrap() {
         Value::List(items) => {
             assert_eq!(items.len(), 3, "grades should have 3 items");
@@ -453,7 +426,11 @@ fn eval_dynamic_index_collection_member_access_from_source() {
     "#;
 
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
     let errors: Vec<_> = compiled
@@ -499,7 +476,11 @@ fn eval_collection_aggregate_from_source() {
     "#;
 
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
     let errors: Vec<_> = compiled

@@ -3,12 +3,12 @@
 //! Proves true incrementality: eval() → edit_param() → check_snapshot() → build_snapshot().
 //! Uses MockConstraintChecker/MockGeometryKernel so tests run fast and in parallel.
 
+use reify_constraints::SimpleConstraintChecker;
 use reify_eval::Engine;
 use reify_eval::cache::NodeId;
 use reify_eval::journal::EventKind;
-use reify_test_support::{bracket_compiled_module, cnid, vcid};
 use reify_test_support::mocks::{MockConstraintChecker, MockGeometryKernel};
-use reify_constraints::SimpleConstraintChecker;
+use reify_test_support::{bracket_compiled_module, cnid, vcid};
 use reify_types::{ExportFormat, Satisfaction, Value};
 
 #[test]
@@ -42,7 +42,11 @@ fn check_snapshot_returns_constraint_results_from_current_values() {
     }
 
     // Values should match eval result
-    assert_eq!(check.values.len(), 6, "check_snapshot values should have 6 entries");
+    assert_eq!(
+        check.values.len(),
+        6,
+        "check_snapshot values should have 6 entries"
+    );
     for (id, val) in eval_result.values.iter() {
         assert_eq!(
             check.values.get(id),
@@ -89,7 +93,10 @@ fn build_snapshot_produces_geometry_from_current_values() {
 
     // Mock kernel should have received at least one geometry op (the box)
     let ops = ops_ref.lock().unwrap();
-    assert!(!ops.is_empty(), "mock kernel should have received geometry operations");
+    assert!(
+        !ops.is_empty(),
+        "mock kernel should have received geometry operations"
+    );
 }
 
 #[test]
@@ -102,7 +109,9 @@ fn edit_param_then_check_snapshot_reflects_updated_values() {
     let _eval_result = engine.eval(&module);
 
     // Edit width: 80mm → 100mm (0.1m)
-    let _edit_result = engine.edit_param(vcid("Bracket", "width"), Value::length(0.1)).unwrap();
+    let _edit_result = engine
+        .edit_param(vcid("Bracket", "width"), Value::length(0.1))
+        .unwrap();
 
     // check_snapshot should reflect updated values
     let check = engine
@@ -110,11 +119,21 @@ fn edit_param_then_check_snapshot_reflects_updated_values() {
         .expect("check_snapshot should return Some after edit_param()");
 
     // Verify width was updated to 0.1m
-    let width_val = check.values.get(&vcid("Bracket", "width")).expect("width should exist");
-    assert_eq!(*width_val, Value::length(0.1), "width should be 0.1m (100mm)");
+    let width_val = check
+        .values
+        .get(&vcid("Bracket", "width"))
+        .expect("width should exist");
+    assert_eq!(
+        *width_val,
+        Value::length(0.1),
+        "width should be 0.1m (100mm)"
+    );
 
     // Verify volume was recomputed: 0.1m * 0.1m * 0.005m = 5e-5 m³
-    let volume_val = check.values.get(&vcid("Bracket", "volume")).expect("volume should exist");
+    let volume_val = check
+        .values
+        .get(&vcid("Bracket", "volume"))
+        .expect("volume should exist");
     let expected_volume = 0.1 * 0.1 * 0.005; // 5e-5 m³
     match volume_val {
         Value::Scalar { si_value, .. } => {
@@ -127,11 +146,25 @@ fn edit_param_then_check_snapshot_reflects_updated_values() {
     }
 
     // Unchanged params should be preserved
-    let height_val = check.values.get(&vcid("Bracket", "height")).expect("height should exist");
-    assert_eq!(*height_val, Value::length(0.1), "height should still be 100mm = 0.1m");
+    let height_val = check
+        .values
+        .get(&vcid("Bracket", "height"))
+        .expect("height should exist");
+    assert_eq!(
+        *height_val,
+        Value::length(0.1),
+        "height should still be 100mm = 0.1m"
+    );
 
-    let thickness_val = check.values.get(&vcid("Bracket", "thickness")).expect("thickness should exist");
-    assert_eq!(*thickness_val, Value::length(0.005), "thickness should still be 5mm = 0.005m");
+    let thickness_val = check
+        .values
+        .get(&vcid("Bracket", "thickness"))
+        .expect("thickness should exist");
+    assert_eq!(
+        *thickness_val,
+        Value::length(0.005),
+        "thickness should still be 5mm = 0.005m"
+    );
 
     // All 3 constraints still Satisfied (width 100mm doesn't violate any constraint)
     assert_eq!(check.constraint_results.len(), 3);
@@ -151,7 +184,9 @@ fn edit_param_constraint_violation_detected() {
     let _eval_result = engine.eval(&module);
 
     // Edit thickness: 5mm → 1mm (0.001m) — violates `thickness > 2mm`
-    let _edit_result = engine.edit_param(vcid("Bracket", "thickness"), Value::length(0.001)).unwrap();
+    let _edit_result = engine
+        .edit_param(vcid("Bracket", "thickness"), Value::length(0.001))
+        .unwrap();
 
     // check_snapshot should detect the violation
     let check = engine
@@ -159,11 +194,21 @@ fn edit_param_constraint_violation_detected() {
         .expect("check_snapshot should return Some");
 
     // Verify thickness was updated
-    let thickness_val = check.values.get(&vcid("Bracket", "thickness")).expect("thickness");
-    assert_eq!(*thickness_val, Value::length(0.001), "thickness should be 0.001m (1mm)");
+    let thickness_val = check
+        .values
+        .get(&vcid("Bracket", "thickness"))
+        .expect("thickness");
+    assert_eq!(
+        *thickness_val,
+        Value::length(0.001),
+        "thickness should be 0.001m (1mm)"
+    );
 
     // Constraint 0: thickness > 2mm — should be VIOLATED (1mm < 2mm)
-    let c0 = check.constraint_results.iter().find(|e| e.id == cnid("Bracket", 0))
+    let c0 = check
+        .constraint_results
+        .iter()
+        .find(|e| e.id == cnid("Bracket", 0))
         .expect("constraint 0 should exist");
     assert_eq!(
         c0.satisfaction,
@@ -172,7 +217,10 @@ fn edit_param_constraint_violation_detected() {
     );
 
     // Constraint 1: thickness < width/4 — should be Satisfied (1mm < 80mm/4 = 20mm)
-    let c1 = check.constraint_results.iter().find(|e| e.id == cnid("Bracket", 1))
+    let c1 = check
+        .constraint_results
+        .iter()
+        .find(|e| e.id == cnid("Bracket", 1))
         .expect("constraint 1 should exist");
     assert_eq!(
         c1.satisfaction,
@@ -191,21 +239,31 @@ fn edit_param_then_build_snapshot_updates_geometry() {
 
     // Cold-start eval + initial build_snapshot
     let _eval_result = engine.eval(&module);
-    let _initial_build = engine.build_snapshot(&module, ExportFormat::Step)
+    let _initial_build = engine
+        .build_snapshot(&module, ExportFormat::Step)
         .expect("initial build_snapshot should work");
 
     let initial_ops_count = ops_ref.lock().unwrap().len();
-    assert!(initial_ops_count > 0, "initial build should produce geometry ops");
+    assert!(
+        initial_ops_count > 0,
+        "initial build should produce geometry ops"
+    );
 
     // Edit width: 80mm → 100mm (0.1m)
-    let _edit_result = engine.edit_param(vcid("Bracket", "width"), Value::length(0.1)).unwrap();
+    let _edit_result = engine
+        .edit_param(vcid("Bracket", "width"), Value::length(0.1))
+        .unwrap();
 
     // build_snapshot after edit should produce new geometry
-    let build = engine.build_snapshot(&module, ExportFormat::Step)
+    let build = engine
+        .build_snapshot(&module, ExportFormat::Step)
         .expect("build_snapshot after edit should work");
 
     // Geometry output should be present
-    assert!(build.geometry_output.is_some(), "should have geometry output after edit");
+    assert!(
+        build.geometry_output.is_some(),
+        "should have geometry output after edit"
+    );
     assert_eq!(
         build.geometry_output.as_deref(),
         Some(b"MOCK_EXPORT_DATA".as_slice()),
@@ -244,7 +302,9 @@ fn journal_records_full_edit_cycle_events() {
     let events_after_eval = engine.journal().all_events().len();
 
     // Edit width: 80mm → 100mm
-    let _edit_result = engine.edit_param(vcid("Bracket", "width"), Value::length(0.1)).unwrap();
+    let _edit_result = engine
+        .edit_param(vcid("Bracket", "width"), Value::length(0.1))
+        .unwrap();
     let events_after_edit = engine.journal().all_events().len();
 
     // edit_param should have added new events
@@ -256,7 +316,8 @@ fn journal_records_full_edit_cycle_events() {
     // Volume depends on width → should have been re-evaluated during edit_param
     let volume_node = NodeId::Value(vcid("Bracket", "volume"));
     let volume_events = engine.journal().events_for_node(&volume_node);
-    let volume_started = volume_events.iter()
+    let volume_started = volume_events
+        .iter()
         .filter(|e| matches!(e.kind, EventKind::Started))
         .count();
     assert!(
@@ -268,7 +329,8 @@ fn journal_records_full_edit_cycle_events() {
     // during edit_param (it's the changed cell, updated directly, not re-evaluated)
     let width_node = NodeId::Value(vcid("Bracket", "width"));
     let width_events = engine.journal().events_for_node(&width_node);
-    let width_started = width_events.iter()
+    let width_started = width_events
+        .iter()
         .filter(|e| matches!(e.kind, EventKind::Started))
         .count();
     assert_eq!(

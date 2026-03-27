@@ -8,13 +8,15 @@ use reify_lsp::server::{NoOpSink, ReifyLanguageServer};
 #[tokio::test]
 async fn full_lifecycle_initialize_open_change_close() {
     // 1. Create service with explicit NoOpSink
-    let (service, _socket) = LspService::new(|client| {
-        ReifyLanguageServer::with_sink(client, Arc::new(NoOpSink))
-    });
+    let (service, _socket) =
+        LspService::new(|client| ReifyLanguageServer::with_sink(client, Arc::new(NoOpSink)));
     let server = service.inner();
 
     // 2. Initialize
-    let init_result = server.initialize(InitializeParams::default()).await.unwrap();
+    let init_result = server
+        .initialize(InitializeParams::default())
+        .await
+        .unwrap();
     match init_result.capabilities.text_document_sync {
         Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)) => {}
         other => panic!("Expected FULL sync, got {other:?}"),

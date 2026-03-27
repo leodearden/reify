@@ -90,10 +90,7 @@ pub enum CompiledExprKind {
     OptionNone,
     /// Meta access: resolves a key from an entity's meta block at runtime.
     /// Result type is always Type::String.
-    MetaAccess {
-        entity: String,
-        key: String,
-    },
+    MetaAccess { entity: String, key: String },
     /// Determinacy predicate: checks the determinacy state of a value cell.
     /// Returns Bool at the engine level (eval layer returns Undef — lacks DeterminacyState access).
     DeterminacyPredicate {
@@ -190,8 +187,7 @@ impl CompiledExpr {
 
     /// Create a value reference expression.
     pub fn value_ref(id: ValueCellId, result_type: Type) -> Self {
-        let content_hash =
-            ContentHash::of(&[1]).combine(ContentHash::of_str(&format!("{}", id)));
+        let content_hash = ContentHash::of(&[1]).combine(ContentHash::of_str(&format!("{}", id)));
         CompiledExpr {
             kind: CompiledExprKind::ValueRef(id),
             result_type,
@@ -247,10 +243,7 @@ impl CompiledExpr {
                 then_branch.walk(f);
                 else_branch.walk(f);
             }
-            CompiledExprKind::Match {
-                discriminant,
-                arms,
-            } => {
+            CompiledExprKind::Match { discriminant, arms } => {
                 discriminant.walk(f);
                 for arm in arms {
                     arm.body.walk(f);
@@ -290,7 +283,11 @@ impl CompiledExpr {
                     arg.walk(f);
                 }
             }
-            CompiledExprKind::Quantifier { collection, predicate, .. } => {
+            CompiledExprKind::Quantifier {
+                collection,
+                predicate,
+                ..
+            } => {
                 collection.walk(f);
                 predicate.walk(f);
             }
@@ -305,8 +302,7 @@ impl CompiledExpr {
 
     /// Create a unary operation expression.
     pub fn unop(op: UnOp, operand: CompiledExpr, result_type: Type) -> Self {
-        let content_hash =
-            ContentHash::of(&[3, op as u8]).combine(operand.content_hash);
+        let content_hash = ContentHash::of(&[3, op as u8]).combine(operand.content_hash);
         CompiledExpr {
             kind: CompiledExprKind::UnOp {
                 op,
@@ -344,7 +340,11 @@ impl CompiledExpr {
                     arg.collect_value_refs_inner(refs);
                 }
             }
-            CompiledExprKind::Conditional { condition, then_branch, else_branch } => {
+            CompiledExprKind::Conditional {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
                 condition.collect_value_refs_inner(refs);
                 then_branch.collect_value_refs_inner(refs);
                 else_branch.collect_value_refs_inner(refs);
@@ -391,7 +391,12 @@ impl CompiledExpr {
                     arg.collect_value_refs_inner(refs);
                 }
             }
-            CompiledExprKind::Quantifier { variable_id, collection, predicate, .. } => {
+            CompiledExprKind::Quantifier {
+                variable_id,
+                collection,
+                predicate,
+                ..
+            } => {
                 // Collection refs are always dependencies
                 collection.collect_value_refs_inner(refs);
                 // Predicate refs excluding the bound variable
@@ -477,7 +482,9 @@ impl CompiledExpr {
     pub fn map_literal(entries: Vec<(CompiledExpr, CompiledExpr)>, result_type: Type) -> Self {
         let mut content_hash = ContentHash::of(&[10]);
         for (key, val) in &entries {
-            content_hash = content_hash.combine(key.content_hash).combine(val.content_hash);
+            content_hash = content_hash
+                .combine(key.content_hash)
+                .combine(val.content_hash);
         }
         CompiledExpr {
             kind: CompiledExprKind::MapLiteral(entries),
@@ -586,10 +593,7 @@ impl CompiledExpr {
                 then_branch.remap_entity(from_entity, to_entity);
                 else_branch.remap_entity(from_entity, to_entity);
             }
-            CompiledExprKind::Match {
-                discriminant,
-                arms,
-            } => {
+            CompiledExprKind::Match { discriminant, arms } => {
                 discriminant.remap_entity(from_entity, to_entity);
                 for arm in arms {
                     arm.body.remap_entity(from_entity, to_entity);
@@ -812,13 +816,19 @@ mod tests {
         let condition = CompiledExpr::binop(BinOp::Gt, a, b, Type::Bool);
         let c = CompiledExpr::value_ref(ValueCellId::new("P", "c"), Type::length());
         let one_mm = CompiledExpr::literal(
-            Value::Scalar { si_value: 0.001, dimension: crate::DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 0.001,
+                dimension: crate::DimensionVector::LENGTH,
+            },
             Type::length(),
         );
         let then_br = CompiledExpr::binop(BinOp::Gt, c, one_mm, Type::Bool);
         let d = CompiledExpr::value_ref(ValueCellId::new("P", "d"), Type::length());
         let two_mm = CompiledExpr::literal(
-            Value::Scalar { si_value: 0.002, dimension: crate::DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 0.002,
+                dimension: crate::DimensionVector::LENGTH,
+            },
             Type::length(),
         );
         let else_br = CompiledExpr::binop(BinOp::Gt, d, two_mm, Type::Bool);

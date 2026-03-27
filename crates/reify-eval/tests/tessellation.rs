@@ -31,10 +31,16 @@ fn tessellate_no_realizations_no_kernel_returns_empty_meshes() {
     let result = engine.tessellate_realizations(&module);
 
     // Should have empty meshes
-    assert!(result.meshes.is_empty(), "expected no meshes when no realizations exist");
+    assert!(
+        result.meshes.is_empty(),
+        "expected no meshes when no realizations exist"
+    );
 
     // Values should still be populated from eval
-    assert!(!result.values.is_empty(), "expected values to be populated from eval");
+    assert!(
+        !result.values.is_empty(),
+        "expected values to be populated from eval"
+    );
 }
 
 /// Helper: build a CompiledModule with one box primitive realization.
@@ -75,12 +81,22 @@ fn tessellate_single_box_realization() {
 
     let result = engine.tessellate_realizations(&module);
 
-    assert_eq!(result.meshes.len(), 1, "expected exactly one mesh for one realization");
+    assert_eq!(
+        result.meshes.len(),
+        1,
+        "expected exactly one mesh for one realization"
+    );
 
     let (entity_path, mesh) = &result.meshes[0];
     assert_eq!(entity_path, "TestShape#realization[0]");
-    assert!(!mesh.vertices.is_empty(), "mesh should have non-empty vertices");
-    assert!(!mesh.indices.is_empty(), "mesh should have non-empty indices");
+    assert!(
+        !mesh.vertices.is_empty(),
+        "mesh should have non-empty vertices"
+    );
+    assert!(
+        !mesh.indices.is_empty(),
+        "mesh should have non-empty indices"
+    );
 }
 
 /// tessellate_realizations with two realizations returns two meshes with distinct entity paths.
@@ -121,7 +137,11 @@ fn tessellate_multiple_realizations() {
 
     let result = engine.tessellate_realizations(&module);
 
-    assert_eq!(result.meshes.len(), 2, "expected two meshes for two realizations");
+    assert_eq!(
+        result.meshes.len(),
+        2,
+        "expected two meshes for two realizations"
+    );
 
     let paths: Vec<&str> = result.meshes.iter().map(|(p, _)| p.as_str()).collect();
     assert_eq!(paths[0], "TestShape#realization[0]");
@@ -139,16 +159,24 @@ fn tessellate_no_kernel_with_realizations_returns_empty_meshes() {
 
     let result = engine.tessellate_realizations(&module);
 
-    assert!(result.meshes.is_empty(), "expected no meshes when kernel is absent");
+    assert!(
+        result.meshes.is_empty(),
+        "expected no meshes when kernel is absent"
+    );
 
     // No tessellation-related error diagnostics
-    let has_tess_diag = result.diagnostics.iter().any(|d| {
-        d.message.contains("tessellation") || d.message.contains("geometry error")
-    });
+    let has_tess_diag = result
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("tessellation") || d.message.contains("geometry error"));
     assert!(
         !has_tess_diag,
         "expected no tessellation diagnostics when kernel absent, got: {:?}",
-        result.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+        result
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -195,16 +223,24 @@ fn tessellate_records_geometry_errors_as_diagnostics() {
     let result = engine.tessellate_realizations(&module);
 
     // No meshes should be produced
-    assert!(result.meshes.is_empty(), "expected no meshes when all kernel ops fail");
+    assert!(
+        result.meshes.is_empty(),
+        "expected no meshes when all kernel ops fail"
+    );
 
     // Should have geometry error diagnostics
-    let has_geom_error = result.diagnostics.iter().any(|d| {
-        d.message.contains("geometry error")
-    });
+    let has_geom_error = result
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("geometry error"));
     assert!(
         has_geom_error,
         "expected geometry error diagnostic, got: {:?}",
-        result.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+        result
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -217,7 +253,10 @@ fn tessellate_snapshot_returns_none_without_prior_eval() {
     let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
 
     let result = engine.tessellate_snapshot(&module);
-    assert!(result.is_none(), "expected None when no eval() has been called");
+    assert!(
+        result.is_none(),
+        "expected None when no eval() has been called"
+    );
 }
 
 /// tessellate_snapshot returns tessellated meshes from the current snapshot after eval().
@@ -231,12 +270,23 @@ fn tessellate_snapshot_returns_meshes_after_eval() {
     // Initial eval to populate snapshot
     let _eval_result = engine.eval(&module);
 
-    let result = engine.tessellate_snapshot(&module)
+    let result = engine
+        .tessellate_snapshot(&module)
         .expect("tessellate_snapshot should return Some after eval()");
 
-    assert_eq!(result.meshes.len(), 1, "expected one mesh from one realization");
+    assert_eq!(
+        result.meshes.len(),
+        1,
+        "expected one mesh from one realization"
+    );
     let (entity_path, mesh) = &result.meshes[0];
     assert_eq!(entity_path, "TestShape#realization[0]");
-    assert!(!mesh.vertices.is_empty(), "mesh should have non-empty vertices");
-    assert!(!mesh.indices.is_empty(), "mesh should have non-empty indices");
+    assert!(
+        !mesh.vertices.is_empty(),
+        "mesh should have non-empty vertices"
+    );
+    assert!(
+        !mesh.indices.is_empty(),
+        "mesh should have non-empty indices"
+    );
 }

@@ -14,9 +14,7 @@ pub enum SnapshotProvenance {
         parent: SnapshotId,
     },
     /// Elaboration pass (re-evaluation of derived values).
-    Elaboration {
-        parent: SnapshotId,
-    },
+    Elaboration { parent: SnapshotId },
     /// Constraint resolution pass that resolved specific value cells.
     Resolution {
         scope: String,
@@ -53,7 +51,10 @@ mod tests {
         assert_eq!(prov, prov2);
 
         match &prov {
-            SnapshotProvenance::Edit { changed: c, parent: p } => {
+            SnapshotProvenance::Edit {
+                changed: c,
+                parent: p,
+            } => {
                 assert_eq!(c.len(), 2);
                 assert!(c.contains(&ValueCellId::new("Bracket", "width")));
                 assert_eq!(*p, SnapshotId(0));
@@ -92,7 +93,11 @@ mod tests {
         assert_eq!(prov, prov2);
 
         match &prov {
-            SnapshotProvenance::Resolution { scope, resolved: r, parent } => {
+            SnapshotProvenance::Resolution {
+                scope,
+                resolved: r,
+                parent,
+            } => {
                 assert_eq!(scope, "min_thickness");
                 assert_eq!(r.len(), 1);
                 assert!(r.contains(&ValueCellId::new("Bracket", "thickness")));

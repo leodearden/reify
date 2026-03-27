@@ -18,7 +18,11 @@ use reify_types::*;
 /// Helper: parse source and compile, returning all templates and diagnostics.
 fn compile_all(source: &str) -> (Vec<TopologyTemplate>, Vec<Diagnostic>) {
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
     let compiled = reify_compiler::compile(&parsed);
     (compiled.templates, compiled.diagnostics)
 }
@@ -44,7 +48,9 @@ structure S {
 
     let (template, _diagnostics) = compile_first_template(source);
 
-    let child_sub = template.sub_components.iter()
+    let child_sub = template
+        .sub_components
+        .iter()
         .find(|s| s.name == "child")
         .expect("expected sub named 'child'");
 
@@ -57,7 +63,8 @@ structure S {
     let guard = child_sub.guard_expr.as_ref().unwrap();
     assert!(
         matches!(&guard.kind, CompiledExprKind::BinOp { op: BinOp::Gt, .. }),
-        "guard_expr should be BinOp::Gt for 'n > 0', got {:?}", guard.kind
+        "guard_expr should be BinOp::Gt for 'n > 0', got {:?}",
+        guard.kind
     );
 }
 
@@ -72,9 +79,14 @@ structure Outer {
 "#;
 
     let (templates, _) = compile_all(source);
-    let outer = templates.iter().find(|t| t.name == "Outer").expect("expected Outer");
+    let outer = templates
+        .iter()
+        .find(|t| t.name == "Outer")
+        .expect("expected Outer");
 
-    let inner_sub = outer.sub_components.iter()
+    let inner_sub = outer
+        .sub_components
+        .iter()
         .find(|s| s.name == "inner")
         .expect("expected sub named 'inner'");
 
@@ -98,7 +110,8 @@ structure S {
 
     let (_templates, diagnostics) = compile_all(source);
 
-    let errors: Vec<_> = diagnostics.iter()
+    let errors: Vec<_> = diagnostics
+        .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
 
@@ -111,8 +124,10 @@ structure S {
     // Error message should mention recursive sub and missing termination
     let msg_ok = errors.iter().any(|d| {
         let msg = d.message.to_lowercase();
-        (msg.contains("recursive") || msg.contains("recursion")) &&
-        (msg.contains("termination") || msg.contains("no termination") || msg.contains("guard"))
+        (msg.contains("recursive") || msg.contains("recursion"))
+            && (msg.contains("termination")
+                || msg.contains("no termination")
+                || msg.contains("guard"))
     });
     assert!(
         msg_ok,
@@ -135,7 +150,8 @@ structure S {
 
     let (_templates, diagnostics) = compile_all(source);
 
-    let errors: Vec<_> = diagnostics.iter()
+    let errors: Vec<_> = diagnostics
+        .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
 
@@ -161,7 +177,8 @@ structure S {
 
     let (_templates, diagnostics) = compile_all(source);
 
-    let errors: Vec<_> = diagnostics.iter()
+    let errors: Vec<_> = diagnostics
+        .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
 
@@ -174,7 +191,8 @@ structure S {
     // Should mention guard not referencing a param
     let msg_ok = errors.iter().any(|d| {
         let msg = d.message.to_lowercase();
-        msg.contains("guard") && (msg.contains("param") || msg.contains("int") || msg.contains("bool"))
+        msg.contains("guard")
+            && (msg.contains("param") || msg.contains("int") || msg.contains("bool"))
     });
     assert!(
         msg_ok,
@@ -197,7 +215,8 @@ structure S {
 
     let (_templates, diagnostics) = compile_all(source);
 
-    let errors: Vec<_> = diagnostics.iter()
+    let errors: Vec<_> = diagnostics
+        .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
 
@@ -210,7 +229,10 @@ structure S {
     // Should mention param not being decremented
     let msg_ok = errors.iter().any(|d| {
         let msg = d.message.to_lowercase();
-        msg.contains("decrement") || msg.contains("unchanged") || msg.contains("modif") || msg.contains("toward")
+        msg.contains("decrement")
+            || msg.contains("unchanged")
+            || msg.contains("modif")
+            || msg.contains("toward")
     });
     assert!(
         msg_ok,
@@ -233,7 +255,8 @@ structure S {
 
     let (_templates, diagnostics) = compile_all(source);
 
-    let errors: Vec<_> = diagnostics.iter()
+    let errors: Vec<_> = diagnostics
+        .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
 
@@ -258,7 +281,8 @@ structure S {
 
     let (_templates, diagnostics) = compile_all(source);
 
-    let errors: Vec<_> = diagnostics.iter()
+    let errors: Vec<_> = diagnostics
+        .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
 
@@ -296,7 +320,8 @@ structure B {
 
     let (_templates, diagnostics) = compile_all(source);
 
-    let errors: Vec<_> = diagnostics.iter()
+    let errors: Vec<_> = diagnostics
+        .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
 
@@ -322,7 +347,8 @@ structure Outer {
 
     let (_templates, diagnostics) = compile_all(source);
 
-    let errors: Vec<_> = diagnostics.iter()
+    let errors: Vec<_> = diagnostics
+        .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
 
@@ -362,7 +388,11 @@ structure S {
         template.sub_components.is_empty(),
         "expected sub_components to be empty because compile_guarded_members drops Sub \
          declarations inside where{{}} blocks (pre-existing limitation), but got: {:?}",
-        template.sub_components.iter().map(|s| &s.name).collect::<Vec<_>>()
+        template
+            .sub_components
+            .iter()
+            .map(|s| &s.name)
+            .collect::<Vec<_>>()
     );
 
     // Because no sub_components exist, Tarjan SCC finds no cycle → is_recursive == false.
@@ -425,7 +455,8 @@ structure S {
 
     let (_templates, diagnostics) = compile_all(source);
 
-    let errors: Vec<_> = diagnostics.iter()
+    let errors: Vec<_> = diagnostics
+        .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
 

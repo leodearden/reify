@@ -14,9 +14,8 @@ fn parse_decls(source: &str) -> (Vec<Declaration>, Vec<ParseError>) {
 
 #[test]
 fn parse_analytical_field() {
-    let (decls, errors) = parse_decls(
-        "field def temp : Point3 -> Scalar { source = analytical { |p| p } }",
-    );
+    let (decls, errors) =
+        parse_decls("field def temp : Point3 -> Scalar { source = analytical { |p| p } }");
     assert!(errors.is_empty(), "parse errors: {:?}", errors);
     assert_eq!(decls.len(), 1);
 
@@ -113,9 +112,8 @@ fn parse_composed_field() {
 
 #[test]
 fn parse_pub_field() {
-    let (decls, errors) = parse_decls(
-        "pub field def temp : Point3 -> Scalar { source = analytical { |p| p } }",
-    );
+    let (decls, errors) =
+        parse_decls("pub field def temp : Point3 -> Scalar { source = analytical { |p| p } }");
     assert!(errors.is_empty(), "parse errors: {:?}", errors);
     assert_eq!(decls.len(), 1);
 

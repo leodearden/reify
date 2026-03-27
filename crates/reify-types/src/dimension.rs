@@ -257,7 +257,10 @@ mod tests {
 
     #[test]
     fn rational_arithmetic() {
-        assert_eq!(Rational::new(1, 2) + Rational::new(1, 3), Rational::new(5, 6));
+        assert_eq!(
+            Rational::new(1, 2) + Rational::new(1, 3),
+            Rational::new(5, 6)
+        );
         assert_eq!(Rational::new(1, 1) - Rational::new(1, 1), Rational::ZERO);
         assert_eq!(-Rational::new(3, 4), Rational::new(-3, 4));
     }
@@ -278,10 +281,10 @@ mod tests {
     #[test]
     fn dimension_div() {
         let velocity = DimensionVector::LENGTH.div(&DimensionVector({
-                let mut v = [Rational::ZERO; 9];
-                v[2] = Rational::ONE; // time
-                v
-            }));
+            let mut v = [Rational::ZERO; 9];
+            v[2] = Rational::ONE; // time
+            v
+        }));
         assert_eq!(velocity.0[0], Rational::ONE); // m
         assert_eq!(velocity.0[2], Rational::new(-1, 1)); // s^-1
     }

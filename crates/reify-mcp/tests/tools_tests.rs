@@ -61,23 +61,33 @@ fn all_tools_have_valid_object_schema() {
 
 /// Write tools with their minimal valid params.
 const WRITE_TOOLS: &[(&str, &str)] = &[
-    ("reify_update_source", r#"{"file_path": "main.ri", "content": "param x = 10mm"}"#),
-    ("reify_set_parameter", r#"{"cell_id": "Bracket.width", "value": "120mm"}"#),
+    (
+        "reify_update_source",
+        r#"{"file_path": "main.ri", "content": "param x = 10mm"}"#,
+    ),
+    (
+        "reify_set_parameter",
+        r#"{"cell_id": "Bracket.width", "value": "120mm"}"#,
+    ),
     ("reify_open_file", r#"{"file_path": "main.ri"}"#),
     ("reify_save_file", r#"{}"#),
-    ("reify_export", r#"{"format": "step", "output_path": "/tmp/out.step"}"#),
+    (
+        "reify_export",
+        r#"{"format": "step", "output_path": "/tmp/out.step"}"#,
+    ),
 ];
 
 /// Navigation tools with their minimal valid params.
 const NAV_TOOLS: &[(&str, &str)] = &[
     ("reify_focus_entity", r#"{"entity_path": "bracket/body"}"#),
-    ("reify_navigate_to_source", r#"{"entity_path": "bracket/body"}"#),
+    (
+        "reify_navigate_to_source",
+        r#"{"entity_path": "bracket/body"}"#,
+    ),
 ];
 
 /// Reference tools with their minimal valid params.
-const REF_TOOLS: &[(&str, &str)] = &[
-    ("reify_language_reference", r#"{"topic": "syntax"}"#),
-];
+const REF_TOOLS: &[(&str, &str)] = &[("reify_language_reference", r#"{"topic": "syntax"}"#)];
 
 #[test]
 fn all_non_read_tools_return_ok_with_valid_params() {
@@ -111,13 +121,31 @@ fn no_tools_return_not_implemented() {
 
     // Use minimal params that avoid InvalidParams for required-param tools
     let minimal_params: std::collections::HashMap<&str, serde_json::Value> = [
-        ("reify_update_source", serde_json::json!({"file_path": "a.ri", "content": ""})),
-        ("reify_set_parameter", serde_json::json!({"cell_id": "x", "value": "1"})),
+        (
+            "reify_update_source",
+            serde_json::json!({"file_path": "a.ri", "content": ""}),
+        ),
+        (
+            "reify_set_parameter",
+            serde_json::json!({"cell_id": "x", "value": "1"}),
+        ),
         ("reify_open_file", serde_json::json!({"file_path": "a.ri"})),
-        ("reify_export", serde_json::json!({"format": "step", "output_path": "/tmp/o"})),
-        ("reify_focus_entity", serde_json::json!({"entity_path": "x"})),
-        ("reify_navigate_to_source", serde_json::json!({"entity_path": "x"})),
-        ("reify_get_source_location", serde_json::json!({"entity_path": "x"})),
+        (
+            "reify_export",
+            serde_json::json!({"format": "step", "output_path": "/tmp/o"}),
+        ),
+        (
+            "reify_focus_entity",
+            serde_json::json!({"entity_path": "x"}),
+        ),
+        (
+            "reify_navigate_to_source",
+            serde_json::json!({"entity_path": "x"}),
+        ),
+        (
+            "reify_get_source_location",
+            serde_json::json!({"entity_path": "x"}),
+        ),
     ]
     .into_iter()
     .collect();
@@ -141,7 +169,11 @@ fn no_tools_return_not_implemented() {
 #[test]
 fn tool_names_match_spec() {
     let registry = setup_registry();
-    let tool_names: Vec<String> = registry.list_tools().iter().map(|t| t.name.clone()).collect();
+    let tool_names: Vec<String> = registry
+        .list_tools()
+        .iter()
+        .map(|t| t.name.clone())
+        .collect();
 
     for expected in EXPECTED_TOOLS {
         assert!(

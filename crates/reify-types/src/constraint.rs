@@ -237,7 +237,10 @@ mod tests {
     fn resolution_problem_populated() {
         use crate::identity::ValueCellId;
         let mut values = crate::value::ValueMap::new();
-        values.insert(ValueCellId::new("Bracket", "width"), crate::value::Value::length(0.08));
+        values.insert(
+            ValueCellId::new("Bracket", "width"),
+            crate::value::Value::length(0.08),
+        );
 
         let problem = ResolutionProblem {
             auto_params: vec![AutoParam {
@@ -245,10 +248,7 @@ mod tests {
                 param_type: Type::length(),
                 bounds: Some((0.01, 1.0)),
             }],
-            constraints: vec![(
-                ConstraintNodeId::new("Bracket", 0),
-                make_literal_expr(),
-            )],
+            constraints: vec![(ConstraintNodeId::new("Bracket", 0), make_literal_expr())],
             current_values: values,
             objective: Some(OptimizationObjective::Minimize(make_literal_expr())),
             functions: vec![],
