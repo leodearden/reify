@@ -6838,7 +6838,13 @@
         "subtasks": [],
         "updatedAt": "2026-03-27T06:25:13.458Z",
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-stdlib/src/lib.rs"
+          ],
+          "modules": [
+            "crates/reify-stdlib/src"
+          ]
         }
       },
       {
@@ -6865,7 +6871,13 @@
         "subtasks": [],
         "updatedAt": "2026-03-26T12:05:52.865Z",
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-stdlib/src/lib.rs"
+          ],
+          "modules": [
+            "crates/reify-stdlib/src"
+          ]
         }
       },
       {
