@@ -2201,6 +2201,34 @@ mod poison_evaluate {
         let outcome = result.unwrap();
         assert_eq!(outcome, EvalOutcome::Changed);
     }
+
+    /// Verify that tracing::warn! is emitted when evaluate() recovers from poisoned locks.
+    /// evaluate() touches read_values, write_values, write_snapshot_values, and lock_results,
+    /// so poisoning values should produce multiple WARN events.
+    #[test]
+    fn tracing_warn_emitted_on_poison_evaluate() {
+        let setup = simple_setup();
+        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+        let node = NodeId::Value(ValueCellId::new("T", "b"));
+
+        // Poison values lock — affects both read and write paths in evaluate()
+        adapter.poison_values();
+
+        let (subscriber, warn_count) = warn_counting_subscriber();
+        let _result = tracing::subscriber::with_default(subscriber, || {
+            catch_unwind(AssertUnwindSafe(|| {
+                tokio::runtime::Runtime::new()
+                    .unwrap()
+                    .block_on(async { adapter.evaluate(node).await })
+            }))
+        });
+
+        let count = warn_count.load(std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            count > 0,
+            "evaluate() should emit tracing::warn! on poison recovery, got {count} WARN events"
+        );
+    }
 }
 
 
