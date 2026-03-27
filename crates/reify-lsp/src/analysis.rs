@@ -328,6 +328,26 @@ mod tests {
         assert_eq!(constraints, 3);
     }
 
+    #[test]
+    fn structure_names_includes_occurrence() {
+        let source = "structure Bracket {\n    param width: Scalar = 80mm\n}\noccurrence def Joint {\n    param diameter: Scalar = 10mm\n    let radius = diameter / 2\n    constraint diameter > 5mm\n}";
+        let ctx = AnalysisContext::new(source, &test_uri());
+        let names = ctx.structure_names();
+        assert_eq!(names.len(), 2, "should have Bracket and Joint");
+        let (name0, p0, l0, c0, kind0) = names[0];
+        assert_eq!(name0, "Bracket");
+        assert_eq!(kind0, "structure");
+        assert_eq!(p0, 1);
+        assert_eq!(l0, 0);
+        assert_eq!(c0, 0);
+        let (name1, p1, l1, c1, kind1) = names[1];
+        assert_eq!(name1, "Joint");
+        assert_eq!(kind1, "occurrence");
+        assert_eq!(p1, 1);
+        assert_eq!(l1, 1);
+        assert_eq!(c1, 1);
+    }
+
     // --- get_value tests ---
 
     #[test]
