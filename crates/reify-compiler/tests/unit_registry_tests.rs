@@ -828,3 +828,32 @@ fn overflow_hardcoded_unit_in_structure_param_rejected() {
         errors
     );
 }
+
+// ─── step-12 (task-208): regression — valid quantity literals in structure params ─
+
+#[test]
+fn valid_quantity_literal_in_structure_param_still_compiles() {
+    // A normal quantity literal in a structure param must still compile without errors.
+    let module = parse_and_compile("structure Foo { param x : Length = 10mm }");
+    assert!(
+        errors_only(&module).is_empty(),
+        "expected no errors for valid quantity literal in structure param; got: {:?}",
+        errors_only(&module)
+    );
+    // Verify the compiled value is correct: 10mm = 0.01m
+    let template = module.templates.iter().find(|t| t.name == "Foo").expect("Foo not found");
+    let x_cell = template.value_cells.iter().find(|c| c.id.member == "x").expect("x not found");
+    if let Some(expr) = &x_cell.default_expr {
+        if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar { si_value, .. }) = &expr.kind {
+            assert!(
+                (si_value - 0.01).abs() < 1e-9,
+                "10mm should be 0.01m, got {}",
+                si_value
+            );
+        } else {
+            panic!("expected scalar literal for x, got {:?}", expr.kind);
+        }
+    } else {
+        panic!("x has no default_expr");
+    }
+}
