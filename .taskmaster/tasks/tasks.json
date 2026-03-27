@@ -11496,7 +11496,14 @@
         "priority": "low",
         "subtasks": [],
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-cli/tests/cli_check.rs",
+            "crates/reify-cli/tests/cli_build.rs"
+          ],
+          "modules": [
+            "crates/reify-cli/tests"
+          ]
         }
       },
       {
