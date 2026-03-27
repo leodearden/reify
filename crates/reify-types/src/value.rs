@@ -1282,10 +1282,8 @@ impl Ord for Value {
                 },
             ) => {
                 // Defensive re-normalization: None bounds → inclusive=false
-                let ali = *ali && al.is_some();
-                let aui = *aui && au.is_some();
-                let bli = *bli && bl.is_some();
-                let bui = *bui && bu.is_some();
+                let (ali, aui) = normalize_range_flags(al, au, *ali, *aui);
+                let (bli, bui) = normalize_range_flags(bl, bu, *bli, *bui);
                 ali.cmp(&bli)
                     .then_with(|| al.cmp(bl))
                     .then_with(|| aui.cmp(&bui))
