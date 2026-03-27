@@ -9756,7 +9756,7 @@
         "description": "NelderMeadSolver at crates/reify-constraints/src/solver.rs:401-423 skips the early-exit feasibility check when problem.objective.is_some(). This means optimization problems where constraints are already satisfied at the initial point still run the full 5000 iterations.\n\n**Fix:** When an objective is present and all constraints are already satisfied at the initial point, still run the optimizer but consider using the feasible initial point as a baseline. At minimum, add the feasibility check before the optimizer loop and if already feasible, run a reduced number of iterations or use a tighter convergence criterion.\n\n**Memory hints:** search for \"Nelder-Mead solver\", \"constraint solver architecture\", entity names: NelderMeadSolver, FEASIBILITY_THRESHOLD, MAX_ITERS",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -9769,7 +9769,7 @@
             "crates/reify-constraints/src"
           ]
         },
-        "updatedAt": "2026-03-27T07:37:20.545Z"
+        "updatedAt": "2026-03-27T07:59:43.454Z"
       },
       {
         "id": "496",
@@ -10077,7 +10077,13 @@
           ],
           "modules": [
             "crates/reify-cli/tests"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Harden CLI build tests: pre-cleanup, file existence, and summary assertion"
+            ]
+          }
         },
         "updatedAt": "2026-03-27T07:57:30.527Z"
       },
@@ -10421,7 +10427,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-27T07:57:30.527Z",
+      "lastModified": "2026-03-27T07:59:43.455Z",
       "taskCount": 527,
       "completedCount": 253,
       "tags": [
