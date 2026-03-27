@@ -99,8 +99,8 @@
       "id": "step-11",
       "type": "impl",
       "description": "Retry merge after second merge_ff_failed. Main advanced again between step-10 rebase and the merge attempt. Fetch origin/main, rebase onto latest origin/main (branch is currently ff-mergeable \u2014 verified 0 commits ahead on main \u2014 but rebase again at merge time to handle any race). Run vitest on claudeBridge.test.ts and App.test.tsx from gui/ directory to confirm 95 tests pass post-rebase. Force-push rebased branch.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "2fcbbd41"
     }
   ],
   "design_decisions": [
