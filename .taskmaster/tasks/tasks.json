@@ -10891,7 +10891,10 @@
           "522"
         ],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+        }
       },
       {
         "id": 549,
@@ -10907,7 +10910,8 @@
         "metadata": {
           "modules": [
             "crates/reify-eval"
-          ]
+          ],
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         }
       },
       {
