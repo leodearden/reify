@@ -10470,6 +10470,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 531,
+        "title": "Solver: warm-start robustness — feasible fallback and convergence awareness",
+        "description": "Three related robustness gaps in the warm-start optimization path (initially_feasible + objective):\n\n1. **False infeasible on warm-start** (solver.rs:497): If the optimizer starts feasible but drifts infeasible within the 500-iteration budget, the post-optimizer check returns `Infeasible` despite a known-feasible initial point. Fix: if `initially_feasible` and post-optimizer check fails, fall back to returning `Solved` with the initial point values.\n\n2. **Silent quality degradation** (solver.rs:436-440): `Solved` is returned regardless of convergence. Consider checking argmin's `TerminationReason` and either adding an `iteration_count` field to `SolveResult::Solved` or documenting that `Solved` does not guarantee optimality with objectives.\n\n3. **Dimension-blind constant** (solver.rs:26-29): `FEASIBLE_OPT_ITERS = 500` doesn't scale with problem dimensionality. Nelder-Mead needs O(N²) iterations. Consider `FEASIBLE_OPT_ITERS_BASE * (n_params + 1)` capped at MAX_ITERS, or add a comment documenting the limitation.\n\nPriority: medium — #1 is a potential correctness bug, #2-#3 are robustness improvements.\n\nMemory hints: search for \"Nelder-Mead solver\", \"constraint solver architecture\", entity names: NelderMeadSolver, FEASIBILITY_THRESHOLD, FEASIBLE_OPT_ITERS",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -10482,7 +10493,7 @@
       ],
       "created": "2026-03-27T08:03:55.881Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-27T08:04:07.108Z"
+      "updated": "2026-03-27T08:04:14.872Z"
     }
   }
 }
