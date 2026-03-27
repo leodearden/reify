@@ -63,7 +63,7 @@ fn mcp_roundtrip(args: &[&str], requests: &[serde_json::Value]) -> Vec<serde_jso
 }
 
 #[test]
-fn mcp_server_tools_list_returns_16_tools() {
+fn mcp_server_tools_list_includes_core_tools() {
     let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/bracket.ri");
 
     let requests = vec![
@@ -85,16 +85,36 @@ fn mcp_server_tools_list_returns_16_tools() {
         .as_array()
         .expect("tools/list should have result.tools array");
 
-    assert_eq!(
+    let tool_names: Vec<&str> = tools
+        .iter()
+        .map(|t| t["name"].as_str().unwrap_or("?"))
+        .collect();
+
+    // Minimum count to catch catastrophic regressions
+    assert!(
+        tools.len() >= 16,
+        "expected at least 16 tools, got {}: {:?}",
         tools.len(),
-        16,
-        "expected 16 tools, got {}: {:?}",
-        tools.len(),
-        tools
-            .iter()
-            .map(|t| t["name"].as_str().unwrap_or("?"))
-            .collect::<Vec<_>>()
+        tool_names
     );
+
+    // Core tools exercised by other tests in this file
+    let core_tools = [
+        "reify_get_source",
+        "reify_get_parameters",
+        "reify_set_parameter",
+        "reify_update_source",
+        "reify_get_constraints",
+        "reify_language_reference",
+    ];
+    for core in &core_tools {
+        assert!(
+            tool_names.contains(core),
+            "core tool '{}' missing from tools/list, got: {:?}",
+            core,
+            tool_names
+        );
+    }
 }
 
 #[test]
