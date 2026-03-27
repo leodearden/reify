@@ -7369,7 +7369,8 @@
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests"
-          ]
+          ],
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         },
         "subtasks": [],
         "updatedAt": "2026-03-25T20:59:19.454Z"
@@ -7386,7 +7387,8 @@
         "metadata": {
           "modules": [
             "crates/reify-compiler"
-          ]
+          ],
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         },
         "subtasks": [],
         "updatedAt": "2026-03-25T20:59:19.488Z"
