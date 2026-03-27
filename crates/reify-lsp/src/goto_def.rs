@@ -94,6 +94,18 @@ mod tests {
     }
 
     #[test]
+    fn goto_def_occurrence_param_returns_location() {
+        let source = "occurrence def Joint {\n    param diameter: Scalar = 10mm\n    constraint diameter > 5mm\n}";
+        // 'diameter' in the constraint is on line 2, col 15
+        let position = Position::new(2, 15);
+        let loc = compute_goto_definition(source, &test_uri(), position)
+            .expect("goto-def for diameter ref in occurrence should return location");
+        assert_eq!(loc.uri, test_uri());
+        // Should point to param declaration on line 1
+        assert_eq!(loc.range.start.line, 1);
+    }
+
+    #[test]
     fn goto_def_keyword_returns_none() {
         let source = reify_test_support::bracket_source();
         // 'param' keyword on line 1
