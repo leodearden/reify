@@ -8328,11 +8328,11 @@
         "description": "In crates/reify-types/src/value.rs: (1) Add upper=None+upper_inclusive=true bypass tests for PartialEq and Ord (mirror existing lower bypass tests). (2) Add test verifying Range(0..10, lower_inclusive=true) != Range(0..10, lower_inclusive=false) when bounds are present. (Review followup from task 364)",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-03-27T08:57:22.174Z",
+        "updatedAt": "2026-03-27T08:57:28.526Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -10797,9 +10797,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-27T08:57:22.322Z",
+      "lastModified": "2026-03-27T08:57:28.526Z",
       "taskCount": 548,
-      "completedCount": 260,
+      "completedCount": 261,
       "tags": [
         "master"
       ]
