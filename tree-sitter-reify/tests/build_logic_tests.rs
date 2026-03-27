@@ -48,7 +48,8 @@ const EXPECTED_OUTPUTS: &[&str] = &["parser.c", "grammar.json", "node-types.json
 
 /// Duplicates needs_generate logic from build.rs for testability.
 /// Returns true if regeneration is needed based on content hash staleness.
-fn needs_generate(grammar_path: &Path, stamp_path: &Path, output_paths: &[&Path]) -> bool {
+/// The caller passes a pre-computed grammar hash to avoid TOCTOU races.
+fn needs_generate(grammar_hash: &str, stamp_path: &Path, output_paths: &[&Path]) -> bool {
     // Must regenerate if any output file is missing.
     for path in output_paths {
         if !path.exists() {
@@ -61,8 +62,7 @@ fn needs_generate(grammar_path: &Path, stamp_path: &Path, output_paths: &[&Path]
         Err(_) => return true,
     };
     // Must regenerate if grammar hash differs from stamp.
-    let current_hash = content_hash(grammar_path);
-    stamp_content.trim() != current_hash
+    stamp_content.trim() != grammar_hash
 }
 
 #[test]
@@ -80,8 +80,9 @@ fn test_needs_generate_true_when_no_stamp() {
     let output_paths: Vec<_> = EXPECTED_OUTPUTS.iter().map(|n| src_dir.join(n)).collect();
     let output_refs: Vec<&Path> = output_paths.iter().map(|p| p.as_path()).collect();
 
+    let hash = content_hash(&grammar);
     assert!(
-        needs_generate(&grammar, &stamp, &output_refs),
+        needs_generate(&hash, &stamp, &output_refs),
         "must regenerate when stamp file is missing"
     );
 }
@@ -105,7 +106,7 @@ fn test_needs_generate_false_when_stamp_matches() {
     let output_refs: Vec<&Path> = output_paths.iter().map(|p| p.as_path()).collect();
 
     assert!(
-        !needs_generate(&grammar, &stamp, &output_refs),
+        !needs_generate(&hash, &stamp, &output_refs),
         "must NOT regenerate when stamp matches and all outputs exist"
     );
 }
@@ -127,8 +128,9 @@ fn test_needs_generate_true_when_stamp_stale() {
     let output_paths: Vec<_> = EXPECTED_OUTPUTS.iter().map(|n| src_dir.join(n)).collect();
     let output_refs: Vec<&Path> = output_paths.iter().map(|p| p.as_path()).collect();
 
+    let hash = content_hash(&grammar);
     assert!(
-        needs_generate(&grammar, &stamp, &output_refs),
+        needs_generate(&hash, &stamp, &output_refs),
         "must regenerate when stamp hash differs from current grammar hash"
     );
 }
@@ -153,7 +155,7 @@ fn test_needs_generate_true_when_output_missing() {
     let output_refs: Vec<&Path> = output_paths.iter().map(|p| p.as_path()).collect();
 
     assert!(
-        needs_generate(&grammar, &stamp, &output_refs),
+        needs_generate(&hash, &stamp, &output_refs),
         "must regenerate when any output file is missing"
     );
 }
