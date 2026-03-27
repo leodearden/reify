@@ -3458,6 +3458,27 @@ mod tests {
     }
 
     #[test]
+    fn revolve_near_degenerate_axis_rejected() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(1.0),
+            })
+            .unwrap();
+        // axis=[1e-8, 0, 0] has mag_sq=1e-16, physically meaningless
+        // but above old EPSILON^2 ≈ 4.9e-32; threshold 1e-12 should catch it
+        let result = kernel.execute(&GeometryOp::Revolve {
+            profile: box_h.id,
+            axis_origin: [0.0, 0.0, 0.0],
+            axis_dir: [1e-8, 0.0, 0.0],
+            angle_rad: std::f64::consts::TAU,
+        });
+        assert_operation_fails_with(result, "zero");
+    }
+
+    #[test]
     fn sweep_circle_along_line_creates_pipe() {
         if !crate::OCCT_AVAILABLE {
             eprintln!("skipping: OCCT not available");
