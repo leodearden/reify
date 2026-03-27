@@ -2476,6 +2476,26 @@ mod tests {
     }
 
     #[test]
+    fn mirror_near_zero_normal_rejected() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        // plane_normal=[1e-20, 0, 0] has mag_sq=1e-40, physically meaningless.
+        // Should be rejected like near-degenerate axes in rotate/revolve.
+        let result = kernel.execute(&GeometryOp::Mirror {
+            target: box_h.id,
+            plane_origin: [0.0, 0.0, 0.0],
+            plane_normal: [1e-20, 0.0, 0.0],
+        });
+        assert_operation_fails_with(result, "zero");
+    }
+
+    #[test]
     fn make_circle_wire_rejects_degenerate_radius() {
         // Radius of 0 should cause MakeEdge to fail; verify we get an error
         // rather than a silently invalid shape.
