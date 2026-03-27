@@ -1,8 +1,10 @@
+use std::collections::HashMap;
+
 use reify_compiler::{CompiledModule, ValueCellKind};
 use reify_constraints::SimpleConstraintChecker;
 use reify_eval::CheckResult;
 use reify_syntax::ParsedModule;
-use reify_types::{DimensionVector, ModulePath, SourceSpan, Type, Value, ValueCellId};
+use reify_types::{DimensionVector, ModulePath, SourceSpan, Type, Value, ValueCellId, ValueMap};
 use tower_lsp::lsp_types::Url;
 
 /// Extract a module name from a file URI.
@@ -48,6 +50,30 @@ impl AnalysisContext {
         let checker = SimpleConstraintChecker;
         let mut engine = reify_eval::Engine::new(Box::new(checker), None);
         let check_result = engine.check(&compiled);
+
+        Self {
+            parsed,
+            compiled,
+            check_result,
+        }
+    }
+
+    /// Build a lightweight analysis context for completions only.
+    ///
+    /// Runs parse + compile but skips engine.check(), which is expensive
+    /// (constraint evaluation + type-checking) and unnecessary for completions.
+    /// Completions only need member_names() (from compiled.templates) and
+    /// structure_names() (from parsed.declarations).
+    pub fn new_for_completions(source: &str, uri: &Url) -> Self {
+        let module_name = module_name_from_uri(uri);
+        let parsed = reify_syntax::parse(source, ModulePath::single(module_name));
+        let compiled = reify_compiler::compile(&parsed);
+        let check_result = CheckResult {
+            values: ValueMap::new(),
+            constraint_results: vec![],
+            diagnostics: vec![],
+            resolved_params: HashMap::new(),
+        };
 
         Self {
             parsed,

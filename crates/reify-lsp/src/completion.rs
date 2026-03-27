@@ -164,8 +164,8 @@ pub fn compute_completions(source: &str, uri: &Url, position: Position) -> Vec<C
         }
     }
 
-    // Context-dependent items from the source
-    let ctx = AnalysisContext::new(source, uri);
+    // Context-dependent items from the source (skip engine.check() — not needed for completions)
+    let ctx = AnalysisContext::new_for_completions(source, uri);
 
     // (d) Value cell members — not in TypeAnnotation (AfterDot SHOULD show members)
     if !matches!(context, CompletionContext::TypeAnnotation) {
