@@ -3266,7 +3266,20 @@
             "crates/reify-syntax"
           ],
           "milestone": "M9",
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "memory_hints": {
+            "entities": [
+              "grammar.js",
+              "lower_instance_qualified_access",
+              "QualifiedAccess",
+              "InstanceQualifiedAccess"
+            ],
+            "queries": [
+              "qualified_access grammar prec.left precedence :: operator",
+              "qualified trait access AST nodes ExprKind reify-syntax",
+              "phantom-done 191 192 193 re-implementation"
+            ]
+          }
         },
         "subtasks": [],
         "updatedAt": "2026-03-27T06:59:46.181Z"
