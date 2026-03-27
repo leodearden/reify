@@ -2092,6 +2092,31 @@ mod poison_panics {
             "into_result() should recover from poisoned results lock, not panic"
         );
     }
+
+    /// Verify that tracing::warn! is emitted when into_result() recovers from poisoned locks.
+    /// into_result() has 6 unwrap_or_else closures in Arc::try_unwrap paths.
+    #[test]
+    fn tracing_warn_emitted_on_poison_into_result() {
+        let setup = simple_setup();
+        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+        let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
+
+        // Poison the values lock
+        adapter.poison_values();
+
+        let (subscriber, warn_count) = warn_counting_subscriber();
+        let _result = tracing::subscriber::with_default(subscriber, || {
+            catch_unwind(AssertUnwindSafe(|| {
+                adapter.into_result(&eval_set, HashSet::new())
+            }))
+        });
+
+        let count = warn_count.load(std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            count > 0,
+            "into_result() should emit tracing::warn! on poison recovery, got {count} WARN events"
+        );
+    }
 }
 
 // Tests for evaluate() recovering from poisoned locks. The evaluate method
