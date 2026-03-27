@@ -9471,7 +9471,14 @@
         "priority": "medium",
         "subtasks": [],
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-lsp/src/goto_def.rs",
+            "crates/reify-lsp/src/server.rs"
+          ],
+          "modules": [
+            "crates/reify-lsp/src"
+          ]
         }
       },
       {
@@ -9485,7 +9492,15 @@
         "priority": "medium",
         "subtasks": [],
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "gui/src/panels/PropertyEditor.tsx",
+            "gui/src/__tests__/PropertyEditor.test.tsx"
+          ],
+          "modules": [
+            "gui/src/panels",
+            "gui/src/__tests__"
+          ]
         }
       },
       {
