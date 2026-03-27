@@ -58,3 +58,5 @@ tempfile = "3"
 tree-sitter = "0.24"
 tree-sitter-language = "0.1"
 tree-sitter-reify = { path = "tree-sitter-reify" }
+
+tracing = "0.1"
