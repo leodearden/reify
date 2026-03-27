@@ -1511,8 +1511,8 @@ impl std::fmt::Display for Value {
             } => {
                 // Defensive re-normalization: if someone bypassed Value::range(),
                 // ensure None bounds never appear as inclusive.
-                let lower_inclusive = *lower_inclusive && lower.is_some();
-                let upper_inclusive = *upper_inclusive && upper.is_some();
+                let (lower_inclusive, upper_inclusive) =
+                    normalize_range_flags(lower, upper, *lower_inclusive, *upper_inclusive);
                 let lb = if lower_inclusive { '[' } else { '(' };
                 let ub = if upper_inclusive { ']' } else { ')' };
                 let lower_str = match lower {
