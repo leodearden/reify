@@ -12486,6 +12486,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 614,
+        "title": "Refactor solver unit tests to use reify-test-support helpers",
+        "description": "The unit tests added in solver.rs (lines 1920-2034) manually construct CompiledExpr, ValueCellId, and ConstraintNodeId instead of using the reify-test-support helpers (vcid, value_ref, gt, lt, literal, mm, cnid) that are already a dev-dependency and used throughout the integration tests. Refactor `feasibility_check_runs_with_objective` and `termination_reason_extracted_without_panic` to use helpers, reducing ~80 lines of boilerplate to ~20.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -12498,7 +12509,7 @@
       ],
       "created": "2026-03-27T23:49:00.101Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-27T23:49:00.123Z"
+      "updated": "2026-03-27T23:49:04.148Z"
     }
   }
 }
