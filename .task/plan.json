@@ -114,14 +114,14 @@
       "type": "impl",
       "description": "Verify target API surface on origin/main using `git show origin/main:<path>`. Confirm: (a) bridge.ts exports NO Claude functions \u2014 no subscribeToClaudeEvents, claudeSendMessage, claudeAbort, or ClaudeMessageContext; (b) claudeStore.ts handleOutboundMessage uses switch/case (no spread-cast); (c) claudeStore.ts claudeAbort() is synchronous void; (d) App.tsx claudeStore callbacks are stubs (onSend: () => {}, onAbort: () => {}); (e) claudeBridge.test.ts does not exist on main; (f) App.test.tsx has no Claude-related mocks. This establishes ground truth that ALL 3 hardening targets are absent. Completes pre-2.",
       "status": "done",
-      "commit": null
+      "commit": "392c5d1a"
     },
     {
       "id": "step-13",
       "type": "impl",
       "description": "Close task as verified no-op. All 3 original hardening targets (spread-cast in subscribeToClaudeEvents, ClaudeMessageContext drift, swallowed Claude errors) are absent from origin/main. The Claude integration was restructured: message handling uses claudeStore's switch/case (safe), abort is synchronous (nothing to catch), type narrowing boundary doesn't exist (onSend receives full MessageContext, no bridge-level ClaudeMessageContext). Code from steps 1-9 targeted APIs that only existed on task 476's branch. No files need modification. Reset branch to clean state on origin/main (only .task/ metadata files) and mark task done.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "e1a807d8"
     }
   ],
   "design_decisions": [
