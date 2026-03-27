@@ -6788,7 +6788,10 @@
         ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-27T06:16:51.758Z"
+        "updatedAt": "2026-03-27T06:16:51.758Z",
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+        }
       },
       {
         "id": 354,
