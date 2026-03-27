@@ -10683,10 +10683,11 @@
         "description": "Extract private helper methods for lock acquisition in ConcurrentEvalAdapter to eliminate 12 inline .unwrap_or_else(|e| e.into_inner()) calls, and add tracing::warn! at each recovery site for production observability.",
         "details": "In crates/reify-runtime/src/concurrent_eval.rs:\n\n1. Add private helper methods following the CliToolContext::lock_state() pattern (crates/reify-cli/src/mcp_context.rs):\n```rust\nfn read_values(&self) -> RwLockReadGuard<'_, ValueMap> {\n    self.values.read().unwrap_or_else(|e| {\n        tracing::warn!(\"ConcurrentEvalAdapter: values RwLock poisoned (prior task panicked), recovering\");\n        e.into_inner()\n    })\n}\nfn write_values(&self) -> RwLockWriteGuard<'_, ValueMap> {\n    self.values.write().unwrap_or_else(|e| {\n        tracing::warn!(\"ConcurrentEvalAdapter: values RwLock poisoned (prior task panicked), recovering\");\n        e.into_inner()\n    })\n}\nfn read_snapshot_values(&self) -> RwLockReadGuard<'_, PersistentMap<ValueCellId, (Value, DeterminacyState)>> {\n    self.snapshot_values.read().unwrap_or_else(|e| {\n        tracing::warn!(\"ConcurrentEvalAdapter: snapshot_values RwLock poisoned, recovering\");\n        e.into_inner()\n    })\n}\nfn write_snapshot_values(&self) -> RwLockWriteGuard<'_, PersistentMap<ValueCellId, (Value, DeterminacyState)>> {\n    self.snapshot_values.write().unwrap_or_else(|e| {\n        tracing::warn!(\"ConcurrentEvalAdapter: snapshot_values RwLock poisoned, recovering\");\n        e.into_inner()\n    })\n}\nfn lock_results(&self) -> MutexGuard<'_, Vec<ConcurrentNodeResult>> {\n    self.results.lock().unwrap_or_else(|e| {\n        tracing::warn!(\"ConcurrentEvalAdapter: results Mutex poisoned, recovering\");\n        e.into_inner()\n    })\n}\n```\n\n2. Replace all 12 inline .unwrap_or_else(|e| e.into_inner()) calls with these helpers.\n\n3. into_result() uses Arc::try_unwrap paths — apply tracing::warn there too (inside the unwrap_or_else closures for both Ok(lock.into_inner()) and Err(arc.read()/lock()) paths).\n\n4. Add `use tracing;` or `tracing::warn!` import.\n\nThis addresses review suggestions about inline duplication (reviewer_reuse_auditor) and missing observability (reviewer_robustness). The pattern already exists in CliToolContext::lock_state().\n\nmemory_hints:\n  search: \"lock poisoning concurrent eval helper pattern\"\n  entities: [\"ConcurrentEvalAdapter\", \"CliToolContext\"]",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-03-27T08:41:23.505Z"
       },
       {
         "id": "543",
@@ -10713,7 +10714,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-27T08:41:23.214Z",
+      "lastModified": "2026-03-27T08:41:23.505Z",
       "taskCount": 544,
       "completedCount": 259,
       "tags": [
