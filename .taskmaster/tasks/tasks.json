@@ -7043,11 +7043,11 @@
         "description": "Review findings from task 189 (diamond trait hierarchy) that need follow-up:\n\nTESTS:\n1. Add diamond_type_conflict_produces_error test — two traits declare same param name with different types merged via diamond, assert exactly 1 conflicting-trait-requirements diagnostic. Exercises seen_names conflict path in collect_all_requirements (lib.rs:4321-4330).\n2. Add dedup count assertions to diamond_members_at_every_level — verify param d appears exactly once in template.value_cells.\n3. Add dedup count assertions to diamond_deep_five_level — verify x and y appear once each in value_cells.\n4. Add cell count assertion to diamond_single_bound_satisfied — verify x appears exactly once.\n5. Use errors[0].message instead of format!(\"{:?}\", errors[0]) in diamond_missing_member_single_error — Debug format is not stable API.\n6. Use more specific error message match than contains(\"x\") — match on \"missing required member 'x'\" or similar.\n\nCODE QUALITY:\n7. Add comment above unnamed defaults branch (lib.rs:4341) explaining dedup is via visited set, not seen_defaults.\n\nMemory hints: search \"diamond trait conformance collect_all_requirements seen_names\", entities: collect_all_requirements, diamond_missing_member_single_error",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-26T18:31:27.301Z"
+        "updatedAt": "2026-03-27T06:28:55.904Z"
       },
       {
         "id": "385",
@@ -8778,7 +8778,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-27T06:28:54.024Z",
+      "lastModified": "2026-03-27T06:28:55.915Z",
       "taskCount": 521,
       "completedCount": 253,
       "tags": [
