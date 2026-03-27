@@ -64,6 +64,12 @@ struct OcctWarmState {
 /// Value: 1e-12 → minimum magnitude ~1e-6 → ~1 micrometer.
 const AXIS_MAG_SQ_MIN: f64 = 1e-12;
 
+/// Minimum absolute angle (radians) for revolve operations.
+/// Angles below this are treated as effectively zero.
+/// Matches the C++ ANGLE_ABS_MIN threshold (1e-30).
+/// Value: 1e-30 radians ≈ 5.7e-29 degrees — far below any physical relevance.
+const ANGLE_ABS_MIN: f64 = 1e-30;
+
 #[cfg(has_occt)]
 /// Extract an f64 from a Value (Int, Real, or Scalar → SI value).
 fn extract_f64(v: &Value) -> Result<f64, GeometryError> {
@@ -463,7 +469,7 @@ impl OcctKernel {
                         angle_rad
                     )));
                 }
-                if *angle_rad == 0.0 {
+                if angle_rad.abs() < ANGLE_ABS_MIN {
                     return Err(GeometryError::OperationFailed(format!(
                         "revolve angle must not be zero, got {}",
                         angle_rad
