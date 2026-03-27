@@ -10834,6 +10834,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 552,
+        "title": "Remove duplicate and subsumed tests in structural_physical_tests.rs",
+        "description": "Remove physical_own_params_are_real (exact duplicate of step-5 logic). Unify all_stdlib_modules_have_zero_error_diagnostics with all_stdlib_modules_have_no_errors in stdlib_loader_tests.rs. Fix overly strict trait_defs.is_empty assertion.",
+        "details": "1. Remove physical_own_params_are_real — lines 131-157 are identical to the param-checking block at lines 178-215.\n2. Unify all_stdlib_modules_have_zero_error_diagnostics with all_stdlib_modules_have_no_errors in stdlib_loader_tests.rs — both iterate load_stdlib() and assert no Error diagnostics.\n3. Fix the !module.trait_defs.is_empty() assertion — future stdlib modules may have only functions/enums.\n\nFiles: crates/reify-compiler/tests/structural_physical_tests.rs, crates/reify-compiler/tests/stdlib_loader_tests.rs",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -10846,7 +10857,7 @@
       ],
       "created": "2026-03-27T09:00:04.578Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-27T09:00:36.782Z"
+      "updated": "2026-03-27T09:00:43.022Z"
     }
   }
 }
