@@ -9622,7 +9622,13 @@
         "subtasks": [],
         "updatedAt": "2026-03-27T06:21:34.054Z",
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-eval/src/lib.rs"
+          ],
+          "modules": [
+            "crates/reify-eval/src"
+          ]
         }
       },
       {
@@ -9648,7 +9654,18 @@
         "priority": "medium",
         "subtasks": [],
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-types/tests/m5_types.rs",
+            "crates/reify-types/src/dimension.rs",
+            "crates/reify-types/src/ty.rs",
+            "crates/reify-types/src/value.rs",
+            "crates/reify-types/src/constraint.rs"
+          ],
+          "modules": [
+            "crates/reify-types/src",
+            "crates/reify-types/tests"
+          ]
         }
       },
       {
