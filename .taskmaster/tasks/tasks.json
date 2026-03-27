@@ -3618,7 +3618,8 @@
           "modules": [
             "crates/reify-compiler"
           ],
-          "milestone": "M9"
+          "milestone": "M9",
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         },
         "subtasks": [],
         "updatedAt": "2026-03-27T06:07:00.126Z"
@@ -3639,7 +3640,8 @@
             "crates/reify-compiler",
             "crates/reify-eval"
           ],
-          "milestone": "M9"
+          "milestone": "M9",
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         },
         "subtasks": [],
         "updatedAt": "2026-03-24T06:01:46.000Z"
