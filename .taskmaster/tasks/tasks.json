@@ -9697,7 +9697,7 @@
         "description": "gui/src/types.ts defines ChatMessage and SessionStatus types that are never imported — all components use the richer versions from gui/src/stores/claudeStore.ts. The two definitions have divergent shapes (types.ts has flat ChatMessage with 4 fields, claudeStore.ts has discriminated union with rich message types; types.ts has 3 SessionStatus variants, claudeStore.ts has 4).\n\n**Fix:** Remove ChatMessage and SessionStatus from types.ts. Verify no imports reference them (grep confirms zero imports from types.ts for these types).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -9709,7 +9709,8 @@
           "modules": [
             "gui/src"
           ]
-        }
+        },
+        "updatedAt": "2026-03-27T07:37:21.253Z"
       },
       {
         "id": "497",
@@ -10288,7 +10289,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-27T07:37:20.545Z",
+      "lastModified": "2026-03-27T07:37:21.261Z",
       "taskCount": 523,
       "completedCount": 251,
       "tags": [
