@@ -178,11 +178,8 @@ pub fn compute_completions(source: &str, uri: &Url, position: Position) -> Vec<C
     // Context-dependent items from the source
     let ctx = AnalysisContext::new(source, uri);
 
-    // (d) Value cell members — not in AfterDot or TypeAnnotation
-    if !matches!(
-        context,
-        CompletionContext::AfterDot | CompletionContext::TypeAnnotation
-    ) {
+    // (d) Value cell members — not in TypeAnnotation (AfterDot SHOULD show members)
+    if !matches!(context, CompletionContext::TypeAnnotation) {
         for (name, _kind, cell_type) in ctx.member_names() {
             items.push(CompletionItem {
                 label: name.to_string(),
