@@ -1,0 +1,108 @@
+{
+  "task_id": "584",
+  "title": "LSP: Scope member lookups to enclosing declaration",
+  "files": [
+    "crates/reify-lsp/src/analysis.rs",
+    "crates/reify-lsp/src/goto_def.rs"
+  ],
+  "modules": [
+    "crates/reify-lsp"
+  ],
+  "analysis": "Both find_member_decl (analysis.rs) and compute_goto_definition (goto_def.rs) iterate ALL declarations when looking up a member name, returning the first match regardless of which declaration the cursor is in. In a file with multiple declarations sharing member names (e.g., two structures both with `param diameter`), this causes: (1) find_member_decl could return span from declaration A but type info from declaration B if compiled template ordering ever diverges from parse order; (2) goto_def always jumps to the first declaration's member even when the cursor is inside a later declaration.\n\nThe fix has two parts:\n1. analysis.rs: Make find_parsed_member_span_and_doc return the owning declaration name as a third tuple element, then filter the compiled-module template search to only match the template with the same name. This ensures span and type info always come from the same declaration.\n2. goto_def.rs: Before searching all declarations, check if the cursor offset falls within a declaration's span (StructureDef.span / OccurrenceDef.span). If so, only search that declaration's members. Fall back to first-found across all declarations if the cursor is outside any declaration.\n\nKey types: StructureDef and OccurrenceDef both have `name: String` and `span: SourceSpan` fields. TopologyTemplate has `name: String` matching the declaration name. ValueCellId has `entity: String` matching the template/declaration name. position_to_offset returns usize; SourceSpan uses u32 start/end.",
+  "prerequisites": [],
+  "steps": [
+    {
+      "id": "step-1",
+      "type": "test",
+      "description": "Write test `find_member_decl_ambiguous_name_returns_first_decl_consistently` in analysis.rs: create source with two structures (A and B) both having `param x` but with different types (Scalar vs Bool). Verify find_member_decl('x') returns type from A (first match) AND span within A's byte range. Write test `find_member_decl_ambiguous_name_second_decl_type_not_leaked`: verify the returned cell_type is NOT Bool (proving type didn't leak from B). These establish the consistency contract as regression tests.",
+      "status": "done",
+      "commit": "b43a23e2"
+    },
+    {
+      "id": "step-2",
+      "type": "impl",
+      "description": "Refactor find_parsed_member_span_and_doc to return `Option<(SourceSpan, Option<&str>, &str)>` where the third element is the owning declaration name (s.name / o.name). Update find_member_decl to destructure the triple as (span, doc, decl_name) and add `if template.name != decl_name { continue; }` before the value_cell / guarded_group inner loops. This ensures the compiled-module lookup is scoped to the same declaration that provided the span.",
+      "status": "done",
+      "commit": "043b29e9"
+    },
+    {
+      "id": "step-3",
+      "type": "test",
+      "description": "Write failing test `goto_def_cursor_in_second_decl_scopes_to_enclosing` in goto_def.rs: create source with structure A { param x } and structure B { param x; let y = x }. Place cursor on 'x' in B's `let y = x` expression. Assert goto_def returns the location of B's `param x` (line 4), NOT A's (line 1). This test WILL FAIL with current code since it always returns the first match.",
+      "status": "done",
+      "commit": "76c7476b"
+    },
+    {
+      "id": "step-4",
+      "type": "test",
+      "description": "Write failing test `goto_def_cursor_in_occurrence_scopes_to_enclosing` in goto_def.rs: create source with structure A { param diameter } and occurrence def B { param diameter; constraint diameter > 5mm }. Place cursor on 'diameter' in B's constraint. Assert goto_def returns B's param diameter location, not A's. Tests the Occurrence arm of enclosing-declaration detection.",
+      "status": "done",
+      "commit": "4252e862"
+    },
+    {
+      "id": "step-5",
+      "type": "impl",
+      "description": "Update compute_goto_definition in goto_def.rs: after extracting word, find the enclosing declaration by checking if `(offset as u32) >= decl_span.start && (offset as u32) < decl_span.end` for each Structure/Occurrence declaration. If an enclosing declaration is found, search only its members via find_named_member_span. If no enclosing declaration or no match in the enclosing declaration, fall back to the existing all-declarations search. This makes steps 3 and 4 pass.",
+      "status": "done",
+      "commit": "0b1e7f2c"
+    },
+    {
+      "id": "step-6",
+      "type": "test",
+      "description": "Write test `goto_def_cursor_outside_declarations_falls_back_to_first` in goto_def.rs: create source with a free-standing `let y = x` line (if parseable, or a comment-style reference) followed by structure A { param x }. If not feasible with the grammar, use a position on a line between two declarations. Verify goto_def still finds the member via fallback. Also write test `goto_def_existing_single_decl_unchanged`: verify that all existing single-declaration goto_def behavior (e.g., bracket_source tests) still works correctly after the refactoring.",
+      "status": "done",
+      "commit": "f7d12c99"
+    }
+  ],
+  "design_decisions": [
+    {
+      "decision": "Return declaration name as a tuple element from find_parsed_member_span_and_doc rather than creating a new struct",
+      "rationale": "Minimal API change since it's a private method. A tuple (SourceSpan, Option<&str>, &str) is lightweight and the method is only called from find_member_decl. Avoids introducing a new type for a single-use internal return value."
+    },
+    {
+      "decision": "Filter on template.name rather than vc.id.entity in the compiled-module search",
+      "rationale": "Filtering at the template level (outer loop) is more efficient \u2014 we skip the entire template's value_cells and guarded_groups in one check rather than checking each value cell individually. Both should be equivalent since vc.id.entity == template.name by construction."
+    },
+    {
+      "decision": "Use declaration span (StructureDef.span / OccurrenceDef.span) for enclosing-declaration detection in goto_def",
+      "rationale": "Both StructureDef and OccurrenceDef already have a span: SourceSpan field that covers the entire declaration including braces. This is the natural way to determine if a cursor is 'inside' a declaration. No new infrastructure needed."
+    },
+    {
+      "decision": "Fall back to first-found across all declarations when cursor is outside any declaration in goto_def",
+      "rationale": "Preserves backward compatibility. A cursor on a top-level reference (if the grammar allows it) or in unusual positions should still navigate to the member rather than returning None. The fallback path is the current behavior."
+    },
+    {
+      "decision": "Do not modify hover.rs for cursor-scoping in this task",
+      "rationale": "The task explicitly asks to fix analysis.rs (internal consistency) and goto_def.rs (cursor scoping). Hover benefits from the find_member_decl consistency fix but would need its own offset parameter to scope by cursor position \u2014 that's a separate concern. hover.rs calls find_member_decl(word) without position context; adding position-awareness to hover is out of scope."
+    }
+  ],
+  "reuse": [
+    {
+      "what": "find_named_member_span helper function",
+      "where": "crates/reify-lsp/src/analysis.rs (pub, line 197)",
+      "how": "Already handles recursive GuardedGroup member search. Used by both find_member_decl (via find_parsed_member_span_and_doc) and compute_goto_definition. No changes needed to this function."
+    },
+    {
+      "what": "StructureDef.span and OccurrenceDef.span fields",
+      "where": "crates/reify-syntax/src/lib.rs (StructureDef line 30-41, OccurrenceDef line 51-63)",
+      "how": "Both declaration types already have SourceSpan fields covering the full declaration. Used in goto_def to detect which declaration the cursor is inside by checking offset against span.start/span.end."
+    },
+    {
+      "what": "position_to_offset from convert.rs",
+      "where": "crates/reify-lsp/src/convert.rs (line 44)",
+      "how": "Already called in compute_goto_definition. Returns usize byte offset from LSP Position, which we compare against declaration spans (cast to u32 or vice versa)."
+    },
+    {
+      "what": "TopologyTemplate.name field",
+      "where": "crates/reify-compiler/src/lib.rs (line 158-185)",
+      "how": "Template name corresponds to the declaration name (StructureDef.name / OccurrenceDef.name). Used in find_member_decl to filter compiled-module search to the same declaration that provided the span."
+    },
+    {
+      "what": "Existing test patterns and fixtures",
+      "where": "crates/reify-lsp/src/analysis.rs and goto_def.rs test modules",
+      "how": "Reuse test_uri(), Position-based assertions, inline source strings, and the pattern of testing with multi-declaration sources (already established in structure_names_includes_occurrence test)."
+    }
+  ],
+  "_session_id": "584-4da07464",
+  "_created_at": "2026-03-27T23:38:58.148952+00:00"
+}
