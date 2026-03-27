@@ -716,6 +716,51 @@ mod tests {
         kernel.store_raw(translated)
     }
 
+    /// Assert that the volume of the shape at `handle_id` is within `tolerance`
+    /// relative error of `expected`. Panics with a descriptive message including `label`.
+    fn assert_volume_near(
+        kernel: &mut OcctKernel,
+        handle_id: GeometryHandleId,
+        expected: f64,
+        tolerance: f64,
+        label: &str,
+    ) {
+        let vol = kernel
+            .query(&GeometryQuery::Volume(handle_id))
+            .expect("Volume query should succeed")
+            .as_f64()
+            .expect("Volume should be numeric");
+        let rel_err = (vol - expected).abs() / expected;
+        assert!(
+            rel_err < tolerance,
+            "{label}: expected volume \u{2248} {expected:.2}, got {vol:.2} (rel_err={rel_err:.4})"
+        );
+    }
+
+    /// Assert that a `Result` is an `Err(GeometryError::OperationFailed(msg))` where
+    /// `msg` contains the given `expected_substring`. Panics on `Ok` or wrong error variant.
+    fn assert_operation_fails_with(
+        result: Result<GeometryHandle, GeometryError>,
+        expected_substring: &str,
+    ) {
+        match result {
+            Err(GeometryError::OperationFailed(msg)) => {
+                assert!(
+                    msg.to_lowercase()
+                        .contains(&expected_substring.to_lowercase()),
+                    "expected error containing '{expected_substring}', got: {msg}"
+                );
+            }
+            Ok(_) => panic!(
+                "expected OperationFailed containing '{expected_substring}', got Ok"
+            ),
+            Err(other) => panic!(
+                "expected OperationFailed containing '{expected_substring}', got {:?}",
+                other
+            ),
+        }
+    }
+
     #[test]
     fn occt_available_is_true_when_built_with_occt() {
         const {
