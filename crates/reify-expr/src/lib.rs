@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use reify_types::{
     BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, DeterminacyPredicateKind,
-    DeterminacyState, DimensionVector, PersistentMap, QuantifierKind, Type, UnOp, Value,
-    ValueCellId, ValueMap,
+    DeterminacyState, DimensionVector, FieldSourceKind, PersistentMap, QuantifierKind, Type, UnOp,
+    Value, ValueCellId, ValueMap,
 };
 
 /// Maximum recursion depth for user-defined function calls.
@@ -142,7 +142,10 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                         Value::Undef
                     }
                 }
-                "gradient" | "divergence" | "curl" if evaluated_args.len() == 1 => {
+                "gradient" if evaluated_args.len() == 1 => {
+                    compute_gradient_field(&evaluated_args[0])
+                }
+                "divergence" | "curl" if evaluated_args.len() == 1 => {
                     if !matches!(&evaluated_args[0], Value::Field { .. }) {
                         #[cfg(debug_assertions)]
                         eprintln!(
@@ -150,8 +153,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                             function.name, evaluated_args[0]
                         );
                     }
-                    // Stub: these field operations are not yet implemented.
-                    // They require numeric differentiation infrastructure.
+                    // Stub: not yet implemented.
                     Value::Undef
                 }
                 _ => reify_stdlib::eval_builtin(&function.name, &evaluated_args),
@@ -476,6 +478,57 @@ fn eval_user_function_call(function_name: &str, args: &[CompiledExpr], ctx: &Eva
     // Evaluate result expression with final scope
     let final_ctx = ctx.with_scope(&scope);
     eval_expr(&func.body.result_expr, &final_ctx)
+}
+
+/// Construct a gradient field from a scalar field.
+///
+/// Given a Field<Point3<Q>, Scalar<R>>, returns a Field<Point3<Q>, Vector3<Scalar<R/Q>>>
+/// with `source = FieldSourceKind::Gradient` and the original field stored in the lambda slot.
+/// The actual gradient computation happens at sample time via central differences.
+///
+/// Returns Undef if:
+/// - Input is not a Value::Field
+/// - Domain is not Point3 (Point{n:3, quantity})
+/// - Codomain is not a scalar type (Type::Scalar or Type::Real)
+fn compute_gradient_field(input: &Value) -> Value {
+    let (domain_type, codomain_type, original_field) = match input {
+        Value::Field {
+            domain_type,
+            codomain_type,
+            ..
+        } => (domain_type, codomain_type, input),
+        _ => return Value::Undef,
+    };
+
+    // Validate domain is Point3
+    let domain_quantity_dim = match domain_type {
+        Type::Point { n: 3, quantity } => match quantity.as_ref() {
+            Type::Scalar { dimension } => *dimension,
+            Type::Real => DimensionVector::DIMENSIONLESS,
+            _ => return Value::Undef,
+        },
+        _ => return Value::Undef,
+    };
+
+    // Validate codomain is scalar
+    let codomain_dim = match codomain_type {
+        Type::Scalar { dimension } => *dimension,
+        Type::Real => DimensionVector::DIMENSIONLESS,
+        _ => return Value::Undef,
+    };
+
+    // Gradient dimension: codomain_dim / domain_quantity_dim
+    let gradient_dim = codomain_dim.div(&domain_quantity_dim);
+
+    // Build result: Field<same_domain, Vector3<Scalar<gradient_dim>>>
+    Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: Type::vec3(Type::Scalar {
+            dimension: gradient_dim,
+        }),
+        source: FieldSourceKind::Gradient,
+        lambda: Box::new(original_field.clone()),
+    }
 }
 
 /// Apply a lambda closure to a list of argument values.
