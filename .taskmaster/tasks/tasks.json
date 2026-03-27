@@ -2618,17 +2618,23 @@
         "dependencies": [
           "159"
         ],
-        "status": "blocked",
+        "status": "pending",
         "metadata": {
           "modules": [
             "crates/reify-eval",
             "crates/reify-constraints"
           ],
           "milestone": "M8",
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: auto(free): solver integration"
+            ]
+          }
         },
         "subtasks": [],
-        "updatedAt": "2026-03-27T10:08:46.690Z"
+        "updatedAt": "2026-03-27T10:13:46.817Z"
       },
       {
         "id": "161",
@@ -11253,7 +11259,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-27T10:08:46.690Z",
+      "lastModified": "2026-03-27T10:13:46.817Z",
       "taskCount": 581,
       "completedCount": 269,
       "tags": [
