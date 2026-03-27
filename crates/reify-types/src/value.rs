@@ -13,6 +13,7 @@ pub enum FieldSourceKind {
     Sampled,
     Composed,
     Imported,
+    Gradient,
 }
 
 /// Runtime values in Reify (M1 subset).
