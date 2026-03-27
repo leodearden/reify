@@ -205,6 +205,7 @@ impl SidecarHandle {
     }
 
     /// Internal constructor shared by `from_parts` and `from_parts_with_mcp`.
+    #[allow(clippy::type_complexity)]
     fn new_inner<R, F>(
         stdin: SharedStdin,
         reader: R,
