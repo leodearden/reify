@@ -11839,6 +11839,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 592,
+        "title": "Fix selectionStore: implement immediate selection dispatch or correct misleading comments",
+        "description": "## Problem\n\nThe selectionStore.ts createEffect has comments stating \"selection (click) updates are sent immediately since they are infrequent\" and \"send immediately if only selection changed\", but the implementation unconditionally routes ALL changes through a 100ms setTimeout — there is no fast path for selection-only changes.\n\nThis creates a race window: if an MCP get_selection call arrives within the 100ms debounce after a user click, it reads stale selection state. The documented design intent was never implemented.\n\n## What \"done\" looks like\n\nEither:\n(a) Implement immediate dispatch for selection changes: track previous selectedEntity, call invoke synchronously when only selectedEntity changed, debounce only hover-only changes at 100ms\nOR\n(b) Accept 100ms is fine for all updates and fix the misleading comments to document actual behavior\n\nDecision: prefer (a) since the original design intent was deliberate — Claude may call get_selection within the same interaction after a user click.\n\n## Files to modify\n- gui/src/stores/selectionStore.ts — implement immediate selection dispatch or fix comments\n- gui/src/__tests__/selectionStore.test.ts — add test verifying the chosen behavior\n\n### memory_hints\n- search: \"selectionStore debounce selection immediate\"\n- search: \"MCP get_selection latency\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -11851,7 +11862,7 @@
       ],
       "created": "2026-03-27T11:34:10.693Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-27T11:34:10.696Z"
+      "updated": "2026-03-27T11:34:19.545Z"
     }
   }
 }
