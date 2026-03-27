@@ -6659,13 +6659,13 @@
         "description": "Address review suggestions from task 139 reviews in main.rs:\n\n1. **WindowEvent::Destroyed for shutdown (S6)**: Change sidecar shutdown hook from `WindowEvent::Destroyed` to `WindowEvent::CloseRequested` for more reliable graceful shutdown while Tauri runtime is still operational.\n\n2. **Untestable spawn logic in command handler (S7)**: Extract the ~55-line lazy-spawn block from claude_send_message into `pub fn spawn_sidecar_impl(path: &Path, engine: Arc<Mutex<EngineSession>>, event_sink: impl Fn(&str, Value)) -> Result<SidecarHandle, String>` in claude_bridge.rs. The Tauri command keeps only path resolution (requires AppHandle) and plumbing.\n\nFiles: gui/src-tauri/src/main.rs, gui/src-tauri/src/claude_bridge.rs\n\nMemory hints:\n- Search: \"Tauri sidecar shutdown\", \"spawn_sidecar_impl\", \"WindowEvent\"\n- Entities: claude_send_message, SidecarHandle, AppState",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [
           "139"
         ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-26T18:20:40.947Z"
+        "updatedAt": "2026-03-27T06:07:00.193Z"
       },
       {
         "id": "354",
@@ -7426,11 +7426,11 @@
         "description": "Add tests to crates/reify-compiler/tests/termination_check_tests.rs:\n\n1. Assert no errors in sub_where_clause_compiles_to_guard_expr (currently discards diagnostics).\n2. Add test asserting template.is_recursive == true for a known recursive structure.\n3. Add test asserting the cycle detection warning diagnostic ('recursive structure cycle detected: ...') is emitted.\n4. Add test for undef in recursive sub args WITHOUT a guard (existing test only covers undef WITH guard).\n5. Add documenting test for the BinOp::Add false negative (n+1 with guard n>0 accepted but non-terminating).\n\nSource: review suggestions from esc-204-20 (task 204).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-26T18:42:28.696Z"
+        "updatedAt": "2026-03-27T06:07:00.227Z"
       },
       {
         "id": "411",
@@ -8723,7 +8723,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-27T06:07:00.159Z",
+      "lastModified": "2026-03-27T06:07:00.227Z",
       "taskCount": 516,
       "completedCount": 253,
       "tags": [
