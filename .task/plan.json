@@ -138,8 +138,8 @@
       "id": "step-14",
       "type": "test",
       "description": "Run full test suite (cargo test -p reify-runtime) to verify all existing tests still pass, including the pre-existing rollback_on_task_panicked_restores_engine_state and resilient_after_panic_rollback_reeval tests which exercise the panic path via execute() (no config). Confirms the cleanup fix doesn't break any existing behavior.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "c873a85f"
     }
   ],
   "design_decisions": [
