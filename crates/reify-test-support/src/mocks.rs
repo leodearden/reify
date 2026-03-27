@@ -1502,6 +1502,21 @@ mod tests {
         assert!(kernel.last_op().is_some());
     }
 
+    // --- Distance query key symmetry tests (task 430) ---
+
+    #[test]
+    fn distance_query_key_is_symmetric() {
+        let from = GeometryHandleId(1);
+        let to = GeometryHandleId(2);
+        // Configure with (1, 2) but query with (2, 1)
+        let kernel = MockGeometryKernel::new().with_distance_result(from, to, meters(5.0));
+
+        let result = kernel
+            .query(&GeometryQuery::Distance { from: to, to: from })
+            .unwrap();
+        assert_eq!(result, meters(5.0));
+    }
+
     // --- SequencedMockConstraintSolver tests (step-1, task 430) ---
 
     #[test]
