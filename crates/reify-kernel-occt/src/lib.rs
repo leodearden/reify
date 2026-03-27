@@ -3458,6 +3458,27 @@ mod tests {
     }
 
     #[test]
+    fn revolve_near_zero_angle_rejected() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(1.0),
+            })
+            .unwrap();
+        // 1e-35 is below C++ threshold (1e-30) and below any reasonable physical angle.
+        // Rust should catch this at its layer with a clear error.
+        let result = kernel.execute(&GeometryOp::Revolve {
+            profile: box_h.id,
+            axis_origin: [0.0, 0.0, 0.0],
+            axis_dir: [0.0, 0.0, 1.0],
+            angle_rad: 1e-35,
+        });
+        assert_operation_fails_with(result, "zero");
+    }
+
+    #[test]
     fn revolve_near_degenerate_axis_rejected() {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
