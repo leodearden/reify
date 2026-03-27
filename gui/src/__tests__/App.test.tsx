@@ -2012,6 +2012,14 @@ describe('App Claude error handling', () => {
       );
     });
 
+    // Verify the toast DOM element matches the error pattern used by other error-path tests
+    await waitFor(() => {
+      const toastEl = screen.getByTestId('toast');
+      expect(toastEl).toBeTruthy();
+      expect(toastEl.dataset.type).toBe('error');
+      expect(toastEl.textContent).toContain('Abort failed: abort failed');
+    });
+
     consoleSpy.mockRestore();
   });
 });
