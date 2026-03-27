@@ -253,7 +253,19 @@ impl ConcurrentScheduler {
                 };
 
                 if is_dirty {
-                    dirty_nodes.push(node);
+                    // Check OnlyRunOnFinalInputs override before adding to dirty
+                    let override_ = config
+                        .node_overrides
+                        .get(&node)
+                        .copied()
+                        .unwrap_or_default();
+                    if override_ == NodeCommitmentOverride::OnlyRunOnFinalInputs
+                        && (config.has_intermediate_inputs)(&node)
+                    {
+                        skipped.insert(node);
+                    } else {
+                        dirty_nodes.push(node);
+                    }
                 } else {
                     skipped.insert(node);
                 }
