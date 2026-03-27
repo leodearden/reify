@@ -277,6 +277,28 @@ describe('subscribeToClaudeEvents', () => {
     });
   });
 
+  it('payload type field does not override mapped event type', async () => {
+    let capturedHandler: ((event: { payload: unknown }) => void) | undefined;
+    mockListen.mockImplementation(async (eventName, handler) => {
+      if (eventName === 'claude-text-delta') {
+        capturedHandler = handler as (event: { payload: unknown }) => void;
+      }
+      return vi.fn();
+    });
+
+    const handler = vi.fn();
+    await subscribeToClaudeEvents(handler);
+
+    // Simulate payload with a rogue `type` field that should NOT override the mapped type
+    capturedHandler!({ payload: { id: 'x', content: 'hi', type: 'WRONG' } });
+
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'text_delta' }),
+    );
+    // Explicitly verify type is NOT 'WRONG'
+    expect(handler.mock.calls[0][0].type).toBe('text_delta');
+  });
+
   describe('listener rollback on partial failure', () => {
     it('cleans up already-registered listeners when a middle listen() fails', async () => {
       const unlisteners = [vi.fn(), vi.fn(), vi.fn()];
