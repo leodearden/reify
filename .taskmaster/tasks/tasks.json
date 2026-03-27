@@ -9679,7 +9679,13 @@
         "priority": "medium",
         "subtasks": [],
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-constraints/src/solver.rs"
+          ],
+          "modules": [
+            "crates/reify-constraints/src"
+          ]
         }
       },
       {
@@ -9693,7 +9699,13 @@
         "priority": "medium",
         "subtasks": [],
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "gui/src/types.ts"
+          ],
+          "modules": [
+            "gui/src"
+          ]
         }
       },
       {
