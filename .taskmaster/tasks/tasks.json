@@ -8763,6 +8763,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 521,
+        "title": "Add rAF flush helper and intermediate-state tests for Claude integration tests",
+        "description": "In `gui/src/__tests__/claudeIntegration.test.ts`, the rAF polyfill populates `rafCallbacks` but those callbacks are never executed. Tests pass only because `claude-done` calls `cancelAndFlush()` synchronously. The rAF batching code path (`scheduleFlush → requestAnimationFrame → flushBuffers`) is never exercised.\n\n**Fix**:\n1. Add a `flushRaf()` helper that drains pending RAF callbacks:\n```typescript\nfunction flushRaf() {\n  const pending = rafCallbacks.splice(0);\n  pending.forEach(cb => cb());\n}\n```\n2. Add a test that fires `text-delta` events WITHOUT a `done`, calls `flushRaf()`, and asserts `responseText` has been updated — validating the rAF path independently.\n3. Also add `afterAll` to restore original globals: `globalThis.requestAnimationFrame = origRAF; globalThis.cancelAnimationFrame = origCancelRAF;`\n4. Make the existing done-event test call `flushRaf()` explicitly before asserting, to document the rAF dependency.\n\nMemory hints:\n- Search: \"claudeIntegration rAF requestAnimationFrame flushBuffers\"\n- Entities: claudeIntegration.test.ts, claudeStore, flushBuffers, cancelAndFlush",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -8775,7 +8786,7 @@
       ],
       "created": "2026-03-27T06:27:41.611Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-27T06:27:59.591Z"
+      "updated": "2026-03-27T06:28:07.051Z"
     }
   }
 }
