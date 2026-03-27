@@ -2621,8 +2621,11 @@
         "status": "in-progress",
         "metadata": {
           "modules": [
+            "crates/reify-compiler",
+            "crates/reify-constraints",
             "crates/reify-eval",
-            "crates/reify-constraints"
+            "crates/reify-test-support",
+            "crates/reify-types"
           ],
           "milestone": "M8",
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
