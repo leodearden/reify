@@ -10402,7 +10402,7 @@
         "description": "Review findings from task 476 (Claude IPC bridge) — type safety and robustness improvements:\n\n1. **Spread-cast payload pattern** (bridge.ts:158-166): Replace `{ type: 'X', ...event.payload } as OutboundMessage` with explicit destructuring for each variant. The spread bypasses TypeScript discriminated union checking and a payload `type` field would silently override the hardcoded discriminant. Use: `const p = event.payload as { id: string; content: string }; handler({ type: 'text_delta', id: p.id, content: p.content })`. This also eliminates the minor per-event allocation from spread on the two high-frequency delta events (~50-200 Hz during streaming).\n\n2. **ClaudeMessageContext narrower than MessageContext** (bridge.ts:114-118): ClaudeMessageContext defines only 3 fields but MessageContext has 5 (also currentFile, attachedContexts). App.tsx's onSend silently drops fields at the bridge boundary. Either extend ClaudeMessageContext or use `Pick<MessageContext, ...>` from claudeStore.\n\n3. **Swallowed errors** (App.tsx:266-268): `catch (_err)` on subscribeToClaudeEvents discards the error before showing toast. Add `console.error('[claude] subscribeToClaudeEvents failed:', err)`. Also: claudeAbort failure gives no user feedback — show a toast instead of just console.error.\n\nModules: gui/src/bridge.ts, gui/src/App.tsx\n\nMemory hints: search \"Claude bridge subscribeToClaudeEvents OutboundMessage spread\", entities: subscribeToClaudeEvents, ClaudeMessageContext, bridge.ts",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "476"
         ],
@@ -10424,7 +10424,7 @@
             ]
           }
         },
-        "updatedAt": "2026-03-27T08:55:23.439Z"
+        "updatedAt": "2026-03-27T08:57:22.322Z"
       },
       {
         "id": "523",
@@ -10797,7 +10797,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-27T08:57:22.174Z",
+      "lastModified": "2026-03-27T08:57:22.322Z",
       "taskCount": 548,
       "completedCount": 260,
       "tags": [
