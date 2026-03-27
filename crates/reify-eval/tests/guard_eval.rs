@@ -526,3 +526,85 @@ fn edit_param_guard_false_preserves_solver_auto_param() {
         thickness_after
     );
 }
+
+/// Mirror of the above test but for else_members: Auto param in else branch
+/// should survive when guard transitions from false→true (deactivating else branch).
+#[test]
+fn edit_param_guard_true_preserves_solver_auto_in_else_members() {
+    let active_id = ValueCellId::new("S", "active");
+    let guard_id = ValueCellId::new("S", "__guard_0");
+    let thickness_id = ValueCellId::new("S", "thickness");
+
+    let guard_expr = value_ref_typed("S", "active", Type::Bool);
+
+    // Auto param 'thickness' as an else_member (kind=Auto, no default_expr)
+    let thickness_decl = ValueCellDecl {
+        id: thickness_id.clone(),
+        kind: ValueCellKind::Auto,
+        visibility: Visibility::Public,
+        cell_type: Type::length(),
+        default_expr: None,
+        span: SourceSpan::new(0, 0),
+    };
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param(
+            "S",
+            "active",
+            Type::Bool,
+            Some(CompiledExpr::literal(Value::Bool(false), Type::Bool)),
+        )
+        // Top-level auto_param so eval() resolution phase finds it
+        .auto_param("S", "thickness", Type::length())
+        // Top-level constraint so eval() resolution phase can match it
+        .constraint(
+            "S",
+            0,
+            Some("thickness_gt_2mm"),
+            gt(value_ref("S", "thickness"), literal(mm(2.0))),
+        )
+        .guarded_group(
+            guard_expr,
+            guard_id.clone(),
+            vec![],                // members
+            vec![],                // constraints
+            vec![thickness_decl],  // else_members (active when false)
+            vec![],                // else_constraints
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    // Mock solver: resolves thickness to 5mm = 0.005 SI
+    let mut solved_values = HashMap::new();
+    solved_values.insert(thickness_id.clone(), mm(5.0));
+    let solver = MockConstraintSolver::new_solved(solved_values);
+
+    let checker = MockConstraintChecker::new();
+    let mut engine =
+        Engine::new(Box::new(checker), None).with_solver(Box::new(solver));
+
+    // Initial eval with guard=false; solver resolves thickness
+    let initial_result = engine.eval(&module);
+    let thickness_val = initial_result.values.get(&thickness_id);
+    assert!(
+        matches!(thickness_val, Some(Value::Scalar { si_value, .. }) if (*si_value - 0.005).abs() < 1e-10),
+        "thickness should be 0.005 SI (5mm) after initial eval, got {:?}",
+        thickness_val
+    );
+
+    // Edit 'active' from false to true — else branch deactivates
+    let edit_result = engine
+        .edit_param(active_id.clone(), Value::Bool(true))
+        .expect("edit_param should succeed");
+
+    // Auto param in else_members should retain solver-resolved value
+    let thickness_after = edit_result.values.get(&thickness_id);
+    assert!(
+        matches!(thickness_after, Some(Value::Scalar { si_value, .. }) if (*si_value - 0.005).abs() < 1e-10),
+        "Auto param 'thickness' in else_members should retain solver-resolved value (0.005 SI) after else branch deactivation, got {:?}",
+        thickness_after
+    );
+}
