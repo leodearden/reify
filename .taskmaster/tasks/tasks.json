@@ -8328,11 +8328,11 @@
         "description": "In crates/reify-types/src/value.rs: (1) Add upper=None+upper_inclusive=true bypass tests for PartialEq and Ord (mirror existing lower bypass tests). (2) Add test verifying Range(0..10, lower_inclusive=true) != Range(0..10, lower_inclusive=false) when bounds are present. (Review followup from task 364)",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-03-27T08:46:50.506Z",
+        "updatedAt": "2026-03-27T08:52:25.198Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -10411,18 +10411,9 @@
             "gui/src"
           ],
           "memory_hints": {
-            "entities": [
-              "subscribeToClaudeEvents",
-              "ClaudeMessageContext",
-              "OutboundMessage",
-              "bridge.ts",
-              "claudeStore",
-              "MessageContext"
-            ],
+            "entities": [],
             "queries": [
-              "Claude bridge subscribeToClaudeEvents OutboundMessage spread-cast payload",
-              "ClaudeMessageContext MessageContext field alignment currentFile attachedContexts",
-              "task 476 Claude IPC bridge review findings"
+              "resolution for: Harden Claude bridge payload mapping and type safety"
             ]
           }
         },
@@ -10760,7 +10751,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-27T08:50:23.290Z",
+      "lastModified": "2026-03-27T08:52:25.198Z",
       "taskCount": 545,
       "completedCount": 260,
       "tags": [
