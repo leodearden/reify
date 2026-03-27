@@ -7,6 +7,13 @@
 //! Dirty/skip decisions are made by the scheduler using pre-computed `changed_vcids`
 //! tracking, not by the adapter. The adapter is purely computational — it evaluates
 //! expressions, computes content hashes, and records results.
+//!
+//! **Lock poisoning recovery:** All lock acquisitions use
+//! `.unwrap_or_else(|e| e.into_inner())` to recover gracefully from poisoned locks.
+//! A poisoned lock means a previous evaluation task panicked while holding the lock —
+//! the data may be partially updated, but recovering prevents cascading panics that
+//! would take down all concurrent tasks sharing the adapter. This matches the pattern
+//! used in `SharedPriorityPromoter`.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
@@ -36,6 +43,10 @@ use crate::concurrent::{
 /// The adapter is purely computational: it evaluates expressions, computes content
 /// hashes for Changed/Unchanged determination, and records results. Skip decisions
 /// are made by the scheduler via pre-computed `changed_vcids` tracking.
+///
+/// All lock acquisitions recover gracefully from poisoning — if an evaluation task
+/// panics mid-computation, subsequent lock acquisitions on the same adapter will
+/// extract the inner data from the `PoisonError` rather than propagating the panic.
 pub struct ConcurrentEvalAdapter {
     /// The evaluation graph (immutable during evaluation).
     graph: Arc<EvaluationGraph>,
@@ -78,14 +89,20 @@ impl ConcurrentEvalAdapter {
     ///
     /// Recovers gracefully from poisoned locks via `unwrap_or_else`.
     pub fn values(&self) -> ValueMap {
-        self.values.read().unwrap_or_else(|e| e.into_inner()).clone()
+        self.values
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// Take the collected results (for testing/inspection).
     ///
     /// Recovers gracefully from poisoned locks via `unwrap_or_else`.
     pub fn take_results(&self) -> Vec<ConcurrentNodeResult> {
-        self.results.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.results
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// Build a `ConcurrentEditResult` via shared references (cloning).
@@ -93,6 +110,9 @@ impl ConcurrentEvalAdapter {
     /// Used as a fallback when `Arc::try_unwrap` fails because outstanding
     /// references still exist. Slightly less efficient than `into_result`
     /// since it clones each inner container through locks.
+    ///
+    /// Recovers gracefully from poisoned locks — if a prior evaluation task
+    /// panicked, the data may be partially updated but this method will not panic.
     ///
     /// The `skipped` set is provided by the scheduler's `SchedulerResult`.
     pub fn build_result_shared(
@@ -136,6 +156,9 @@ impl ConcurrentEvalAdapter {
     /// Consume the adapter and produce a `ConcurrentEditResult`.
     ///
     /// Extracts the final values, snapshot_values, and results.
+    /// Recovers gracefully from poisoned locks on both the `into_inner()`
+    /// (sole-owner) and `read()`/`lock()` (shared-reference fallback) paths.
+    ///
     /// The `skipped` set is provided by the scheduler's `SchedulerResult`.
     pub fn into_result(
         self,
@@ -273,13 +296,16 @@ impl AsyncNodeEvaluator for ConcurrentEvalAdapter {
 
             // Record result (no early cutoff propagation — skip decisions
             // are made by the scheduler using pre-computed changed_vcids)
-            self.results.lock().unwrap_or_else(|e| e.into_inner()).push(ConcurrentNodeResult {
-                node: node.clone(),
-                value: val,
-                determinacy: DeterminacyState::Determined,
-                trace,
-                outcome,
-            });
+            self.results
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(ConcurrentNodeResult {
+                    node: node.clone(),
+                    value: val,
+                    determinacy: DeterminacyState::Determined,
+                    trace,
+                    outcome,
+                });
 
             return outcome;
         }
