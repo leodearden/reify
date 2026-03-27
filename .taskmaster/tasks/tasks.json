@@ -10867,6 +10867,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 555,
+        "title": "Replace fragile unwrap and unreachable patterns in eval let-binding code",
+        "description": "Two hardening fixes in `crates/reify-eval/src/lib.rs`:\n\n1. **filter+unwrap → filter_map** (lines ~2916-2917 and ~3715-3719): The pattern `.filter(|c| c.default_expr.is_some()).map(|c| c.default_expr.as_ref().unwrap())` is safe today but fragile under refactor. Replace with `.filter_map(|c| c.default_expr.as_ref().map(|expr| (NodeId::Value(c.id.clone()), expr)))`.\n\n2. **unreachable!() → graceful diagnostic** (lines ~2930-2932): In `evaluate_let_bindings` and `elaborate_child_lets_only`, `_ => unreachable!()` on NodeId match is a latent panic. Replace with: `_ => { diagnostics.push(Diagnostic::error(...)); continue; }`.\n\nConsistent with project convention: logic errors should be noisy, not silent, and should not crash.\n\nmemory_hints: search \"fragile unwrap pattern eval\", search \"silent defaults pattern\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -10879,7 +10890,7 @@
       ],
       "created": "2026-03-27T09:00:04.578Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-27T09:00:49.075Z"
+      "updated": "2026-03-27T09:00:49.852Z"
     }
   }
 }
