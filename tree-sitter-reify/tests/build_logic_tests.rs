@@ -161,9 +161,20 @@ fn test_needs_generate_true_when_output_missing() {
 /// Duplicates verify_outputs logic from build.rs for testability.
 /// Returns Err with a message naming the missing file(s).
 fn verify_outputs(src_dir: &Path) -> Result<(), String> {
-    // Stub — will be implemented in step-10
-    let _ = src_dir;
-    unimplemented!("verify_outputs not yet implemented")
+    let mut missing = Vec::new();
+    for name in EXPECTED_OUTPUTS {
+        if !src_dir.join(name).exists() {
+            missing.push(*name);
+        }
+    }
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "tree-sitter generate succeeded but these output files are missing: {}",
+            missing.join(", ")
+        ))
+    }
 }
 
 #[test]

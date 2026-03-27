@@ -64,6 +64,24 @@ fn needs_generate(
     stamp_content.trim() != current_hash
 }
 
+/// Verify that all expected output files exist after generation.
+/// Panics with a clear message naming whichever file is missing.
+fn verify_outputs(src_dir: &std::path::Path) {
+    let mut missing = Vec::new();
+    for name in EXPECTED_OUTPUTS {
+        if !src_dir.join(name).exists() {
+            missing.push(*name);
+        }
+    }
+    if !missing.is_empty() {
+        panic!(
+            "tree-sitter generate succeeded but these output files are missing: {}. \
+             Check tree-sitter CLI version.",
+            missing.join(", ")
+        );
+    }
+}
+
 fn main() {
     let src_dir = std::path::Path::new("src");
     let parser_path = src_dir.join("parser.c");
@@ -85,13 +103,8 @@ fn main() {
 
     if needs_generate(grammar_path, &stamp_path, &output_refs) {
         run_tree_sitter_generate();
-        // Verify parser.c was actually created.
-        if !parser_path.exists() {
-            panic!(
-                "tree-sitter generate succeeded but src/parser.c was not created. \
-                 Check tree-sitter CLI version."
-            );
-        }
+        // Verify all 3 output files were created.
+        verify_outputs(src_dir);
         // Write updated stamp.
         let hash = content_hash(grammar_path);
         std::fs::write(&stamp_path, &hash).unwrap_or_else(|e| {
