@@ -9,7 +9,7 @@
     "gui/src",
     "gui/src/__tests__"
   ],
-  "analysis": "bridge.ts (wire/transport layer) currently imports `MessageContext` from claudeStore.ts (domain/state layer) at line 8, then defines `ClaudeMessageContext = Pick<MessageContext, 3 fields>` at line 115. This inverts the natural layering: sidecar/types \u2192 bridge.ts \u2192 claudeStore.ts \u2192 App.tsx. The import makes the wire layer depend on the domain layer.\n\nThe fix is straightforward: (1) replace the Pick type alias with a standalone interface having the same 3 optional fields, (2) remove the claudeStore import, (3) add a comment pointing to types.typecheck.ts as the drift guard.\n\nFor types.typecheck.ts, the current bidirectional assignability assertions (`_fwd`/`_rev`) are tautological because `ClaudeMessageContext` IS literally `Pick<MessageContext, ...>` \u2014 they can never fail. After reverting to standalone, they recover meaning but remain weak due to the all-optional field problem: since all 3 fields (`selectedEntity?`, `diagnostics?`, `constraints?`) are optional, `{}` satisfies both types, making assignability pass even if field names diverge entirely. The fix is to use TypeScript's mapped-type equality pattern (`Equals<A,B>`) which compares exact structural shape, not just assignability.\n\nApp.tsx (line 65-68) already manually maps `context.selectedEntity/diagnostics/constraints` when calling `claudeSendMessage`, so no changes needed there. ChatPanel.tsx works with `MessageContext` from the store, not `ClaudeMessageContext`. The existing runtime tests in claudeBridge.test.ts test the actual invoke behavior and don't depend on the type definition mechanism.",
+  "analysis": "bridge.ts (wire/transport layer) currently imports `MessageContext` from claudeStore.ts (domain/state layer) at line 8, then defines `ClaudeMessageContext = Pick<MessageContext, 3 fields>` at line 115. This inverts the natural layering: sidecar/types \u2192 bridge.ts \u2192 claudeStore.ts \u2192 App.tsx. The import makes the wire layer depend on the domain layer.\n\nThe fix is straightforward: (1) replace the Pick type alias with a standalone interface having the same 3 optional fields, (2) remove the claudeStore import, (3) add a comment pointing to types.typecheck.ts as the drift guard.\n\nFor types.typecheck.ts, the current bidirectional assignability assertions (`_fwd`/`_rev`) are tautological because `ClaudeMessageContext` IS literally `Pick<MessageContext, ...>` \u2014 they can never fail. After reverting to standalone, they recover meaning but remain weak due to the all-optional field problem: since all 3 fields (`selectedEntity?`, `diagnostics?`, `constraints?`) are optional, `{}` satisfies both types, making assignability pass even if field names diverge entirely. The fix is to use TypeScript's mapped-type equality pattern (`Equals<A,B>`) which compares exact structural shape, not just assignability.\n\nApp.tsx (line 65-68) already manually maps `context.selectedEntity/diagnostics/constraints` when calling `claudeSendMessage`, so no changes needed there. ChatPanel.tsx works with `MessageContext` from the store, not `ClaudeMessageContext`. The existing runtime tests in claudeBridge.test.ts test the actual invoke behavior and don't depend on the type definition mechanism.\n\n**Post-review update:** The `type _Assert = ... extends true ? true : never` pattern on line 137 is broken \u2014 `type X = never` is valid TypeScript and produces no compile error. The assertion must use a constrained generic (`type AssertTrue<T extends true> = T`) so that when `Equals` returns `false`, TypeScript raises 'Type false does not satisfy the constraint true'. The eslint-disable comment for @typescript-eslint/no-unused-vars is also incorrect on a type alias (ESLint doesn't flag unused type aliases).",
   "prerequisites": [
     {
       "id": "pre-1",
@@ -40,6 +40,20 @@
       "description": "Verify everything compiles and tests pass: run `npm run typecheck` (tsc --noEmit) to confirm the standalone interface stays in sync via the Equals assertion, then run `npm test` to confirm runtime behavior is unchanged (claudeBridge.test.ts, bridge.test.ts, etc.).",
       "status": "done",
       "commit": "3dacf424"
+    },
+    {
+      "id": "step-4",
+      "type": "impl",
+      "description": "Fix broken compile-time assertion in types.typecheck.ts. The current pattern `type _AssertClaudeContextSync = Equals<...> extends true ? true : never` is a no-op \u2014 `type X = never` is valid TypeScript and produces no diagnostic. Replace with a constrained generic pattern: (a) Add `type AssertTrue<T extends true> = T;` helper. (b) Replace line 137 with `type _AssertClaudeContextSync = AssertTrue<Equals<ClaudeMessageContext, _ExpectedClaudeContext>>;`. When Equals returns false, TypeScript raises 'Type false does not satisfy the constraint true'. (c) Remove the incorrect `// eslint-disable-next-line @typescript-eslint/no-unused-vars` comment (ESLint does not flag unused type aliases, so the directive was meaningless). (d) Update the comment on line 135 to accurately describe the mechanism \u2014 do NOT claim 'this line produces a type error' without it being true.",
+      "status": "done",
+      "commit": "ededd61d"
+    },
+    {
+      "id": "step-5",
+      "type": "test",
+      "description": "Verify the fixed assertion actually catches divergence (negative test). (a) Run `npm run typecheck` to confirm the constrained-generic assertion compiles when types are in sync. (b) Temporarily mutate _ExpectedClaudeContext (e.g., add an extra field `_drift?: boolean`) and run `tsc --noEmit` \u2014 confirm it FAILS with 'Type false does not satisfy the constraint true'. (c) Revert the temporary mutation and run `npm run typecheck` again to confirm green. (d) Run `npm test` to confirm runtime tests still pass.",
+      "status": "pending",
+      "commit": null
     }
   ],
   "design_decisions": [
@@ -58,6 +72,10 @@
     {
       "decision": "No changes to App.tsx, ChatPanel.tsx, or claudeStore.ts",
       "rationale": "App.tsx already manually maps MessageContext fields to ClaudeMessageContext when calling claudeSendMessage (lines 65-68). ChatPanel.tsx works with MessageContext from the store. The reconciliation point (App.tsx) correctly bridges domain\u2192wire types. No coupling changes needed outside bridge.ts and the typecheck file."
+    },
+    {
+      "decision": "Use constrained generic AssertTrue<T extends true> instead of conditional-to-never pattern",
+      "rationale": "The original pattern `type X = Equals<A,B> extends true ? true : never` silently resolves to `type X = never` when types diverge \u2014 valid TypeScript, no error. The constrained generic `type AssertTrue<T extends true> = T` forces TypeScript to check `T extends true` at the point of use. When Equals returns `false`, the constraint violation produces 'Type false does not satisfy the constraint true'. This is a well-known TypeScript compile-time assertion idiom (used by type-testing libraries like expect-type and tsd)."
     }
   ],
   "reuse": [
@@ -75,8 +93,13 @@
       "what": "Existing claudeBridge.test.ts runtime tests",
       "where": "gui/src/__tests__/claudeBridge.test.ts",
       "how": "These tests verify claudeSendMessage behavior with context objects. They don't depend on how ClaudeMessageContext is defined (standalone vs Pick), so they serve as regression tests confirming the refactoring doesn't break runtime behavior."
+    },
+    {
+      "what": "AssertTrue<T extends true> pattern from type-testing libraries",
+      "where": "Common TypeScript idiom (expect-type, tsd, ts-expect)",
+      "how": "The constrained generic assertion pattern is the standard way to enforce compile-time type checks in .typecheck.ts files. It produces a clear error message when the constraint is violated."
     }
   ],
   "_session_id": "546-7e864c84",
-  "_created_at": "2026-03-27T11:52:40.789614+00:00"
+  "_created_at": "2026-03-27T12:03:26.348291+00:00"
 }
