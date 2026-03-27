@@ -9049,7 +9049,15 @@
         "subtasks": [],
         "updatedAt": "2026-03-26T08:24:05.895Z",
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-expr/src/lib.rs",
+            "crates/reify-expr/tests/point_vector_eval_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-expr/src",
+            "crates/reify-expr/tests"
+          ]
         }
       },
       {
@@ -9064,7 +9072,13 @@
         "subtasks": [],
         "updatedAt": "2026-03-26T08:25:43.386Z",
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-runtime/src/concurrent_eval.rs"
+          ],
+          "modules": [
+            "crates/reify-runtime/src"
+          ]
         }
       },
       {
