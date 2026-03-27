@@ -19,23 +19,26 @@ pub fn compute_goto_definition(source: &str, uri: &Url, position: Position) -> O
 
     // Search for a param or let declaration with matching name
     for decl in &parsed.declarations {
-        if let reify_syntax::Declaration::Structure(s) = decl {
-            for member in &s.members {
-                match member {
-                    reify_syntax::MemberDecl::Param(p) if p.name == word => {
-                        return Some(Location {
-                            uri: uri.clone(),
-                            range: span_to_range(source, p.span),
-                        });
-                    }
-                    reify_syntax::MemberDecl::Let(l) if l.name == word => {
-                        return Some(Location {
-                            uri: uri.clone(),
-                            range: span_to_range(source, l.span),
-                        });
-                    }
-                    _ => {}
+        let members = match decl {
+            reify_syntax::Declaration::Structure(s) => &s.members,
+            reify_syntax::Declaration::Occurrence(o) => &o.members,
+            _ => continue,
+        };
+        for member in members {
+            match member {
+                reify_syntax::MemberDecl::Param(p) if p.name == word => {
+                    return Some(Location {
+                        uri: uri.clone(),
+                        range: span_to_range(source, p.span),
+                    });
                 }
+                reify_syntax::MemberDecl::Let(l) if l.name == word => {
+                    return Some(Location {
+                        uri: uri.clone(),
+                        range: span_to_range(source, l.span),
+                    });
+                }
+                _ => {}
             }
         }
     }
