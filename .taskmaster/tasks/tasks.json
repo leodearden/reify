@@ -11136,11 +11136,11 @@
         "description": "Three test quality fixes in reify-cli tests.",
         "details": "1. Replace 9 instances of assert_ne!(response[\"result\"][\"isError\"], true) with assert_eq!(..., Value::Bool(false)) in mcp_integration.rs — catches malformed responses where isError is absent.\n2. Change mcp_server_tools_list_returns_16_tools to assert minimum count and/or check specific tool names instead of exact count. Update test name.\n3. Rename gui_with_valid_ri_file_attempts_launch to gui_with_valid_ri_file_skips_launch_when_env_set in cli_gui.rs.\n\nFiles: crates/reify-cli/tests/mcp_integration.rs, crates/reify-cli/tests/cli_gui.rs",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-27T11:12:21.838Z",
+        "updatedAt": "2026-03-27T23:31:52.819Z",
         "metadata": {
           "modules": [
             "crates/reify-cli"
@@ -11374,7 +11374,7 @@
         "description": "Four improvements to tree-sitter-reify/build.rs auto-generation logic.",
         "details": "1. Verify all 3 output files (parser.c, grammar.json, node-types.json) after generation, not just parser.c.\n2. Replace mtime-based staleness detection with content hash (stamp file) — mtime is unreliable in git worktree workflow.\n3. Remove redundant cargo:rerun-if-changed=src/parser.c — since build.rs now manages parser.c, it triggers double execution.\n4. Add subprocess timeout (e.g. 60s) to tree-sitter generate command to prevent hanging cargo build.\n\nFiles: tree-sitter-reify/build.rs",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -11393,7 +11393,7 @@
             ]
           }
         },
-        "updatedAt": "2026-03-27T12:04:05.630Z"
+        "updatedAt": "2026-03-27T23:31:52.853Z"
       },
       {
         "id": "564",
@@ -12473,7 +12473,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-27T23:31:52.785Z",
+      "lastModified": "2026-03-27T23:31:52.853Z",
       "taskCount": 612,
       "completedCount": 278,
       "tags": [
