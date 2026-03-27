@@ -37,6 +37,25 @@ assert "scripts/tree-sitter-generate.sh exists" \
 assert "scripts/tree-sitter-generate.sh is executable" \
     test -x "$ROOT/scripts/tree-sitter-generate.sh"
 
+# ── Step 2: Generation script produces expected output files ────────
+# Run the generation script and verify outputs.
+assert "tree-sitter-generate.sh runs successfully" \
+    "$ROOT/scripts/tree-sitter-generate.sh"
+
+assert "parser.c was generated" \
+    test -f "$ROOT/tree-sitter-reify/src/parser.c"
+
+assert "grammar.json was generated" \
+    test -f "$ROOT/tree-sitter-reify/src/grammar.json"
+
+assert "node-types.json was generated" \
+    test -f "$ROOT/tree-sitter-reify/src/node-types.json"
+
+# parser.c should be non-trivial (>100KB).
+parser_size=$(stat -c%s "$ROOT/tree-sitter-reify/src/parser.c" 2>/dev/null || echo 0)
+assert "parser.c is non-trivial (>100KB, got ${parser_size} bytes)" \
+    test "$parser_size" -gt 102400
+
 # ── Summary ─────────────────────────────────────────────────────────
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
