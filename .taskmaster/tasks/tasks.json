@@ -10889,6 +10889,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 557,
+        "title": "Extract compile_with_stdlib test helper and fix fragile couplings",
+        "description": "DRY improvements for stdlib test infrastructure.",
+        "details": "1. Extract shared compile_with_stdlib(source) -> CompiledModule helper used by 5+ conformance tests.\n2. Replace hardcoded 'std/structural/physical' path string in load_stdlib_module with ModulePath::new constructor.\n3. Use .any() fast path in stdlib_loader error check instead of collecting into Vec.\n\nFiles: crates/reify-compiler/tests/structural_physical_tests.rs, crates/reify-compiler/src/stdlib_loader.rs",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -10901,7 +10912,7 @@
       ],
       "created": "2026-03-27T09:00:04.578Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-27T09:00:53.174Z"
+      "updated": "2026-03-27T09:00:57.554Z"
     }
   }
 }
