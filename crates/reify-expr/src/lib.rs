@@ -119,18 +119,29 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             // so they're handled here rather than in stdlib.
             match function.name.as_str() {
                 "sample" if evaluated_args.len() == 2 => {
-                    if let Value::Field { lambda, .. } = &evaluated_args[0] {
-                        match lambda.as_ref() {
-                            Value::Lambda { .. } => {
-                                apply_lambda(lambda, &evaluated_args[1..], ctx)
-                            }
-                            _ => {
-                                #[cfg(debug_assertions)]
-                                eprintln!(
-                                    "[reify-expr] sample: Field lambda is not a Lambda: {:?}",
-                                    lambda
-                                );
+                    if let Value::Field {
+                        source, lambda, ..
+                    } = &evaluated_args[0]
+                    {
+                        if *source == FieldSourceKind::Gradient {
+                            if let Value::Field { .. } = lambda.as_ref() {
+                                sample_gradient_field(lambda, &evaluated_args[1], ctx)
+                            } else {
                                 Value::Undef
+                            }
+                        } else {
+                            match lambda.as_ref() {
+                                Value::Lambda { .. } => {
+                                    apply_lambda(lambda, &evaluated_args[1..], ctx)
+                                }
+                                _ => {
+                                    #[cfg(debug_assertions)]
+                                    eprintln!(
+                                        "[reify-expr] sample: Field lambda is not a Lambda: {:?}",
+                                        lambda
+                                    );
+                                    Value::Undef
+                                }
                             }
                         }
                     } else {
@@ -529,6 +540,111 @@ fn compute_gradient_field(input: &Value) -> Value {
         source: FieldSourceKind::Gradient,
         lambda: Box::new(original_field.clone()),
     }
+}
+
+/// Sample a gradient field at a point using central differences.
+///
+/// Given the original field (stored in the gradient field's lambda slot) and a Point3
+/// query point, computes the numerical gradient via central differences:
+///   grad_i = (f(p + h*e_i) - f(p - h*e_i)) / (2*h)
+/// where h = 1e-6 * max(|coord_i|, 1e-3).
+///
+/// Returns a Value::Vector with 3 Scalar components (dimension = codomain_dim / domain_dim).
+fn sample_gradient_field(inner_field: &Value, point: &Value, ctx: &EvalContext) -> Value {
+    // Extract original field's lambda and codomain type
+    let (lambda, codomain_type, domain_type) = match inner_field {
+        Value::Field {
+            lambda,
+            codomain_type,
+            domain_type,
+            ..
+        } => (lambda.as_ref(), codomain_type, domain_type),
+        _ => return Value::Undef,
+    };
+
+    // Extract Point3 components
+    let components: &[Value] = match point {
+        Value::Point(items) if items.len() == 3 => items,
+        _ => return Value::Undef,
+    };
+
+    // Get f64 coords and their dimension
+    let mut coords = [0.0f64; 3];
+    let point_dim = components[0].dimension();
+    for (i, comp) in components.iter().enumerate() {
+        match comp.as_f64() {
+            Some(v) => coords[i] = v,
+            None => return Value::Undef,
+        }
+    }
+
+    // Compute codomain and domain quantity dimensions for the gradient result
+    let codomain_dim = match codomain_type {
+        Type::Scalar { dimension } => *dimension,
+        Type::Real => DimensionVector::DIMENSIONLESS,
+        _ => return Value::Undef,
+    };
+    let domain_quantity_dim = match domain_type {
+        Type::Point { n: 3, quantity } => match quantity.as_ref() {
+            Type::Scalar { dimension } => *dimension,
+            Type::Real => DimensionVector::DIMENSIONLESS,
+            _ => return Value::Undef,
+        },
+        _ => return Value::Undef,
+    };
+    let gradient_dim = codomain_dim.div(&domain_quantity_dim);
+
+    // Compute central differences for each axis
+    let mut gradient_components = Vec::with_capacity(3);
+    for axis in 0..3 {
+        let h = 1e-6 * f64::max(coords[axis].abs(), 1e-3);
+
+        // Build perturbed points: p + h*e_axis, p - h*e_axis
+        let mut plus_coords = coords;
+        let mut minus_coords = coords;
+        plus_coords[axis] += h;
+        minus_coords[axis] -= h;
+
+        let p_plus = Value::Point(
+            plus_coords
+                .iter()
+                .map(|&c| Value::Scalar {
+                    si_value: c,
+                    dimension: point_dim,
+                })
+                .collect(),
+        );
+        let p_minus = Value::Point(
+            minus_coords
+                .iter()
+                .map(|&c| Value::Scalar {
+                    si_value: c,
+                    dimension: point_dim,
+                })
+                .collect(),
+        );
+
+        // Evaluate f(p+h*e_i) and f(p-h*e_i)
+        let f_plus = apply_lambda(lambda, &[p_plus], ctx);
+        let f_minus = apply_lambda(lambda, &[p_minus], ctx);
+
+        let f_plus_val = match f_plus.as_f64() {
+            Some(v) if v.is_finite() => v,
+            _ => return Value::Undef,
+        };
+        let f_minus_val = match f_minus.as_f64() {
+            Some(v) if v.is_finite() => v,
+            _ => return Value::Undef,
+        };
+
+        let deriv = (f_plus_val - f_minus_val) / (2.0 * h);
+        gradient_components.push(Value::Scalar {
+            si_value: deriv,
+            dimension: gradient_dim,
+        });
+    }
+
+    Value::Vector(gradient_components)
 }
 
 /// Apply a lambda closure to a list of argument values.
