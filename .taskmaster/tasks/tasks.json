@@ -7708,7 +7708,23 @@
         "subtasks": [],
         "updatedAt": "2026-03-26T02:32:38.259Z",
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-test-support/src/lib.rs",
+            "crates/reify-compiler/tests/meta_compile_tests.rs",
+            "crates/reify-compiler/tests/connect_compile_tests.rs",
+            "crates/reify-compiler/tests/field_compile_tests.rs",
+            "crates/reify-eval/tests/meta_eval_integration.rs",
+            "crates/reify-eval/tests/m5_integration.rs",
+            "crates/reify-eval/tests/occurrence_eval.rs",
+            "crates/reify-eval/tests/purpose_eval.rs",
+            "crates/reify-eval/tests/field_eval_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-test-support/src",
+            "crates/reify-compiler/tests",
+            "crates/reify-eval/tests"
+          ]
         }
       },
       {
@@ -7723,7 +7739,15 @@
         "subtasks": [],
         "updatedAt": "2026-03-26T02:28:01.824Z",
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-compiler/tests/guard_compilation.rs",
+            "crates/reify-compiler/tests/collection_sub_tests.rs",
+            "crates/reify-compiler/tests/common/mod.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/tests"
+          ]
         }
       },
       {
