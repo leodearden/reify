@@ -6790,7 +6790,14 @@
         "subtasks": [],
         "updatedAt": "2026-03-27T06:16:51.758Z",
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "gui/src-tauri/src/main.rs",
+            "gui/src-tauri/src/claude_bridge.rs"
+          ],
+          "modules": [
+            "gui/src-tauri/src"
+          ]
         }
       },
       {
