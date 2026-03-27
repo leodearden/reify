@@ -1675,6 +1675,49 @@ mod poison_recovery {
         // Results should be empty (no evaluations have occurred), but accessible
         assert!(results.is_empty());
     }
+
+    /// Verify that tracing::warn! is emitted when take_results() recovers from a poisoned lock.
+    #[test]
+    fn tracing_warn_emitted_on_poison_results_lock() {
+        let setup = simple_setup();
+        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+
+        adapter.poison_results();
+
+        let (subscriber, warn_count) = warn_counting_subscriber();
+        let _result = tracing::subscriber::with_default(subscriber, || {
+            catch_unwind(AssertUnwindSafe(|| adapter.take_results()))
+        });
+
+        let count = warn_count.load(std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            count > 0,
+            "take_results() should emit tracing::warn! on poison recovery, got {count} WARN events"
+        );
+    }
+
+    /// Verify that tracing::warn! is emitted when build_result_shared() recovers from poisoned snapshot_values.
+    #[test]
+    fn tracing_warn_emitted_on_poison_snapshot_values_read() {
+        let setup = simple_setup();
+        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+        let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
+
+        adapter.poison_snapshot_values();
+
+        let (subscriber, warn_count) = warn_counting_subscriber();
+        let _result = tracing::subscriber::with_default(subscriber, || {
+            catch_unwind(AssertUnwindSafe(|| {
+                adapter.build_result_shared(&eval_set, HashSet::new())
+            }))
+        });
+
+        let count = warn_count.load(std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            count > 0,
+            "build_result_shared() should emit tracing::warn! on poison recovery, got {count} WARN events"
+        );
+    }
 }
 
 /// Critical test: 3+ parent mixed fan-in where downstream reads ONLY
