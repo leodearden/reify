@@ -10459,6 +10459,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 530,
+        "title": "Solver: extract build_solved_values helper to deduplicate zip-insert loop",
+        "description": "The early-exit Solved path (solver.rs:422-430) and the final return path (solver.rs:522-530) contain an identical loop:\n```rust\nfor (param, &val) in problem.auto_params.iter().zip(SOME_VEC.iter()) {\n    values.insert(param.id.clone(), Value::Scalar {\n        si_value: val,\n        dimension: dimension_of(&param.param_type),\n    });\n}\n```\n\nExtract a private helper:\n```rust\nfn build_solved_values(params: &[AutoParam], vals: &[f64]) -> HashMap<ValueCellId, Value> { ... }\n```\nand call it from both sites.\n\nMemory hints: search for \"solver code duplication\", entity names: DimensionalSolver, build_trial_values",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -10471,7 +10482,7 @@
       ],
       "created": "2026-03-27T08:03:55.881Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-27T08:04:02.602Z"
+      "updated": "2026-03-27T08:04:07.108Z"
     }
   }
 }
