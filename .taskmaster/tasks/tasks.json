@@ -11352,7 +11352,14 @@
         "priority": "medium",
         "subtasks": [],
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            ".gitignore",
+            "tree-sitter-reify/build.rs"
+          ],
+          "modules": [
+            "tree-sitter-reify"
+          ]
         }
       },
       {
