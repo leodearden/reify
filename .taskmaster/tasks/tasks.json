@@ -10568,10 +10568,11 @@
         "description": "Adding a new type variant in reify-types requires coordinated match-arm additions across 6 files that form a tightly-coupled \"type spine\" clique (10-11x co-conflict frequency):\n- crates/reify-types/src/value.rs (12 conflicts)\n- crates/reify-types/src/ty.rs (10 conflicts)\n- crates/reify-test-support/src/builders.rs (21 conflicts)\n- crates/reify-lsp/src/analysis.rs (12 conflicts)\n- crates/reify-constraints/src/classifier.rs (11 conflicts)\n- gui/src-tauri/src/types.rs (10 conflicts)\n\nInvestigate and implement decoupling:\n1. Enum dispatch traits so new variants are self-contained in one file\n2. Derive macros to auto-generate downstream match arms\n3. Or at minimum, move match-arm blocks into per-variant files so additions don't conflict\n4. Evaluate widening module locks for reify-types to serialize with downstream consumers as an interim measure\n\nmemory_hints: search \"type variant fan-out\", get_entity \"Value enum\", get_entity \"Type enum\", search \"match arm generation\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "high",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-03-27T08:27:41.446Z"
       },
       {
         "id": "536",
@@ -10642,7 +10643,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-27T08:27:40.898Z",
+      "lastModified": "2026-03-27T08:27:41.446Z",
       "taskCount": 541,
       "completedCount": 258,
       "tags": [
