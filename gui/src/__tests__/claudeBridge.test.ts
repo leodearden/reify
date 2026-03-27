@@ -277,6 +277,29 @@ describe('subscribeToClaudeEvents', () => {
     });
   });
 
+  it('payload type field does not override event discriminant', async () => {
+    let capturedHandler: ((event: { payload: unknown }) => void) | undefined;
+    mockListen.mockImplementation(async (eventName, handler) => {
+      if (eventName === 'claude-text-delta') {
+        capturedHandler = handler as (event: { payload: unknown }) => void;
+      }
+      return vi.fn();
+    });
+
+    const handler = vi.fn();
+    await subscribeToClaudeEvents(handler);
+
+    // Simulate a malformed sidecar message where payload contains a `type` field
+    capturedHandler!({ payload: { type: 'EVIL', id: 'msg-1', content: 'Hello' } });
+
+    // The hardcoded discriminant 'text_delta' must win — not the payload's 'type'
+    expect(handler).toHaveBeenCalledWith({
+      type: 'text_delta',
+      id: 'msg-1',
+      content: 'Hello',
+    });
+  });
+
   describe('listener rollback on partial failure', () => {
     it('cleans up already-registered listeners when a middle listen() fails', async () => {
       const unlisteners = [vi.fn(), vi.fn(), vi.fn()];
