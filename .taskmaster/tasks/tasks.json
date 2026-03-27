@@ -8054,7 +8054,9 @@
         "details": "",
         "testStrategy": "",
         "status": "blocked",
-        "dependencies": [],
+        "dependencies": [
+          "208"
+        ],
         "priority": "medium",
         "subtasks": [],
         "updatedAt": "2026-03-26T12:47:47.115Z",
