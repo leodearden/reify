@@ -474,6 +474,27 @@ mod tests {
         );
     }
 
+    #[test]
+    fn hover_on_occurrence_member_shows_param_info() {
+        let source = "occurrence def Joint {\n    param diameter: Scalar = 10mm\n}";
+        // 'diameter' on line 1, col 10
+        let position = Position::new(1, 10);
+        let md = hover_markdown(source, position)
+            .expect("hover should return info for occurrence member");
+        assert!(
+            md.contains("param"),
+            "should mention 'param', got: {md}"
+        );
+        assert!(
+            md.contains("diameter"),
+            "should mention 'diameter', got: {md}"
+        );
+        assert!(
+            md.contains("Scalar"),
+            "should mention 'Scalar', got: {md}"
+        );
+    }
+
     // --- edge cases ---
 
     #[test]
