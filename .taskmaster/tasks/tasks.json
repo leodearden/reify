@@ -7400,7 +7400,15 @@
         "subtasks": [],
         "updatedAt": "2026-03-27T06:32:09.950Z",
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/tests/trait_conformance_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/src",
+            "crates/reify-compiler/tests"
+          ]
         }
       },
       {
@@ -7427,7 +7435,15 @@
         "subtasks": [],
         "updatedAt": "2026-03-26T02:34:56.285Z",
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-compiler/tests/determinacy_compile_tests.rs",
+            "crates/reify-expr/src/lib.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/tests",
+            "crates/reify-expr/src"
+          ]
         }
       },
       {
