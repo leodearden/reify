@@ -432,8 +432,8 @@ impl Value {
                 upper_inclusive,
             } => {
                 // Defensive re-normalization: None bounds → inclusive=false
-                let lower_inclusive = *lower_inclusive && lower.is_some();
-                let upper_inclusive = *upper_inclusive && upper.is_some();
+                let (lower_inclusive, upper_inclusive) =
+                    normalize_range_flags(lower, upper, *lower_inclusive, *upper_inclusive);
                 // tag=17; flags then optional bounds
                 let mut h = ContentHash::of(&[17, lower_inclusive as u8, upper_inclusive as u8]);
                 match lower {
