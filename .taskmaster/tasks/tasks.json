@@ -9093,7 +9093,13 @@
         "subtasks": [],
         "updatedAt": "2026-03-26T08:24:31.758Z",
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-runtime/src/concurrent_eval.rs"
+          ],
+          "modules": [
+            "crates/reify-runtime/src"
+          ]
         }
       },
       {
@@ -9108,7 +9114,15 @@
         "subtasks": [],
         "updatedAt": "2026-03-26T12:05:54.068Z",
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-runtime/src/concurrent_eval.rs",
+            "crates/reify-eval/src/lib.rs"
+          ],
+          "modules": [
+            "crates/reify-runtime/src",
+            "crates/reify-eval/src"
+          ]
         }
       },
       {
