@@ -2,82 +2,30 @@ use tower_lsp::lsp_types::{CompletionItem, CompletionItemKind, Position, Url};
 
 use crate::analysis::AnalysisContext;
 
-/// Compute completion items for the given position.
-///
-/// Returns a flat list of all available completions (keywords, identifiers,
-/// types, built-in functions, structure names). Client-side filtering applies.
-pub fn compute_completions(source: &str, uri: &Url, _position: Position) -> Vec<CompletionItem> {
-    let mut items = Vec::new();
-
-    // (a) Keywords
-    for kw in KEYWORDS {
-        items.push(CompletionItem {
-            label: kw.to_string(),
-            kind: Some(CompletionItemKind::KEYWORD),
-            ..Default::default()
-        });
-    }
-
-    // (b) Built-in functions
-    for func in BUILTIN_FUNCTIONS {
-        items.push(CompletionItem {
-            label: func.to_string(),
-            kind: Some(CompletionItemKind::FUNCTION),
-            ..Default::default()
-        });
-    }
-
-    // (c) Type names
-    for ty in TYPE_NAMES {
-        items.push(CompletionItem {
-            label: ty.to_string(),
-            kind: Some(CompletionItemKind::CLASS),
-            ..Default::default()
-        });
-    }
-
-    // Context-dependent items from the source
-    let ctx = AnalysisContext::new(source, uri);
-
-    // (d) Value cell members as variables with type detail
-    for (name, _kind, cell_type) in ctx.member_names() {
-        items.push(CompletionItem {
-            label: name.to_string(),
-            kind: Some(CompletionItemKind::VARIABLE),
-            detail: Some(cell_type.to_string()),
-            ..Default::default()
-        });
-    }
-
-    // (e) Structure names
-    for (name, _params, _lets, _constraints) in ctx.structure_names() {
-        items.push(CompletionItem {
-            label: name.to_string(),
-            kind: Some(CompletionItemKind::STRUCT),
-            ..Default::default()
-        });
-    }
-
-    items
+/// Cursor context for position-sensitive completions.
+#[derive(Debug)]
+enum CompletionContext {
+    /// Outside any structure definition
+    TopLevel,
+    /// Inside a structure body, at declaration level
+    Body,
+    /// Inside an expression (after `=`, inside constraint)
+    Expression,
+    /// Immediately after a `.` operator
+    AfterDot,
+    /// In a type annotation position (after `:`)
+    TypeAnnotation,
 }
 
-/// Reify language keywords.
-const KEYWORDS: &[&str] = &[
-    "structure",
-    "param",
-    "let",
-    "constraint",
-    "sub",
-    "import",
-    "if",
-    "then",
-    "else",
-    "and",
-    "or",
-    "not",
-    "true",
-    "false",
-    "auto",
+/// Top-level keywords (structure definitions, imports).
+const TOP_LEVEL_KEYWORDS: &[&str] = &["structure", "import"];
+
+/// Body-level declaration keywords.
+const BODY_KEYWORDS: &[&str] = &["param", "let", "constraint", "sub"];
+
+/// Expression-level keywords.
+const EXPR_KEYWORDS: &[&str] = &[
+    "if", "then", "else", "and", "or", "not", "true", "false", "auto",
 ];
 
 /// Built-in geometry and math functions.
@@ -88,6 +36,177 @@ const BUILTIN_FUNCTIONS: &[&str] = &[
 
 /// Built-in type names.
 const TYPE_NAMES: &[&str] = &["Scalar", "Bool", "Int", "Real", "String"];
+
+/// Convert an LSP Position to a byte offset in the source string.
+fn position_to_offset(source: &str, position: Position) -> usize {
+    let mut offset = 0;
+    for (i, line) in source.split('\n').enumerate() {
+        if i == position.line as usize {
+            return offset + (position.character as usize).min(line.len());
+        }
+        offset += line.len() + 1;
+    }
+    source.len()
+}
+
+/// Determine the completion context from the cursor position.
+fn determine_context(source: &str, position: Position) -> CompletionContext {
+    let offset = position_to_offset(source, position);
+    let before_cursor = &source[..offset.min(source.len())];
+
+    // After-dot: last non-whitespace character is '.'
+    let trimmed = before_cursor.trim_end();
+    if trimmed.ends_with('.') {
+        return CompletionContext::AfterDot;
+    }
+
+    // Brace depth determines top-level vs inside structure
+    let brace_depth: i32 = before_cursor
+        .chars()
+        .map(|c| match c {
+            '{' => 1,
+            '}' => -1,
+            _ => 0,
+        })
+        .sum();
+
+    if brace_depth <= 0 {
+        return CompletionContext::TopLevel;
+    }
+
+    // Inside structure body — examine current line for sub-context
+    let line_start = before_cursor.rfind('\n').map_or(0, |p| p + 1);
+    let line_before = before_cursor[line_start..].trim();
+
+    // Type annotation: after ':' in param/sub declaration, no '=' yet
+    if line_before.starts_with("param ") || line_before.starts_with("sub ") {
+        if let Some(colon_pos) = line_before.find(':') {
+            if !line_before[colon_pos + 1..].contains('=') {
+                return CompletionContext::TypeAnnotation;
+            }
+        }
+    }
+
+    // Expression: after '=' assignment
+    if let Some(eq_pos) = line_before.find('=') {
+        let before_eq = if eq_pos > 0 {
+            line_before.as_bytes()[eq_pos - 1]
+        } else {
+            b' '
+        };
+        let after_eq = if eq_pos + 1 < line_before.len() {
+            line_before.as_bytes()[eq_pos + 1]
+        } else {
+            b' '
+        };
+        if before_eq != b'>' && before_eq != b'<' && before_eq != b'!' && after_eq != b'=' {
+            return CompletionContext::Expression;
+        }
+    }
+
+    // Expression: inside constraint expression
+    if line_before.starts_with("constraint ") || line_before == "constraint" {
+        return CompletionContext::Expression;
+    }
+
+    CompletionContext::Body
+}
+
+/// Compute completion items for the given position.
+///
+/// Returns position-sensitive completions filtered by cursor context.
+pub fn compute_completions(source: &str, uri: &Url, position: Position) -> Vec<CompletionItem> {
+    let mut items = Vec::new();
+    let context = determine_context(source, position);
+
+    // (a) Keywords — filtered by context
+    match context {
+        CompletionContext::TopLevel => {
+            for kw in TOP_LEVEL_KEYWORDS.iter().chain(EXPR_KEYWORDS.iter()) {
+                items.push(CompletionItem {
+                    label: kw.to_string(),
+                    kind: Some(CompletionItemKind::KEYWORD),
+                    ..Default::default()
+                });
+            }
+        }
+        CompletionContext::Body => {
+            for kw in BODY_KEYWORDS.iter().chain(EXPR_KEYWORDS.iter()) {
+                items.push(CompletionItem {
+                    label: kw.to_string(),
+                    kind: Some(CompletionItemKind::KEYWORD),
+                    ..Default::default()
+                });
+            }
+        }
+        CompletionContext::Expression => {
+            for kw in EXPR_KEYWORDS {
+                items.push(CompletionItem {
+                    label: kw.to_string(),
+                    kind: Some(CompletionItemKind::KEYWORD),
+                    ..Default::default()
+                });
+            }
+        }
+        CompletionContext::AfterDot | CompletionContext::TypeAnnotation => {}
+    }
+
+    // (b) Built-in functions — not in AfterDot or TypeAnnotation
+    if !matches!(
+        context,
+        CompletionContext::AfterDot | CompletionContext::TypeAnnotation
+    ) {
+        for func in BUILTIN_FUNCTIONS {
+            items.push(CompletionItem {
+                label: func.to_string(),
+                kind: Some(CompletionItemKind::FUNCTION),
+                ..Default::default()
+            });
+        }
+    }
+
+    // (c) Type names — not in AfterDot
+    if !matches!(context, CompletionContext::AfterDot) {
+        for ty in TYPE_NAMES {
+            items.push(CompletionItem {
+                label: ty.to_string(),
+                kind: Some(CompletionItemKind::CLASS),
+                ..Default::default()
+            });
+        }
+    }
+
+    // Context-dependent items from the source
+    let ctx = AnalysisContext::new(source, uri);
+
+    // (d) Value cell members — not in AfterDot or TypeAnnotation
+    if !matches!(
+        context,
+        CompletionContext::AfterDot | CompletionContext::TypeAnnotation
+    ) {
+        for (name, _kind, cell_type) in ctx.member_names() {
+            items.push(CompletionItem {
+                label: name.to_string(),
+                kind: Some(CompletionItemKind::VARIABLE),
+                detail: Some(cell_type.to_string()),
+                ..Default::default()
+            });
+        }
+    }
+
+    // (e) Structure names — not in AfterDot
+    if !matches!(context, CompletionContext::AfterDot) {
+        for (name, _params, _lets, _constraints) in ctx.structure_names() {
+            items.push(CompletionItem {
+                label: name.to_string(),
+                kind: Some(CompletionItemKind::STRUCT),
+                ..Default::default()
+            });
+        }
+    }
+
+    items
+}
 
 #[cfg(test)]
 mod tests {
@@ -108,8 +227,7 @@ mod tests {
             .iter()
             .filter(|i| i.kind == Some(CompletionItemKind::KEYWORD))
             .collect();
-        // Should include at least: structure, param, let, constraint, sub, import,
-        // if, then, else, and, or, not, true, false, auto
+        // Inside body: param, let, constraint, sub + expression keywords (13 total)
         assert!(
             keywords.len() >= 12,
             "expected at least 12 keywords, got {}",
@@ -123,8 +241,8 @@ mod tests {
             "should include 'constraint'"
         );
         assert!(
-            keyword_labels.contains(&"structure"),
-            "should include 'structure'"
+            keyword_labels.contains(&"sub"),
+            "should include 'sub'"
         );
     }
 
