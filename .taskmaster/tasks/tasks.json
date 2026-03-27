@@ -6314,16 +6314,22 @@
           "326",
           "317"
         ],
-        "status": "blocked",
+        "status": "pending",
         "metadata": {
           "milestone": "stdlib-M8.3",
           "modules": [
             "crates/reify-compiler"
           ],
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Stdlib: Physical, Rigid, Flexible structural traits"
+            ]
+          }
         },
         "subtasks": [],
-        "updatedAt": "2026-03-27T08:36:58.701Z"
+        "updatedAt": "2026-03-27T08:39:06.607Z"
       },
       {
         "id": "330",
@@ -10693,7 +10699,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-27T08:36:58.701Z",
+      "lastModified": "2026-03-27T08:39:06.607Z",
       "taskCount": 544,
       "completedCount": 259,
       "tags": [
