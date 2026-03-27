@@ -788,3 +788,43 @@ fn valid_small_factor_still_compiles() {
     let unit = module.units.iter().find(|u| u.name == "pico").expect("pico not found");
     assert!((unit.factor - 1e-12).abs() < 1e-24);
 }
+
+// ─── step-10 (task-208): compile_expr_guarded rejects non-finite quantity literals ─
+
+#[test]
+fn overflow_user_unit_in_structure_param_rejected() {
+    // User-defined unit with factor 2.0, value that parses as infinity in a
+    // structure param. si_value = inf * 2.0 + 0.0 = inf — must emit overflow diagnostic.
+    // Note: tree-sitter grammar doesn't support scientific notation in number_literal,
+    // so we use a 309-digit integer which str::parse::<f64>() maps to f64::INFINITY.
+    let big_num = "9".repeat(309);
+    let src = format!(
+        "unit big : Length = 2.0\nstructure S {{ param x : Length = {}big }}",
+        big_num
+    );
+    let module = parse_and_compile(&src);
+    let errors = errors_only(&module);
+    assert!(
+        errors.iter().any(|d| d.message.contains("overflow") || d.message.contains("finite")),
+        "expected overflow diagnostic for non-finite quantity literal in structure param; got: {:?}",
+        errors
+    );
+}
+
+#[test]
+fn overflow_hardcoded_unit_in_structure_param_rejected() {
+    // Hardcoded mm path with value that parses as infinity.
+    // si_value = inf * 0.001 = inf — must emit overflow diagnostic.
+    let big_num = "9".repeat(309);
+    let src = format!(
+        "structure S {{ param y : Length = {}mm }}",
+        big_num
+    );
+    let module = parse_and_compile(&src);
+    let errors = errors_only(&module);
+    assert!(
+        errors.iter().any(|d| d.message.contains("overflow") || d.message.contains("finite")),
+        "expected overflow diagnostic for non-finite quantity literal in structure param; got: {:?}",
+        errors
+    );
+}
