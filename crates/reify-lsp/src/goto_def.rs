@@ -154,6 +154,27 @@ mod tests {
         assert_eq!(loc.range.start.line, 5);
     }
 
+    // --- enclosing-declaration scoping tests ---
+
+    #[test]
+    fn goto_def_cursor_in_second_decl_scopes_to_enclosing() {
+        // Two structures with identically-named param x.
+        // Cursor on 'x' in B's `let y = x` should jump to B's param x, not A's.
+        let source = "structure A {\n    param x: Scalar = 5mm\n}\nstructure B {\n    param x: Bool = true\n    let y = x\n}";
+        // Line 5: "    let y = x"
+        //                      ^ col 12 = 'x' reference
+        let position = Position::new(5, 12);
+        let loc = compute_goto_definition(source, &test_uri(), position)
+            .expect("goto-def for x in B should return location");
+        assert_eq!(loc.uri, test_uri());
+        // Should point to B's param x on line 4, NOT A's on line 1
+        assert_eq!(
+            loc.range.start.line, 4,
+            "expected B's param x (line 4), got line {}",
+            loc.range.start.line
+        );
+    }
+
     #[test]
     fn goto_def_unknown_word_returns_none() {
         let source = "structure Foo {\n  param x: Scalar = 5mm\n}";
