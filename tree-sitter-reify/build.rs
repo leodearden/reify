@@ -37,18 +37,31 @@ fn run_tree_sitter_generate() {
     }
 }
 
-fn needs_generate(parser_path: &std::path::Path, grammar_path: &std::path::Path) -> bool {
-    if !parser_path.exists() {
-        return true;
+/// The expected output files that tree-sitter generate produces.
+const EXPECTED_OUTPUTS: &[&str] = &["parser.c", "grammar.json", "node-types.json"];
+
+/// Check if regeneration is needed based on content hash staleness.
+/// Returns true if any output file is missing, stamp file is missing,
+/// or stamp hash doesn't match grammar.js content hash.
+fn needs_generate(
+    grammar_path: &std::path::Path,
+    stamp_path: &std::path::Path,
+    output_paths: &[&std::path::Path],
+) -> bool {
+    // Must regenerate if any output file is missing.
+    for path in output_paths {
+        if !path.exists() {
+            return true;
+        }
     }
-    // Regenerate if grammar.js is newer than parser.c.
-    if grammar_path.exists()
-        && let (Ok(gm), Ok(pm)) = (grammar_path.metadata(), parser_path.metadata())
-        && let (Ok(gt), Ok(pt)) = (gm.modified(), pm.modified())
-    {
-        return gt > pt;
-    }
-    false
+    // Must regenerate if stamp file is missing.
+    let stamp_content = match std::fs::read_to_string(stamp_path) {
+        Ok(s) => s,
+        Err(_) => return true,
+    };
+    // Must regenerate if grammar hash differs from stamp.
+    let current_hash = content_hash(grammar_path);
+    stamp_content.trim() != current_hash
 }
 
 fn main() {
@@ -60,8 +73,17 @@ fn main() {
     println!("cargo:rerun-if-changed=grammar.js");
     println!("cargo:rerun-if-changed=src/parser.c");
 
-    // Auto-generate parser.c from grammar.js when missing or stale.
-    if needs_generate(&parser_path, grammar_path) {
+    // Auto-generate from grammar.js when missing or stale.
+    let output_paths: Vec<std::path::PathBuf> = EXPECTED_OUTPUTS
+        .iter()
+        .map(|n| src_dir.join(n))
+        .collect();
+    let output_refs: Vec<&std::path::Path> = output_paths.iter().map(|p| p.as_path()).collect();
+    // Stamp file stored in OUT_DIR (cargo build directory).
+    let out_dir = std::env::var("OUT_DIR").unwrap_or_else(|_| ".".to_string());
+    let stamp_path = std::path::Path::new(&out_dir).join("grammar_hash.stamp");
+
+    if needs_generate(grammar_path, &stamp_path, &output_refs) {
         run_tree_sitter_generate();
         // Verify parser.c was actually created.
         if !parser_path.exists() {
@@ -70,6 +92,11 @@ fn main() {
                  Check tree-sitter CLI version."
             );
         }
+        // Write updated stamp.
+        let hash = content_hash(grammar_path);
+        std::fs::write(&stamp_path, &hash).unwrap_or_else(|e| {
+            eprintln!("warning: failed to write stamp file: {}", e);
+        });
     }
 
     let mut c_config = cc::Build::new();

@@ -49,9 +49,20 @@ const EXPECTED_OUTPUTS: &[&str] = &["parser.c", "grammar.json", "node-types.json
 /// Duplicates needs_generate logic from build.rs for testability.
 /// Returns true if regeneration is needed based on content hash staleness.
 fn needs_generate(grammar_path: &Path, stamp_path: &Path, output_paths: &[&Path]) -> bool {
-    // Stub — will be implemented in step-8
-    let _ = (grammar_path, stamp_path, output_paths);
-    unimplemented!("needs_generate not yet implemented")
+    // Must regenerate if any output file is missing.
+    for path in output_paths {
+        if !path.exists() {
+            return true;
+        }
+    }
+    // Must regenerate if stamp file is missing.
+    let stamp_content = match std::fs::read_to_string(stamp_path) {
+        Ok(s) => s,
+        Err(_) => return true,
+    };
+    // Must regenerate if grammar hash differs from stamp.
+    let current_hash = content_hash(grammar_path);
+    stamp_content.trim() != current_hash
 }
 
 #[test]
