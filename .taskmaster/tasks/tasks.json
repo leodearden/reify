@@ -10824,10 +10824,11 @@
         "description": "The `unfold_recursive_sub` function in `crates/reify-eval/src/lib.rs` currently takes 16 parameters. Extract stable-across-calls fields into an `UnfoldContext<'t>` struct:\n\n**Stable fields (→ UnfoldContext):** values, snapshot, functions, journal, cache, version_id, meta_map, templates, diagnostics, node_budget\n\n**Depth-varying (remain as args):** scope_template, child_template, sub, parent_entity, depth, max_depth\n\nAlso refactor `elaborate_child_lets_only` which has a similar parameter bloat.\n\nThis follows the Context-object pattern used elsewhere in the codebase for similar recursive passes.\n\nmemory_hints: search \"unfold_recursive_sub context struct\", get_entity \"UnfoldContext\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-03-27T09:08:30.292Z"
       },
       {
         "id": "550",
@@ -10982,7 +10983,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-27T09:08:30.031Z",
+      "lastModified": "2026-03-27T09:08:30.293Z",
       "taskCount": 562,
       "completedCount": 262,
       "tags": [
