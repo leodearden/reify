@@ -1568,18 +1568,18 @@ async fn edit_check_concurrent_preserves_constraint_labels() {
 }
 
 // --- PoisonError behavior tests (legacy module, kept for backward compat) ---
-// The old poison_recovery tests verified silent recovery from poisoned locks.
-// After the C4 fix (panic-on-poison), these now verify panics instead.
-// The comprehensive panic tests are in the `poison_panics` module below.
+// Poison recovery tests verify that poisoned locks are recovered gracefully
+// via unwrap_or_else(|e| e.into_inner()), preventing cascading panics when
+// one evaluation task panics mid-computation.
 
 #[cfg(feature = "test-utils")]
 mod poison_recovery {
     use super::*;
     use std::panic::{AssertUnwindSafe, catch_unwind};
 
-    /// After the C4 fix, values() panics on poisoned lock (no silent recovery).
+    /// values() recovers gracefully from a poisoned values RwLock and returns valid data.
     #[test]
-    fn values_panics_after_values_lock_poisoning() {
+    fn values_recovers_from_poisoned_values_lock() {
         let setup = simple_setup();
         let adapter = ConcurrentEvalAdapter::from_setup(&setup);
 
@@ -1587,14 +1587,18 @@ mod poison_recovery {
 
         let result = catch_unwind(AssertUnwindSafe(|| adapter.values()));
         assert!(
-            result.is_err(),
-            "values() must panic on poisoned lock after C4 fix"
+            result.is_ok(),
+            "values() should recover from poisoned lock, not panic"
         );
+        let values = result.unwrap();
+        // The recovered data should still contain the pre-poisoning values
+        assert!(values.contains(&ValueCellId::new("T", "a")));
+        assert!(values.contains(&ValueCellId::new("T", "b")));
     }
 
-    /// After the C4 fix, take_results() panics on poisoned lock.
+    /// take_results() recovers gracefully from a poisoned results Mutex and returns valid data.
     #[test]
-    fn take_results_panics_after_results_lock_poisoning() {
+    fn take_results_recovers_from_poisoned_results_lock() {
         let setup = simple_setup();
         let adapter = ConcurrentEvalAdapter::from_setup(&setup);
 
@@ -1602,9 +1606,12 @@ mod poison_recovery {
 
         let result = catch_unwind(AssertUnwindSafe(|| adapter.take_results()));
         assert!(
-            result.is_err(),
-            "take_results() must panic on poisoned lock after C4 fix"
+            result.is_ok(),
+            "take_results() should recover from poisoned lock, not panic"
         );
+        let results = result.unwrap();
+        // Results should be empty (no evaluations have occurred), but accessible
+        assert!(results.is_empty());
     }
 }
 
