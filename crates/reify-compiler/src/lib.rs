@@ -617,7 +617,7 @@ fn evaluate_const_expr(
         reify_syntax::ExprKind::BinOp { op, left, right } => {
             let lhs = evaluate_const_expr(left, registry, diagnostics)?;
             let rhs = evaluate_const_expr(right, registry, diagnostics)?;
-            match op.as_str() {
+            let result = match op.as_str() {
                 "+" => Some(lhs + rhs),
                 "-" => Some(lhs - rhs),
                 "*" => Some(lhs * rhs),
@@ -627,10 +627,9 @@ fn evaluate_const_expr(
                             Diagnostic::error("division by zero in unit conversion expression")
                                 .with_label(DiagnosticLabel::new(expr.span, "here")),
                         );
-                        None
-                    } else {
-                        Some(lhs / rhs)
+                        return None;
                     }
+                    Some(lhs / rhs)
                 }
                 other => {
                     diagnostics.push(
@@ -642,7 +641,18 @@ fn evaluate_const_expr(
                     );
                     None
                 }
+            };
+            // Guard: reject non-finite arithmetic results (inf, NaN from overflow).
+            if let Some(v) = result {
+                if !v.is_finite() {
+                    diagnostics.push(
+                        Diagnostic::error("overflow in unit conversion expression")
+                            .with_label(DiagnosticLabel::new(expr.span, "result is not finite")),
+                    );
+                    return None;
+                }
             }
+            result
         }
         reify_syntax::ExprKind::UnOp { op, operand } => {
             let val = evaluate_const_expr(operand, registry, diagnostics)?;
