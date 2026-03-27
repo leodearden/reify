@@ -9878,7 +9878,7 @@
         "description": "The 2026-03-26 full project review found annotation.rs as an orphaned file — it exists in the codebase but is not referenced or used. This was one of 5 high-severity findings; the other 4 have tasks (489, 490, 491, 493) but this one was missed.",
         "details": "memory_hints:\\n- search: \"annotation.rs orphaned file review finding\"\\n- search: \"annotation framework parser types compiler\"\\n- entity: \"reify-compiler\"\\n\\nInvestigate whether annotation.rs contains any code that should be integrated (e.g., tasks 264-265 implemented annotation framework — check if this is leftover scaffolding or a genuinely dead file). If dead, remove it. If it has useful code, wire it in.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -9891,7 +9891,8 @@
           "modules": [
             "crates/reify-types/src"
           ]
-        }
+        },
+        "updatedAt": "2026-03-27T08:06:33.262Z"
       },
       {
         "id": "501",
@@ -10485,7 +10486,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-27T08:06:33.112Z",
+      "lastModified": "2026-03-27T08:06:33.262Z",
       "taskCount": 531,
       "completedCount": 256,
       "tags": [
