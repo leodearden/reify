@@ -11179,6 +11179,19 @@
         ],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 577,
+        "title": "DRY: compute node_overrides once per node in execute_with_config",
+        "description": "In `crates/reify-runtime/src/concurrent.rs`, `config.node_overrides.get(&node).copied().unwrap_or_default()` is computed twice for each dirty node: once in the dirty/skip pre-computation pass (line ~262) and again in the commitment tracker registration block (line ~298). These will silently diverge if the lookup logic changes.\n\n**Fix:** Compute the override once at the top of the per-node loop and reuse it. Option A: store `(NodeId, NodeCommitmentOverride)` pairs in `dirty_nodes`. Option B: compute and bind `let override_ = ...` once in the is_dirty block and carry it through.\n\n**File:** `crates/reify-runtime/src/concurrent.rs`",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          477
+        ],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -11191,7 +11204,7 @@
       ],
       "created": "2026-03-27T09:55:03.636Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-27T09:55:09.099Z"
+      "updated": "2026-03-27T09:55:14.002Z"
     }
   }
 }
