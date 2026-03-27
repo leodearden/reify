@@ -1896,9 +1896,16 @@ mod poison_panics {
         let result = catch_unwind(AssertUnwindSafe(|| {
             adapter.build_result_shared(&eval_set, HashSet::new())
         }));
-        assert!(result.is_ok(), "build_result_shared() should recover from poisoned snapshot_values lock, not panic");
+        assert!(
+            result.is_ok(),
+            "build_result_shared() should recover from poisoned snapshot_values lock, not panic"
+        );
         let edit_result = result.unwrap();
-        assert!(edit_result.snapshot_values.contains_key(&ValueCellId::new("T", "a")));
+        assert!(
+            edit_result
+                .snapshot_values
+                .contains_key(&ValueCellId::new("T", "a"))
+        );
     }
 
     /// build_result_shared() recovers from poisoned results Mutex.
@@ -1913,7 +1920,10 @@ mod poison_panics {
         let result = catch_unwind(AssertUnwindSafe(|| {
             adapter.build_result_shared(&eval_set, HashSet::new())
         }));
-        assert!(result.is_ok(), "build_result_shared() should recover from poisoned results lock, not panic");
+        assert!(
+            result.is_ok(),
+            "build_result_shared() should recover from poisoned results lock, not panic"
+        );
     }
 
     /// into_result() recovers from poisoned values RwLock.
@@ -1953,9 +1963,11 @@ mod poison_panics {
             "into_result() should recover from poisoned snapshot_values lock, not panic"
         );
         let edit_result = result.unwrap();
-        assert!(edit_result
-            .snapshot_values
-            .contains_key(&ValueCellId::new("T", "a")));
+        assert!(
+            edit_result
+                .snapshot_values
+                .contains_key(&ValueCellId::new("T", "a"))
+        );
     }
 
     /// into_result() recovers from poisoned results Mutex.
@@ -1984,7 +1996,7 @@ mod poison_panics {
 #[cfg(feature = "test-utils")]
 mod poison_evaluate {
     use super::*;
-    use std::panic::{catch_unwind, AssertUnwindSafe};
+    use std::panic::{AssertUnwindSafe, catch_unwind};
 
     /// evaluate() recovers from poisoned values RwLock (read path at start of evaluation).
     #[test]
@@ -1997,11 +2009,14 @@ mod poison_evaluate {
         adapter.poison_values();
 
         let result = catch_unwind(AssertUnwindSafe(|| {
-            tokio::runtime::Runtime::new().unwrap().block_on(async {
-                adapter.evaluate(node).await
-            })
+            tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(async { adapter.evaluate(node).await })
         }));
-        assert!(result.is_ok(), "evaluate() should recover from poisoned values lock, not panic");
+        assert!(
+            result.is_ok(),
+            "evaluate() should recover from poisoned values lock, not panic"
+        );
         let outcome = result.unwrap();
         // b = a * 2 where a=10, so b=20 which differs from old hash → Changed
         assert_eq!(outcome, EvalOutcome::Changed);
@@ -2020,14 +2035,20 @@ mod poison_evaluate {
         adapter.poison_values();
 
         let result = catch_unwind(AssertUnwindSafe(|| {
-            tokio::runtime::Runtime::new().unwrap().block_on(async {
-                adapter.evaluate(node).await
-            })
+            tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(async { adapter.evaluate(node).await })
         }));
-        assert!(result.is_ok(), "evaluate() should recover from poisoned values write lock, not panic");
+        assert!(
+            result.is_ok(),
+            "evaluate() should recover from poisoned values write lock, not panic"
+        );
         // Verify the value was written despite poisoning
         let values = adapter.values();
-        assert_eq!(values.get(&ValueCellId::new("T", "b")), Some(&Value::Real(20.0)));
+        assert_eq!(
+            values.get(&ValueCellId::new("T", "b")),
+            Some(&Value::Real(20.0))
+        );
     }
 
     /// evaluate() recovers from poisoned snapshot_values RwLock.
@@ -2041,11 +2062,14 @@ mod poison_evaluate {
         adapter.poison_snapshot_values();
 
         let result = catch_unwind(AssertUnwindSafe(|| {
-            tokio::runtime::Runtime::new().unwrap().block_on(async {
-                adapter.evaluate(node).await
-            })
+            tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(async { adapter.evaluate(node).await })
         }));
-        assert!(result.is_ok(), "evaluate() should recover from poisoned snapshot_values lock, not panic");
+        assert!(
+            result.is_ok(),
+            "evaluate() should recover from poisoned snapshot_values lock, not panic"
+        );
         let outcome = result.unwrap();
         assert_eq!(outcome, EvalOutcome::Changed);
     }
@@ -2061,11 +2085,14 @@ mod poison_evaluate {
         adapter.poison_results();
 
         let result = catch_unwind(AssertUnwindSafe(|| {
-            tokio::runtime::Runtime::new().unwrap().block_on(async {
-                adapter.evaluate(node).await
-            })
+            tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(async { adapter.evaluate(node).await })
         }));
-        assert!(result.is_ok(), "evaluate() should recover from poisoned results lock, not panic");
+        assert!(
+            result.is_ok(),
+            "evaluate() should recover from poisoned results lock, not panic"
+        );
         let outcome = result.unwrap();
         assert_eq!(outcome, EvalOutcome::Changed);
     }
