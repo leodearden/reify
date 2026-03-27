@@ -5649,7 +5649,8 @@
             "crates/reify-types",
             "crates/reify-compiler",
             "crates/reify-eval"
-          ]
+          ],
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         },
         "subtasks": [],
         "updatedAt": "2026-03-24T00:00:00.000Z"
