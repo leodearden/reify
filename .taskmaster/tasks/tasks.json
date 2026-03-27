@@ -11082,6 +11082,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 569,
+        "title": "Add runtime payload validation in bridge.ts event handlers",
+        "description": "Add lightweight runtime guards to the 6 payload-bearing handlers in gui/src/bridge.ts subscribeToClaudeEvents (lines 159-182). Currently all payload casts are compile-time only — if the Rust sidecar emits a malformed event, undefined values propagate silently.\n\nFix: add null-guard before each cast (`if (!event.payload) return;`) and optionally validate required string fields (e.g. `typeof p.id !== 'string'`). Also guard tool_input against null/array values in the tool_call handler.\n\nSource: architect reviewer (S4) and robustness reviewer from task 517 review.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -11094,7 +11105,7 @@
       ],
       "created": "2026-03-27T09:20:31.609Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-27T09:20:31.613Z"
+      "updated": "2026-03-27T09:20:36.419Z"
     }
   }
 }
