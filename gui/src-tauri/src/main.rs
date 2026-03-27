@@ -7,7 +7,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 use tauri::{Emitter, Manager};
 
@@ -237,6 +237,21 @@ fn focus_entity(app: tauri::AppHandle, entity_path: String) -> Result<(), String
 }
 
 #[tauri::command]
+fn update_selection(
+    state: tauri::State<'_, AppState>,
+    selected_entity: Option<String>,
+    hovered_entity: Option<String>,
+) -> Result<(), String> {
+    let mut sel = state
+        .selection
+        .write()
+        .map_err(|e| format!("Selection lock poisoned: {}", e))?;
+    sel.selected_entity = selected_entity;
+    sel.hovered_entity = hovered_entity;
+    Ok(())
+}
+
+#[tauri::command]
 fn mcp_tool_call(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
@@ -377,6 +392,10 @@ fn main() {
         last_state: std::sync::Mutex::new(None),
         watcher: Mutex::new(None),
         sidecar: tokio::sync::Mutex::new(None),
+        selection: Arc::new(RwLock::new(reify_mcp::SelectionInfo {
+            selected_entity: None,
+            hovered_entity: None,
+        })),
     };
 
     tauri::Builder::default()
@@ -411,6 +430,7 @@ fn main() {
             export,
             get_source_location,
             focus_entity,
+            update_selection,
             mcp_tool_call,
             lsp_request,
             claude_send_message,

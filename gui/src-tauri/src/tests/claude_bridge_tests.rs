@@ -448,8 +448,9 @@ fn app_state_has_sidecar_field() {
     use crate::commands::AppState;
     use crate::engine::EngineSession;
     use reify_constraints::SimpleConstraintChecker;
+    use reify_mcp::SelectionInfo;
     use reify_test_support::MockGeometryKernel;
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, Mutex, RwLock};
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
@@ -461,6 +462,10 @@ fn app_state_has_sidecar_field() {
         last_state: Mutex::new(None),
         watcher: Mutex::new(None),
         sidecar: tokio::sync::Mutex::new(None),
+        selection: Arc::new(RwLock::new(SelectionInfo {
+            selected_entity: None,
+            hovered_entity: None,
+        })),
     };
 }
 
