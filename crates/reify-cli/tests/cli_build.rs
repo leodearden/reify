@@ -66,6 +66,15 @@ fn build_violating_bracket_exits_failure() {
         stdout.contains("Some constraints violated."),
         "stdout should contain summary message, got: {stdout}"
     );
+    // Channel-regression: constraint output must NOT leak to stderr
+    assert!(
+        !stderr.contains("VIOLATED"),
+        "stderr should not contain 'VIOLATED', got: {stderr}"
+    );
+    assert!(
+        !stderr.contains("Some constraints violated"),
+        "stderr should not contain constraint summary, got: {stderr}"
+    );
     // Geometry file should still be written even when constraints are violated
     assert!(
         std::path::Path::new(output_path).exists(),
@@ -101,6 +110,11 @@ fn build_valid_bracket_exits_success() {
     assert!(
         !stdout.contains("VIOLATED"),
         "stdout should NOT contain 'VIOLATED' for valid bracket, got: {stdout}"
+    );
+    // Channel-regression: 'Wrote' must NOT leak to stderr
+    assert!(
+        !stderr.contains("Wrote"),
+        "stderr should not contain 'Wrote', got: {stderr}"
     );
     assert!(
         std::path::Path::new(output_path).exists(),
