@@ -12043,7 +12043,21 @@
         "priority": "low",
         "subtasks": [],
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-mcp/src/types.rs",
+            "gui/src-tauri/src/mcp_context.rs",
+            "gui/src-tauri/src/main.rs",
+            "gui/src-tauri/src/commands.rs",
+            "gui/src-tauri/src/tests/mcp_context_tests.rs",
+            "gui/src-tauri/src/tests/mcp_dispatch_tests.rs",
+            "gui/src-tauri/src/tests/claude_bridge_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-mcp/src",
+            "gui/src-tauri/src",
+            "gui/src-tauri/src/tests"
+          ]
         }
       },
       {
@@ -12057,7 +12071,17 @@
         "priority": "medium",
         "subtasks": [],
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "gui/src/__tests__/selectionStore.test.ts",
+            "gui/src-tauri/src/tests/mcp_context_tests.rs",
+            "gui/src-tauri/src/tests/claude_bridge_tests.rs",
+            "gui/src-tauri/src/tests/mcp_dispatch_tests.rs"
+          ],
+          "modules": [
+            "gui/src/__tests__",
+            "gui/src-tauri/src/tests"
+          ]
         }
       },
       {
