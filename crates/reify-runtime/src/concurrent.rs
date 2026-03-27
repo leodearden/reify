@@ -337,6 +337,22 @@ impl ConcurrentScheduler {
                 handles.push(handle);
             }
 
+            // Cleanup closure: remove all dirty nodes from tracker and promoter.
+            // Called on both normal completion and error paths to prevent stale entries.
+            let cleanup_level = |dirty: &[NodeId]| {
+                if let Some(ref tracker) = config.commitment_tracker {
+                    let mut guard = tracker.lock().unwrap_or_else(|e| e.into_inner());
+                    for node in dirty {
+                        guard.remove_task(node);
+                    }
+                }
+                if let Some(ref promoter) = config.priority_promoter {
+                    for node in dirty {
+                        promoter.remove(node);
+                    }
+                }
+            };
+
             // Join all tasks in this level
             for handle in handles {
                 match handle.await {
@@ -350,26 +366,18 @@ impl ConcurrentScheduler {
                     Ok((_, Some(EvalOutcome::Unchanged))) => {} // Unchanged — skip
                     Ok((_, None)) => {} // Commitment-cancelled — drop
                     Err(e) if e.is_panic() => {
+                        cleanup_level(&dirty_nodes);
                         return Err(SchedulerError::TaskPanicked(e.into_panic()));
                     }
                     Err(_) => {
+                        cleanup_level(&dirty_nodes);
                         return Err(SchedulerError::TaskCancelled);
                     }
                 }
             }
 
-            // Cleanup: remove all processed nodes from tracker and promoter
-            if let Some(ref tracker) = config.commitment_tracker {
-                let mut guard = tracker.lock().unwrap_or_else(|e| e.into_inner());
-                for node in &dirty_nodes {
-                    guard.remove_task(node);
-                }
-            }
-            if let Some(ref promoter) = config.priority_promoter {
-                for node in &dirty_nodes {
-                    promoter.remove(node);
-                }
-            }
+            // Normal completion: cleanup all processed nodes
+            cleanup_level(&dirty_nodes);
         }
 
         Ok(SchedulerResult { changed, skipped })
