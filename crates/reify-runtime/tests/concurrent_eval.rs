@@ -1930,3 +1930,86 @@ mod poison_panics {
         );
     }
 }
+
+// --- Tests for execute_with_config: priority, commitment, overrides ---
+
+/// Test that nodes within a level are spawned in priority order.
+/// Three nodes at the same level with priorities P0Interactive, P1Slow, P3Speculative.
+/// Uses TrackingAsyncEvaluator to record evaluation order.
+/// With #[tokio::test] (current_thread runtime), spawn order == eval order for
+/// synchronous evaluators.
+#[tokio::test]
+async fn test_priority_ordering_within_level() {
+    use reify_eval::cache::{EvalOutcome, NodeId};
+    use reify_eval::deps::DependencyTrace;
+    use reify_runtime::concurrent::{
+        AsyncNodeEvaluator, CancellationToken, ConcurrentScheduler, SchedulerConfig,
+    };
+    use reify_runtime::priority_promotion::SharedPriorityPromoter;
+    use reify_runtime::Priority;
+    use reify_types::ValueCellId;
+    use std::collections::{HashMap, HashSet};
+    use std::sync::{Arc, Mutex};
+
+    // TrackingAsyncEvaluator: records NodeId on each evaluate call
+    struct TrackingAsyncEvaluator {
+        eval_order: Arc<Mutex<Vec<NodeId>>>,
+    }
+    impl AsyncNodeEvaluator for TrackingAsyncEvaluator {
+        async fn evaluate(&self, node: NodeId) -> EvalOutcome {
+            self.eval_order.lock().unwrap().push(node);
+            EvalOutcome::Changed
+        }
+    }
+
+    let e = "PRI";
+    // Use names whose hash order differs from priority order.
+    // "zz_high" (P0) should be evaluated first despite hashing differently than "aa_low" (P3).
+    let node_p0 = NodeId::Value(ValueCellId::new(e, "zz_high"));
+    let node_p1slow = NodeId::Value(ValueCellId::new(e, "mm_mid"));
+    let node_p3 = NodeId::Value(ValueCellId::new(e, "aa_low"));
+
+    // All at same level (no inter-dependencies, empty traces → dirty by default)
+    let mut traces = HashMap::new();
+    traces.insert(node_p0.clone(), DependencyTrace::default());
+    traces.insert(node_p1slow.clone(), DependencyTrace::default());
+    traces.insert(node_p3.clone(), DependencyTrace::default());
+
+    let eval_order = Arc::new(Mutex::new(Vec::new()));
+    let evaluator = Arc::new(TrackingAsyncEvaluator {
+        eval_order: Arc::clone(&eval_order),
+    });
+
+    // Set up priorities
+    let mut node_priorities = HashMap::new();
+    node_priorities.insert(node_p0.clone(), Priority::P0Interactive);
+    node_priorities.insert(node_p1slow.clone(), Priority::P1Slow);
+    node_priorities.insert(node_p3.clone(), Priority::P3Speculative);
+
+    let promoter = Arc::new(SharedPriorityPromoter::new());
+
+    let config = SchedulerConfig {
+        priority_promoter: Some(Arc::clone(&promoter)),
+        node_priorities,
+        ..SchedulerConfig::default()
+    };
+
+    let cancel = CancellationToken::new();
+    let scheduler = ConcurrentScheduler;
+    // Reverse order in eval_set to ensure sorting actually reorders
+    let eval_set = vec![node_p3.clone(), node_p1slow.clone(), node_p0.clone()];
+
+    let result = scheduler
+        .execute_with_config(eval_set, evaluator, &traces, &cancel, &HashSet::new(), config)
+        .await
+        .unwrap();
+
+    assert_eq!(result.changed.len(), 3);
+
+    // With priority sorting, spawn order should be: P0, P1Slow, P3
+    let order = eval_order.lock().unwrap();
+    assert_eq!(order.len(), 3);
+    assert_eq!(order[0], node_p0, "P0Interactive should be evaluated first");
+    assert_eq!(order[1], node_p1slow, "P1Slow should be evaluated second");
+    assert_eq!(order[2], node_p3, "P3Speculative should be evaluated last");
+}
