@@ -2612,7 +2612,7 @@
         "id": "160",
         "title": "auto(free): solver integration",
         "description": "When resolving `auto(free)` params, skip uniqueness check in the solver. Emit a Warning diagnostic: 'Parameter `x` resolved via auto(free) -- result is not uniquely determined.' For strict auto: add uniqueness verification (perturb solution and verify no equally-optimal alternative exists). If non-unique, strict auto fails with diagnostic.",
-        "details": "",
+        "details": "<info added on 2026-03-27T13:31:39.753Z>\nSCOPE GAP: The prior implementation only covered verify_uniqueness (requirement 1 of 4). The task was reset to pending. Full implementation must cover all four requirements: (1) skip uniqueness check in solver for auto(free), (2) emit Warning diagnostic for auto(free) resolution, (3) add uniqueness verification for strict auto via perturbation, (4) strict auto fails with diagnostic if non-unique. Additionally, adding unique:bool to SolveResult::Solved requires updating approximately 60 pattern-match sites across the codebase.\n</info added on 2026-03-27T13:31:39.753Z>",
         "testStrategy": "Eval tests: auto(free) resolves when strict fails, strict fails on non-unique, warning emitted.",
         "priority": "high",
         "dependencies": [
@@ -2630,9 +2630,16 @@
           "milestone": "M8",
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "memory_hints": {
-            "entities": [],
+            "entities": [
+              "SolveResult",
+              "ValueCellKind",
+              "auto(free)",
+              "verify_uniqueness"
+            ],
             "queries": [
-              "resolution for: auto(free): solver integration"
+              "auto(free) solver integration worktree reset scope gap",
+              "SolveResult Solved unique bool pattern match sites",
+              "task 160 prior implementation verify_uniqueness only 1 of 4 requirements"
             ]
           }
         },
@@ -3563,7 +3570,7 @@
           }
         },
         "subtasks": [],
-        "updatedAt": "2026-03-27T11:30:16.448Z"
+        "updatedAt": "2026-03-27T23:31:53.529Z"
       },
       {
         "id": "203",
@@ -3698,7 +3705,7 @@
           }
         },
         "subtasks": [],
-        "updatedAt": "2026-03-27T11:07:16.834Z"
+        "updatedAt": "2026-03-27T23:31:53.296Z"
       },
       {
         "id": "209",
@@ -3717,7 +3724,20 @@
             "crates/reify-eval"
           ],
           "milestone": "M9",
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "memory_hints": {
+            "entities": [
+              "UnitRegistry",
+              "unit declarations",
+              "DimensionVector",
+              "CompiledUnit"
+            ],
+            "queries": [
+              "unit declarations registry compiler pre-pass conversion factor",
+              "task 208 unit registry branch status",
+              "custom unit declaration user-defined cross-module import"
+            ]
+          }
         },
         "subtasks": [],
         "updatedAt": "2026-03-24T06:01:46.000Z"
@@ -5241,7 +5261,7 @@
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         },
         "subtasks": [],
-        "updatedAt": "2026-03-27T11:07:16.984Z"
+        "updatedAt": "2026-03-27T23:31:53.416Z"
       },
       {
         "id": "282",
@@ -7161,13 +7181,13 @@
         "id": "369",
         "title": "Pragma: silent parse failures + error reporting + tests + PartialEq",
         "description": "All pragma-lowering methods take &self not &mut self; failures return None silently with no diagnostic. Change to &mut self and push ParseError on failure. Fix f64 parse failure silently dropping entire pragma arg (ts_parser.rs:757-759). Fix malformed string literal falling back to raw text including quote char (ts_parser.rs:762-768). Add PartialEq to Pragma and PragmaArg (enables duplicate-pragma checking).\n\nMissing tests:\n- Bare(Number), Bare(String), Bare(Bool) pragma arg variants\n- Multiple pragmas in a single block\n- Pragma placed after other members (interleaved ordering)\n\nMemory hints: search \"lower_pragma ParseError pragma arg parse\", entities: lower_pragma, PragmaValue, PragmaArg",
-        "details": "",
+        "details": "<info added on 2026-03-27T14:08:51.686Z>\nRECONCILIATION NOTE: This task has bounced between pending and in-progress 11+ times. Root cause identified: worktree corruption — the task-216 plan was loaded into the task-369 worktree in a prior session, causing the agent to work on the wrong task. Each subsequent orchestrator attempt picks it up, discovers the mismatch, and resets it. The worktree needs to be cleaned/recreated before this task can make progress.\n</info added on 2026-03-27T14:08:51.686Z>\n<info added on 2026-03-27T14:21:27.249Z>\nBLOCKED: Worktree corruption prevents progress. The task-216 plan was loaded into the task-369 worktree in a prior session, causing agents to work on the wrong task. Each orchestrator attempt picks it up, discovers the mismatch, and resets (11+ bounces). Human action needed: delete/recreate the worktree for task 369, then set status back to pending.\n</info added on 2026-03-27T14:21:27.249Z>",
         "testStrategy": "",
-        "status": "pending",
+        "status": "blocked",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-27T11:16:50.540Z",
+        "updatedAt": "2026-03-27T14:21:05.746Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -7181,7 +7201,13 @@
             "crates/reify-test-support",
             "tree-sitter-reify/grammar.js",
             "tree-sitter-reify/src"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Pragma: silent parse failures + error reporting + tests + PartialEq"
+            ]
+          }
         }
       },
       {
@@ -8147,7 +8173,19 @@
         "subtasks": [],
         "updatedAt": "2026-03-26T07:29:32.389Z",
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "memory_hints": {
+            "entities": [
+              "UnitRegistry",
+              "CompilationScope",
+              "unit_registry_ptr"
+            ],
+            "queries": [
+              "unsafe raw UnitRegistry pointer CompilationScope lifetime",
+              "task 208 unit registry branch status",
+              "reference threading compile_expr_guarded"
+            ]
+          }
         }
       },
       {
@@ -8403,11 +8441,11 @@
         "description": "In crates/reify-test-support/src/values.rs: (1) Guard assert_value_approx_impl against NaN inputs. (2) Add #[should_panic] tests for dimension-mismatch, component-count-mismatch, and type-variant-mismatch panic paths. In crates/reify-test-support/src/mocks.rs: (3) Add debug_assert guarding MomentOfInertia QueryKey against NaN axis values. (Review followup from task 351)",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-27T12:01:24.002Z",
+        "updatedAt": "2026-03-27T12:16:55.645Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -8431,11 +8469,11 @@
         "description": "In crates/reify-test-support/src/mocks.rs: (1) Fix SequencedMockConstraintSolver::solve — release results lock before acquiring last lock. (2) Make Distance QueryKey order-independent by normalizing (from, to) to (min, max). (Review followup from task 351)",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-26T18:12:27.006Z",
+        "updatedAt": "2026-03-27T23:54:29.771Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -8583,7 +8621,7 @@
         "id": "437",
         "title": "LSP: recurse into GuardedGroup members in find_parsed_member_span",
         "description": "Make find_parsed_member_span in analysis.rs recurse into GuardedGroupDecl.members and else_members so params/lets inside where-guarded blocks are visible to hover and goto-def. Also affects goto_def.rs which has the same flat traversal. (Review followup from task 216)",
-        "details": "",
+        "details": "<info added on 2026-03-27T14:46:16.277Z>\nRECONCILIATION NOTE (2026-03-27): Memory records this task was unblocked and merged to main, with the member_names() fix folded into the merge commit. However, status was reverted from done→in-progress→pending via buffered events around 12:01-12:07 UTC. Current status (pending) may be stale if the code is actually merged. Human should verify: (1) check git log for the merge commit, (2) if merged, set status to done; if not, leave as pending.\n</info added on 2026-03-27T14:46:16.277Z>",
         "testStrategy": "",
         "status": "pending",
         "dependencies": [],
@@ -9219,7 +9257,7 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-27T11:12:21.738Z",
+        "updatedAt": "2026-03-27T23:36:38.600Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -9577,7 +9615,8 @@
           "modules": [
             "crates/reify-lsp/src"
           ]
-        }
+        },
+        "updatedAt": "2026-03-27T23:31:52.689Z"
       },
       {
         "id": "483",
@@ -9785,11 +9824,11 @@
         "description": "edit_param has two sequential guard re-elaboration blocks with the solver running between them. The second block can overwrite solver-resolved auto param values.\n\n**What's wrong:**\n- Block A (lib.rs:1562-1646): re-evaluates guard expressions when structure_controlling cells are dirty\n- Solver (lib.rs:1655-1797): resolves auto params and writes values\n- Block B (lib.rs:1799-1881): re-evaluates guard members when guard values changed — overwrites solver values with Undef for members whose guard is now false\n\nIf an auto param lives in a guarded group whose guard transitions to false, Block B sets it to Undef AFTER the solver resolved it. The solver's work is lost.\n\n**Fix:** Merge the two guard re-elaboration blocks into one that runs BEFORE the solver, or ensure Block B does not overwrite auto param values that were set by the solver. The simplest fix: in Block B, skip cells with kind == ValueCellKind::Auto when deactivating guarded members (they should remain at their solver-resolved value or be explicitly invalidated through the dirty cone).\n\n**Memory hints:** search for \"guard re-elaboration\", \"edit_param resolution\", entity names: edit_param, structure_controlling, guard_changed",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-03-27T11:54:23.557Z",
+        "updatedAt": "2026-03-27T23:31:52.722Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -10477,7 +10516,7 @@
         "description": "Review findings from task 476 (Claude IPC bridge) — test coverage gaps and quality improvements:\n\n1. **App cleanup test gap** (App.test.tsx): Cleanup/unmount test doesn't verify `claudeEventUnsub` is called. Add `priorClaudeUnsub = vi.fn()`, mock `subscribeToClaudeEvents` to return it, assert it's called after unmount.\n\n2. **Missing error-path App test**: No test for `subscribeToClaudeEvents` rejection showing 'Claude assistant unavailable' toast. Add test following the pattern of other subscription-failure toasts.\n\n3. **capturedHandler assertion** (claudeBridge.test.ts:147+): All 7 payload-mapping tests use `capturedHandler!` without `expect(capturedHandler).toBeDefined()` first. Add the assertion to convert cryptic TypeError into clear failure.\n\n4. **Test boilerplate** (claudeBridge.test.ts:136-278): capturedHandler pattern repeated 7 times. Refactor to `test.each` over event name / payload / expected-message tuples, or extract a helper.\n\n5. **Missing invoke rejection tests**: No tests verifying `claudeSendMessage`/`claudeAbort`/`claudeClearSession` propagate rejections from `invoke`.\n\n6. **rAF flush path untested** (claudeIntegration.test.ts): rAF-batching flush path is never exercised — done always flushes synchronously. Add test firing text-delta without done, then manually flush rAF queue.\n\n7. **Restore globals** (claudeIntegration.test.ts:6-13): `requestAnimationFrame`/`cancelAnimationFrame` replaced but never restored. Add `afterAll` to restore originals.\n\nModules: gui/src/__tests__/claudeBridge.test.ts, gui/src/__tests__/claudeIntegration.test.ts, gui/src/__tests__/App.test.tsx\n\nMemory hints: search \"claudeBridge test capturedHandler subscribeToClaudeEvents\", entities: claudeBridge.test.ts, claudeIntegration.test.ts",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "cancelled",
         "dependencies": [
           "476"
         ],
@@ -10493,7 +10532,8 @@
           "modules": [
             "gui/src/__tests__"
           ]
-        }
+        },
+        "updatedAt": "2026-03-27T12:15:03.811Z"
       },
       {
         "id": "524",
@@ -10501,13 +10541,13 @@
         "description": "In gui/src/bridge.ts, subscribeToClaudeEvents() uses a spread-cast pattern for all 7 claude-* event types (claude-text-delta, claude-thinking-delta, claude-tool-call, claude-tool-result, claude-done, claude-error, claude-ready). Each listen() handler casts the Tauri event payload directly to an OutboundMessage shape without validation. If a payload's shape diverges from OutboundMessage (e.g. during sidecar protocol evolution or version mismatch), errors will be silent and the store will receive malformed messages.\\n\\nFix: Add discriminated type-guards (or Zod schema validation) for each event type in the listen() handlers. Each guard should validate the required fields for that event variant before calling the handler — on validation failure, log a warning and skip the message.\\n\\nSource: Stage 1 review of task 476 merge.",
         "details": "<info added on 2026-03-27T09:02:57.775Z>\nNOTE: This task is a subset of task 522 (Harden Claude bridge payload mapping and type safety), which covers the same spread-cast/type-guard issue plus two other bridge improvements. If task 522 completes successfully, this task should be cancelled as a duplicate. Do not start this task independently — check task 522 status first.\n</info added on 2026-03-27T09:02:57.775Z>",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "cancelled",
         "dependencies": [
           "476"
         ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-27T11:07:18.226Z",
+        "updatedAt": "2026-03-27T12:15:03.917Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -10524,13 +10564,13 @@
         "description": "In gui/src/bridge.ts, the ClaudeMessageContext type defines only 3 fields (selectedEntity, diagnostics, constraints). The store's MessageContext type has 5 fields (selectedEntity, diagnostics, constraints, currentFile, attachedContexts). The two extra fields (currentFile, attachedContexts) are silently dropped when the bridge constructs the Tauri invoke payload, so the Claude sidecar never receives file context or attached contexts from the GUI.\\n\\nFix:\\n1. Add currentFile (string | undefined) and attachedContexts (string[] | undefined) to ClaudeMessageContext in bridge.ts.\\n2. Update claudeSendMessage() to pass these fields through, with appropriate snake_case mapping for the Rust backend (current_file, attached_contexts).\\n3. Update the Rust ClaudeContext struct in claude_bridge.rs to accept current_file and attached_contexts fields.\\n4. Update bridge tests to cover the new fields.\\n\\nSource: Stage 1 review of task 476 merge.\\n\\nmemory_hints: search \\\"ClaudeMessageContext MessageContext field alignment\\\", entities: bridge.ts, claudeSendMessage, ClaudeContext",
         "details": "<info added on 2026-03-27T09:03:00.264Z>\nNOTE: This task is a subset of task 522 (Harden Claude bridge payload mapping and type safety), which covers the same ClaudeMessageContext alignment issue plus two other bridge improvements. If task 522 completes successfully, this task should be cancelled as a duplicate. Do not start this task independently — check task 522 status first.\n</info added on 2026-03-27T09:03:00.264Z>",
         "testStrategy": "",
-        "status": "done",
+        "status": "cancelled",
         "dependencies": [
           "476"
         ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-27T12:01:20.467Z",
+        "updatedAt": "2026-03-27T14:46:09.748Z",
         "metadata": {
           "modules": [
             "gui/sidecar",
@@ -10675,11 +10715,11 @@
         "description": "Tree-sitter generated files (src/parser.c at 63K lines, src/grammar.json, src/node-types.json) cause ~9 merge conflicts because they're committed by task branches. Instead:\n\n1. Add tree-sitter-reify/src/parser.c, grammar.json, node-types.json to .gitignore on task branches (or a pre-commit hook that unstages them)\n2. The orchestrator's merge worktree should run `tree-sitter generate` as a post-merge step before verification, regenerating from grammar.js\n3. Ensure CI also regenerates rather than relying on committed artifacts\n\nmemory_hints: search \"tree-sitter grammar generation\", get_entity \"tree-sitter-reify\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-03-27T11:07:17.238Z",
+        "updatedAt": "2026-03-27T23:38:19.188Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -10693,8 +10733,11 @@
             "hooks/pre-commit"
           ],
           "modules": [
-            "hooks",
-            "tree-sitter-reify"
+            "hooks/pre-commit",
+            "hooks/project-checks",
+            "orchestrator.yaml",
+            "tree-sitter-reify/.gitignore",
+            "tree-sitter-reify/build.rs"
           ]
         }
       },
@@ -10767,11 +10810,11 @@
         "description": "gui/package-lock.json causes merge conflicts when multiple tasks modify GUI dependencies. Instead of committing lockfile changes on task branches:\n\n1. Add gui/package-lock.json to .gitignore (or unstage in pre-commit hook) for task branches\n2. Add a post-merge step in the orchestrator merge worktree: cd gui && npm install (regenerates lockfile from package.json)\n3. Ensure CI regenerates the lockfile rather than relying on committed version\n\nSame pattern as the tree-sitter generated files task.\n\nmemory_hints: search \"package-lock merge conflicts\", search \"gui dependencies\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-03-27T11:07:16.524Z",
+        "updatedAt": "2026-03-27T23:42:15.616Z",
         "metadata": {
           "modules": [
             ".gitignore",
@@ -10978,7 +11021,7 @@
         "description": "Review finding from task 522: bridge.ts (wire/transport layer) now imports from claudeStore.ts (domain/state layer) via `import type { MessageContext }`, inverting the natural layering (sidecar/types → bridge.ts → claudeStore.ts → App.tsx). The original standalone `ClaudeMessageContext` interface was architecturally correct — bridge defines its own wire contract, App.tsx reconciles domain to wire types.\n\n1. Revert `ClaudeMessageContext` in bridge.ts to a standalone interface with the 3 fields (selectedEntity, diagnostics, constraints) — remove the `import type { MessageContext }` from claudeStore.\n2. Fix types.typecheck.ts: the bidirectional assignability assertions (`_fwd`/`_rev`) are now tautological since ClaudeMessageContext IS `Pick<MessageContext, ...>`. After reverting to standalone, the assertions recover their original meaning. Also fix the all-optional type issue: since all 3 fields are optional, `{}` satisfies both types regardless. Use a mapped-type equality assertion or at minimum document the limitation.\n3. The typecheck.ts file already serves as the structural drift guard — add a comment in bridge.ts pointing to it.\n\nMemory hints: search \"ClaudeMessageContext bridge.ts standalone interface layering\", entities: ClaudeMessageContext, bridge.ts, claudeStore.ts",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [
           "522"
         ],
@@ -10995,9 +11038,15 @@
             "gui/src",
             "gui/src/stores",
             "gui/src/__tests__"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Revert bridge.ts→claudeStore import, restore standalone ClaudeMessageContext"
+            ]
+          }
         },
-        "updatedAt": "2026-03-27T11:49:20.808Z"
+        "updatedAt": "2026-03-27T23:49:15.057Z"
       },
       {
         "id": "547",
@@ -11090,11 +11139,11 @@
         "description": "Three test quality fixes in reify-cli tests.",
         "details": "1. Replace 9 instances of assert_ne!(response[\"result\"][\"isError\"], true) with assert_eq!(..., Value::Bool(false)) in mcp_integration.rs — catches malformed responses where isError is absent.\n2. Change mcp_server_tools_list_returns_16_tools to assert minimum count and/or check specific tool names instead of exact count. Update test name.\n3. Rename gui_with_valid_ri_file_attempts_launch to gui_with_valid_ri_file_skips_launch_when_env_set in cli_gui.rs.\n\nFiles: crates/reify-cli/tests/mcp_integration.rs, crates/reify-cli/tests/cli_gui.rs",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-27T11:12:21.838Z",
+        "updatedAt": "2026-03-27T23:46:07.150Z",
         "metadata": {
           "modules": [
             "crates/reify-cli"
@@ -11109,7 +11158,9 @@
         "details": "1. Remove physical_own_params_are_real — lines 131-157 are identical to the param-checking block at lines 178-215.\n2. Unify all_stdlib_modules_have_zero_error_diagnostics with all_stdlib_modules_have_no_errors in stdlib_loader_tests.rs — both iterate load_stdlib() and assert no Error diagnostics.\n3. Fix the !module.trait_defs.is_empty() assertion — future stdlib modules may have only functions/enums.\n\nFiles: crates/reify-compiler/tests/structural_physical_tests.rs, crates/reify-compiler/tests/stdlib_loader_tests.rs",
         "testStrategy": "",
         "status": "pending",
-        "dependencies": [],
+        "dependencies": [
+          "329"
+        ],
         "priority": "medium",
         "subtasks": [],
         "updatedAt": "2026-03-27T09:16:31.923Z",
@@ -11245,7 +11296,7 @@
         "description": "Test module names and comments are stale after C4 reversal from panic-on-poison to graceful recovery.",
         "details": "1. Rename mod poison_panics to mod poison_recovery_extended (or similar) — it no longer tests panics.\n2. Update 'legacy module, kept for backward compat' comment on mod poison_recovery to accurately describe its role.\n3. Add comment documenting why C4 (panic-on-poison) was reversed in favor of graceful recovery.\n\nFiles: crates/reify-runtime/tests/concurrent_eval.rs",
         "testStrategy": "",
-        "status": "pending",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -11257,7 +11308,8 @@
           "modules": [
             "crates/reify-runtime/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-03-27T12:15:03.696Z"
       },
       {
         "id": "560",
@@ -11265,7 +11317,7 @@
         "description": "12 inline occurrences of .unwrap_or_else(|e| e.into_inner()) pattern. Extract into private helper methods matching CliToolContext::lock_state() precedent.",
         "details": "Add private helper methods (read_values(), write_values(), read_snapshot_values(), write_snapshot_values(), lock_results()) that encapsulate the .unwrap_or_else(|e| e.into_inner()) pattern. Replace all 12 inline occurrences.\n\nFiles: crates/reify-runtime/src/concurrent_eval.rs",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -11278,7 +11330,7 @@
             "crates/reify-runtime/src"
           ]
         },
-        "updatedAt": "2026-03-27T12:03:28.227Z"
+        "updatedAt": "2026-03-27T12:15:04.238Z"
       },
       {
         "id": "561",
@@ -11286,7 +11338,7 @@
         "description": "Multiple test quality issues: redundant tests, incomplete assertions, unreachable code path tested.",
         "details": "1. Merge evaluate_recovers_poisoned_values_read and _write into single test (same RwLock poisoned).\n2. Add data-verification assertions to evaluate_recovers_poisoned_snapshot_values (check snapshot_values written) and evaluate_recovers_poisoned_results (check take_results() has entry).\n3. Add node_results.is_empty() assertions to build_result_shared and into_result poison recovery tests.\n4. Fix test design flaw in evaluate_recovers_poisoned_values_write where post-evaluate values() call tests trivially-unpoisoned lock.\n\nFiles: crates/reify-runtime/tests/concurrent_eval.rs",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -11298,7 +11350,8 @@
           "modules": [
             "crates/reify-runtime/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-03-27T23:38:19.432Z"
       },
       {
         "id": "562",
@@ -11344,7 +11397,7 @@
             ]
           }
         },
-        "updatedAt": "2026-03-27T12:04:05.630Z"
+        "updatedAt": "2026-03-27T23:31:54.565Z"
       },
       {
         "id": "564",
@@ -11352,7 +11405,7 @@
         "description": "Three test improvements for the tree-sitter pipeline infra tests.",
         "details": "1. Add test that deletes parser.c and runs cargo check WITHOUT calling tree-sitter-generate.sh first — validates build.rs auto-generation path (the key new feature).\n2. Fix assert helper to show command output on failure instead of redirecting to /dev/null.\n3. Add negative tests: temporarily rename grammar.js and assert tree-sitter-generate.sh exits non-zero.\n\nFiles: tests/infra/test_tree_sitter_pipeline.sh",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -11366,7 +11419,7 @@
             "tree-sitter-reify"
           ]
         },
-        "updatedAt": "2026-03-27T12:06:38.026Z"
+        "updatedAt": "2026-03-27T23:31:52.898Z"
       },
       {
         "id": "565",
@@ -11768,9 +11821,15 @@
           "modules": [
             "crates/reify-constraints/src",
             "crates/reify-constraints/tests"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Solver: warm-start convergence robustness improvements"
+            ]
+          }
         },
-        "updatedAt": "2026-03-27T12:04:05.793Z"
+        "updatedAt": "2026-03-27T23:46:09.439Z"
       },
       {
         "id": "584",
@@ -11782,11 +11841,12 @@
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-03-27T11:54:23.203Z",
+        "updatedAt": "2026-03-27T23:31:53.777Z",
         "metadata": {
           "modules": [
             "crates/reify-lsp"
-          ]
+          ],
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         }
       },
       {
@@ -11798,7 +11858,18 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-lsp/src/analysis.rs",
+            "crates/reify-lsp/src/hover.rs",
+            "crates/reify-lsp/src/completion.rs"
+          ],
+          "modules": [
+            "crates/reify-lsp/src"
+          ]
+        }
       },
       {
         "id": "586",
@@ -11809,7 +11880,16 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-lsp/src/analysis.rs"
+          ],
+          "modules": [
+            "crates/reify-lsp/src"
+          ]
+        }
       },
       {
         "id": "587",
@@ -11820,12 +11900,46 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-lsp/src/analysis.rs",
+            "crates/reify-lsp/src/goto_def.rs",
+            "crates/reify-lsp/src/hover.rs"
+          ],
+          "modules": [
+            "crates/reify-lsp/src"
+          ]
+        }
       },
       {
         "id": "588",
         "title": "SolveResult API: distinguish fallback-to-initial from genuinely optimized Solved",
         "description": "SolveResult::Solved now has dual semantics: (1) optimizer converged with genuine objective improvement, or (2) optimizer drifted infeasible and solver fell back to initial feasible point with no objective progress. Callers cannot distinguish these at runtime.\n\nOptions:\n- (a) Add `SolvedWithWarning { values, reason }` variant that callers treat like Solved but also emit a warning\n- (b) Add `objective_optimized: bool` field to Solved\n- (c) Extend NoProgress to carry optional fallback values\n\nOption (a) or (b) preferred — keeps the change additive. Update the NOTE comment at solver.rs:639-643 to reflect the actual structural limitation (NoProgress carries no values) rather than claiming it's purely about API stability.\n\nMemory hints: search \"SolveResult warm-start fallback\", entity SolveResult, entity DimensionalSolver",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          "531"
+        ],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-03-27T12:12:42.786Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-constraints",
+            "crates/reify-eval",
+            "crates/reify-test-support",
+            "crates/reify-types"
+          ],
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+        }
+      },
+      {
+        "id": "589",
+        "title": "Solver fallback path: defer allocation, extract helper, validate objective",
+        "description": "Three related improvements to the warm-start fallback path in solver.rs:\n\n1. **Defer fallback HashMap** (perf): `initial_fallback_values` HashMap is built eagerly on every warm-start solve but only consumed on the error path. Since `initial: Vec<f64>` stays in scope, defer construction into the `if final_max_residual > FEASIBILITY_THRESHOLD` block. Zero cost on success path.\n\n2. **Extract params_to_value_map helper** (DRY): The fallback block (lines 513-532) duplicates the zip-and-collect from `build_trial_values` (lines 51-67). Extract `fn params_to_value_map(params: &[AutoParam], x: &[f64]) -> HashMap<ValueCellId, Value>` and call from both.\n\n3. **Validate objective on fallback** (correctness): The fallback path (line 602-603) bypasses post-solve objective validation at lines 619-625. If the initial point produces undefined objective (div-by-zero, missing value), fallback silently promotes to Solved. Add the same objective check before returning fallback.\n\nMemory hints: search \"solver fallback warm-start\", entity DimensionalSolver, entity build_trial_values",
         "details": "",
         "testStrategy": "",
         "status": "in-progress",
@@ -11834,20 +11948,16 @@
         ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-27T12:07:02.558Z"
-      },
-      {
-        "id": "589",
-        "title": "Solver fallback path: defer allocation, extract helper, validate objective",
-        "description": "Three related improvements to the warm-start fallback path in solver.rs:\n\n1. **Defer fallback HashMap** (perf): `initial_fallback_values` HashMap is built eagerly on every warm-start solve but only consumed on the error path. Since `initial: Vec<f64>` stays in scope, defer construction into the `if final_max_residual > FEASIBILITY_THRESHOLD` block. Zero cost on success path.\n\n2. **Extract params_to_value_map helper** (DRY): The fallback block (lines 513-532) duplicates the zip-and-collect from `build_trial_values` (lines 51-67). Extract `fn params_to_value_map(params: &[AutoParam], x: &[f64]) -> HashMap<ValueCellId, Value>` and call from both.\n\n3. **Validate objective on fallback** (correctness): The fallback path (line 602-603) bypasses post-solve objective validation at lines 619-625. If the initial point produces undefined objective (div-by-zero, missing value), fallback silently promotes to Solved. Add the same objective check before returning fallback.\n\nMemory hints: search \"solver fallback warm-start\", entity DimensionalSolver, entity build_trial_values",
-        "details": "",
-        "testStrategy": "",
-        "status": "pending",
-        "dependencies": [
-          "531"
-        ],
-        "priority": "medium",
-        "subtasks": []
+        "updatedAt": "2026-03-27T23:46:44.991Z",
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-constraints/src/solver.rs"
+          ],
+          "modules": [
+            "crates/reify-constraints/src"
+          ]
+        }
       },
       {
         "id": "590",
@@ -11860,7 +11970,16 @@
           "531"
         ],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-constraints/tests/solver_integration.rs"
+          ],
+          "modules": [
+            "crates/reify-constraints/tests"
+          ]
+        }
       },
       {
         "id": "591",
@@ -11871,7 +11990,22 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "gui/src-tauri/src/mcp_context.rs",
+            "gui/src-tauri/src/claude_bridge.rs",
+            "gui/src-tauri/src/main.rs",
+            "gui/src-tauri/src/tests/mcp_context_tests.rs",
+            "gui/src-tauri/src/tests/mcp_dispatch_tests.rs",
+            "gui/src-tauri/src/tests/claude_bridge_tests.rs"
+          ],
+          "modules": [
+            "gui/src-tauri/src",
+            "gui/src-tauri/src/tests"
+          ]
+        }
       },
       {
         "id": "592",
@@ -11879,10 +12013,22 @@
         "description": "## Problem\n\nThe selectionStore.ts createEffect has comments stating \"selection (click) updates are sent immediately since they are infrequent\" and \"send immediately if only selection changed\", but the implementation unconditionally routes ALL changes through a 100ms setTimeout — there is no fast path for selection-only changes.\n\nThis creates a race window: if an MCP get_selection call arrives within the 100ms debounce after a user click, it reads stale selection state. The documented design intent was never implemented.\n\n## What \"done\" looks like\n\nEither:\n(a) Implement immediate dispatch for selection changes: track previous selectedEntity, call invoke synchronously when only selectedEntity changed, debounce only hover-only changes at 100ms\nOR\n(b) Accept 100ms is fine for all updates and fix the misleading comments to document actual behavior\n\nDecision: prefer (a) since the original design intent was deliberate — Claude may call get_selection within the same interaction after a user click.\n\n## Files to modify\n- gui/src/stores/selectionStore.ts — implement immediate selection dispatch or fix comments\n- gui/src/__tests__/selectionStore.test.ts — add test verifying the chosen behavior\n\n### memory_hints\n- search: \"selectionStore debounce selection immediate\"\n- search: \"MCP get_selection latency\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-03-27T23:31:55.055Z",
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "gui/src/stores/selectionStore.ts",
+            "gui/src/__tests__/selectionStore.test.ts"
+          ],
+          "modules": [
+            "gui/src/stores",
+            "gui/src/__tests__"
+          ]
+        }
       },
       {
         "id": "593",
@@ -11893,7 +12039,24 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-mcp/src/types.rs",
+            "gui/src-tauri/src/mcp_context.rs",
+            "gui/src-tauri/src/main.rs",
+            "gui/src-tauri/src/commands.rs",
+            "gui/src-tauri/src/tests/mcp_context_tests.rs",
+            "gui/src-tauri/src/tests/mcp_dispatch_tests.rs",
+            "gui/src-tauri/src/tests/claude_bridge_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-mcp/src",
+            "gui/src-tauri/src",
+            "gui/src-tauri/src/tests"
+          ]
+        }
       },
       {
         "id": "594",
@@ -11901,10 +12064,30 @@
         "description": "## Problem\n\nThe selection sync path added in task 478 has several test coverage gaps:\n\n1. **Frontend:** selectionStore.test.ts has 13 tests but none cover the createEffect + invoke('update_selection') behavior. The entire debounce/cleanup path has zero coverage.\n2. **Rust constructor:** `with_event_emitter_and_selection()` is the primary production constructor (used in mcp_tool_call) but is never exercised by any test.\n3. **Claude bridge:** `from_parts_with_mcp_intercepts_reify_tool_calls` passes a selection Arc but never asserts the selection state is threaded into the TauriToolContext — the test would pass even if the parameter were silently ignored.\n4. **Dispatch:** Only tests selected_entity set + hovered_entity null. No test for both fields populated.\n\n## What \"done\" looks like\n\n1. selectionStore.test.ts: mock invoke, verify correct args after state change, verify debounce coalescing, verify cleanup cancels timer\n2. mcp_context_tests.rs: test with_event_emitter_and_selection() — verify selection reads and event emission\n3. claude_bridge_tests.rs: pre-populate selection Arc with `Some(\"Bracket\")`, assert JSON tool_result contains the selection\n4. mcp_dispatch_tests.rs: add test with both fields populated\n5. All existing tests pass\n\n## Files to modify\n- gui/src/__tests__/selectionStore.test.ts — add invoke mock tests\n- gui/src-tauri/src/tests/mcp_context_tests.rs — test with_event_emitter_and_selection\n- gui/src-tauri/src/tests/claude_bridge_tests.rs — assert selection threading\n- gui/src-tauri/src/tests/mcp_dispatch_tests.rs — both-fields test\n\n### memory_hints\n- search: \"selectionStore test invoke mock\"\n- search: \"TauriToolContext test coverage\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "blocked",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "gui/src/__tests__/selectionStore.test.ts",
+            "gui/src-tauri/src/tests/mcp_context_tests.rs",
+            "gui/src-tauri/src/tests/claude_bridge_tests.rs",
+            "gui/src-tauri/src/tests/mcp_dispatch_tests.rs"
+          ],
+          "modules": [
+            "gui/src/__tests__",
+            "gui/src-tauri/src/tests"
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Add test coverage for selection sync path (frontend invoke + Rust constructors + dispatch)"
+            ]
+          }
+        },
+        "updatedAt": "2026-03-27T23:46:43.435Z"
       },
       {
         "id": "595",
@@ -11916,11 +12099,12 @@
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-03-27T12:03:28.088Z",
+        "updatedAt": "2026-03-27T23:31:53.064Z",
         "metadata": {
           "modules": [
             "crates/reify-lsp"
-          ]
+          ],
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         }
       },
       {
@@ -11932,7 +12116,17 @@
         "status": "pending",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-lsp/src/analysis.rs",
+            "crates/reify-lsp/src/goto_def.rs"
+          ],
+          "modules": [
+            "crates/reify-lsp/src"
+          ]
+        }
       },
       {
         "id": "597",
@@ -11944,11 +12138,12 @@
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-03-27T12:04:05.490Z",
+        "updatedAt": "2026-03-27T23:31:53.094Z",
         "metadata": {
           "modules": [
             "crates/reify-lsp"
-          ]
+          ],
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         }
       },
       {
@@ -11966,7 +12161,8 @@
           "modules": [
             "crates/reify-eval",
             "crates/reify-types"
-          ]
+          ],
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         }
       },
       {
@@ -11978,7 +12174,16 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-lsp/src/analysis.rs"
+          ],
+          "modules": [
+            "crates/reify-lsp/src"
+          ]
+        }
       },
       {
         "id": "600",
@@ -11989,7 +12194,16 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-eval/src/lib.rs"
+          ],
+          "modules": [
+            "crates/reify-eval/src"
+          ]
+        }
       },
       {
         "id": "601",
@@ -12000,7 +12214,17 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-lsp/src/analysis.rs",
+            "crates/reify-lsp/src/goto_def.rs"
+          ],
+          "modules": [
+            "crates/reify-lsp/src"
+          ]
+        }
       },
       {
         "id": "602",
@@ -12011,7 +12235,17 @@
         "status": "pending",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-test-support/src/builders/field.rs",
+            "crates/reify-test-support/src/builders/trait_def.rs"
+          ],
+          "modules": [
+            "crates/reify-test-support/src/builders"
+          ]
+        }
       },
       {
         "id": "603",
@@ -12022,7 +12256,17 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-lsp/src/analysis.rs",
+            "crates/reify-lsp/src/goto_def.rs"
+          ],
+          "modules": [
+            "crates/reify-lsp/src"
+          ]
+        }
       },
       {
         "id": "604",
@@ -12033,7 +12277,18 @@
         "status": "pending",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-lsp/src/analysis.rs",
+            "crates/reify-eval/src/lib.rs"
+          ],
+          "modules": [
+            "crates/reify-lsp/src",
+            "crates/reify-eval/src"
+          ]
+        }
       },
       {
         "id": "605",
@@ -12041,10 +12296,22 @@
         "description": "In gui/sidecar/src/session.ts, the `handleSendMessage` method has an inline type annotation for the `context` parameter that duplicates — and diverges from — the `SendMessage.context` type in types.ts. The inline type only includes `selected_entity`, `diagnostics`, `constraints`, missing the `current_file` and `attached_contexts` fields added in task 525. There is also no prompt-building logic for the new fields, so they are silently dropped even though the full stack (bridge.ts → Rust → sidecar types.ts) now transmits them.\n\nFix:\n1. Replace the inline type annotation on handleSendMessage's `context` parameter with `SendMessage['context']` imported from `./types.js`.\n2. Add `contextParts.push(...)` branches for `current_file` and `attached_contexts` in the prompt-building section.\n3. Add tests verifying the new fields appear in the constructed prompt.\n\nSource: Review suggestions 3+7 from task 525 triage.\n\nmemory_hints: search \"handleSendMessage context prompt building\", entities: session.ts, SendMessage, types.ts",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "gui/sidecar/src/session.ts",
+            "gui/sidecar/src/__tests__/session.test.ts"
+          ],
+          "modules": [
+            "gui/sidecar/src",
+            "gui/sidecar/src/__tests__"
+          ]
+        },
+        "updatedAt": "2026-03-27T23:46:09.630Z"
       },
       {
         "id": "606",
@@ -12055,7 +12322,16 @@
         "status": "pending",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "tree-sitter-reify/build.rs"
+          ],
+          "modules": [
+            "tree-sitter-reify"
+          ]
+        }
       },
       {
         "id": "607",
@@ -12063,10 +12339,20 @@
         "description": "scripts/tree-sitter-generate.sh unconditionally runs `tree-sitter generate` with no staleness check and no timeout. build.rs has both (content-hash stamp + 60s timeout), but the shell script — called by orchestrator.yaml verification commands up to 60+ times per run — does neither. Add: (1) hash-based staleness guard matching build.rs contract, (2) `timeout 60 tree-sitter generate` to prevent hung builds.",
         "details": "Files: scripts/tree-sitter-generate.sh. The script is called from orchestrator.yaml pre-test/lint/typecheck commands. Memory hint: search for \"task 563 content hash staleness\" for the build.rs implementation pattern.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "scripts/tree-sitter-generate.sh"
+          ],
+          "modules": [
+            "scripts"
+          ]
+        },
+        "updatedAt": "2026-03-27T23:54:31.597Z"
       },
       {
         "id": "608",
@@ -12077,7 +12363,16 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "tree-sitter-reify/build.rs"
+          ],
+          "modules": [
+            "tree-sitter-reify"
+          ]
+        }
       },
       {
         "id": "609",
@@ -12088,14 +12383,161 @@
         "status": "pending",
         "dependencies": [],
         "priority": "medium",
+        "subtasks": [],
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "tree-sitter-reify/build.rs"
+          ],
+          "modules": [
+            "tree-sitter-reify"
+          ]
+        }
+      },
+      {
+        "id": "610",
+        "title": "Add empty-context edge case test and fix for claudeSendMessage",
+        "description": "claudeSendMessage treats `{}` as truthy, emitting `{ selected_entity: undefined, diagnostics: undefined, constraints: undefined }` to the Rust sidecar instead of `undefined`. This may cause different behavior if the sidecar distinguishes between missing context and all-undefined-fields context.\n\n1. Add a test: `claudeSendMessage('hello', {})` — verify the current behavior\n2. Decide whether `{}` should be treated as no-context (check `Object.values(context).some(v => v !== undefined)`) or left as-is with a documenting test\n3. Update bridge.ts implementation if normalizing empty context to undefined\n\nMemory hints: search \"claudeSendMessage bridge.ts empty context\", entities: ClaudeMessageContext, bridge.ts",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "gui/src/bridge.ts",
+            "gui/src/__tests__/bridge.test.ts"
+          ],
+          "modules": [
+            "gui/src",
+            "gui/src/__tests__"
+          ]
+        }
+      },
+      {
+        "id": "611",
+        "title": "Add exhaustiveness guard for bridge.ts wire field mapping",
+        "description": "The Equals<A,B> compile-time assertion in types.typecheck.ts catches structural drift between ClaudeMessageContext and MessageContext, but the runtime field mapping in claudeSendMessage (bridge.ts:130-134) and the mirror mapping in App.tsx (lines 65-68) manually enumerate field names. If a new field is added to both interfaces, the type assertion passes but the runtime mapping silently drops the new field.\n\nOptions:\n1. Replace explicit field enumeration with a computed mapping (iterate Object.keys + camelToSnake helper)\n2. Add an exhaustiveness helper type that asserts every key of ClaudeMessageContext appears in the mapping literal\n3. At minimum, add prominent comments in both bridge.ts and App.tsx warning that the mapping must be kept in sync\n\nAlso add a comment in App.tsx near the manual mapping (lines 65-68) pointing to types.typecheck.ts so maintainers know to update both places.\n\nMemory hints: search \"ClaudeMessageContext bridge.ts field mapping exhaustiveness\", entities: ClaudeMessageContext, bridge.ts, App.tsx",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "gui/src/bridge.ts",
+            "gui/src/App.tsx",
+            "gui/src/__tests__/types.typecheck.ts"
+          ],
+          "modules": [
+            "gui/src",
+            "gui/src/__tests__"
+          ]
+        }
+      },
+      {
+        "id": "612",
+        "title": "Fix compile_geometry_op None placeholder and GeomRef::Step(0) hardcoding bugs",
+        "description": "Two pre-existing bugs in geometry compilation (crates/reify-compiler/src/lib.rs and crates/reify-eval):\n\n1. **compile_geometry_op None placeholder**: When compile_geometry_op returns None (compilation failure), no placeholder is pushed into step_handles. This causes silent corruption in GeomRef::Step(n) relative indexing — all subsequent step indices are off by one per failed op, leading to wrong geometry references downstream.\n\n2. **compile_geometry_call GeomRef::Step(0) hardcoding**: compile_geometry_call() hardcodes target: GeomRef::Step(0) for all pattern/modify/transform ops. This means all geometry operations target the first step regardless of the intended target geometry.\n\nFix: (1) Push a sentinel/error placeholder into step_handles when compile_geometry_op returns None. (2) Resolve the correct GeomRef target based on the geometry name→step index map.\n\nmemory_hints: search \"compile_geometry_op None placeholder step_handles\", search \"compile_geometry_call GeomRef Step hardcoded\", get_entity \"GeometryKernel\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": [],
+        "metadata": {
+          "source": "reconciliation-stage2",
+          "flag": "FLAG-S2-COMPILE-GEOMETRY-OP-BUG",
+          "related_memories": [
+            "67a018f9-2786-45de-b175-56d447d99982",
+            "818e7314-6409-426f-89c3-275441a9d4cb"
+          ],
+          "modules": [
+            "crates/reify-compiler",
+            "crates/reify-eval"
+          ],
+          "memory_hints": {
+            "entities": [
+              "GeometryKernel",
+              "DispatchPlanner",
+              "compile_geometry_op",
+              "GeomRef",
+              "step_handles"
+            ],
+            "queries": [
+              "compile_geometry_op None placeholder step_handles silent corruption",
+              "compile_geometry_call GeomRef Step(0) hardcoded target",
+              "geometry name to step index map resolution"
+            ]
+          },
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+        }
+      },
+      {
+        "id": "613",
+        "title": "Strengthen solver test assertions and fix budget-exhaustion test",
+        "description": "Three related test quality issues in reify-constraints:\n1. `warm_start_budget_exhaustion_stays_feasible` (solver_integration.rs:914) does not actually exhaust the iteration budget — reduce the budget or increase problem complexity to trigger MaxItersReached.\n2. `termination_reason_extracted_without_panic` (solver.rs:1983) accepts Infeasible for a trivially solvable problem — assert Solved and verify solution satisfies 5mm < x < 50mm.\n3. Use `mm()` helper for `current_values` in `warm_start_feasible_no_objective_early_exit` (solver_integration.rs:1019-1021) instead of inline `Value::Scalar`.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
+      },
+      {
+        "id": "614",
+        "title": "Refactor solver unit tests to use reify-test-support helpers",
+        "description": "The unit tests added in solver.rs (lines 1920-2034) manually construct CompiledExpr, ValueCellId, and ConstraintNodeId instead of using the reify-test-support helpers (vcid, value_ref, gt, lt, literal, mm, cnid) that are already a dev-dependency and used throughout the integration tests. Refactor `feasibility_check_runs_with_objective` and `termination_reason_extracted_without_panic` to use helpers, reducing ~80 lines of boilerplate to ~20.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
+      },
+      {
+        "id": "615",
+        "title": "Add tracing to solver error paths and consolidate redundant logs",
+        "description": "Three observability gaps/issues in solver.rs:\n1. executor.run() error path (line 571-574) returns NoProgress with no tracing — add warn! with the error.\n2. get_best_param()==None path (line 601-604) returns NoProgress with no tracing — add warn!.\n3. Two consecutive debug! logs (lines 582-596) for MaxItersReached have overlapping fields — merge into a single structured log event or differentiate their content.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
+      },
+      {
+        "id": "616",
+        "title": "Extract normalize_distance_pair helper and derive Ord on GeometryHandleId",
+        "description": "DRY fix: The distance-pair normalization logic (`if from.0 <= to.0 { (from, to) } else { (to, from) }`) is duplicated verbatim in QueryKey::from_query() (line ~181) and MockGeometryKernel::with_distance_result() (line ~267) in crates/reify-test-support/src/mocks.rs. If the normalization rule changes, the two sites can drift silently, breaking distance lookups.\n\nFix:\n1. Add `#[derive(PartialOrd, Ord)]` to `GeometryHandleId` in crates/reify-types/src/geometry.rs (currently only has PartialEq, Eq, Hash). This removes the `.0` field access from the mock layer.\n2. Extract a private helper `fn normalize_distance_pair(a: GeometryHandleId, b: GeometryHandleId) -> (GeometryHandleId, GeometryHandleId)` (or a `QueryKey::distance()` constructor) in mocks.rs and call it from both sites.\n\nmemory_hints: search \"GeometryHandleId derive\" and \"distance normalization\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
+      },
+      {
+        "id": "617",
+        "title": "Add missing test coverage for mock solver and kernel (task 430 followup)",
+        "description": "Three test coverage gaps identified in crates/reify-test-support/src/mocks.rs after task 430's deadlock fix and distance normalization:\n\n1. **Empty-vec panic path**: No test for `SequencedMockConstraintSolver::new(vec![])` followed by `solve()`. Add a `#[should_panic(expected = \"no results configured\")]` test.\n\n2. **Negative case for distance queries**: No test that querying an unregistered Distance pair returns an error. Add a test: configure Distance(1,2), query Distance(1,3), assert Err.\n\n3. **Concurrency regression test**: The primary motivation for the refactor was eliminating nested lock acquisition (deadlock risk), but no multi-threaded test exercises this. Add a smoke test using `std::thread::scope` with 2-4 threads calling `solver.solve()` concurrently.\n\nmemory_hints: search \"SequencedMockConstraintSolver\" and \"distance query key\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
         "subtasks": []
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-27T12:07:02.558Z",
-      "taskCount": 609,
-      "completedCount": 278,
+      "lastModified": "2026-03-27T23:54:31.600Z",
+      "taskCount": 617,
+      "completedCount": 281,
       "tags": [
         "master"
       ]

@@ -900,6 +900,159 @@ fn warm_start_scales_iterations_with_dimension() {
     }
 }
 
+/// Budget-exhaustion scenario: 2-param problem with tight constraints
+/// (each param 10mm-12mm window), wide auto param bounds (0-100mm), both
+/// params start feasible at 11mm, minimize(p0+p1) objective. With the
+/// dimension-scaled iteration budget, the solver may exhaust its budget
+/// without fully converging the objective, but the result must still be
+/// Solved with all constraints satisfied.
+///
+/// This tests the convergence-without-full-optimality scenario — the solver
+/// returns Solved even when the optimizer hits MaxItersReached, as long as
+/// the final point satisfies all constraints.
+#[test]
+fn warm_start_budget_exhaustion_stays_feasible() {
+    let solver = DimensionalSolver;
+
+    let p0_id = vcid("Part", "p0");
+    let p1_id = vcid("Part", "p1");
+    let p0_ref = value_ref("Part", "p0");
+    let p1_ref = value_ref("Part", "p1");
+
+    // Tight constraints: each param in [10mm, 12mm] — only 2mm feasible window
+    let constraints = vec![
+        (cnid("Part", 0), gt(p0_ref.clone(), literal(mm(10.0)))),
+        (cnid("Part", 1), lt(p0_ref.clone(), literal(mm(12.0)))),
+        (cnid("Part", 2), gt(p1_ref.clone(), literal(mm(10.0)))),
+        (cnid("Part", 3), lt(p1_ref.clone(), literal(mm(12.0)))),
+    ];
+
+    // Minimize(p0 + p1) — pushes both params toward their lower constraint bound
+    let sum_expr = binop(BinOp::Add, p0_ref, p1_ref);
+    let objective = OptimizationObjective::Minimize(sum_expr);
+
+    // Both params start at 11mm — feasible, centered in constraint window
+    let mut current = ValueMap::new();
+    current.insert(
+        p0_id.clone(),
+        Value::Scalar {
+            si_value: 0.011,
+            dimension: DimensionVector::LENGTH,
+        },
+    );
+    current.insert(
+        p1_id.clone(),
+        Value::Scalar {
+            si_value: 0.011,
+            dimension: DimensionVector::LENGTH,
+        },
+    );
+
+    let problem = ResolutionProblem {
+        auto_params: vec![
+            AutoParam {
+                id: p0_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.0, 0.1)), // Wide bounds [0, 100mm]
+            },
+            AutoParam {
+                id: p1_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.0, 0.1)), // Wide bounds [0, 100mm]
+            },
+        ],
+        constraints,
+        current_values: current,
+        objective: Some(objective),
+        functions: vec![],
+    };
+
+    let result = solver.solve(&problem);
+    match result {
+        SolveResult::Solved { values } => {
+            // Both params must satisfy constraints: 10mm < p < 12mm
+            for pid in [&p0_id, &p1_id] {
+                let si = values.get(pid).unwrap().as_f64().unwrap();
+                assert!(
+                    si > 0.010 && si < 0.012,
+                    "param {:?} should satisfy constraints (10mm < p < 12mm), got {} m",
+                    pid,
+                    si
+                );
+            }
+        }
+        other => panic!(
+            "expected Solved for budget-exhaustion scenario, got {:?}",
+            other
+        ),
+    }
+}
+
+/// When all params start feasible (centered in their constraint windows) with NO
+/// objective, the solver should return Solved immediately via the early-exit path
+/// with values equal to the initial current_values. This validates that the
+/// pure-feasibility early-exit path works correctly and doesn't regress with
+/// tracing instrumentation.
+#[test]
+fn warm_start_feasible_no_objective_early_exit() {
+    let solver = DimensionalSolver;
+
+    let x_id = vcid("Part", "x");
+    let y_id = vcid("Part", "y");
+    let z_id = vcid("Part", "z");
+    let x_ref = value_ref("Part", "x");
+    let y_ref = value_ref("Part", "y");
+    let z_ref = value_ref("Part", "z");
+
+    // Constraints: each param must be between 10mm and 20mm
+    let constraints = vec![
+        (cnid("Part", 0), gt(x_ref.clone(), literal(mm(10.0)))),
+        (cnid("Part", 1), lt(x_ref.clone(), literal(mm(20.0)))),
+        (cnid("Part", 2), gt(y_ref.clone(), literal(mm(10.0)))),
+        (cnid("Part", 3), lt(y_ref.clone(), literal(mm(20.0)))),
+        (cnid("Part", 4), gt(z_ref.clone(), literal(mm(10.0)))),
+        (cnid("Part", 5), lt(z_ref.clone(), literal(mm(20.0)))),
+    ];
+
+    // All params start centered at 15mm — solidly feasible
+    let mut current = ValueMap::new();
+    current.insert(x_id.clone(), Value::Scalar { si_value: 0.015, dimension: DimensionVector::LENGTH });
+    current.insert(y_id.clone(), Value::Scalar { si_value: 0.015, dimension: DimensionVector::LENGTH });
+    current.insert(z_id.clone(), Value::Scalar { si_value: 0.015, dimension: DimensionVector::LENGTH });
+
+    let problem = ResolutionProblem {
+        auto_params: vec![
+            AutoParam { id: x_id.clone(), param_type: Type::length(), bounds: Some((0.001, 0.1)) },
+            AutoParam { id: y_id.clone(), param_type: Type::length(), bounds: Some((0.001, 0.1)) },
+            AutoParam { id: z_id.clone(), param_type: Type::length(), bounds: Some((0.001, 0.1)) },
+        ],
+        constraints,
+        current_values: current,
+        objective: None, // No objective — should trigger early-exit
+        functions: vec![],
+    };
+
+    let result = solver.solve(&problem);
+    match result {
+        SolveResult::Solved { values } => {
+            // Each param should be returned at exactly the initial value (15mm)
+            for (pid, label) in [(&x_id, "x"), (&y_id, "y"), (&z_id, "z")] {
+                let si = values.get(pid).unwrap().as_f64().unwrap();
+                assert!(
+                    (si - 0.015).abs() < 1e-12,
+                    "{} should remain at initial 15mm (0.015 m), got {} m",
+                    label,
+                    si
+                );
+            }
+        }
+        other => panic!(
+            "expected Solved for feasible-no-objective early exit, got {:?}",
+            other
+        ),
+    }
+}
+
 /// When the initial point is INfeasible and the optimizer also fails to find
 /// feasibility, the result must be Infeasible — the feasible fallback must NOT
 /// apply when the initial point was never verified feasible.

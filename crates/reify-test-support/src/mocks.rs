@@ -114,21 +114,29 @@ impl SequencedMockConstraintSolver {
 
 impl ConstraintSolver for SequencedMockConstraintSolver {
     fn solve(&self, _problem: &ResolutionProblem) -> SolveResult {
-        let r = {
+        // Extract the next result (if any) while holding only the results lock.
+        // The results lock is dropped at the end of this block, before we touch `self.last`.
+        let next = {
             let mut results = self.results.lock().unwrap();
             if results.is_empty() {
-                return self
-                    .last
-                    .lock()
-                    .unwrap()
-                    .clone()
-                    .expect("no results configured");
+                None
+            } else {
+                Some(results.remove(0))
             }
-            results.remove(0)
         };
-        // results lock is released before acquiring last lock
-        *self.last.lock().unwrap() = Some(r.clone());
-        r
+        // results lock is released — safe to acquire last lock
+        match next {
+            Some(r) => {
+                *self.last.lock().unwrap() = Some(r.clone());
+                r
+            }
+            None => self
+                .last
+                .lock()
+                .unwrap()
+                .clone()
+                .expect("no results configured"),
+        }
     }
 }
 
@@ -168,14 +176,26 @@ impl QueryKey {
             GeometryQuery::SurfaceArea(id) => QueryKey::SurfaceArea(*id),
             GeometryQuery::Centroid(id) => QueryKey::Centroid(*id),
             GeometryQuery::BoundingBox(id) => QueryKey::BoundingBox(*id),
-            GeometryQuery::Distance { from, to } => QueryKey::Distance {
-                from: *from,
-                to: *to,
-            },
-            GeometryQuery::MomentOfInertia { handle, axis } => QueryKey::MomentOfInertia {
-                handle: *handle,
-                axis_bits: [axis[0].to_bits(), axis[1].to_bits(), axis[2].to_bits()],
-            },
+            GeometryQuery::Distance { from, to } => {
+                // Normalize to (min, max) so Distance(A,B) == Distance(B,A)
+                let (lo, hi) = if from.0 <= to.0 {
+                    (*from, *to)
+                } else {
+                    (*to, *from)
+                };
+                QueryKey::Distance { from: lo, to: hi }
+            }
+            GeometryQuery::MomentOfInertia { handle, axis } => {
+                debug_assert!(
+                    !axis[0].is_nan() && !axis[1].is_nan() && !axis[2].is_nan(),
+                    "MomentOfInertia axis contains NaN: {:?} — NaN bits break HashMap lookup",
+                    axis
+                );
+                QueryKey::MomentOfInertia {
+                    handle: *handle,
+                    axis_bits: [axis[0].to_bits(), axis[1].to_bits(), axis[2].to_bits()],
+                }
+            }
         }
     }
 }
@@ -233,24 +253,43 @@ impl MockGeometryKernel {
     }
 
     /// Configure a Distance query result for a specific pair of handles.
+    ///
+    /// The key is normalized to `(min, max)` order so lookups are symmetric —
+    /// `with_distance_result(A, B, v)` matches both `Distance { from: A, to: B }`
+    /// and `Distance { from: B, to: A }`.
     pub fn with_distance_result(
         mut self,
         from: GeometryHandleId,
         to: GeometryHandleId,
         value: Value,
     ) -> Self {
+        // Normalize to (min, max) so Distance(A,B) == Distance(B,A)
+        let (lo, hi) = if from.0 <= to.0 {
+            (from, to)
+        } else {
+            (to, from)
+        };
         self.typed_queries
-            .insert(QueryKey::Distance { from, to }, value);
+            .insert(QueryKey::Distance { from: lo, to: hi }, value);
         self
     }
 
     /// Configure a MomentOfInertia query result for a specific handle and axis.
+    ///
+    /// # Panics (debug)
+    /// Panics if any axis component is NaN — NaN bits are not equal to themselves,
+    /// which would silently break HashMap lookup.
     pub fn with_inertia_result(
         mut self,
         handle: GeometryHandleId,
         axis: [f64; 3],
         value: Value,
     ) -> Self {
+        debug_assert!(
+            !axis[0].is_nan() && !axis[1].is_nan() && !axis[2].is_nan(),
+            "MomentOfInertia axis contains NaN: {:?} — NaN bits break HashMap lookup",
+            axis
+        );
         self.typed_queries.insert(
             QueryKey::MomentOfInertia {
                 handle,
@@ -1476,6 +1515,141 @@ mod tests {
         // op_count() and last_op() should still work.
         assert_eq!(kernel.op_count(), 1);
         assert!(kernel.last_op().is_some());
+    }
+
+    // --- Distance query key symmetry tests (task 430) ---
+
+    #[test]
+    fn distance_query_key_is_symmetric() {
+        let from = GeometryHandleId(1);
+        let to = GeometryHandleId(2);
+        // Configure with (1, 2) but query with (2, 1)
+        let kernel = MockGeometryKernel::new().with_distance_result(from, to, meters(5.0));
+
+        let result = kernel
+            .query(&GeometryQuery::Distance { from: to, to: from })
+            .unwrap();
+        assert_eq!(result, meters(5.0));
+    }
+
+    #[test]
+    fn distance_same_handle_is_identity() {
+        let id = GeometryHandleId(1);
+        let kernel = MockGeometryKernel::new().with_distance_result(id, id, meters(0.0));
+
+        let result = kernel
+            .query(&GeometryQuery::Distance { from: id, to: id })
+            .unwrap();
+        assert_eq!(result, meters(0.0));
+    }
+
+    #[test]
+    fn distance_result_symmetric_via_reversed_config() {
+        // Configure with higher id first: (3, 1), query with lower id first: (1, 3)
+        let kernel = MockGeometryKernel::new().with_distance_result(
+            GeometryHandleId(3),
+            GeometryHandleId(1),
+            meters(7.0),
+        );
+
+        let result = kernel
+            .query(&GeometryQuery::Distance {
+                from: GeometryHandleId(1),
+                to: GeometryHandleId(3),
+            })
+            .unwrap();
+        assert_eq!(result, meters(7.0));
+    }
+
+    // --- SequencedMockConstraintSolver tests (step-1, task 430) ---
+
+    #[test]
+    fn sequenced_solver_returns_results_in_order() {
+        let mut values1 = HashMap::new();
+        values1.insert(ValueCellId::new("S", "x"), Value::length(0.001));
+        let mut values2 = HashMap::new();
+        values2.insert(ValueCellId::new("S", "x"), Value::length(0.002));
+        let mut values3 = HashMap::new();
+        values3.insert(ValueCellId::new("S", "x"), Value::length(0.003));
+
+        let solver = SequencedMockConstraintSolver::new(vec![
+            SolveResult::Solved {
+                values: values1.clone(),
+            },
+            SolveResult::Solved {
+                values: values2.clone(),
+            },
+            SolveResult::Solved {
+                values: values3.clone(),
+            },
+        ]);
+
+        let problem = ResolutionProblem {
+            auto_params: vec![],
+            constraints: vec![],
+            current_values: ValueMap::new(),
+            objective: None,
+            functions: vec![],
+        };
+
+        // Each call returns the next result in sequence
+        match solver.solve(&problem) {
+            SolveResult::Solved { values } => assert_eq!(values, values1),
+            other => panic!("expected Solved #1, got {:?}", other),
+        }
+        match solver.solve(&problem) {
+            SolveResult::Solved { values } => assert_eq!(values, values2),
+            other => panic!("expected Solved #2, got {:?}", other),
+        }
+        match solver.solve(&problem) {
+            SolveResult::Solved { values } => assert_eq!(values, values3),
+            other => panic!("expected Solved #3, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn sequenced_solver_repeats_last_after_exhaustion() {
+        let mut values1 = HashMap::new();
+        values1.insert(ValueCellId::new("S", "a"), Value::length(0.01));
+        let mut values2 = HashMap::new();
+        values2.insert(ValueCellId::new("S", "b"), Value::length(0.02));
+
+        let solver = SequencedMockConstraintSolver::new(vec![
+            SolveResult::Solved {
+                values: values1.clone(),
+            },
+            SolveResult::Solved {
+                values: values2.clone(),
+            },
+        ]);
+
+        let problem = ResolutionProblem {
+            auto_params: vec![],
+            constraints: vec![],
+            current_values: ValueMap::new(),
+            objective: None,
+            functions: vec![],
+        };
+
+        // Consume both results
+        match solver.solve(&problem) {
+            SolveResult::Solved { values } => assert_eq!(values, values1),
+            other => panic!("expected Solved #1, got {:?}", other),
+        }
+        match solver.solve(&problem) {
+            SolveResult::Solved { values } => assert_eq!(values, values2),
+            other => panic!("expected Solved #2, got {:?}", other),
+        }
+
+        // 3rd and 4th calls should repeat the last result
+        match solver.solve(&problem) {
+            SolveResult::Solved { values } => assert_eq!(values, values2),
+            other => panic!("expected Solved #3 (repeated last), got {:?}", other),
+        }
+        match solver.solve(&problem) {
+            SolveResult::Solved { values } => assert_eq!(values, values2),
+            other => panic!("expected Solved #4 (repeated last), got {:?}", other),
+        }
     }
 
     #[test]

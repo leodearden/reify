@@ -114,17 +114,31 @@ type _NoChatMessage = import('../types').ChatMessage;
 type _NoSessionStatus = import('../types').SessionStatus;
 
 // --- ClaudeMessageContext ↔ MessageContext structural sync guard ---
+//
+// ClaudeMessageContext (in bridge.ts) is a standalone interface that must stay
+// structurally identical to Pick<MessageContext, 'selectedEntity' | 'diagnostics' | 'constraints' | 'currentFile' | 'attachedContexts'>.
+//
+// We use an Equals<A,B> type-level assertion rather than bidirectional assignability
+// because all five fields are optional — `{}` satisfies any all-optional type,
+// so assignability checks would pass even if the field names diverged entirely.
+// The Equals pattern compares exact structural identity and catches renames,
+// additions, and removals at compile time.
 import type { ClaudeMessageContext } from '../bridge';
 import type { MessageContext } from '../stores/claudeStore';
 
 type _ExpectedClaudeContext = Pick<MessageContext, 'selectedEntity' | 'diagnostics' | 'constraints' | 'currentFile' | 'attachedContexts'>;
 
-// Bidirectional assignability: ensures ClaudeMessageContext stays in sync with the Pick
-const _fwd: _ExpectedClaudeContext = {} as ClaudeMessageContext;
-const _rev: ClaudeMessageContext = {} as _ExpectedClaudeContext;
+/** Exact structural equality check — evaluates to `true` only if A and B are identical types. */
+type Equals<A, B> =
+  (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;
 
-void _fwd;
-void _rev;
+/** Constrained generic that causes a compile error when T is not `true`. */
+type AssertTrue<T extends true> = T;
+
+// Compile-time assertion: if ClaudeMessageContext diverges from _ExpectedClaudeContext,
+// Equals<> returns `false` and AssertTrue's constraint `T extends true` fails with
+// "Type 'false' does not satisfy the constraint 'true'".
+type _AssertClaudeContextSync = AssertTrue<Equals<ClaudeMessageContext, _ExpectedClaudeContext>>;
 
 // Suppress unused variable warnings — this file is only for type checking
 void mesh;
