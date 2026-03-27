@@ -11,7 +11,7 @@
   "modules": [
     "gui/src"
   ],
-  "analysis": "Three distinct hardening issues in the Claude IPC bridge layer:\n\n1. **Spread-cast vulnerability (bridge.ts:158-166)**: `subscribeToClaudeEvents` uses `{ type: 'text_delta', ...event.payload } as OutboundMessage` for each event variant. Because JS spread applies properties in source order, a payload containing a `type` field (e.g. from a malformed sidecar message) would silently OVERRIDE the hardcoded discriminant \u2014 `{ type: 'text_delta', ...{type:'EVIL'} }` produces `{type:'EVIL'}`. The `as OutboundMessage` cast hides this from TypeScript. Fix: explicit field extraction per variant so only known fields are forwarded and the discriminant is always hardcoded. This also eliminates the minor per-event object allocation from spread on high-frequency delta events.\n\n2. **ClaudeMessageContext drift risk (bridge.ts:114-118)**: `ClaudeMessageContext` (3 fields) is an independent interface from `MessageContext` (5 fields, in claudeStore.ts). App.tsx's onSend manually picks 3 fields from MessageContext to pass to `claudeSendMessage`, silently dropping `currentFile` and `attachedContexts`. If MessageContext gains fields, the bridge type won't flag the omission. Fix: replace the standalone interface with `Pick<MessageContext, 'selectedEntity' | 'diagnostics' | 'constraints'>` to make the coupling explicit. The sidecar's SendMessage type only accepts these 3 fields, so the narrowing is correct but should be documented via Pick.\n\n3. **Swallowed errors (App.tsx:266-268, 74-76)**: The `subscribeToClaudeEvents` catch block uses `catch (_err)` discarding the error before showing a generic toast. The `claudeAbort` failure handler only calls `console.error` with no user feedback. Fix: log the error with a `[claude]` prefix for both, and show a toast for abort failures.\n\nExisting test coverage: `claudeBridge.test.ts` has 14 tests covering all 7 event types, invoke wrappers, and listener rollback. `App.test.tsx` mocks all bridge functions. `types.typecheck.ts` has compile-time assertions for IPC types. All three files will be extended.",
+  "analysis": "REVISED ANALYSIS (post-review, verified against origin/main):\n\nAll three hardening targets from the original task description were structurally removed from main before this branch could merge. The original analysis was built against APIs from task 476's branch, not origin/main.\n\n**Actual state on origin/main:**\n\n1. **Spread-cast vulnerability (ABSENT)**: bridge.ts contains ONLY CAD engine IPC wrappers (getInitialState, setParameter, onMeshUpdate, etc.). There is no `subscribeToClaudeEvents`, no EventEntry array, and no spread-cast pattern. Claude message handling lives in claudeStore.ts via `handleOutboundMessage(msg: OutboundMessage)` which uses a proper switch/case on `msg.type` \u2014 the discriminant is never spread-overridable.\n\n2. **ClaudeMessageContext drift (ABSENT)**: The `ClaudeMessageContext` type does not exist anywhere on main. The store defines `MessageContext` (5 camelCase fields) and `SendMessage.context` in gui/sidecar/src/types.ts defines 3 snake_case fields. These are structurally incompatible (different naming conventions), so a Pick<> guard is meaningless until the IPC serialization layer maps between them. App.tsx's claudeStore is wired with stub callbacks (`onSend: () => {}, onAbort: () => {}`) \u2014 the actual sidecar IPC integration is deferred to a future task.\n\n3. **Swallowed errors (ABSENT for Claude)**: App.tsx has no `subscribeToClaudeEvents` call and no Claude-related catch blocks. `claudeAbort()` in claudeStore is synchronous (returns void, not Promise) so there is nothing to catch. The one `catch (_err)` at App.tsx:237 is for file change monitoring (onFileChanged), not Claude operations.\n\n**Branch state**: `git diff --name-only origin/main...HEAD` shows only `.task/` metadata files. All code changes from steps 1-9 were lost during rebases (steps 10-11) because the target APIs were removed from main, making the diffs unresolvable.\n\n**Baseline errors in original plan**:\n- 'claudeBridge.test.ts has 14 tests' \u2014 file never existed on main (fabricated baseline)\n- 'App.tsx:266-268 subscribeToClaudeEvents catch' \u2014 these lines are file monitoring code on main\n- 'bridge.ts:158-166 spread-cast' \u2014 bridge.ts has no Claude code on main\n- 'App.test.tsx mocks all bridge functions' \u2014 only CAD engine mocks exist; no Claude mocks\n\n**Conclusion**: Task is a verified no-op against current main. All 3 hardening targets were specific to a Claude bridge integration layer (task 476) that was either never merged or was subsequently refactored into the claudeStore pattern. No code changes are needed.",
   "prerequisites": [
     {
       "id": "pre-1",
@@ -22,6 +22,13 @@
         "gui/src/__tests__/claudeBridge.test.ts",
         "gui/src/__tests__/App.test.tsx"
       ]
+    },
+    {
+      "id": "pre-2",
+      "description": "Verify target API surface exists on origin/main (not just on task branch). Confirm subscribeToClaudeEvents, ClaudeMessageContext, and Claude error catch blocks are exported/present in bridge.ts and App.tsx on origin/main before writing tests against them.",
+      "status": "done",
+      "commit": null,
+      "tests": []
     }
   ],
   "steps": [
@@ -101,6 +108,20 @@
       "description": "Retry merge after second merge_ff_failed. Main advanced again between step-10 rebase and the merge attempt. Fetch origin/main, rebase onto latest origin/main (branch is currently ff-mergeable \u2014 verified 0 commits ahead on main \u2014 but rebase again at merge time to handle any race). Run vitest on claudeBridge.test.ts and App.test.tsx from gui/ directory to confirm 95 tests pass post-rebase. Force-push rebased branch.",
       "status": "done",
       "commit": "2fcbbd41"
+    },
+    {
+      "id": "step-12",
+      "type": "impl",
+      "description": "Verify target API surface on origin/main using `git show origin/main:<path>`. Confirm: (a) bridge.ts exports NO Claude functions \u2014 no subscribeToClaudeEvents, claudeSendMessage, claudeAbort, or ClaudeMessageContext; (b) claudeStore.ts handleOutboundMessage uses switch/case (no spread-cast); (c) claudeStore.ts claudeAbort() is synchronous void; (d) App.tsx claudeStore callbacks are stubs (onSend: () => {}, onAbort: () => {}); (e) claudeBridge.test.ts does not exist on main; (f) App.test.tsx has no Claude-related mocks. This establishes ground truth that ALL 3 hardening targets are absent. Completes pre-2.",
+      "status": "done",
+      "commit": null
+    },
+    {
+      "id": "step-13",
+      "type": "impl",
+      "description": "Close task as verified no-op. All 3 original hardening targets (spread-cast in subscribeToClaudeEvents, ClaudeMessageContext drift, swallowed Claude errors) are absent from origin/main. The Claude integration was restructured: message handling uses claudeStore's switch/case (safe), abort is synchronous (nothing to catch), type narrowing boundary doesn't exist (onSend receives full MessageContext, no bridge-level ClaudeMessageContext). Code from steps 1-9 targeted APIs that only existed on task 476's branch. No files need modification. Reset branch to clean state on origin/main (only .task/ metadata files) and mark task done.",
+      "status": "pending",
+      "commit": null
     }
   ],
   "design_decisions": [
@@ -123,6 +144,14 @@
     {
       "decision": "Use showToast for claudeAbort failures, matching the pattern used for claudeSendMessage failures",
       "rationale": "claudeSendMessage failures use claudeStore.addSystemMessage (chat-visible). Abort failures use showToast (transient notification) because abort failure is a system-level issue, not a conversation event. The user needs to know the abort didn't work but shouldn't see it pollute the chat history."
+    },
+    {
+      "decision": "Task is a verified no-op \u2014 close without code changes",
+      "rationale": "All 3 hardening targets from the task description (spread-cast in subscribeToClaudeEvents, ClaudeMessageContext type drift, swallowed Claude error catch blocks) are absent from origin/main. The Claude bridge layer from task 476 was restructured: (a) handleOutboundMessage in claudeStore uses switch/case, not spread; (b) ClaudeMessageContext type doesn't exist \u2014 MessageContext flows through directly; (c) claudeAbort is synchronous void, onSend/onAbort are stubs. No type assertion between MessageContext (camelCase) and SendMessage.context (snake_case) is feasible since they use different naming conventions \u2014 the mapping happens at the serialization layer which doesn't exist yet. Writing tests against absent APIs wastes effort and creates unmergeable branches."
+    },
+    {
+      "decision": "Baseline verification must check origin/main, not the worktree",
+      "rationale": "The original pre-1 verified the test suite passes in the worktree, but did not verify that the files and APIs being tested exist on origin/main. This caused all 9 steps to build on fabricated assumptions: claudeBridge.test.ts was assumed to exist (it didn't), subscribeToClaudeEvents was assumed to be in bridge.ts (it wasn't). Future tasks must verify `git show origin/main:<path>` for target files before writing tests."
     }
   ],
   "reuse": [
@@ -158,6 +187,6 @@
     }
   ],
   "_session_id": "522-44ce85a2",
-  "_created_at": "2026-03-27T11:38:15.757216+00:00",
+  "_created_at": "2026-03-27T12:08:43.852872+00:00",
   "_schema_version": 1
 }
