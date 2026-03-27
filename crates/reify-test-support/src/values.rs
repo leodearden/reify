@@ -224,6 +224,17 @@ macro_rules! assert_value_approx {
 /// Implementation function for `assert_value_approx!`. Not intended for direct use.
 pub fn assert_value_approx_impl(left: &Value, right: &Value, tol: f64, file: &str, line: u32) {
     fn check(left: &Value, right: &Value, tol: f64, path: &str) -> Result<(), String> {
+        /// Guard: fail immediately if either f64 is NaN (NaN comparisons are always false,
+        /// which would silently pass tolerance checks).
+        fn guard_nan(a: f64, b: f64, path: &str) -> Result<(), String> {
+            if a.is_nan() || b.is_nan() {
+                return Err(format!(
+                    "{path}: NaN detected in comparison: left={a}, right={b}"
+                ));
+            }
+            Ok(())
+        }
+
         match (left, right) {
             (
                 Value::Scalar {
@@ -238,6 +249,7 @@ pub fn assert_value_approx_impl(left: &Value, right: &Value, tol: f64, file: &st
                 if da != db {
                     return Err(format!("{path}: dimension mismatch: {:?} vs {:?}", da, db));
                 }
+                guard_nan(*a, *b, path)?;
                 if (a - b).abs() > tol {
                     return Err(format!(
                         "{path}: values differ: {a} vs {b} (diff={}, tol={tol})",
@@ -247,6 +259,7 @@ pub fn assert_value_approx_impl(left: &Value, right: &Value, tol: f64, file: &st
                 Ok(())
             }
             (Value::Real(a), Value::Real(b)) => {
+                guard_nan(*a, *b, path)?;
                 if (a - b).abs() > tol {
                     return Err(format!(
                         "{path}: values differ: {a} vs {b} (diff={}, tol={tol})",
@@ -285,6 +298,37 @@ pub fn assert_value_approx_impl(left: &Value, right: &Value, tol: f64, file: &st
                 }
                 for (i, (ai, bi)) in a.iter().zip(b.iter()).enumerate() {
                     check(ai, bi, tol, &format!("{path}[{i}]"))?;
+                }
+                Ok(())
+            }
+            (
+                Value::Complex {
+                    re: ra,
+                    im: ia,
+                    dimension: da,
+                },
+                Value::Complex {
+                    re: rb,
+                    im: ib,
+                    dimension: db,
+                },
+            ) => {
+                if da != db {
+                    return Err(format!("{path}: dimension mismatch: {:?} vs {:?}", da, db));
+                }
+                guard_nan(*ra, *rb, &format!("{path}.re"))?;
+                guard_nan(*ia, *ib, &format!("{path}.im"))?;
+                if (ra - rb).abs() > tol {
+                    return Err(format!(
+                        "{path}.re: values differ: {ra} vs {rb} (diff={}, tol={tol})",
+                        (ra - rb).abs()
+                    ));
+                }
+                if (ia - ib).abs() > tol {
+                    return Err(format!(
+                        "{path}.im: values differ: {ia} vs {ib} (diff={}, tol={tol})",
+                        (ia - ib).abs()
+                    ));
                 }
                 Ok(())
             }
@@ -1061,6 +1105,50 @@ mod tests {
         let a = point3(1.0, 2.0, 3.0);
         let b = point3(1.0, 2.0, 4.0);
         assert_value_approx!(a, b, 1e-9);
+    }
+
+    #[test]
+    #[should_panic(expected = "dimension mismatch")]
+    fn assert_value_approx_dimension_mismatch_panics() {
+        let a = meters(1.0);
+        let b = Value::Scalar {
+            si_value: 1.0,
+            dimension: DimensionVector::MASS,
+        };
+        assert_value_approx!(a, b);
+    }
+
+    #[test]
+    #[should_panic(expected = "length mismatch")]
+    fn assert_value_approx_component_count_mismatch_panics() {
+        let a = point3(1.0, 2.0, 3.0);
+        let b = Value::Point(vec![meters(1.0), meters(2.0)]);
+        assert_value_approx!(a, b);
+    }
+
+    #[test]
+    #[should_panic(expected = "values differ")]
+    fn assert_value_approx_type_variant_mismatch_panics() {
+        let a = Value::Int(1);
+        let b = Value::Real(1.0);
+        assert_value_approx!(a, b);
+    }
+
+    #[test]
+    #[should_panic(expected = "NaN detected")]
+    fn assert_value_approx_nan_scalar_panics() {
+        let a = meters(1.0);
+        let b = Value::Scalar {
+            si_value: f64::NAN,
+            dimension: DimensionVector::LENGTH,
+        };
+        assert_value_approx!(a, b);
+    }
+
+    #[test]
+    #[should_panic(expected = "NaN detected")]
+    fn assert_value_approx_nan_real_panics() {
+        assert_value_approx!(Value::Real(f64::NAN), Value::Real(1.0));
     }
 
     #[test]

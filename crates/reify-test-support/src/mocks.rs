@@ -172,10 +172,17 @@ impl QueryKey {
                 from: *from,
                 to: *to,
             },
-            GeometryQuery::MomentOfInertia { handle, axis } => QueryKey::MomentOfInertia {
-                handle: *handle,
-                axis_bits: [axis[0].to_bits(), axis[1].to_bits(), axis[2].to_bits()],
-            },
+            GeometryQuery::MomentOfInertia { handle, axis } => {
+                debug_assert!(
+                    !axis[0].is_nan() && !axis[1].is_nan() && !axis[2].is_nan(),
+                    "MomentOfInertia axis contains NaN: {:?} — NaN bits break HashMap lookup",
+                    axis
+                );
+                QueryKey::MomentOfInertia {
+                    handle: *handle,
+                    axis_bits: [axis[0].to_bits(), axis[1].to_bits(), axis[2].to_bits()],
+                }
+            }
         }
     }
 }
@@ -245,12 +252,21 @@ impl MockGeometryKernel {
     }
 
     /// Configure a MomentOfInertia query result for a specific handle and axis.
+    ///
+    /// # Panics (debug)
+    /// Panics if any axis component is NaN — NaN bits are not equal to themselves,
+    /// which would silently break HashMap lookup.
     pub fn with_inertia_result(
         mut self,
         handle: GeometryHandleId,
         axis: [f64; 3],
         value: Value,
     ) -> Self {
+        debug_assert!(
+            !axis[0].is_nan() && !axis[1].is_nan() && !axis[2].is_nan(),
+            "MomentOfInertia axis contains NaN: {:?} — NaN bits break HashMap lookup",
+            axis
+        );
         self.typed_queries.insert(
             QueryKey::MomentOfInertia {
                 handle,
