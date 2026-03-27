@@ -5360,7 +5360,8 @@
             "crates/reify-eval",
             "examples"
           ],
-          "milestone": "M11"
+          "milestone": "M11",
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         },
         "subtasks": [],
         "updatedAt": "2026-03-24T06:01:46.000Z"
