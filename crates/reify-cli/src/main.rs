@@ -6,6 +6,7 @@ use reify_constraints::SimpleConstraintChecker;
 mod mcp_context;
 use reify_geometry::DispatchPlanner;
 use reify_kernel_occt::OcctKernelHandle;
+use reify_eval::ConstraintCheckEntry;
 use reify_types::{ExportFormat, ModulePath, Satisfaction, Severity};
 
 fn main() -> ExitCode {
@@ -33,6 +34,25 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Report per-constraint status lines to stdout. Returns `true` if all constraints are satisfied.
+fn report_constraints(entries: &[ConstraintCheckEntry]) -> bool {
+    let mut all_satisfied = true;
+    for entry in entries {
+        let status = match entry.satisfaction {
+            Satisfaction::Satisfied => "OK",
+            Satisfaction::Violated => {
+                all_satisfied = false;
+                "VIOLATED"
+            }
+            Satisfaction::Indeterminate => "INDETERMINATE",
+        };
+        let id_str = format!("{}", entry.id);
+        let label = entry.label.as_deref().unwrap_or(&id_str);
+        println!("  {} {}", status, label);
+    }
+    all_satisfied
 }
 
 fn parse_and_compile(path: &str) -> Result<reify_compiler::CompiledModule, ExitCode> {
