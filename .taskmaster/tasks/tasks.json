@@ -11237,6 +11237,17 @@
         ],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 581,
+        "title": "Remove .task/plan.json from git tracking on main",
+        "description": "The file .task/plan.json was leaked onto main by commit 14ae324a (from task-517). It is deleted from the working tree but still tracked in git. The pre-commit hook TS type error blocker that previously prevented this cleanup was fixed in commit 784e3921. Run `git rm --cached .task/plan.json` (and .task/iterations.jsonl if present) and commit to main. Also verify .task/ is in .gitignore to prevent future leaks.\n\nMemory hints: search \".task plan.json tracked on main leaked commit\", entities: .task/plan.json, pre-commit hook",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -11248,7 +11259,8 @@
         "master"
       ],
       "created": "2026-03-27T09:56:59.091Z",
-      "description": "Tasks for master context"
+      "description": "Tasks for master context",
+      "updated": "2026-03-27T09:59:16.803Z"
     }
   }
 }
