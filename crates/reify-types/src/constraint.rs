@@ -132,8 +132,7 @@ mod tests {
         let d2 = d; // Copy
         assert_eq!(d, d2); // PartialEq + Eq
 
-        #[allow(clippy::clone_on_copy)]
-        let d3 = d.clone(); // Clone
+        let d3 = Clone::clone(&d); // Clone
         assert_eq!(d, d3);
 
         // Hash: usable as HashMap key
