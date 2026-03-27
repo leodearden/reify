@@ -900,6 +900,94 @@ fn warm_start_scales_iterations_with_dimension() {
     }
 }
 
+/// Budget-exhaustion scenario: 2-param problem with tight constraints
+/// (each param 10mm-12mm window), wide auto param bounds (0-100mm), both
+/// params start feasible at 11mm, minimize(p0+p1) objective. With the
+/// dimension-scaled iteration budget, the solver may exhaust its budget
+/// without fully converging the objective, but the result must still be
+/// Solved with all constraints satisfied.
+///
+/// This tests the convergence-without-full-optimality scenario — the solver
+/// returns Solved even when the optimizer hits MaxItersReached, as long as
+/// the final point satisfies all constraints.
+#[test]
+fn warm_start_budget_exhaustion_stays_feasible() {
+    let solver = DimensionalSolver;
+
+    let p0_id = vcid("Part", "p0");
+    let p1_id = vcid("Part", "p1");
+    let p0_ref = value_ref("Part", "p0");
+    let p1_ref = value_ref("Part", "p1");
+
+    // Tight constraints: each param in [10mm, 12mm] — only 2mm feasible window
+    let constraints = vec![
+        (cnid("Part", 0), gt(p0_ref.clone(), literal(mm(10.0)))),
+        (cnid("Part", 1), lt(p0_ref.clone(), literal(mm(12.0)))),
+        (cnid("Part", 2), gt(p1_ref.clone(), literal(mm(10.0)))),
+        (cnid("Part", 3), lt(p1_ref.clone(), literal(mm(12.0)))),
+    ];
+
+    // Minimize(p0 + p1) — pushes both params toward their lower constraint bound
+    let sum_expr = binop(BinOp::Add, p0_ref, p1_ref);
+    let objective = OptimizationObjective::Minimize(sum_expr);
+
+    // Both params start at 11mm — feasible, centered in constraint window
+    let mut current = ValueMap::new();
+    current.insert(
+        p0_id.clone(),
+        Value::Scalar {
+            si_value: 0.011,
+            dimension: DimensionVector::LENGTH,
+        },
+    );
+    current.insert(
+        p1_id.clone(),
+        Value::Scalar {
+            si_value: 0.011,
+            dimension: DimensionVector::LENGTH,
+        },
+    );
+
+    let problem = ResolutionProblem {
+        auto_params: vec![
+            AutoParam {
+                id: p0_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.0, 0.1)), // Wide bounds [0, 100mm]
+            },
+            AutoParam {
+                id: p1_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.0, 0.1)), // Wide bounds [0, 100mm]
+            },
+        ],
+        constraints,
+        current_values: current,
+        objective: Some(objective),
+        functions: vec![],
+    };
+
+    let result = solver.solve(&problem);
+    match result {
+        SolveResult::Solved { values } => {
+            // Both params must satisfy constraints: 10mm < p < 12mm
+            for pid in [&p0_id, &p1_id] {
+                let si = values.get(pid).unwrap().as_f64().unwrap();
+                assert!(
+                    si > 0.010 && si < 0.012,
+                    "param {:?} should satisfy constraints (10mm < p < 12mm), got {} m",
+                    pid,
+                    si
+                );
+            }
+        }
+        other => panic!(
+            "expected Solved for budget-exhaustion scenario, got {:?}",
+            other
+        ),
+    }
+}
+
 /// When the initial point is INfeasible and the optimizer also fails to find
 /// feasibility, the result must be Infeasible — the feasible fallback must NOT
 /// apply when the initial point was never verified feasible.
