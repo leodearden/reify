@@ -220,6 +220,43 @@ mod tests {
     }
 
     #[test]
+    fn goto_def_existing_single_decl_unchanged() {
+        // Verify that all existing single-declaration goto_def behavior still
+        // works after the enclosing-declaration scoping refactoring.
+        let source = reify_test_support::bracket_source();
+        // Test 1: thickness ref in constraint → param declaration
+        let loc = compute_goto_definition(source, &test_uri(), Position::new(9, 15))
+            .expect("thickness ref should resolve");
+        assert_eq!(loc.range.start.line, 3);
+        // Test 2: width ref in constraint expr → param declaration
+        let loc = compute_goto_definition(source, &test_uri(), Position::new(10, 30))
+            .expect("width ref should resolve");
+        assert_eq!(loc.range.start.line, 1);
+        // Test 3: volume let → itself
+        let loc = compute_goto_definition(source, &test_uri(), Position::new(7, 8))
+            .expect("volume should resolve");
+        assert_eq!(loc.range.start.line, 7);
+    }
+
+    #[test]
+    fn goto_def_cursor_in_first_decl_still_finds_own_member() {
+        // When cursor is inside the first declaration, scoped search should
+        // still find members (not accidentally skip them).
+        let source = "structure A {\n    param x: Scalar = 5mm\n    let y = x\n}\nstructure B {\n    param x: Bool = true\n}";
+        // Line 2: "    let y = x"
+        //                      ^ col 12 = 'x' reference inside A
+        let position = Position::new(2, 12);
+        let loc = compute_goto_definition(source, &test_uri(), position)
+            .expect("goto-def for x in A should return location");
+        // Should point to A's param x on line 1
+        assert_eq!(
+            loc.range.start.line, 1,
+            "expected A's param x (line 1), got line {}",
+            loc.range.start.line
+        );
+    }
+
+    #[test]
     fn goto_def_unknown_word_returns_none() {
         let source = "structure Foo {\n  param x: Scalar = 5mm\n}";
         // Position past end of meaningful content
