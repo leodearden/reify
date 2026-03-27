@@ -6662,7 +6662,8 @@
           "milestone": "stdlib-stress",
           "modules": [
             "crates/reify-eval/tests"
-          ]
+          ],
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         },
         "subtasks": [],
         "details": "Two tests: (1) patterns — pattern of patterns, count=0/1, 10×10 grid, pattern+union_all; (2) large_assembly — 50+ structures with geometry+material+ports, computed mass propagation, simulation_ready purpose. Target: <5s eval.",
@@ -6686,7 +6687,8 @@
           "milestone": "stdlib-stress",
           "modules": [
             "crates/reify-eval/tests"
-          ]
+          ],
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         },
         "subtasks": [],
         "details": "Three tests: (1) trait_hierarchy — 3-deep chains, diamond inheritance, multi-trait impl; (2) sweep_degenerate — zero extrude, 0°/720° revolve, self-intersecting path, 1-profile loft; (3) error_messages — every error class produces helpful diagnostic.",
