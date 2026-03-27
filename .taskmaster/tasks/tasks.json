@@ -10676,7 +10676,15 @@
               "resolution for: Stop committing tree-sitter generated files on task branches"
             ]
           },
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            ".gitignore",
+            "hooks/pre-commit"
+          ],
+          "modules": [
+            "hooks",
+            "tree-sitter-reify"
+          ]
         }
       },
       {
@@ -10772,7 +10780,15 @@
         "priority": "low",
         "subtasks": [],
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "gui/src/__tests__/PropertyEditor.test.tsx",
+            "gui/src/panels/PropertyEditor.tsx"
+          ],
+          "modules": [
+            "gui/src/__tests__",
+            "gui/src/panels"
+          ]
         }
       },
       {
