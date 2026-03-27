@@ -6737,7 +6737,8 @@
           "milestone": "stdlib-polish",
           "modules": [
             "crates/reify-mcp"
-          ]
+          ],
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         },
         "subtasks": [],
         "details": "Update crates/reify-mcp/src/tools/chunks/stdlib.md with complete function listings for all new stdlib functions. Include usage examples for key operations.",
