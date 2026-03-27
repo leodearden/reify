@@ -25,6 +25,8 @@ fn inbound_send_message_with_context_serializes() {
         selected_entity: Some("cube1".to_string()),
         diagnostics: Some(vec!["Error at line 1".to_string()]),
         constraints: Some(vec!["x > 0".to_string()]),
+        current_file: None,
+        attached_contexts: None,
     };
     let msg = InboundMessage::SendMessage {
         id: "msg-2".to_string(),
@@ -156,12 +158,34 @@ fn message_context_optional_fields_skip_none() {
         selected_entity: None,
         diagnostics: None,
         constraints: None,
+        current_file: None,
+        attached_contexts: None,
     };
     let json_val: Value = serde_json::to_value(&ctx).unwrap();
     // None fields should be omitted (skip_serializing_if)
     assert!(json_val.get("selected_entity").is_none());
     assert!(json_val.get("diagnostics").is_none());
     assert!(json_val.get("constraints").is_none());
+    assert!(json_val.get("current_file").is_none());
+    assert!(json_val.get("attached_contexts").is_none());
+}
+
+#[test]
+fn message_context_with_all_fields_serializes() {
+    let ctx = MessageContext {
+        selected_entity: Some("cube1".to_string()),
+        diagnostics: Some(vec!["Error at line 1".to_string()]),
+        constraints: Some(vec!["x > 0".to_string()]),
+        current_file: Some("bracket.ri".to_string()),
+        attached_contexts: Some(vec!["design-spec.md".to_string(), "notes.txt".to_string()]),
+    };
+    let json_val: Value = serde_json::to_value(&ctx).unwrap();
+    assert_eq!(json_val["selected_entity"], "cube1");
+    assert_eq!(json_val["diagnostics"][0], "Error at line 1");
+    assert_eq!(json_val["constraints"][0], "x > 0");
+    assert_eq!(json_val["current_file"], "bracket.ri");
+    assert_eq!(json_val["attached_contexts"][0], "design-spec.md");
+    assert_eq!(json_val["attached_contexts"][1], "notes.txt");
 }
 
 #[test]
