@@ -1301,6 +1301,17 @@ fn compile_expr_guarded(
                 .or_else(|| unit_to_scalar(*value, unit));
             match resolved {
                 Some((scalar_val, dimension)) => {
+                    // Defense-in-depth: reject non-finite si_value from either
+                    // lookup_unit_in_registry or unit_to_scalar (overflow, inf literal, etc.)
+                    if let Value::Scalar { si_value, .. } = &scalar_val
+                        && !si_value.is_finite()
+                    {
+                        diagnostics.push(
+                            Diagnostic::error("overflow in quantity literal: result is not finite".to_string())
+                                .with_label(DiagnosticLabel::new(expr.span, "non-finite result")),
+                        );
+                        return CompiledExpr::literal(Value::Undef, Type::Scalar { dimension: DimensionVector::DIMENSIONLESS });
+                    }
                     let ty = Type::Scalar { dimension };
                     CompiledExpr::literal(scalar_val, ty)
                 }
