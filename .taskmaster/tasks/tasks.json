@@ -10448,6 +10448,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 529,
+        "title": "Solver tests: add multi-param warm-start and partial-feasibility coverage",
+        "description": "Three gaps in solver test coverage after the warm-start feasibility feature:\n\n1. **Incomplete unit test assertion** (solver.rs:1714-1749): `feasibility_check_runs_with_objective` only asserts `Solved` but never checks the optimizer actually moved toward the objective minimum. Add assertion that returned x is near 5mm (lower bound), e.g. `assert!(si < 0.008)`.\n\n2. **No multi-param warm-start test** (solver_integration.rs): All 4 new tests use a single auto parameter. Add a test with 2+ auto params, a feasible initial point, and an objective to exercise `build_simplex`, `build_trial_values`, and the returned values map for N > 1.\n\n3. **No partial-feasibility test**: Add a test where `current_values` provides a partially-feasible starting point (satisfies some constraints but not all) with an objective present. This confirms `initially_feasible` is computed correctly over all constraints.\n\nMemory hints: search for \"solver test coverage\", \"warm-start optimization\", entity names: NelderMeadSolver, FEASIBLE_OPT_ITERS",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -10460,7 +10471,7 @@
       ],
       "created": "2026-03-27T08:03:55.881Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-27T08:03:55.892Z"
+      "updated": "2026-03-27T08:04:02.602Z"
     }
   }
 }
