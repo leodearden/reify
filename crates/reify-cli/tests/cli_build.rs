@@ -59,12 +59,12 @@ fn build_violating_bracket_exits_failure() {
         "reify build should exit non-zero when constraints are violated.\nstdout: {stdout}\nstderr: {stderr}"
     );
     assert!(
-        stdout.contains("VIOLATED"),
-        "stdout should contain 'VIOLATED', got: {stdout}"
+        stderr.contains("VIOLATED"),
+        "stderr should contain 'VIOLATED', got: {stderr}"
     );
     assert!(
-        stdout.contains("Some constraints violated."),
-        "stdout should contain summary message, got: {stdout}"
+        stderr.contains("Some constraints violated."),
+        "stderr should contain summary message, got: {stderr}"
     );
     // Geometry file should still be written even when constraints are violated
     assert!(
@@ -99,8 +99,8 @@ fn build_valid_bracket_exits_success() {
         "stdout should contain 'Wrote', got: {stdout}"
     );
     assert!(
-        !stdout.contains("VIOLATED"),
-        "stdout should NOT contain 'VIOLATED' for valid bracket, got: {stdout}"
+        !stderr.contains("VIOLATED"),
+        "stderr should NOT contain 'VIOLATED' for valid bracket, got: {stderr}"
     );
     assert!(
         std::path::Path::new(output_path).exists(),
