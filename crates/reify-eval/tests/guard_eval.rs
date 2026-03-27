@@ -3,10 +3,14 @@
 //! Tests for evaluating guarded groups: conditional member activation,
 //! else branches, undef guards, and schema re-elaboration.
 
+use std::collections::HashMap;
+
 use reify_eval::Engine;
-use reify_test_support::builders::{gt, value_ref_typed};
+use reify_test_support::builders::{gt, literal, value_ref, value_ref_typed};
 use reify_test_support::mocks::MockConstraintChecker;
-use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
+use reify_test_support::{
+    CompiledModuleBuilder, MockConstraintSolver, TopologyTemplateBuilder, mm,
+};
 use reify_types::*;
 
 use reify_compiler::{CompiledConstraint, ValueCellDecl, ValueCellKind, Visibility};
@@ -433,5 +437,92 @@ fn eval_guarded_constraint_enforced_only_when_active() {
             .iter()
             .map(|cr| (&cr.id, &cr.satisfaction))
             .collect::<Vec<_>>()
+    );
+}
+
+/// Bug reproduction: Block B in edit_param() overwrites solver-resolved Auto param values.
+///
+/// Setup: Bool param 'active' (default=true), guarded group with Auto param 'thickness'
+/// as a member, constraint (thickness > 2mm), MockConstraintSolver resolves thickness to 5mm.
+/// After eval() (guard=true, solver resolves thickness), call edit_param('active', false).
+/// Assert: thickness retains its solver-resolved value (0.005 SI), NOT Undef.
+#[test]
+fn edit_param_guard_false_preserves_solver_auto_param() {
+    let active_id = ValueCellId::new("S", "active");
+    let guard_id = ValueCellId::new("S", "__guard_0");
+    let thickness_id = ValueCellId::new("S", "thickness");
+
+    let guard_expr = value_ref_typed("S", "active", Type::Bool);
+
+    // Auto param 'thickness' as a guarded member (kind=Auto, no default_expr)
+    let thickness_decl = ValueCellDecl {
+        id: thickness_id.clone(),
+        kind: ValueCellKind::Auto,
+        visibility: Visibility::Public,
+        cell_type: Type::length(),
+        default_expr: None,
+        span: SourceSpan::new(0, 0),
+    };
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param(
+            "S",
+            "active",
+            Type::Bool,
+            Some(CompiledExpr::literal(Value::Bool(true), Type::Bool)),
+        )
+        // Top-level auto_param so eval() resolution phase finds it
+        .auto_param("S", "thickness", Type::length())
+        // Top-level constraint so eval() resolution phase can match it
+        .constraint(
+            "S",
+            0,
+            Some("thickness_gt_2mm"),
+            gt(value_ref("S", "thickness"), literal(mm(2.0))),
+        )
+        .guarded_group(
+            guard_expr,
+            guard_id.clone(),
+            vec![thickness_decl],  // members (active when true) — graph sees kind=Auto
+            vec![],                // constraints (already at top level)
+            vec![],                // else_members
+            vec![],                // else_constraints
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    // Mock solver: resolves thickness to 5mm = 0.005 SI
+    let mut solved_values = HashMap::new();
+    solved_values.insert(thickness_id.clone(), mm(5.0));
+    let solver = MockConstraintSolver::new_solved(solved_values);
+
+    let checker = MockConstraintChecker::new();
+    let mut engine =
+        Engine::new(Box::new(checker), None).with_solver(Box::new(solver));
+
+    // Initial eval with guard=true; solver resolves thickness
+    let initial_result = engine.eval(&module);
+    let thickness_val = initial_result.values.get(&thickness_id);
+    assert!(
+        matches!(thickness_val, Some(Value::Scalar { si_value, .. }) if (*si_value - 0.005).abs() < 1e-10),
+        "thickness should be 0.005 SI (5mm) after initial eval, got {:?}",
+        thickness_val
+    );
+
+    // Edit 'active' from true to false — guard deactivates
+    let edit_result = engine
+        .edit_param(active_id.clone(), Value::Bool(false))
+        .expect("edit_param should succeed");
+
+    // BUG: Block B in edit_param overwrites solver-resolved Auto param with Undef.
+    // After fix, thickness should retain its solver-resolved value.
+    let thickness_after = edit_result.values.get(&thickness_id);
+    assert!(
+        matches!(thickness_after, Some(Value::Scalar { si_value, .. }) if (*si_value - 0.005).abs() < 1e-10),
+        "Auto param 'thickness' should retain solver-resolved value (0.005 SI) after guard deactivation, got {:?}",
+        thickness_after
     );
 }
