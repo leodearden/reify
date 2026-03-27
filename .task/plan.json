@@ -46,8 +46,8 @@
       "id": "step-5",
       "type": "test",
       "description": "Run `cargo test -p reify-cli` to verify all cli_build and cli_check tests pass. Then run the full `cargo test --workspace` to confirm no regressions across the project.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "95ebbe23"
     }
   ],
   "design_decisions": [
