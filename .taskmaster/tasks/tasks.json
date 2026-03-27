@@ -10291,7 +10291,7 @@
         "description": "Two gaps in `gui/src/__tests__/App.test.tsx`:\n\n1. **Missing cleanup test for `claudeEventUnsub`**: The existing cleanup/unmount test verifies `priorUnsub` and `priorFileUnsub` are called on unmount, but does NOT verify `claudeEventUnsub` is called. A regression dropping `claudeEventUnsub?.()` from `onCleanup` would silently leak 7 Tauri event listeners.\n\n   Fix: Extend the cleanup test to include a `priorClaudeUnsub = vi.fn()`, mock `subscribeToClaudeEvents` to return it, and assert it's called after unmount.\n\n2. **Missing error-path test for subscription failure**: `App.tsx` has a catch block showing toast 'Claude assistant unavailable — chat features may not work' when `subscribeToClaudeEvents` rejects. No test exercises this path.\n\n   Fix: Add a test that mocks `subscribeToClaudeEvents` to reject, renders App, and asserts the toast appears.\n\nMemory hints:\n- Search: \"App.test.tsx cleanup unmount subscribeToClaudeEvents\"\n- Entities: App.tsx, subscribeToClaudeEvents, claudeEventUnsub",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -10303,7 +10303,8 @@
           "modules": [
             "gui/src/__tests__"
           ]
-        }
+        },
+        "updatedAt": "2026-03-27T08:10:12.430Z"
       },
       {
         "id": "520",
@@ -10489,7 +10490,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-27T08:10:12.264Z",
+      "lastModified": "2026-03-27T08:10:12.430Z",
       "taskCount": 531,
       "completedCount": 256,
       "tags": [
