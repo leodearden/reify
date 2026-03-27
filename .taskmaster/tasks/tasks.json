@@ -8360,7 +8360,17 @@
         "subtasks": [],
         "updatedAt": "2026-03-26T02:42:25.759Z",
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-test-support/src/lib.rs",
+            "crates/reify-eval/tests/m9_trait_conformance.rs",
+            "crates/reify-eval/tests/m5_integration.rs",
+            "crates/reify-eval/tests/purpose_eval.rs"
+          ],
+          "modules": [
+            "crates/reify-test-support/src",
+            "crates/reify-eval/tests"
+          ]
         }
       },
       {
@@ -8375,7 +8385,13 @@
         "subtasks": [],
         "updatedAt": "2026-03-26T12:05:53.596Z",
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-eval/tests/m9_trait_conformance.rs"
+          ],
+          "modules": [
+            "crates/reify-eval/tests"
+          ]
         }
       },
       {
