@@ -90,8 +90,13 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
     setEditValue(input.value);
   }
 
+  const QUANTITY_RE = /^\s*-?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?\s*(mm|cm|deg|rad|m)\s*$/;
+
   function isValidValue(value: string): boolean {
-    return value.trim() !== '' && Number.isFinite(Number(value.trim()));
+    const trimmed = value.trim();
+    if (trimmed === '') return false;
+    if (Number.isFinite(Number(trimmed))) return true;
+    return QUANTITY_RE.test(trimmed);
   }
 
   function handleKeyDown(cellId: string, e: KeyboardEvent) {
