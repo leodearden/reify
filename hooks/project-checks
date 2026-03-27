@@ -18,6 +18,13 @@ fi
 
 echo "pre-commit: linting (main branch)..."
 
+# ── Tree-sitter: regenerate parser from grammar.js ────────────────────
+echo "  tree-sitter: generate"
+if ! (cd "$ROOT/tree-sitter-reify" && tree-sitter generate) 2>&1; then
+    echo "pre-commit: tree-sitter generate failed. Ensure tree-sitter CLI is installed."
+    exit 1
+fi
+
 # ── Rust: clippy ──────────────────────────────────────────────────────
 echo "  clippy: workspace"
 if ! cargo clippy --workspace --all-targets --quiet -- -D warnings 2>&1; then
