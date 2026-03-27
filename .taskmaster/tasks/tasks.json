@@ -3278,8 +3278,8 @@
       {
         "id": 193,
         "title": "Qualified trait access: tests",
-        "description": ">=8 tests: disambiguation when two traits define same member name, instance-level qualified access, errors (trait not found, member not in trait, instance doesn't implement trait), qualified access in constraint expressions.",
-        "details": "",
+        "description": ">=8 tests: disambiguation when two traits define same member name, instance-level qualified access, errors (trait not found, member not in trait, instance doesn't implement trait), qualified access in constraint expressions. [Updated: 3/27/2026]",
+        "details": "<info added on 2026-03-27T07:21:08.476Z>\nPreviously marked as phantom-done; code was merged and then reverted in commit 3a248e07. This task requires a full re-implementation.\n</info added on 2026-03-27T07:21:08.476Z>",
         "testStrategy": ">=8 tests.",
         "priority": "high",
         "dependencies": [
@@ -6808,7 +6808,9 @@
         "details": "",
         "testStrategy": "",
         "status": "pending",
-        "dependencies": [],
+        "dependencies": [
+          "191"
+        ],
         "priority": "high",
         "subtasks": [],
         "updatedAt": "2026-03-27T06:21:14.126Z"
