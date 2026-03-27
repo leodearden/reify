@@ -11115,6 +11115,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 572,
+        "title": "Remove duplicate CLI channel-regression tests",
+        "description": "The standalone tests check_constraint_output_on_stdout_not_stderr (cli_check.rs:80-111) and build_constraint_output_on_stdout_not_stderr (cli_build.rs:127-167) are entirely redundant with inline channel-regression assertions already present in check_violating_bracket_exits_failure and build_violating_bracket_exits_failure. Both run the same fixture, same binary, same assertions. The standalone tests are strictly weaker (no exit-code check). Remove them.\n\nMemory hints: search \"CLI test duplication channel regression\", entity: cmd_check, cmd_build",
+        "details": "Locations:\n- crates/reify-cli/tests/cli_check.rs:80-111 — remove check_constraint_output_on_stdout_not_stderr\n- crates/reify-cli/tests/cli_build.rs:127-167 — remove build_constraint_output_on_stdout_not_stderr\n\nThe inline assertions in the existing tests (check_violating_bracket_exits_failure, build_violating_bracket_exits_failure) already cover the same channel-regression. Keeping both doubles binary invocations for zero additional coverage.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -11127,7 +11138,7 @@
       ],
       "created": "2026-03-27T09:20:31.609Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-27T09:24:37.856Z"
+      "updated": "2026-03-27T09:24:43.708Z"
     }
   }
 }
