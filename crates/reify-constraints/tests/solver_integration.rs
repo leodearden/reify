@@ -571,3 +571,67 @@ fn optimize_with_feasible_initial_point() {
         other => panic!("expected Solved, got {:?}", other),
     }
 }
+
+/// Maximize with a feasible initial point — the solver should still push x
+/// toward the constraint boundary (upper) rather than staying at the initial point.
+/// Auto param upper bound (50mm) is below the constraint ceiling (80mm), so the
+/// optimizer converges at the param bound (50mm), safely inside the feasible region.
+#[test]
+fn maximize_with_feasible_initial_point() {
+    let solver = DimensionalSolver;
+
+    let x_id = vcid("Part", "x");
+    let x_ref = value_ref("Part", "x");
+
+    // x > 2mm AND x < 80mm
+    let gt_expr = gt(x_ref.clone(), literal(mm(2.0)));
+    let lt_expr = lt(x_ref.clone(), literal(mm(80.0)));
+
+    // Maximize x — should push toward upper bound
+    let objective = OptimizationObjective::Maximize(x_ref);
+
+    // Set current value to 10mm — already feasible
+    let mut current = ValueMap::new();
+    current.insert(
+        x_id.clone(),
+        Value::Scalar {
+            si_value: 0.010,
+            dimension: DimensionVector::LENGTH,
+        },
+    );
+
+    let problem = ResolutionProblem {
+        auto_params: vec![AutoParam {
+            id: x_id.clone(),
+            param_type: Type::length(),
+            bounds: Some((0.001, 0.050)), // upper bound 50mm < constraint 80mm
+        }],
+        constraints: vec![
+            (cnid("Part", 0), gt_expr),
+            (cnid("Part", 1), lt_expr),
+        ],
+        current_values: current,
+        objective: Some(objective),
+        functions: vec![],
+    };
+
+    let result = solver.solve(&problem);
+    match result {
+        SolveResult::Solved { values } => {
+            let si = values.get(&x_id).unwrap().as_f64().unwrap();
+            // Maximize should push x toward 50mm (auto param upper bound),
+            // well above the 10mm initial point
+            assert!(
+                si > 0.030,
+                "maximized x should be pushed well above initial 10mm, got {} m",
+                si
+            );
+            assert!(
+                si <= 0.051,
+                "maximized x should not exceed param bounds (50mm), got {} m",
+                si
+            );
+        }
+        other => panic!("expected Solved, got {:?}", other),
+    }
+}
