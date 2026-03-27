@@ -608,3 +608,61 @@ fn edit_param_guard_true_preserves_solver_auto_in_else_members() {
         thickness_after
     );
 }
+
+/// Regression test: regular Param-kind members must still be set to Undef when
+/// their guard deactivates. The Auto-skip fix should not affect normal params.
+#[test]
+fn edit_param_guard_false_still_deactivates_regular_params() {
+    let active_id = ValueCellId::new("S", "active");
+    let guard_id = ValueCellId::new("S", "__guard_0");
+    let width_id = ValueCellId::new("S", "width");
+
+    let guard_expr = value_ref_typed("S", "active", Type::Bool);
+
+    // Regular Param-kind member 'width' with a default value
+    let width_decl = make_param_decl("S", "width", Type::length(), Value::length(0.01));
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param(
+            "S",
+            "active",
+            Type::Bool,
+            Some(CompiledExpr::literal(Value::Bool(true), Type::Bool)),
+        )
+        .guarded_group(
+            guard_expr,
+            guard_id.clone(),
+            vec![width_decl], // members (active when true)
+            vec![],           // constraints
+            vec![],           // else_members
+            vec![],           // else_constraints
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    // Initial eval with guard=true; width should be 10mm = 0.01
+    let initial_result = engine.eval(&module);
+    assert_eq!(
+        initial_result.values.get(&width_id),
+        Some(&Value::length(0.01)),
+        "width should be 0.01 (10mm SI) when guard is true"
+    );
+
+    // Edit 'active' from true to false — guard deactivates
+    let edit_result = engine
+        .edit_param(active_id.clone(), Value::Bool(false))
+        .expect("edit_param should succeed");
+
+    // Regular Param member should be Undef after guard deactivation
+    assert_eq!(
+        edit_result.values.get(&width_id),
+        Some(&Value::Undef),
+        "Regular Param 'width' should be Undef after guard changed to false"
+    );
+}
