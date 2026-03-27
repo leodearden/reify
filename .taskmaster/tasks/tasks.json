@@ -8449,7 +8449,14 @@
         "subtasks": [],
         "updatedAt": "2026-03-26T12:05:53.675Z",
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-lsp/src/analysis.rs",
+            "crates/reify-lsp/src/goto_def.rs"
+          ],
+          "modules": [
+            "crates/reify-lsp/src"
+          ]
         }
       },
       {
@@ -8465,7 +8472,16 @@
         "priority": "medium",
         "subtasks": [],
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-syntax/src/lib.rs",
+            "crates/reify-syntax/src/ts_parser.rs",
+            "crates/reify-compiler/src/lib.rs"
+          ],
+          "modules": [
+            "crates/reify-syntax/src",
+            "crates/reify-compiler/src"
+          ]
         }
       },
       {
