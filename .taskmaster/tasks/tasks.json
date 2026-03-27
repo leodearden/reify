@@ -7689,11 +7689,11 @@
         "description": "In crates/reify-test-support/src/values.rs: (1) Guard assert_value_approx_impl against NaN inputs. (2) Add #[should_panic] tests for dimension-mismatch, component-count-mismatch, and type-variant-mismatch panic paths. In crates/reify-test-support/src/mocks.rs: (3) Add debug_assert guarding MomentOfInertia QueryKey against NaN axis values. (Review followup from task 351)",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-26T18:37:37.758Z"
+        "updatedAt": "2026-03-27T06:07:00.356Z"
       },
       {
         "id": "430",
@@ -8723,7 +8723,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-27T06:07:00.324Z",
+      "lastModified": "2026-03-27T06:07:00.356Z",
       "taskCount": 516,
       "completedCount": 253,
       "tags": [
