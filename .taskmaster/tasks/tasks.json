@@ -11923,6 +11923,17 @@
         "dependencies": [],
         "priority": "high",
         "subtasks": []
+      },
+      {
+        "id": 598,
+        "title": "Fix geometry op index corruption on compile_geometry_op failure",
+        "description": "In reify-eval/src/lib.rs, when compile_geometry_op returns None (lines 2729-2733, 2792-2797, 2906-2909), no placeholder is pushed to step_handles. Subsequent ops referencing Step(N) will get the wrong handle since indices have shifted. Fix by pushing a sentinel GeometryHandleId or breaking out of the loop. Pre-existing bug, not introduced by task 437.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -11935,7 +11946,7 @@
       ],
       "created": "2026-03-27T11:53:55.691Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-27T11:54:03.947Z"
+      "updated": "2026-03-27T11:54:08.393Z"
     }
   }
 }
