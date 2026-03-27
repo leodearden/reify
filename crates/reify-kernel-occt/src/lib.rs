@@ -685,6 +685,19 @@ impl OcctKernel {
 mod tests {
     use super::*;
 
+    /// Create a circle face of given `radius`, rotate it into the XZ plane, translate
+    /// it `offset_r` along X, and store into `kernel`. Returns a GeometryHandleId
+    /// suitable for revolving around the Z axis to produce a torus.
+    fn make_torus_profile(kernel: &mut OcctKernel, radius: f64, offset_r: f64) -> GeometryHandleId {
+        let face =
+            ffi::ffi::make_circle_face(radius, 0.0).expect("make_circle_face should succeed");
+        let rotated = ffi::ffi::rotate_shape(&face, 1.0, 0.0, 0.0, std::f64::consts::FRAC_PI_2)
+            .expect("rotate_shape should succeed");
+        let translated = ffi::ffi::translate_shape(&rotated, offset_r, 0.0, 0.0)
+            .expect("translate_shape should succeed");
+        kernel.store_raw(translated)
+    }
+
     #[test]
     fn occt_available_is_true_when_built_with_occt() {
         const {
