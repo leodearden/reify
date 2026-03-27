@@ -6735,11 +6735,11 @@
         "description": "Fix NaN bypassing ALL validation in orient_basis (IEEE 754 comparisons always false) by adding explicit finiteness check. Add !value.is_finite() guard in trig_input as defense-in-depth. Extract vec3_norm() helper to deduplicate inline 3D vector magnitude computation across orient_basis/orient_axis_angle.\n\nMissing tests to add:\n- Axis normalization with non-unit vector (e.g. [2,0,0])\n- Dimensioned Scalar input to orient_quaternion (as_f64 silently strips dimension)\n- NaN/Inf angle values through trig_input\n- Uppercase convention 'XYZ' for orient_euler (documents case-sensitivity)\n\nMemory hints: search \"orient_basis orient_axis_angle trig_input NaN validation\", entities: eval_builtin, orient_basis, orient_euler",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-03-27T06:12:34.260Z"
+        "updatedAt": "2026-03-27T06:16:22.282Z"
       },
       {
         "id": "360",
@@ -8723,7 +8723,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-27T06:16:19.109Z",
+      "lastModified": "2026-03-27T06:16:22.282Z",
       "taskCount": 516,
       "completedCount": 253,
       "tags": [
