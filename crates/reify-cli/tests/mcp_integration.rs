@@ -1,3 +1,4 @@
+use serde_json::Value;
 use std::io::Write;
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -117,8 +118,9 @@ fn mcp_server_language_reference_returns_content() {
     assert!(responses.len() >= 2, "expected at least 2 responses");
 
     let call_response = &responses[1];
-    assert_ne!(
-        call_response["result"]["isError"], true,
+    assert_eq!(
+        call_response["result"]["isError"],
+        Value::Bool(false),
         "language_reference should not return error: {:?}",
         call_response
     );
@@ -164,8 +166,9 @@ fn mcp_server_get_parameters_returns_bracket_params() {
     assert!(responses.len() >= 2, "expected at least 2 responses");
 
     let call_response = &responses[1];
-    assert_ne!(
-        call_response["result"]["isError"], true,
+    assert_eq!(
+        call_response["result"]["isError"],
+        Value::Bool(false),
         "get_parameters should not return error: {:?}",
         call_response
     );
@@ -253,8 +256,9 @@ fn mcp_server_set_parameter_changes_value() {
 
     // set_parameter response
     let set_response = &responses[1];
-    assert_ne!(
-        set_response["result"]["isError"], true,
+    assert_eq!(
+        set_response["result"]["isError"],
+        Value::Bool(false),
         "set_parameter should not return error: {:?}",
         set_response
     );
@@ -358,8 +362,9 @@ fn mcp_server_update_source_invalid_preserves_state() {
     // This is the key assertion: if update_source mutates files before validation,
     // get_source will return the broken content instead of the original.
     let source_response = &responses[2];
-    assert_ne!(
-        source_response["result"]["isError"], true,
+    assert_eq!(
+        source_response["result"]["isError"],
+        Value::Bool(false),
         "get_source should not return error after failed update: {:?}",
         source_response
     );
@@ -385,8 +390,9 @@ fn mcp_server_update_source_invalid_preserves_state() {
 
     // get_parameters should still return original bracket.ri parameters
     let get_response = &responses[3];
-    assert_ne!(
-        get_response["result"]["isError"], true,
+    assert_eq!(
+        get_response["result"]["isError"],
+        Value::Bool(false),
         "get_parameters should not return error after failed update: {:?}",
         get_response
     );
@@ -456,8 +462,9 @@ fn mcp_server_set_parameter_reports_new_value_accurately() {
 
     // set_parameter response should report success
     let set_response = &responses[1];
-    assert_ne!(
-        set_response["result"]["isError"], true,
+    assert_eq!(
+        set_response["result"]["isError"],
+        Value::Bool(false),
         "set_parameter should not return error: {:?}",
         set_response
     );
@@ -533,8 +540,9 @@ fn mcp_server_set_parameter_constraint_verified_after_change() {
 
     // set_parameter should return success=true (constraints are soft, not blocking)
     let set_response = &responses[1];
-    assert_ne!(
-        set_response["result"]["isError"], true,
+    assert_eq!(
+        set_response["result"]["isError"],
+        Value::Bool(false),
         "set_parameter should not return error even with constraint violation: {:?}",
         set_response
     );
@@ -573,8 +581,9 @@ fn mcp_server_set_parameter_constraint_verified_after_change() {
 
     // get_constraints should return all 3 bracket constraints (confirming constraint evaluator runs)
     let constraints_response = &responses[3];
-    assert_ne!(
-        constraints_response["result"]["isError"], true,
+    assert_eq!(
+        constraints_response["result"]["isError"],
+        Value::Bool(false),
         "get_constraints should not return error: {:?}",
         constraints_response
     );
@@ -638,8 +647,9 @@ fn mcp_server_set_parameter_error_preserves_state() {
 
     // get_parameters should still return all 5 original parameters with original values
     let get_response = &responses[2];
-    assert_ne!(
-        get_response["result"]["isError"], true,
+    assert_eq!(
+        get_response["result"]["isError"],
+        Value::Bool(false),
         "get_parameters should not return error after failed set_parameter: {:?}",
         get_response
     );
