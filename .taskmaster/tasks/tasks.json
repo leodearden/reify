@@ -10606,11 +10606,11 @@
         "description": "crates/reify-test-support/src/builders.rs (1914 lines) is the #2 merge conflict source (21 conflicts out of 101). Multiple tasks append new builder functions to the same monolithic file.\n\nSplit into per-type-family submodules under crates/reify-test-support/src/builders/:\n- value.rs (Value/Quantity builders)\n- geometry.rs (Point/Vector/Transform builders)\n- expr.rs (expression tree builders)\n- syntax.rs (AST/parse tree builders)\n- etc. based on current content clustering\n\nRe-export from builders/mod.rs so existing `use builders::*` imports keep working.\n\nmemory_hints: search \"test builder patterns reify\", search \"builders.rs structure\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-03-27T08:26:35.751Z",
+        "updatedAt": "2026-03-27T09:19:44.400Z",
         "metadata": {
           "modules": [
             "crates/reify-test-support"
@@ -11074,7 +11074,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-27T09:19:44.226Z",
+      "lastModified": "2026-03-27T09:19:44.400Z",
       "taskCount": 567,
       "completedCount": 264,
       "tags": [
