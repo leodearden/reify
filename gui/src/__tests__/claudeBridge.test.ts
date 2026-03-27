@@ -392,6 +392,83 @@ describe('subscribeToClaudeEvents', () => {
     });
   });
 
+  describe('discriminant override protection', () => {
+    /**
+     * Helper: set up mockListen to capture the handler for a specific event name.
+     * Returns a function that, when called, retrieves the captured handler.
+     */
+    function captureEventHandler(eventName: string) {
+      let captured: ((event: { payload: unknown }) => void) | undefined;
+      mockListen.mockImplementation(async (name, handler) => {
+        if (name === eventName) {
+          captured = handler as (event: { payload: unknown }) => void;
+        }
+        return vi.fn();
+      });
+      return () => captured!;
+    }
+
+    it('claude-text-delta: rogue type field does not override discriminant', async () => {
+      const getCaptured = captureEventHandler('claude-text-delta');
+      const handler = vi.fn();
+      await subscribeToClaudeEvents(handler);
+
+      getCaptured()({ payload: { id: 'x', content: 'hi', type: 'error' } });
+
+      expect(handler).toHaveBeenCalledWith({ type: 'text_delta', id: 'x', content: 'hi' });
+    });
+
+    it('claude-thinking-delta: rogue type field does not override discriminant', async () => {
+      const getCaptured = captureEventHandler('claude-thinking-delta');
+      const handler = vi.fn();
+      await subscribeToClaudeEvents(handler);
+
+      getCaptured()({ payload: { id: 'x', content: 'thinking...', type: 'done' } });
+
+      expect(handler).toHaveBeenCalledWith({ type: 'thinking_delta', id: 'x', content: 'thinking...' });
+    });
+
+    it('claude-tool-call: rogue type field does not override discriminant', async () => {
+      const getCaptured = captureEventHandler('claude-tool-call');
+      const handler = vi.fn();
+      await subscribeToClaudeEvents(handler);
+
+      getCaptured()({ payload: { id: 'x', tool_name: 'edit', tool_input: { path: 'a.ri' }, type: 'ready' } });
+
+      expect(handler).toHaveBeenCalledWith({ type: 'tool_call', id: 'x', tool_name: 'edit', tool_input: { path: 'a.ri' } });
+    });
+
+    it('claude-tool-result: rogue type field does not override discriminant', async () => {
+      const getCaptured = captureEventHandler('claude-tool-result');
+      const handler = vi.fn();
+      await subscribeToClaudeEvents(handler);
+
+      getCaptured()({ payload: { id: 'x', tool_name: 'read', result: 'data', type: 'text_delta' } });
+
+      expect(handler).toHaveBeenCalledWith({ type: 'tool_result', id: 'x', tool_name: 'read', result: 'data' });
+    });
+
+    it('claude-done: rogue type field does not override discriminant', async () => {
+      const getCaptured = captureEventHandler('claude-done');
+      const handler = vi.fn();
+      await subscribeToClaudeEvents(handler);
+
+      getCaptured()({ payload: { id: 'x', type: 'error' } });
+
+      expect(handler).toHaveBeenCalledWith({ type: 'done', id: 'x' });
+    });
+
+    it('claude-error: rogue type field does not override discriminant', async () => {
+      const getCaptured = captureEventHandler('claude-error');
+      const handler = vi.fn();
+      await subscribeToClaudeEvents(handler);
+
+      getCaptured()({ payload: { id: 'x', message: 'oops', type: 'text_delta' } });
+
+      expect(handler).toHaveBeenCalledWith({ type: 'error', id: 'x', message: 'oops' });
+    });
+  });
+
   describe('listener rollback on partial failure', () => {
     it('cleans up already-registered listeners when a middle listen() fails', async () => {
       const unlisteners = [vi.fn(), vi.fn(), vi.fn()];
