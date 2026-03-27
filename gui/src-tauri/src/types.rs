@@ -281,4 +281,12 @@ mod format_value_range_tests {
         assert_eq!(formatted, "(1..10)");
         assert_eq!(unit, "");
     }
+
+    #[test]
+    fn both_bounds_inclusive() {
+        let range = Value::range(Some(Value::Int(1)), Some(Value::Int(10)), true, true);
+        let (formatted, unit) = format_value(&range);
+        assert_eq!(formatted, "[1..10]");
+        assert_eq!(unit, "");
+    }
 }
