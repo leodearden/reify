@@ -11901,6 +11901,17 @@
         "dependencies": [],
         "priority": "high",
         "subtasks": []
+      },
+      {
+        "id": 596,
+        "title": "Strengthen guarded-group test assertions in LSP",
+        "description": "Two sets of new tests introduced by task 437 have weak assertions:\n1. analysis.rs guarded-group tests (lines 438-489) don't assert span or cell_type.\n2. goto_def.rs guarded-group tests (lines 126-155) don't assert character offset.\nAdd span start/end, cell_type, and character offset assertions to catch regression in nested member handling.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -11913,7 +11924,7 @@
       ],
       "created": "2026-03-27T11:53:55.691Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-27T11:53:55.700Z"
+      "updated": "2026-03-27T11:53:59.495Z"
     }
   }
 }
