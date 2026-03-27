@@ -82,6 +82,22 @@ assert "grammar.json is not tracked by git" \
 assert "node-types.json is not tracked by git" \
     assert_not_tracked "tree-sitter-reify/src/node-types.json"
 
+# ── Step 5: Full regeneration-to-build pipeline ────────────────────
+# Delete parser.c, regenerate, then verify cargo check succeeds.
+rm -f "$ROOT/tree-sitter-reify/src/parser.c"
+
+assert "parser.c deleted for regen test" \
+    test ! -f "$ROOT/tree-sitter-reify/src/parser.c"
+
+assert "tree-sitter-generate.sh regenerates after deletion" \
+    "$ROOT/scripts/tree-sitter-generate.sh"
+
+assert "parser.c exists after regeneration" \
+    test -f "$ROOT/tree-sitter-reify/src/parser.c"
+
+assert "cargo check -p tree-sitter-reify succeeds after regeneration" \
+    cargo check -p tree-sitter-reify
+
 # ── Summary ─────────────────────────────────────────────────────────
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
