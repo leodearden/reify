@@ -6366,7 +6366,8 @@
           "milestone": "stdlib-M8.3",
           "modules": [
             "crates/reify-syntax"
-          ]
+          ],
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         },
         "subtasks": [],
         "updatedAt": "2026-03-24T00:00:00.000Z"
@@ -6386,7 +6387,8 @@
           "milestone": "stdlib-M8.3",
           "modules": [
             "crates/reify-syntax"
-          ]
+          ],
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         },
         "subtasks": [],
         "updatedAt": "2026-03-24T00:00:00.000Z"
