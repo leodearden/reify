@@ -752,3 +752,82 @@ fn infeasible_with_objective_still_detected() {
         ),
     }
 }
+
+/// Warm-start with an 8-parameter feasible problem and an objective.
+/// Each parameter has a constraint that the optimizer might push past
+/// with insufficient iterations. With dimension-scaled budget, the solver
+/// should get enough iterations (500 * 9 = 4500 vs fixed 500) to stay
+/// feasible and return Solved.
+#[test]
+fn warm_start_scales_iterations_with_dimension() {
+    let solver = DimensionalSolver;
+
+    // Create 8 independent parameters, each with tight constraints
+    let param_ids: Vec<_> = (0..8).map(|i| vcid("Part", &format!("p{}", i))).collect();
+    let param_refs: Vec<_> = (0..8)
+        .map(|i| value_ref("Part", &format!("p{}", i)))
+        .collect();
+
+    // Each param: p_i > 10mm AND p_i < 20mm
+    let mut constraints = Vec::new();
+    for (i, pref) in param_refs.iter().enumerate() {
+        let idx = i as u32;
+        constraints.push((cnid("Part", idx * 2), gt(pref.clone(), literal(mm(10.0)))));
+        constraints.push((
+            cnid("Part", idx * 2 + 1),
+            lt(pref.clone(), literal(mm(20.0))),
+        ));
+    }
+
+    // Minimize p0 — pushes one param toward lower bound
+    let objective = OptimizationObjective::Minimize(param_refs[0].clone());
+
+    // All params start at 15mm (feasible, centered in constraint window)
+    let mut current = ValueMap::new();
+    for pid in &param_ids {
+        current.insert(
+            pid.clone(),
+            Value::Scalar {
+                si_value: 0.015,
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+    }
+
+    let auto_params: Vec<_> = param_ids
+        .iter()
+        .map(|pid| AutoParam {
+            id: pid.clone(),
+            param_type: Type::length(),
+            bounds: Some((0.005, 0.025)), // 5mm–25mm, extends beyond constraints
+        })
+        .collect();
+
+    let problem = ResolutionProblem {
+        auto_params,
+        constraints,
+        current_values: current,
+        objective: Some(objective),
+        functions: vec![],
+    };
+
+    let result = solver.solve(&problem);
+    match result {
+        SolveResult::Solved { values } => {
+            // All params must satisfy their constraints
+            for pid in &param_ids {
+                let si = values.get(pid).unwrap().as_f64().unwrap();
+                assert!(
+                    si > 0.010 && si < 0.020,
+                    "param {:?} should satisfy constraints (10mm < p < 20mm), got {} m",
+                    pid,
+                    si
+                );
+            }
+        }
+        other => panic!(
+            "expected Solved for 8-param warm-start, got {:?}",
+            other
+        ),
+    }
+}
