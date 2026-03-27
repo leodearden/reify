@@ -2289,7 +2289,8 @@
           "modules": [
             "crates/reify-syntax"
           ],
-          "milestone": "M8"
+          "milestone": "M8",
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         },
         "subtasks": [],
         "updatedAt": "2026-03-27T06:07:00.685Z"
@@ -2309,7 +2310,8 @@
           "modules": [
             "crates/reify-compiler"
           ],
-          "milestone": "M8"
+          "milestone": "M8",
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         },
         "subtasks": [],
         "updatedAt": "2026-03-24T06:01:46.000Z"
