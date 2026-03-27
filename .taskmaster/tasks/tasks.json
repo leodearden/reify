@@ -12052,7 +12052,8 @@
         "metadata": {
           "modules": [
             "crates/reify-lsp"
-          ]
+          ],
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         }
       },
       {
@@ -12070,7 +12071,8 @@
           "modules": [
             "crates/reify-eval",
             "crates/reify-types"
-          ]
+          ],
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         }
       },
       {
