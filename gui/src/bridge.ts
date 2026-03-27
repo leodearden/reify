@@ -168,42 +168,42 @@ export async function subscribeToClaudeEvents(
         console.warn('claude-text-delta: invalid payload, skipping', event.payload);
         return;
       }
-      handler({ type: 'text_delta', ...event.payload });
+      handler({ type: 'text_delta', id: event.payload.id, content: event.payload.content });
     }],
     ['claude-thinking-delta', (event) => {
       if (!isThinkingDeltaPayload(event.payload)) {
         console.warn('claude-thinking-delta: invalid payload, skipping', event.payload);
         return;
       }
-      handler({ type: 'thinking_delta', ...event.payload });
+      handler({ type: 'thinking_delta', id: event.payload.id, content: event.payload.content });
     }],
     ['claude-tool-call', (event) => {
       if (!isToolCallPayload(event.payload)) {
         console.warn('claude-tool-call: invalid payload, skipping', event.payload);
         return;
       }
-      handler({ type: 'tool_call', ...event.payload });
+      handler({ type: 'tool_call', id: event.payload.id, tool_name: event.payload.tool_name, tool_input: event.payload.tool_input });
     }],
     ['claude-tool-result', (event) => {
       if (!isToolResultPayload(event.payload)) {
         console.warn('claude-tool-result: invalid payload, skipping', event.payload);
         return;
       }
-      handler({ type: 'tool_result', ...event.payload });
+      handler({ type: 'tool_result', id: event.payload.id, tool_name: event.payload.tool_name, result: event.payload.result });
     }],
     ['claude-done', (event) => {
       if (!isDonePayload(event.payload)) {
         console.warn('claude-done: invalid payload, skipping', event.payload);
         return;
       }
-      handler({ type: 'done', ...event.payload });
+      handler({ type: 'done', id: event.payload.id });
     }],
     ['claude-error', (event) => {
       if (!isErrorPayload(event.payload)) {
         console.warn('claude-error: invalid payload, skipping', event.payload);
         return;
       }
-      handler({ type: 'error', ...event.payload });
+      handler({ type: 'error', id: event.payload.id, message: event.payload.message });
     }],
     ['claude-ready', () => handler({ type: 'ready' })],
   ];
