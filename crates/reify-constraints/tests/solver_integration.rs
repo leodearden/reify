@@ -506,3 +506,63 @@ fn nelder_mead_tolerance_config_does_not_degenerate() {
         other => panic!("expected Solved, got {:?}", other),
     }
 }
+
+/// Optimization with an already-feasible initial point should still produce Solved,
+/// with the objective driven toward its optimum (minimize pushes toward lower bound).
+#[test]
+fn optimize_with_feasible_initial_point() {
+    let solver = DimensionalSolver;
+
+    let thickness_id = vcid("Bracket", "thickness");
+    let thickness_ref = value_ref("Bracket", "thickness");
+
+    // thickness > 2mm AND thickness < 20mm
+    let gt_expr = gt(thickness_ref.clone(), literal(mm(2.0)));
+    let lt_expr = lt(thickness_ref.clone(), literal(mm(20.0)));
+
+    // Minimize thickness — should push toward 2mm lower bound
+    let objective = OptimizationObjective::Minimize(thickness_ref);
+
+    // Set current value to 10mm — already feasible (between 2mm and 20mm)
+    let mut current = ValueMap::new();
+    current.insert(
+        thickness_id.clone(),
+        Value::Scalar {
+            si_value: 0.010,
+            dimension: DimensionVector::LENGTH,
+        },
+    );
+
+    let problem = ResolutionProblem {
+        auto_params: vec![AutoParam {
+            id: thickness_id.clone(),
+            param_type: Type::length(),
+            bounds: Some((0.001, 0.1)),
+        }],
+        constraints: vec![
+            (cnid("Bracket", 0), gt_expr),
+            (cnid("Bracket", 1), lt_expr),
+        ],
+        current_values: current,
+        objective: Some(objective),
+        functions: vec![],
+    };
+
+    let result = solver.solve(&problem);
+    match result {
+        SolveResult::Solved { values } => {
+            let si = values
+                .get(&thickness_id)
+                .unwrap()
+                .as_f64()
+                .unwrap();
+            // Minimize should push thickness toward 2mm (lower constraint bound)
+            assert!(
+                si > 0.002 && si < 0.006,
+                "minimized thickness should be close to 2mm, got {} m",
+                si
+            );
+        }
+        other => panic!("expected Solved, got {:?}", other),
+    }
+}
