@@ -6414,7 +6414,8 @@
           "milestone": "stdlib-M8.3",
           "modules": [
             "crates/reify-eval/tests"
-          ]
+          ],
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         },
         "subtasks": [],
         "details": "Four .ri integration tests: (1) materials — aluminum bracket Physical+Elastic+Strong, computed mass; (2) ports — motor+gearbox RotaryPort, ThreadedPort M8; (3) tolerancing — flange with Position(MMC), Flatness, Ra 1.6μm; (4) units — all SI prefixes, imperial conversions, cross-system arithmetic.",
