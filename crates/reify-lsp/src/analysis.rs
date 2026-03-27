@@ -85,18 +85,34 @@ impl AnalysisContext {
     /// Find the source span and doc comment for a named member in the parsed module.
     fn find_parsed_member_span_and_doc(&self, name: &str) -> Option<(SourceSpan, Option<&str>)> {
         for decl in &self.parsed.declarations {
-            if let reify_syntax::Declaration::Structure(s) = decl {
-                for member in &s.members {
-                    match member {
-                        reify_syntax::MemberDecl::Param(p) if p.name == name => {
-                            return Some((p.span, p.doc.as_deref()));
+            match decl {
+                reify_syntax::Declaration::Structure(s) => {
+                    for member in &s.members {
+                        match member {
+                            reify_syntax::MemberDecl::Param(p) if p.name == name => {
+                                return Some((p.span, p.doc.as_deref()));
+                            }
+                            reify_syntax::MemberDecl::Let(l) if l.name == name => {
+                                return Some((l.span, l.doc.as_deref()));
+                            }
+                            _ => {}
                         }
-                        reify_syntax::MemberDecl::Let(l) if l.name == name => {
-                            return Some((l.span, l.doc.as_deref()));
-                        }
-                        _ => {}
                     }
                 }
+                reify_syntax::Declaration::Occurrence(o) => {
+                    for member in &o.members {
+                        match member {
+                            reify_syntax::MemberDecl::Param(p) if p.name == name => {
+                                return Some((p.span, p.doc.as_deref()));
+                            }
+                            reify_syntax::MemberDecl::Let(l) if l.name == name => {
+                                return Some((l.span, l.doc.as_deref()));
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                _ => {}
             }
         }
         None
@@ -110,6 +126,9 @@ impl AnalysisContext {
             match decl {
                 reify_syntax::Declaration::Structure(s) if s.name == name => {
                     return s.doc.as_deref();
+                }
+                reify_syntax::Declaration::Occurrence(o) if o.name == name => {
+                    return o.doc.as_deref();
                 }
                 reify_syntax::Declaration::Function(f) if f.name == name => {
                     return f.doc.as_deref();
@@ -133,29 +152,33 @@ impl AnalysisContext {
         result
     }
 
-    /// Return all structure names with member counts:
-    /// `(name, param_count, let_count, constraint_count)`.
-    pub fn structure_names(&self) -> Vec<(&str, usize, usize, usize)> {
+    /// Return all structure/occurrence names with member counts:
+    /// `(name, param_count, let_count, constraint_count, kind)`.
+    pub fn structure_names(&self) -> Vec<(&str, usize, usize, usize, &str)> {
         let mut result = Vec::new();
         for decl in &self.parsed.declarations {
-            if let reify_syntax::Declaration::Structure(s) = decl {
-                let param_count = s
-                    .members
-                    .iter()
-                    .filter(|m| matches!(m, reify_syntax::MemberDecl::Param(_)))
-                    .count();
-                let let_count = s
-                    .members
-                    .iter()
-                    .filter(|m| matches!(m, reify_syntax::MemberDecl::Let(_)))
-                    .count();
-                let constraint_count = s
-                    .members
-                    .iter()
-                    .filter(|m| matches!(m, reify_syntax::MemberDecl::Constraint(_)))
-                    .count();
-                result.push((s.name.as_str(), param_count, let_count, constraint_count));
-            }
+            let (members, name, kind) = match decl {
+                reify_syntax::Declaration::Structure(s) => {
+                    (&s.members, s.name.as_str(), "structure")
+                }
+                reify_syntax::Declaration::Occurrence(o) => {
+                    (&o.members, o.name.as_str(), "occurrence")
+                }
+                _ => continue,
+            };
+            let param_count = members
+                .iter()
+                .filter(|m| matches!(m, reify_syntax::MemberDecl::Param(_)))
+                .count();
+            let let_count = members
+                .iter()
+                .filter(|m| matches!(m, reify_syntax::MemberDecl::Let(_)))
+                .count();
+            let constraint_count = members
+                .iter()
+                .filter(|m| matches!(m, reify_syntax::MemberDecl::Constraint(_)))
+                .count();
+            result.push((name, param_count, let_count, constraint_count, kind));
         }
         result
     }
@@ -255,6 +278,17 @@ mod tests {
     }
 
     #[test]
+    fn find_member_decl_occurrence_param() {
+        let source = "occurrence def Joint {\n    param diameter: Scalar = 10mm\n}";
+        let ctx = AnalysisContext::new(source, &test_uri());
+        let info = ctx
+            .find_member_decl("diameter")
+            .expect("diameter should exist in occurrence");
+        assert_eq!(info.name, "diameter");
+        assert_eq!(info.kind, ValueCellKind::Param);
+    }
+
+    #[test]
     fn find_member_decl_nonexistent_returns_none() {
         let source = reify_test_support::bracket_source();
         let ctx = AnalysisContext::new(source, &test_uri());
@@ -291,11 +325,32 @@ mod tests {
         let ctx = AnalysisContext::new(source, &test_uri());
         let structs = ctx.structure_names();
         assert_eq!(structs.len(), 1);
-        let (name, params, lets, constraints) = structs[0];
+        let (name, params, lets, constraints, kind) = structs[0];
         assert_eq!(name, "Bracket");
         assert_eq!(params, 5);
         assert_eq!(lets, 2); // volume + body
         assert_eq!(constraints, 3);
+        assert_eq!(kind, "structure");
+    }
+
+    #[test]
+    fn structure_names_includes_occurrence() {
+        let source = "structure Bracket {\n    param width: Scalar = 80mm\n}\noccurrence def Joint {\n    param diameter: Scalar = 10mm\n    let radius = diameter / 2\n    constraint diameter > 5mm\n}";
+        let ctx = AnalysisContext::new(source, &test_uri());
+        let names = ctx.structure_names();
+        assert_eq!(names.len(), 2, "should have Bracket and Joint");
+        let (name0, p0, l0, c0, kind0) = names[0];
+        assert_eq!(name0, "Bracket");
+        assert_eq!(kind0, "structure");
+        assert_eq!(p0, 1);
+        assert_eq!(l0, 0);
+        assert_eq!(c0, 0);
+        let (name1, p1, l1, c1, kind1) = names[1];
+        assert_eq!(name1, "Joint");
+        assert_eq!(kind1, "occurrence");
+        assert_eq!(p1, 1);
+        assert_eq!(l1, 1);
+        assert_eq!(c1, 1);
     }
 
     // --- get_value tests ---
@@ -329,6 +384,14 @@ mod tests {
         let source = "/// A bracket.\nstructure Bracket {\n    param width: Scalar = 80mm\n}";
         let ctx = AnalysisContext::new(source, &test_uri());
         assert_eq!(ctx.find_entity_doc("Bracket"), Some("A bracket."));
+    }
+
+    #[test]
+    fn find_entity_doc_returns_doc_for_occurrence() {
+        let source =
+            "/// A joint process.\noccurrence def Joint {\n    param diameter: Scalar = 10mm\n}";
+        let ctx = AnalysisContext::new(source, &test_uri());
+        assert_eq!(ctx.find_entity_doc("Joint"), Some("A joint process."));
     }
 
     #[test]

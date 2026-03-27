@@ -50,7 +50,7 @@ pub fn compute_completions(source: &str, uri: &Url, _position: Position) -> Vec<
     }
 
     // (e) Structure names
-    for (name, _params, _lets, _constraints) in ctx.structure_names() {
+    for (name, _params, _lets, _constraints, _kind) in ctx.structure_names() {
         items.push(CompletionItem {
             label: name.to_string(),
             kind: Some(CompletionItemKind::STRUCT),
@@ -239,6 +239,20 @@ mod tests {
         assert!(
             !functions.is_empty(),
             "empty source should still have built-in functions"
+        );
+    }
+
+    #[test]
+    fn completions_include_occurrence_names() {
+        let source = "occurrence def Joint {\n    param diameter: Scalar = 10mm\n}";
+        let items = compute_completions(source, &test_uri(), Position::new(1, 0));
+        let structs: Vec<_> = items
+            .iter()
+            .filter(|i| i.kind == Some(CompletionItemKind::STRUCT))
+            .collect();
+        assert!(
+            structs.iter().any(|s| s.label == "Joint"),
+            "should include 'Joint' occurrence in completions"
         );
     }
 
