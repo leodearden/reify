@@ -10676,11 +10676,11 @@
         "description": "Tree-sitter generated files (src/parser.c at 63K lines, src/grammar.json, src/node-types.json) cause ~9 merge conflicts because they're committed by task branches. Instead:\n\n1. Add tree-sitter-reify/src/parser.c, grammar.json, node-types.json to .gitignore on task branches (or a pre-commit hook that unstages them)\n2. The orchestrator's merge worktree should run `tree-sitter generate` as a post-merge step before verification, regenerating from grammar.js\n3. Ensure CI also regenerates rather than relying on committed artifacts\n\nmemory_hints: search \"tree-sitter grammar generation\", get_entity \"tree-sitter-reify\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-03-27T11:07:17.238Z",
+        "updatedAt": "2026-03-27T12:16:38.649Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -10996,7 +10996,13 @@
             "gui/src",
             "gui/src/stores",
             "gui/src/__tests__"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Revert bridge.ts→claudeStore import, restore standalone ClaudeMessageContext"
+            ]
+          }
         },
         "updatedAt": "2026-03-27T12:15:14.736Z"
       },
@@ -12104,7 +12110,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-27T12:15:14.736Z",
+      "lastModified": "2026-03-27T12:16:38.650Z",
       "taskCount": 609,
       "completedCount": 278,
       "tags": [
