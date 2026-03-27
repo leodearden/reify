@@ -8435,11 +8435,11 @@
         "description": "The eval() cold path correctly resolves auto params per-template (lib.rs:1264-1392), but edit_param (lib.rs:1657-1674) and resolve_concurrent_edit (lib.rs:681-699) collect auto params from ALL templates via HashMap iteration into a single solver call.\n\n**What's wrong:**\n1. Auto params from unrelated templates (e.g., Bracket.thickness and Bolt.diameter) are coupled into one solver call\n2. scope_name is set from the entity of whichever auto param HashMap iteration yields first — non-deterministic, so the wrong optimization objective may be applied\n3. The incremental path can find different solutions than the cold-start path for the same inputs\n\n**Fix:** Group auto params by template entity (using the entity component of ValueCellId) before solving. Solve each group independently, matching the eval() per-template pattern. Use the template's entity name as scope_name for objective lookup. Add a test with multiple templates that have independent auto params to verify the paths produce identical results.\n\n**Memory hints:** search for \"auto resolution architecture\", \"two-phase eval\", entity names: resolve_concurrent_edit, edit_param, ResolutionProblem, scope_name",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-03-27T06:15:38.664Z"
+        "updatedAt": "2026-03-27T06:20:32.004Z"
       },
       {
         "id": "492",
@@ -8723,7 +8723,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-27T06:18:14.973Z",
+      "lastModified": "2026-03-27T06:20:32.004Z",
       "taskCount": 516,
       "completedCount": 253,
       "tags": [
