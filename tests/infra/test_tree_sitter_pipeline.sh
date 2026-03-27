@@ -112,6 +112,10 @@ assert "lint_command includes tree-sitter generate" \
 assert "type_check_command includes tree-sitter generate" \
     bash -c "grep '^type_check_command:' '$ROOT/orchestrator.yaml' | grep -q 'tree-sitter generate'"
 
+# ── Step 7: hooks/project-checks includes tree-sitter generation ───
+assert "hooks/project-checks includes tree-sitter generate" \
+    grep -q "tree-sitter generate" "$ROOT/hooks/project-checks"
+
 # ── Summary ─────────────────────────────────────────────────────────
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
