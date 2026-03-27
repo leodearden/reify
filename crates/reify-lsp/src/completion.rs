@@ -343,10 +343,10 @@ mod tests {
     }
 
     // --- position-sensitive completion tests (task 481) ---
-    // These tests assert that completions are context-sensitive based on cursor position.
-    // The current implementation returns everything everywhere, so the exclusion assertions
-    // FAIL — this is the expected TDD "red" state. The follow-up task implements
-    // position-sensitive filtering to make them pass (turn "green").
+    // These tests verify that completions are context-sensitive based on cursor position.
+    // Each test places the cursor in a specific context (top-level, body, expression,
+    // after-dot, type annotation, constraint expression) and asserts that only
+    // contextually-relevant completions are returned.
 
     #[test]
     fn completion_top_level_excludes_body_keywords() {
