@@ -98,6 +98,20 @@ assert "parser.c exists after regeneration" \
 assert "cargo check -p tree-sitter-reify succeeds after regeneration" \
     cargo check -p tree-sitter-reify
 
+# ── Step 6: Orchestrator verification commands include generation ───
+assert "orchestrator.yaml test_command includes tree-sitter generate" \
+    grep -q "tree-sitter generate" "$ROOT/orchestrator.yaml"
+
+# Check that the tree-sitter generate appears in test_command, lint_command, type_check_command lines.
+assert "test_command includes tree-sitter generate" \
+    bash -c "grep '^test_command:' '$ROOT/orchestrator.yaml' | grep -q 'tree-sitter generate'"
+
+assert "lint_command includes tree-sitter generate" \
+    bash -c "grep '^lint_command:' '$ROOT/orchestrator.yaml' | grep -q 'tree-sitter generate'"
+
+assert "type_check_command includes tree-sitter generate" \
+    bash -c "grep '^type_check_command:' '$ROOT/orchestrator.yaml' | grep -q 'tree-sitter generate'"
+
 # ── Summary ─────────────────────────────────────────────────────────
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
