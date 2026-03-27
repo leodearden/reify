@@ -9514,7 +9514,13 @@
         "priority": "medium",
         "subtasks": [],
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-compiler/src/lib.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/src"
+          ]
         }
       },
       {
@@ -9528,7 +9534,13 @@
         "priority": "low",
         "subtasks": [],
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-compiler/src/lib.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/src"
+          ]
         }
       },
       {
