@@ -26,6 +26,10 @@ pub struct MessageContext {
     pub diagnostics: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub constraints: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_file: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attached_contexts: Option<Vec<String>>,
 }
 
 /// Inbound messages sent from the GUI to the sidecar (over sidecar stdin).

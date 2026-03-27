@@ -1253,6 +1253,8 @@ fn format_inbound_send_message_with_context_includes_context() {
             selected_entity: Some("box1".to_string()),
             diagnostics: None,
             constraints: None,
+            current_file: None,
+            attached_contexts: None,
         }),
     };
     let line = format_inbound(&msg);
