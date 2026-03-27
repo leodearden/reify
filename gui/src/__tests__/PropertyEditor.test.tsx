@@ -602,7 +602,6 @@ describe('PropertyEditor quantity literal acceptance', () => {
     ['1.5m'],
     ['100cm'],
     ['1rad'],
-    ['5 mm'],
     ['-10mm'],
   ])("'%s' on Enter DOES call onSetParameter", (qtyLiteral) => {
     const onSetParam = vi.fn();
@@ -621,6 +620,9 @@ describe('PropertyEditor quantity literal acceptance', () => {
   it.each([
     ['10xyz'],
     ['mm80'],
+    ['5 mm'],
+    ['5  mm'],
+    ['5\tmm'],
   ])("'%s' on Enter does NOT call onSetParameter", (invalidLiteral) => {
     const onSetParam = vi.fn();
     render(() => (
