@@ -12296,7 +12296,15 @@
         "priority": "medium",
         "subtasks": [],
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "gui/sidecar/src/session.ts",
+            "gui/sidecar/src/__tests__/session.test.ts"
+          ],
+          "modules": [
+            "gui/sidecar/src",
+            "gui/sidecar/src/__tests__"
+          ]
         }
       },
       {
@@ -12310,7 +12318,13 @@
         "priority": "medium",
         "subtasks": [],
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "tree-sitter-reify/build.rs"
+          ],
+          "modules": [
+            "tree-sitter-reify"
+          ]
         }
       },
       {
