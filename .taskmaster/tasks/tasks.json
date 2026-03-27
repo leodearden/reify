@@ -7474,11 +7474,11 @@
         "description": "Three missing test cases in crates/reify-expr/tests/gradient_tests.rs:\n\n1. Point3 with non-Scalar quantity (e.g., Vec3) as domain -> eval_gradient should return Undef.\n2. Wrong-sized Tensor point (e.g., 2-component instead of 3) -> compute_numerical_gradient should return Undef.\n3. Partial Undef propagation: lambda returns Undef only for perturbations on one axis, verifying the early-exit behavior.\n\nSource: review suggestions from esc-281-11 (task 281).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-26T18:35:59.539Z"
+        "updatedAt": "2026-03-27T06:07:00.294Z"
       },
       {
         "id": "415",
@@ -7536,11 +7536,11 @@
         "description": "Seven test issues in crates/reify-compiler/tests/unit_registry_tests.rs:\n\n1. Add missing 'in' (inch) and 's' (second) to regression_hardcoded_units_all_still_resolve.\n2. Assert all 3 params (mm, deg, kg) in hardcoded_units_still_work_without_declarations.\n3. Add test for Dimensionless dimension type.\n4. Add test for division-by-zero guard in evaluate_const_expr.\n5. Add test for non-constant expression rejection in unit conversion.\n6. Add test that user-declared unit overrides hardcoded unit.\n7. Remove duplicate test: evaluate_const_quantity_literal_cross_ref == unit_cross_ref_in_conversion_expr.\n\nSource: review suggestions from esc-208-28 (task 208).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-26T18:37:16.469Z"
+        "updatedAt": "2026-03-27T06:07:00.324Z"
       },
       {
         "id": "420",
@@ -8723,7 +8723,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-27T06:07:00.260Z",
+      "lastModified": "2026-03-27T06:07:00.324Z",
       "taskCount": 516,
       "completedCount": 253,
       "tags": [
