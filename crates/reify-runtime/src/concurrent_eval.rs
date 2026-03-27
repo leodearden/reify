@@ -8,12 +8,15 @@
 //! tracking, not by the adapter. The adapter is purely computational — it evaluates
 //! expressions, computes content hashes, and records results.
 //!
-//! **Lock poisoning recovery:** All lock acquisitions use
-//! `.unwrap_or_else(|e| e.into_inner())` to recover gracefully from poisoned locks.
-//! A poisoned lock means a previous evaluation task panicked while holding the lock —
-//! the data may be partially updated, but recovering prevents cascading panics that
-//! would take down all concurrent tasks sharing the adapter. This matches the pattern
-//! used in `SharedPriorityPromoter`.
+//! **Lock poisoning recovery:** All lock acquisitions recover gracefully from poisoned
+//! locks via private helper methods (`read_values()`, `write_values()`,
+//! `read_snapshot_values()`, `write_snapshot_values()`, `lock_results()`) that emit
+//! `tracing::warn!` on recovery. A poisoned lock means a previous evaluation task
+//! panicked while holding the lock — the data may be partially updated, but recovering
+//! prevents cascading panics that would take down all concurrent tasks sharing the
+//! adapter. The `into_result()` method uses inline recovery with `tracing::warn!`
+//! because `self` is consumed by `Arc::try_unwrap`. This matches the pattern used in
+//! `SharedPriorityPromoter`.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
@@ -184,7 +187,10 @@ impl ConcurrentEvalAdapter {
     ///
     /// Extracts the final values, snapshot_values, and results.
     /// Recovers gracefully from poisoned locks on both the `into_inner()`
-    /// (sole-owner) and `read()`/`lock()` (shared-reference fallback) paths.
+    /// (sole-owner) and `read()`/`lock()` (shared-reference fallback) paths,
+    /// emitting `tracing::warn!` on each recovery. These stay inline because
+    /// `self` is consumed by `Arc::try_unwrap` — the helper methods (which take
+    /// `&self`) cannot be used here.
     ///
     /// The `skipped` set is provided by the scheduler's `SchedulerResult`.
     pub fn into_result(
@@ -193,16 +199,45 @@ impl ConcurrentEvalAdapter {
         skipped: HashSet<NodeId>,
     ) -> ConcurrentEditResult {
         let values = match Arc::try_unwrap(self.values) {
-            Ok(lock) => lock.into_inner().unwrap_or_else(|e| e.into_inner()),
-            Err(arc) => arc.read().unwrap_or_else(|e| e.into_inner()).clone(),
+            Ok(lock) => lock.into_inner().unwrap_or_else(|e| {
+                tracing::warn!("values RwLock poisoned (into_inner), recovering: {e}");
+                e.into_inner()
+            }),
+            Err(arc) => arc
+                .read()
+                .unwrap_or_else(|e| {
+                    tracing::warn!("values RwLock poisoned (shared fallback), recovering: {e}");
+                    e.into_inner()
+                })
+                .clone(),
         };
         let snapshot_values = match Arc::try_unwrap(self.snapshot_values) {
-            Ok(lock) => lock.into_inner().unwrap_or_else(|e| e.into_inner()),
-            Err(arc) => arc.read().unwrap_or_else(|e| e.into_inner()).clone(),
+            Ok(lock) => lock.into_inner().unwrap_or_else(|e| {
+                tracing::warn!("snapshot_values RwLock poisoned (into_inner), recovering: {e}");
+                e.into_inner()
+            }),
+            Err(arc) => arc
+                .read()
+                .unwrap_or_else(|e| {
+                    tracing::warn!(
+                        "snapshot_values RwLock poisoned (shared fallback), recovering: {e}"
+                    );
+                    e.into_inner()
+                })
+                .clone(),
         };
         let node_results = match Arc::try_unwrap(self.results) {
-            Ok(lock) => lock.into_inner().unwrap_or_else(|e| e.into_inner()),
-            Err(arc) => arc.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+            Ok(lock) => lock.into_inner().unwrap_or_else(|e| {
+                tracing::warn!("results Mutex poisoned (into_inner), recovering: {e}");
+                e.into_inner()
+            }),
+            Err(arc) => arc
+                .lock()
+                .unwrap_or_else(|e| {
+                    tracing::warn!("results Mutex poisoned (shared fallback), recovering: {e}");
+                    e.into_inner()
+                })
+                .clone(),
         };
 
         // actual_eval_set = eval_set nodes that weren't skipped
