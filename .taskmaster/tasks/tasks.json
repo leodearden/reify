@@ -10779,6 +10779,19 @@
         ],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 548,
+        "title": "Harden Claude error-handling test suite",
+        "description": "Review findings from task 522: multiple test robustness issues in App.test.tsx and claudeBridge.test.ts Claude error handling tests.\n\n1. **Toast assertion missing** (App.test.tsx ~line 1959): 'logs error to console when subscribeToClaudeEvents fails' only asserts console.error but never verifies the toast ('Claude assistant unavailable') appears. Add waitFor block checking toast element, matching the abort-failure test pattern.\n2. **Timing issue** (App.test.tsx ~line 1970): consoleSpy assertion outside waitFor — the catch block executes asynchronously. Wrap in waitFor for consistency.\n3. **claudeHandler! guard** (App.test.tsx ~line 1997): Non-null assertion used without prior check that subscribeToClaudeEvents mock was called. Add `await waitFor(() => expect(claudeHandler).toBeDefined())` before calling.\n4. **Spy cleanup** (App.test.tsx ~lines 1975, 2023): consoleSpy.mockRestore() not in try/finally. If assertion throws, spy leaks. Use try/finally or move to afterEach.\n5. **Discriminant test coverage** (claudeBridge.test.ts ~line 280): 'payload type field does not override event discriminant' only covers text_delta. Add at least one more variant (e.g. claude-error) to verify the pattern.\n\nMemory hints: search \"Claude error handling test subscribeToClaudeEvents toast assertion spy cleanup\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          522
+        ],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -10791,7 +10804,7 @@
       ],
       "created": "2026-03-27T08:55:05.090Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-27T08:55:11.445Z"
+      "updated": "2026-03-27T08:55:17.654Z"
     }
   }
 }
