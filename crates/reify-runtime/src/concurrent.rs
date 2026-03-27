@@ -315,21 +315,21 @@ impl ConcurrentScheduler {
                     let start = std::time::Instant::now();
                     let outcome = eval.evaluate(n.clone()).await;
                     // Commitment check: if cancel fired and tracker is present
-                    if cancel_clone.is_cancelled() {
-                        if let Some(ref tracker) = tracker_clone {
-                            let elapsed = start.elapsed();
-                            let progress = crate::commitment::TaskProgress {
-                                elapsed,
-                                reported_progress: None,
-                                previous_runtime: None,
-                            };
-                            let mut guard =
-                                tracker.lock().unwrap_or_else(|e| e.into_inner());
-                            guard.update_status(&n, &progress, has_intermediate);
-                            if !guard.should_continue(&n, true) {
-                                // Uncommitted in dirty cone — drop result
-                                return (n, None);
-                            }
+                    if cancel_clone.is_cancelled()
+                        && let Some(ref tracker) = tracker_clone
+                    {
+                        let elapsed = start.elapsed();
+                        let progress = crate::commitment::TaskProgress {
+                            elapsed,
+                            reported_progress: None,
+                            previous_runtime: None,
+                        };
+                        let mut guard =
+                            tracker.lock().unwrap_or_else(|e| e.into_inner());
+                        guard.update_status(&n, &progress, has_intermediate);
+                        if !guard.should_continue(&n, true) {
+                            // Uncommitted in dirty cone — drop result
+                            return (n, None);
                         }
                     }
                     (n, Some(outcome))
