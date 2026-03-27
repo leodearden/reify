@@ -176,6 +176,25 @@ mod tests {
     }
 
     #[test]
+    fn goto_def_cursor_in_occurrence_scopes_to_enclosing() {
+        // Structure A and occurrence B both have param diameter.
+        // Cursor on 'diameter' in B's constraint should jump to B's param, not A's.
+        let source = "structure A {\n    param diameter: Scalar = 10mm\n}\noccurrence def B {\n    param diameter: Scalar = 20mm\n    constraint diameter > 5mm\n}";
+        // Line 5: "    constraint diameter > 5mm"
+        //                        ^ col 15 = 'diameter' reference
+        let position = Position::new(5, 15);
+        let loc = compute_goto_definition(source, &test_uri(), position)
+            .expect("goto-def for diameter in B should return location");
+        assert_eq!(loc.uri, test_uri());
+        // Should point to B's param diameter on line 4, NOT A's on line 1
+        assert_eq!(
+            loc.range.start.line, 4,
+            "expected B's param diameter (line 4), got line {}",
+            loc.range.start.line
+        );
+    }
+
+    #[test]
     fn goto_def_unknown_word_returns_none() {
         let source = "structure Foo {\n  param x: Scalar = 5mm\n}";
         // Position past end of meaningful content
