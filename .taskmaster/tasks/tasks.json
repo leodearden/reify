@@ -11755,6 +11755,17 @@
         "dependencies": [],
         "priority": "high",
         "subtasks": []
+      },
+      {
+        "id": 585,
+        "title": "LSP: Introduce EntityKind enum and rename structure_names",
+        "description": "structure_names() now returns both structures and occurrences, making its name a misnomer. It also returns an anonymous positional tuple `Vec<(&str, usize, usize, usize, &str)>` where the 5th element is a raw display string \"structure\"/\"occurrence\" — coupling analysis with presentation.\n\nRefactor:\n1. Add `pub enum EntityKind { Structure, Occurrence }` in analysis.rs (or a shared types module).\n2. Optionally introduce `pub struct EntitySummary<'a> { name, params, lets, constraints, kind: EntityKind }`.\n3. Rename `structure_names()` → `entity_names()` or `declaration_summaries()`.\n4. Update call sites in hover.rs and completion.rs to match on EntityKind for display strings.\n\nAll call sites are within the reify-lsp crate — mechanical rename with no semantic change.\n\nMemory hints: search \"LSP analysis structure_names EntityKind\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -11767,7 +11778,7 @@
       ],
       "created": "2026-03-27T11:29:42.301Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-27T11:29:42.311Z"
+      "updated": "2026-03-27T11:29:48.367Z"
     }
   }
 }
