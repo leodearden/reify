@@ -464,15 +464,17 @@ impl OcctKernel {
                     )));
                 }
                 if *angle_rad == 0.0 {
-                    return Err(GeometryError::OperationFailed(
-                        "revolve angle must not be zero".into(),
-                    ));
+                    return Err(GeometryError::OperationFailed(format!(
+                        "revolve angle must not be zero, got {}",
+                        angle_rad
+                    )));
                 }
                 let mag_sq = axis_dir[0].powi(2) + axis_dir[1].powi(2) + axis_dir[2].powi(2);
                 if mag_sq < AXIS_MAG_SQ_MIN {
-                    return Err(GeometryError::OperationFailed(
-                        "revolve axis direction must not be zero-length".into(),
-                    ));
+                    return Err(GeometryError::OperationFailed(format!(
+                        "revolve axis_dir must not be zero-length: [{}, {}, {}]",
+                        axis_dir[0], axis_dir[1], axis_dir[2]
+                    )));
                 }
                 let profile_shape = self.get_shape(*profile)?;
                 ffi::ffi::make_revolve(
