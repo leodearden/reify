@@ -3,7 +3,7 @@
 //! Walks a `CompiledExpr` tree and determines which `ConstraintDomain`
 //! applies, based on the leaf value types and operators encountered.
 
-use reify_types::{CompiledExpr, CompiledExprKind, ConstraintDomain, Type, Value};
+use reify_types::{CompiledExpr, CompiledExprKind, ConstraintDomain, Type};
 
 /// Internal flags collected during expression tree traversal.
 #[derive(Default)]
@@ -73,37 +73,14 @@ impl ConstraintClassifier {
         expr.walk(&mut |node| {
             match &node.kind {
                 CompiledExprKind::Literal(value) => {
-                    match value {
-                        Value::Bool(_) => flags.has_logical = true,
-                        Value::Int(_) | Value::Real(_) | Value::Scalar { .. } => {
-                            flags.has_numeric = true;
-                        }
-                        Value::String(_) | Value::Undef => {
-                            // String and Undef don't contribute to domain classification
-                        }
-                        Value::Enum { .. }
-                        | Value::List(_)
-                        | Value::Set(_)
-                        | Value::Map(_)
-                        | Value::Option(_)
-                        | Value::Lambda { .. }
-                        | Value::Field { .. }
-                        | Value::Tensor(_)
-                        | Value::Point(_)
-                        | Value::Vector(_)
-                        | Value::Matrix(_)
-                        | Value::Complex { .. }
-                        | Value::Orientation { .. }
-                        | Value::Frame { .. }
-                        | Value::Transform { .. }
-                        | Value::Plane { .. }
-                        | Value::Axis { .. }
-                        | Value::BoundingBox { .. }
-                        | Value::Range { .. } => {
-                            // Collection, enum, lambda, field, tensor, Point, Vector, Matrix, Complex,
-                            // Orientation, Frame, Transform, Plane, Axis, BoundingBox, and Range types don't contribute to domain classification.
-                        }
+                    // Domain classification is centralised on Value itself so
+                    // that adding a new variant only requires editing value.rs.
+                    if value.is_domain_logical_leaf() {
+                        flags.has_logical = true;
+                    } else if value.is_domain_numeric_leaf() {
+                        flags.has_numeric = true;
                     }
+                    // All other variants don't contribute to domain classification.
                 }
                 CompiledExprKind::ValueRef(_) => {
                     // Classify based on the result type of the reference,
@@ -131,7 +108,7 @@ impl ConstraintClassifier {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_types::{BinOp, ContentHash, DimensionVector};
+    use reify_types::{BinOp, ContentHash, DimensionVector, Value};
 
     #[test]
     fn literal_int_is_numeric() {
