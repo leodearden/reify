@@ -8552,7 +8552,13 @@
         "priority": "medium",
         "subtasks": [],
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "gui/src-tauri/src/types.rs"
+          ],
+          "modules": [
+            "gui/src-tauri/src"
+          ]
         }
       },
       {
