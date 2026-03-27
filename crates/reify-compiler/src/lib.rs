@@ -688,6 +688,13 @@ fn evaluate_const_expr(
                     return None;
                 }
                 let si = value * entry.factor;
+                if !si.is_finite() {
+                    diagnostics.push(
+                        Diagnostic::error("overflow in unit conversion expression")
+                            .with_label(DiagnosticLabel::new(expr.span, "result is not finite")),
+                    );
+                    return None;
+                }
                 Some(si)
             } else if let Some((scalar_val, _dim)) = unit_to_scalar(*value, unit) {
                 if let Value::Scalar { si_value, .. } = scalar_val {
