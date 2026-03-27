@@ -8770,7 +8770,10 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+        }
       },
       {
         "id": 484,
@@ -9234,4 +9237,8 @@
       "tags": [
         "master"
       ],
-      "create
+      "created": "2026-03-27T07:21:01.637Z",
+      "description": "Tasks for master context"
+    }
+  }
+}
