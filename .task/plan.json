@@ -1,0 +1,95 @@
+{
+  "task_id": "560",
+  "title": "Extract lock-recovery helpers on ConcurrentEvalAdapter",
+  "files": [
+    "crates/reify-runtime/src/concurrent_eval.rs",
+    "crates/reify-runtime/tests/concurrent_eval.rs"
+  ],
+  "modules": [
+    "crates/reify-runtime/src"
+  ],
+  "analysis": "TASK ALREADY COMPLETE ON MAIN. The 5 private helper methods (read_values, write_values, read_snapshot_values, write_snapshot_values, lock_results) already exist on lines 92-133 of concurrent_eval.rs and are used throughout: values(), take_results(), build_result_shared(), and the AsyncNodeEvaluator::evaluate() impl. The git log shows these were introduced via commits 64236102 ('add 5 lock helper methods'), 87a19b99 ('refactor take_results/build_result_shared'), d02a193b ('refactor evaluate()'), and ad4e84d2 ('add tracing::warn! to into_result()'). The 6 remaining inline patterns in into_result() (lines 200-241) are intentionally kept inline because self is consumed by Arc::try_unwrap \u2014 the &self helper methods cannot be called after self is moved. This is documented in the module-level doc comment (lines 16-18). 17 poison recovery tests exist and pass (3 test modules: poison_recovery, poison_panics, poison_evaluate), all gated behind feature = 'test-utils'. The CliToolContext::lock_state() precedent pattern (crates/reify-cli/src/mcp_context.rs:55-58) uses the same unwrap_or_else(|poisoned| poisoned.into_inner()) idiom but without tracing::warn! \u2014 the ConcurrentEvalAdapter helpers enhance this pattern by adding tracing diagnostics. No code changes are required. Verification only.",
+  "prerequisites": [
+    {
+      "id": "pre-1",
+      "description": "Verify all 17 poison recovery tests pass with 'cargo test -p reify-runtime --test concurrent_eval --features test-utils -- poison'",
+      "status": "done",
+      "commit": "e2c53e4c",
+      "tests": [
+        "poison_recovery::tracing_warn_emitted_on_poison_values_read",
+        "poison_recovery::values_recovers_from_poisoned_values_lock",
+        "poison_recovery::take_results_recovers_from_poisoned_results_lock",
+        "poison_recovery::tracing_warn_emitted_on_poison_results_lock",
+        "poison_recovery::tracing_warn_emitted_on_poison_snapshot_values_read",
+        "poison_panics::build_result_shared_recovers_from_poisoned_values_lock",
+        "poison_panics::build_result_shared_recovers_from_poisoned_snapshot_values_lock",
+        "poison_panics::build_result_shared_recovers_from_poisoned_results_lock",
+        "poison_panics::into_result_recovers_from_poisoned_values_lock",
+        "poison_panics::into_result_recovers_from_poisoned_snapshot_values_lock",
+        "poison_panics::into_result_recovers_from_poisoned_results_lock",
+        "poison_panics::tracing_warn_emitted_on_poison_into_result",
+        "poison_evaluate::evaluate_recovers_poisoned_values_read",
+        "poison_evaluate::evaluate_recovers_poisoned_values_write",
+        "poison_evaluate::evaluate_recovers_poisoned_snapshot_values",
+        "poison_evaluate::evaluate_recovers_poisoned_results",
+        "poison_evaluate::tracing_warn_emitted_on_poison_evaluate"
+      ]
+    },
+    {
+      "id": "pre-2",
+      "description": "Verify no remaining extractable inline unwrap_or_else(|e| e.into_inner()) patterns exist outside helper methods and into_result() \u2014 grep confirms only helper definitions (5) and into_result() consumed-self paths (6) remain",
+      "status": "done",
+      "commit": "e2c53e4c",
+      "tests": []
+    }
+  ],
+  "steps": [
+    {
+      "id": "step-1",
+      "type": "test",
+      "description": "Verify existing tests confirm all 5 helpers work: run full concurrent_eval test suite including poison_recovery, poison_panics, and poison_evaluate modules. All 17 tests should pass. No new tests needed \u2014 coverage is comprehensive.",
+      "status": "done",
+      "commit": "e2c53e4c"
+    },
+    {
+      "id": "step-2",
+      "type": "impl",
+      "description": "No implementation needed \u2014 mark task as done. The 5 helpers (read_values, write_values, read_snapshot_values, write_snapshot_values, lock_results) exist and replace all extractable inline occurrences. The 6 into_result() inline patterns are intentionally kept inline (self consumed by Arc::try_unwrap) and are documented.",
+      "status": "done",
+      "commit": "e2c53e4c"
+    }
+  ],
+  "design_decisions": [
+    {
+      "decision": "The 6 inline unwrap_or_else patterns in into_result() are intentionally NOT extracted into helpers",
+      "rationale": "into_result() consumes self via Arc::try_unwrap. The &self helper methods (read_values, etc.) cannot be called after self.values/self.snapshot_values/self.results are moved out. The two code paths per field (Ok: RwLock/Mutex::into_inner poison recovery, Err: .read()/.lock() shared-ref fallback) each need their own recovery. This is documented in the module-level doc comment (lines 16-18) and the into_result() method doc (lines 191-193)."
+    },
+    {
+      "decision": "Helpers add tracing::warn! on poison recovery, enhancing the CliToolContext::lock_state() precedent",
+      "rationale": "CliToolContext::lock_state() silently recovers via unwrap_or_else(|poisoned| poisoned.into_inner()). ConcurrentEvalAdapter helpers emit tracing::warn! because concurrent evaluation poisoning indicates a task panic mid-computation \u2014 this diagnostic is critical for debugging production scheduler issues."
+    },
+    {
+      "decision": "Task is already complete on main \u2014 no code changes required",
+      "rationale": "Git log shows commits 64236102, 87a19b99, d02a193b, ad4e84d2 implemented all requested changes. 17 tests pass. The worktree has zero diff from main."
+    }
+  ],
+  "reuse": [
+    {
+      "what": "CliToolContext::lock_state() poison recovery pattern",
+      "where": "crates/reify-cli/src/mcp_context.rs:55-58",
+      "how": "Same unwrap_or_else(|e| e.into_inner()) idiom used as the base pattern, enhanced with tracing::warn! in ConcurrentEvalAdapter helpers"
+    },
+    {
+      "what": "SharedPriorityPromoter inline poison recovery (6 occurrences)",
+      "where": "crates/reify-runtime/src/priority_promotion.rs:128-173",
+      "how": "Same inline pattern as into_result() \u2014 candidate for similar helper extraction in a separate task"
+    },
+    {
+      "what": "poison_*() test helpers on ConcurrentEvalAdapter",
+      "where": "crates/reify-runtime/src/concurrent_eval.rs:264-298 (cfg(test/test-utils))",
+      "how": "poison_values(), poison_snapshot_values(), poison_results() enable targeted lock poisoning for test assertions"
+    }
+  ],
+  "_session_id": "560-2e616c95",
+  "_created_at": "2026-03-27T12:08:20.807093+00:00"
+}
