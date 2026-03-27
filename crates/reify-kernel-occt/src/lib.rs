@@ -319,13 +319,17 @@ impl OcctKernel {
                 let mag_sq = plane_normal[0] * plane_normal[0]
                     + plane_normal[1] * plane_normal[1]
                     + plane_normal[2] * plane_normal[2];
-                if mag_sq == 0.0
-                    || !plane_normal[0].is_finite()
+                if !plane_normal[0].is_finite()
                     || !plane_normal[1].is_finite()
                     || !plane_normal[2].is_finite()
                 {
                     return Err(GeometryError::OperationFailed(
                         "mirror plane normal must be a finite non-zero vector".into(),
+                    ));
+                }
+                if mag_sq < AXIS_MAG_SQ_MIN {
+                    return Err(GeometryError::OperationFailed(
+                        "mirror plane normal must not be zero-length".into(),
                     ));
                 }
                 ffi::ffi::mirror_shape(
