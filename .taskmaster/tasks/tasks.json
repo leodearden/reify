@@ -5011,7 +5011,8 @@
           "modules": [
             "crates/reify-eval"
           ],
-          "milestone": "M11"
+          "milestone": "M11",
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         },
         "subtasks": [],
         "updatedAt": "2026-03-24T06:01:46.000Z"
@@ -5031,7 +5032,8 @@
           "modules": [
             "crates/reify-compiler"
           ],
-          "milestone": "M11"
+          "milestone": "M11",
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         },
         "subtasks": [],
         "updatedAt": "2026-03-24T06:01:46.000Z"
