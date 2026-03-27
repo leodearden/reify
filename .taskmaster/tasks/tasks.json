@@ -10502,13 +10502,13 @@
         "description": "In gui/src/bridge.ts, subscribeToClaudeEvents() uses a spread-cast pattern for all 7 claude-* event types (claude-text-delta, claude-thinking-delta, claude-tool-call, claude-tool-result, claude-done, claude-error, claude-ready). Each listen() handler casts the Tauri event payload directly to an OutboundMessage shape without validation. If a payload's shape diverges from OutboundMessage (e.g. during sidecar protocol evolution or version mismatch), errors will be silent and the store will receive malformed messages.\\n\\nFix: Add discriminated type-guards (or Zod schema validation) for each event type in the listen() handlers. Each guard should validate the required fields for that event variant before calling the handler — on validation failure, log a warning and skip the message.\\n\\nSource: Stage 1 review of task 476 merge.",
         "details": "<info added on 2026-03-27T09:02:57.775Z>\nNOTE: This task is a subset of task 522 (Harden Claude bridge payload mapping and type safety), which covers the same spread-cast/type-guard issue plus two other bridge improvements. If task 522 completes successfully, this task should be cancelled as a duplicate. Do not start this task independently — check task 522 status first.\n</info added on 2026-03-27T09:02:57.775Z>",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "cancelled",
         "dependencies": [
           "476"
         ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-27T11:07:18.226Z",
+        "updatedAt": "2026-03-27T12:15:03.917Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -12104,7 +12104,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-27T12:15:03.811Z",
+      "lastModified": "2026-03-27T12:15:03.917Z",
       "taskCount": 609,
       "completedCount": 278,
       "tags": [
