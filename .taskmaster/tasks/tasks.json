@@ -10964,7 +10964,8 @@
         "metadata": {
           "modules": [
             "crates/reify-compiler"
-          ]
+          ],
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         }
       },
       {
@@ -10982,7 +10983,8 @@
           "modules": [
             "crates/reify-compiler",
             "crates/reify-eval"
-          ]
+          ],
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         }
       },
       {
