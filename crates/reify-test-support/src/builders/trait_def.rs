@@ -1,4 +1,4 @@
-use reify_types::{ContentHash, DimensionVector, SourceSpan, Type, TypeParam};
+use reify_types::{ContentHash, SourceSpan, Type, TypeParam};
 
 use reify_compiler::{
     CompiledTrait, DefaultKind, RequirementKind, TraitDefault, TraitRequirement,
@@ -183,7 +183,7 @@ impl CompiledTraitBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_types::Value;
+    use reify_types::DimensionVector;
 
     // step-1: failing test for TraitDefBuilder minimal
     #[test]

@@ -2,7 +2,7 @@ use reify_compiler::{
     CompiledField, CompiledImport, CompiledModule, CompiledPurpose, CompiledTrait,
     TopologyTemplate,
 };
-use reify_types::{ContentHash, SourceSpan, Type};
+use reify_types::{ContentHash, SourceSpan};
 
 /// Builder for `CompiledModule`.
 pub struct CompiledModuleBuilder {
@@ -145,7 +145,7 @@ mod tests {
         literal, CompiledFieldBuilder, CompiledPurposeBuilder, CompiledTraitBuilder,
         TraitDefBuilder,
     };
-    use reify_types::{EnumDef, ModulePath, Value};
+    use reify_types::{EnumDef, ModulePath, Type, Value};
 
     fn module_path() -> ModulePath {
         ModulePath::new(vec!["test".to_string()])

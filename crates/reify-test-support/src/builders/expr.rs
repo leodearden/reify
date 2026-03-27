@@ -1,6 +1,6 @@
 use reify_types::{
-    BinOp, CompiledExpr, CompiledExprKind, ContentHash, DimensionVector, ResolvedFunction,
-    SourceSpan, Type, UnOp, Value, ValueCellId,
+    BinOp, CompiledExpr, CompiledExprKind, ContentHash, DimensionVector, ResolvedFunction, Type,
+    UnOp, Value, ValueCellId,
 };
 
 // --- Expression builders ---
