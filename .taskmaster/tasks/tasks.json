@@ -8189,7 +8189,13 @@
         "subtasks": [],
         "updatedAt": "2026-03-26T02:42:00.296Z",
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-compiler/src/lib.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/src"
+          ]
         }
       },
       {
@@ -8204,7 +8210,13 @@
         "subtasks": [],
         "updatedAt": "2026-03-26T02:40:14.632Z",
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-compiler/tests/recursive_detection_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/tests"
+          ]
         }
       },
       {
