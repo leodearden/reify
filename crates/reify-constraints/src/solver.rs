@@ -1941,4 +1941,61 @@ mod tests {
             result
         );
     }
+
+    /// Running the solver through TerminationReason extraction must not panic
+    /// or regress the result. A minimal 1-param feasible problem should still
+    /// return Solved or Infeasible (never NoProgress for a well-formed problem).
+    #[test]
+    fn termination_reason_extracted_without_panic() {
+        use crate::DimensionalSolver;
+        use reify_types::{
+            AutoParam, BinOp, CompiledExpr, ConstraintNodeId, DimensionVector, Type, Value,
+            ValueCellId,
+        };
+
+        let solver = DimensionalSolver;
+        let x_id = ValueCellId::new("Part", "x");
+
+        // Simple feasibility: x > 5mm AND x < 50mm
+        let x_ref = CompiledExpr::value_ref(x_id.clone(), Type::length());
+        let five_mm = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: 0.005,
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::length(),
+        );
+        let fifty_mm = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: 0.050,
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::length(),
+        );
+        let gt_expr =
+            CompiledExpr::binop(BinOp::Gt, x_ref.clone(), five_mm, Type::Bool);
+        let lt_expr = CompiledExpr::binop(BinOp::Lt, x_ref, fifty_mm, Type::Bool);
+
+        let problem = ResolutionProblem {
+            auto_params: vec![AutoParam {
+                id: x_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.1)),
+            }],
+            constraints: vec![
+                (ConstraintNodeId::new("Part", 0), gt_expr),
+                (ConstraintNodeId::new("Part", 1), lt_expr),
+            ],
+            current_values: ValueMap::new(),
+            objective: None,
+            functions: vec![],
+        };
+
+        let result = solver.solve(&problem);
+        assert!(
+            matches!(result, SolveResult::Solved { .. } | SolveResult::Infeasible { .. }),
+            "well-formed 1-param problem should return Solved or Infeasible, got {:?}",
+            result
+        );
+    }
 }
