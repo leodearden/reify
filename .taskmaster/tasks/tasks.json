@@ -10514,13 +10514,13 @@
         "description": "In gui/src/bridge.ts, the ClaudeMessageContext type defines only 3 fields (selectedEntity, diagnostics, constraints). The store's MessageContext type has 5 fields (selectedEntity, diagnostics, constraints, currentFile, attachedContexts). The two extra fields (currentFile, attachedContexts) are silently dropped when the bridge constructs the Tauri invoke payload, so the Claude sidecar never receives file context or attached contexts from the GUI.\\n\\nFix:\\n1. Add currentFile (string | undefined) and attachedContexts (string[] | undefined) to ClaudeMessageContext in bridge.ts.\\n2. Update claudeSendMessage() to pass these fields through, with appropriate snake_case mapping for the Rust backend (current_file, attached_contexts).\\n3. Update the Rust ClaudeContext struct in claude_bridge.rs to accept current_file and attached_contexts fields.\\n4. Update bridge tests to cover the new fields.\\n\\nSource: Stage 1 review of task 476 merge.\\n\\nmemory_hints: search \\\"ClaudeMessageContext MessageContext field alignment\\\", entities: bridge.ts, claudeSendMessage, ClaudeContext",
         "details": "<info added on 2026-03-27T09:03:00.264Z>\nNOTE: This task is a subset of task 522 (Harden Claude bridge payload mapping and type safety), which covers the same ClaudeMessageContext alignment issue plus two other bridge improvements. If task 522 completes successfully, this task should be cancelled as a duplicate. Do not start this task independently — check task 522 status first.\n</info added on 2026-03-27T09:03:00.264Z>",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "476"
         ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-27T08:54:05.376Z",
+        "updatedAt": "2026-03-27T11:39:08.527Z",
         "metadata": {
           "modules": [
             "gui/sidecar",
@@ -11876,7 +11876,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-27T11:39:07.505Z",
+      "lastModified": "2026-03-27T11:39:08.531Z",
       "taskCount": 594,
       "completedCount": 274,
       "tags": [
