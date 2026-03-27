@@ -83,7 +83,7 @@ fn gui_non_ri_file_shows_error() {
 }
 
 #[test]
-fn gui_with_valid_ri_file_attempts_launch() {
+fn gui_with_valid_ri_file_skips_launch_when_env_set() {
     // Use the existing bracket.ri fixture
     let fixture =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/bracket.ri");
