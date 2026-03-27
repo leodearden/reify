@@ -494,6 +494,46 @@ mod tests {
         assert_eq!(info.kind, ValueCellKind::Let);
     }
 
+    // --- ambiguous member name regression tests ---
+
+    #[test]
+    fn find_member_decl_ambiguous_name_returns_first_decl_consistently() {
+        // Two structures with identically-named params but different types.
+        // find_member_decl must return span AND type from the same declaration.
+        let source =
+            "structure A {\n    param x: Scalar = 5mm\n}\nstructure B {\n    param x: Bool = true\n}";
+        let ctx = AnalysisContext::new(source, &test_uri());
+        let info = ctx.find_member_decl("x").expect("x should exist");
+        // Should return type from A (first match) — Scalar with LENGTH dimension
+        assert!(
+            matches!(info.cell_type, Type::Scalar { .. }),
+            "expected Scalar type from first declaration A, got {:?}",
+            info.cell_type
+        );
+        // Span should be within A's byte range (before B starts)
+        let b_start = source.find("structure B").unwrap() as u32;
+        assert!(
+            info.span.end <= b_start,
+            "span should be within structure A's byte range, span.end={} but B starts at {}",
+            info.span.end,
+            b_start
+        );
+    }
+
+    #[test]
+    fn find_member_decl_ambiguous_name_second_decl_type_not_leaked() {
+        // Verify the returned cell_type is NOT Bool (proving type didn't leak from B).
+        let source =
+            "structure A {\n    param x: Scalar = 5mm\n}\nstructure B {\n    param x: Bool = true\n}";
+        let ctx = AnalysisContext::new(source, &test_uri());
+        let info = ctx.find_member_decl("x").expect("x should exist");
+        assert_ne!(
+            *info.cell_type,
+            Type::Bool,
+            "type should not leak from second declaration B"
+        );
+    }
+
     // --- format_value tests ---
 
     #[test]
