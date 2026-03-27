@@ -12420,7 +12420,16 @@
         "priority": "low",
         "subtasks": [],
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "gui/src/bridge.ts",
+            "gui/src/App.tsx",
+            "gui/src/__tests__/types.typecheck.ts"
+          ],
+          "modules": [
+            "gui/src",
+            "gui/src/__tests__"
+          ]
         }
       },
       {
