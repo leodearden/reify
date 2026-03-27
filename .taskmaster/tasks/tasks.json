@@ -12035,6 +12035,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 607,
+        "title": "Add staleness check and timeout to tree-sitter-generate.sh",
+        "description": "scripts/tree-sitter-generate.sh unconditionally runs `tree-sitter generate` with no staleness check and no timeout. build.rs has both (content-hash stamp + 60s timeout), but the shell script — called by orchestrator.yaml verification commands up to 60+ times per run — does neither. Add: (1) hash-based staleness guard matching build.rs contract, (2) `timeout 60 tree-sitter generate` to prevent hung builds.",
+        "details": "Files: scripts/tree-sitter-generate.sh. The script is called from orchestrator.yaml pre-test/lint/typecheck commands. Memory hint: search for \"task 563 content hash staleness\" for the build.rs implementation pattern.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -12047,7 +12058,7 @@
       ],
       "created": "2026-03-27T12:02:44.768Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-27T12:02:44.779Z"
+      "updated": "2026-03-27T12:02:50.099Z"
     }
   }
 }
