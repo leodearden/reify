@@ -52,8 +52,8 @@
       "id": "step-5",
       "type": "test",
       "description": "Verify the fixed assertion actually catches divergence (negative test). (a) Run `npm run typecheck` to confirm the constrained-generic assertion compiles when types are in sync. (b) Temporarily mutate _ExpectedClaudeContext (e.g., add an extra field `_drift?: boolean`) and run `tsc --noEmit` \u2014 confirm it FAILS with 'Type false does not satisfy the constraint true'. (c) Revert the temporary mutation and run `npm run typecheck` again to confirm green. (d) Run `npm test` to confirm runtime tests still pass.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "e4a7c2c6"
     }
   ],
   "design_decisions": [
