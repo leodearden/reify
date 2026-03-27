@@ -12046,6 +12046,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 608,
+        "title": "build.rs: panic on missing OUT_DIR instead of silent fallback",
+        "description": "build.rs line 138 uses `env::var(\"OUT_DIR\").unwrap_or_else(|_| \".\".to_string())` which silently falls back to writing grammar_hash.stamp to the source tree root when OUT_DIR is unset. Cargo always sets OUT_DIR, so the fallback is dead code that could silently pollute the source tree. Change to `.expect(\"OUT_DIR must be set by cargo\")` to make the contract explicit.",
+        "details": "File: tree-sitter-reify/build.rs:138. Simple one-line fix. Also update the corresponding test duplicate in tests/build_logic_tests.rs.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -12058,7 +12069,7 @@
       ],
       "created": "2026-03-27T12:02:44.768Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-27T12:02:50.099Z"
+      "updated": "2026-03-27T12:02:54.560Z"
     }
   }
 }
