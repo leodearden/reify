@@ -3,98 +3,6 @@ use reify_types::{
     SourceSpan, Type, UnOp, Value, ValueCellId,
 };
 
-/// Infer the Type of a Value for use in literal() and collection builders.
-fn infer_value_type(v: &Value) -> Type {
-    match v {
-        Value::Bool(_) => Type::Bool,
-        Value::Int(_) => Type::Int,
-        Value::Real(_) => Type::Real,
-        Value::String(_) => Type::String,
-        Value::Scalar { dimension, .. } => Type::Scalar {
-            dimension: *dimension,
-        },
-        Value::Enum { type_name, .. } => Type::Enum(type_name.clone()),
-        Value::List(items) => {
-            let elem_ty = items.first().map(infer_value_type).unwrap_or(Type::Int);
-            Type::List(Box::new(elem_ty))
-        }
-        Value::Set(items) => {
-            let elem_ty = items
-                .iter()
-                .next()
-                .map(infer_value_type)
-                .unwrap_or(Type::Int);
-            Type::Set(Box::new(elem_ty))
-        }
-        Value::Map(m) => {
-            let (k_ty, v_ty) = m
-                .iter()
-                .next()
-                .map(|(k, v)| (infer_value_type(k), infer_value_type(v)))
-                .unwrap_or((Type::String, Type::Int));
-            Type::Map(Box::new(k_ty), Box::new(v_ty))
-        }
-        Value::Option(Some(inner)) => Type::Option(Box::new(infer_value_type(inner))),
-        Value::Option(None) => Type::Option(Box::new(Type::Bool)),
-        Value::Lambda { params, body, .. } => {
-            let param_types = params.iter().map(|_| Type::Real).collect();
-            Type::Function {
-                params: param_types,
-                return_type: Box::new(body.result_type.clone()),
-            }
-        }
-        Value::Field {
-            domain_type,
-            codomain_type,
-            ..
-        } => Type::Field {
-            domain: Box::new(domain_type.clone()),
-            codomain: Box::new(codomain_type.clone()),
-        },
-        Value::Tensor(_) => {
-            panic!(
-                "literal() cannot infer Tensor type (rank/n/quantity). Use CompiledExpr::literal(value, type) directly."
-            )
-        }
-        Value::Complex { dimension, .. } => Type::complex(Type::Scalar {
-            dimension: *dimension,
-        }),
-        Value::Matrix(_) => {
-            panic!(
-                "literal() cannot infer Matrix type. Use CompiledExpr::literal(value, type) directly."
-            )
-        }
-        Value::Point(components) => {
-            let q = components
-                .first()
-                .map(infer_value_type)
-                .unwrap_or(Type::Real);
-            Type::Point {
-                n: components.len(),
-                quantity: Box::new(q),
-            }
-        }
-        Value::Vector(components) => {
-            let q = components
-                .first()
-                .map(infer_value_type)
-                .unwrap_or(Type::Real);
-            Type::Vector {
-                n: components.len(),
-                quantity: Box::new(q),
-            }
-        }
-        Value::Orientation { .. } => Type::Orientation(3),
-        Value::Frame { .. } => Type::Frame(3),
-        Value::Transform { .. } => Type::Transform(3),
-        Value::Plane { .. } => Type::Bool, // placeholder — no Type::Plane yet
-        Value::Axis { .. } => Type::Bool,  // placeholder — no Type::Axis yet
-        Value::BoundingBox { .. } => Type::Bool, // placeholder — no Type::BoundingBox yet
-        Value::Range { .. } => Type::Bool, // placeholder
-        Value::Undef => Type::Bool,
-    }
-}
-
 // --- Expression builders ---
 
 /// Create a literal expression from a value, inferring the type.
@@ -102,7 +10,7 @@ fn infer_value_type(v: &Value) -> Type {
 /// Supports all Value variants including M5 types (Enum, List, Set, Map, Option,
 /// Lambda, Field). For empty collections, element type defaults to Int/Bool.
 pub fn literal(v: Value) -> CompiledExpr {
-    let ty = infer_value_type(&v);
+    let ty = v.infer_type();
     CompiledExpr::literal(v, ty)
 }
 

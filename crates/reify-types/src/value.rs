@@ -447,6 +447,472 @@ impl Value {
             Value::Undef => ContentHash::of(&[5]),
         }
     }
+
+    // --- Type-spine consolidated methods ---
+    //
+    // These methods centralise logic that previously lived as match-on-Value
+    // blocks in downstream crates (builders, classifier, LSP analysis).
+    // Adding a new Value variant now only requires updating value.rs (and
+    // ty.rs for the corresponding Type variant), instead of editing 4+
+    // files across 4 crates.
+
+    /// Infer the [`Type`] of a runtime [`Value`].
+    ///
+    /// Used by test builders to derive a type from a literal value.
+    /// For variants whose type cannot be fully inferred (Tensor, Matrix),
+    /// this method panics — use `CompiledExpr::literal(value, type)` directly.
+    pub fn infer_type(&self) -> crate::ty::Type {
+        use crate::ty::Type;
+        match self {
+            Value::Bool(_) => Type::Bool,
+            Value::Int(_) => Type::Int,
+            Value::Real(_) => Type::Real,
+            Value::String(_) => Type::String,
+            Value::Scalar { dimension, .. } => Type::Scalar {
+                dimension: *dimension,
+            },
+            Value::Enum { type_name, .. } => Type::Enum(type_name.clone()),
+            Value::List(items) => {
+                let elem_ty = items.first().map(Value::infer_type).unwrap_or(Type::Int);
+                Type::List(Box::new(elem_ty))
+            }
+            Value::Set(items) => {
+                let elem_ty = items
+                    .iter()
+                    .next()
+                    .map(Value::infer_type)
+                    .unwrap_or(Type::Int);
+                Type::Set(Box::new(elem_ty))
+            }
+            Value::Map(m) => {
+                let (k_ty, v_ty) = m
+                    .iter()
+                    .next()
+                    .map(|(k, v)| (k.infer_type(), v.infer_type()))
+                    .unwrap_or((Type::String, Type::Int));
+                Type::Map(Box::new(k_ty), Box::new(v_ty))
+            }
+            Value::Option(Some(inner)) => Type::Option(Box::new(inner.infer_type())),
+            Value::Option(None) => Type::Option(Box::new(Type::Bool)),
+            Value::Lambda { params, body, .. } => {
+                let param_types = params.iter().map(|_| Type::Real).collect();
+                Type::Function {
+                    params: param_types,
+                    return_type: Box::new(body.result_type.clone()),
+                }
+            }
+            Value::Field {
+                domain_type,
+                codomain_type,
+                ..
+            } => Type::Field {
+                domain: Box::new(domain_type.clone()),
+                codomain: Box::new(codomain_type.clone()),
+            },
+            Value::Tensor(_) => {
+                panic!(
+                    "infer_type() cannot infer Tensor type (rank/n/quantity). \
+                     Use CompiledExpr::literal(value, type) directly."
+                )
+            }
+            Value::Complex { dimension, .. } => Type::complex(Type::Scalar {
+                dimension: *dimension,
+            }),
+            Value::Matrix(_) => {
+                panic!(
+                    "infer_type() cannot infer Matrix type. \
+                     Use CompiledExpr::literal(value, type) directly."
+                )
+            }
+            Value::Point(components) => {
+                let q = components
+                    .first()
+                    .map(Value::infer_type)
+                    .unwrap_or(Type::Real);
+                Type::Point {
+                    n: components.len(),
+                    quantity: Box::new(q),
+                }
+            }
+            Value::Vector(components) => {
+                let q = components
+                    .first()
+                    .map(Value::infer_type)
+                    .unwrap_or(Type::Real);
+                Type::Vector {
+                    n: components.len(),
+                    quantity: Box::new(q),
+                }
+            }
+            Value::Orientation { .. } => Type::Orientation(3),
+            Value::Frame { .. } => Type::Frame(3),
+            Value::Transform { .. } => Type::Transform(3),
+            Value::Plane { .. } => Type::Plane,
+            Value::Axis { .. } => Type::Axis,
+            Value::BoundingBox { .. } => Type::BoundingBox,
+            Value::Range { lower, upper, .. } => {
+                let elem_ty = lower
+                    .as_ref()
+                    .or(upper.as_ref())
+                    .map(|v| v.infer_type())
+                    .unwrap_or(Type::Real);
+                Type::Range(Box::new(elem_ty))
+            }
+            Value::Undef => Type::Bool,
+        }
+    }
+
+    /// Returns `true` if this value is a numeric leaf for constraint
+    /// domain classification (Int, Real, or Scalar).
+    pub fn is_domain_numeric_leaf(&self) -> bool {
+        matches!(self, Value::Int(_) | Value::Real(_) | Value::Scalar { .. })
+    }
+
+    /// Returns `true` if this value is a logical leaf for constraint
+    /// domain classification (Bool).
+    pub fn is_domain_logical_leaf(&self) -> bool {
+        matches!(self, Value::Bool(_))
+    }
+
+    /// Format this value for user-friendly display (e.g., hover tooltips).
+    ///
+    /// Unlike the [`Display`](std::fmt::Display) impl which shows raw
+    /// dimension vectors, this method uses human-readable SI unit labels.
+    pub fn format_hover(&self) -> String {
+        match self {
+            Value::Bool(b) => format!("{b}"),
+            Value::Int(i) => format!("{i}"),
+            Value::Real(r) => format!("{r}"),
+            Value::String(s) => format!("\"{s}\""),
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
+                let unit = dimension_unit_label(dimension);
+                if unit.is_empty() {
+                    format!("{si_value}")
+                } else {
+                    format!("{si_value} {unit}")
+                }
+            }
+            Value::Enum { type_name, variant } => format!("{type_name}::{variant}"),
+            Value::List(items) => {
+                let inner: Vec<String> = items.iter().map(Value::format_hover).collect();
+                format!("[{}]", inner.join(", "))
+            }
+            Value::Set(items) => {
+                let inner: Vec<String> = items.iter().map(Value::format_hover).collect();
+                format!("{{{}}}", inner.join(", "))
+            }
+            Value::Map(entries) => {
+                let inner: Vec<String> = entries
+                    .iter()
+                    .map(|(k, v)| format!("{}: {}", k.format_hover(), v.format_hover()))
+                    .collect();
+                format!("{{{}}}", inner.join(", "))
+            }
+            Value::Option(inner) => match inner {
+                None => "none".to_string(),
+                Some(v) => format!("some({})", v.format_hover()),
+            },
+            Value::Tensor(items) => {
+                let inner: Vec<String> = items.iter().map(Value::format_hover).collect();
+                format!("[{}]", inner.join(", "))
+            }
+            Value::Lambda { .. } => "<lambda>".to_string(),
+            Value::Field {
+                domain_type,
+                codomain_type,
+                source,
+                ..
+            } => {
+                format!("Field<{}, {}>({:?})", domain_type, codomain_type, source)
+            }
+            Value::Complex { re, im, dimension } => {
+                let unit = dimension_unit_label(dimension);
+                let (sign, im_abs) = if *im < 0.0 {
+                    ("-", im.abs())
+                } else {
+                    ("+", *im)
+                };
+                if unit.is_empty() {
+                    format!("{re} {sign} {im_abs}i")
+                } else {
+                    format!("{re} {sign} {im_abs}i {unit}")
+                }
+            }
+            Value::Matrix(rows) => {
+                let inner: Vec<String> = rows
+                    .iter()
+                    .map(|row| {
+                        let cols: Vec<String> = row.iter().map(Value::format_hover).collect();
+                        format!("[{}]", cols.join(", "))
+                    })
+                    .collect();
+                format!("[{}]", inner.join(", "))
+            }
+            Value::Point(components) => {
+                let inner: Vec<String> = components.iter().map(Value::format_hover).collect();
+                format!("Point({})", inner.join(", "))
+            }
+            Value::Vector(components) => {
+                let inner: Vec<String> = components.iter().map(Value::format_hover).collect();
+                format!("Vector({})", inner.join(", "))
+            }
+            Value::Orientation { w, x, y, z } => {
+                format!("Orientation(w={w}, x={x}, y={y}, z={z})")
+            }
+            Value::Frame { origin, basis } => {
+                format!(
+                    "Frame(origin={}, basis={})",
+                    origin.format_hover(),
+                    basis.format_hover()
+                )
+            }
+            Value::Transform {
+                rotation,
+                translation,
+            } => {
+                format!(
+                    "Transform(rotation={}, translation={})",
+                    rotation.format_hover(),
+                    translation.format_hover()
+                )
+            }
+            Value::Plane { origin, normal } => {
+                format!(
+                    "Plane(origin={}, normal={})",
+                    origin.format_hover(),
+                    normal.format_hover()
+                )
+            }
+            Value::Axis { origin, direction } => {
+                format!(
+                    "Axis(origin={}, direction={})",
+                    origin.format_hover(),
+                    direction.format_hover()
+                )
+            }
+            Value::BoundingBox { min, max } => {
+                format!(
+                    "BoundingBox(min={}, max={})",
+                    min.format_hover(),
+                    max.format_hover()
+                )
+            }
+            Value::Range { lower, upper, .. } => {
+                let lo = lower
+                    .as_ref()
+                    .map(|v| v.format_hover())
+                    .unwrap_or_else(|| "..".to_string());
+                let hi = upper
+                    .as_ref()
+                    .map(|v| v.format_hover())
+                    .unwrap_or_else(|| "..".to_string());
+                format!("{lo}..{hi}")
+            }
+            Value::Undef => "(undefined)".to_string(),
+        }
+    }
+
+    /// Format this value for GUI display, returning `(formatted_value, unit_string)`.
+    ///
+    /// Unlike [`format_hover`](Value::format_hover) which shows raw SI values,
+    /// this method converts to standard engineering display units (mm, deg, mm², mm³)
+    /// via [`DimensionVector::to_display_units`].
+    pub fn format_display_pair(&self) -> (String, String) {
+        match self {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
+                let (display_value, unit) = dimension.to_display_units(*si_value);
+                (format_display_number(display_value), unit.to_string())
+            }
+            Value::Int(i) => (i.to_string(), String::new()),
+            Value::Real(r) => (format_display_number(*r), String::new()),
+            Value::Bool(b) => (b.to_string(), String::new()),
+            Value::String(s) => (s.clone(), String::new()),
+            Value::Enum { variant, .. } => (variant.clone(), String::new()),
+            Value::List(items) => {
+                let strs: Vec<String> =
+                    items.iter().map(|v| v.format_display_pair().0).collect();
+                (format!("[{}]", strs.join(", ")), String::new())
+            }
+            Value::Set(items) => {
+                let strs: Vec<String> =
+                    items.iter().map(|v| v.format_display_pair().0).collect();
+                (format!("set{{{}}}", strs.join(", ")), String::new())
+            }
+            Value::Map(entries) => {
+                let strs: Vec<String> = entries
+                    .iter()
+                    .map(|(k, v)| {
+                        format!(
+                            "{} => {}",
+                            k.format_display_pair().0,
+                            v.format_display_pair().0
+                        )
+                    })
+                    .collect();
+                (format!("map{{{}}}", strs.join(", ")), String::new())
+            }
+            Value::Option(opt) => match opt {
+                Some(inner) => inner.format_display_pair(),
+                None => ("none".to_string(), String::new()),
+            },
+            Value::Lambda { .. } => ("<lambda>".to_string(), String::new()),
+            Value::Field {
+                domain_type,
+                codomain_type,
+                source,
+                ..
+            } => (
+                format!("Field<{}, {}>({:?})", domain_type, codomain_type, source),
+                String::new(),
+            ),
+            Value::Tensor(items) => {
+                let strs: Vec<String> =
+                    items.iter().map(|v| v.format_display_pair().0).collect();
+                (format!("[{}]", strs.join(", ")), String::new())
+            }
+            Value::Point(items) => {
+                let strs: Vec<String> =
+                    items.iter().map(|v| v.format_display_pair().0).collect();
+                (format!("point({})", strs.join(", ")), String::new())
+            }
+            Value::Vector(items) => {
+                let strs: Vec<String> =
+                    items.iter().map(|v| v.format_display_pair().0).collect();
+                (format!("vec({})", strs.join(", ")), String::new())
+            }
+            Value::Matrix(rows) => {
+                let row_strs: Vec<String> = rows
+                    .iter()
+                    .map(|row| {
+                        let inner: Vec<String> =
+                            row.iter().map(|v| v.format_display_pair().0).collect();
+                        format!("[{}]", inner.join(", "))
+                    })
+                    .collect();
+                (format!("[{}]", row_strs.join(", ")), String::new())
+            }
+            Value::Complex { re, im, dimension } => {
+                let (display_re, unit) = dimension.to_display_units(*re);
+                let (display_im, _) = dimension.to_display_units(*im);
+                let formatted = format!(
+                    "{} + {}i",
+                    format_display_number(display_re),
+                    format_display_number(display_im)
+                );
+                (formatted, unit.to_string())
+            }
+            Value::Orientation { w, x, y, z } => {
+                (format!("[{}, {}, {}, {}]q", w, x, y, z), String::new())
+            }
+            Value::Frame { origin, basis } => (
+                format!(
+                    "frame({}, {})",
+                    origin.format_display_pair().0,
+                    basis.format_display_pair().0
+                ),
+                String::new(),
+            ),
+            Value::Transform {
+                rotation,
+                translation,
+            } => (
+                format!(
+                    "transform({}, {})",
+                    rotation.format_display_pair().0,
+                    translation.format_display_pair().0
+                ),
+                String::new(),
+            ),
+            Value::Plane { origin, normal } => (
+                format!(
+                    "plane({}, {})",
+                    origin.format_display_pair().0,
+                    normal.format_display_pair().0
+                ),
+                String::new(),
+            ),
+            Value::Axis { origin, direction } => (
+                format!(
+                    "axis({}, {})",
+                    origin.format_display_pair().0,
+                    direction.format_display_pair().0
+                ),
+                String::new(),
+            ),
+            Value::BoundingBox { min, max } => (
+                format!(
+                    "bbox({}, {})",
+                    min.format_display_pair().0,
+                    max.format_display_pair().0
+                ),
+                String::new(),
+            ),
+            Value::Range {
+                lower,
+                upper,
+                lower_inclusive,
+                upper_inclusive,
+            } => {
+                let lower_inclusive = *lower_inclusive && lower.is_some();
+                let upper_inclusive = *upper_inclusive && upper.is_some();
+                let lower_bracket = if lower_inclusive { "[" } else { "(" };
+                let upper_bracket = if upper_inclusive { "]" } else { ")" };
+                let lower_str = lower
+                    .as_ref()
+                    .map(|v| v.format_display_pair().0)
+                    .unwrap_or_else(|| "-\u{221E}".to_string());
+                let upper_str = upper
+                    .as_ref()
+                    .map(|v| v.format_display_pair().0)
+                    .unwrap_or_else(|| "+\u{221E}".to_string());
+                (
+                    format!(
+                        "{}{}..{}{}",
+                        lower_bracket, lower_str, upper_str, upper_bracket
+                    ),
+                    String::new(),
+                )
+            }
+            Value::Undef => ("undefined".to_string(), String::new()),
+        }
+    }
+}
+
+/// Format a floating-point number for display: whole numbers render without
+/// decimal points (e.g. `80.0` → `"80"`).
+pub fn format_display_number(v: f64) -> String {
+    if v == v.trunc() && v.abs() < 1e15 {
+        format!("{}", v as i64)
+    } else {
+        format!("{}", v)
+    }
+}
+
+/// Map a DimensionVector to a human-readable SI unit label.
+///
+/// Used by [`Value::format_hover`] for user-facing display.
+fn dimension_unit_label(dim: &DimensionVector) -> &'static str {
+    if *dim == DimensionVector::LENGTH {
+        "m"
+    } else if *dim == DimensionVector::AREA {
+        "m\u{00B2}"
+    } else if *dim == DimensionVector::VOLUME {
+        "m\u{00B3}"
+    } else if *dim == DimensionVector::MASS {
+        "kg"
+    } else if *dim == DimensionVector::ANGLE {
+        "rad"
+    } else if dim.is_dimensionless() {
+        ""
+    } else {
+        "SI"
+    }
 }
 
 impl PartialEq for Value {

@@ -19,23 +19,26 @@ pub fn compute_goto_definition(source: &str, uri: &Url, position: Position) -> O
 
     // Search for a param or let declaration with matching name
     for decl in &parsed.declarations {
-        if let reify_syntax::Declaration::Structure(s) = decl {
-            for member in &s.members {
-                match member {
-                    reify_syntax::MemberDecl::Param(p) if p.name == word => {
-                        return Some(Location {
-                            uri: uri.clone(),
-                            range: span_to_range(source, p.span),
-                        });
-                    }
-                    reify_syntax::MemberDecl::Let(l) if l.name == word => {
-                        return Some(Location {
-                            uri: uri.clone(),
-                            range: span_to_range(source, l.span),
-                        });
-                    }
-                    _ => {}
+        let members = match decl {
+            reify_syntax::Declaration::Structure(s) => &s.members,
+            reify_syntax::Declaration::Occurrence(o) => &o.members,
+            _ => continue,
+        };
+        for member in members {
+            match member {
+                reify_syntax::MemberDecl::Param(p) if p.name == word => {
+                    return Some(Location {
+                        uri: uri.clone(),
+                        range: span_to_range(source, p.span),
+                    });
                 }
+                reify_syntax::MemberDecl::Let(l) if l.name == word => {
+                    return Some(Location {
+                        uri: uri.clone(),
+                        range: span_to_range(source, l.span),
+                    });
+                }
+                _ => {}
             }
         }
     }
@@ -91,6 +94,18 @@ mod tests {
         assert_eq!(loc.uri, test_uri());
         // Should point to itself (the let declaration) on line 7
         assert_eq!(loc.range.start.line, 7);
+    }
+
+    #[test]
+    fn goto_def_occurrence_param_returns_location() {
+        let source = "occurrence def Joint {\n    param diameter: Scalar = 10mm\n    constraint diameter > 5mm\n}";
+        // 'diameter' in the constraint is on line 2, col 15
+        let position = Position::new(2, 15);
+        let loc = compute_goto_definition(source, &test_uri(), position)
+            .expect("goto-def for diameter ref in occurrence should return location");
+        assert_eq!(loc.uri, test_uri());
+        // Should point to param declaration on line 1
+        assert_eq!(loc.range.start.line, 1);
     }
 
     #[test]

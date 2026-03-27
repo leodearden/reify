@@ -55,6 +55,22 @@ struct OcctWarmState {
 }
 
 #[cfg(has_occt)]
+/// Minimum squared magnitude for axis/direction vectors.
+///
+/// Vectors with mag² below this threshold are treated as zero-length and rejected.
+/// This catches physically meaningless axes (e.g. sub-micrometer) while allowing
+/// any vector representable in normal CAD geometry.
+///
+/// Value: 1e-12 → minimum magnitude ~1e-6 → ~1 micrometer.
+const AXIS_MAG_SQ_MIN: f64 = 1e-12;
+
+/// Minimum absolute angle (radians) for revolve operations.
+/// Angles below this are treated as effectively zero.
+/// Matches the C++ ANGLE_ABS_MIN threshold (1e-30).
+/// Value: 1e-30 radians ≈ 5.7e-29 degrees — far below any physical relevance.
+const ANGLE_ABS_MIN: f64 = 1e-30;
+
+#[cfg(has_occt)]
 /// Extract an f64 from a Value (Int, Real, or Scalar → SI value).
 fn extract_f64(v: &Value) -> Result<f64, GeometryError> {
     v.as_f64()
@@ -235,7 +251,7 @@ impl OcctKernel {
                     )));
                 }
                 let mag_sq = axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2];
-                if mag_sq < 1e-12 {
+                if mag_sq < AXIS_MAG_SQ_MIN {
                     return Err(GeometryError::OperationFailed(
                         "rotation axis must not be zero-length".into(),
                     ));
@@ -303,13 +319,17 @@ impl OcctKernel {
                 let mag_sq = plane_normal[0] * plane_normal[0]
                     + plane_normal[1] * plane_normal[1]
                     + plane_normal[2] * plane_normal[2];
-                if mag_sq == 0.0
-                    || !plane_normal[0].is_finite()
+                if !plane_normal[0].is_finite()
                     || !plane_normal[1].is_finite()
                     || !plane_normal[2].is_finite()
                 {
                     return Err(GeometryError::OperationFailed(
                         "mirror plane normal must be a finite non-zero vector".into(),
+                    ));
+                }
+                if mag_sq < AXIS_MAG_SQ_MIN {
+                    return Err(GeometryError::OperationFailed(
+                        "mirror plane normal must not be zero-length".into(),
                     ));
                 }
                 ffi::ffi::mirror_shape(
@@ -396,7 +416,7 @@ impl OcctKernel {
                     )));
                 }
                 let mag_sq = axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2];
-                if mag_sq < 1e-12 {
+                if mag_sq < AXIS_MAG_SQ_MIN {
                     return Err(GeometryError::OperationFailed(
                         "rotate_around axis must not be zero-length".into(),
                     ));
@@ -428,25 +448,48 @@ impl OcctKernel {
                 axis_dir,
                 angle_rad,
             } => {
-                // Validate all floats are finite
-                let all_finite = axis_origin.iter().all(|v| v.is_finite())
-                    && axis_dir.iter().all(|v| v.is_finite())
-                    && angle_rad.is_finite();
-                if !all_finite {
-                    return Err(GeometryError::OperationFailed(
-                        "revolve parameters must be finite".into(),
-                    ));
+                // Revolve validation (Rust layer — DEFENSE-IN-DEPTH)
+                // This Rust layer validates inputs with stricter thresholds (AXIS_MAG_SQ_MIN=1e-12,
+                // ANGLE_ABS_MIN=1e-30) and produces descriptive error messages including parameter
+                // names and values. The C++ FFI layer (occt_wrapper.cpp) has its own validation
+                // with relaxed thresholds (1e-30 for mag_sq) as a safety net for any future code
+                // paths that may call FFI directly, bypassing this Rust layer.
+                if !axis_origin[0].is_finite()
+                    || !axis_origin[1].is_finite()
+                    || !axis_origin[2].is_finite()
+                {
+                    return Err(GeometryError::OperationFailed(format!(
+                        "revolve axis_origin must be finite: [{}, {}, {}]",
+                        axis_origin[0], axis_origin[1], axis_origin[2]
+                    )));
                 }
-                if *angle_rad == 0.0 {
-                    return Err(GeometryError::OperationFailed(
-                        "revolve angle must not be zero".into(),
-                    ));
+                if !axis_dir[0].is_finite()
+                    || !axis_dir[1].is_finite()
+                    || !axis_dir[2].is_finite()
+                {
+                    return Err(GeometryError::OperationFailed(format!(
+                        "revolve axis_dir must be finite: [{}, {}, {}]",
+                        axis_dir[0], axis_dir[1], axis_dir[2]
+                    )));
+                }
+                if !angle_rad.is_finite() {
+                    return Err(GeometryError::OperationFailed(format!(
+                        "revolve angle must be finite: {}",
+                        angle_rad
+                    )));
+                }
+                if angle_rad.abs() < ANGLE_ABS_MIN {
+                    return Err(GeometryError::OperationFailed(format!(
+                        "revolve angle must not be zero, got {}",
+                        angle_rad
+                    )));
                 }
                 let mag_sq = axis_dir[0].powi(2) + axis_dir[1].powi(2) + axis_dir[2].powi(2);
-                if mag_sq < 1e-12 {
-                    return Err(GeometryError::OperationFailed(
-                        "revolve axis direction must not be zero-length".into(),
-                    ));
+                if mag_sq < AXIS_MAG_SQ_MIN {
+                    return Err(GeometryError::OperationFailed(format!(
+                        "revolve axis_dir must not be zero-length: [{}, {}, {}]",
+                        axis_dir[0], axis_dir[1], axis_dir[2]
+                    )));
                 }
                 let profile_shape = self.get_shape(*profile)?;
                 ffi::ffi::make_revolve(
@@ -674,6 +717,82 @@ impl OcctKernel {
 #[cfg(all(test, has_occt))]
 mod tests {
     use super::*;
+
+    /// Create a circle face of given `radius`, rotate it into the XZ plane, translate
+    /// it `offset_r` along X, and store into `kernel`. Returns a GeometryHandleId
+    /// suitable for revolving around the Z axis to produce a torus.
+    fn make_torus_profile(kernel: &mut OcctKernel, radius: f64, offset_r: f64) -> GeometryHandleId {
+        let face =
+            ffi::ffi::make_circle_face(radius, 0.0).expect("make_circle_face should succeed");
+        let rotated = ffi::ffi::rotate_shape(&face, 1.0, 0.0, 0.0, std::f64::consts::FRAC_PI_2)
+            .expect("rotate_shape should succeed");
+        let translated = ffi::ffi::translate_shape(&rotated, offset_r, 0.0, 0.0)
+            .expect("translate_shape should succeed");
+        kernel.store_raw(translated)
+    }
+
+    /// Create a rect face of given `width` × `height`, rotate it into the XZ plane,
+    /// translate it `offset_r` along X, and store into `kernel`. Returns a
+    /// GeometryHandleId suitable for revolving around the Z axis.
+    fn make_rect_torus_profile(
+        kernel: &mut OcctKernel,
+        width: f64,
+        height: f64,
+        offset_r: f64,
+    ) -> GeometryHandleId {
+        let face = ffi::ffi::make_rect_face(width, height, 0.0, 0.0, 0.0)
+            .expect("make_rect_face should succeed");
+        let rotated = ffi::ffi::rotate_shape(&face, 1.0, 0.0, 0.0, std::f64::consts::FRAC_PI_2)
+            .expect("rotate_shape should succeed");
+        let translated = ffi::ffi::translate_shape(&rotated, offset_r, 0.0, 0.0)
+            .expect("translate_shape should succeed");
+        kernel.store_raw(translated)
+    }
+
+    /// Assert that the volume of the shape at `handle_id` is within `tolerance`
+    /// relative error of `expected`. Panics with a descriptive message including `label`.
+    fn assert_volume_near(
+        kernel: &mut OcctKernel,
+        handle_id: GeometryHandleId,
+        expected: f64,
+        tolerance: f64,
+        label: &str,
+    ) {
+        let vol = kernel
+            .query(&GeometryQuery::Volume(handle_id))
+            .expect("Volume query should succeed")
+            .as_f64()
+            .expect("Volume should be numeric");
+        let rel_err = (vol - expected).abs() / expected;
+        assert!(
+            rel_err < tolerance,
+            "{label}: expected volume \u{2248} {expected:.2}, got {vol:.2} (rel_err={rel_err:.4})"
+        );
+    }
+
+    /// Assert that a `Result` is an `Err(GeometryError::OperationFailed(msg))` where
+    /// `msg` contains the given `expected_substring`. Panics on `Ok` or wrong error variant.
+    fn assert_operation_fails_with(
+        result: Result<GeometryHandle, GeometryError>,
+        expected_substring: &str,
+    ) {
+        match result {
+            Err(GeometryError::OperationFailed(msg)) => {
+                assert!(
+                    msg.to_lowercase()
+                        .contains(&expected_substring.to_lowercase()),
+                    "expected error containing '{expected_substring}', got: {msg}"
+                );
+            }
+            Ok(_) => panic!(
+                "expected OperationFailed containing '{expected_substring}', got Ok"
+            ),
+            Err(other) => panic!(
+                "expected OperationFailed containing '{expected_substring}', got {:?}",
+                other
+            ),
+        }
+    }
 
     #[test]
     fn occt_available_is_true_when_built_with_occt() {
@@ -2366,6 +2485,26 @@ mod tests {
     }
 
     #[test]
+    fn mirror_near_zero_normal_rejected() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        // plane_normal=[1e-20, 0, 0] has mag_sq=1e-40, physically meaningless.
+        // Should be rejected like near-degenerate axes in rotate/revolve.
+        let result = kernel.execute(&GeometryOp::Mirror {
+            target: box_h.id,
+            plane_origin: [0.0, 0.0, 0.0],
+            plane_normal: [1e-20, 0.0, 0.0],
+        });
+        assert_operation_fails_with(result, "zero");
+    }
+
+    #[test]
     fn make_circle_wire_rejects_degenerate_radius() {
         // Radius of 0 should cause MakeEdge to fail; verify we get an error
         // rather than a silently invalid shape.
@@ -2950,16 +3089,9 @@ mod tests {
     #[test]
     fn revolve_circle_face_full_volume() {
         // Pappus' theorem: V = 2πR × A where R = centroid-to-axis distance, A = profile area.
-        // Circle face r=5 at origin in XY plane, rotate 90° around X to XZ plane,
-        // translate 20 on X → centroid at (20, 0, 0), R=20, A=π*25.
-        // Revolve around Z axis by 2π → torus volume = 2π²×20×25 ≈ 9869.6
+        // Circle face r=5 at offset R=20, revolve around Z axis by 2π → torus volume = 2π²Rr²
         let mut kernel = OcctKernel::new();
-        let face = ffi::ffi::make_circle_face(5.0, 0.0).expect("make_circle_face should succeed");
-        let rotated = ffi::ffi::rotate_shape(&face, 1.0, 0.0, 0.0, std::f64::consts::FRAC_PI_2)
-            .expect("rotate_shape should succeed");
-        let translated = ffi::ffi::translate_shape(&rotated, 20.0, 0.0, 0.0)
-            .expect("translate_shape should succeed");
-        let face_id = kernel.store_raw(translated);
+        let face_id = make_torus_profile(&mut kernel, 5.0, 20.0);
 
         let result = kernel
             .execute(&GeometryOp::Revolve {
@@ -2969,32 +3101,15 @@ mod tests {
                 angle_rad: std::f64::consts::TAU,
             })
             .expect("Revolve full should succeed");
-        let vol = kernel
-            .query(&GeometryQuery::Volume(result.id))
-            .expect("Volume query should succeed")
-            .as_f64()
-            .expect("Volume should be numeric");
         let expected = 2.0 * std::f64::consts::PI.powi(2) * 20.0 * 25.0; // 2π²Rr²
-        let rel_err = (vol - expected).abs() / expected;
-        assert!(
-            rel_err < 0.02,
-            "expected torus volume ≈ {:.2}, got {:.2} (rel_err={:.4})",
-            expected,
-            vol,
-            rel_err
-        );
+        assert_volume_near(&mut kernel, result.id, expected, 0.02, "circle torus full");
     }
 
     #[test]
     fn revolve_half_angle_half_volume() {
-        // Same setup as full volume but angle=π → half torus.
+        // Same setup as full volume but angle=π → half torus should be ~50% of full.
         let mut kernel = OcctKernel::new();
-        let face = ffi::ffi::make_circle_face(5.0, 0.0).expect("make_circle_face should succeed");
-        let rotated = ffi::ffi::rotate_shape(&face, 1.0, 0.0, 0.0, std::f64::consts::FRAC_PI_2)
-            .expect("rotate_shape should succeed");
-        let translated = ffi::ffi::translate_shape(&rotated, 20.0, 0.0, 0.0)
-            .expect("translate_shape should succeed");
-        let face_id = kernel.store_raw(translated);
+        let face_id = make_torus_profile(&mut kernel, 5.0, 20.0);
 
         let full = kernel
             .execute(&GeometryOp::Revolve {
@@ -3011,12 +3126,7 @@ mod tests {
             .expect("Volume should be numeric");
 
         // Create another face for half revolution
-        let face2 = ffi::ffi::make_circle_face(5.0, 0.0).expect("make_circle_face should succeed");
-        let rotated2 = ffi::ffi::rotate_shape(&face2, 1.0, 0.0, 0.0, std::f64::consts::FRAC_PI_2)
-            .expect("rotate_shape should succeed");
-        let translated2 = ffi::ffi::translate_shape(&rotated2, 20.0, 0.0, 0.0)
-            .expect("translate_shape should succeed");
-        let face2_id = kernel.store_raw(translated2);
+        let face2_id = make_torus_profile(&mut kernel, 5.0, 20.0);
 
         let half = kernel
             .execute(&GeometryOp::Revolve {
@@ -3074,15 +3184,8 @@ mod tests {
     fn revolve_rect_face_torus_volume() {
         // Rect face w=4, h=2, centered at (10, 0, 0) in XZ plane.
         // Pappus: V = 2π × R × A = 2π × 10 × (4×2) = 160π ≈ 502.65
-        // make_rect_face creates in XY plane, so rotate 90° around X to get XZ plane.
         let mut kernel = OcctKernel::new();
-        let face = ffi::ffi::make_rect_face(4.0, 2.0, 0.0, 0.0, 0.0)
-            .expect("make_rect_face should succeed");
-        let rotated = ffi::ffi::rotate_shape(&face, 1.0, 0.0, 0.0, std::f64::consts::FRAC_PI_2)
-            .expect("rotate_shape should succeed");
-        let translated = ffi::ffi::translate_shape(&rotated, 10.0, 0.0, 0.0)
-            .expect("translate_shape should succeed");
-        let face_id = kernel.store_raw(translated);
+        let face_id = make_rect_torus_profile(&mut kernel, 4.0, 2.0, 10.0);
 
         let result = kernel
             .execute(&GeometryOp::Revolve {
@@ -3092,28 +3195,12 @@ mod tests {
                 angle_rad: std::f64::consts::TAU,
             })
             .expect("Revolve rect should succeed");
-        let vol = kernel
-            .query(&GeometryQuery::Volume(result.id))
-            .expect("Volume query should succeed")
-            .as_f64()
-            .expect("Volume should be numeric");
         let expected = 2.0 * std::f64::consts::PI * 10.0 * (4.0 * 2.0); // 2πR×A = 160π
-        let rel_err = (vol - expected).abs() / expected;
-        assert!(
-            rel_err < 0.02,
-            "expected rect torus volume ≈ {:.2}, got {:.2} (rel_err={:.4})",
-            expected,
-            vol,
-            rel_err
-        );
+        assert_volume_near(&mut kernel, result.id, expected, 0.02, "rect torus full");
     }
 
     #[test]
     fn revolve_zero_angle_returns_error() {
-        if !crate::OCCT_AVAILABLE {
-            eprintln!("skipping: OCCT not available");
-            return;
-        }
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
@@ -3128,24 +3215,11 @@ mod tests {
             axis_dir: [0.0, 0.0, 1.0],
             angle_rad: 0.0,
         });
-        match result {
-            Err(GeometryError::OperationFailed(msg)) => {
-                assert!(
-                    msg.contains("zero"),
-                    "expected error message containing 'zero', got: {msg}"
-                );
-            }
-            Ok(_) => panic!("expected OperationFailed for zero angle, got Ok"),
-            Err(other) => panic!("expected OperationFailed, got {:?}", other),
-        }
+        assert_operation_fails_with(result, "zero");
     }
 
     #[test]
     fn revolve_nan_params_returns_error() {
-        if !crate::OCCT_AVAILABLE {
-            eprintln!("skipping: OCCT not available");
-            return;
-        }
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
@@ -3160,24 +3234,11 @@ mod tests {
             axis_dir: [0.0, 0.0, 1.0],
             angle_rad: f64::NAN,
         });
-        match result {
-            Err(GeometryError::OperationFailed(msg)) => {
-                assert!(
-                    msg.contains("finite"),
-                    "expected error message containing 'finite', got: {msg}"
-                );
-            }
-            Ok(_) => panic!("expected OperationFailed for NaN angle, got Ok"),
-            Err(other) => panic!("expected OperationFailed, got {:?}", other),
-        }
+        assert_operation_fails_with(result, "finite");
     }
 
     #[test]
     fn revolve_zero_axis_dir_returns_error() {
-        if !crate::OCCT_AVAILABLE {
-            eprintln!("skipping: OCCT not available");
-            return;
-        }
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
@@ -3192,16 +3253,7 @@ mod tests {
             axis_dir: [0.0, 0.0, 0.0],
             angle_rad: std::f64::consts::TAU,
         });
-        match result {
-            Err(GeometryError::OperationFailed(msg)) => {
-                assert!(
-                    msg.contains("zero"),
-                    "expected error message containing 'zero', got: {msg}"
-                );
-            }
-            Ok(_) => panic!("expected OperationFailed for zero axis dir, got Ok"),
-            Err(other) => panic!("expected OperationFailed, got {:?}", other),
-        }
+        assert_operation_fails_with(result, "zero");
     }
 
     #[test]
@@ -3252,6 +3304,147 @@ mod tests {
             vol,
             rel_err
         );
+    }
+
+    // --- Revolve error specificity tests (task-400) ---
+
+    #[test]
+    fn revolve_nan_axis_origin_error_mentions_origin() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(1.0),
+            })
+            .unwrap();
+        let result = kernel.execute(&GeometryOp::Revolve {
+            profile: box_h.id,
+            axis_origin: [f64::NAN, 0.0, 0.0],
+            axis_dir: [0.0, 0.0, 1.0],
+            angle_rad: std::f64::consts::TAU,
+        });
+        assert_operation_fails_with(result, "axis_origin");
+    }
+
+    #[test]
+    fn revolve_nan_axis_dir_error_mentions_dir() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(1.0),
+            })
+            .unwrap();
+        let result = kernel.execute(&GeometryOp::Revolve {
+            profile: box_h.id,
+            axis_origin: [0.0, 0.0, 0.0],
+            axis_dir: [0.0, f64::NAN, 0.0],
+            angle_rad: std::f64::consts::TAU,
+        });
+        assert_operation_fails_with(result, "axis_dir");
+    }
+
+    #[test]
+    fn revolve_inf_angle_error_mentions_angle() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(1.0),
+            })
+            .unwrap();
+        let result = kernel.execute(&GeometryOp::Revolve {
+            profile: box_h.id,
+            axis_origin: [0.0, 0.0, 0.0],
+            axis_dir: [0.0, 0.0, 1.0],
+            angle_rad: f64::INFINITY,
+        });
+        assert_operation_fails_with(result, "angle");
+    }
+
+    #[test]
+    fn revolve_zero_angle_error_includes_value() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(1.0),
+            })
+            .unwrap();
+        let result = kernel.execute(&GeometryOp::Revolve {
+            profile: box_h.id,
+            axis_origin: [0.0, 0.0, 0.0],
+            axis_dir: [0.0, 0.0, 1.0],
+            angle_rad: 0.0,
+        });
+        // Error should include the actual value "0" for debuggability
+        assert_operation_fails_with(result, "0");
+    }
+
+    #[test]
+    fn revolve_zero_axis_error_includes_values() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(1.0),
+            })
+            .unwrap();
+        let result = kernel.execute(&GeometryOp::Revolve {
+            profile: box_h.id,
+            axis_origin: [0.0, 0.0, 0.0],
+            axis_dir: [0.0, 0.0, 0.0],
+            angle_rad: std::f64::consts::TAU,
+        });
+        // Error should include the axis values
+        assert_operation_fails_with(result, "0, 0, 0");
+    }
+
+    #[test]
+    fn revolve_near_zero_angle_rejected() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(1.0),
+            })
+            .unwrap();
+        // 1e-35 is below C++ threshold (1e-30) and below any reasonable physical angle.
+        // Rust should catch this at its layer with a clear error.
+        let result = kernel.execute(&GeometryOp::Revolve {
+            profile: box_h.id,
+            axis_origin: [0.0, 0.0, 0.0],
+            axis_dir: [0.0, 0.0, 1.0],
+            angle_rad: 1e-35,
+        });
+        assert_operation_fails_with(result, "zero");
+    }
+
+    #[test]
+    fn revolve_near_degenerate_axis_rejected() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(1.0),
+            })
+            .unwrap();
+        // axis=[1e-8, 0, 0] has mag_sq=1e-16, physically meaningless
+        // but above old EPSILON^2 ≈ 4.9e-32; threshold 1e-12 should catch it
+        let result = kernel.execute(&GeometryOp::Revolve {
+            profile: box_h.id,
+            axis_origin: [0.0, 0.0, 0.0],
+            axis_dir: [1e-8, 0.0, 0.0],
+            angle_rad: std::f64::consts::TAU,
+        });
+        assert_operation_fails_with(result, "zero");
     }
 
     #[test]

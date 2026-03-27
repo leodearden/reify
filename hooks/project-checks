@@ -4,6 +4,15 @@
 
 ROOT="${1:?}"
 
+# Skip full project checks if the only staged changes are in non-source paths
+# (e.g. .task/ cleanup).  Only source-file additions/modifications warrant the
+# full lint+test gate.
+source_changes="$(git diff --cached --name-only --diff-filter=ACMR | grep -v '^\.task/')"
+if [ -z "$source_changes" ]; then
+    echo "pre-commit: no source changes staged — skipping project checks."
+    exit 0
+fi
+
 # Ensure cargo and node tooling are on PATH (git hooks get a minimal env).
 [ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
 

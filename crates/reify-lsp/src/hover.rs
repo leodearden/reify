@@ -42,10 +42,10 @@ pub fn compute_hover(source: &str, uri: &Url, position: Position) -> Option<Hove
     }
 
     // Try structure name
-    for (name, params, lets, constraints) in ctx.structure_names() {
+    for (name, params, lets, constraints, kind) in ctx.structure_names() {
         if name == word {
             let mut md = format!(
-                "```reify\nstructure {name}\n```\n\n{params} params, {lets} lets, {constraints} constraints"
+                "```reify\n{kind} {name}\n```\n\n{params} params, {lets} lets, {constraints} constraints"
             );
             if let Some(doc) = ctx.find_entity_doc(name) {
                 md.push_str("\n\n");
@@ -456,6 +456,42 @@ mod tests {
         assert!(
             md.contains("Flow direction."),
             "should contain doc comment, got: {md}"
+        );
+    }
+
+    // --- occurrence hover tests ---
+
+    #[test]
+    fn hover_on_occurrence_name_shows_occurrence_keyword() {
+        let source = "occurrence def Joint {\n    param diameter: Scalar = 10mm\n}";
+        // 'Joint' starts after 'occurrence def ' = col 15
+        let position = Position::new(0, 16);
+        let md = hover_markdown(source, position)
+            .expect("hover should return info for occurrence name");
+        assert!(
+            md.contains("occurrence Joint"),
+            "should show 'occurrence Joint', not 'structure Joint', got: {md}"
+        );
+    }
+
+    #[test]
+    fn hover_on_occurrence_member_shows_param_info() {
+        let source = "occurrence def Joint {\n    param diameter: Scalar = 10mm\n}";
+        // 'diameter' on line 1, col 10
+        let position = Position::new(1, 10);
+        let md = hover_markdown(source, position)
+            .expect("hover should return info for occurrence member");
+        assert!(
+            md.contains("param"),
+            "should mention 'param', got: {md}"
+        );
+        assert!(
+            md.contains("diameter"),
+            "should mention 'diameter', got: {md}"
+        );
+        assert!(
+            md.contains("Scalar"),
+            "should mention 'Scalar', got: {md}"
         );
     }
 

@@ -239,6 +239,11 @@ impl CommitmentTracker {
     pub fn remove_task(&mut self, node_id: &NodeId) {
         self.states.remove(node_id);
     }
+
+    /// Return the number of tracked tasks (for test verification of cleanup).
+    pub fn task_count(&self) -> usize {
+        self.states.len()
+    }
 }
 
 impl Default for CommitmentPolicy {

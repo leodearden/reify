@@ -2625,10 +2625,16 @@
             "crates/reify-constraints"
           ],
           "milestone": "M8",
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: auto(free): solver integration"
+            ]
+          }
         },
         "subtasks": [],
-        "updatedAt": "2026-03-26T12:05:52.666Z"
+        "updatedAt": "2026-03-27T10:44:26.219Z"
       },
       {
         "id": "161",
@@ -3545,10 +3551,16 @@
             "examples"
           ],
           "milestone": "M9",
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Determinacy predicates: tests and .ri example"
+            ]
+          }
         },
         "subtasks": [],
-        "updatedAt": "2026-03-27T07:37:18.923Z"
+        "updatedAt": "2026-03-27T11:07:17.061Z"
       },
       {
         "id": "203",
@@ -3683,7 +3695,7 @@
           }
         },
         "subtasks": [],
-        "updatedAt": "2026-03-27T08:39:24.052Z"
+        "updatedAt": "2026-03-27T11:07:16.834Z"
       },
       {
         "id": "209",
@@ -5226,7 +5238,7 @@
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         },
         "subtasks": [],
-        "updatedAt": "2026-03-27T07:37:18.710Z"
+        "updatedAt": "2026-03-27T11:07:16.984Z"
       },
       {
         "id": "282",
@@ -7152,7 +7164,7 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-27T08:19:29.908Z",
+        "updatedAt": "2026-03-27T11:16:50.540Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -7759,7 +7771,7 @@
         "testStrategy": "",
         "priority": "low",
         "dependencies": [],
-        "status": "in-progress",
+        "status": "done",
         "metadata": {
           "modules": [
             "crates/reify-kernel-occt"
@@ -7767,7 +7779,7 @@
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         },
         "subtasks": [],
-        "updatedAt": "2026-03-27T08:45:00.487Z"
+        "updatedAt": "2026-03-27T09:38:52.118Z"
       },
       {
         "id": "401",
@@ -8160,7 +8172,13 @@
               "UnitRegistry API cleanup dimension mapping DRY entry API",
               "task 208 unit declarations registry branch"
             ]
-          }
+          },
+          "files": [
+            "crates/reify-compiler/src/lib.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/src"
+          ]
         }
       },
       {
@@ -8382,11 +8400,11 @@
         "description": "In crates/reify-test-support/src/values.rs: (1) Guard assert_value_approx_impl against NaN inputs. (2) Add #[should_panic] tests for dimension-mismatch, component-count-mismatch, and type-variant-mismatch panic paths. In crates/reify-test-support/src/mocks.rs: (3) Add debug_assert guarding MomentOfInertia QueryKey against NaN axis values. (Review followup from task 351)",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-27T09:18:58.756Z",
+        "updatedAt": "2026-03-27T11:07:16.294Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -8542,11 +8560,11 @@
         "description": "Add Declaration::Occurrence arms alongside Declaration::Structure in analysis.rs (find_parsed_member_span, structure_names) and goto_def.rs. Occurrence is structurally identical to Structure, so each match arm can be duplicated or extracted into a helper. Currently, members inside occurrence declarations are invisible to hover, goto-def, and completions. (Review followup from task 216)",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-26T12:05:53.629Z",
+        "updatedAt": "2026-03-27T11:07:17.694Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -9191,7 +9209,7 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-27T07:42:05.636Z",
+        "updatedAt": "2026-03-27T11:12:21.738Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -9421,7 +9439,7 @@
         "description": "**Gap:** `CommitmentTracker` and `SharedPriorityPromoter` are fully implemented and unit-tested (task #31), but `ConcurrentScheduler::execute` in `crates/reify-runtime/src/concurrent.rs` does not use them at all. The scheduler only checks `cancel.is_cancelled()` at the top of each level loop — it has no per-node commitment checking, no priority-based ordering within levels, and no mechanism to skip `OnlyRunOnFinalInputs` nodes during intermediate evaluations.\n\n**What \"done\" looks like:**\n1. `ConcurrentScheduler::execute` accepts (or is extended with) a `CommitmentTracker` (or `Arc<Mutex<CommitmentTracker>>`) and a `SharedPriorityPromoter`.\n2. Before spawning tasks for a level, nodes are sorted by effective priority from `SharedPriorityPromoter` (highest priority spawned first).\n3. When a stale/dirty-cone signal arrives mid-level, in-flight nodes consult `CommitmentTracker::should_continue` to decide whether to run to completion (committed) or cancel (not yet committed).\n4. Nodes with `NodeCommitmentOverride::OnlyRunOnFinalInputs` that have intermediate inputs are skipped (not spawned).\n5. On task completion/cancellation, nodes are removed from both `CommitmentTracker` and `SharedPriorityPromoter`.\n6. All new behavior is covered by failing-first integration tests in `tests/concurrent_eval.rs`.\n\n**Test-first workflow:**\n- Write failing integration tests first that assert: (a) priority ordering affects spawn order within a level, (b) committed nodes survive cancellation while uncommitted nodes are cancelled, (c) OnlyRunOnFinalInputs nodes are skipped when inputs are intermediate, (d) cleanup on completion removes nodes from both subsystems.\n- Then wire the subsystems into `execute` to make the tests pass.",
         "details": "## Implementation Guidance\n\n### Files to modify\n- `crates/reify-runtime/src/concurrent.rs` — `ConcurrentScheduler::execute` signature and body\n- `crates/reify-runtime/tests/concurrent_eval.rs` — new integration tests\n\n### Signature change for `ConcurrentScheduler::execute`\n\nThe current signature is:\n```rust\npub async fn execute<E: AsyncNodeEvaluator + 'static>(\n    &self,\n    eval_set: Vec<NodeId>,\n    evaluator: Arc<E>,\n    traces: &HashMap<NodeId, DependencyTrace>,\n    cancel: &CancellationToken,\n    changed_cells: &HashSet<ValueCellId>,\n) -> Result<SchedulerResult, SchedulerError>\n```\n\nAdd optional parameters (or a config struct) for:\n- `commitment_tracker: Option<Arc<Mutex<CommitmentTracker>>>` — per-node commitment state\n- `priority_promoter: Option<Arc<SharedPriorityPromoter>>` — effective priority lookup\n- `node_overrides: HashMap<NodeId, NodeCommitmentOverride>` — per-node commitment overrides\n- `has_intermediate_inputs: impl Fn(&NodeId) -> bool` — callback to check input finality\n\nConsider a builder or config struct to avoid signature bloat. Existing callers should keep working with defaults (None/empty).\n\n### Wiring points inside `execute`\n\n1. **Priority ordering** (before spawning): After filtering dirty_nodes for a level, sort by `priority_promoter.effective_priority(&node)`. Register each node in the promoter when it enters the eval set.\n\n2. **OnlyRunOnFinalInputs skip** (during dirty/skip pre-computation): If `node_overrides[node] == OnlyRunOnFinalInputs && has_intermediate_inputs(node)`, add to `skipped` instead of `dirty_nodes`.\n\n3. **Per-node cancellation with commitment** (inside spawned tasks): Instead of only checking `cancel.is_cancelled()` at the level boundary, pass a per-node child token. Before returning the eval result, check: if cancel is signalled AND `commitment_tracker.should_continue(node, in_dirty_cone=true)` is false, return a new `EvalOutcome::Cancelled` or drop the result. If committed, let it complete.\n\n4. **Registration and cleanup**: Register nodes in `CommitmentTracker` (with their override) and `SharedPriorityPromoter` (with their priority) when spawning. Remove from both on completion or cancellation.\n\n5. **Commitment status updates**: Periodically (or at level boundaries) call `commitment_tracker.update_status()` for in-flight nodes with their `TaskProgress`. For the initial implementation, updating at level boundaries is sufficient.\n\n### Integration tests to write (test-first)\n\n1. **`test_priority_ordering_within_level`**: Two nodes at same level, one P0Interactive, one P3Speculative. Use a `TrackingAsyncEvaluator` to verify P0 is evaluated before P3.\n\n2. **`test_committed_node_survives_cancellation`**: Node with elapsed > `always_commit_after`. Signal cancel mid-evaluation. Assert the committed node's result appears in `changed`, while an uncommitted node is absent.\n\n3. **`test_only_run_on_final_inputs_skipped`**: Node with `OnlyRunOnFinalInputs` override where `has_intermediate_inputs` returns true. Assert it appears in `skipped`, not `changed`.\n\n4. **`test_cleanup_on_completion`**: After execute completes, verify the tracker and promoter have no leftover entries for completed nodes.\n\n5. **`test_uncommitted_in_dirty_cone_cancelled`**: Uncommitted node (low elapsed, low progress) in dirty cone. Signal cancel. Assert it is NOT in `changed`.\n\n### Backward compatibility\n\nAll new parameters must be optional or defaulted. Existing tests in `concurrent.rs` and `tests/concurrent_eval.rs` must continue to pass without modification — they use `execute` without commitment/priority and should get the current behavior.\n\n### memory_hints\n- `search(query=\"ConcurrentScheduler execute signature\", project_id=\"reify\")`\n- `search(query=\"commitment policy scheduler wiring\", project_id=\"reify\")`\n- `get_entity(name=\"CommitmentTracker\")`\n- `get_entity(name=\"ConcurrentScheduler\")`\n- `get_entity(name=\"SharedPriorityPromoter\")`",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [
           "31"
         ],
@@ -9438,7 +9456,7 @@
             "crates/reify-runtime/tests"
           ]
         },
-        "updatedAt": "2026-03-27T08:39:06.744Z"
+        "updatedAt": "2026-03-27T09:55:56.651Z"
       },
       {
         "id": "478",
@@ -9462,7 +9480,7 @@
             "gui/src-tauri"
           ]
         },
-        "updatedAt": "2026-03-27T08:41:23.096Z"
+        "updatedAt": "2026-03-27T11:07:18.105Z"
       },
       {
         "id": "479",
@@ -9739,14 +9757,15 @@
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-03-27T06:20:32.004Z",
+        "updatedAt": "2026-03-27T10:17:30.732Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
             "crates/reify-eval/src/lib.rs"
           ],
           "modules": [
-            "crates/reify-eval/src"
+            "crates/reify-eval",
+            "crates/reify-test-support"
           ]
         }
       },
@@ -9760,7 +9779,7 @@
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-03-27T06:21:34.054Z",
+        "updatedAt": "2026-03-27T11:07:16.369Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -9815,7 +9834,7 @@
         "description": "NelderMeadSolver at crates/reify-constraints/src/solver.rs:401-423 skips the early-exit feasibility check when problem.objective.is_some(). This means optimization problems where constraints are already satisfied at the initial point still run the full 5000 iterations.\n\n**Fix:** When an objective is present and all constraints are already satisfied at the initial point, still run the optimizer but consider using the feasible initial point as a baseline. At minimum, add the feasibility check before the optimizer loop and if already feasible, run a reduced number of iterations or use a tighter convergence criterion.\n\n**Memory hints:** search for \"Nelder-Mead solver\", \"constraint solver architecture\", entity names: NelderMeadSolver, FEASIBILITY_THRESHOLD, MAX_ITERS",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -9834,7 +9853,7 @@
             ]
           }
         },
-        "updatedAt": "2026-03-27T08:06:33.112Z"
+        "updatedAt": "2026-03-27T10:48:16.143Z"
       },
       {
         "id": "496",
@@ -9952,7 +9971,7 @@
         "description": "cmd_build prints constraint summary (\"Some constraints violated.\") to stderr (eprintln!) while cmd_check prints the identical summary to stdout (println!). The two commands now share the same exit-code semantics but use different output channels. A CI script grepping the summary from stdout for cmd_check would need to switch to stderr for cmd_build.\n\n**Fix:** Pick one direction — either both use stderr (since constraint status is arguably diagnostic) or both use stdout (since it's the primary output of cmd_check). Update both commands to be consistent. Per-constraint status lines (OK/VIOLATED/INDETERMINATE) also differ: cmd_check uses println, cmd_build uses eprintln.\n\n**Locations:**\n- crates/reify-cli/src/main.rs: cmd_check ~line 101-112, cmd_build ~line 174-187\n\n**Memory hints:** search for \"CLI output channels\", entity names: cmd_build, cmd_check",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -9965,7 +9984,7 @@
             "crates/reify-cli/src"
           ]
         },
-        "updatedAt": "2026-03-27T08:55:23.580Z"
+        "updatedAt": "2026-03-27T09:25:07.070Z"
       },
       {
         "id": "502",
@@ -10299,7 +10318,7 @@
         "description": "The `subscribeToClaudeEvents` function in `gui/src/bridge.ts` uses `{ type: 'X', ...event.payload } as OutboundMessage` for all 6 payload-bearing event handlers. This has three issues:\n\n1. **Type safety**: The `as OutboundMessage` cast suppresses TS verification — a renamed Rust field would compile cleanly but produce structurally wrong objects.\n2. **Correctness trap**: The hardcoded `type` appears before the spread, meaning any `type` in the payload would silently override it.\n3. **Allocation on hot path**: The spread creates a new heap object per event. During streaming, `text_delta` events arrive at 50-200 Hz.\n\n**Fix**: Replace spread-cast pattern with explicit destructuring for all event handlers:\n```typescript\n['claude-text-delta', (event) => {\n  const p = event.payload as { id: string; content: string };\n  handler({ type: 'text_delta', id: p.id, content: p.content });\n}],\n```\n\nThis makes field mapping explicit, lets TypeScript verify the OutboundMessage discriminated union shape, and avoids unnecessary object allocation on the hot streaming path.\n\nMemory hints:\n- Search: \"subscribeToClaudeEvents OutboundMessage payload spread\"\n- Entities: bridge.ts, OutboundMessage, subscribeToClaudeEvents",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -10318,7 +10337,7 @@
             ]
           }
         },
-        "updatedAt": "2026-03-27T08:41:23.214Z"
+        "updatedAt": "2026-03-27T09:20:16.468Z"
       },
       {
         "id": "518",
@@ -10406,11 +10425,12 @@
         "id": "522",
         "title": "Harden Claude bridge payload mapping and type safety",
         "description": "Review findings from task 476 (Claude IPC bridge) — type safety and robustness improvements:\n\n1. **Spread-cast payload pattern** (bridge.ts:158-166): Replace `{ type: 'X', ...event.payload } as OutboundMessage` with explicit destructuring for each variant. The spread bypasses TypeScript discriminated union checking and a payload `type` field would silently override the hardcoded discriminant. Use: `const p = event.payload as { id: string; content: string }; handler({ type: 'text_delta', id: p.id, content: p.content })`. This also eliminates the minor per-event allocation from spread on the two high-frequency delta events (~50-200 Hz during streaming).\n\n2. **ClaudeMessageContext narrower than MessageContext** (bridge.ts:114-118): ClaudeMessageContext defines only 3 fields but MessageContext has 5 (also currentFile, attachedContexts). App.tsx's onSend silently drops fields at the bridge boundary. Either extend ClaudeMessageContext or use `Pick<MessageContext, ...>` from claudeStore.\n\n3. **Swallowed errors** (App.tsx:266-268): `catch (_err)` on subscribeToClaudeEvents discards the error before showing toast. Add `console.error('[claude] subscribeToClaudeEvents failed:', err)`. Also: claudeAbort failure gives no user feedback — show a toast instead of just console.error.\n\nModules: gui/src/bridge.ts, gui/src/App.tsx\n\nMemory hints: search \"Claude bridge subscribeToClaudeEvents OutboundMessage spread\", entities: subscribeToClaudeEvents, ClaudeMessageContext, bridge.ts",
-        "details": "",
+        "details": "<info added on 2026-03-27T09:59:11.091Z>\nAdd dependency on task 517. The remaining scope includes: (a) addressing the issue where ClaudeMessageContext is narrower than MessageContext by either extending ClaudeMessageContext or using `Pick<MessageContext, ...>` to include missing fields like currentFile and attachedContexts, and (b) handling swallowed errors in App.tsx by ensuring errors are logged and user feedback is provided through toasts. The spread-cast fix from item #1 should not be re-implemented.\n</info added on 2026-03-27T09:59:11.091Z>",
         "testStrategy": "",
         "status": "in-progress",
         "dependencies": [
-          "476"
+          "476",
+          "517"
         ],
         "priority": "medium",
         "subtasks": [],
@@ -10439,7 +10459,7 @@
             ]
           }
         },
-        "updatedAt": "2026-03-27T08:57:22.322Z"
+        "updatedAt": "2026-03-27T11:07:17.421Z"
       },
       {
         "id": "523",
@@ -10471,13 +10491,22 @@
         "description": "In gui/src/bridge.ts, subscribeToClaudeEvents() uses a spread-cast pattern for all 7 claude-* event types (claude-text-delta, claude-thinking-delta, claude-tool-call, claude-tool-result, claude-done, claude-error, claude-ready). Each listen() handler casts the Tauri event payload directly to an OutboundMessage shape without validation. If a payload's shape diverges from OutboundMessage (e.g. during sidecar protocol evolution or version mismatch), errors will be silent and the store will receive malformed messages.\\n\\nFix: Add discriminated type-guards (or Zod schema validation) for each event type in the listen() handlers. Each guard should validate the required fields for that event variant before calling the handler — on validation failure, log a warning and skip the message.\\n\\nSource: Stage 1 review of task 476 merge.",
         "details": "<info added on 2026-03-27T09:02:57.775Z>\nNOTE: This task is a subset of task 522 (Harden Claude bridge payload mapping and type safety), which covers the same spread-cast/type-guard issue plus two other bridge improvements. If task 522 completes successfully, this task should be cancelled as a duplicate. Do not start this task independently — check task 522 status first.\n</info added on 2026-03-27T09:02:57.775Z>",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "476"
         ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-27T08:54:04.904Z"
+        "updatedAt": "2026-03-27T11:07:18.226Z",
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "gui/src/bridge.ts"
+          ],
+          "modules": [
+            "gui/src"
+          ]
+        }
       },
       {
         "id": "525",
@@ -10497,7 +10526,8 @@
             "gui/sidecar",
             "gui/src",
             "gui/src-tauri"
-          ]
+          ],
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         }
       },
       {
@@ -10509,7 +10539,16 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-eval/tests/geometry_error_handling.rs"
+          ],
+          "modules": [
+            "crates/reify-eval/tests"
+          ]
+        }
       },
       {
         "id": "527",
@@ -10525,7 +10564,8 @@
         "metadata": {
           "modules": [
             "crates/reify-eval"
-          ]
+          ],
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         }
       },
       {
@@ -10539,7 +10579,16 @@
           "495"
         ],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-constraints/tests/solver_integration.rs"
+          ],
+          "modules": [
+            "crates/reify-constraints/tests"
+          ]
+        }
       },
       {
         "id": "529",
@@ -10552,7 +10601,18 @@
           "495"
         ],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-constraints/src/solver.rs",
+            "crates/reify-constraints/tests/solver_integration.rs"
+          ],
+          "modules": [
+            "crates/reify-constraints/src",
+            "crates/reify-constraints/tests"
+          ]
+        }
       },
       {
         "id": "530",
@@ -10565,7 +10625,16 @@
           "495"
         ],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-constraints/src/solver.rs"
+          ],
+          "modules": [
+            "crates/reify-constraints/src"
+          ]
+        }
       },
       {
         "id": "531",
@@ -10573,12 +10642,22 @@
         "description": "Three related robustness gaps in the warm-start optimization path (initially_feasible + objective):\n\n1. **False infeasible on warm-start** (solver.rs:497): If the optimizer starts feasible but drifts infeasible within the 500-iteration budget, the post-optimizer check returns `Infeasible` despite a known-feasible initial point. Fix: if `initially_feasible` and post-optimizer check fails, fall back to returning `Solved` with the initial point values.\n\n2. **Silent quality degradation** (solver.rs:436-440): `Solved` is returned regardless of convergence. Consider checking argmin's `TerminationReason` and either adding an `iteration_count` field to `SolveResult::Solved` or documenting that `Solved` does not guarantee optimality with objectives.\n\n3. **Dimension-blind constant** (solver.rs:26-29): `FEASIBLE_OPT_ITERS = 500` doesn't scale with problem dimensionality. Nelder-Mead needs O(N²) iterations. Consider `FEASIBLE_OPT_ITERS_BASE * (n_params + 1)` capped at MAX_ITERS, or add a comment documenting the limitation.\n\nPriority: medium — #1 is a potential correctness bug, #2-#3 are robustness improvements.\n\nMemory hints: search for \"Nelder-Mead solver\", \"constraint solver architecture\", entity names: NelderMeadSolver, FEASIBILITY_THRESHOLD, FEASIBLE_OPT_ITERS",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "495"
         ],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-constraints/src/solver.rs"
+          ],
+          "modules": [
+            "crates/reify-constraints/src"
+          ]
+        },
+        "updatedAt": "2026-03-27T11:07:18.388Z"
       },
       {
         "id": "532",
@@ -10590,14 +10669,23 @@
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-03-27T09:08:29.591Z",
+        "updatedAt": "2026-03-27T11:07:17.238Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
             "queries": [
               "resolution for: Stop committing tree-sitter generated files on task branches"
             ]
-          }
+          },
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            ".gitignore",
+            "hooks/pre-commit"
+          ],
+          "modules": [
+            "hooks",
+            "tree-sitter-reify"
+          ]
         }
       },
       {
@@ -10606,15 +10694,16 @@
         "description": "crates/reify-test-support/src/builders.rs (1914 lines) is the #2 merge conflict source (21 conflicts out of 101). Multiple tasks append new builder functions to the same monolithic file.\n\nSplit into per-type-family submodules under crates/reify-test-support/src/builders/:\n- value.rs (Value/Quantity builders)\n- geometry.rs (Point/Vector/Transform builders)\n- expr.rs (expression tree builders)\n- syntax.rs (AST/parse tree builders)\n- etc. based on current content clustering\n\nRe-export from builders/mod.rs so existing `use builders::*` imports keep working.\n\nmemory_hints: search \"test builder patterns reify\", search \"builders.rs structure\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-03-27T08:26:35.751Z",
+        "updatedAt": "2026-03-27T11:07:17.349Z",
         "metadata": {
           "modules": [
             "crates/reify-test-support"
-          ]
+          ],
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         }
       },
       {
@@ -10633,7 +10722,8 @@
             "crates/reify-compiler",
             "crates/reify-eval",
             "crates/reify-expr"
-          ]
+          ],
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         }
       },
       {
@@ -10642,11 +10732,11 @@
         "description": "Adding a new type variant in reify-types requires coordinated match-arm additions across 6 files that form a tightly-coupled \"type spine\" clique (10-11x co-conflict frequency):\n- crates/reify-types/src/value.rs (12 conflicts)\n- crates/reify-types/src/ty.rs (10 conflicts)\n- crates/reify-test-support/src/builders.rs (21 conflicts)\n- crates/reify-lsp/src/analysis.rs (12 conflicts)\n- crates/reify-constraints/src/classifier.rs (11 conflicts)\n- gui/src-tauri/src/types.rs (10 conflicts)\n\nInvestigate and implement decoupling:\n1. Enum dispatch traits so new variants are self-contained in one file\n2. Derive macros to auto-generate downstream match arms\n3. Or at minimum, move match-arm blocks into per-variant files so additions don't conflict\n4. Evaluate widening module locks for reify-types to serialize with downstream consumers as an interim measure\n\nmemory_hints: search \"type variant fan-out\", get_entity \"Value enum\", get_entity \"Type enum\", search \"match arm generation\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-03-27T08:49:23.882Z",
+        "updatedAt": "2026-03-27T09:28:56.969Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -10667,16 +10757,17 @@
         "description": "gui/package-lock.json causes merge conflicts when multiple tasks modify GUI dependencies. Instead of committing lockfile changes on task branches:\n\n1. Add gui/package-lock.json to .gitignore (or unstage in pre-commit hook) for task branches\n2. Add a post-merge step in the orchestrator merge worktree: cd gui && npm install (regenerates lockfile from package.json)\n3. Ensure CI regenerates the lockfile rather than relying on committed version\n\nSame pattern as the tree-sitter generated files task.\n\nmemory_hints: search \"package-lock merge conflicts\", search \"gui dependencies\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-03-27T09:08:30.031Z",
+        "updatedAt": "2026-03-27T11:07:16.524Z",
         "metadata": {
           "modules": [
             ".gitignore",
             "orchestrator.yaml"
-          ]
+          ],
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         }
       },
       {
@@ -10688,7 +10779,18 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "gui/src/__tests__/PropertyEditor.test.tsx",
+            "gui/src/panels/PropertyEditor.tsx"
+          ],
+          "modules": [
+            "gui/src/__tests__",
+            "gui/src/panels"
+          ]
+        }
       },
       {
         "id": "538",
@@ -10699,7 +10801,18 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "gui/src/panels/PropertyEditor.tsx",
+            "gui/src/__tests__/PropertyEditor.test.tsx"
+          ],
+          "modules": [
+            "gui/src/panels",
+            "gui/src/__tests__"
+          ]
+        }
       },
       {
         "id": "539",
@@ -10710,7 +10823,16 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "gui/src/bridge.ts"
+          ],
+          "modules": [
+            "gui/src"
+          ]
+        }
       },
       {
         "id": "540",
@@ -10721,7 +10843,16 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "gui/src/bridge.ts"
+          ],
+          "modules": [
+            "gui/src"
+          ]
+        }
       },
       {
         "id": "541",
@@ -10732,7 +10863,16 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "gui/src/__tests__/claudeBridge.test.ts"
+          ],
+          "modules": [
+            "gui/src/__tests__"
+          ]
+        }
       },
       {
         "id": "542",
@@ -10740,16 +10880,17 @@
         "description": "Extract private helper methods for lock acquisition in ConcurrentEvalAdapter to eliminate 12 inline .unwrap_or_else(|e| e.into_inner()) calls, and add tracing::warn! at each recovery site for production observability.",
         "details": "In crates/reify-runtime/src/concurrent_eval.rs:\n\n1. Add private helper methods following the CliToolContext::lock_state() pattern (crates/reify-cli/src/mcp_context.rs):\n```rust\nfn read_values(&self) -> RwLockReadGuard<'_, ValueMap> {\n    self.values.read().unwrap_or_else(|e| {\n        tracing::warn!(\"ConcurrentEvalAdapter: values RwLock poisoned (prior task panicked), recovering\");\n        e.into_inner()\n    })\n}\nfn write_values(&self) -> RwLockWriteGuard<'_, ValueMap> {\n    self.values.write().unwrap_or_else(|e| {\n        tracing::warn!(\"ConcurrentEvalAdapter: values RwLock poisoned (prior task panicked), recovering\");\n        e.into_inner()\n    })\n}\nfn read_snapshot_values(&self) -> RwLockReadGuard<'_, PersistentMap<ValueCellId, (Value, DeterminacyState)>> {\n    self.snapshot_values.read().unwrap_or_else(|e| {\n        tracing::warn!(\"ConcurrentEvalAdapter: snapshot_values RwLock poisoned, recovering\");\n        e.into_inner()\n    })\n}\nfn write_snapshot_values(&self) -> RwLockWriteGuard<'_, PersistentMap<ValueCellId, (Value, DeterminacyState)>> {\n    self.snapshot_values.write().unwrap_or_else(|e| {\n        tracing::warn!(\"ConcurrentEvalAdapter: snapshot_values RwLock poisoned, recovering\");\n        e.into_inner()\n    })\n}\nfn lock_results(&self) -> MutexGuard<'_, Vec<ConcurrentNodeResult>> {\n    self.results.lock().unwrap_or_else(|e| {\n        tracing::warn!(\"ConcurrentEvalAdapter: results Mutex poisoned, recovering\");\n        e.into_inner()\n    })\n}\n```\n\n2. Replace all 12 inline .unwrap_or_else(|e| e.into_inner()) calls with these helpers.\n\n3. into_result() uses Arc::try_unwrap paths — apply tracing::warn there too (inside the unwrap_or_else closures for both Ok(lock.into_inner()) and Err(arc.read()/lock()) paths).\n\n4. Add `use tracing;` or `tracing::warn!` import.\n\nThis addresses review suggestions about inline duplication (reviewer_reuse_auditor) and missing observability (reviewer_robustness). The pattern already exists in CliToolContext::lock_state().\n\nmemory_hints:\n  search: \"lock poisoning concurrent eval helper pattern\"\n  entities: [\"ConcurrentEvalAdapter\", \"CliToolContext\"]",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-27T08:46:50.405Z",
+        "updatedAt": "2026-03-27T11:16:50.778Z",
         "metadata": {
           "modules": [
             "Cargo.toml",
             "crates/reify-runtime"
-          ]
+          ],
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         }
       },
       {
@@ -10761,7 +10902,19 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-runtime/src/concurrent_eval.rs",
+            "crates/reify-runtime/src/lib.rs",
+            "crates/reify-runtime/tests/concurrent_eval.rs"
+          ],
+          "modules": [
+            "crates/reify-runtime/src",
+            "crates/reify-runtime/tests"
+          ]
+        }
       },
       {
         "id": "544",
@@ -10772,7 +10925,16 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-runtime/tests/concurrent_eval.rs"
+          ],
+          "modules": [
+            "crates/reify-runtime/tests"
+          ]
+        }
       },
       {
         "id": "545",
@@ -10783,7 +10945,16 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "gui/src/__tests__/App.test.tsx"
+          ],
+          "modules": [
+            "gui/src/__tests__"
+          ]
+        }
       },
       {
         "id": "546",
@@ -10796,7 +10967,20 @@
           "522"
         ],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "gui/src/bridge.ts",
+            "gui/src/stores/claudeStore.ts",
+            "gui/src/__tests__/types.typecheck.ts"
+          ],
+          "modules": [
+            "gui/src",
+            "gui/src/stores",
+            "gui/src/__tests__"
+          ]
+        }
       },
       {
         "id": "547",
@@ -10809,7 +10993,20 @@
           "522"
         ],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "gui/src/utils/errorClassifier.ts",
+            "gui/src/App.tsx",
+            "gui/src/editor/Editor.tsx"
+          ],
+          "modules": [
+            "gui/src",
+            "gui/src/utils",
+            "gui/src/editor"
+          ]
+        }
       },
       {
         "id": "548",
@@ -10822,7 +11019,17 @@
           "522"
         ],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "gui/src/__tests__/App.test.tsx",
+            "gui/src/__tests__/claudeBridge.test.ts"
+          ],
+          "modules": [
+            "gui/src/__tests__"
+          ]
+        }
       },
       {
         "id": "549",
@@ -10838,7 +11045,8 @@
         "metadata": {
           "modules": [
             "crates/reify-eval"
-          ]
+          ],
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         }
       },
       {
@@ -10855,7 +11063,8 @@
         "metadata": {
           "modules": [
             "crates/reify-eval"
-          ]
+          ],
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         }
       },
       {
@@ -10864,15 +11073,16 @@
         "description": "Three test quality fixes in reify-cli tests.",
         "details": "1. Replace 9 instances of assert_ne!(response[\"result\"][\"isError\"], true) with assert_eq!(..., Value::Bool(false)) in mcp_integration.rs — catches malformed responses where isError is absent.\n2. Change mcp_server_tools_list_returns_16_tools to assert minimum count and/or check specific tool names instead of exact count. Update test name.\n3. Rename gui_with_valid_ri_file_attempts_launch to gui_with_valid_ri_file_skips_launch_when_env_set in cli_gui.rs.\n\nFiles: crates/reify-cli/tests/mcp_integration.rs, crates/reify-cli/tests/cli_gui.rs",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-27T09:11:05.939Z",
+        "updatedAt": "2026-03-27T11:12:21.838Z",
         "metadata": {
           "modules": [
             "crates/reify-cli"
-          ]
+          ],
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         }
       },
       {
@@ -10889,7 +11099,8 @@
         "metadata": {
           "modules": [
             "crates/reify-compiler"
-          ]
+          ],
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         }
       },
       {
@@ -10907,7 +11118,8 @@
           "modules": [
             "crates/reify-compiler",
             "crates/reify-eval"
-          ]
+          ],
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         }
       },
       {
@@ -10919,7 +11131,14 @@
         "status": "pending",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-03-27T09:27:10.721Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler"
+          ],
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+        }
       },
       {
         "id": "555",
@@ -10930,7 +11149,16 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-eval/src/lib.rs"
+          ],
+          "modules": [
+            "crates/reify-eval/src"
+          ]
+        }
       },
       {
         "id": "556",
@@ -10941,7 +11169,16 @@
         "status": "pending",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-eval/tests/structural_physical.rs"
+          ],
+          "modules": [
+            "crates/reify-eval/tests"
+          ]
+        }
       },
       {
         "id": "557",
@@ -10952,7 +11189,18 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-test-support/src/lib.rs",
+            "crates/reify-compiler/tests/stdlib.rs"
+          ],
+          "modules": [
+            "crates/reify-test-support/src",
+            "crates/reify-compiler/tests"
+          ]
+        }
       },
       {
         "id": "558",
@@ -10963,7 +11211,16 @@
         "status": "pending",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-stdlib/src/structural_physical.ri"
+          ],
+          "modules": [
+            "crates/reify-stdlib/src"
+          ]
+        }
       },
       {
         "id": "559",
@@ -10974,7 +11231,16 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-runtime/tests/concurrent_eval.rs"
+          ],
+          "modules": [
+            "crates/reify-runtime/tests"
+          ]
+        }
       },
       {
         "id": "560",
@@ -10985,7 +11251,16 @@
         "status": "pending",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-runtime/src/concurrent_eval.rs"
+          ],
+          "modules": [
+            "crates/reify-runtime/src"
+          ]
+        }
       },
       {
         "id": "561",
@@ -10996,7 +11271,16 @@
         "status": "pending",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-runtime/tests/concurrent_eval.rs"
+          ],
+          "modules": [
+            "crates/reify-runtime/tests"
+          ]
+        }
       },
       {
         "id": "562",
@@ -11013,7 +11297,8 @@
           "modules": [
             "crates/reify-eval",
             "crates/reify-runtime"
-          ]
+          ],
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         }
       },
       {
@@ -11025,7 +11310,16 @@
         "status": "pending",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "tree-sitter-reify/build.rs"
+          ],
+          "modules": [
+            "tree-sitter-reify"
+          ]
+        }
       },
       {
         "id": "564",
@@ -11036,7 +11330,17 @@
         "status": "pending",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "tree-sitter-reify/tests/pipeline.rs",
+            "tree-sitter-reify/build.rs"
+          ],
+          "modules": [
+            "tree-sitter-reify"
+          ]
+        }
       },
       {
         "id": "565",
@@ -11047,7 +11351,17 @@
         "status": "pending",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            ".gitignore",
+            "tree-sitter-reify/build.rs"
+          ],
+          "modules": [
+            "tree-sitter-reify"
+          ]
+        }
       },
       {
         "id": "566",
@@ -11058,7 +11372,16 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-runtime/tests/concurrent_eval.rs"
+          ],
+          "modules": [
+            "crates/reify-runtime/tests"
+          ]
+        }
       },
       {
         "id": "567",
@@ -11069,14 +11392,365 @@
         "status": "pending",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-runtime/src/concurrent_eval.rs",
+            "crates/reify-runtime/src/lib.rs"
+          ],
+          "modules": [
+            "crates/reify-runtime/src"
+          ]
+        }
+      },
+      {
+        "id": "568",
+        "title": "Bridge.ts type hygiene: rename payload variable, use Omit<> casts, fix EventEntry type",
+        "description": "Three related type-hygiene improvements in gui/src/bridge.ts (subscribeToClaudeEvents):\n\n1. Rename terse `p` variable to `payload` in all 6 handlers (lines 159-182) for readability\n2. Replace inline cast shapes with `Omit<TextDelta, 'type'>` etc. using imported interfaces from sidecar/src/types.ts — eliminates duplicated field definitions\n3. Change EventEntry payload type from `Record<string, unknown>` to `unknown` since each handler re-casts independently\n\nSource: architect reviewer (S1, S2) and reuse auditor (S3) from task 517 review.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "gui/src/bridge.ts"
+          ],
+          "modules": [
+            "gui/src"
+          ]
+        }
+      },
+      {
+        "id": "569",
+        "title": "Add runtime payload validation in bridge.ts event handlers",
+        "description": "Add lightweight runtime guards to the 6 payload-bearing handlers in gui/src/bridge.ts subscribeToClaudeEvents (lines 159-182). Currently all payload casts are compile-time only — if the Rust sidecar emits a malformed event, undefined values propagate silently.\n\nFix: add null-guard before each cast (`if (!event.payload) return;`) and optionally validate required string fields (e.g. `typeof p.id !== 'string'`). Also guard tool_input against null/array values in the tool_call handler.\n\nSource: architect reviewer (S4) and robustness reviewer from task 517 review.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "gui/src/bridge.ts"
+          ],
+          "modules": [
+            "gui/src"
+          ]
+        }
+      },
+      {
+        "id": "570",
+        "title": "Harden claudeBridge tests: remove redundant assertion, add tool_call coverage",
+        "description": "Two test improvements in gui/src/__tests__/claudeBridge.test.ts:\n\n1. Remove redundant second assertion in 'payload type field does not override mapped event type' test (line 317) — the objectContaining check already verifies the type field\n2. Add extra-field exclusion test for claude-tool-call event — it has a structurally complex payload (tool_input: Record<string, unknown>) not covered by the existing representative tests on text_delta and done\n\nSource: test analyst reviewer (S5, S6) from task 517 review.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "gui/src/__tests__/claudeBridge.test.ts"
+          ],
+          "modules": [
+            "gui/src/__tests__"
+          ]
+        }
+      },
+      {
+        "id": "571",
+        "title": "Document Indeterminate-as-success semantics and add CLI test",
+        "description": "In report_constraints (crates/reify-cli/src/main.rs), Satisfaction::Indeterminate does not set all_satisfied = false, meaning indeterminate constraints are treated as success. This was an intentional decision but is not documented in the code. Add a comment explaining the choice, and add a CLI integration test that exercises Indeterminate constraints — verifying exit code is 0 and INDETERMINATE text appears on stdout (not stderr).\n\nMemory hints: search \"Indeterminate constraint semantics intentional\", entity: report_constraints",
+        "details": "Locations:\n- crates/reify-cli/src/main.rs:49 — add comment on the Indeterminate match arm\n- crates/reify-cli/tests/cli_check.rs — add test with fixture producing Indeterminate constraints\n- May need a new fixture file under crates/reify-cli/tests/fixtures/\n\nThe decision \"A build with only indeterminate constraints exits 0 and does not block the build\" is already recorded in project memory. This task is about making the code self-documenting and adding regression test coverage.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-cli/src/main.rs",
+            "crates/reify-cli/tests/cli_check.rs"
+          ],
+          "modules": [
+            "crates/reify-cli/src",
+            "crates/reify-cli/tests"
+          ]
+        }
+      },
+      {
+        "id": "572",
+        "title": "Remove duplicate CLI channel-regression tests",
+        "description": "The standalone tests check_constraint_output_on_stdout_not_stderr (cli_check.rs:80-111) and build_constraint_output_on_stdout_not_stderr (cli_build.rs:127-167) are entirely redundant with inline channel-regression assertions already present in check_violating_bracket_exits_failure and build_violating_bracket_exits_failure. Both run the same fixture, same binary, same assertions. The standalone tests are strictly weaker (no exit-code check). Remove them.\n\nMemory hints: search \"CLI test duplication channel regression\", entity: cmd_check, cmd_build",
+        "details": "Locations:\n- crates/reify-cli/tests/cli_check.rs:80-111 — remove check_constraint_output_on_stdout_not_stderr\n- crates/reify-cli/tests/cli_build.rs:127-167 — remove build_constraint_output_on_stdout_not_stderr\n\nThe inline assertions in the existing tests (check_violating_bracket_exits_failure, build_violating_bracket_exits_failure) already cover the same channel-regression. Keeping both doubles binary invocations for zero additional coverage.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-cli/tests/cli_check.rs",
+            "crates/reify-cli/tests/cli_build.rs"
+          ],
+          "modules": [
+            "crates/reify-cli/tests"
+          ]
+        }
+      },
+      {
+        "id": "573",
+        "title": "Align constraint/diagnostic output ordering in cmd_check vs cmd_build",
+        "description": "cmd_check reports constraint results before diagnostics (line 113, then 115-117), while cmd_build reports diagnostics before constraints (lines 172-174, then 177). The two commands should present the same information in the same order for consistency.\n\nFix: Pick one order (constraints first matches cmd_check) and apply to both.\n\nMemory hints: search \"CLI output ordering consistency\", entity: cmd_check, cmd_build",
+        "details": "Locations:\n- crates/reify-cli/src/main.rs:113 (cmd_check: constraints first)\n- crates/reify-cli/src/main.rs:172-177 (cmd_build: diagnostics first)\n\nRecommended: constraints first, then diagnostics — matching cmd_check's current order. Diagnostics describe evaluation problems; constraint results describe design intent, so leading with constraints is more user-friendly.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-cli/src/main.rs"
+          ],
+          "modules": [
+            "crates/reify-cli/src"
+          ]
+        }
+      },
+      {
+        "id": "574",
+        "title": "Add positive boundary tests for revolve validation thresholds",
+        "description": "Add tests that confirm values just above AXIS_MAG_SQ_MIN and ANGLE_ABS_MIN thresholds are accepted (not just that values below are rejected). Without these, an inverted comparison or off-by-one in the constant would go undetected.\n\nSuggested tests:\n- `revolve_just_above_axis_threshold_accepted`: axis_dir=[1e-3, 0, 0] (mag_sq=1e-6 >> 1e-12) succeeds\n- `revolve_just_above_angle_threshold_accepted`: angle_rad=1e-25 (>> 1e-30) succeeds\n\nmemory_hints: search \"AXIS_MAG_SQ_MIN ANGLE_ABS_MIN revolve validation thresholds\", get_entity \"OcctKernel\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-eval/tests/geometry_error_handling.rs"
+          ],
+          "modules": [
+            "crates/reify-eval/tests"
+          ]
+        }
+      },
+      {
+        "id": "575",
+        "title": "Replace std::thread::sleep with tokio::time::sleep in concurrent_eval async tests",
+        "description": "In `crates/reify-runtime/tests/concurrent_eval.rs`, `test_committed_node_survives_cancellation` uses `std::thread::sleep(Duration::from_millis(50))` inside an async evaluator body within a `tokio::spawn` task. Under the `#[tokio::test]` current_thread runtime, this blocks the entire executor for 50ms, preventing other tasks from being polled. The test passes by accident due to current_thread serialization, not by design.\n\n**Fix:** Replace `std::thread::sleep(Duration::from_millis(50))` with `tokio::time::sleep(Duration::from_millis(50)).await` inside the async `evaluate` fn at line ~2132. This is a one-line change since `AsyncNodeEvaluator::evaluate` is already async.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          "477"
+        ],
+        "priority": "low",
+        "subtasks": [],
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-runtime/tests/concurrent_eval.rs"
+          ],
+          "modules": [
+            "crates/reify-runtime/tests"
+          ]
+        }
+      },
+      {
+        "id": "576",
+        "title": "Reduce mutex acquisitions in ConcurrentScheduler priority sort and cleanup",
+        "description": "Two performance issues in `crates/reify-runtime/src/concurrent.rs`:\n\n1. **Sort acquires mutex O(N log N) times** (lines 285-289): `dirty_nodes.sort_by_key` calls `promoter.effective_priority()` per comparison, each locking the internal mutex. Since nodes are freshly registered and no promotions have occurred, sort directly from `config.node_priorities` — zero mutex acquisitions, same result.\n\n2. **cleanup_level per-node mutex** (lines 349-353): `promoter.remove(node)` acquires and releases the mutex per node. Add a `batch_remove` method to `SharedPriorityPromoter` or lock the inner field once outside the loop.\n\n**Files:** `crates/reify-runtime/src/concurrent.rs`, `crates/reify-runtime/src/priority_promotion.rs`",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          "477"
+        ],
+        "priority": "low",
+        "subtasks": [],
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-runtime/src/concurrent.rs",
+            "crates/reify-runtime/src/priority_promotion.rs"
+          ],
+          "modules": [
+            "crates/reify-runtime/src"
+          ]
+        }
+      },
+      {
+        "id": "577",
+        "title": "DRY: compute node_overrides once per node in execute_with_config",
+        "description": "In `crates/reify-runtime/src/concurrent.rs`, `config.node_overrides.get(&node).copied().unwrap_or_default()` is computed twice for each dirty node: once in the dirty/skip pre-computation pass (line ~262) and again in the commitment tracker registration block (line ~298). These will silently diverge if the lookup logic changes.\n\n**Fix:** Compute the override once at the top of the per-node loop and reuse it. Option A: store `(NodeId, NodeCommitmentOverride)` pairs in `dirty_nodes`. Option B: compute and bind `let override_ = ...` once in the is_dirty block and carry it through.\n\n**File:** `crates/reify-runtime/src/concurrent.rs`",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          "477"
+        ],
+        "priority": "low",
+        "subtasks": [],
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-runtime/src/concurrent.rs"
+          ],
+          "modules": [
+            "crates/reify-runtime/src"
+          ]
+        }
+      },
+      {
+        "id": "578",
+        "title": "Deduplicate test helpers and consolidate imports in concurrent_eval.rs",
+        "description": "In `crates/reify-runtime/tests/concurrent_eval.rs`, the execute_with_config test section has significant code duplication:\n\n1. **AllChangedAsync** — defined identically at lines ~2034 and ~2270 (2 copies).\n2. **PanickingEvaluator** — defined identically at lines ~638, ~740, ~2344, and ~2432 (4 copies total).\n3. **Import blocks** — ~10 identical `use` lines repeated in each of the 7 new test functions.\n\n**Fix:** Wrap the execute_with_config tests in a `mod execute_with_config_tests { use super::*; ... }` block (like the existing `mod poison_panics` pattern). Hoist `AllChangedAsync` and `PanickingEvaluator` to module-level helpers visible to all tests.\n\n**File:** `crates/reify-runtime/tests/concurrent_eval.rs`",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          "477"
+        ],
+        "priority": "low",
+        "subtasks": [],
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-runtime/tests/concurrent_eval.rs"
+          ],
+          "modules": [
+            "crates/reify-runtime/tests"
+          ]
+        }
+      },
+      {
+        "id": "579",
+        "title": "Add missing test coverage for AlwaysCancelWhenStale and OnlyRunOnFinalInputs-runs-when-final",
+        "description": "Two commitment override paths lack test coverage in `crates/reify-runtime/tests/concurrent_eval.rs`:\n\n1. **AlwaysCancelWhenStale** — fully implemented in `commitment.rs:115-117` but has no integration test. A node with this override should always be dropped when cancel fires, regardless of elapsed time. Add `test_always_cancel_when_stale_drops_result`: set a node with AlwaysCancelWhenStale override and CommitmentPolicy with always_commit_after=0ms (would normally commit), fire cancel, assert NOT in changed.\n\n2. **OnlyRunOnFinalInputs with final inputs (false branch)** — `test_only_run_on_final_inputs_skipped` only tests the true case. Add `test_only_run_on_final_inputs_runs_when_final`: give node OnlyRunOnFinalInputs override, set `has_intermediate_inputs` to `|_| false`, assert node IS in changed.\n\n**File:** `crates/reify-runtime/tests/concurrent_eval.rs`",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          "477"
+        ],
+        "priority": "low",
+        "subtasks": [],
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-runtime/tests/concurrent_eval.rs"
+          ],
+          "modules": [
+            "crates/reify-runtime/tests"
+          ]
+        }
+      },
+      {
+        "id": "580",
+        "title": "Use JoinSet to abort detached tasks on ConcurrentScheduler error paths",
+        "description": "In `crates/reify-runtime/src/concurrent.rs` (lines 368-375), when returning Err on panic or cancel paths, remaining JoinHandles in `handles` are dropped. In tokio, dropping a JoinHandle detaches (does not abort) the task — those evaluations continue running in the background holding `Arc<E>` and `Arc<Mutex<CommitmentTracker>>`. The evaluator's side effects continue after the caller believes execution has stopped.\n\n**Fix:** Replace `Vec<JoinHandle>` with `tokio::task::JoinSet`. In error branches, call `join_set.abort_all()` before returning Err. This ensures cooperative cancellation of in-flight tasks and is consistent with the existing cancel semantics.\n\n**File:** `crates/reify-runtime/src/concurrent.rs`",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          "477"
+        ],
+        "priority": "medium",
+        "subtasks": [],
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-runtime/src/concurrent.rs"
+          ],
+          "modules": [
+            "crates/reify-runtime/src"
+          ]
+        }
+      },
+      {
+        "id": "581",
+        "title": "Remove .task/plan.json from git tracking on main",
+        "description": "The file .task/plan.json was leaked onto main by commit 14ae324a (from task-517). It is deleted from the working tree but still tracked in git. The pre-commit hook TS type error blocker that previously prevented this cleanup was fixed in commit 784e3921. Run `git rm --cached .task/plan.json` (and .task/iterations.jsonl if present) and commit to main. Also verify .task/ is in .gitignore to prevent future leaks.\n\nMemory hints: search \".task plan.json tracked on main leaked commit\", entities: .task/plan.json, pre-commit hook",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            ".gitignore",
+            ".task/plan.json"
+          ],
+          "modules": [
+            "."
+          ]
+        }
+      },
+      {
+        "id": "582",
+        "title": "Solver: code quality cleanup from task 495 review",
+        "description": "Address code quality suggestions from task 495 reviews in solver.rs and solver_integration.rs:\n\n1. Simplify redundant `problem.objective.is_some()` guard at solver.rs:~436 — after the early-return for `initially_feasible && objective.is_none()`, the `objective.is_some()` check is always true. Simplify to `if initially_feasible`.\n2. Inline or annotate `trial_values` binding at solver.rs:~408 — used only for feasibility check, could be inlined into `max_constraint_residual()` call.\n3. Tighten assertion bounds in `optimize_with_feasible_initial_point` — lower bound should be 5mm (param bound) not 2mm (constraint floor).\n4. Tighten assertion bounds in `maximize_with_feasible_initial_point` — upper bound tolerance too loose (1mm slack vs ~0.2mm expected).\n5. Add objective-value assertion to `feasibility_check_runs_with_objective` unit test — currently only checks Solved, should verify optimizer moved toward minimum.\n6. Replace raw `Value::Scalar` literals with `mm()` helper in new integration tests.\n7. Extract `build_solved_values` helper to deduplicate the zip-insert loop in early-exit and final-return paths.\n\nFiles: crates/reify-constraints/src/solver.rs, crates/reify-constraints/tests/solver_integration.rs\n\nMemory hints: search \"Nelder-Mead solver\", entity NelderMeadSolver",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-constraints/src/solver.rs",
+            "crates/reify-constraints/tests/solver_integration.rs"
+          ],
+          "modules": [
+            "crates/reify-constraints/src",
+            "crates/reify-constraints/tests"
+          ]
+        }
+      },
+      {
+        "id": "583",
+        "title": "Solver: warm-start convergence robustness improvements",
+        "description": "Address architectural robustness suggestions from task 495 reviews for the warm-start optimization path:\n\n1. **Convergence reporting**: When FEASIBLE_OPT_ITERS budget is exhausted without convergence, SolveResult::Solved is returned with no indication of suboptimality. Either add convergence metadata to SolveResult::Solved or check argmin's TerminationReason.\n2. **Dimension-scaling FEASIBLE_OPT_ITERS**: The flat 500-iteration budget doesn't scale with problem dimensionality. Nelder-Mead needs O(N²) iterations. Scale as `FEASIBLE_OPT_ITERS_BASE * (n_params + 1)` capped at MAX_ITERS. Add a multi-parameter warm-start test (N≥2).\n3. **Fallback on drift**: When initially_feasible=true but the optimizer drifts out of the feasible region during the reduced-budget run, fall back to returning the known-feasible initial point instead of Infeasible.\n\nFiles: crates/reify-constraints/src/solver.rs, crates/reify-constraints/tests/solver_integration.rs\n\nMemory hints: search \"Nelder-Mead solver\", \"constraint solver architecture\", entity NelderMeadSolver, FEASIBILITY_THRESHOLD",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-constraints/src/solver.rs",
+            "crates/reify-constraints/tests/solver_integration.rs"
+          ],
+          "modules": [
+            "crates/reify-constraints/src",
+            "crates/reify-constraints/tests"
+          ]
+        }
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-27T09:18:58.757Z",
-      "taskCount": 567,
-      "completedCount": 264,
+      "lastModified": "2026-03-27T11:16:50.778Z",
+      "taskCount": 583,
+      "completedCount": 270,
       "tags": [
         "master"
       ]

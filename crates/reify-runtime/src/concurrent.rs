@@ -5,11 +5,46 @@
 
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use reify_eval::cache::{EvalOutcome, NodeId};
 use reify_eval::deps::DependencyTrace;
 use reify_types::ValueCellId;
+
+use crate::Priority;
+use crate::commitment::{CommitmentTracker, NodeCommitmentOverride};
+use crate::priority_promotion::SharedPriorityPromoter;
+
+/// Configuration for [`ConcurrentScheduler::execute_with_config`].
+///
+/// Controls priority-based ordering, commitment tracking, and per-node
+/// behavior overrides during concurrent evaluation. `Default` gives
+/// exact current `execute` behavior (no priority sorting, no commitment
+/// tracking, no skip overrides).
+pub struct SchedulerConfig {
+    /// Optional commitment tracker for commitment-aware cancellation.
+    pub commitment_tracker: Option<Arc<Mutex<CommitmentTracker>>>,
+    /// Optional priority promoter for priority-based spawn ordering.
+    pub priority_promoter: Option<Arc<SharedPriorityPromoter>>,
+    /// Per-node commitment behavior overrides.
+    pub node_overrides: HashMap<NodeId, NodeCommitmentOverride>,
+    /// Per-node scheduling priorities.
+    pub node_priorities: HashMap<NodeId, Priority>,
+    /// Callback to check if a node has intermediate (non-final) inputs.
+    pub has_intermediate_inputs: Arc<dyn Fn(&NodeId) -> bool + Send + Sync>,
+}
+
+impl Default for SchedulerConfig {
+    fn default() -> Self {
+        Self {
+            commitment_tracker: None,
+            priority_promoter: None,
+            node_overrides: HashMap::new(),
+            node_priorities: HashMap::new(),
+            has_intermediate_inputs: Arc::new(|_| false),
+        }
+    }
+}
 
 /// Error type for concurrent scheduler execution.
 ///
@@ -154,6 +189,34 @@ impl ConcurrentScheduler {
         cancel: &CancellationToken,
         changed_cells: &HashSet<ValueCellId>,
     ) -> Result<SchedulerResult, SchedulerError> {
+        self.execute_with_config(
+            eval_set,
+            evaluator,
+            traces,
+            cancel,
+            changed_cells,
+            SchedulerConfig::default(),
+        )
+        .await
+    }
+
+    /// Execute the eval set concurrently with additional configuration for
+    /// priority ordering, commitment tracking, and per-node overrides.
+    ///
+    /// Extends [`execute`](Self::execute) with:
+    /// - Priority-based spawn ordering within each level
+    /// - Commitment-aware cancellation (committed results survive cancel)
+    /// - `OnlyRunOnFinalInputs` skip logic
+    /// - Registration/cleanup lifecycle for tracker and promoter
+    pub async fn execute_with_config<E: AsyncNodeEvaluator + 'static>(
+        &self,
+        eval_set: Vec<NodeId>,
+        evaluator: Arc<E>,
+        traces: &HashMap<NodeId, DependencyTrace>,
+        cancel: &CancellationToken,
+        changed_cells: &HashSet<ValueCellId>,
+        config: SchedulerConfig,
+    ) -> Result<SchedulerResult, SchedulerError> {
         if eval_set.is_empty() {
             return Ok(SchedulerResult {
                 changed: HashSet::new(),
@@ -190,43 +253,131 @@ impl ConcurrentScheduler {
                 };
 
                 if is_dirty {
-                    dirty_nodes.push(node);
+                    // Check OnlyRunOnFinalInputs override before adding to dirty
+                    let override_ = config
+                        .node_overrides
+                        .get(&node)
+                        .copied()
+                        .unwrap_or_default();
+                    if override_ == NodeCommitmentOverride::OnlyRunOnFinalInputs
+                        && (config.has_intermediate_inputs)(&node)
+                    {
+                        skipped.insert(node);
+                    } else {
+                        dirty_nodes.push(node);
+                    }
                 } else {
                     skipped.insert(node);
                 }
             }
 
+            // Register dirty nodes in priority promoter and sort by priority
+            if let Some(ref promoter) = config.priority_promoter {
+                for node in &dirty_nodes {
+                    let priority = config
+                        .node_priorities
+                        .get(node)
+                        .copied()
+                        .unwrap_or(Priority::P3Speculative);
+                    promoter.register(node.clone(), priority);
+                }
+                // Sort by effective priority: ascending (P0 < P3 in Ord)
+                dirty_nodes.sort_by_key(|node| {
+                    promoter
+                        .effective_priority(node)
+                        .unwrap_or(Priority::P3Speculative)
+                });
+            }
+
+            // Register dirty nodes in commitment tracker before spawning
+            if let Some(ref tracker) = config.commitment_tracker {
+                let mut guard = tracker.lock().unwrap_or_else(|e| e.into_inner());
+                for node in &dirty_nodes {
+                    let override_ = config
+                        .node_overrides
+                        .get(node)
+                        .copied()
+                        .unwrap_or_default();
+                    guard.register_task(node.clone(), override_);
+                }
+            }
+
             // Spawn tasks for dirty nodes in this level
+            // Returns (NodeId, Option<EvalOutcome>) where None = commitment-cancelled
             let mut handles = Vec::new();
-            for node in dirty_nodes {
+            for node in &dirty_nodes {
                 let eval = Arc::clone(&evaluator);
                 let n = node.clone();
+                let cancel_clone = cancel.clone();
+                let tracker_clone = config.commitment_tracker.clone();
+                let has_intermediate = (config.has_intermediate_inputs)(&n);
                 let handle = tokio::spawn(async move {
+                    let start = std::time::Instant::now();
                     let outcome = eval.evaluate(n.clone()).await;
-                    (n, outcome)
+                    // Commitment check: if cancel fired and tracker is present
+                    if cancel_clone.is_cancelled()
+                        && let Some(ref tracker) = tracker_clone
+                    {
+                        let elapsed = start.elapsed();
+                        let progress = crate::commitment::TaskProgress {
+                            elapsed,
+                            reported_progress: None,
+                            previous_runtime: None,
+                        };
+                        let mut guard =
+                            tracker.lock().unwrap_or_else(|e| e.into_inner());
+                        guard.update_status(&n, &progress, has_intermediate);
+                        if !guard.should_continue(&n, true) {
+                            // Uncommitted in dirty cone — drop result
+                            return (n, None);
+                        }
+                    }
+                    (n, Some(outcome))
                 });
                 handles.push(handle);
             }
 
+            // Cleanup closure: remove all dirty nodes from tracker and promoter.
+            // Called on both normal completion and error paths to prevent stale entries.
+            let cleanup_level = |dirty: &[NodeId]| {
+                if let Some(ref tracker) = config.commitment_tracker {
+                    let mut guard = tracker.lock().unwrap_or_else(|e| e.into_inner());
+                    for node in dirty {
+                        guard.remove_task(node);
+                    }
+                }
+                if let Some(ref promoter) = config.priority_promoter {
+                    for node in dirty {
+                        promoter.remove(node);
+                    }
+                }
+            };
+
             // Join all tasks in this level
             for handle in handles {
                 match handle.await {
-                    Ok((node, EvalOutcome::Changed)) => {
+                    Ok((node, Some(EvalOutcome::Changed))) => {
                         // Add to changed_vcids for downstream dirty computation
                         if let NodeId::Value(ref vcid) = node {
                             changed_vcids.insert(vcid.clone());
                         }
                         changed.insert(node);
                     }
-                    Ok(_) => {} // Unchanged — skip
+                    Ok((_, Some(EvalOutcome::Unchanged))) => {} // Unchanged — skip
+                    Ok((_, None)) => {} // Commitment-cancelled — drop
                     Err(e) if e.is_panic() => {
+                        cleanup_level(&dirty_nodes);
                         return Err(SchedulerError::TaskPanicked(e.into_panic()));
                     }
                     Err(_) => {
+                        cleanup_level(&dirty_nodes);
                         return Err(SchedulerError::TaskCancelled);
                     }
                 }
             }
+
+            // Normal completion: cleanup all processed nodes
+            cleanup_level(&dirty_nodes);
         }
 
         Ok(SchedulerResult { changed, skipped })

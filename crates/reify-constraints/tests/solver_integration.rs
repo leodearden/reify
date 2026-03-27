@@ -506,3 +506,182 @@ fn nelder_mead_tolerance_config_does_not_degenerate() {
         other => panic!("expected Solved, got {:?}", other),
     }
 }
+
+/// Optimization with an already-feasible initial point should still produce Solved,
+/// with the objective driven toward its optimum (minimize pushes toward lower bound).
+/// Auto param bounds (5mm–100mm) prevent the solver from overshooting the constraint
+/// boundary at 2mm, so the optimizer converges at the bounds floor (≈5mm) which is
+/// well inside the feasible region.
+#[test]
+fn optimize_with_feasible_initial_point() {
+    let solver = DimensionalSolver;
+
+    let thickness_id = vcid("Bracket", "thickness");
+    let thickness_ref = value_ref("Bracket", "thickness");
+
+    // thickness > 2mm AND thickness < 50mm
+    let gt_expr = gt(thickness_ref.clone(), literal(mm(2.0)));
+    let lt_expr = lt(thickness_ref.clone(), literal(mm(50.0)));
+
+    // Minimize thickness — should push toward the auto param lower bound (5mm),
+    // which is still above the constraint floor (2mm)
+    let objective = OptimizationObjective::Minimize(thickness_ref);
+
+    // Set current value to 25mm — already feasible (between 2mm and 50mm)
+    let mut current = ValueMap::new();
+    current.insert(
+        thickness_id.clone(),
+        Value::Scalar {
+            si_value: 0.025,
+            dimension: DimensionVector::LENGTH,
+        },
+    );
+
+    let problem = ResolutionProblem {
+        auto_params: vec![AutoParam {
+            id: thickness_id.clone(),
+            param_type: Type::length(),
+            bounds: Some((0.005, 0.1)), // 5mm–100mm, floor above constraint
+        }],
+        constraints: vec![
+            (cnid("Bracket", 0), gt_expr),
+            (cnid("Bracket", 1), lt_expr),
+        ],
+        current_values: current,
+        objective: Some(objective),
+        functions: vec![],
+    };
+
+    let result = solver.solve(&problem);
+    match result {
+        SolveResult::Solved { values } => {
+            let si = values
+                .get(&thickness_id)
+                .unwrap()
+                .as_f64()
+                .unwrap();
+            // Minimize should push thickness toward 5mm (auto param lower bound),
+            // which is safely above the 2mm constraint.
+            assert!(
+                si > 0.002 && si < 0.010,
+                "minimized thickness should be near 5mm, got {} m",
+                si
+            );
+        }
+        other => panic!("expected Solved, got {:?}", other),
+    }
+}
+
+/// Maximize with a feasible initial point — the solver should still push x
+/// toward the constraint boundary (upper) rather than staying at the initial point.
+/// Auto param upper bound (50mm) is below the constraint ceiling (80mm), so the
+/// optimizer converges at the param bound (50mm), safely inside the feasible region.
+#[test]
+fn maximize_with_feasible_initial_point() {
+    let solver = DimensionalSolver;
+
+    let x_id = vcid("Part", "x");
+    let x_ref = value_ref("Part", "x");
+
+    // x > 2mm AND x < 80mm
+    let gt_expr = gt(x_ref.clone(), literal(mm(2.0)));
+    let lt_expr = lt(x_ref.clone(), literal(mm(80.0)));
+
+    // Maximize x — should push toward upper bound
+    let objective = OptimizationObjective::Maximize(x_ref);
+
+    // Set current value to 10mm — already feasible
+    let mut current = ValueMap::new();
+    current.insert(
+        x_id.clone(),
+        Value::Scalar {
+            si_value: 0.010,
+            dimension: DimensionVector::LENGTH,
+        },
+    );
+
+    let problem = ResolutionProblem {
+        auto_params: vec![AutoParam {
+            id: x_id.clone(),
+            param_type: Type::length(),
+            bounds: Some((0.001, 0.050)), // upper bound 50mm < constraint 80mm
+        }],
+        constraints: vec![
+            (cnid("Part", 0), gt_expr),
+            (cnid("Part", 1), lt_expr),
+        ],
+        current_values: current,
+        objective: Some(objective),
+        functions: vec![],
+    };
+
+    let result = solver.solve(&problem);
+    match result {
+        SolveResult::Solved { values } => {
+            let si = values.get(&x_id).unwrap().as_f64().unwrap();
+            // Maximize should push x toward 50mm (auto param upper bound),
+            // well above the 10mm initial point
+            assert!(
+                si > 0.030,
+                "maximized x should be pushed well above initial 10mm, got {} m",
+                si
+            );
+            assert!(
+                si <= 0.051,
+                "maximized x should not exceed param bounds (50mm), got {} m",
+                si
+            );
+        }
+        other => panic!("expected Solved, got {:?}", other),
+    }
+}
+
+/// Infeasible constraints with an objective present should still be detected.
+/// Bounds [0, 10mm], constraint x > 15mm — impossible within bounds.
+/// Regression guard: the feasibility check must NOT short-circuit the
+/// infeasibility detection path when an objective is present.
+#[test]
+fn infeasible_with_objective_still_detected() {
+    let solver = DimensionalSolver;
+
+    let x_id = vcid("Part", "x");
+    let x_ref = value_ref("Part", "x");
+
+    // constraint: x > 15mm — impossible with bounds [0, 10mm]
+    let constraint = gt(x_ref.clone(), literal(mm(15.0)));
+
+    // Maximize x — the objective shouldn't mask the infeasibility
+    let objective = OptimizationObjective::Maximize(x_ref);
+
+    let problem = ResolutionProblem {
+        auto_params: vec![AutoParam {
+            id: x_id.clone(),
+            param_type: Type::length(),
+            bounds: Some((0.0, 0.010)), // max 10mm
+        }],
+        constraints: vec![(cnid("Part", 0), constraint)],
+        current_values: ValueMap::new(),
+        objective: Some(objective),
+        functions: vec![],
+    };
+
+    let result = solver.solve(&problem);
+    match result {
+        SolveResult::Infeasible { diagnostics } => {
+            assert!(
+                !diagnostics.is_empty(),
+                "should have diagnostic messages"
+            );
+            let msg = &diagnostics[0].message;
+            assert!(
+                msg.contains("residual"),
+                "diagnostic should mention residual, got: {}",
+                msg
+            );
+        }
+        other => panic!(
+            "expected Infeasible for constraint beyond bounds with objective, got {:?}",
+            other
+        ),
+    }
+}
