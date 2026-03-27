@@ -6892,7 +6892,13 @@
         "subtasks": [],
         "updatedAt": "2026-03-27T06:16:22.282Z",
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-stdlib/src/lib.rs"
+          ],
+          "modules": [
+            "crates/reify-stdlib/src"
+          ]
         }
       },
       {
