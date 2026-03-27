@@ -1393,6 +1393,33 @@ describe('App event subscription error toast', () => {
   });
 });
 
+describe('App Claude subscription error toast', () => {
+  it('shows warning toast when subscribeToClaudeEvents rejects', async () => {
+    vi.mocked(bridge.subscribeToClaudeEvents).mockRejectedValueOnce(
+      new Error('connection refused'),
+    );
+
+    render(() => <App />);
+
+    // Wait for ready state (subscribeToClaudeEvents failure is non-fatal)
+    await waitFor(() => {
+      expect(screen.getByTestId('app-layout')).toBeTruthy();
+    });
+
+    // Wait for the Claude-specific warning toast to appear
+    await waitFor(() => {
+      const toasts = screen.getAllByTestId('toast');
+      const claudeToast = toasts.find((t) =>
+        t.textContent?.includes('Claude assistant unavailable'),
+      );
+      expect(claudeToast).toBeTruthy();
+      expect(claudeToast!.textContent).toContain(
+        'chat features may not work',
+      );
+    });
+  });
+});
+
 describe('App reload error toast', () => {
   it('shows error toast when reload fails', async () => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
