@@ -11517,7 +11517,13 @@
         "priority": "low",
         "subtasks": [],
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-cli/src/main.rs"
+          ],
+          "modules": [
+            "crates/reify-cli/src"
+          ]
         }
       },
       {
@@ -11531,7 +11537,13 @@
         "priority": "low",
         "subtasks": [],
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-eval/tests/geometry_error_handling.rs"
+          ],
+          "modules": [
+            "crates/reify-eval/tests"
+          ]
         }
       },
       {
