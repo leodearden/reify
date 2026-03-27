@@ -81,15 +81,15 @@
       "id": "step-10",
       "type": "test",
       "description": "Add two missing payload-mapping tests to gui/src/__tests__/claudeBridge.test.ts in the subscribeToClaudeEvents describe block. (1) 'maps claude-thinking-delta event to OutboundMessage { type: \"thinking_delta\" }': mock listen() to capture the handler for 'claude-thinking-delta', fire it with payload { id: 'msg-t1', content: 'Let me think...' }, assert handler received { type: 'thinking_delta', id: 'msg-t1', content: 'Let me think...' }. Follow the exact same capturedHandler pattern used by the existing claude-text-delta test. (2) 'maps claude-tool-result event to OutboundMessage { type: \"tool_result\" }': mock listen() to capture the handler for 'claude-tool-result', fire it with payload { id: 'msg-tr1', tool_name: 'read_file', result: 'file contents here' }, assert handler received { type: 'tool_result', id: 'msg-tr1', tool_name: 'read_file', result: 'file contents here' }. This specifically tests the distinct ToolResult shape (result: unknown) vs ToolCall's tool_input field.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "5b3406ed"
     },
     {
       "id": "step-11",
       "type": "impl",
       "description": "Run the full vitest suite to verify the two new payload-mapping tests from step-10 pass against the existing subscribeToClaudeEvents implementation in bridge.ts. The spread pattern { type: 'tool_result', ...event.payload } should correctly map the ToolResult fields. If any test fails (e.g., field name mismatch or missing field), fix the corresponding entry in the entries array in subscribeToClaudeEvents. All existing tests must continue passing \u2014 no regressions.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "5b3406ed"
     }
   ],
   "design_decisions": [
