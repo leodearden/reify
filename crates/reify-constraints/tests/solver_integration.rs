@@ -899,3 +899,64 @@ fn warm_start_scales_iterations_with_dimension() {
         ),
     }
 }
+
+/// When the initial point is INfeasible and the optimizer also fails to find
+/// feasibility, the result must be Infeasible — the feasible fallback must NOT
+/// apply when the initial point was never verified feasible.
+///
+/// Regression guard: ensures the fallback is gated on initially_feasible=true.
+#[test]
+fn infeasible_initial_not_rescued_by_fallback() {
+    let solver = DimensionalSolver;
+
+    let x_id = vcid("Part", "x");
+    let x_ref = value_ref("Part", "x");
+
+    // constraint: x > 15mm — impossible with bounds [0, 10mm]
+    let constraint = gt(x_ref.clone(), literal(mm(15.0)));
+
+    // Minimize x — objective present, but initial is not feasible
+    let objective = OptimizationObjective::Minimize(x_ref);
+
+    // Current value = 5mm — NOT feasible (violates x > 15mm)
+    let mut current = ValueMap::new();
+    current.insert(
+        x_id.clone(),
+        Value::Scalar {
+            si_value: 0.005,
+            dimension: DimensionVector::LENGTH,
+        },
+    );
+
+    let problem = ResolutionProblem {
+        auto_params: vec![AutoParam {
+            id: x_id.clone(),
+            param_type: Type::length(),
+            bounds: Some((0.0, 0.010)), // max 10mm, can't reach 15mm
+        }],
+        constraints: vec![(cnid("Part", 0), constraint)],
+        current_values: current,
+        objective: Some(objective),
+        functions: vec![],
+    };
+
+    let result = solver.solve(&problem);
+    match result {
+        SolveResult::Infeasible { diagnostics } => {
+            assert!(
+                !diagnostics.is_empty(),
+                "should have diagnostic messages"
+            );
+            let msg = &diagnostics[0].message;
+            assert!(
+                msg.contains("residual"),
+                "diagnostic should mention residual, got: {}",
+                msg
+            );
+        }
+        other => panic!(
+            "expected Infeasible when initial point is not feasible, got {:?} — fallback must NOT rescue infeasible initials",
+            other
+        ),
+    }
+}
