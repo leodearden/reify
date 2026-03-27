@@ -79,6 +79,9 @@ export class SidecarSession {
     let prompt = text;
     if (context) {
       const contextParts: string[] = [];
+      if (context.current_file) {
+        contextParts.push(`Current file: ${context.current_file}`);
+      }
       if (context.selected_entity) {
         contextParts.push(`Selected entity: ${context.selected_entity}`);
       }
