@@ -8497,7 +8497,13 @@
         "priority": "low",
         "subtasks": [],
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-syntax/tests/type_alias_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-syntax/tests"
+          ]
         }
       },
       {
@@ -8524,7 +8530,13 @@
         "subtasks": [],
         "updatedAt": "2026-03-26T12:05:53.705Z",
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "gui/src-tauri/src/claude_bridge.rs"
+          ],
+          "modules": [
+            "gui/src-tauri/src"
+          ]
         }
       },
       {
