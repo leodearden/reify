@@ -10545,10 +10545,11 @@
         "description": "crates/reify-compiler/src/lib.rs (6437 lines, 26 conflicts — 70% conflict rate on merges touching it) is the #1 merge conflict source. It's a god module containing all compilation phases.\n\nSplit by compilation phase or AST node family:\n- Identify natural phase boundaries (parsing, lowering, resolution, codegen, etc.)\n- Extract each into its own submodule (e.g. mod lower; mod resolve; mod codegen;)\n- Keep lib.rs as a thin re-export facade\n- Target: lib.rs under 500 lines, no submodule over 1500 lines\n\nAlso consider splitting crates/reify-eval/src/lib.rs (4229 lines, 5 conflicts) and crates/reify-expr/src/lib.rs (2677 lines, 10 conflicts) using the same pattern.\n\nmemory_hints: search \"compiler phases reify\", search \"compilation pipeline architecture\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "high",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-03-27T08:26:36.192Z"
       },
       {
         "id": "535",
@@ -10630,7 +10631,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-27T08:26:35.758Z",
+      "lastModified": "2026-03-27T08:26:36.192Z",
       "taskCount": 541,
       "completedCount": 258,
       "tags": [
