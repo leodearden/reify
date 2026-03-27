@@ -1,0 +1,143 @@
+{
+  "task_id": "436",
+  "title": "LSP: handle OccurrenceDef in analysis traversals",
+  "files": [
+    "crates/reify-lsp/src/analysis.rs",
+    "crates/reify-lsp/src/goto_def.rs",
+    "crates/reify-lsp/src/hover.rs",
+    "crates/reify-lsp/src/completion.rs"
+  ],
+  "modules": [
+    "crates/reify-lsp/src"
+  ],
+  "analysis": "Four functions in the LSP crate only pattern-match on Declaration::Structure, ignoring Declaration::Occurrence. Since OccurrenceDef has identical fields to StructureDef (name, doc, is_pub, type_params, trait_bounds, members, span, content_hash), adding parallel match arms is straightforward. The affected functions are: (1) find_parsed_member_span_and_doc in analysis.rs \u2014 makes occurrence members invisible to hover and find_member_decl, (2) find_entity_doc in analysis.rs \u2014 occurrence doc comments unreachable, (3) structure_names in analysis.rs \u2014 occurrences missing from hover summaries and completions, (4) compute_goto_definition in goto_def.rs \u2014 goto-def fails on occurrence members. The structure_names function is special because its return value feeds into hover.rs (line 48) which hardcodes 'structure' in the display string; we add a kind discriminator to the return type so hover correctly shows 'occurrence' for occurrence declarations. The compiler already handles Declaration::Occurrence and member_names()/get_value() work off compiled templates, so those paths need no changes.",
+  "prerequisites": [],
+  "steps": [
+    {
+      "id": "step-1",
+      "type": "test",
+      "description": "Write failing test `find_member_decl_occurrence_param` in analysis.rs::tests \u2014 parse 'occurrence def Joint { param diameter: Scalar = 10mm }', call find_member_decl(\"diameter\"), assert returns Some with name=\"diameter\", kind=Param. Currently fails because find_parsed_member_span_and_doc only matches Declaration::Structure.",
+      "status": "done",
+      "commit": "28306be0"
+    },
+    {
+      "id": "step-2",
+      "type": "impl",
+      "description": "Add Declaration::Occurrence(o) arm to find_parsed_member_span_and_doc in analysis.rs (line 88). Duplicate the Structure arm logic: iterate o.members, match Param/Let by name, return (span, doc). Step-1 test passes.",
+      "status": "done",
+      "commit": "e56eb783"
+    },
+    {
+      "id": "step-3",
+      "type": "test",
+      "description": "Write failing test `find_entity_doc_returns_doc_for_occurrence` in analysis.rs::tests \u2014 parse '/// A joint process.\\noccurrence def Joint { param diameter: Scalar = 10mm }', call find_entity_doc(\"Joint\"), assert returns Some(\"A joint process.\"). Currently fails because find_entity_doc only matches Declaration::Structure.",
+      "status": "done",
+      "commit": "fb242202"
+    },
+    {
+      "id": "step-4",
+      "type": "impl",
+      "description": "Add Declaration::Occurrence(o) arm to find_entity_doc in analysis.rs (line 111). Match o.name == name, return o.doc.as_deref(). Step-3 test passes.",
+      "status": "done",
+      "commit": "c2de170e"
+    },
+    {
+      "id": "step-5",
+      "type": "test",
+      "description": "Write failing test `structure_names_includes_occurrence` in analysis.rs::tests \u2014 parse source with both 'structure Bracket { param width: Scalar = 80mm }' and 'occurrence def Joint { param diameter: Scalar = 10mm\\n  let radius = diameter / 2\\n  constraint diameter > 5mm }', call structure_names(), assert result has 2 entries: Bracket with kind=\"structure\" (1 param, 0 lets, 0 constraints) and Joint with kind=\"occurrence\" (1 param, 1 let, 1 constraint). Fails because structure_names doesn't match Occurrence and doesn't return kind.",
+      "status": "done",
+      "commit": "6f7eacbf"
+    },
+    {
+      "id": "step-6",
+      "type": "impl",
+      "description": "Change structure_names return type from Vec<(&str, usize, usize, usize)> to Vec<(&str, usize, usize, usize, &str)> adding kind as 5th element (\"structure\" or \"occurrence\"). Add Declaration::Occurrence(o) arm with identical counting logic. Update callers to compile: (a) hover.rs line 45 destructure adds 'kind' variable, (b) completion.rs line 53 destructure adds '_kind', (c) existing test structure_names_returns_bracket adds kind assertion. Do NOT yet use kind in hover format string (step-10). Steps 5 and existing tests pass.",
+      "status": "done",
+      "commit": "4c7befba"
+    },
+    {
+      "id": "step-7",
+      "type": "test",
+      "description": "Write failing test `goto_def_occurrence_param_returns_location` in goto_def.rs::tests \u2014 parse 'occurrence def Joint {\\n    param diameter: Scalar = 10mm\\n    constraint diameter > 5mm\\n}', position on 'diameter' in the constraint (line 2, col 15), assert compute_goto_definition returns location pointing to param declaration on line 1. Fails because compute_goto_definition only matches Declaration::Structure.",
+      "status": "done",
+      "commit": "0cf5c105"
+    },
+    {
+      "id": "step-8",
+      "type": "impl",
+      "description": "Add Declaration::Occurrence(o) arm to compute_goto_definition in goto_def.rs (line 22). Duplicate the Structure arm: iterate o.members, match Param/Let by name, return Location with span. Step-7 test passes.",
+      "status": "done",
+      "commit": "8ab1be69"
+    },
+    {
+      "id": "step-9",
+      "type": "test",
+      "description": "Write failing test `hover_on_occurrence_name_shows_occurrence_keyword` in hover.rs::tests \u2014 parse 'occurrence def Joint { param diameter: Scalar = 10mm }', hover on 'Joint' (line 0, col 20), assert markdown contains 'occurrence Joint' (not 'structure Joint'). Fails because hover.rs hardcodes 'structure' in the format string at line 48.",
+      "status": "done",
+      "commit": "baa1c362"
+    },
+    {
+      "id": "step-10",
+      "type": "impl",
+      "description": "Update hover.rs line 48 format string from hardcoded 'structure' to use the kind variable from structure_names() destructuring (already available from step-6). Change format!(...\"structure {name}\"...) to format!(...\"{kind} {name}\"...). Step-9 test passes.",
+      "status": "done",
+      "commit": "e7cbd9a6"
+    },
+    {
+      "id": "step-11",
+      "type": "test",
+      "description": "Write verification test `hover_on_occurrence_member_shows_param_info` in hover.rs::tests \u2014 parse 'occurrence def Joint { param diameter: Scalar = 10mm }', hover on 'diameter' (line 0 after occurrence keyword offset), assert markdown contains 'param' and 'diameter' and 'Scalar'. Should already pass (find_member_decl fixed in step-2, hover delegates to it).",
+      "status": "done",
+      "commit": "aae691ea"
+    },
+    {
+      "id": "step-12",
+      "type": "test",
+      "description": "Write verification test `completions_include_occurrence_names` in completion.rs::tests \u2014 parse 'occurrence def Joint { param diameter: Scalar = 10mm }', call compute_completions, assert items include 'Joint' with kind STRUCT. Should already pass (structure_names includes occurrences from step-6, completion.rs iterates it).",
+      "status": "done",
+      "commit": "c1186456"
+    }
+  ],
+  "design_decisions": [
+    {
+      "decision": "Duplicate match arms rather than extracting a shared trait or helper function",
+      "rationale": "StructureDef and OccurrenceDef are distinct types in the type system despite identical fields. Extracting a trait (e.g. EntityLike with name/doc/members accessors) would require changes to reify-syntax which is out of scope. Duplication is minimal (3-5 lines per site) and the task description explicitly suggests 'each match arm can be duplicated or extracted into a helper'."
+    },
+    {
+      "decision": "Add kind string as 5th tuple element to structure_names() return type rather than keeping return type unchanged",
+      "rationale": "hover.rs hardcodes 'structure' in the display string at line 48. Without a kind discriminator, occurrences would display as 'structure Joint' which is incorrect. Adding kind='structure'|'occurrence' at the end of the tuple minimizes diff on existing destructuring patterns (callers just append one more binding)."
+    },
+    {
+      "decision": "Keep the method named structure_names() rather than renaming to entity_names()",
+      "rationale": "Renaming would be a larger refactor touching all callers and test names. The method now returns both structures and occurrences but its primary use case and name remain intuitive. A rename can be done in a future cleanup pass."
+    },
+    {
+      "decision": "Use CompletionItemKind::STRUCT for occurrence names in completions",
+      "rationale": "LSP has no built-in 'occurrence' completion kind. STRUCT is the closest semantic match since occurrences are structurally identical to structures. No change needed in completion.rs beyond destructuring the new tuple element."
+    }
+  ],
+  "reuse": [
+    {
+      "what": "reify_test_support::bracket_source() fixture",
+      "where": "crates/reify-lsp/src/analysis.rs tests",
+      "how": "Existing tests use this for Structure testing; occurrence tests use inline source strings since bracket_source only contains a structure"
+    },
+    {
+      "what": "test_uri() helper and hover_markdown() helper",
+      "where": "analysis.rs::tests, goto_def.rs::tests, hover.rs::tests",
+      "how": "All test modules define fn test_uri() -> Url { Url::parse(\"file:///test.ri\").unwrap() }; hover.rs also has hover_markdown() helper that extracts markdown from hover result"
+    },
+    {
+      "what": "AnalysisContext::new() pipeline",
+      "where": "All LSP feature modules",
+      "how": "Runs parse\u2192compile\u2192check pipeline; occurrence support flows through automatically since reify-compiler already handles Declaration::Occurrence"
+    },
+    {
+      "what": "Existing Declaration::Structure match arm patterns",
+      "where": "analysis.rs and goto_def.rs",
+      "how": "Each Occurrence arm is an exact duplicate of the adjacent Structure arm, accessing the same field names (name, doc, members, span)"
+    }
+  ],
+  "_session_id": "436-66bca971",
+  "_created_at": "2026-03-27T11:12:51.019402+00:00"
+}
