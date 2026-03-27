@@ -217,3 +217,35 @@ fn test_no_redundant_rerun_if_changed() {
          Watching it causes double execution."
     );
 }
+
+/// Duplicates run_with_timeout logic from build.rs for testability.
+/// Returns Ok(()) on success, Err(message) on failure or timeout.
+fn run_with_timeout(cmd: &str, args: &[&str], timeout_secs: u64) -> Result<(), String> {
+    // Stub — will be implemented in step-14
+    let _ = (cmd, args, timeout_secs);
+    unimplemented!("run_with_timeout not yet implemented")
+}
+
+#[test]
+fn test_subprocess_timeout_kills_hung_process() {
+    use std::time::Instant;
+
+    let start = Instant::now();
+    // Use 'sleep 30' to simulate a hung process, with 1s timeout.
+    let result = run_with_timeout("sleep", &["30"], 1);
+    let elapsed = start.elapsed();
+
+    assert!(result.is_err(), "hung process should return error on timeout");
+    let err = result.unwrap_err();
+    assert!(
+        err.to_lowercase().contains("timeout") || err.to_lowercase().contains("timed out"),
+        "error should mention timeout, got: {}",
+        err
+    );
+    // Should complete within ~2s (1s timeout + overhead), not 30s.
+    assert!(
+        elapsed.as_secs() < 5,
+        "should have killed hung process quickly, but took {:?}",
+        elapsed
+    );
+}
