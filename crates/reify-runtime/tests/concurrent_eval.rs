@@ -2013,3 +2013,75 @@ async fn test_priority_ordering_within_level() {
     assert_eq!(order[1], node_p1slow, "P1Slow should be evaluated second");
     assert_eq!(order[2], node_p3, "P3Speculative should be evaluated last");
 }
+
+/// Test that OnlyRunOnFinalInputs nodes with intermediate inputs are skipped.
+/// Two nodes at same level: node_a (default CommitIfSlow) and node_b
+/// (OnlyRunOnFinalInputs override). has_intermediate_inputs returns true for node_b.
+/// node_b should be in result.skipped and NOT in result.changed.
+/// node_a should be in result.changed.
+#[tokio::test]
+async fn test_only_run_on_final_inputs_skipped() {
+    use reify_eval::cache::{EvalOutcome, NodeId};
+    use reify_eval::deps::DependencyTrace;
+    use reify_runtime::commitment::NodeCommitmentOverride;
+    use reify_runtime::concurrent::{
+        AsyncNodeEvaluator, CancellationToken, ConcurrentScheduler, SchedulerConfig,
+    };
+    use reify_types::ValueCellId;
+    use std::collections::{HashMap, HashSet};
+    use std::sync::Arc;
+
+    struct AllChangedAsync;
+    impl AsyncNodeEvaluator for AllChangedAsync {
+        async fn evaluate(&self, _node: NodeId) -> EvalOutcome {
+            EvalOutcome::Changed
+        }
+    }
+
+    let e = "SKIP";
+    let node_a = NodeId::Value(ValueCellId::new(e, "a"));
+    let node_b = NodeId::Value(ValueCellId::new(e, "b"));
+
+    // Both at same level, empty traces → dirty by default
+    let mut traces = HashMap::new();
+    traces.insert(node_a.clone(), DependencyTrace::default());
+    traces.insert(node_b.clone(), DependencyTrace::default());
+
+    // node_b has OnlyRunOnFinalInputs override
+    let mut node_overrides = HashMap::new();
+    node_overrides.insert(node_b.clone(), NodeCommitmentOverride::OnlyRunOnFinalInputs);
+
+    // has_intermediate_inputs returns true for node_b
+    let b_clone = node_b.clone();
+    let config = SchedulerConfig {
+        node_overrides,
+        has_intermediate_inputs: Arc::new(move |n| *n == b_clone),
+        ..SchedulerConfig::default()
+    };
+
+    let cancel = CancellationToken::new();
+    let scheduler = ConcurrentScheduler;
+    let evaluator = Arc::new(AllChangedAsync);
+    let eval_set = vec![node_a.clone(), node_b.clone()];
+
+    let result = scheduler
+        .execute_with_config(eval_set, evaluator, &traces, &cancel, &HashSet::new(), config)
+        .await
+        .unwrap();
+
+    // node_b should be in skipped (OnlyRunOnFinalInputs with intermediate inputs)
+    assert!(
+        result.skipped.contains(&node_b),
+        "node_b should be in skipped set (OnlyRunOnFinalInputs with intermediate inputs)"
+    );
+    assert!(
+        !result.changed.contains(&node_b),
+        "node_b should NOT be in changed set"
+    );
+
+    // node_a should be evaluated and in changed
+    assert!(
+        result.changed.contains(&node_a),
+        "node_a should be in changed set (default CommitIfSlow)"
+    );
+}
