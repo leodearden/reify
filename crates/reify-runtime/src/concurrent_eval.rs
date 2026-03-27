@@ -16,7 +16,7 @@
 //! used in `SharedPriorityPromoter`.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use reify_compiler::ValueCellKind;
 use reify_eval::cache::{CachedResult, EvalOutcome, NodeId};
@@ -85,14 +85,55 @@ impl ConcurrentEvalAdapter {
         }
     }
 
+    /// Acquire a read lock on `values`, recovering from poison with a warning.
+    fn read_values(&self) -> RwLockReadGuard<'_, ValueMap> {
+        self.values.read().unwrap_or_else(|e| {
+            tracing::warn!("values RwLock poisoned, recovering: {e}");
+            e.into_inner()
+        })
+    }
+
+    /// Acquire a write lock on `values`, recovering from poison with a warning.
+    fn write_values(&self) -> RwLockWriteGuard<'_, ValueMap> {
+        self.values.write().unwrap_or_else(|e| {
+            tracing::warn!("values RwLock poisoned, recovering: {e}");
+            e.into_inner()
+        })
+    }
+
+    /// Acquire a read lock on `snapshot_values`, recovering from poison with a warning.
+    fn read_snapshot_values(
+        &self,
+    ) -> RwLockReadGuard<'_, PersistentMap<ValueCellId, (Value, DeterminacyState)>> {
+        self.snapshot_values.read().unwrap_or_else(|e| {
+            tracing::warn!("snapshot_values RwLock poisoned, recovering: {e}");
+            e.into_inner()
+        })
+    }
+
+    /// Acquire a write lock on `snapshot_values`, recovering from poison with a warning.
+    fn write_snapshot_values(
+        &self,
+    ) -> RwLockWriteGuard<'_, PersistentMap<ValueCellId, (Value, DeterminacyState)>> {
+        self.snapshot_values.write().unwrap_or_else(|e| {
+            tracing::warn!("snapshot_values RwLock poisoned, recovering: {e}");
+            e.into_inner()
+        })
+    }
+
+    /// Acquire a lock on `results`, recovering from poison with a warning.
+    fn lock_results(&self) -> MutexGuard<'_, Vec<ConcurrentNodeResult>> {
+        self.results.lock().unwrap_or_else(|e| {
+            tracing::warn!("results Mutex poisoned, recovering: {e}");
+            e.into_inner()
+        })
+    }
+
     /// Get a snapshot of the current values (for testing/inspection).
     ///
-    /// Recovers gracefully from poisoned locks via `unwrap_or_else`.
+    /// Recovers gracefully from poisoned locks via `read_values()` helper.
     pub fn values(&self) -> ValueMap {
-        self.values
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
+        self.read_values().clone()
     }
 
     /// Take the collected results (for testing/inspection).
