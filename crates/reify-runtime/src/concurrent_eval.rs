@@ -223,7 +223,12 @@ impl AsyncNodeEvaluator for ConcurrentEvalAdapter {
             let expr = cell_node.default_expr.as_ref().unwrap();
 
             // Read current values (brief read lock)
-            let current_values = { self.values.read().unwrap().clone() };
+            let current_values = {
+                self.values
+                    .read()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone()
+            };
 
             // Evaluate expression (pure, no lock held)
             let val = reify_expr::eval_expr(
@@ -253,19 +258,22 @@ impl AsyncNodeEvaluator for ConcurrentEvalAdapter {
 
             // Write result to shared values (brief write lock)
             {
-                let mut values = self.values.write().unwrap();
+                let mut values = self.values.write().unwrap_or_else(|e| e.into_inner());
                 values.insert(vcid.clone(), val.clone());
             }
 
             // Write to snapshot values (brief write lock)
             {
-                let mut sv = self.snapshot_values.write().unwrap();
+                let mut sv = self
+                    .snapshot_values
+                    .write()
+                    .unwrap_or_else(|e| e.into_inner());
                 sv.insert(vcid.clone(), (val.clone(), DeterminacyState::Determined));
             }
 
             // Record result (no early cutoff propagation — skip decisions
             // are made by the scheduler using pre-computed changed_vcids)
-            self.results.lock().unwrap().push(ConcurrentNodeResult {
+            self.results.lock().unwrap_or_else(|e| e.into_inner()).push(ConcurrentNodeResult {
                 node: node.clone(),
                 value: val,
                 determinacy: DeterminacyState::Determined,
