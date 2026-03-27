@@ -289,14 +289,50 @@ impl ConcurrentScheduler {
                 });
             }
 
+            // Register dirty nodes in commitment tracker before spawning
+            if let Some(ref tracker) = config.commitment_tracker {
+                let mut guard = tracker.lock().unwrap_or_else(|e| e.into_inner());
+                for node in &dirty_nodes {
+                    let override_ = config
+                        .node_overrides
+                        .get(node)
+                        .copied()
+                        .unwrap_or_default();
+                    guard.register_task(node.clone(), override_);
+                }
+            }
+
             // Spawn tasks for dirty nodes in this level
+            // Returns (NodeId, Option<EvalOutcome>) where None = commitment-cancelled
             let mut handles = Vec::new();
-            for node in dirty_nodes {
+            for node in &dirty_nodes {
                 let eval = Arc::clone(&evaluator);
                 let n = node.clone();
+                let cancel_clone = cancel.clone();
+                let tracker_clone = config.commitment_tracker.clone();
+                let has_intermediate = (config.has_intermediate_inputs)(&n);
                 let handle = tokio::spawn(async move {
+                    let start = std::time::Instant::now();
                     let outcome = eval.evaluate(n.clone()).await;
-                    (n, outcome)
+                    // Commitment check: if cancel fired and tracker is present
+                    if cancel_clone.is_cancelled() {
+                        if let Some(ref tracker) = tracker_clone {
+                            let elapsed = start.elapsed();
+                            let progress = crate::commitment::TaskProgress {
+                                elapsed,
+                                reported_progress: None,
+                                previous_runtime: None,
+                            };
+                            let mut guard =
+                                tracker.lock().unwrap_or_else(|e| e.into_inner());
+                            guard.update_status(&n, &progress, has_intermediate);
+                            if !guard.should_continue(&n, true) {
+                                // Uncommitted in dirty cone — drop result
+                                return (n, None);
+                            }
+                        }
+                    }
+                    (n, Some(outcome))
                 });
                 handles.push(handle);
             }
@@ -304,14 +340,15 @@ impl ConcurrentScheduler {
             // Join all tasks in this level
             for handle in handles {
                 match handle.await {
-                    Ok((node, EvalOutcome::Changed)) => {
+                    Ok((node, Some(EvalOutcome::Changed))) => {
                         // Add to changed_vcids for downstream dirty computation
                         if let NodeId::Value(ref vcid) = node {
                             changed_vcids.insert(vcid.clone());
                         }
                         changed.insert(node);
                     }
-                    Ok(_) => {} // Unchanged — skip
+                    Ok((_, Some(EvalOutcome::Unchanged))) => {} // Unchanged — skip
+                    Ok((_, None)) => {} // Commitment-cancelled — drop
                     Err(e) if e.is_panic() => {
                         return Err(SchedulerError::TaskPanicked(e.into_panic()));
                     }
