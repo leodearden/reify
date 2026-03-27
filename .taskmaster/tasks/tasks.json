@@ -11994,7 +11994,19 @@
         "priority": "low",
         "subtasks": [],
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "gui/src-tauri/src/mcp_context.rs",
+            "gui/src-tauri/src/claude_bridge.rs",
+            "gui/src-tauri/src/main.rs",
+            "gui/src-tauri/src/tests/mcp_context_tests.rs",
+            "gui/src-tauri/src/tests/mcp_dispatch_tests.rs",
+            "gui/src-tauri/src/tests/claude_bridge_tests.rs"
+          ],
+          "modules": [
+            "gui/src-tauri/src",
+            "gui/src-tauri/src/tests"
+          ]
         }
       },
       {
@@ -12009,7 +12021,15 @@
         "subtasks": [],
         "updatedAt": "2026-03-27T12:21:38.899Z",
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "gui/src/stores/selectionStore.ts",
+            "gui/src/__tests__/selectionStore.test.ts"
+          ],
+          "modules": [
+            "gui/src/stores",
+            "gui/src/__tests__"
+          ]
         }
       },
       {
