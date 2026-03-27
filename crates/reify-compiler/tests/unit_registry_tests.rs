@@ -611,3 +611,56 @@ fn affine_unit_still_works_in_runtime_value_expression() {
         panic!("t has no default_expr");
     }
 }
+
+// ─── step-1 (task-208): evaluate_const_expr rejects non-finite arithmetic ─────
+
+#[test]
+fn overflow_multiplication_rejected() {
+    // f64::MAX * 2.0 → inf — must NOT be registered.
+    let src = format!("unit huge : Length = {} * 2.0", f64::MAX);
+    let module = parse_and_compile(&src);
+    assert!(
+        !module.units.iter().any(|u| u.name == "huge"),
+        "unit with overflow factor should not be registered"
+    );
+    let errors = errors_only(&module);
+    assert!(
+        errors.iter().any(|d| d.message.contains("overflow")),
+        "expected overflow diagnostic; got: {:?}",
+        errors
+    );
+}
+
+#[test]
+fn overflow_addition_rejected() {
+    // f64::MAX + f64::MAX → inf
+    let src = format!("unit huge_add : Length = {} + {}", f64::MAX, f64::MAX);
+    let module = parse_and_compile(&src);
+    assert!(
+        !module.units.iter().any(|u| u.name == "huge_add"),
+        "unit with overflow addition should not be registered"
+    );
+    let errors = errors_only(&module);
+    assert!(
+        errors.iter().any(|d| d.message.contains("overflow")),
+        "expected overflow diagnostic; got: {:?}",
+        errors
+    );
+}
+
+#[test]
+fn overflow_division_result_rejected() {
+    // f64::MAX / very_small → inf (not div-by-zero, but result is inf)
+    let src = format!("unit huge_div : Length = {} / 0.0000000000000001", f64::MAX);
+    let module = parse_and_compile(&src);
+    assert!(
+        !module.units.iter().any(|u| u.name == "huge_div"),
+        "unit with overflow division result should not be registered"
+    );
+    let errors = errors_only(&module);
+    assert!(
+        errors.iter().any(|d| d.message.contains("overflow")),
+        "expected overflow diagnostic; got: {:?}",
+        errors
+    );
+}
