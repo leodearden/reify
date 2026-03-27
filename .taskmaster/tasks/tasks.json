@@ -11767,11 +11767,11 @@
         "description": "find_member_decl and compute_goto_definition search ALL declarations for a member name match, returning the first hit regardless of which declaration the cursor is in. In a file with multiple declarations sharing member names (e.g. two occurrences both with `param diameter`), span info can come from one declaration while type info comes from another (find_member_decl), and goto-def always jumps to the first declaration's member (compute_goto_definition).\n\nFix both:\n1. analysis.rs find_member_decl: have find_parsed_member_span_and_doc also return the owning declaration name, then match both template name AND member name in the compiled-module lookup.\n2. goto_def.rs compute_goto_definition: check whether the cursor offset falls within the declaration's span and only search members of the enclosing declaration (or fall back to first-found if no enclosing declaration).\n\nMemory hints: search \"LSP cross-declaration member lookup scoping\" and \"find_member_decl ambiguity\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-03-27T11:39:21.172Z",
+        "updatedAt": "2026-03-27T11:54:23.203Z",
         "metadata": {
           "modules": [
             "crates/reify-lsp"
@@ -11952,7 +11952,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-27T11:54:23.081Z",
+      "lastModified": "2026-03-27T11:54:23.214Z",
       "taskCount": 599,
       "completedCount": 275,
       "tags": [
