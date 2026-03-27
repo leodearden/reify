@@ -260,11 +260,12 @@ fn mcp_tool_call(
 ) -> Result<serde_json::Value, String> {
     // Clone app before moving into the event_emitter closure
     let app_for_emitter = app.clone();
-    let ctx = reify_gui::mcp_context::TauriToolContext::with_event_emitter(
+    let ctx = reify_gui::mcp_context::TauriToolContext::with_event_emitter_and_selection(
         state.engine.clone(),
         move |event_name, payload| {
             app_for_emitter.emit(event_name, payload).ok();
         },
+        state.selection.clone(),
     );
 
     // Bracket the MCP call with evaluation-status events
