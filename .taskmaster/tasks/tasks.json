@@ -10401,6 +10401,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 527,
+        "title": "Abort or sentinel on first compile_geometry_op failure in realization sequence",
+        "description": "When compile_geometry_op returns None for a step in a realization sequence, no handle is pushed to step_handles. Subsequent operations referencing that missing step via GeomRef::Step(idx) silently resolve to a wrong handle or also return None, generating cascading 'failed to compile geometry operation' diagnostics that bury the root cause. Consider pushing a sentinel handle or aborting the realization early on the first failure, so downstream ops don't produce misleading redundant diagnostics. Memory hint: search for \"compile_geometry_op\" and \"realization sequence\".",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -10413,7 +10424,7 @@
       ],
       "created": "2026-03-27T07:44:10.732Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-27T07:47:40.416Z"
+      "updated": "2026-03-27T07:47:45.056Z"
     }
   }
 }
