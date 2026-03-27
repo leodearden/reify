@@ -12,6 +12,7 @@ reify-expr.workspace = true
 reify-compiler.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
+tracing.workspace = true
 
 [features]
 test-utils = []
