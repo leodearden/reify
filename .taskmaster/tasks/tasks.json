@@ -7716,7 +7716,10 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-27T06:33:18.466Z"
+        "updatedAt": "2026-03-27T06:33:18.466Z",
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+        }
       },
       {
         "id": 415,
@@ -7728,7 +7731,10 @@
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-03-27T06:16:19.035Z"
+        "updatedAt": "2026-03-27T06:16:19.035Z",
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+        }
       },
       {
         "id": 416,
