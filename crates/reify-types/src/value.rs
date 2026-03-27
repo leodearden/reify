@@ -116,6 +116,20 @@ pub enum Value {
     Undef,
 }
 
+/// Normalize range inclusivity flags: force `inclusive=false` when the
+/// corresponding bound is `None` (unbounded endpoint cannot be inclusive).
+fn normalize_range_flags<T>(
+    lower: &Option<T>,
+    upper: &Option<T>,
+    lower_inclusive: bool,
+    upper_inclusive: bool,
+) -> (bool, bool) {
+    (
+        lower_inclusive && lower.is_some(),
+        upper_inclusive && upper.is_some(),
+    )
+}
+
 impl Value {
     /// Create a scalar with LENGTH dimension from a value in meters.
     pub fn length(meters: f64) -> Self {
@@ -145,8 +159,8 @@ impl Value {
         lower_inclusive: bool,
         upper_inclusive: bool,
     ) -> Value {
-        let lower_inclusive = lower_inclusive && lower.is_some();
-        let upper_inclusive = upper_inclusive && upper.is_some();
+        let (lower_inclusive, upper_inclusive) =
+            normalize_range_flags(&lower, &upper, lower_inclusive, upper_inclusive);
         Value::Range {
             lower: lower.map(Box::new),
             upper: upper.map(Box::new),
@@ -418,8 +432,8 @@ impl Value {
                 upper_inclusive,
             } => {
                 // Defensive re-normalization: None bounds → inclusive=false
-                let lower_inclusive = *lower_inclusive && lower.is_some();
-                let upper_inclusive = *upper_inclusive && upper.is_some();
+                let (lower_inclusive, upper_inclusive) =
+                    normalize_range_flags(lower, upper, *lower_inclusive, *upper_inclusive);
                 // tag=17; flags then optional bounds
                 let mut h = ContentHash::of(&[17, lower_inclusive as u8, upper_inclusive as u8]);
                 match lower {
@@ -859,8 +873,8 @@ impl Value {
                 lower_inclusive,
                 upper_inclusive,
             } => {
-                let lower_inclusive = *lower_inclusive && lower.is_some();
-                let upper_inclusive = *upper_inclusive && upper.is_some();
+                let (lower_inclusive, upper_inclusive) =
+                    normalize_range_flags(lower, upper, *lower_inclusive, *upper_inclusive);
                 let lower_bracket = if lower_inclusive { "[" } else { "(" };
                 let upper_bracket = if upper_inclusive { "]" } else { ")" };
                 let lower_str = lower
@@ -1081,10 +1095,8 @@ impl PartialEq for Value {
                 },
             ) => {
                 // Defensive re-normalization: None bounds → inclusive=false
-                let ali = *ali && al.is_some();
-                let aui = *aui && au.is_some();
-                let bli = *bli && bl.is_some();
-                let bui = *bui && bu.is_some();
+                let (ali, aui) = normalize_range_flags(al, au, *ali, *aui);
+                let (bli, bui) = normalize_range_flags(bl, bu, *bli, *bui);
                 al == bl && au == bu && ali == bli && aui == bui
             }
             (Value::Matrix(a), Value::Matrix(b)) => a == b,
@@ -1270,10 +1282,8 @@ impl Ord for Value {
                 },
             ) => {
                 // Defensive re-normalization: None bounds → inclusive=false
-                let ali = *ali && al.is_some();
-                let aui = *aui && au.is_some();
-                let bli = *bli && bl.is_some();
-                let bui = *bui && bu.is_some();
+                let (ali, aui) = normalize_range_flags(al, au, *ali, *aui);
+                let (bli, bui) = normalize_range_flags(bl, bu, *bli, *bui);
                 ali.cmp(&bli)
                     .then_with(|| al.cmp(bl))
                     .then_with(|| aui.cmp(&bui))
@@ -1501,8 +1511,8 @@ impl std::fmt::Display for Value {
             } => {
                 // Defensive re-normalization: if someone bypassed Value::range(),
                 // ensure None bounds never appear as inclusive.
-                let lower_inclusive = *lower_inclusive && lower.is_some();
-                let upper_inclusive = *upper_inclusive && upper.is_some();
+                let (lower_inclusive, upper_inclusive) =
+                    normalize_range_flags(lower, upper, *lower_inclusive, *upper_inclusive);
                 let lb = if lower_inclusive { '[' } else { '(' };
                 let ub = if upper_inclusive { ']' } else { ')' };
                 let lower_str = match lower {
@@ -1661,6 +1671,41 @@ impl ValueMap {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── normalize_range_flags unit tests ─────────────────────────────────────
+
+    #[test]
+    fn test_normalize_range_flags() {
+        // Both bounds present → flags pass through unchanged
+        assert_eq!(
+            normalize_range_flags(&Some(1), &Some(2), true, true),
+            (true, true)
+        );
+
+        // Lower is None → lower_inclusive forced false
+        assert_eq!(
+            normalize_range_flags::<i32>(&None, &Some(2), true, true),
+            (false, true)
+        );
+
+        // Upper is None → upper_inclusive forced false
+        assert_eq!(
+            normalize_range_flags(&Some(1), &None::<i32>, true, true),
+            (true, false)
+        );
+
+        // Both None → both forced false
+        assert_eq!(
+            normalize_range_flags::<i32>(&None, &None, true, true),
+            (false, false)
+        );
+
+        // Both present but flags already false → stays false
+        assert_eq!(
+            normalize_range_flags(&Some(1), &Some(2), false, false),
+            (false, false)
+        );
+    }
 
     #[test]
     fn value_content_hash_determinism() {
@@ -3702,10 +3747,11 @@ mod tests {
         assert_eq!(format!("{}", r), "(-inf..inf)");
     }
 
-    // ── Range invariant enforcement tests (step-9) ───────────────────────────
+    // ── Range invariant re-normalization tests (step-9) ───────────────────────
     // These tests bypass Value::range() factory and directly construct Value::Range
     // with an invariant violation (lower/upper_inclusive=true when bound is None).
-    // Each impl (content_hash, PartialEq, Ord, Display) must panic via debug_assert!.
+    // Each impl (content_hash, PartialEq, Ord, Display) silently re-normalizes
+    // via normalize_range_flags.
 
     #[test]
     fn value_range_bypass_hash_renormalizes() {
