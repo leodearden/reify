@@ -2171,3 +2171,81 @@ async fn test_committed_node_survives_cancellation() {
         "fast_node should NOT be in changed (uncommitted, cancelled)"
     );
 }
+
+/// Test that uncommitted nodes in dirty cone are cancelled.
+/// Two nodes at same level. CommitmentPolicy with always_commit_after=5s (long).
+/// One node fires cancel during eval. Both are fast (<1ms, well below threshold).
+/// Assert neither node is in result.changed (both uncommitted when cancel fires).
+#[tokio::test]
+async fn test_uncommitted_in_dirty_cone_cancelled() {
+    use reify_eval::cache::{EvalOutcome, NodeId};
+    use reify_eval::deps::DependencyTrace;
+    use reify_runtime::commitment::{CommitmentPolicy, CommitmentTracker};
+    use reify_runtime::concurrent::{
+        AsyncNodeEvaluator, CancellationToken, ConcurrentScheduler, SchedulerConfig,
+    };
+    use reify_types::ValueCellId;
+    use std::collections::{HashMap, HashSet};
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    let e = "UNC";
+    let node_a = NodeId::Value(ValueCellId::new(e, "a"));
+    let node_b = NodeId::Value(ValueCellId::new(e, "b"));
+
+    let mut traces = HashMap::new();
+    traces.insert(node_a.clone(), DependencyTrace::default());
+    traces.insert(node_b.clone(), DependencyTrace::default());
+
+    let cancel = CancellationToken::new();
+
+    // Evaluator: node_a fires cancel, both are fast
+    struct CancellingEvaluator {
+        cancel: CancellationToken,
+        trigger_node: NodeId,
+    }
+    impl AsyncNodeEvaluator for CancellingEvaluator {
+        async fn evaluate(&self, node: NodeId) -> EvalOutcome {
+            if node == self.trigger_node {
+                self.cancel.cancel();
+            }
+            EvalOutcome::Changed
+        }
+    }
+
+    let evaluator = Arc::new(CancellingEvaluator {
+        cancel: cancel.clone(),
+        trigger_node: node_a.clone(),
+    });
+
+    // CommitmentPolicy: 5s threshold — neither node will reach this
+    let policy = CommitmentPolicy {
+        always_commit_after: Duration::from_secs(5),
+        commit_when_proportion_done: 0.99,
+    };
+    let tracker = Arc::new(Mutex::new(CommitmentTracker::new(policy)));
+
+    let config = SchedulerConfig {
+        commitment_tracker: Some(Arc::clone(&tracker)),
+        ..SchedulerConfig::default()
+    };
+
+    let scheduler = ConcurrentScheduler;
+    let eval_set = vec![node_a.clone(), node_b.clone()];
+
+    let result = scheduler
+        .execute_with_config(eval_set, evaluator, &traces, &cancel, &HashSet::new(), config)
+        .await
+        .unwrap();
+
+    // Both nodes are uncommitted (fast, below 5s threshold) and cancel is fired
+    // → both should be dropped
+    assert!(
+        !result.changed.contains(&node_a),
+        "node_a should NOT be in changed (uncommitted, cancelled)"
+    );
+    assert!(
+        !result.changed.contains(&node_b),
+        "node_b should NOT be in changed (uncommitted, cancelled)"
+    );
+}
