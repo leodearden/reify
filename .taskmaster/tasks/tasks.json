@@ -10878,6 +10878,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 556,
+        "title": "Strengthen weak assertions in structural_physical tests",
+        "description": "Two tests have overly loose assertions that could pass for wrong reasons.",
+        "details": "1. physical_constraint_injected_into_conforming_structure: only asserts !constraints.is_empty(). Should verify constraint references 'volume'.\n2. missing_volume_produces_error_diagnostic: broad 'missing' fallback in error message check could match unrelated errors. Should assert specifically on 'volume'.\n\nFiles: crates/reify-compiler/tests/structural_physical_tests.rs",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -10890,7 +10901,7 @@
       ],
       "created": "2026-03-27T09:00:04.578Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-27T09:00:49.852Z"
+      "updated": "2026-03-27T09:00:53.174Z"
     }
   }
 }
