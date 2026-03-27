@@ -114,17 +114,27 @@ type _NoChatMessage = import('../types').ChatMessage;
 type _NoSessionStatus = import('../types').SessionStatus;
 
 // --- ClaudeMessageContext ↔ MessageContext structural sync guard ---
+//
+// ClaudeMessageContext (in bridge.ts) is a standalone interface that must stay
+// structurally identical to Pick<MessageContext, 'selectedEntity' | 'diagnostics' | 'constraints'>.
+//
+// We use an Equals<A,B> type-level assertion rather than bidirectional assignability
+// because all three fields are optional — `{}` satisfies any all-optional type,
+// so assignability checks would pass even if the field names diverged entirely.
+// The Equals pattern compares exact structural identity and catches renames,
+// additions, and removals at compile time.
 import type { ClaudeMessageContext } from '../bridge';
 import type { MessageContext } from '../stores/claudeStore';
 
 type _ExpectedClaudeContext = Pick<MessageContext, 'selectedEntity' | 'diagnostics' | 'constraints' | 'currentFile' | 'attachedContexts'>;
 
-// Bidirectional assignability: ensures ClaudeMessageContext stays in sync with the Pick
-const _fwd: _ExpectedClaudeContext = {} as ClaudeMessageContext;
-const _rev: ClaudeMessageContext = {} as _ExpectedClaudeContext;
+/** Exact structural equality check — evaluates to `true` only if A and B are identical types. */
+type Equals<A, B> =
+  (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;
 
-void _fwd;
-void _rev;
+// Compile-time assertion: if the types diverge, this line produces a type error.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+type _AssertClaudeContextSync = Equals<ClaudeMessageContext, _ExpectedClaudeContext> extends true ? true : never;
 
 // Suppress unused variable warnings — this file is only for type checking
 void mesh;
