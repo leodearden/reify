@@ -90,7 +90,7 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
     setEditValue(input.value);
   }
 
-  const QUANTITY_RE = /^\s*-?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?\s*(mm|cm|deg|rad|m)\s*$/;
+  const QUANTITY_RE = /^-?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?(mm|cm|deg|rad|m)$/;
 
   function isValidValue(value: string): boolean {
     const trimmed = value.trim();
