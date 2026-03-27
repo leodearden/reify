@@ -9553,7 +9553,7 @@
         "description": "## Problem\n\nThe PropertyEditor's `isValidValue` function (`gui/src/panels/PropertyEditor.tsx:93-95`) only accepts raw numbers via `Number.isFinite(Number(value))`. Typing `80mm` is rejected as invalid — the user must mentally convert to SI base units (e.g. `0.08` for 80mm). However, the Rust backend's `parse_value_string` (`gui/src-tauri/src/engine.rs:390`) already supports quantity literals (`80mm`, `100cm`, `1.5m`, `90deg`, `1.57rad`) and converts them to SI floats. The frontend gate is the only thing blocking this.\n\n## What \"done\" looks like\n\n1. Typing `80mm` + Enter in a PropertyEditor input calls `onSetParameter(cellId, \"80mm\")` — the backend handles the conversion.\n2. Typing `90deg`, `1.5m`, `100cm`, `1rad` all work the same way.\n3. Pure garbage like `abc` or `hello` is still rejected with `data-invalid`.\n4. Plain numbers (`42.5`, `1e3`, ` 42 `) continue to work as before.\n5. `Infinity`, `-Infinity`, `1e999` remain rejected.\n6. All existing PropertyEditor tests pass (with the `10mm`-rejection test updated to expect acceptance).\n\n## Test-first workflow\n\n1. **Update existing test** at `gui/src/__tests__/PropertyEditor.test.tsx:537-549`: change the `'10mm' on Enter does NOT call onSetParameter` assertion to assert it DOES call `onSetParameter('c1', '10mm')` and does NOT set `data-invalid`.\n2. **Add new tests** for quantity-literal acceptance: `80mm`, `90deg`, `1.5m`, `100cm`, `1rad`, `5 mm` (space between number and unit). Also test rejection of invalid suffixed strings: `10xyz`, `mm80` (unit before number), empty unit `10`.\n3. Run tests — they should fail (red).\n4. Implement the fix in `isValidValue`.\n5. Run tests — they should pass (green).",
         "details": "## Implementation guidance\n\n### Where to change\n\n**`gui/src/panels/PropertyEditor.tsx`** — The only file that needs production changes.\n\nThe current `isValidValue` (line 93-95):\n```typescript\nfunction isValidValue(value: string): boolean {\n  return value.trim() !== '' && Number.isFinite(Number(value.trim()));\n}\n```\n\nReplace with a function that also matches quantity literal patterns. The accepted unit suffixes must mirror the backend's `parse_value_string` unit table in `gui/src-tauri/src/engine.rs:404-410`:\n- `mm`, `cm`, `m` (length)\n- `deg`, `rad` (angle)\n\nSuggested approach — a regex that matches `<number><optional-whitespace><unit>`:\n```typescript\nconst QUANTITY_RE = /^\\s*-?(\\d+\\.?\\d*|\\.\\d+)([eE][+-]?\\d+)?\\s*(mm|cm|deg|rad|m)\\s*$/;\n\nfunction isValidValue(value: string): boolean {\n  const trimmed = value.trim();\n  if (trimmed === '') return false;\n  if (Number.isFinite(Number(trimmed))) return true;\n  return QUANTITY_RE.test(trimmed);\n}\n```\n\nIMPORTANT: The regex must try longer suffixes implicitly (regex alternation is greedy-left, so put `mm` and `cm` before `m`, and `deg` before `rad` is fine since they don't overlap). Alternatively use word boundaries or ensure `m` doesn't match when `mm`/`cm` should.\n\nThe regex above handles this correctly because regex alternation tries left-to-right: `mm|cm|deg|rad|m` will match `mm` before `m`.\n\n### What NOT to change\n\n- Do NOT convert quantity literals to SI on the frontend. Pass the raw string (e.g. `\"80mm\"`) through to `onSetParameter`. The backend's `parse_value_string` handles the conversion.\n- Do NOT change `handleKeyDown`, `handleBlur`, or `handleInput` — they already call `isValidValue` and pass the raw `input.value` to `onSetParameter`.\n\n### Tests to update\n\n**`gui/src/__tests__/PropertyEditor.test.tsx`**:\n\n1. **Invert** the test at line 537: `'10mm' on Enter does NOT call onSetParameter` → should now CALL `onSetParameter('c1', '10mm')` and NOT set `data-invalid`.\n2. **Invert** the test at line 551: `'1.5abc' on Enter does NOT call onSetParameter` → this should remain rejected (abc is not a valid unit).\n3. **Add** a new describe block `'PropertyEditor quantity literal acceptance'` with cases:\n   - `'80mm'` → accepted, calls `onSetParameter`\n   - `'90deg'` → accepted\n   - `'1.5m'` → accepted\n   - `'100cm'` → accepted\n   - `'1rad'` → accepted\n   - `'5 mm'` (space before unit) → accepted\n   - `'-10mm'` (negative) → accepted\n   - `'10xyz'` → rejected\n   - `'mm80'` → rejected\n   - `'10'` (no unit, plain number) → accepted (existing behavior)\n\n### memory_hints\n\n- `search(query=\"PropertyEditor isValidValue quantity literal\", project_id=\"reify\")` — check for prior decisions about input validation\n- `search(query=\"parse_value_string unit table\", project_id=\"reify\")` — understand backend unit support\n- `get_entity(name=\"PropertyEditor\")` — component context",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -9574,7 +9574,7 @@
             ]
           }
         },
-        "updatedAt": "2026-03-27T07:40:02.589Z"
+        "updatedAt": "2026-03-27T07:42:05.987Z"
       },
       {
         "id": "487",
@@ -10388,7 +10388,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-27T07:42:05.637Z",
+      "lastModified": "2026-03-27T07:42:05.987Z",
       "taskCount": 525,
       "completedCount": 251,
       "tags": [
