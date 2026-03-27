@@ -12066,7 +12066,7 @@
         "description": "## Problem\n\nThe selection sync path added in task 478 has several test coverage gaps:\n\n1. **Frontend:** selectionStore.test.ts has 13 tests but none cover the createEffect + invoke('update_selection') behavior. The entire debounce/cleanup path has zero coverage.\n2. **Rust constructor:** `with_event_emitter_and_selection()` is the primary production constructor (used in mcp_tool_call) but is never exercised by any test.\n3. **Claude bridge:** `from_parts_with_mcp_intercepts_reify_tool_calls` passes a selection Arc but never asserts the selection state is threaded into the TauriToolContext — the test would pass even if the parameter were silently ignored.\n4. **Dispatch:** Only tests selected_entity set + hovered_entity null. No test for both fields populated.\n\n## What \"done\" looks like\n\n1. selectionStore.test.ts: mock invoke, verify correct args after state change, verify debounce coalescing, verify cleanup cancels timer\n2. mcp_context_tests.rs: test with_event_emitter_and_selection() — verify selection reads and event emission\n3. claude_bridge_tests.rs: pre-populate selection Arc with `Some(\"Bracket\")`, assert JSON tool_result contains the selection\n4. mcp_dispatch_tests.rs: add test with both fields populated\n5. All existing tests pass\n\n## Files to modify\n- gui/src/__tests__/selectionStore.test.ts — add invoke mock tests\n- gui/src-tauri/src/tests/mcp_context_tests.rs — test with_event_emitter_and_selection\n- gui/src-tauri/src/tests/claude_bridge_tests.rs — assert selection threading\n- gui/src-tauri/src/tests/mcp_dispatch_tests.rs — both-fields test\n\n### memory_hints\n- search: \"selectionStore test invoke mock\"\n- search: \"TauriToolContext test coverage\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -12082,7 +12082,8 @@
             "gui/src/__tests__",
             "gui/src-tauri/src/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-03-27T23:36:38.665Z"
       },
       {
         "id": "595",
@@ -12473,7 +12474,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-27T23:36:38.600Z",
+      "lastModified": "2026-03-27T23:36:38.665Z",
       "taskCount": 612,
       "completedCount": 278,
       "tags": [
