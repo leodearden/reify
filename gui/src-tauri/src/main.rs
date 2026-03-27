@@ -328,6 +328,7 @@ async fn claude_send_message(
 
     let app_for_events = app.clone();
     let engine = Arc::clone(&state.engine);
+    let selection = Arc::clone(&state.selection);
 
     // Lazily spawn the sidecar (if not running) and wait for it to become ready.
     reify_gui::claude_bridge::ensure_sidecar_ready(
@@ -336,10 +337,16 @@ async fn claude_send_message(
             let path = sidecar_path;
             let app_c = app_for_events;
             let eng = engine;
+            let sel = selection;
             async move {
-                reify_gui::claude_bridge::spawn_sidecar_impl(&path, eng, move |name, payload| {
-                    app_c.emit(&name, payload).ok();
-                })
+                reify_gui::claude_bridge::spawn_sidecar_impl(
+                    &path,
+                    eng,
+                    move |name, payload| {
+                        app_c.emit(&name, payload).ok();
+                    },
+                    sel,
+                )
                 .await
             }
         },

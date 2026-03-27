@@ -174,7 +174,10 @@ impl SidecarHandle {
         R: AsyncBufRead + Unpin + Send + 'static,
     {
         let stdin: SharedStdin = Arc::new(Mutex::new(Box::new(writer)));
-        Self::new_inner::<R, fn(String, Value)>(stdin, reader, state, None)
+        Self::new_inner::<
+            R,
+            fn(String, Value),
+        >(stdin, reader, state, None)
     }
 
     /// Construct a SidecarHandle with full event and MCP wiring.
@@ -190,6 +193,7 @@ impl SidecarHandle {
         state: Arc<Mutex<SidecarState>>,
         engine: Arc<std::sync::Mutex<crate::engine::EngineSession>>,
         event_sink: F,
+        selection: Arc<std::sync::RwLock<reify_mcp::SelectionInfo>>,
     ) -> Self
     where
         W: AsyncWrite + Unpin + Send + 'static,
@@ -197,7 +201,7 @@ impl SidecarHandle {
         F: Fn(String, Value) + Send + Sync + 'static,
     {
         let stdin: SharedStdin = Arc::new(Mutex::new(Box::new(writer)));
-        Self::new_inner(stdin, reader, state, Some((engine, event_sink)))
+        Self::new_inner(stdin, reader, state, Some((engine, event_sink, selection)))
     }
 
     /// Internal constructor shared by `from_parts` and `from_parts_with_mcp`.
@@ -205,7 +209,11 @@ impl SidecarHandle {
         stdin: SharedStdin,
         reader: R,
         state: Arc<Mutex<SidecarState>>,
-        mcp_config: Option<(Arc<std::sync::Mutex<crate::engine::EngineSession>>, F)>,
+        mcp_config: Option<(
+            Arc<std::sync::Mutex<crate::engine::EngineSession>>,
+            F,
+            Arc<std::sync::RwLock<reify_mcp::SelectionInfo>>,
+        )>,
     ) -> Self
     where
         R: AsyncBufRead + Unpin + Send + 'static,
@@ -233,7 +241,7 @@ impl SidecarHandle {
                     }
 
                     // 2. Event emission and MCP interception
-                    if let Some((ref engine, ref sink)) = mcp_config {
+                    if let Some((ref engine, ref sink, ref selection)) = mcp_config {
                         let (event_name, payload) = outbound_to_event(&msg);
                         sink(event_name, payload);
 
@@ -249,9 +257,13 @@ impl SidecarHandle {
                             let tool_name = tool_name.clone();
                             let tool_input = tool_input.clone();
                             let engine_clone = Arc::clone(engine);
+                            let selection_clone = Arc::clone(selection);
                             let stdin_clone = Arc::clone(&stdin_for_reader);
                             tokio::spawn(async move {
-                                let ctx = crate::mcp_context::TauriToolContext::new(engine_clone);
+                                let ctx = crate::mcp_context::TauriToolContext::new_with_selection(
+                                    engine_clone,
+                                    selection_clone,
+                                );
                                 let result = crate::mcp_context::mcp_tool_call_impl(
                                     &tool_name, tool_input, &ctx,
                                 );
@@ -475,6 +487,7 @@ pub async fn spawn_sidecar_impl<F>(
     path: &Path,
     engine: Arc<std::sync::Mutex<crate::engine::EngineSession>>,
     event_sink: F,
+    selection: Arc<std::sync::RwLock<reify_mcp::SelectionInfo>>,
 ) -> Result<SidecarHandle, String>
 where
     F: Fn(String, Value) + Send + Sync + 'static,
@@ -503,8 +516,14 @@ where
 
     let reader = BufReader::new(stdout);
     let sidecar_state = Arc::new(Mutex::new(SidecarState::Starting));
-    let mut handle =
-        SidecarHandle::from_parts_with_mcp(stdin, reader, sidecar_state, engine, event_sink);
+    let mut handle = SidecarHandle::from_parts_with_mcp(
+        stdin,
+        reader,
+        sidecar_state,
+        engine,
+        event_sink,
+        selection,
+    );
     handle.set_child(proc);
     Ok(handle)
 }

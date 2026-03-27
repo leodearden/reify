@@ -387,6 +387,10 @@ async fn from_parts_with_mcp_intercepts_reify_tool_calls() {
     // from_parts_with_mcp wires up both event sink and MCP tool interception
     let events = Arc::new(std::sync::Mutex::new(vec![]));
     let events_clone = Arc::clone(&events);
+    let selection = Arc::new(std::sync::RwLock::new(reify_mcp::SelectionInfo {
+        selected_entity: None,
+        hovered_entity: None,
+    }));
     let _handle = SidecarHandle::from_parts_with_mcp(
         stdin_writer,
         reader,
@@ -395,6 +399,7 @@ async fn from_parts_with_mcp_intercepts_reify_tool_calls() {
         move |name: String, payload: serde_json::Value| {
             events_clone.lock().unwrap().push((name, payload));
         },
+        selection,
     );
 
     // Inject a reify_ tool_call from simulated sidecar stdout
@@ -1033,10 +1038,15 @@ async fn spawn_sidecar_impl_returns_error_for_missing_binary() {
     let session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
     let engine = Arc::new(std::sync::Mutex::new(session));
 
+    let selection = Arc::new(std::sync::RwLock::new(reify_mcp::SelectionInfo {
+        selected_entity: None,
+        hovered_entity: None,
+    }));
     let result = spawn_sidecar_impl(
         Path::new("/tmp/no-such-sidecar-binary"),
         engine,
         |_name: String, _payload: serde_json::Value| {},
+        selection,
     )
     .await;
 
@@ -1063,10 +1073,15 @@ async fn spawn_sidecar_impl_returns_handle_for_valid_binary() {
     let engine = Arc::new(std::sync::Mutex::new(session));
 
     // /bin/cat keeps stdin open and produces no unexpected stdout — ideal minimal live process
+    let selection = Arc::new(std::sync::RwLock::new(reify_mcp::SelectionInfo {
+        selected_entity: None,
+        hovered_entity: None,
+    }));
     let result = spawn_sidecar_impl(
         Path::new("/bin/cat"),
         engine,
         |_name: String, _payload: serde_json::Value| {},
+        selection,
     )
     .await;
 
