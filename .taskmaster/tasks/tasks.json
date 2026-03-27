@@ -7888,7 +7888,8 @@
           "modules": [
             "crates/reify-eval"
           ],
-          "milestone": "M9"
+          "milestone": "M9",
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         },
         "subtasks": [],
         "updatedAt": "2026-03-25T21:10:21.264980+00:00"
@@ -7903,7 +7904,10 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-03-26T02:42:00.296Z"
+        "updatedAt": "2026-03-26T02:42:00.296Z",
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+        }
       },
       {
         "id": 426,
