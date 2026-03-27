@@ -241,11 +241,11 @@ mod tests {
 
     // --- position-sensitive completion tests (task 481) ---
     // These tests assert that completions are context-sensitive based on cursor position.
-    // They are #[ignore] because the current implementation returns everything everywhere;
-    // task 2 will implement position-sensitive filtering to make them pass.
+    // The current implementation returns everything everywhere, so the exclusion assertions
+    // FAIL — this is the expected TDD "red" state. The follow-up task implements
+    // position-sensitive filtering to make them pass (turn "green").
 
     #[test]
-    #[ignore] // Fails until position-sensitive completions are implemented (task 2)
     fn completion_top_level_excludes_body_keywords() {
         // Source: one structure, then a blank line. Cursor is outside any structure.
         let source = "structure Foo {\n    param x: Scalar = 1mm\n}\n";
@@ -270,7 +270,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // Fails until position-sensitive completions are implemented (task 2)
     fn completion_inside_body_excludes_top_level_keywords() {
         let source = reify_test_support::bracket_source();
         // Line 6 is the blank line between params and let, inside body
@@ -294,7 +293,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // Fails until position-sensitive completions are implemented (task 2)
     fn completion_expression_excludes_declaration_keywords() {
         // Cursor is in an expression position (after `= `)
         let source = "structure Foo {\n    let x = \n}";
@@ -325,7 +323,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // Fails until position-sensitive completions are implemented (task 2)
     fn completion_after_dot_returns_only_members() {
         // Cursor is after a dot — should only return member completions
         // Note: Bar is undefined, but the exclusion assertions are what matter
@@ -362,7 +359,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // Fails until position-sensitive completions are implemented (task 2)
     fn completion_type_position_returns_types_and_structs() {
         // Cursor is in a type annotation position (after `x: `)
         let source = "structure Foo {\n    param x: \n}";
@@ -414,7 +410,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // Fails until position-sensitive completions are implemented (task 2)
     fn completion_constraint_expr_excludes_declaration_keywords() {
         let source = reify_test_support::bracket_source();
         // Line 9: "    constraint thickness > 2mm" — col 27 is inside the expression
