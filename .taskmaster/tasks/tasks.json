@@ -10485,7 +10485,14 @@
         ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-27T08:54:05.376Z"
+        "updatedAt": "2026-03-27T08:54:05.376Z",
+        "metadata": {
+          "modules": [
+            "gui/sidecar",
+            "gui/src",
+            "gui/src-tauri"
+          ]
+        }
       },
       {
         "id": 526,
