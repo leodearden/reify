@@ -7168,7 +7168,7 @@
         "id": 369,
         "title": "Pragma: silent parse failures + error reporting + tests + PartialEq",
         "description": "All pragma-lowering methods take &self not &mut self; failures return None silently with no diagnostic. Change to &mut self and push ParseError on failure. Fix f64 parse failure silently dropping entire pragma arg (ts_parser.rs:757-759). Fix malformed string literal falling back to raw text including quote char (ts_parser.rs:762-768). Add PartialEq to Pragma and PragmaArg (enables duplicate-pragma checking).\n\nMissing tests:\n- Bare(Number), Bare(String), Bare(Bool) pragma arg variants\n- Multiple pragmas in a single block\n- Pragma placed after other members (interleaved ordering)\n\nMemory hints: search \"lower_pragma ParseError pragma arg parse\", entities: lower_pragma, PragmaValue, PragmaArg",
-        "details": "",
+        "details": "<info added on 2026-03-27T14:08:51.686Z>\nRECONCILIATION NOTE: This task has bounced between pending and in-progress 11+ times. Root cause identified: worktree corruption — the task-216 plan was loaded into the task-369 worktree in a prior session, causing the agent to work on the wrong task. Each subsequent orchestrator attempt picks it up, discovers the mismatch, and resets it. The worktree needs to be cleaned/recreated before this task can make progress.\n</info added on 2026-03-27T14:08:51.686Z>",
         "testStrategy": "",
         "status": "pending",
         "dependencies": [],
@@ -7188,7 +7188,18 @@
             "crates/reify-test-support",
             "tree-sitter-reify/grammar.js",
             "tree-sitter-reify/src"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "lower_pragma",
+              "PragmaValue",
+              "PragmaArg"
+            ],
+            "queries": [
+              "task 369 worktree corruption task-216 plan loaded wrong worktree",
+              "lower_pragma ParseError pragma arg parse failure silent"
+            ]
+          }
         }
       },
       {
