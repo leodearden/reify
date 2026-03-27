@@ -3362,6 +3362,44 @@ mod tests {
     }
 
     #[test]
+    fn revolve_nan_axis_dir_error_mentions_dir() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(1.0),
+            })
+            .unwrap();
+        let result = kernel.execute(&GeometryOp::Revolve {
+            profile: box_h.id,
+            axis_origin: [0.0, 0.0, 0.0],
+            axis_dir: [0.0, f64::NAN, 0.0],
+            angle_rad: std::f64::consts::TAU,
+        });
+        assert_operation_fails_with(result, "axis_dir");
+    }
+
+    #[test]
+    fn revolve_inf_angle_error_mentions_angle() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(1.0),
+            })
+            .unwrap();
+        let result = kernel.execute(&GeometryOp::Revolve {
+            profile: box_h.id,
+            axis_origin: [0.0, 0.0, 0.0],
+            axis_dir: [0.0, 0.0, 1.0],
+            angle_rad: f64::INFINITY,
+        });
+        assert_operation_fails_with(result, "angle");
+    }
+
+    #[test]
     fn sweep_circle_along_line_creates_pipe() {
         if !crate::OCCT_AVAILABLE {
             eprintln!("skipping: OCCT not available");
