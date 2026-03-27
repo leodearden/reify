@@ -357,6 +357,19 @@ impl ConcurrentScheduler {
                     }
                 }
             }
+
+            // Cleanup: remove all processed nodes from tracker and promoter
+            if let Some(ref tracker) = config.commitment_tracker {
+                let mut guard = tracker.lock().unwrap_or_else(|e| e.into_inner());
+                for node in &dirty_nodes {
+                    guard.remove_task(node);
+                }
+            }
+            if let Some(ref promoter) = config.priority_promoter {
+                for node in &dirty_nodes {
+                    promoter.remove(node);
+                }
+            }
         }
 
         Ok(SchedulerResult { changed, skipped })
