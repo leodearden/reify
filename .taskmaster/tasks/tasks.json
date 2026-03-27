@@ -8828,7 +8828,13 @@
         "subtasks": [],
         "updatedAt": "2026-03-26T12:05:53.868Z",
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-syntax/src/ts_parser.rs"
+          ],
+          "modules": [
+            "crates/reify-syntax/src"
+          ]
         }
       },
       {
@@ -8843,7 +8849,15 @@
         "subtasks": [],
         "updatedAt": "2026-03-26T08:28:27.358Z",
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-syntax/src/ts_parser.rs",
+            "crates/reify-syntax/tests/connect_chain_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-syntax/src",
+            "crates/reify-syntax/tests"
+          ]
         }
       },
       {
