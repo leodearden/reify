@@ -360,4 +360,24 @@ mod format_value_range_tests {
         assert_eq!(formatted, "[0..5)");
         assert_eq!(unit, "");
     }
+
+    #[test]
+    fn range_unit_always_empty_even_with_scalar_bounds() {
+        // Range with Scalar bounds (LENGTH dimension): unit must still be empty
+        // because Range display does not propagate unit info from its bounds.
+        let lower = Value::Scalar {
+            si_value: 0.001,
+            dimension: reify_types::DimensionVector::LENGTH,
+        };
+        let upper = Value::Scalar {
+            si_value: 0.01,
+            dimension: reify_types::DimensionVector::LENGTH,
+        };
+        let range = Value::range(Some(lower), Some(upper), true, false);
+        let (formatted, unit) = format_value(&range);
+        // Scalars inside the range are formatted individually (SI→mm conversion),
+        // but the range itself carries no unit.
+        assert_eq!(formatted, "[1..10)");
+        assert_eq!(unit, "", "Range unit string must always be empty");
+    }
 }
