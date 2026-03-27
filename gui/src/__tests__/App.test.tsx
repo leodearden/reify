@@ -2000,3 +2000,72 @@ describe('App keyboard help overlay', () => {
     });
   });
 });
+
+describe('App Claude error handling', () => {
+  it('logs error to console when subscribeToClaudeEvents fails', async () => {
+    const subscribeError = new Error('subscribe failed');
+    vi.mocked(bridge.subscribeToClaudeEvents).mockRejectedValue(subscribeError);
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    render(() => <App />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('app-layout')).toBeTruthy();
+    });
+
+    expect(consoleSpy).toHaveBeenCalledWith(
+      '[claude] subscribeToClaudeEvents failed:',
+      subscribeError,
+    );
+
+    consoleSpy.mockRestore();
+  });
+
+  it('shows toast when claudeAbort fails', async () => {
+    const abortError = new Error('abort failed');
+    vi.mocked(bridge.claudeAbort).mockRejectedValue(abortError);
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    // Capture the handler passed to subscribeToClaudeEvents
+    let claudeHandler: ((msg: any) => void) | undefined;
+    vi.mocked(bridge.subscribeToClaudeEvents).mockImplementation(async (handler) => {
+      claudeHandler = handler;
+      return () => {};
+    });
+
+    render(() => <App />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('app-layout')).toBeTruthy();
+    });
+
+    // Fire a text_delta event to put claudeStore into 'responding' state
+    claudeHandler!({ type: 'text_delta', id: 'msg-1', content: 'Hello' });
+
+    // Wait for abort button to appear
+    await waitFor(() => {
+      expect(screen.getByTestId('abort-button')).toBeTruthy();
+    });
+
+    // Click the abort button
+    fireEvent.click(screen.getByTestId('abort-button'));
+
+    // Wait for the toast to appear (claudeAbort rejection triggers async catch)
+    await waitFor(() => {
+      expect(consoleSpy).toHaveBeenCalledWith(
+        '[claude] abort failed:',
+        abortError,
+      );
+    });
+
+    // Verify the toast DOM element matches the error pattern used by other error-path tests
+    await waitFor(() => {
+      const toastEl = screen.getByTestId('toast');
+      expect(toastEl).toBeTruthy();
+      expect(toastEl.dataset.type).toBe('error');
+      expect(toastEl.textContent).toContain('Abort failed: abort failed');
+    });
+
+    consoleSpy.mockRestore();
+  });
+});

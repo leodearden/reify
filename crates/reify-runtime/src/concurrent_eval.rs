@@ -8,15 +8,18 @@
 //! tracking, not by the adapter. The adapter is purely computational — it evaluates
 //! expressions, computes content hashes, and records results.
 //!
-//! **Lock poisoning recovery:** All lock acquisitions use
-//! `.unwrap_or_else(|e| e.into_inner())` to recover gracefully from poisoned locks.
-//! A poisoned lock means a previous evaluation task panicked while holding the lock —
-//! the data may be partially updated, but recovering prevents cascading panics that
-//! would take down all concurrent tasks sharing the adapter. This matches the pattern
-//! used in `SharedPriorityPromoter`.
+//! **Lock poisoning recovery:** All lock acquisitions recover gracefully from poisoned
+//! locks via private helper methods (`read_values()`, `write_values()`,
+//! `read_snapshot_values()`, `write_snapshot_values()`, `lock_results()`) that emit
+//! `tracing::warn!` on recovery. A poisoned lock means a previous evaluation task
+//! panicked while holding the lock — the data may be partially updated, but recovering
+//! prevents cascading panics that would take down all concurrent tasks sharing the
+//! adapter. The `into_result()` method uses inline recovery with `tracing::warn!`
+//! because `self` is consumed by `Arc::try_unwrap`. This matches the pattern used in
+//! `SharedPriorityPromoter`.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use reify_compiler::ValueCellKind;
 use reify_eval::cache::{CachedResult, EvalOutcome, NodeId};
@@ -85,24 +88,62 @@ impl ConcurrentEvalAdapter {
         }
     }
 
+    /// Acquire a read lock on `values`, recovering from poison with a warning.
+    fn read_values(&self) -> RwLockReadGuard<'_, ValueMap> {
+        self.values.read().unwrap_or_else(|e| {
+            tracing::warn!("values RwLock poisoned, recovering: {e}");
+            e.into_inner()
+        })
+    }
+
+    /// Acquire a write lock on `values`, recovering from poison with a warning.
+    fn write_values(&self) -> RwLockWriteGuard<'_, ValueMap> {
+        self.values.write().unwrap_or_else(|e| {
+            tracing::warn!("values RwLock poisoned, recovering: {e}");
+            e.into_inner()
+        })
+    }
+
+    /// Acquire a read lock on `snapshot_values`, recovering from poison with a warning.
+    fn read_snapshot_values(
+        &self,
+    ) -> RwLockReadGuard<'_, PersistentMap<ValueCellId, (Value, DeterminacyState)>> {
+        self.snapshot_values.read().unwrap_or_else(|e| {
+            tracing::warn!("snapshot_values RwLock poisoned, recovering: {e}");
+            e.into_inner()
+        })
+    }
+
+    /// Acquire a write lock on `snapshot_values`, recovering from poison with a warning.
+    fn write_snapshot_values(
+        &self,
+    ) -> RwLockWriteGuard<'_, PersistentMap<ValueCellId, (Value, DeterminacyState)>> {
+        self.snapshot_values.write().unwrap_or_else(|e| {
+            tracing::warn!("snapshot_values RwLock poisoned, recovering: {e}");
+            e.into_inner()
+        })
+    }
+
+    /// Acquire a lock on `results`, recovering from poison with a warning.
+    fn lock_results(&self) -> MutexGuard<'_, Vec<ConcurrentNodeResult>> {
+        self.results.lock().unwrap_or_else(|e| {
+            tracing::warn!("results Mutex poisoned, recovering: {e}");
+            e.into_inner()
+        })
+    }
+
     /// Get a snapshot of the current values (for testing/inspection).
     ///
-    /// Recovers gracefully from poisoned locks via `unwrap_or_else`.
+    /// Recovers gracefully from poisoned locks via `read_values()` helper.
     pub fn values(&self) -> ValueMap {
-        self.values
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
+        self.read_values().clone()
     }
 
     /// Take the collected results (for testing/inspection).
     ///
-    /// Recovers gracefully from poisoned locks via `unwrap_or_else`.
+    /// Recovers gracefully from poisoned locks via `lock_results()` helper.
     pub fn take_results(&self) -> Vec<ConcurrentNodeResult> {
-        self.results
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
+        self.lock_results().clone()
     }
 
     /// Build a `ConcurrentEditResult` via shared references (cloning).
@@ -111,8 +152,9 @@ impl ConcurrentEvalAdapter {
     /// references still exist. Slightly less efficient than `into_result`
     /// since it clones each inner container through locks.
     ///
-    /// Recovers gracefully from poisoned locks — if a prior evaluation task
-    /// panicked, the data may be partially updated but this method will not panic.
+    /// Recovers gracefully from poisoned locks via helper methods — if a prior
+    /// evaluation task panicked, the data may be partially updated but this
+    /// method will not panic.
     ///
     /// The `skipped` set is provided by the scheduler's `SchedulerResult`.
     pub fn build_result_shared(
@@ -120,21 +162,9 @@ impl ConcurrentEvalAdapter {
         eval_set: &[NodeId],
         skipped: HashSet<NodeId>,
     ) -> ConcurrentEditResult {
-        let values = self
-            .values
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone();
-        let snapshot_values = self
-            .snapshot_values
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone();
-        let node_results = self
-            .results
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone();
+        let values = self.read_values().clone();
+        let snapshot_values = self.read_snapshot_values().clone();
+        let node_results = self.lock_results().clone();
 
         let actual_eval_set: Vec<NodeId> = eval_set
             .iter()
@@ -157,7 +187,10 @@ impl ConcurrentEvalAdapter {
     ///
     /// Extracts the final values, snapshot_values, and results.
     /// Recovers gracefully from poisoned locks on both the `into_inner()`
-    /// (sole-owner) and `read()`/`lock()` (shared-reference fallback) paths.
+    /// (sole-owner) and `read()`/`lock()` (shared-reference fallback) paths,
+    /// emitting `tracing::warn!` on each recovery. These stay inline because
+    /// `self` is consumed by `Arc::try_unwrap` — the helper methods (which take
+    /// `&self`) cannot be used here.
     ///
     /// The `skipped` set is provided by the scheduler's `SchedulerResult`.
     pub fn into_result(
@@ -166,16 +199,45 @@ impl ConcurrentEvalAdapter {
         skipped: HashSet<NodeId>,
     ) -> ConcurrentEditResult {
         let values = match Arc::try_unwrap(self.values) {
-            Ok(lock) => lock.into_inner().unwrap_or_else(|e| e.into_inner()),
-            Err(arc) => arc.read().unwrap_or_else(|e| e.into_inner()).clone(),
+            Ok(lock) => lock.into_inner().unwrap_or_else(|e| {
+                tracing::warn!("values RwLock poisoned (into_inner), recovering: {e}");
+                e.into_inner()
+            }),
+            Err(arc) => arc
+                .read()
+                .unwrap_or_else(|e| {
+                    tracing::warn!("values RwLock poisoned (shared fallback), recovering: {e}");
+                    e.into_inner()
+                })
+                .clone(),
         };
         let snapshot_values = match Arc::try_unwrap(self.snapshot_values) {
-            Ok(lock) => lock.into_inner().unwrap_or_else(|e| e.into_inner()),
-            Err(arc) => arc.read().unwrap_or_else(|e| e.into_inner()).clone(),
+            Ok(lock) => lock.into_inner().unwrap_or_else(|e| {
+                tracing::warn!("snapshot_values RwLock poisoned (into_inner), recovering: {e}");
+                e.into_inner()
+            }),
+            Err(arc) => arc
+                .read()
+                .unwrap_or_else(|e| {
+                    tracing::warn!(
+                        "snapshot_values RwLock poisoned (shared fallback), recovering: {e}"
+                    );
+                    e.into_inner()
+                })
+                .clone(),
         };
         let node_results = match Arc::try_unwrap(self.results) {
-            Ok(lock) => lock.into_inner().unwrap_or_else(|e| e.into_inner()),
-            Err(arc) => arc.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+            Ok(lock) => lock.into_inner().unwrap_or_else(|e| {
+                tracing::warn!("results Mutex poisoned (into_inner), recovering: {e}");
+                e.into_inner()
+            }),
+            Err(arc) => arc
+                .lock()
+                .unwrap_or_else(|e| {
+                    tracing::warn!("results Mutex poisoned (shared fallback), recovering: {e}");
+                    e.into_inner()
+                })
+                .clone(),
         };
 
         // actual_eval_set = eval_set nodes that weren't skipped
@@ -246,12 +308,7 @@ impl AsyncNodeEvaluator for ConcurrentEvalAdapter {
             let expr = cell_node.default_expr.as_ref().unwrap();
 
             // Read current values (brief read lock)
-            let current_values = {
-                self.values
-                    .read()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .clone()
-            };
+            let current_values = { self.read_values().clone() };
 
             // Evaluate expression (pure, no lock held)
             let val = reify_expr::eval_expr(
@@ -281,25 +338,18 @@ impl AsyncNodeEvaluator for ConcurrentEvalAdapter {
 
             // Write result to shared values (brief write lock)
             {
-                let mut values = self.values.write().unwrap_or_else(|e| e.into_inner());
-                values.insert(vcid.clone(), val.clone());
+                self.write_values().insert(vcid.clone(), val.clone());
             }
 
             // Write to snapshot values (brief write lock)
             {
-                let mut sv = self
-                    .snapshot_values
-                    .write()
-                    .unwrap_or_else(|e| e.into_inner());
-                sv.insert(vcid.clone(), (val.clone(), DeterminacyState::Determined));
+                self.write_snapshot_values()
+                    .insert(vcid.clone(), (val.clone(), DeterminacyState::Determined));
             }
 
             // Record result (no early cutoff propagation — skip decisions
             // are made by the scheduler using pre-computed changed_vcids)
-            self.results
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .push(ConcurrentNodeResult {
+            self.lock_results().push(ConcurrentNodeResult {
                     node: node.clone(),
                     value: val,
                     determinacy: DeterminacyState::Determined,

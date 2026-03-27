@@ -1,6 +1,7 @@
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 use reify_constraints::SimpleConstraintChecker;
+use reify_mcp::SelectionInfo;
 use reify_test_support::{MockGeometryKernel, bracket_source};
 
 use crate::commands::AppState;
@@ -24,7 +25,28 @@ fn app_state_constructible() {
         last_state: Mutex::new(None),
         watcher: Mutex::new(None),
         sidecar: tokio::sync::Mutex::new(None),
+        selection: Arc::new(RwLock::new(SelectionInfo {
+            selected_entity: None,
+            hovered_entity: None,
+        })),
     };
+}
+
+#[test]
+fn app_state_selection_is_accessible() {
+    let session = make_loaded_session();
+    let state = AppState {
+        engine: Arc::new(Mutex::new(session)),
+        last_state: Mutex::new(None),
+        watcher: Mutex::new(None),
+        sidecar: tokio::sync::Mutex::new(None),
+        selection: Arc::new(RwLock::new(SelectionInfo {
+            selected_entity: Some("Bracket".to_string()),
+            hovered_entity: None,
+        })),
+    };
+    let sel = state.selection.read().unwrap();
+    assert_eq!(sel.selected_entity, Some("Bracket".to_string()));
 }
 
 #[test]

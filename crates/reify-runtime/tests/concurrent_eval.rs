@@ -1573,9 +1573,72 @@ async fn edit_check_concurrent_preserves_constraint_labels() {
 // one evaluation task panics mid-computation.
 
 #[cfg(feature = "test-utils")]
+/// Helper: build a tracing subscriber that counts WARN-level events using an AtomicUsize.
+/// Returns the subscriber and a clone of the counter for assertions.
+fn warn_counting_subscriber() -> (impl tracing::Subscriber, Arc<std::sync::atomic::AtomicUsize>) {
+    use std::sync::atomic::AtomicUsize;
+
+    let count = Arc::new(AtomicUsize::new(0));
+    let count_clone = Arc::clone(&count);
+
+    struct WarnCounter(Arc<AtomicUsize>);
+
+    impl tracing::Subscriber for WarnCounter {
+        fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+            metadata.level() <= &tracing::Level::WARN
+        }
+
+        fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+
+        fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+
+        fn record_follows_from(
+            &self,
+            _span: &tracing::span::Id,
+            _follows: &tracing::span::Id,
+        ) {
+        }
+
+        fn event(&self, event: &tracing::Event<'_>) {
+            if event.metadata().level() == &tracing::Level::WARN {
+                self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+
+        fn enter(&self, _span: &tracing::span::Id) {}
+
+        fn exit(&self, _span: &tracing::span::Id) {}
+    }
+
+    (WarnCounter(count_clone), count)
+}
+
+#[cfg(feature = "test-utils")]
 mod poison_recovery {
     use super::*;
     use std::panic::{AssertUnwindSafe, catch_unwind};
+
+    /// Verify that tracing::warn! is emitted when values() recovers from a poisoned lock.
+    #[test]
+    fn tracing_warn_emitted_on_poison_values_read() {
+        let setup = simple_setup();
+        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+
+        adapter.poison_values();
+
+        let (subscriber, warn_count) = warn_counting_subscriber();
+        let _result = tracing::subscriber::with_default(subscriber, || {
+            catch_unwind(AssertUnwindSafe(|| adapter.values()))
+        });
+
+        let count = warn_count.load(std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            count > 0,
+            "values() should emit tracing::warn! on poison recovery, got {count} WARN events"
+        );
+    }
 
     /// values() recovers gracefully from a poisoned values RwLock and returns valid data.
     #[test]
@@ -1612,6 +1675,49 @@ mod poison_recovery {
         let results = result.unwrap();
         // Results should be empty (no evaluations have occurred), but accessible
         assert!(results.is_empty());
+    }
+
+    /// Verify that tracing::warn! is emitted when take_results() recovers from a poisoned lock.
+    #[test]
+    fn tracing_warn_emitted_on_poison_results_lock() {
+        let setup = simple_setup();
+        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+
+        adapter.poison_results();
+
+        let (subscriber, warn_count) = warn_counting_subscriber();
+        let _result = tracing::subscriber::with_default(subscriber, || {
+            catch_unwind(AssertUnwindSafe(|| adapter.take_results()))
+        });
+
+        let count = warn_count.load(std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            count > 0,
+            "take_results() should emit tracing::warn! on poison recovery, got {count} WARN events"
+        );
+    }
+
+    /// Verify that tracing::warn! is emitted when build_result_shared() recovers from poisoned snapshot_values.
+    #[test]
+    fn tracing_warn_emitted_on_poison_snapshot_values_read() {
+        let setup = simple_setup();
+        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+        let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
+
+        adapter.poison_snapshot_values();
+
+        let (subscriber, warn_count) = warn_counting_subscriber();
+        let _result = tracing::subscriber::with_default(subscriber, || {
+            catch_unwind(AssertUnwindSafe(|| {
+                adapter.build_result_shared(&eval_set, HashSet::new())
+            }))
+        });
+
+        let count = warn_count.load(std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            count > 0,
+            "build_result_shared() should emit tracing::warn! on poison recovery, got {count} WARN events"
+        );
     }
 }
 
@@ -1987,6 +2093,31 @@ mod poison_panics {
             "into_result() should recover from poisoned results lock, not panic"
         );
     }
+
+    /// Verify that tracing::warn! is emitted when into_result() recovers from poisoned locks.
+    /// into_result() has 6 unwrap_or_else closures in Arc::try_unwrap paths.
+    #[test]
+    fn tracing_warn_emitted_on_poison_into_result() {
+        let setup = simple_setup();
+        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+        let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
+
+        // Poison the values lock
+        adapter.poison_values();
+
+        let (subscriber, warn_count) = warn_counting_subscriber();
+        let _result = tracing::subscriber::with_default(subscriber, || {
+            catch_unwind(AssertUnwindSafe(|| {
+                adapter.into_result(&eval_set, HashSet::new())
+            }))
+        });
+
+        let count = warn_count.load(std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            count > 0,
+            "into_result() should emit tracing::warn! on poison recovery, got {count} WARN events"
+        );
+    }
 }
 
 // Tests for evaluate() recovering from poisoned locks. The evaluate method
@@ -2095,6 +2226,34 @@ mod poison_evaluate {
         );
         let outcome = result.unwrap();
         assert_eq!(outcome, EvalOutcome::Changed);
+    }
+
+    /// Verify that tracing::warn! is emitted when evaluate() recovers from poisoned locks.
+    /// evaluate() touches read_values, write_values, write_snapshot_values, and lock_results,
+    /// so poisoning values should produce multiple WARN events.
+    #[test]
+    fn tracing_warn_emitted_on_poison_evaluate() {
+        let setup = simple_setup();
+        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+        let node = NodeId::Value(ValueCellId::new("T", "b"));
+
+        // Poison values lock — affects both read and write paths in evaluate()
+        adapter.poison_values();
+
+        let (subscriber, warn_count) = warn_counting_subscriber();
+        let _result = tracing::subscriber::with_default(subscriber, || {
+            catch_unwind(AssertUnwindSafe(|| {
+                tokio::runtime::Runtime::new()
+                    .unwrap()
+                    .block_on(async { adapter.evaluate(node).await })
+            }))
+        });
+
+        let count = warn_count.load(std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            count > 0,
+            "evaluate() should emit tracing::warn! on poison recovery, got {count} WARN events"
+        );
     }
 }
 

@@ -56,6 +56,29 @@ describe('claude invoke wrappers', () => {
     });
   });
 
+  it('claudeSendMessage maps currentFile and attachedContexts to snake_case', async () => {
+    mockInvoke.mockResolvedValue(undefined);
+
+    await claudeSendMessage('help me', {
+      selectedEntity: 'Bracket.body',
+      diagnostics: ['warning: unused variable'],
+      constraints: ['width > 5'],
+      currentFile: 'bracket.ri',
+      attachedContexts: ['design-spec.md', 'notes.txt'],
+    });
+
+    expect(mockInvoke).toHaveBeenCalledWith('claude_send_message', {
+      text: 'help me',
+      context: {
+        selected_entity: 'Bracket.body',
+        diagnostics: ['warning: unused variable'],
+        constraints: ['width > 5'],
+        current_file: 'bracket.ri',
+        attached_contexts: ['design-spec.md', 'notes.txt'],
+      },
+    });
+  });
+
   it('claudeSendMessage passes undefined fields correctly', async () => {
     mockInvoke.mockResolvedValue(undefined);
 
@@ -69,6 +92,8 @@ describe('claude invoke wrappers', () => {
         selected_entity: 'Bracket.w',
         diagnostics: undefined,
         constraints: undefined,
+        current_file: undefined,
+        attached_contexts: undefined,
       },
     });
   });

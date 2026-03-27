@@ -8,6 +8,8 @@ export interface SendMessage {
     selected_entity?: string;
     diagnostics?: string[];
     constraints?: string[];
+    current_file?: string;
+    attached_contexts?: string[];
   };
 }
 

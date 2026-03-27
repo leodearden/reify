@@ -1,7 +1,7 @@
 use reify_types::ModulePath;
 use tower_lsp::lsp_types::{Location, Position, Url};
 
-use crate::analysis::module_name_from_uri;
+use crate::analysis::{find_named_member_span, module_name_from_uri};
 use crate::convert::{find_word_at_offset, position_to_offset, span_to_range};
 
 /// Compute go-to-definition for the symbol at the given position.
@@ -18,28 +18,18 @@ pub fn compute_goto_definition(source: &str, uri: &Url, position: Position) -> O
     let parsed = reify_syntax::parse(source, ModulePath::single(module_name));
 
     // Search for a param or let declaration with matching name
+    // (recursing into guarded groups via find_named_member_span)
     for decl in &parsed.declarations {
         let members = match decl {
             reify_syntax::Declaration::Structure(s) => &s.members,
             reify_syntax::Declaration::Occurrence(o) => &o.members,
             _ => continue,
         };
-        for member in members {
-            match member {
-                reify_syntax::MemberDecl::Param(p) if p.name == word => {
-                    return Some(Location {
-                        uri: uri.clone(),
-                        range: span_to_range(source, p.span),
-                    });
-                }
-                reify_syntax::MemberDecl::Let(l) if l.name == word => {
-                    return Some(Location {
-                        uri: uri.clone(),
-                        range: span_to_range(source, l.span),
-                    });
-                }
-                _ => {}
-            }
+        if let Some((span, _doc)) = find_named_member_span(members, word) {
+            return Some(Location {
+                uri: uri.clone(),
+                range: span_to_range(source, span),
+            });
         }
     }
 
@@ -128,6 +118,40 @@ mod tests {
             compute_goto_definition(source, &test_uri(), position).is_none(),
             "goto-def on structure name should return None"
         );
+    }
+
+    // --- guarded group go-to-definition tests ---
+
+    #[test]
+    fn goto_def_param_inside_where_block() {
+        // Source with guarded_x declared inside a where block,
+        // referenced by let ref_x = guarded_x on line 5.
+        let source = "structure S {\n    param cond : Bool = true\n    where cond {\n        param guarded_x : Scalar = 5mm\n    }\n    let ref_x = guarded_x\n}";
+        // Line 5: "    let ref_x = guarded_x"
+        //                          ^-- char 16 = start of 'guarded_x' reference
+        let position = Position::new(5, 16);
+        let loc = compute_goto_definition(source, &test_uri(), position)
+            .expect("goto-def for guarded_x ref should return location");
+        assert_eq!(loc.uri, test_uri());
+        // Should point to the param declaration on line 3:
+        // "        param guarded_x : Scalar = 5mm"
+        assert_eq!(loc.range.start.line, 3);
+    }
+
+    #[test]
+    fn goto_def_let_inside_else_block() {
+        // Source with fallback declared inside an else block,
+        // referenced by let use_fb = fallback on line 7.
+        let source = "structure S {\n    param cond : Bool = true\n    where cond {\n        param a : Scalar = 1mm\n    } else {\n        let fallback = 10\n    }\n    let use_fb = fallback\n}";
+        // Line 7: "    let use_fb = fallback"
+        //                           ^-- char 17 = start of 'fallback' reference
+        let position = Position::new(7, 17);
+        let loc = compute_goto_definition(source, &test_uri(), position)
+            .expect("goto-def for fallback ref should return location");
+        assert_eq!(loc.uri, test_uri());
+        // Should point to the let declaration on line 5:
+        // "        let fallback = 10"
+        assert_eq!(loc.range.start.line, 5);
     }
 
     #[test]

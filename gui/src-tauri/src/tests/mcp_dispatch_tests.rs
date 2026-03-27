@@ -1,6 +1,7 @@
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 use reify_constraints::SimpleConstraintChecker;
+use reify_mcp::SelectionInfo;
 use reify_test_support::{MockGeometryKernel, bracket_source};
 
 use crate::diff::compute_delta;
@@ -186,5 +187,25 @@ fn mcp_read_tool_produces_empty_delta() {
     assert!(
         delta.changed_meshes.is_empty(),
         "changed_meshes should be empty after read-only tool"
+    );
+}
+
+#[test]
+fn dispatch_get_selection_returns_selected_entity() {
+    let engine = make_engine();
+    let selection = Arc::new(RwLock::new(SelectionInfo {
+        selected_entity: Some("Bracket".to_string()),
+        hovered_entity: None,
+    }));
+    let ctx = TauriToolContext::new_with_selection(engine, selection);
+    let result = mcp_tool_call_impl("reify_get_selection", serde_json::json!({}), &ctx)
+        .expect("dispatch should succeed");
+    assert_eq!(
+        result["selected_entity"], "Bracket",
+        "selected_entity should be Bracket"
+    );
+    assert!(
+        result["hovered_entity"].is_null(),
+        "hovered_entity should be null"
     );
 }

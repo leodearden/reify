@@ -25,6 +25,8 @@ fn inbound_send_message_with_context_serializes() {
         selected_entity: Some("cube1".to_string()),
         diagnostics: Some(vec!["Error at line 1".to_string()]),
         constraints: Some(vec!["x > 0".to_string()]),
+        current_file: None,
+        attached_contexts: None,
     };
     let msg = InboundMessage::SendMessage {
         id: "msg-2".to_string(),
@@ -156,12 +158,34 @@ fn message_context_optional_fields_skip_none() {
         selected_entity: None,
         diagnostics: None,
         constraints: None,
+        current_file: None,
+        attached_contexts: None,
     };
     let json_val: Value = serde_json::to_value(&ctx).unwrap();
     // None fields should be omitted (skip_serializing_if)
     assert!(json_val.get("selected_entity").is_none());
     assert!(json_val.get("diagnostics").is_none());
     assert!(json_val.get("constraints").is_none());
+    assert!(json_val.get("current_file").is_none());
+    assert!(json_val.get("attached_contexts").is_none());
+}
+
+#[test]
+fn message_context_with_all_fields_serializes() {
+    let ctx = MessageContext {
+        selected_entity: Some("cube1".to_string()),
+        diagnostics: Some(vec!["Error at line 1".to_string()]),
+        constraints: Some(vec!["x > 0".to_string()]),
+        current_file: Some("bracket.ri".to_string()),
+        attached_contexts: Some(vec!["design-spec.md".to_string(), "notes.txt".to_string()]),
+    };
+    let json_val: Value = serde_json::to_value(&ctx).unwrap();
+    assert_eq!(json_val["selected_entity"], "cube1");
+    assert_eq!(json_val["diagnostics"][0], "Error at line 1");
+    assert_eq!(json_val["constraints"][0], "x > 0");
+    assert_eq!(json_val["current_file"], "bracket.ri");
+    assert_eq!(json_val["attached_contexts"][0], "design-spec.md");
+    assert_eq!(json_val["attached_contexts"][1], "notes.txt");
 }
 
 #[test]
@@ -387,6 +411,10 @@ async fn from_parts_with_mcp_intercepts_reify_tool_calls() {
     // from_parts_with_mcp wires up both event sink and MCP tool interception
     let events = Arc::new(std::sync::Mutex::new(vec![]));
     let events_clone = Arc::clone(&events);
+    let selection = Arc::new(std::sync::RwLock::new(reify_mcp::SelectionInfo {
+        selected_entity: None,
+        hovered_entity: None,
+    }));
     let _handle = SidecarHandle::from_parts_with_mcp(
         stdin_writer,
         reader,
@@ -395,6 +423,7 @@ async fn from_parts_with_mcp_intercepts_reify_tool_calls() {
         move |name: String, payload: serde_json::Value| {
             events_clone.lock().unwrap().push((name, payload));
         },
+        selection,
     );
 
     // Inject a reify_ tool_call from simulated sidecar stdout
@@ -448,8 +477,9 @@ fn app_state_has_sidecar_field() {
     use crate::commands::AppState;
     use crate::engine::EngineSession;
     use reify_constraints::SimpleConstraintChecker;
+    use reify_mcp::SelectionInfo;
     use reify_test_support::MockGeometryKernel;
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, Mutex, RwLock};
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
@@ -461,6 +491,10 @@ fn app_state_has_sidecar_field() {
         last_state: Mutex::new(None),
         watcher: Mutex::new(None),
         sidecar: tokio::sync::Mutex::new(None),
+        selection: Arc::new(RwLock::new(SelectionInfo {
+            selected_entity: None,
+            hovered_entity: None,
+        })),
     };
 }
 
@@ -1028,10 +1062,15 @@ async fn spawn_sidecar_impl_returns_error_for_missing_binary() {
     let session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
     let engine = Arc::new(std::sync::Mutex::new(session));
 
+    let selection = Arc::new(std::sync::RwLock::new(reify_mcp::SelectionInfo {
+        selected_entity: None,
+        hovered_entity: None,
+    }));
     let result = spawn_sidecar_impl(
         Path::new("/tmp/no-such-sidecar-binary"),
         engine,
         |_name: String, _payload: serde_json::Value| {},
+        selection,
     )
     .await;
 
@@ -1058,10 +1097,15 @@ async fn spawn_sidecar_impl_returns_handle_for_valid_binary() {
     let engine = Arc::new(std::sync::Mutex::new(session));
 
     // /bin/cat keeps stdin open and produces no unexpected stdout — ideal minimal live process
+    let selection = Arc::new(std::sync::RwLock::new(reify_mcp::SelectionInfo {
+        selected_entity: None,
+        hovered_entity: None,
+    }));
     let result = spawn_sidecar_impl(
         Path::new("/bin/cat"),
         engine,
         |_name: String, _payload: serde_json::Value| {},
+        selection,
     )
     .await;
 
@@ -1209,6 +1253,8 @@ fn format_inbound_send_message_with_context_includes_context() {
             selected_entity: Some("box1".to_string()),
             diagnostics: None,
             constraints: None,
+            current_file: None,
+            attached_contexts: None,
         }),
     };
     let line = format_inbound(&msg);

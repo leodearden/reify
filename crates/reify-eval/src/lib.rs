@@ -4151,7 +4151,7 @@ mod tests {
         let step_handles = vec![GeometryHandleId(10)];
         let values = ValueMap::new();
 
-        // Revolve with missing 'ox' arg — returns None gracefully
+        // Revolve with missing 'ox' arg — should return None, not silently use 0.0
         let op = CompiledGeometryOp::Sweep {
             kind: SweepKind::Revolve,
             profiles: vec![GeomRef::Step(0)],

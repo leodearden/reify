@@ -113,6 +113,19 @@ type _NoChatMessage = import('../types').ChatMessage;
 // @ts-expect-error SessionStatus should not exist in types.ts (superseded by claudeStore.ts)
 type _NoSessionStatus = import('../types').SessionStatus;
 
+// --- ClaudeMessageContext ↔ MessageContext structural sync guard ---
+import type { ClaudeMessageContext } from '../bridge';
+import type { MessageContext } from '../stores/claudeStore';
+
+type _ExpectedClaudeContext = Pick<MessageContext, 'selectedEntity' | 'diagnostics' | 'constraints' | 'currentFile' | 'attachedContexts'>;
+
+// Bidirectional assignability: ensures ClaudeMessageContext stays in sync with the Pick
+const _fwd: _ExpectedClaudeContext = {} as ClaudeMessageContext;
+const _rev: ClaudeMessageContext = {} as _ExpectedClaudeContext;
+
+void _fwd;
+void _rev;
+
 // Suppress unused variable warnings — this file is only for type checking
 void mesh;
 void meshNoNormals;
