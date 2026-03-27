@@ -216,7 +216,7 @@ impl<'a> Lowering<'a> {
                         span: self.span(child),
                     });
                 }
-                _ => {}
+                _ => self.warn_unexpected_child(child, "source file"),
             }
         }
     }
