@@ -69,6 +69,12 @@ pub struct AutoParam {
 #[derive(Debug, Clone)]
 pub enum SolveResult {
     /// Successfully resolved all auto parameters.
+    ///
+    /// **Note:** `Solved` indicates constraint satisfaction but does not guarantee
+    /// objective optimality. When an optimization objective is present, the
+    /// Nelder-Mead optimizer may have hit the iteration limit without full
+    /// convergence; the returned values satisfy all constraints but the objective
+    /// value may not be globally optimal.
     Solved {
         /// Resolved values for auto parameters.
         values: HashMap<ValueCellId, Value>,

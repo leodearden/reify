@@ -636,6 +636,73 @@ fn maximize_with_feasible_initial_point() {
     }
 }
 
+/// When the initial point is feasible and the optimizer drifts infeasible
+/// while chasing an objective, the solver must fall back to the initial
+/// feasible point rather than returning Infeasible.
+///
+/// Setup: tight constraints (x > 5mm AND x < 6mm), current = 5.5mm (feasible),
+/// minimize(x) objective, but param bounds [0, 100mm] let the optimizer explore
+/// well below the constraint floor. With only 500 warm-start iterations, the
+/// penalty-based optimizer may converge to a point below 5mm.
+/// Pre-fix: solver returns Infeasible (bug). Post-fix: Solved with initial values.
+#[test]
+fn warm_start_falls_back_to_initial_when_optimizer_drifts_infeasible() {
+    let solver = DimensionalSolver;
+
+    let x_id = vcid("Part", "x");
+    let x_ref = value_ref("Part", "x");
+
+    // Tight constraints: x > 5mm AND x < 6mm (only 1mm feasible window)
+    let gt_expr = gt(x_ref.clone(), literal(mm(5.0)));
+    let lt_expr = lt(x_ref.clone(), literal(mm(6.0)));
+
+    // Minimize x — pushes toward 0, trying to leave the feasible window
+    let objective = OptimizationObjective::Minimize(x_ref);
+
+    // Current value = 5.5mm — right in the feasible window
+    let mut current = ValueMap::new();
+    current.insert(
+        x_id.clone(),
+        Value::Scalar {
+            si_value: 0.0055,
+            dimension: DimensionVector::LENGTH,
+        },
+    );
+
+    let problem = ResolutionProblem {
+        auto_params: vec![AutoParam {
+            id: x_id.clone(),
+            param_type: Type::length(),
+            // Wide bounds [0, 100mm] — optimizer CAN explore below 5mm
+            bounds: Some((0.0, 0.1)),
+        }],
+        constraints: vec![
+            (cnid("Part", 0), gt_expr),
+            (cnid("Part", 1), lt_expr),
+        ],
+        current_values: current,
+        objective: Some(objective),
+        functions: vec![],
+    };
+
+    let result = solver.solve(&problem);
+    match result {
+        SolveResult::Solved { values } => {
+            let si = values.get(&x_id).unwrap().as_f64().unwrap();
+            // The result must satisfy constraints: 5mm < x < 6mm
+            assert!(
+                si > 0.005 && si < 0.006,
+                "result should satisfy constraints (5mm < x < 6mm), got {} m",
+                si
+            );
+        }
+        other => panic!(
+            "expected Solved (fallback to feasible initial), got {:?}",
+            other
+        ),
+    }
+}
+
 /// Infeasible constraints with an objective present should still be detected.
 /// Bounds [0, 10mm], constraint x > 15mm — impossible within bounds.
 /// Regression guard: the feasibility check must NOT short-circuit the
@@ -681,6 +748,214 @@ fn infeasible_with_objective_still_detected() {
         }
         other => panic!(
             "expected Infeasible for constraint beyond bounds with objective, got {:?}",
+            other
+        ),
+    }
+}
+
+/// Warm-start with a feasible initial point should optimize to a BETTER value
+/// than the initial point, not just fall back. This guards against the fallback
+/// being too aggressive — it should only trigger when the optimizer drifts
+/// infeasible, not on every warm-start.
+///
+/// Setup: x > 2mm AND x < 50mm, initial = 25mm, minimize(x), bounds [5mm, 100mm].
+/// The optimizer should push x down to ~5mm (param lower bound), which is better
+/// than the 25mm initial point and still feasible.
+#[test]
+fn warm_start_optimizes_when_possible() {
+    let solver = DimensionalSolver;
+
+    let x_id = vcid("Part", "x");
+    let x_ref = value_ref("Part", "x");
+
+    // Wide constraints: x > 2mm AND x < 50mm
+    let gt_expr = gt(x_ref.clone(), literal(mm(2.0)));
+    let lt_expr = lt(x_ref.clone(), literal(mm(50.0)));
+
+    // Minimize x — should optimize, not just return initial
+    let objective = OptimizationObjective::Minimize(x_ref);
+
+    // Start at 25mm — feasible, but far from optimal
+    let mut current = ValueMap::new();
+    current.insert(
+        x_id.clone(),
+        Value::Scalar {
+            si_value: 0.025,
+            dimension: DimensionVector::LENGTH,
+        },
+    );
+
+    let problem = ResolutionProblem {
+        auto_params: vec![AutoParam {
+            id: x_id.clone(),
+            param_type: Type::length(),
+            bounds: Some((0.005, 0.1)), // 5mm–100mm, lower bound above constraint floor
+        }],
+        constraints: vec![
+            (cnid("Part", 0), gt_expr),
+            (cnid("Part", 1), lt_expr),
+        ],
+        current_values: current,
+        objective: Some(objective),
+        functions: vec![],
+    };
+
+    let result = solver.solve(&problem);
+    match result {
+        SolveResult::Solved { values } => {
+            let si = values.get(&x_id).unwrap().as_f64().unwrap();
+            // Optimizer should push x below 25mm (initial), toward ~5mm (param lower bound)
+            assert!(
+                si < 0.015,
+                "optimized x should be well below initial 25mm, got {} m (fallback not triggered)",
+                si
+            );
+            // Must still be feasible
+            assert!(
+                si > 0.002,
+                "optimized x should still satisfy x > 2mm, got {} m",
+                si
+            );
+        }
+        other => panic!("expected Solved with optimized value, got {:?}", other),
+    }
+}
+
+/// Warm-start with an 8-parameter feasible problem and an objective.
+/// Each parameter has a constraint that the optimizer might push past
+/// with insufficient iterations. With dimension-scaled budget, the solver
+/// should get enough iterations (500 * 9 = 4500 vs fixed 500) to stay
+/// feasible and return Solved.
+#[test]
+fn warm_start_scales_iterations_with_dimension() {
+    let solver = DimensionalSolver;
+
+    // Create 8 independent parameters, each with tight constraints
+    let param_ids: Vec<_> = (0..8).map(|i| vcid("Part", &format!("p{}", i))).collect();
+    let param_refs: Vec<_> = (0..8)
+        .map(|i| value_ref("Part", &format!("p{}", i)))
+        .collect();
+
+    // Each param: p_i > 10mm AND p_i < 20mm
+    let mut constraints = Vec::new();
+    for (i, pref) in param_refs.iter().enumerate() {
+        let idx = i as u32;
+        constraints.push((cnid("Part", idx * 2), gt(pref.clone(), literal(mm(10.0)))));
+        constraints.push((
+            cnid("Part", idx * 2 + 1),
+            lt(pref.clone(), literal(mm(20.0))),
+        ));
+    }
+
+    // Minimize p0 — pushes one param toward lower bound
+    let objective = OptimizationObjective::Minimize(param_refs[0].clone());
+
+    // All params start at 15mm (feasible, centered in constraint window)
+    let mut current = ValueMap::new();
+    for pid in &param_ids {
+        current.insert(
+            pid.clone(),
+            Value::Scalar {
+                si_value: 0.015,
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+    }
+
+    let auto_params: Vec<_> = param_ids
+        .iter()
+        .map(|pid| AutoParam {
+            id: pid.clone(),
+            param_type: Type::length(),
+            bounds: Some((0.005, 0.025)), // 5mm–25mm, extends beyond constraints
+        })
+        .collect();
+
+    let problem = ResolutionProblem {
+        auto_params,
+        constraints,
+        current_values: current,
+        objective: Some(objective),
+        functions: vec![],
+    };
+
+    let result = solver.solve(&problem);
+    match result {
+        SolveResult::Solved { values } => {
+            // All params must satisfy their constraints
+            for pid in &param_ids {
+                let si = values.get(pid).unwrap().as_f64().unwrap();
+                assert!(
+                    si > 0.010 && si < 0.020,
+                    "param {:?} should satisfy constraints (10mm < p < 20mm), got {} m",
+                    pid,
+                    si
+                );
+            }
+        }
+        other => panic!(
+            "expected Solved for 8-param warm-start, got {:?}",
+            other
+        ),
+    }
+}
+
+/// When the initial point is INfeasible and the optimizer also fails to find
+/// feasibility, the result must be Infeasible — the feasible fallback must NOT
+/// apply when the initial point was never verified feasible.
+///
+/// Regression guard: ensures the fallback is gated on initially_feasible=true.
+#[test]
+fn infeasible_initial_not_rescued_by_fallback() {
+    let solver = DimensionalSolver;
+
+    let x_id = vcid("Part", "x");
+    let x_ref = value_ref("Part", "x");
+
+    // constraint: x > 15mm — impossible with bounds [0, 10mm]
+    let constraint = gt(x_ref.clone(), literal(mm(15.0)));
+
+    // Minimize x — objective present, but initial is not feasible
+    let objective = OptimizationObjective::Minimize(x_ref);
+
+    // Current value = 5mm — NOT feasible (violates x > 15mm)
+    let mut current = ValueMap::new();
+    current.insert(
+        x_id.clone(),
+        Value::Scalar {
+            si_value: 0.005,
+            dimension: DimensionVector::LENGTH,
+        },
+    );
+
+    let problem = ResolutionProblem {
+        auto_params: vec![AutoParam {
+            id: x_id.clone(),
+            param_type: Type::length(),
+            bounds: Some((0.0, 0.010)), // max 10mm, can't reach 15mm
+        }],
+        constraints: vec![(cnid("Part", 0), constraint)],
+        current_values: current,
+        objective: Some(objective),
+        functions: vec![],
+    };
+
+    let result = solver.solve(&problem);
+    match result {
+        SolveResult::Infeasible { diagnostics } => {
+            assert!(
+                !diagnostics.is_empty(),
+                "should have diagnostic messages"
+            );
+            let msg = &diagnostics[0].message;
+            assert!(
+                msg.contains("residual"),
+                "diagnostic should mention residual, got: {}",
+                msg
+            );
+        }
+        other => panic!(
+            "expected Infeasible when initial point is not feasible, got {:?} — fallback must NOT rescue infeasible initials",
             other
         ),
     }

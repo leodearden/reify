@@ -26,10 +26,11 @@ const PENALTY_WEIGHT: f64 = 1e6;
 /// regions, but not so large as to cause overflow when added to other penalties.
 const UNDEF_OBJECTIVE_PENALTY: f64 = f64::MAX / 2.0;
 
-/// Reduced iteration budget when the initial point is already feasible and an
-/// objective is present. The optimizer only needs to explore the feasible region
-/// for a better objective value, not search for feasibility first.
-const FEASIBLE_OPT_ITERS: u64 = 500;
+/// Per-simplex-vertex iteration budget when the initial point is already feasible
+/// and an objective is present. Nelder-Mead uses an (N+1)-vertex simplex, so the
+/// total warm-start budget is `FEASIBLE_OPT_ITERS_PER_DIM * (n_params + 1)`,
+/// capped at MAX_ITERS. This scales naturally with problem dimensionality.
+const FEASIBLE_OPT_ITERS_PER_DIM: u64 = 500;
 
 /// Derivative-free constraint solver using Nelder-Mead optimization.
 ///
@@ -506,9 +507,37 @@ impl ConstraintSolver for DimensionalSolver {
             return SolveResult::Solved { values };
         }
 
-        // Choose iteration budget: reduced when warm-starting from feasible point
+        // Capture initial point as fallback values before optimization.
+        // If initially_feasible and the optimizer drifts infeasible, we fall
+        // back to these values rather than returning Infeasible.
+        let initial_fallback_values: Option<HashMap<_, _>> = if initially_feasible {
+            Some(
+                problem
+                    .auto_params
+                    .iter()
+                    .zip(initial.iter())
+                    .map(|(param, &val)| {
+                        (
+                            param.id.clone(),
+                            Value::Scalar {
+                                si_value: val,
+                                dimension: dimension_of(&param.param_type),
+                            },
+                        )
+                    })
+                    .collect(),
+            )
+        } else {
+            None
+        };
+
+        // Choose iteration budget: scaled by simplex size when warm-starting.
+        // Nelder-Mead needs O(N+1) evaluations per simplex sweep, so scale
+        // the budget proportionally to give higher-dimensional problems enough
+        // iterations to converge.
         let max_iters = if initially_feasible && problem.objective.is_some() {
-            FEASIBLE_OPT_ITERS
+            let n_params = problem.auto_params.len() as u64;
+            (FEASIBLE_OPT_ITERS_PER_DIM * (n_params + 1)).min(MAX_ITERS)
         } else {
             MAX_ITERS
         };
@@ -567,6 +596,12 @@ impl ConstraintSolver for DimensionalSolver {
         let final_max_residual =
             max_constraint_residual(&problem.constraints, &final_values, &problem.functions);
         if final_max_residual > FEASIBILITY_THRESHOLD {
+            // If the initial point was feasible but the optimizer drifted infeasible
+            // while chasing an objective, fall back to the initial feasible values
+            // rather than reporting a false Infeasible.
+            if let Some(fallback) = initial_fallback_values {
+                return SolveResult::Solved { values: fallback };
+            }
             return SolveResult::Infeasible {
                 diagnostics: vec![reify_types::Diagnostic {
                     severity: reify_types::Severity::Error,
@@ -601,6 +636,11 @@ impl ConstraintSolver for DimensionalSolver {
             );
         }
 
+        // NOTE: Solved indicates constraint satisfaction but does NOT guarantee objective
+        // optimality. The Nelder-Mead optimizer may have hit the iteration limit without
+        // full convergence. Convergence quality (e.g., TerminationReason::MaxItersReached
+        // vs actual convergence) is not propagated through SolveResult to avoid a breaking
+        // API change across 6+ crates. See design_decisions in the task plan for rationale.
         SolveResult::Solved { values }
     }
 }
