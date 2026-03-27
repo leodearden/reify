@@ -1,0 +1,166 @@
+{
+  "task_id": "524",
+  "title": "Fix bridge.ts type safety: add type-guards to subscribeToClaudeEvents event payload handlers",
+  "files": [
+    "gui/src/claudeGuards.ts",
+    "gui/src/__tests__/claudeGuards.test.ts",
+    "gui/src/bridge.ts",
+    "gui/src/__tests__/claudeBridge.test.ts"
+  ],
+  "modules": [
+    "gui/src",
+    "gui/src/__tests__"
+  ],
+  "analysis": "bridge.ts subscribeToClaudeEvents() registers 7 Tauri event listeners (claude-text-delta, claude-thinking-delta, claude-tool-call, claude-tool-result, claude-done, claude-error, claude-ready). Each handler merges event.payload via spread operator and casts to OutboundMessage with `as` \u2014 zero runtime validation. If the sidecar protocol evolves or a version mismatch occurs, malformed payloads silently corrupt the store.\n\nThe fix: create hand-written type guard functions (one per OutboundMessage variant) that validate required fields exist with correct types. Integrate these guards into each listen() handler \u2014 on validation failure, console.warn and skip the message. No Zod: the project uses no validation libraries; typeof checks and console.warn are the established patterns (see meshManager.ts validation).\n\nOutboundMessage variant required fields:\n- TextDelta: { id: string, content: string }\n- ThinkingDelta: { id: string, content: string }\n- ToolCall: { id: string, tool_name: string, tool_input: object }\n- ToolResult: { id: string, tool_name: string, result: any (must exist) }\n- Done: { id: string }\n- ErrorMessage: { id: string, message: string }\n- Ready: (no payload fields \u2014 type is injected by the mapper, payload is ignored)\n\nExisting tests in claudeBridge.test.ts cover happy-path mapping and rollback. New tests will cover guard logic (accept/reject) and bridge rejection behavior (console.warn + skip).\n\n**REVIEW FEEDBACK (step-4 defect):** Steps 1-5 added type guards and validation-rejection, but step-4 left the spread operator in place (`handler({ type: 'text_delta', ...event.payload })`). Because JS spread applies left-to-right, a payload containing its own `type` field silently overwrites the hardcoded discriminant. Steps 6-8 fix this by replacing all spreads with explicit per-field destructuring.\n\n**MERGE FEEDBACK #1 (merge_ff_failed, steps 9-10):** Main advanced with 3 commits (0e83e07d, f4782f5f, e75e6aa0) that touch bridge.ts and claudeBridge.test.ts. Main has a partial fix: explicit destructuring with `as` casts but no runtime type guards. Our branch supersedes this with type guards + explicit destructuring + fallback behavior. Steps 9-10 rebased onto main at that point.\n\n**MERGE FEEDBACK #2 (merge_ff_failed, steps 11-12):** Main advanced again after step-9/10 rebase. Current merge base is 06416bba, but main is now at 6bc7f2a8 with additional merges: task/522 (bridge.ts hardening: `Pick<MessageContext>` refactor + explicit `as`-cast extraction), task/478 (selection Arc threading through sidecar), task/531 (solver warm-start). The bridge.ts conflict is with task/522's changes: main now imports `MessageContext` from claudeStore and uses `Pick<MessageContext, ...>` instead of standalone `ClaudeMessageContext` interface. Our branch must accept the `Pick<MessageContext>` refactor (orthogonal improvement) while keeping our guard imports + guard-based handlers (supersede main's `as`-cast version). claudeBridge.test.ts has no new changes on main since step-9 merge base \u2014 clean rebase expected for tests. Steps 11-12 rebase onto current main and verify.",
+  "prerequisites": [],
+  "steps": [
+    {
+      "id": "step-1",
+      "type": "test",
+      "description": "Write failing tests for type guard functions: each guard should accept valid payloads and reject payloads with missing/wrong-type fields. Test file: gui/src/__tests__/claudeGuards.test.ts. Test cases per guard: (1) accepts minimal valid payload, (2) accepts payload with extra fields, (3) rejects null, (4) rejects undefined, (5) rejects primitive, (6) rejects object missing each required field, (7) rejects object with wrong-type field. Also test isClaudePayload base check (object, not null).",
+      "status": "done",
+      "commit": "c49b60a7"
+    },
+    {
+      "id": "step-2",
+      "type": "impl",
+      "description": "Create gui/src/claudeGuards.ts with 6 exported type-guard functions: isTextDeltaPayload, isThinkingDeltaPayload, isToolCallPayload, isToolResultPayload, isDonePayload, isErrorPayload. Each takes `unknown` and returns a type predicate. Use typeof checks for string fields, typeof === 'object' && !== null for object fields, 'in' operator for result existence. Ready needs no guard (no payload fields \u2014 type is injected synthetically). Export a convenience isRecordPayload helper for the base object check.",
+      "status": "done",
+      "commit": "776b139c"
+    },
+    {
+      "id": "step-3",
+      "type": "test",
+      "description": "Write failing tests in gui/src/__tests__/claudeBridge.test.ts for validation-rejection behavior: (1) malformed claude-text-delta payload (missing id) does NOT call handler and logs console.warn, (2) malformed claude-tool-call payload (tool_input is string instead of object) skips with warning, (3) malformed claude-error payload (missing message) skips with warning, (4) malformed claude-done payload (id is number instead of string) skips with warning, (5) valid payloads still pass through correctly (existing tests cover this but add one explicit test verifying guard integration). Use vi.spyOn(console, 'warn') to verify warning output.",
+      "status": "done",
+      "commit": "e9e0fa6e"
+    },
+    {
+      "id": "step-4",
+      "type": "impl",
+      "description": "Modify gui/src/bridge.ts subscribeToClaudeEvents() to use type guards. Import guards from ./claudeGuards. Replace each spread-cast handler with: (1) check payload with the appropriate guard, (2) if valid, call handler with typed message, (3) if invalid, console.warn with event name and payload summary, then return (skip). Ready handler stays as-is (no payload to validate). Update the EventEntry type annotation to use `unknown` for payload instead of Record<string, unknown>.",
+      "status": "done",
+      "commit": "b3b36c0c"
+    },
+    {
+      "id": "step-5",
+      "type": "test",
+      "description": "Run the full test suite (vitest) to verify: all existing claudeBridge.test.ts happy-path tests still pass, all new guard unit tests pass, all new rejection tests pass, and claudeIntegration.test.ts still passes. Fix any regressions.",
+      "status": "done",
+      "commit": "b3b36c0c"
+    },
+    {
+      "id": "step-6",
+      "type": "test",
+      "description": "Write failing tests in gui/src/__tests__/claudeBridge.test.ts proving the discriminant override vulnerability. Add a new describe block 'discriminant override protection'. For each of the 6 non-Ready event types, send a payload that includes a rogue `type` field (e.g. `{ id: 'x', content: 'hi', type: 'error' }` for claude-text-delta) and assert that handler receives the hardcoded discriminant (e.g. `type: 'text_delta'`), NOT the payload's `type` value. Also assert handler receives ONLY the variant's own fields plus `type` \u2014 no extra payload fields leak through. Test cases: (1) claude-text-delta with payload containing `type: 'error'` \u2014 expect `{ type: 'text_delta', id, content }`, (2) claude-thinking-delta with `type: 'done'` \u2014 expect `{ type: 'thinking_delta', id, content }`, (3) claude-tool-call with `type: 'ready'` \u2014 expect `{ type: 'tool_call', id, tool_name, tool_input }`, (4) claude-tool-result with `type: 'text_delta'` \u2014 expect `{ type: 'tool_result', id, tool_name, result }`, (5) claude-done with `type: 'error'` \u2014 expect `{ type: 'done', id }`, (6) claude-error with `type: 'text_delta'` \u2014 expect `{ type: 'error', id, message }`. These tests MUST fail against current code (which uses spread).",
+      "status": "done",
+      "commit": "5a89c676"
+    },
+    {
+      "id": "step-7",
+      "type": "impl",
+      "description": "Replace all spread operators in bridge.ts subscribeToClaudeEvents() with explicit per-field destructuring. Each handler should construct the OutboundMessage by naming only the fields that belong to its variant, reading them from the validated payload. Specifically: (1) text-delta: `handler({ type: 'text_delta', id: event.payload.id, content: event.payload.content })`, (2) thinking-delta: `handler({ type: 'thinking_delta', id: event.payload.id, content: event.payload.content })`, (3) tool-call: `handler({ type: 'tool_call', id: event.payload.id, tool_name: event.payload.tool_name, tool_input: event.payload.tool_input })`, (4) tool-result: `handler({ type: 'tool_result', id: event.payload.id, tool_name: event.payload.tool_name, result: event.payload.result })`, (5) done: `handler({ type: 'done', id: event.payload.id })`, (6) error: `handler({ type: 'error', id: event.payload.id, message: event.payload.message })`. Ready handler unchanged. After the guard passes, the payload is narrowed to the correct type so field access is type-safe.",
+      "status": "done",
+      "commit": "fc1322fd"
+    },
+    {
+      "id": "step-8",
+      "type": "test",
+      "description": "Run the full test suite (vitest) to verify: all step-6 discriminant-override tests now pass, all existing happy-path mapping tests still pass, all guard unit tests pass, all validation-rejection tests pass. Confirm zero regressions.",
+      "status": "done",
+      "commit": "fc1322fd"
+    },
+    {
+      "id": "step-9",
+      "type": "impl",
+      "description": "Rebase task/524 onto current main to resolve merge_ff_failed. Main has 3 commits (0e83e07d, f4782f5f, e75e6aa0) that partially overlap with our work: bridge.ts has explicit destructuring with `as` casts (no guards), and claudeBridge.test.ts has two simple inline tests for extra-fields and type-override. Our branch supersedes both. Conflict resolution strategy:\n\n1. `bridge.ts`: Take our version entirely \u2014 it imports claudeGuards, uses runtime type guards with `unknown` payload type, and has explicit destructuring (superset of main's `as`-cast version).\n\n2. `claudeBridge.test.ts`: Main added two inline tests at line ~277 ('extra unknown fields in payload are not forwarded to handler' and 'payload type field does not override mapped event type'). Our branch replaces that exact region with comprehensive `describe('payload validation rejection')` and `describe('discriminant override protection')` blocks that cover the same behaviors plus much more. Drop main's two simple tests in favor of our blocks. Keep all other tests from main untouched (happy-path mapping, rollback tests).\n\n3. `claudeGuards.ts` and `claudeGuards.test.ts`: New files only on our branch \u2014 no conflict, clean addition.\n\nAfter rebase, all commit hashes change. The branch should fast-forward merge cleanly into main.",
+      "status": "done",
+      "commit": "dc4e53cd"
+    },
+    {
+      "id": "step-10",
+      "type": "test",
+      "description": "Run full vitest suite after rebase to verify zero regressions: all guard unit tests, all validation-rejection tests, all discriminant-override tests, all happy-path mapping tests, and all rollback tests pass. Also run `npx tsc --noEmit` to verify no TypeScript errors from the rebase resolution. If any test fails, inspect whether the rebase resolution dropped or mis-merged content and fix.",
+      "status": "done",
+      "commit": "dc4e53cd"
+    },
+    {
+      "id": "step-11",
+      "type": "impl",
+      "description": "Rebase task/524 onto current main (6bc7f2a8) to resolve second merge_ff_failed. Main advanced past our step-9 rebase point with merges of task/522, task/478, and task/531. Current merge base is 06416bba; main is 20+ commits ahead.\n\nConflict surface analysis \u2014 only `gui/src/bridge.ts` has overlapping changes:\n\n1. `bridge.ts` conflict: Main (via task/522 merge 7c88abd0) now has:\n   - `import type { MessageContext } from './stores/claudeStore'` (new line 8)\n   - `export type ClaudeMessageContext = Pick<MessageContext, 'selectedEntity' | 'diagnostics' | 'constraints'>` replacing the standalone interface\n   - `subscribeToClaudeEvents` with explicit field extraction using `as` casts (e.g. `const p = event.payload as { id: string; content: string }; handler({ type: 'text_delta', id: p.id, content: p.content })`)\n   - Payload type: `Record<string, unknown>`\n   Our branch has:\n   - `import { isTextDeltaPayload, ... } from './claudeGuards'`\n   - Original standalone `ClaudeMessageContext` interface (pre-task/522)\n   - `subscribeToClaudeEvents` with guard-based validation + explicit destructuring\n   - Payload type: `unknown`\n   Resolution: Accept BOTH main's `Pick<MessageContext>` refactor (lines 8, 115) AND our guard imports + guard-based handlers. Specifically:\n   - Keep main's `import type { MessageContext }` line\n   - Keep main's `Pick<MessageContext, ...>` type alias\n   - Add our `import { isTextDeltaPayload, ... } from './claudeGuards'` import\n   - Use our subscribeToClaudeEvents implementation (guards + explicit destructuring + `unknown` payload type) \u2014 this supersedes main's `as`-cast version\n\n2. `claudeBridge.test.ts`: Main has no new changes to this file beyond what step-9 already resolved \u2014 clean rebase expected.\n\n3. `claudeGuards.ts` and `claudeGuards.test.ts`: New files only on our branch \u2014 no conflict.\n\n4. Other main changes (App.tsx, selectionStore.ts, src-tauri files, solver, LSP): No overlap with our files \u2014 clean rebase.\n\nRun: `git rebase main`, resolve bridge.ts conflict as described, `git add`, `git rebase --continue`.",
+      "status": "done",
+      "commit": "a8a1c039"
+    },
+    {
+      "id": "step-12",
+      "type": "test",
+      "description": "Run full verification after rebase onto latest main:\n1. `cd gui && npx vitest run` \u2014 all tests must pass: guard unit tests, validation-rejection tests, discriminant-override tests, happy-path mapping tests, rollback tests.\n2. `cd gui && npx tsc --noEmit` \u2014 verify TypeScript compilation with the merged `Pick<MessageContext>` import and our guard imports coexisting cleanly.\n3. Verify the `ClaudeMessageContext` type alias uses `Pick<MessageContext, ...>` (from main), not the old standalone interface.\n4. Verify `subscribeToClaudeEvents` uses our guard-based validation (not main's `as` casts).\nIf any test or type-check fails, inspect the rebase resolution for dropped/mis-merged content and fix.",
+      "status": "done",
+      "commit": "a8a1c039"
+    }
+  ],
+  "design_decisions": [
+    {
+      "decision": "Hand-written type guards instead of Zod schemas",
+      "rationale": "The GUI codebase has zero validation library dependencies. Using typeof checks matches the existing pattern (see meshManager.ts, useLayoutPersistence.ts). Adding Zod would introduce a new dependency for 6 small guards \u2014 not worth the bundle size or conceptual overhead."
+    },
+    {
+      "decision": "Separate claudeGuards.ts file rather than inline in bridge.ts",
+      "rationale": "Guards are pure functions that benefit from isolated unit testing. Keeping bridge.ts focused on IPC wiring maintains its current single-responsibility. The guards file is small (~50 lines) and directly imported."
+    },
+    {
+      "decision": "console.warn + skip on validation failure (not throw)",
+      "rationale": "Throwing would crash the event loop and prevent subsequent valid events from arriving. The meshManager.ts pattern uses console.warn for invalid data and continues \u2014 this is the established project convention for non-fatal data validation. Skipping the message is safer than forwarding a malformed object to the store."
+    },
+    {
+      "decision": "No guard for Ready event",
+      "rationale": "The Ready handler in subscribeToClaudeEvents already ignores the payload entirely \u2014 it emits { type: 'ready' } with no spread. There are no payload fields to validate, so a guard adds no value."
+    },
+    {
+      "decision": "Type guards validate payload shape, not the full OutboundMessage",
+      "rationale": "The 'type' discriminator field is injected by the mapper in bridge.ts, not from the payload. Guards should validate the wire payload fields (id, content, tool_name, etc.) that come from the sidecar. This keeps concerns separated: bridge adds the type tag, guard validates the rest."
+    },
+    {
+      "decision": "Explicit per-field destructuring instead of spread operator",
+      "rationale": "The spread operator (`{ type: 'x', ...payload }`) is vulnerable to discriminant override: if the payload contains its own `type` field, JS left-to-right spread resolution silently overwrites the hardcoded discriminant. Explicit destructuring (`{ type: 'x', id: payload.id, content: payload.content }`) names only the fields belonging to each variant, making it impossible for extra payload fields (including a rogue `type`) to leak into the OutboundMessage. This is the core fix the task required."
+    },
+    {
+      "decision": "Rebase supersedes main's partial fix rather than merging alongside it",
+      "rationale": "Main's task/522 merge adds explicit destructuring with `as` casts and two simple tests. Our branch is a strict superset: same explicit destructuring but with runtime type guards instead of `as` casts, plus comprehensive test coverage. Merging would create redundant/conflicting code. Rebasing and resolving by taking our version is clean because every behavior main added is already covered by our implementation."
+    },
+    {
+      "decision": "Accept main's Pick<MessageContext> refactor during rebase",
+      "rationale": "Task/522 replaced the standalone ClaudeMessageContext interface with `Pick<MessageContext, 'selectedEntity' | 'diagnostics' | 'constraints'>`. This is an orthogonal improvement (type DRY-ness) that doesn't conflict with our guard work. We accept it wholesale rather than reverting to the old interface."
+    }
+  ],
+  "reuse": [
+    {
+      "what": "Existing console.warn validation pattern",
+      "where": "gui/src/viewport/meshManager.ts:54",
+      "how": "Follow the same pattern: console.warn with descriptive message, then early-return to skip processing."
+    },
+    {
+      "what": "Existing typeof guard pattern",
+      "where": "gui/src/hooks/useLayoutPersistence.ts:22-26",
+      "how": "Use the same typeof-based field validation pattern for checking payload field types."
+    },
+    {
+      "what": "Existing test infrastructure and mock patterns",
+      "where": "gui/src/__tests__/claudeBridge.test.ts",
+      "how": "Reuse the same vi.mock setup for @tauri-apps/api/event, the captured-handler pattern for simulating events, and the ALL_EVENT_NAMES constant."
+    },
+    {
+      "what": "OutboundMessage type definitions",
+      "where": "gui/sidecar/src/types.ts",
+      "how": "Import individual variant interfaces (TextDelta, ToolCall, etc.) as type-predicate return types for the guards. Guards validate the payload shape matches what the type expects minus the 'type' discriminator."
+    },
+    {
+      "what": "captureEventHandler test helper",
+      "where": "gui/src/__tests__/claudeBridge.test.ts:285-294",
+      "how": "Reuse the existing captureEventHandler helper from the 'payload validation rejection' describe block for the new discriminant-override tests. Consider hoisting it to the outer describe scope so both test groups can use it."
+    }
+  ],
+  "_session_id": "524-be3bbbdc",
+  "_created_at": "2026-03-27T11:35:20.734022+00:00",
+  "_schema_version": 1
+}
