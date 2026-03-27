@@ -11935,10 +11935,11 @@
         "description": "In reify-eval/src/lib.rs, when compile_geometry_op returns None (lines 2729-2733, 2792-2797, 2906-2909), no placeholder is pushed to step_handles. Subsequent ops referencing Step(N) will get the wrong handle since indices have shifted. Fix by pushing a sentinel GeometryHandleId or breaking out of the loop. Pre-existing bug, not introduced by task 437.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "high",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-03-27T11:58:04.150Z"
       },
       {
         "id": "599",
@@ -12009,7 +12010,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-27T11:58:01.975Z",
+      "lastModified": "2026-03-27T11:58:04.150Z",
       "taskCount": 604,
       "completedCount": 277,
       "tags": [
