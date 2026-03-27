@@ -20,6 +20,7 @@ import type {
 import { convertRawMesh, convertRawGuiState } from './types';
 import type { OutboundMessage } from '../sidecar/src/types';
 import {
+  isRecordPayload,
   isTextDeltaPayload,
   isThinkingDeltaPayload,
   isToolCallPayload,
@@ -193,14 +194,18 @@ export async function subscribeToClaudeEvents(
     }],
     ['claude-done', (event) => {
       if (!isDonePayload(event.payload)) {
-        console.warn('claude-done: invalid payload, skipping', event.payload);
+        console.warn('claude-done: invalid payload, emitting fallback done', event.payload);
+        const id = (isRecordPayload(event.payload) && typeof event.payload.id === 'string') ? event.payload.id : '';
+        handler({ type: 'done', id });
         return;
       }
       handler({ type: 'done', id: event.payload.id });
     }],
     ['claude-error', (event) => {
       if (!isErrorPayload(event.payload)) {
-        console.warn('claude-error: invalid payload, skipping', event.payload);
+        console.warn('claude-error: invalid payload, emitting fallback error', event.payload);
+        const id = (isRecordPayload(event.payload) && typeof event.payload.id === 'string') ? event.payload.id : '';
+        handler({ type: 'error', id, message: 'sidecar sent malformed error payload' });
         return;
       }
       handler({ type: 'error', id: event.payload.id, message: event.payload.message });

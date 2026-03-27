@@ -346,7 +346,7 @@ describe('subscribeToClaudeEvents', () => {
       warnSpy.mockRestore();
     });
 
-    it('rejects malformed claude-error payload (missing message) with console.warn', async () => {
+    it('emits fallback error for malformed claude-error payload (missing message)', async () => {
       const getCaptured = captureEventHandler('claude-error');
       const handler = vi.fn();
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -354,13 +354,17 @@ describe('subscribeToClaudeEvents', () => {
 
       getCaptured()({ payload: { id: 'msg-4' } }); // missing message
 
-      expect(handler).not.toHaveBeenCalled();
+      expect(handler).toHaveBeenCalledWith({
+        type: 'error',
+        id: 'msg-4',
+        message: 'sidecar sent malformed error payload',
+      });
       expect(warnSpy).toHaveBeenCalledTimes(1);
       expect(warnSpy.mock.calls[0][0]).toContain('claude-error');
       warnSpy.mockRestore();
     });
 
-    it('rejects malformed claude-done payload (id is number) with console.warn', async () => {
+    it('emits fallback done for malformed claude-done payload (id is number)', async () => {
       const getCaptured = captureEventHandler('claude-done');
       const handler = vi.fn();
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -368,7 +372,10 @@ describe('subscribeToClaudeEvents', () => {
 
       getCaptured()({ payload: { id: 42 } }); // id should be string
 
-      expect(handler).not.toHaveBeenCalled();
+      expect(handler).toHaveBeenCalledWith({
+        type: 'done',
+        id: '',
+      });
       expect(warnSpy).toHaveBeenCalledTimes(1);
       expect(warnSpy.mock.calls[0][0]).toContain('claude-done');
       warnSpy.mockRestore();
