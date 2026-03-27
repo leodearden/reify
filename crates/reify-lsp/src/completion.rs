@@ -242,6 +242,20 @@ mod tests {
         );
     }
 
+    #[test]
+    fn completions_include_occurrence_names() {
+        let source = "occurrence def Joint {\n    param diameter: Scalar = 10mm\n}";
+        let items = compute_completions(source, &test_uri(), Position::new(1, 0));
+        let structs: Vec<_> = items
+            .iter()
+            .filter(|i| i.kind == Some(CompletionItemKind::STRUCT))
+            .collect();
+        assert!(
+            structs.iter().any(|s| s.label == "Joint"),
+            "should include 'Joint' occurrence in completions"
+        );
+    }
+
     // --- position-sensitive completion tests (task 481) ---
     // These tests assert that completions are context-sensitive based on cursor position.
     // They are #[ignore] because the current implementation returns everything everywhere;
