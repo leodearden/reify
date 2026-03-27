@@ -110,20 +110,7 @@ fn cmd_check(args: &[String]) -> ExitCode {
     let mut engine = reify_eval::Engine::new(Box::new(checker), None);
     let result = engine.check(&compiled);
 
-    let mut all_satisfied = true;
-    for entry in &result.constraint_results {
-        let status = match entry.satisfaction {
-            Satisfaction::Satisfied => "OK",
-            Satisfaction::Violated => {
-                all_satisfied = false;
-                "VIOLATED"
-            }
-            Satisfaction::Indeterminate => "INDETERMINATE",
-        };
-        let id_str = format!("{}", entry.id);
-        let label = entry.label.as_deref().unwrap_or(&id_str);
-        println!("  {} {}", status, label);
-    }
+    let all_satisfied = report_constraints(&result.constraint_results);
 
     for diag in &result.diagnostics {
         eprintln!("{}: {}", diag.severity, diag.message);
