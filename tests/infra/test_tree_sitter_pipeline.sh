@@ -56,6 +56,16 @@ parser_size=$(stat -c%s "$ROOT/tree-sitter-reify/src/parser.c" 2>/dev/null || ec
 assert "parser.c is non-trivial (>100KB, got ${parser_size} bytes)" \
     test "$parser_size" -gt 102400
 
+# ── Step 3: .gitignore excludes generated files ────────────────────
+assert ".gitignore contains tree-sitter-reify/src/parser.c" \
+    grep -qF "tree-sitter-reify/src/parser.c" "$ROOT/.gitignore"
+
+assert ".gitignore contains tree-sitter-reify/src/grammar.json" \
+    grep -qF "tree-sitter-reify/src/grammar.json" "$ROOT/.gitignore"
+
+assert ".gitignore contains tree-sitter-reify/src/node-types.json" \
+    grep -qF "tree-sitter-reify/src/node-types.json" "$ROOT/.gitignore"
+
 # ── Summary ─────────────────────────────────────────────────────────
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
