@@ -8958,7 +8958,20 @@
         "subtasks": [],
         "updatedAt": "2026-03-26T12:05:53.930Z",
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-eval/src/lib.rs",
+            "crates/reify-eval/src/graph.rs",
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-eval/tests/recursive_unfold.rs",
+            "crates/reify-compiler/tests/recursive_detection_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-eval/src",
+            "crates/reify-compiler/src",
+            "crates/reify-eval/tests",
+            "crates/reify-compiler/tests"
+          ]
         }
       },
       {
