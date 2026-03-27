@@ -121,3 +121,28 @@ fn test_needs_generate_true_when_stamp_stale() {
         "must regenerate when stamp hash differs from current grammar hash"
     );
 }
+
+#[test]
+fn test_needs_generate_true_when_output_missing() {
+    let dir = tempfile::tempdir().unwrap();
+    let grammar = dir.path().join("grammar.js");
+    std::fs::write(&grammar, b"module.exports = grammar({});").unwrap();
+    let stamp = dir.path().join("stamp.hash");
+    // Write matching hash
+    let hash = content_hash(&grammar);
+    std::fs::write(&stamp, &hash).unwrap();
+    // Create only 2 of the 3 output files (grammar.json missing)
+    let src_dir = dir.path().join("src");
+    std::fs::create_dir_all(&src_dir).unwrap();
+    std::fs::write(src_dir.join("parser.c"), b"placeholder").unwrap();
+    // grammar.json intentionally missing
+    std::fs::write(src_dir.join("node-types.json"), b"placeholder").unwrap();
+
+    let output_paths: Vec<_> = EXPECTED_OUTPUTS.iter().map(|n| src_dir.join(n)).collect();
+    let output_refs: Vec<&Path> = output_paths.iter().map(|p| p.as_path()).collect();
+
+    assert!(
+        needs_generate(&grammar, &stamp, &output_refs),
+        "must regenerate when any output file is missing"
+    );
+}
