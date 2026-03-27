@@ -10516,6 +10516,17 @@
         "dependencies": [],
         "priority": "high",
         "subtasks": []
+      },
+      {
+        "id": 533,
+        "title": "Split builders.rs into per-domain modules",
+        "description": "crates/reify-test-support/src/builders.rs (1914 lines) is the #2 merge conflict source (21 conflicts out of 101). Multiple tasks append new builder functions to the same monolithic file.\n\nSplit into per-type-family submodules under crates/reify-test-support/src/builders/:\n- value.rs (Value/Quantity builders)\n- geometry.rs (Point/Vector/Transform builders)\n- expr.rs (expression tree builders)\n- syntax.rs (AST/parse tree builders)\n- etc. based on current content clustering\n\nRe-export from builders/mod.rs so existing `use builders::*` imports keep working.\n\nmemory_hints: search \"test builder patterns reify\", search \"builders.rs structure\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -10528,7 +10539,7 @@
       ],
       "created": "2026-03-27T08:12:47.223Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-27T08:12:47.248Z"
+      "updated": "2026-03-27T08:12:49.432Z"
     }
   }
 }
