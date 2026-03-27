@@ -117,7 +117,7 @@ type _NoSessionStatus = import('../types').SessionStatus;
 import type { ClaudeMessageContext } from '../bridge';
 import type { MessageContext } from '../stores/claudeStore';
 
-type _ExpectedClaudeContext = Pick<MessageContext, 'selectedEntity' | 'diagnostics' | 'constraints'>;
+type _ExpectedClaudeContext = Pick<MessageContext, 'selectedEntity' | 'diagnostics' | 'constraints' | 'currentFile' | 'attachedContexts'>;
 
 // Bidirectional assignability: ensures ClaudeMessageContext stays in sync with the Pick
 const _fwd: _ExpectedClaudeContext = {} as ClaudeMessageContext;
