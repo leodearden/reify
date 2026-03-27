@@ -1,0 +1,71 @@
+// M9 determinacy predicates: exercises all four determinacy predicates
+// through constraints that act as assertions (all must be Satisfied).
+//
+// All four predicates check DeterminacyState (not Value content):
+//
+//   determined(x)           — true iff x is fully resolved
+//                             (state == Determined)
+//   undetermined(x)         — true iff x has no value
+//                             (state == Undetermined, regardless of constraints)
+//   constrained(x)          — true iff x is a solver variable
+//                             (state == Auto || Provisional; tests solver
+//                             involvement, NOT constraint presence)
+//   partially_determined(x) — true iff x is in solver intermediate state
+//                             (state == Provisional only; distinguishes
+//                             actively-solving from Auto which is covered
+//                             by constrained())
+//
+// Coverage:
+//   1. determined() on param with default → true (Determined state)
+//   2. !determined() on auto param → true (Auto ≠ Determined)
+//   3. constrained() on auto param → true (Auto is a solver variable)
+//   4. !constrained() on determined param → true (Determined ≠ Auto/Provisional)
+//   5. !partially_determined() on determined param → true (Determined ≠ Provisional)
+//   6. Boolean composition with &&
+//   7. Where guard with determined() condition
+//   8. Negated undetermined() on determined param → true (Determined ≠ Undetermined)
+//   9. undetermined() on param without default → true (Undetermined state)
+//  10. !partially_determined() on auto param → true (Auto ≠ Provisional)
+
+structure DeterminacyDemo {
+    // Params with different determinacy states:
+    //   a, c  -> Determined   (have concrete defaults)
+    //   b     -> Auto         (auto default, awaiting solver)
+    //   d     -> Undetermined (no default)
+    param a : Length = 10mm
+    param b : Scalar = auto
+    param c : Length = 20mm
+    param d : Real
+
+    // 1. determined() — param with default is Determined
+    constraint determined(a)
+
+    // 2. !determined() — auto param is not Determined
+    constraint !determined(b)
+
+    // 3. constrained() — auto param is a solver variable (state == Auto)
+    constraint constrained(b)
+
+    // 4. !constrained() — determined param is not a solver variable (Determined ≠ Auto/Provisional)
+    constraint !constrained(a)
+
+    // 5. !partially_determined() — determined param is not in solver intermediate state (Determined ≠ Provisional)
+    constraint !partially_determined(a)
+
+    // 6. Composition: both a and c are determined
+    constraint determined(a) && determined(c)
+
+    // 7. Where guard: constraint inside determined() guard is active
+    where determined(a) {
+        constraint a > 0mm
+    }
+
+    // 8. Negated: determined param is not undetermined
+    constraint !undetermined(a)
+
+    // 9. undetermined() — param without default is Undetermined
+    constraint undetermined(d)
+
+    // 10. !partially_determined() — auto param is not in solver intermediate state (Auto ≠ Provisional)
+    constraint !partially_determined(b)
+}

@@ -458,6 +458,7 @@ mod tests {
             constraints: vec![(cnid.clone(), &expr)],
             values: &values,
             functions: &[],
+            determinacy: None,
         };
 
         let results = checker.check(&input);

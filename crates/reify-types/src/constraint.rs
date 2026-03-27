@@ -3,8 +3,9 @@ use std::collections::HashMap;
 use crate::diagnostics::Diagnostic;
 use crate::expr::{CompiledExpr, CompiledFunction};
 use crate::identity::{ConstraintNodeId, ValueCellId};
+use crate::persistent::PersistentMap;
 use crate::ty::Type;
-use crate::value::{Satisfaction, Value, ValueMap};
+use crate::value::{DeterminacyState, Satisfaction, Value, ValueMap};
 
 /// Input to constraint checking: a batch of constraints with current values.
 #[derive(Debug)]
@@ -15,6 +16,14 @@ pub struct ConstraintInput<'a> {
     pub values: &'a ValueMap,
     /// User-defined functions available for evaluation within constraint expressions.
     pub functions: &'a [CompiledFunction],
+    /// Optional determinacy snapshot for evaluating DeterminacyPredicate expressions
+    /// within constraints. When `Some`, the checker passes this to `EvalContext::with_determinacy()`
+    /// so that `determined()`, `undetermined()`, `constrained()`, and `partially_determined()`
+    /// predicates can look up cell determinacy states.
+    ///
+    /// Defaults to `None` for backward compatibility — existing callers that don't need
+    /// determinacy context can omit this field.
+    pub determinacy: Option<&'a PersistentMap<ValueCellId, (Value, DeterminacyState)>>,
 }
 
 /// Result of checking a single constraint.
