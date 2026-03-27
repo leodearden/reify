@@ -100,9 +100,21 @@ impl ConcurrentEvalAdapter {
         eval_set: &[NodeId],
         skipped: HashSet<NodeId>,
     ) -> ConcurrentEditResult {
-        let values = self.values.read().unwrap().clone();
-        let snapshot_values = self.snapshot_values.read().unwrap().clone();
-        let node_results = self.results.lock().unwrap().clone();
+        let values = self
+            .values
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let snapshot_values = self
+            .snapshot_values
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let node_results = self
+            .results
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
 
         let actual_eval_set: Vec<NodeId> = eval_set
             .iter()
@@ -131,16 +143,16 @@ impl ConcurrentEvalAdapter {
         skipped: HashSet<NodeId>,
     ) -> ConcurrentEditResult {
         let values = match Arc::try_unwrap(self.values) {
-            Ok(lock) => lock.into_inner().unwrap(),
-            Err(arc) => arc.read().unwrap().clone(),
+            Ok(lock) => lock.into_inner().unwrap_or_else(|e| e.into_inner()),
+            Err(arc) => arc.read().unwrap_or_else(|e| e.into_inner()).clone(),
         };
         let snapshot_values = match Arc::try_unwrap(self.snapshot_values) {
-            Ok(lock) => lock.into_inner().unwrap(),
-            Err(arc) => arc.read().unwrap().clone(),
+            Ok(lock) => lock.into_inner().unwrap_or_else(|e| e.into_inner()),
+            Err(arc) => arc.read().unwrap_or_else(|e| e.into_inner()).clone(),
         };
         let node_results = match Arc::try_unwrap(self.results) {
-            Ok(lock) => lock.into_inner().unwrap(),
-            Err(arc) => arc.lock().unwrap().clone(),
+            Ok(lock) => lock.into_inner().unwrap_or_else(|e| e.into_inner()),
+            Err(arc) => arc.lock().unwrap_or_else(|e| e.into_inner()).clone(),
         };
 
         // actual_eval_set = eval_set nodes that weren't skipped
