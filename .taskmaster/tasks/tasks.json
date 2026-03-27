@@ -9946,7 +9946,7 @@
         "description": "cmd_build prints constraint summary (\"Some constraints violated.\") to stderr (eprintln!) while cmd_check prints the identical summary to stdout (println!). The two commands now share the same exit-code semantics but use different output channels. A CI script grepping the summary from stdout for cmd_check would need to switch to stderr for cmd_build.\n\n**Fix:** Pick one direction — either both use stderr (since constraint status is arguably diagnostic) or both use stdout (since it's the primary output of cmd_check). Update both commands to be consistent. Per-constraint status lines (OK/VIOLATED/INDETERMINATE) also differ: cmd_check uses println, cmd_build uses eprintln.\n\n**Locations:**\n- crates/reify-cli/src/main.rs: cmd_check ~line 101-112, cmd_build ~line 174-187\n\n**Memory hints:** search for \"CLI output channels\", entity names: cmd_build, cmd_check",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -9958,7 +9958,8 @@
           "modules": [
             "crates/reify-cli/src"
           ]
-        }
+        },
+        "updatedAt": "2026-03-27T08:55:23.580Z"
       },
       {
         "id": "502",
@@ -10796,7 +10797,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-27T08:55:23.439Z",
+      "lastModified": "2026-03-27T08:55:23.580Z",
       "taskCount": 548,
       "completedCount": 260,
       "tags": [
