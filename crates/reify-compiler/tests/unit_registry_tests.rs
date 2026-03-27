@@ -740,3 +740,51 @@ fn quantity_literal_overflow_rejected() {
         errors
     );
 }
+
+// ─── step-9 (task-208): regression tests — valid units still compile ──────────
+
+#[test]
+fn valid_arithmetic_factor_still_compiles() {
+    // 25.4 * 0.001 = 0.0254 — valid, should compile fine.
+    let module = parse_and_compile("unit inch : Length = 25.4 * 0.001");
+    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
+    let unit = module.units.iter().find(|u| u.name == "inch").expect("inch not found");
+    assert!((unit.factor - 0.0254).abs() < 1e-9);
+}
+
+#[test]
+fn valid_offset_still_compiles() {
+    // 1 offset 273.15 — valid affine unit.
+    let module = parse_and_compile("unit degC : Temperature = 1 offset 273.15");
+    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
+    let unit = module.units.iter().find(|u| u.name == "degC").expect("degC not found");
+    assert!((unit.offset.unwrap() - 273.15).abs() < 1e-9);
+}
+
+#[test]
+fn valid_quantity_literal_cross_ref_still_compiles() {
+    // 0.0254mm — valid cross-reference.
+    let module = parse_and_compile("unit mm : Length = 0.001\nunit thou : Length = 0.0254mm");
+    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
+    let thou = module.units.iter().find(|u| u.name == "thou").expect("thou not found");
+    assert!((thou.factor - 0.0000254).abs() < 1e-12);
+}
+
+#[test]
+fn valid_negative_factor_still_compiles() {
+    // Negative factor is finite and non-zero — should compile.
+    // (Semantically odd but not a validation error at this level.)
+    let module = parse_and_compile("unit neg : Length = 0 - 1");
+    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
+    let unit = module.units.iter().find(|u| u.name == "neg").expect("neg not found");
+    assert!((unit.factor - (-1.0)).abs() < 1e-12);
+}
+
+#[test]
+fn valid_small_factor_still_compiles() {
+    // Very small but finite factor.
+    let module = parse_and_compile("unit pico : Length = 0.000000000001");
+    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
+    let unit = module.units.iter().find(|u| u.name == "pico").expect("pico not found");
+    assert!((unit.factor - 1e-12).abs() < 1e-24);
+}
