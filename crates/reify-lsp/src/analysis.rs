@@ -359,6 +359,14 @@ mod tests {
     }
 
     #[test]
+    fn find_entity_doc_returns_doc_for_occurrence() {
+        let source =
+            "/// A joint process.\noccurrence def Joint {\n    param diameter: Scalar = 10mm\n}";
+        let ctx = AnalysisContext::new(source, &test_uri());
+        assert_eq!(ctx.find_entity_doc("Joint"), Some("A joint process."));
+    }
+
+    #[test]
     fn find_entity_doc_returns_none_for_undocumented() {
         let source = reify_test_support::bracket_source();
         let ctx = AnalysisContext::new(source, &test_uri());
