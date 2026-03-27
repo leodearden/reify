@@ -664,3 +664,37 @@ fn overflow_division_result_rejected() {
         errors
     );
 }
+
+// ─── step-3 (task-208): compile_unit rejects zero and non-finite factors ──────
+
+#[test]
+fn zero_literal_factor_rejected() {
+    // A unit with literal zero factor destroys unit information.
+    let module = parse_and_compile("unit z : Length = 0");
+    assert!(
+        !module.units.iter().any(|u| u.name == "z"),
+        "unit with zero factor should not be registered"
+    );
+    let errors = errors_only(&module);
+    assert!(
+        errors.iter().any(|d| d.message.contains("non-zero") || d.message.contains("zero")),
+        "expected zero-factor diagnostic; got: {:?}",
+        errors
+    );
+}
+
+#[test]
+fn zero_from_arithmetic_factor_rejected() {
+    // Zero via arithmetic: 0 * 1 → 0.
+    let module = parse_and_compile("unit z2 : Length = 0 * 1");
+    assert!(
+        !module.units.iter().any(|u| u.name == "z2"),
+        "unit with zero arithmetic factor should not be registered"
+    );
+    let errors = errors_only(&module);
+    assert!(
+        errors.iter().any(|d| d.message.contains("non-zero") || d.message.contains("zero")),
+        "expected zero-factor diagnostic; got: {:?}",
+        errors
+    );
+}
