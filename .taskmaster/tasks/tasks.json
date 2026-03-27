@@ -6699,11 +6699,11 @@
         "description": "Follow-up from task 300 code review. All issues are in crates/reify-stdlib/src/lib.rs.\n\n1. **remap dimension stripping**: remap always returns Real, silently dropping dimension from Scalar inputs. Add dimension-aware arms (mirroring clamp/lerp) or at minimum validate dimension consistency and return Undef on mismatch. Add test for Scalar inputs.\n2. **NaN guard completeness**: clamp guards NaN in bounds (lo/hi) but not in x — relies on sanitize_value backstop. Add x.is_nan() to guard in Real, Scalar, and fallback arms. Similarly, lerp's as_f64() passes NaN t through to sanitize_value — add explicit NaN check after extraction.\n3. **Extract helpers / reduce duplication**: (a) Add quinary or quinary_f64 helper for remap (currently inlines arg-count check), (b) Extract valid_f64_range(lo, hi) for the repeated NaN+inverted-range guard in clamp, (c) Extract lerp_f64(a, b, t) for the repeated formula, (d) Add assert_real_approx() test helper for the ~20 repeated match-on-Real assertions.\n4. **Additional test coverage**: clamp Int below-lo and above-hi, lerp NaN in a/b endpoints, lerp with Int inputs (documents Real coercion), remap with Scalar inputs.\n5. **Minor cleanup**: Move mod into two-arg section (not separate \"Integer functions\" section), add lerp Int fast path, add remap early-exit for from_lo==from_hi, reconstruct Scalar in clamp fallback when dimension is non-DIMENSIONLESS.\n\nmemory_hints: search \"stdlib builtin helper pattern\" and \"dimension preservation convention\"; get_entity \"eval_builtin\", \"sanitize_value\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-26T18:27:48.115Z"
+        "updatedAt": "2026-03-27T06:18:14.973Z"
       },
       {
         "id": "357",
@@ -8723,7 +8723,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-27T06:18:14.872Z",
+      "lastModified": "2026-03-27T06:18:14.973Z",
       "taskCount": 516,
       "completedCount": 253,
       "tags": [
