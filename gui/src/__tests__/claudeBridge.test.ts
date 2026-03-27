@@ -92,6 +92,8 @@ describe('claude invoke wrappers', () => {
         selected_entity: 'Bracket.w',
         diagnostics: undefined,
         constraints: undefined,
+        current_file: undefined,
+        attached_contexts: undefined,
       },
     });
   });
