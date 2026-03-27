@@ -114,21 +114,29 @@ impl SequencedMockConstraintSolver {
 
 impl ConstraintSolver for SequencedMockConstraintSolver {
     fn solve(&self, _problem: &ResolutionProblem) -> SolveResult {
-        let r = {
+        // Extract the next result (if any) while holding only the results lock.
+        // The results lock is dropped at the end of this block, before we touch `self.last`.
+        let next = {
             let mut results = self.results.lock().unwrap();
             if results.is_empty() {
-                return self
-                    .last
-                    .lock()
-                    .unwrap()
-                    .clone()
-                    .expect("no results configured");
+                None
+            } else {
+                Some(results.remove(0))
             }
-            results.remove(0)
         };
-        // results lock is released before acquiring last lock
-        *self.last.lock().unwrap() = Some(r.clone());
-        r
+        // results lock is released — safe to acquire last lock
+        match next {
+            Some(r) => {
+                *self.last.lock().unwrap() = Some(r.clone());
+                r
+            }
+            None => self
+                .last
+                .lock()
+                .unwrap()
+                .clone()
+                .expect("no results configured"),
+        }
     }
 }
 
