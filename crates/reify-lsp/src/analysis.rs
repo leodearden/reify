@@ -255,6 +255,17 @@ mod tests {
     }
 
     #[test]
+    fn find_member_decl_occurrence_param() {
+        let source = "occurrence def Joint {\n    param diameter: Scalar = 10mm\n}";
+        let ctx = AnalysisContext::new(source, &test_uri());
+        let info = ctx
+            .find_member_decl("diameter")
+            .expect("diameter should exist in occurrence");
+        assert_eq!(info.name, "diameter");
+        assert_eq!(info.kind, ValueCellKind::Param);
+    }
+
+    #[test]
     fn find_member_decl_nonexistent_returns_none() {
         let source = reify_test_support::bracket_source();
         let ctx = AnalysisContext::new(source, &test_uri());
