@@ -23,7 +23,7 @@ vi.mock('@tauri-apps/api/event', () => ({
 
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { createClaudeStore } from '../stores/claudeStore';
+import { createClaudeStore, type AssistantMessage } from '../stores/claudeStore';
 import {
   claudeSendMessage,
   claudeAbort,
@@ -127,7 +127,7 @@ describe('claude bridge integration', () => {
 
     // Check store state reflects the events
     const assistantMsg = store.state.messages.find(
-      (m) => m.role === 'assistant' && m.id === msgId,
+      (m): m is AssistantMessage => m.role === 'assistant' && m.id === msgId,
     );
     expect(assistantMsg).toBeTruthy();
     expect(assistantMsg!.responseText).toBe('Here is my response');
@@ -158,7 +158,7 @@ describe('claude bridge integration', () => {
     });
 
     const assistantMsg = store.state.messages.find(
-      (m) => m.role === 'assistant' && m.id === msgId,
+      (m): m is AssistantMessage => m.role === 'assistant' && m.id === msgId,
     );
     expect(assistantMsg!.error).toBe('API key invalid');
     expect(assistantMsg!.complete).toBe(true);
