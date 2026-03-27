@@ -1,0 +1,233 @@
+{
+  "task_id": "400",
+  "title": "Review: OCCT kernel revolve validation cleanup (21 suggestions from task 309)",
+  "files": [
+    "crates/reify-kernel-occt/src/lib.rs",
+    "crates/reify-kernel-occt/cpp/occt_wrapper.cpp",
+    "crates/reify-kernel-occt/cpp/occt_wrapper.h"
+  ],
+  "modules": [
+    "crates/reify-kernel-occt"
+  ],
+  "analysis": "The task-309 review identified 21 suggestions across 4 themes in the OCCT kernel's revolve (and related) validation code. After thorough analysis of lib.rs (3292 lines), occt_wrapper.cpp (1177 lines), and 82 existing tests, here is the breakdown:\n\n**Theme 1 \u2014 Dual Validation (5 suggestions):** Both Rust and C++ validate revolve inputs (finiteness, axis magnitude, angle). The Rust layer uses threshold 1e-12 for axis mag_sq, while C++ uses 1e-30. This is intentional defense-in-depth but is undocumented. The C++ validation is a safety net for future code paths that might bypass Rust. Resolution: Keep both layers, add doc comments explaining the pattern.\n\n**Theme 2 \u2014 Threshold Inconsistency (6 suggestions):** Magic numbers are scattered: Rust uses 1e-12 for axis mag_sq (rotate/rotate_around/revolve), C++ uses 1e-30 (revolve/prism/line_wire), 1e-10 (linear_pattern mag, MoI axis). Mirror uses exact `== 0.0` for plane_normal mag_sq. Revolve angle: Rust checks `== 0.0` (exact), C++ checks `< 1e-30` (fuzzy). Resolution: Extract named constants in both Rust and C++; align the revolve angle check to use the Rust threshold consistently; fix mirror to use the threshold pattern.\n\n**Theme 3 \u2014 Error Specificity (5 suggestions):** Revolve's 'parameters must be finite' doesn't identify which parameter is bad (axis_origin, axis_dir, or angle). Other ops like rotate/translate include the actual values in error messages, but revolve doesn't. Inconsistent error phrasing ('must not be zero' vs 'must be non-zero'). Resolution: Make revolve error messages as specific as rotate/translate, including parameter names and values.\n\n**Theme 4 \u2014 Test Boilerplate (5 suggestions):** Every revolve volume test repeats the same 5-line setup (make_circle_face \u2192 rotate \u2192 translate \u2192 store_raw). Error tests repeat match-on-OperationFailed boilerplate. Volume assertions repeat rel_err calculation. The `if !crate::OCCT_AVAILABLE { return; }` guard appears in 20+ tests. Resolution: Extract helper functions for face setup, error assertion, and volume assertion. The OCCT guard stays as-is (it's idiomatic Rust and the compiler optimizes it away).\n\nApproach: TDD \u2014 write tests for new behaviors first (threshold constants, specific error messages, near-degenerate revolve rejection), then implement. Refactoring steps (test helpers, doc comments) don't need TDD since they change no behavior.",
+  "prerequisites": [
+    {
+      "id": "pre-1",
+      "description": "Extract named threshold constants in lib.rs: `const AXIS_MAG_SQ_MIN: f64 = 1e-12;` to replace all bare `1e-12` literals in rotate/rotate_around/revolve validation",
+      "status": "done",
+      "commit": "39e65b62",
+      "tests": []
+    },
+    {
+      "id": "pre-2",
+      "description": "Extract named threshold constants in occt_wrapper.cpp: `constexpr double AXIS_MAG_SQ_MIN = 1e-30;` and `constexpr double DIR_MAG_MIN = 1e-10;` to replace all bare numeric literals in C++ validation guards",
+      "status": "done",
+      "commit": "0bd14f2a",
+      "tests": []
+    },
+    {
+      "id": "pre-3",
+      "description": "Add doc comments to C++ validation blocks explaining dual-validation pattern: '// DEFENSE-IN-DEPTH: Rust validates first with stricter threshold (1e-12). This C++ check (1e-30) is a safety net for future code paths that may bypass the Rust layer.'",
+      "status": "done",
+      "commit": "bcb382c8",
+      "tests": []
+    },
+    {
+      "id": "pre-4",
+      "description": "Extract test helper `make_torus_profile` in tests module: creates a circle face at offset R from Z axis in XZ plane (make_circle_face \u2192 rotate 90\u00b0 around X \u2192 translate along X \u2192 store_raw). Replaces 5-line boilerplate in 5 revolve tests.",
+      "status": "done",
+      "commit": "0224f47d",
+      "tests": []
+    },
+    {
+      "id": "pre-5",
+      "description": "Extract test helper `make_rect_torus_profile` in tests module: creates a rect face at offset R from Z axis in XZ plane (make_rect_face \u2192 rotate \u2192 translate \u2192 store_raw). Replaces boilerplate in 2 revolve tests.",
+      "status": "done",
+      "commit": "f6a28758",
+      "tests": []
+    },
+    {
+      "id": "pre-6",
+      "description": "Extract test helper `assert_volume_near(kernel, handle_id, expected, tolerance, label)` that computes volume, rel_err, and asserts with a descriptive message. Replaces 6-line volume assertion pattern in 10+ tests.",
+      "status": "done",
+      "commit": "8e72b953",
+      "tests": []
+    },
+    {
+      "id": "pre-7",
+      "description": "Extract test helper `assert_operation_fails_with(result, expected_substring)` that matches on `Err(GeometryError::OperationFailed(msg))` and checks substring. Replaces 8-line error assertion pattern in 10+ tests.",
+      "status": "done",
+      "commit": "8e72b953",
+      "tests": []
+    }
+  ],
+  "steps": [
+    {
+      "id": "step-1",
+      "type": "test",
+      "description": "Write test `revolve_nan_axis_origin_error_mentions_origin`: revolve with axis_origin=[NaN, 0, 0], valid axis_dir and angle. Assert error message contains 'axis_origin' (not just generic 'finite'). Currently fails because revolve produces generic 'parameters must be finite'.",
+      "status": "done",
+      "commit": "c24da41f"
+    },
+    {
+      "id": "step-2",
+      "type": "test",
+      "description": "Write test `revolve_nan_axis_dir_error_mentions_dir`: revolve with valid axis_origin, axis_dir=[0, NaN, 0], valid angle. Assert error contains 'axis_dir'. Currently fails for same reason.",
+      "status": "done",
+      "commit": "5f5bbe01"
+    },
+    {
+      "id": "step-3",
+      "type": "test",
+      "description": "Write test `revolve_inf_angle_error_mentions_angle`: revolve with valid origin/dir, angle_rad=f64::INFINITY. Assert error contains 'angle'. Currently fails (generic message).",
+      "status": "done",
+      "commit": "5f5bbe01"
+    },
+    {
+      "id": "step-4",
+      "type": "impl",
+      "description": "Implement parameter-specific error messages for revolve validation in lib.rs. Replace the single `all_finite` check with three separate checks: (1) axis_origin finiteness \u2192 'revolve axis_origin must be finite: [{}, {}, {}]', (2) axis_dir finiteness \u2192 'revolve axis_dir must be finite: [{}, {}, {}]', (3) angle finiteness \u2192 'revolve angle must be finite: {}'. This makes step-1, step-2, step-3 tests pass.",
+      "status": "done",
+      "commit": "ad9e6f44"
+    },
+    {
+      "id": "step-5",
+      "type": "test",
+      "description": "Write test `revolve_zero_angle_error_includes_value`: revolve with angle_rad=0.0. Assert error contains '0' (the actual value). Validates that error messages include the bad value for debuggability.",
+      "status": "done",
+      "commit": "f9377297"
+    },
+    {
+      "id": "step-6",
+      "type": "test",
+      "description": "Write test `revolve_zero_axis_error_includes_values`: revolve with axis_dir=[0,0,0]. Assert error contains the axis values. Validates value-in-message pattern.",
+      "status": "done",
+      "commit": "f9377297"
+    },
+    {
+      "id": "step-7",
+      "type": "impl",
+      "description": "Add actual parameter values to revolve error messages: zero-angle \u2192 'revolve angle must not be zero, got {angle_rad}', zero-axis \u2192 'revolve axis_dir must not be zero-length: [{}, {}, {}]'. Makes step-5, step-6 pass. Also apply the named constant AXIS_MAG_SQ_MIN in the mag_sq check.",
+      "status": "done",
+      "commit": "95408cd8"
+    },
+    {
+      "id": "step-8",
+      "type": "test",
+      "description": "Write test `revolve_near_degenerate_axis_rejected`: revolve with axis_dir=[1e-8, 0, 0] (mag_sq=1e-16, above old EPSILON^2 but below 1e-12). Assert OperationFailed with 'zero' in message. Validates threshold catches physically meaningless axes, matching existing rotate_near_degenerate_axis_rejected pattern.",
+      "status": "done",
+      "commit": "35c330d2"
+    },
+    {
+      "id": "step-9",
+      "type": "impl",
+      "description": "Verify revolve_near_degenerate_axis_rejected already passes (threshold is already 1e-12 which rejects 1e-16 mag_sq). If it passes, this step is a no-op confirming existing behavior. If not, fix the threshold.",
+      "status": "done",
+      "commit": "35c330d2"
+    },
+    {
+      "id": "step-10",
+      "type": "test",
+      "description": "Write test `revolve_near_zero_angle_rejected`: revolve with angle_rad=1e-35 (below C++ 1e-30 threshold, also below any reasonable physical angle). Currently the Rust `== 0.0` check lets this through to C++ where it's caught. Assert error is returned (verifying defense-in-depth works for effectively-zero angles).",
+      "status": "done",
+      "commit": "4eb5fc81"
+    },
+    {
+      "id": "step-11",
+      "type": "impl",
+      "description": "Align Rust revolve angle check: change `*angle_rad == 0.0` to `angle_rad.abs() < ANGLE_ABS_MIN` where `const ANGLE_ABS_MIN: f64 = 1e-30;` (matching C++ threshold). This catches effectively-zero angles at the Rust layer with a proper error message instead of falling through to C++. Makes step-10 pass with a Rust-originated error.",
+      "status": "done",
+      "commit": "413b4f97"
+    },
+    {
+      "id": "step-12",
+      "type": "test",
+      "description": "Write test `mirror_near_zero_normal_rejected`: mirror with plane_normal=[1e-20, 0, 0] (mag_sq=1e-40, physically meaningless). Currently passes through because mirror checks `mag_sq == 0.0` (exact). Assert OperationFailed with 'zero' or 'non-zero'. This test will fail with current code.",
+      "status": "done",
+      "commit": "99d5e69e"
+    },
+    {
+      "id": "step-13",
+      "type": "impl",
+      "description": "Fix mirror validation: replace `mag_sq == 0.0` with `mag_sq < AXIS_MAG_SQ_MIN` to match the threshold pattern used by rotate/revolve/rotate_around. Makes step-12 pass.",
+      "status": "done",
+      "commit": "11de0608"
+    },
+    {
+      "id": "step-14",
+      "type": "test",
+      "description": "Refactor existing revolve volume tests to use extracted helpers: `revolve_circle_face_full_volume` \u2192 use make_torus_profile + assert_volume_near; `revolve_half_angle_half_volume` \u2192 use make_torus_profile; `revolve_rect_face_torus_volume` \u2192 use make_rect_torus_profile + assert_volume_near. Verify all still pass.",
+      "status": "done",
+      "commit": "7f7c0e3c"
+    },
+    {
+      "id": "step-15",
+      "type": "test",
+      "description": "Refactor existing revolve error tests to use assert_operation_fails_with helper: `revolve_zero_angle_returns_error`, `revolve_nan_params_returns_error`, `revolve_zero_axis_dir_returns_error`. Update substring expectations to match the new specific messages from step-4/step-7. Verify all still pass.",
+      "status": "done",
+      "commit": "73776dc4"
+    },
+    {
+      "id": "step-16",
+      "type": "impl",
+      "description": "Final consistency pass: (1) Verify all bare 1e-12 literals in lib.rs are replaced with AXIS_MAG_SQ_MIN. (2) Verify all bare 1e-30/1e-10 literals in occt_wrapper.cpp are replaced with named constants. (3) Verify error message phrasing is consistent ('must not be zero-length' everywhere, not mixed with 'must be non-zero'). (4) Add inline doc comment on revolve validation block explaining the Rust/C++ dual-layer approach. Run full test suite to confirm no regressions.",
+      "status": "done",
+      "commit": "b9889dbd"
+    }
+  ],
+  "design_decisions": [
+    {
+      "decision": "Keep dual Rust/C++ validation layers rather than removing one",
+      "rationale": "Defense-in-depth is valuable for an FFI boundary. The Rust layer provides user-friendly error messages with parameter context. The C++ layer is a safety net for any future code paths that might call FFI directly (e.g., testing, hot-path optimizations). Cost is trivial (a few comparisons per call)."
+    },
+    {
+      "decision": "Keep Rust threshold at 1e-12 (stricter) and C++ at 1e-30 (relaxed) rather than unifying",
+      "rationale": "Different semantic purposes: Rust rejects 'physically meaningless' inputs (sub-nanometer axes), while C++ rejects 'mathematically degenerate' inputs (underflow to zero). The Rust threshold (1e-12 for mag_sq \u2192 ~1e-6 magnitude \u2192 ~1 micrometer) is a reasonable minimum for CAD geometry. The C++ threshold catches only true zeros/denormals."
+    },
+    {
+      "decision": "Align Rust revolve angle check from exact `== 0.0` to fuzzy `abs() < 1e-30`",
+      "rationale": "Exact zero-check is inconsistent with the axis check (which uses a threshold). Using 1e-30 matches the C++ angle threshold and catches effectively-zero angles (e.g., from floating-point arithmetic that should have produced exactly zero). This is conservative \u2014 1e-30 radians is ~5.7e-29 degrees."
+    },
+    {
+      "decision": "Fix mirror plane_normal to use AXIS_MAG_SQ_MIN threshold instead of exact == 0.0",
+      "rationale": "Consistency with all other vector magnitude checks (rotate, rotate_around, revolve). The exact-zero check lets through degenerate normals like [1e-20, 0, 0] which would cause OCCT to produce nonsensical geometry. This is a latent bug, not just style."
+    },
+    {
+      "decision": "Extract test helpers as functions rather than macros",
+      "rationale": "Functions are debuggable, type-checked, and compose better. The OCCT_AVAILABLE guard is kept as a bare `if` (not a helper) because it's idiomatic for Rust test gating and the compiler eliminates it at compile time."
+    },
+    {
+      "decision": "Scope limited to revolve-adjacent validation, not a full crate-wide cleanup",
+      "rationale": "The task title says 'revolve validation cleanup'. Fixing mirror's threshold and adding consistency to nearby code (rotate/translate error messages already have values) is within scope. A full cleanup of all 82 tests would be a separate task."
+    }
+  ],
+  "reuse": [
+    {
+      "what": "Existing error message pattern from Rotate validation (includes parameter values)",
+      "where": "lib.rs lines 232-235: `format!(\"rotate parameters must be finite values: axis=[{}, {}, {}], angle_rad={}\", ...)`",
+      "how": "Use the same format string pattern for revolve: separate checks for axis_origin, axis_dir, and angle_rad, each with the actual values in the message."
+    },
+    {
+      "what": "Existing near-degenerate axis test pattern",
+      "where": "lib.rs lines 1512-1573: `rotate_near_degenerate_axis_rejected` and `rotate_around_near_degenerate_axis_rejected`",
+      "how": "Follow the same pattern for `revolve_near_degenerate_axis_rejected`: use value between thresholds, assert error contains 'zero'."
+    },
+    {
+      "what": "Existing `store_raw` test helper",
+      "where": "lib.rs line 652: `fn store_raw(&mut self, shape: UniquePtr<OcctShape>) -> GeometryHandleId`",
+      "how": "New `make_torus_profile` and `make_rect_torus_profile` helpers will call `store_raw` as the final step to inject FFI-created faces into the kernel."
+    },
+    {
+      "what": "Existing ffi::ffi:: face construction + transform chain",
+      "where": "lib.rs lines 2957-2962: make_circle_face \u2192 rotate_shape \u2192 translate_shape pattern",
+      "how": "Extract into `make_torus_profile(kernel, radius, offset_r)` helper that encapsulates the 5-step chain and returns a GeometryHandleId."
+    },
+    {
+      "what": "Existing error assertion pattern",
+      "where": "lib.rs lines 3131-3140: match on Err(OperationFailed(msg)) + assert substring",
+      "how": "Extract into `assert_operation_fails_with(result, substring)` that handles all three match arms (Ok, wrong Err variant, correct Err with substring check)."
+    }
+  ],
+  "_session_id": "400-5680d909",
+  "_created_at": "2026-03-27T09:00:34.330939+00:00"
+}
