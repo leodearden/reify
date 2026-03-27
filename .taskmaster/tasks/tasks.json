@@ -9775,7 +9775,7 @@
         "description": "gui/src/types.ts defines ChatMessage and SessionStatus types that are never imported — all components use the richer versions from gui/src/stores/claudeStore.ts. The two definitions have divergent shapes (types.ts has flat ChatMessage with 4 fields, claudeStore.ts has discriminated union with rich message types; types.ts has 3 SessionStatus variants, claudeStore.ts has 4).\n\n**Fix:** Remove ChatMessage and SessionStatus from types.ts. Verify no imports reference them (grep confirms zero imports from types.ts for these types).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -9788,7 +9788,7 @@
             "gui/src"
           ]
         },
-        "updatedAt": "2026-03-27T07:37:21.253Z"
+        "updatedAt": "2026-03-27T07:53:51.132Z"
       },
       {
         "id": "497",
@@ -10043,7 +10043,7 @@
         "description": "cmd_build prints constraint status to stderr (eprintln!) while cmd_check uses stdout (println!). Inconsistent output channels for the same constraint summary concept.",
         "details": "In crates/reify-cli/src/main.rs, cmd_build (line ~174) prints constraint status lines to stderr via eprintln!, while cmd_check (line ~101) prints them to stdout via println!. The summary message 'Some constraints violated.' is also sent to different channels. Unify so both commands use the same channel. Stdout is likely correct since constraint results are primary output.\n\nFiles: crates/reify-cli/src/main.rs\n\nmemory_hints: search \"cmd_build cmd_check constraint\" | entities: cmd_build, cmd_check",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -10056,7 +10056,7 @@
             "crates/reify-cli/src"
           ]
         },
-        "updatedAt": "2026-03-27T07:40:02.708Z"
+        "updatedAt": "2026-03-27T07:53:50.908Z"
       },
       {
         "id": "510",
@@ -10416,9 +10416,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-27T07:47:52.750Z",
+      "lastModified": "2026-03-27T07:53:51.132Z",
       "taskCount": 527,
-      "completedCount": 251,
+      "completedCount": 253,
       "tags": [
         "master"
       ]
