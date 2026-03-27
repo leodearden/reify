@@ -11808,7 +11808,7 @@
         "description": "Address architectural robustness suggestions from task 495 reviews for the warm-start optimization path:\n\n1. **Convergence reporting**: When FEASIBLE_OPT_ITERS budget is exhausted without convergence, SolveResult::Solved is returned with no indication of suboptimality. Either add convergence metadata to SolveResult::Solved or check argmin's TerminationReason.\n2. **Dimension-scaling FEASIBLE_OPT_ITERS**: The flat 500-iteration budget doesn't scale with problem dimensionality. Nelder-Mead needs O(N²) iterations. Scale as `FEASIBLE_OPT_ITERS_BASE * (n_params + 1)` capped at MAX_ITERS. Add a multi-parameter warm-start test (N≥2).\n3. **Fallback on drift**: When initially_feasible=true but the optimizer drifts out of the feasible region during the reduced-budget run, fall back to returning the known-feasible initial point instead of Infeasible.\n\nFiles: crates/reify-constraints/src/solver.rs, crates/reify-constraints/tests/solver_integration.rs\n\nMemory hints: search \"Nelder-Mead solver\", \"constraint solver architecture\", entity NelderMeadSolver, FEASIBILITY_THRESHOLD",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -11829,7 +11829,7 @@
             ]
           }
         },
-        "updatedAt": "2026-03-27T23:46:05.861Z"
+        "updatedAt": "2026-03-27T23:46:09.439Z"
       },
       {
         "id": "584",
@@ -12478,7 +12478,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-27T23:46:07.150Z",
+      "lastModified": "2026-03-27T23:46:09.439Z",
       "taskCount": 612,
       "completedCount": 279,
       "tags": [
