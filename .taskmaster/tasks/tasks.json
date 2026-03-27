@@ -12232,7 +12232,14 @@
         "priority": "medium",
         "subtasks": [],
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-test-support/src/builders/field.rs",
+            "crates/reify-test-support/src/builders/trait_def.rs"
+          ],
+          "modules": [
+            "crates/reify-test-support/src/builders"
+          ]
         }
       },
       {
