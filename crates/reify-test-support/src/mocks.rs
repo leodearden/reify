@@ -176,10 +176,15 @@ impl QueryKey {
             GeometryQuery::SurfaceArea(id) => QueryKey::SurfaceArea(*id),
             GeometryQuery::Centroid(id) => QueryKey::Centroid(*id),
             GeometryQuery::BoundingBox(id) => QueryKey::BoundingBox(*id),
-            GeometryQuery::Distance { from, to } => QueryKey::Distance {
-                from: *from,
-                to: *to,
-            },
+            GeometryQuery::Distance { from, to } => {
+                // Normalize to (min, max) so Distance(A,B) == Distance(B,A)
+                let (lo, hi) = if from.0 <= to.0 {
+                    (*from, *to)
+                } else {
+                    (*to, *from)
+                };
+                QueryKey::Distance { from: lo, to: hi }
+            }
             GeometryQuery::MomentOfInertia { handle, axis } => {
                 debug_assert!(
                     !axis[0].is_nan() && !axis[1].is_nan() && !axis[2].is_nan(),
@@ -248,14 +253,24 @@ impl MockGeometryKernel {
     }
 
     /// Configure a Distance query result for a specific pair of handles.
+    ///
+    /// The key is normalized to `(min, max)` order so lookups are symmetric —
+    /// `with_distance_result(A, B, v)` matches both `Distance { from: A, to: B }`
+    /// and `Distance { from: B, to: A }`.
     pub fn with_distance_result(
         mut self,
         from: GeometryHandleId,
         to: GeometryHandleId,
         value: Value,
     ) -> Self {
+        // Normalize to (min, max) so Distance(A,B) == Distance(B,A)
+        let (lo, hi) = if from.0 <= to.0 {
+            (from, to)
+        } else {
+            (to, from)
+        };
         self.typed_queries
-            .insert(QueryKey::Distance { from, to }, value);
+            .insert(QueryKey::Distance { from: lo, to: hi }, value);
         self
     }
 
