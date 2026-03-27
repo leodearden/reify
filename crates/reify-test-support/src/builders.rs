@@ -3,14 +3,6 @@ use reify_types::{
     SourceSpan, Type, UnOp, Value, ValueCellId,
 };
 
-/// Infer the Type of a Value for use in literal() and collection builders.
-///
-/// Delegates to [`Value::infer_type()`] — the canonical implementation lives
-/// on Value itself so that adding a new variant only requires editing value.rs.
-fn infer_value_type(v: &Value) -> Type {
-    v.infer_type()
-}
-
 // --- Expression builders ---
 
 /// Create a literal expression from a value, inferring the type.
@@ -18,7 +10,7 @@ fn infer_value_type(v: &Value) -> Type {
 /// Supports all Value variants including M5 types (Enum, List, Set, Map, Option,
 /// Lambda, Field). For empty collections, element type defaults to Int/Bool.
 pub fn literal(v: Value) -> CompiledExpr {
-    let ty = infer_value_type(&v);
+    let ty = v.infer_type();
     CompiledExpr::literal(v, ty)
 }
 

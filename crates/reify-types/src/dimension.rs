@@ -186,6 +186,26 @@ impl DimensionVector {
         DimensionVector(result)
     }
 
+    /// Convert an SI value to the standard engineering display unit for this dimension.
+    ///
+    /// Returns `(converted_value, unit_label)`. For example, LENGTH converts
+    /// metres to millimetres: `to_display_units(0.08)` → `(80.0, "mm")`.
+    pub fn to_display_units(&self, si_value: f64) -> (f64, &'static str) {
+        if *self == DimensionVector::LENGTH {
+            (si_value * 1000.0, "mm")
+        } else if *self == DimensionVector::ANGLE {
+            (si_value * 180.0 / std::f64::consts::PI, "deg")
+        } else if *self == DimensionVector::AREA {
+            (si_value * 1e6, "mm\u{00B2}")
+        } else if *self == DimensionVector::VOLUME {
+            (si_value * 1e9, "mm\u{00B3}")
+        } else if self.is_dimensionless() {
+            (si_value, "")
+        } else {
+            (si_value, "SI")
+        }
+    }
+
     pub fn content_hash(&self) -> ContentHash {
         let mut buf = [0u8; 36]; // 9 * 4 bytes (2 bytes per i16 field)
         for (i, r) in self.0.iter().enumerate() {
