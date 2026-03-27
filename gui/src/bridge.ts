@@ -156,12 +156,30 @@ export async function subscribeToClaudeEvents(
   type EventEntry = [string, (event: { payload: Record<string, unknown> }) => void];
 
   const entries: EventEntry[] = [
-    ['claude-text-delta', (event) => handler({ type: 'text_delta', ...event.payload } as OutboundMessage)],
-    ['claude-thinking-delta', (event) => handler({ type: 'thinking_delta', ...event.payload } as OutboundMessage)],
-    ['claude-tool-call', (event) => handler({ type: 'tool_call', ...event.payload } as OutboundMessage)],
-    ['claude-tool-result', (event) => handler({ type: 'tool_result', ...event.payload } as OutboundMessage)],
-    ['claude-done', (event) => handler({ type: 'done', ...event.payload } as OutboundMessage)],
-    ['claude-error', (event) => handler({ type: 'error', ...event.payload } as OutboundMessage)],
+    ['claude-text-delta', (event) => {
+      const p = event.payload;
+      handler({ type: 'text_delta', id: p.id as string, content: p.content as string });
+    }],
+    ['claude-thinking-delta', (event) => {
+      const p = event.payload;
+      handler({ type: 'thinking_delta', id: p.id as string, content: p.content as string });
+    }],
+    ['claude-tool-call', (event) => {
+      const p = event.payload;
+      handler({ type: 'tool_call', id: p.id as string, tool_name: p.tool_name as string, tool_input: p.tool_input as Record<string, unknown> });
+    }],
+    ['claude-tool-result', (event) => {
+      const p = event.payload;
+      handler({ type: 'tool_result', id: p.id as string, tool_name: p.tool_name as string, result: p.result });
+    }],
+    ['claude-done', (event) => {
+      const p = event.payload;
+      handler({ type: 'done', id: p.id as string });
+    }],
+    ['claude-error', (event) => {
+      const p = event.payload;
+      handler({ type: 'error', id: p.id as string, message: p.message as string });
+    }],
     ['claude-ready', () => handler({ type: 'ready' })],
   ];
 
