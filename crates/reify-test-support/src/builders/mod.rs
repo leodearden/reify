@@ -380,9 +380,9 @@ mod reexport_contract_tests {
     //! Guard tests: verify that core builder functions remain accessible
     //! via the `crate::builders` module path after submodule extraction.
     use crate::builders::{
-        binop, conditional_expr, eq, fn_call, ge, gt, lambda_expr, le, list_expr, literal, lt,
-        map_expr, method_call_expr, ne, neg, not, sample_call, set_expr, user_fn_call, value_ref,
-        value_ref_typed,
+        binop, conditional_expr, eq, equality_constraint, fn_call, ge, gt, lambda_expr, le,
+        list_expr, literal, lt, map_expr, method_call_expr, ne, neg, not, range_constraint,
+        sample_call, set_expr, user_fn_call, value_ref, value_ref_typed,
     };
     use reify_types::{BinOp, Type, Value};
 
@@ -412,6 +412,24 @@ mod reexport_contract_tests {
         let _ = method_call_expr(literal(Value::Int(1)), "m", vec![], Type::Int);
         let _ = sample_call(literal(Value::Real(0.0)), literal(Value::Real(1.0)), Type::Real);
         let _ = lambda_expr(vec![("x", Type::Real)], literal(Value::Real(1.0)));
+    }
+
+    #[test]
+    fn constraint_builders_accessible_via_module_path() {
+        let exprs = range_constraint(
+            "E",
+            "m",
+            Type::Real,
+            literal(Value::Real(0.0)),
+            literal(Value::Real(1.0)),
+        );
+        assert_eq!(exprs.len(), 2);
+        assert_eq!(exprs[0].result_type, Type::Bool);
+        assert_eq!(exprs[1].result_type, Type::Bool);
+
+        let eq_exprs = equality_constraint("E", "m", Type::Real, literal(Value::Real(1.0)));
+        assert_eq!(eq_exprs.len(), 1);
+        assert_eq!(eq_exprs[0].result_type, Type::Bool);
     }
 }
 
