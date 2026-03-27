@@ -1885,8 +1885,7 @@ async fn wait_ready_notified_race_on_multithread() {
 
     // Run 20 iterations to increase probability of hitting timing-dependent races.
     for i in 0..20 {
-        let held_writer: Arc<Mutex<Option<tokio::io::DuplexStream>>> =
-            Arc::new(Mutex::new(None));
+        let held_writer: Arc<Mutex<Option<tokio::io::DuplexStream>>> = Arc::new(Mutex::new(None));
         let held_clone = Arc::clone(&held_writer);
 
         let state = Arc::new(Mutex::new(SidecarState::Starting));
@@ -2058,8 +2057,7 @@ async fn ensure_sidecar_ready_enable_prevents_missed_notification_race() {
     use tokio::sync::Mutex;
 
     for i in 0..50 {
-        let held_writer: Arc<Mutex<Option<tokio::io::DuplexStream>>> =
-            Arc::new(Mutex::new(None));
+        let held_writer: Arc<Mutex<Option<tokio::io::DuplexStream>>> = Arc::new(Mutex::new(None));
         let held_clone = Arc::clone(&held_writer);
 
         let spawn_fn = move || {
@@ -2090,12 +2088,10 @@ async fn ensure_sidecar_ready_enable_prevents_missed_notification_race() {
         let (_stale_writer, stale_reader) = tokio::io::duplex(1024);
         let stale_reader = BufReader::new(stale_reader);
         let (stale_stdin, _stale_stdin_end) = tokio::io::duplex(1024);
-        let stale_handle =
-            SidecarHandle::from_parts(stale_stdin, stale_reader, stale_state);
+        let stale_handle = SidecarHandle::from_parts(stale_stdin, stale_reader, stale_state);
 
         let sidecar: Mutex<Option<SidecarHandle>> = Mutex::new(Some(stale_handle));
-        let result =
-            ensure_sidecar_ready(&sidecar, spawn_fn, Duration::from_millis(500)).await;
+        let result = ensure_sidecar_ready(&sidecar, spawn_fn, Duration::from_millis(500)).await;
 
         assert!(
             result.is_ok(),
