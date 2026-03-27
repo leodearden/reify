@@ -11264,7 +11264,7 @@
         "description": "12 inline occurrences of .unwrap_or_else(|e| e.into_inner()) pattern. Extract into private helper methods matching CliToolContext::lock_state() precedent.",
         "details": "Add private helper methods (read_values(), write_values(), read_snapshot_values(), write_snapshot_values(), lock_results()) that encapsulate the .unwrap_or_else(|e| e.into_inner()) pattern. Replace all 12 inline occurrences.\n\nFiles: crates/reify-runtime/src/concurrent_eval.rs",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -11276,7 +11276,8 @@
           "modules": [
             "crates/reify-runtime/src"
           ]
-        }
+        },
+        "updatedAt": "2026-03-27T12:03:28.227Z"
       },
       {
         "id": "561",
@@ -12077,7 +12078,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-27T12:03:28.089Z",
+      "lastModified": "2026-03-27T12:03:28.227Z",
       "taskCount": 609,
       "completedCount": 278,
       "tags": [
