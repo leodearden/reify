@@ -636,6 +636,11 @@ impl ConstraintSolver for DimensionalSolver {
             );
         }
 
+        // NOTE: Solved indicates constraint satisfaction but does NOT guarantee objective
+        // optimality. The Nelder-Mead optimizer may have hit the iteration limit without
+        // full convergence. Convergence quality (e.g., TerminationReason::MaxItersReached
+        // vs actual convergence) is not propagated through SolveResult to avoid a breaking
+        // API change across 6+ crates. See design_decisions in the task plan for rationale.
         SolveResult::Solved { values }
     }
 }
