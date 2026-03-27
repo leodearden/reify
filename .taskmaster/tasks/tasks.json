@@ -10631,7 +10631,8 @@
             "queries": [
               "resolution for: Stop committing tree-sitter generated files on task branches"
             ]
-          }
+          },
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         }
       },
       {
@@ -10648,7 +10649,8 @@
         "metadata": {
           "modules": [
             "crates/reify-test-support"
-          ]
+          ],
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         }
       },
       {
