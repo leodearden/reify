@@ -9366,7 +9366,13 @@
         "priority": "low",
         "subtasks": [],
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-lsp/src/diagnostics.rs"
+          ],
+          "modules": [
+            "crates/reify-lsp/src"
+          ]
         }
       },
       {
@@ -9381,7 +9387,13 @@
         "subtasks": [],
         "updatedAt": "2026-03-27T06:16:22.408Z",
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-lsp/src/completion.rs"
+          ],
+          "modules": [
+            "crates/reify-lsp/src"
+          ]
         }
       },
       {
