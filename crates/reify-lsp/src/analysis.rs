@@ -64,7 +64,7 @@ impl AnalysisContext {
         // Get the span and doc from the parsed module (accurate tree-sitter offsets)
         let (span, doc) = self.find_parsed_member_span_and_doc(name)?;
 
-        // Find type info from the compiled module
+        // Find type info from the compiled module (top-level and guarded members)
         for template in &self.compiled.templates {
             for vc in &template.value_cells {
                 if vc.id.member == name {
@@ -77,6 +77,20 @@ impl AnalysisContext {
                     });
                 }
             }
+            // Also search inside guarded groups (where blocks)
+            for group in &template.guarded_groups {
+                for vc in group.members.iter().chain(group.else_members.iter()) {
+                    if vc.id.member == name {
+                        return Some(MemberInfo {
+                            name: &vc.id.member,
+                            kind: vc.kind,
+                            cell_type: &vc.cell_type,
+                            span,
+                            doc,
+                        });
+                    }
+                }
+            }
         }
 
         None
@@ -85,34 +99,13 @@ impl AnalysisContext {
     /// Find the source span and doc comment for a named member in the parsed module.
     fn find_parsed_member_span_and_doc(&self, name: &str) -> Option<(SourceSpan, Option<&str>)> {
         for decl in &self.parsed.declarations {
-            match decl {
-                reify_syntax::Declaration::Structure(s) => {
-                    for member in &s.members {
-                        match member {
-                            reify_syntax::MemberDecl::Param(p) if p.name == name => {
-                                return Some((p.span, p.doc.as_deref()));
-                            }
-                            reify_syntax::MemberDecl::Let(l) if l.name == name => {
-                                return Some((l.span, l.doc.as_deref()));
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                reify_syntax::Declaration::Occurrence(o) => {
-                    for member in &o.members {
-                        match member {
-                            reify_syntax::MemberDecl::Param(p) if p.name == name => {
-                                return Some((p.span, p.doc.as_deref()));
-                            }
-                            reify_syntax::MemberDecl::Let(l) if l.name == name => {
-                                return Some((l.span, l.doc.as_deref()));
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                _ => {}
+            let members = match decl {
+                reify_syntax::Declaration::Structure(s) => &s.members,
+                reify_syntax::Declaration::Occurrence(o) => &o.members,
+                _ => continue,
+            };
+            if let Some(result) = find_named_member_span(members, name) {
+                return Some(result);
             }
         }
         None
@@ -147,6 +140,12 @@ impl AnalysisContext {
         for template in &self.compiled.templates {
             for vc in &template.value_cells {
                 result.push((vc.id.member.as_str(), vc.kind, &vc.cell_type));
+            }
+            // Also include members inside guarded groups (where blocks)
+            for group in &template.guarded_groups {
+                for vc in group.members.iter().chain(group.else_members.iter()) {
+                    result.push((vc.id.member.as_str(), vc.kind, &vc.cell_type));
+                }
             }
         }
         result
@@ -188,6 +187,37 @@ impl AnalysisContext {
         let id = ValueCellId::new(entity, member);
         self.check_result.values.get(&id)
     }
+}
+
+/// Recursively search a member list for a named param or let declaration.
+///
+/// Returns `(span, doc)` for the first match. Recurses into
+/// `GuardedGroup.members` and `GuardedGroup.else_members` so that
+/// declarations inside `where cond { ... } else { ... }` blocks are found.
+pub fn find_named_member_span<'a>(
+    members: &'a [reify_syntax::MemberDecl],
+    name: &str,
+) -> Option<(SourceSpan, Option<&'a str>)> {
+    for member in members {
+        match member {
+            reify_syntax::MemberDecl::Param(p) if p.name == name => {
+                return Some((p.span, p.doc.as_deref()));
+            }
+            reify_syntax::MemberDecl::Let(l) if l.name == name => {
+                return Some((l.span, l.doc.as_deref()));
+            }
+            reify_syntax::MemberDecl::GuardedGroup(g) => {
+                if let Some(result) = find_named_member_span(&g.members, name) {
+                    return Some(result);
+                }
+                if let Some(result) = find_named_member_span(&g.else_members, name) {
+                    return Some(result);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Format a `Value` for user-friendly display in hover tooltips.
@@ -407,6 +437,61 @@ mod tests {
         let ctx = AnalysisContext::new(source, &test_uri());
         let info = ctx.find_member_decl("width").expect("width should exist");
         assert_eq!(info.doc, Some("The width."));
+    }
+
+    // --- find_member_decl inside guarded groups ---
+
+    #[test]
+    fn find_member_decl_param_inside_where_block() {
+        let source = r#"structure S {
+    param cond : Bool = true
+    where cond {
+        param guarded_x : Scalar = 5mm
+    }
+}"#;
+        let ctx = AnalysisContext::new(source, &test_uri());
+        let info = ctx
+            .find_member_decl("guarded_x")
+            .expect("guarded_x inside where block should be found");
+        assert_eq!(info.name, "guarded_x");
+        assert_eq!(info.kind, ValueCellKind::Param);
+    }
+
+    #[test]
+    fn find_member_decl_nested_where_blocks() {
+        let source = r#"structure S {
+    param a : Bool = true
+    param b : Bool = true
+    where a {
+        where b {
+            param deep_x : Scalar = 1mm
+        }
+    }
+}"#;
+        let ctx = AnalysisContext::new(source, &test_uri());
+        let info = ctx
+            .find_member_decl("deep_x")
+            .expect("deep_x inside nested where blocks should be found");
+        assert_eq!(info.name, "deep_x");
+        assert_eq!(info.kind, ValueCellKind::Param);
+    }
+
+    #[test]
+    fn find_member_decl_let_inside_else_block() {
+        let source = r#"structure S {
+    param cond : Bool = true
+    where cond {
+        param a : Scalar = 1mm
+    } else {
+        let fallback = 2
+    }
+}"#;
+        let ctx = AnalysisContext::new(source, &test_uri());
+        let info = ctx
+            .find_member_decl("fallback")
+            .expect("fallback inside else block should be found");
+        assert_eq!(info.name, "fallback");
+        assert_eq!(info.kind, ValueCellKind::Let);
     }
 
     // --- format_value tests ---
