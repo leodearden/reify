@@ -1019,7 +1019,9 @@ impl Engine {
 
                     let val = reify_expr::eval_expr(
                         expr,
-                        &reify_expr::EvalContext::new(&values, functions).with_meta(&self.meta_map),
+                        &reify_expr::EvalContext::new(&values, functions)
+                            .with_meta(&self.meta_map)
+                            .with_determinacy(&snapshot.values),
                     );
                     values.insert(cell.id.clone(), val.clone());
 
@@ -1070,7 +1072,9 @@ impl Engine {
                 // Evaluate the guard cell expression
                 let guard_val = reify_expr::eval_expr(
                     &group.guard_expr,
-                    &reify_expr::EvalContext::new(&values, functions).with_meta(&self.meta_map),
+                    &reify_expr::EvalContext::new(&values, functions)
+                        .with_meta(&self.meta_map)
+                        .with_determinacy(&snapshot.values),
                 );
                 values.insert(group.guard_value_cell.clone(), guard_val.clone());
 
@@ -1095,7 +1099,8 @@ impl Engine {
                                 let val = reify_expr::eval_expr(
                                     expr,
                                     &reify_expr::EvalContext::new(&values, functions)
-                                        .with_meta(&self.meta_map),
+                                        .with_meta(&self.meta_map)
+                                        .with_determinacy(&snapshot.values),
                                 );
                                 values.insert(cell.id.clone(), val.clone());
                                 snapshot
@@ -1132,7 +1137,8 @@ impl Engine {
                                 let val = reify_expr::eval_expr(
                                     expr,
                                     &reify_expr::EvalContext::new(&values, functions)
-                                        .with_meta(&self.meta_map),
+                                        .with_meta(&self.meta_map)
+                                        .with_determinacy(&snapshot.values),
                                 );
                                 values.insert(cell.id.clone(), val.clone());
                                 snapshot
@@ -2152,6 +2158,7 @@ impl Engine {
                 constraints: constraint_pairs,
                 values,
                 functions: &self.functions,
+                determinacy: Some(&state.snapshot.values),
             };
 
             let results = self.constraint_checker.check(&input);
@@ -2536,6 +2543,7 @@ impl Engine {
                 constraints: constraint_pairs,
                 values: &values,
                 functions: &module.functions,
+                determinacy: Some(&state.snapshot.values),
             };
 
             let results = self.constraint_checker.check(&input);
@@ -2621,10 +2629,13 @@ impl Engine {
                 .map(|c| (c.id.clone(), &c.expr))
                 .collect();
 
+            // After eval(), eval_state is always Some — unwrap is safe here.
+            let det_values = &self.eval_state.as_ref().unwrap().snapshot.values;
             let input = ConstraintInput {
                 constraints: constraint_pairs,
                 values: &eval_result.values,
                 functions: &module.functions,
+                determinacy: Some(det_values),
             };
 
             let results = self.constraint_checker.check(&input);
@@ -2684,6 +2695,7 @@ impl Engine {
                     constraints: constraint_pairs,
                     values: &values,
                     functions: &module.functions,
+                    determinacy: Some(&state.snapshot.values),
                 };
 
                 let results = self.constraint_checker.check(&input);
@@ -2974,6 +2986,7 @@ impl Engine {
                     constraints: constraint_pairs,
                     values: &values,
                     functions: &module.functions,
+                    determinacy: Some(&state.snapshot.values),
                 };
 
                 let results = self.constraint_checker.check(&input);
@@ -3060,7 +3073,9 @@ impl Engine {
 
             let val = reify_expr::eval_expr(
                 expr,
-                &reify_expr::EvalContext::new(values, functions).with_meta(meta_map),
+                &reify_expr::EvalContext::new(values, functions)
+                    .with_meta(meta_map)
+                    .with_determinacy(&snapshot.values),
             );
             values.insert(cell_id.clone(), val.clone());
 

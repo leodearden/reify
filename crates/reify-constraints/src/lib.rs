@@ -29,10 +29,13 @@ impl ConstraintChecker for SimpleConstraintChecker {
             .constraints
             .iter()
             .map(|(id, expr)| {
-                let value = reify_expr::eval_expr(
-                    expr,
-                    &reify_expr::EvalContext::new(input.values, input.functions),
-                );
+                let ctx = reify_expr::EvalContext::new(input.values, input.functions);
+                let ctx = if let Some(det) = input.determinacy {
+                    ctx.with_determinacy(det)
+                } else {
+                    ctx
+                };
+                let value = reify_expr::eval_expr(expr, &ctx);
                 let (satisfaction, diagnostics) = match value {
                     Value::Bool(true) => {
                         (Satisfaction::Satisfied, ConstraintDiagnostics::default())
@@ -125,6 +128,7 @@ mod tests {
             constraints: vec![(cnid("Bracket", 0), &expr)],
             values: &values,
             functions: &[],
+            determinacy: None,
         };
 
         let results = checker.check(&input);
@@ -143,6 +147,7 @@ mod tests {
             constraints: vec![(cnid("Bracket", 0), &expr)],
             values: &values,
             functions: &[],
+            determinacy: None,
         };
 
         let results = checker.check(&input);
@@ -160,6 +165,7 @@ mod tests {
             constraints: vec![(cnid("Bracket", 0), &expr)],
             values: &values,
             functions: &[],
+            determinacy: None,
         };
 
         let results = checker.check(&input);
@@ -185,6 +191,7 @@ mod tests {
             constraints: vec![(cnid("Bracket", 0), &expr)],
             values: &values,
             functions: &[],
+            determinacy: None,
         };
 
         let results = checker.check(&input);
@@ -212,6 +219,7 @@ mod tests {
             constraints: vec![(cnid("Bracket", 0), &expr1), (cnid("Bracket", 1), &expr2)],
             values: &values,
             functions: &[],
+            determinacy: None,
         };
 
         let results = checker.check(&input);
@@ -239,6 +247,7 @@ mod tests {
             constraints: vec![(cnid("Bracket", 0), &expr)],
             values: &values,
             functions: &[],
+            determinacy: None,
         };
 
         // Should not panic
