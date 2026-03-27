@@ -753,6 +753,74 @@ fn infeasible_with_objective_still_detected() {
     }
 }
 
+/// Warm-start with a feasible initial point should optimize to a BETTER value
+/// than the initial point, not just fall back. This guards against the fallback
+/// being too aggressive — it should only trigger when the optimizer drifts
+/// infeasible, not on every warm-start.
+///
+/// Setup: x > 2mm AND x < 50mm, initial = 25mm, minimize(x), bounds [5mm, 100mm].
+/// The optimizer should push x down to ~5mm (param lower bound), which is better
+/// than the 25mm initial point and still feasible.
+#[test]
+fn warm_start_optimizes_when_possible() {
+    let solver = DimensionalSolver;
+
+    let x_id = vcid("Part", "x");
+    let x_ref = value_ref("Part", "x");
+
+    // Wide constraints: x > 2mm AND x < 50mm
+    let gt_expr = gt(x_ref.clone(), literal(mm(2.0)));
+    let lt_expr = lt(x_ref.clone(), literal(mm(50.0)));
+
+    // Minimize x — should optimize, not just return initial
+    let objective = OptimizationObjective::Minimize(x_ref);
+
+    // Start at 25mm — feasible, but far from optimal
+    let mut current = ValueMap::new();
+    current.insert(
+        x_id.clone(),
+        Value::Scalar {
+            si_value: 0.025,
+            dimension: DimensionVector::LENGTH,
+        },
+    );
+
+    let problem = ResolutionProblem {
+        auto_params: vec![AutoParam {
+            id: x_id.clone(),
+            param_type: Type::length(),
+            bounds: Some((0.005, 0.1)), // 5mm–100mm, lower bound above constraint floor
+        }],
+        constraints: vec![
+            (cnid("Part", 0), gt_expr),
+            (cnid("Part", 1), lt_expr),
+        ],
+        current_values: current,
+        objective: Some(objective),
+        functions: vec![],
+    };
+
+    let result = solver.solve(&problem);
+    match result {
+        SolveResult::Solved { values } => {
+            let si = values.get(&x_id).unwrap().as_f64().unwrap();
+            // Optimizer should push x below 25mm (initial), toward ~5mm (param lower bound)
+            assert!(
+                si < 0.015,
+                "optimized x should be well below initial 25mm, got {} m (fallback not triggered)",
+                si
+            );
+            // Must still be feasible
+            assert!(
+                si > 0.002,
+                "optimized x should still satisfy x > 2mm, got {} m",
+                si
+            );
+        }
+        other => panic!("expected Solved with optimized value, got {:?}", other),
+    }
+}
+
 /// Warm-start with an 8-parameter feasible problem and an objective.
 /// Each parameter has a constraint that the optimizer might push past
 /// with insufficient iterations. With dimension-scaled budget, the solver
