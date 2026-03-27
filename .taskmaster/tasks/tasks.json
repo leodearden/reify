@@ -7180,7 +7180,15 @@
         "subtasks": [],
         "updatedAt": "2026-03-27T06:15:38.588Z",
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-expr/src/lib.rs",
+            "crates/reify-types/src/value.rs"
+          ],
+          "modules": [
+            "crates/reify-expr/src",
+            "crates/reify-types/src"
+          ]
         }
       },
       {
