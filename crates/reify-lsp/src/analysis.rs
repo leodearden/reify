@@ -85,18 +85,34 @@ impl AnalysisContext {
     /// Find the source span and doc comment for a named member in the parsed module.
     fn find_parsed_member_span_and_doc(&self, name: &str) -> Option<(SourceSpan, Option<&str>)> {
         for decl in &self.parsed.declarations {
-            if let reify_syntax::Declaration::Structure(s) = decl {
-                for member in &s.members {
-                    match member {
-                        reify_syntax::MemberDecl::Param(p) if p.name == name => {
-                            return Some((p.span, p.doc.as_deref()));
+            match decl {
+                reify_syntax::Declaration::Structure(s) => {
+                    for member in &s.members {
+                        match member {
+                            reify_syntax::MemberDecl::Param(p) if p.name == name => {
+                                return Some((p.span, p.doc.as_deref()));
+                            }
+                            reify_syntax::MemberDecl::Let(l) if l.name == name => {
+                                return Some((l.span, l.doc.as_deref()));
+                            }
+                            _ => {}
                         }
-                        reify_syntax::MemberDecl::Let(l) if l.name == name => {
-                            return Some((l.span, l.doc.as_deref()));
-                        }
-                        _ => {}
                     }
                 }
+                reify_syntax::Declaration::Occurrence(o) => {
+                    for member in &o.members {
+                        match member {
+                            reify_syntax::MemberDecl::Param(p) if p.name == name => {
+                                return Some((p.span, p.doc.as_deref()));
+                            }
+                            reify_syntax::MemberDecl::Let(l) if l.name == name => {
+                                return Some((l.span, l.doc.as_deref()));
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                _ => {}
             }
         }
         None
