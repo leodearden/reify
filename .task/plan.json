@@ -1,0 +1,114 @@
+{
+  "task_id": "592",
+  "title": "Fix selectionStore: implement immediate selection dispatch or correct misleading comments",
+  "files": [
+    "gui/src/stores/selectionStore.ts",
+    "gui/src/__tests__/selectionStore.test.ts"
+  ],
+  "modules": [
+    "gui/src/stores",
+    "gui/src/__tests__"
+  ],
+  "analysis": "The selectionStore.ts createEffect has a comment claiming 'selection (click) updates are sent immediately since they are infrequent' and 'send immediately if only selection changed', but ALL state changes unconditionally go through a 100ms setTimeout. There is no fast path for selection-only changes.\n\nThe fix (option a) is to track the previous selectedEntity and detect when only selection changed (not hover). When only selection changes, call invoke('update_selection', ...) synchronously. When hover changes (with or without selection), debounce at 100ms as before.\n\nImplementation approach:\n- Track `prevSelected` and `prevHovered` variables outside the effect\n- Inside the effect, compare current vs previous values\n- If selectedEntity changed but hoveredEntity did not \u2192 invoke immediately (no setTimeout)\n- If hoveredEntity changed (regardless of selectedEntity) \u2192 debounce at 100ms as before\n- Clear any pending debounce timer before dispatching immediate selection updates to avoid duplicates\n\nThe existing test file tests only state mutations (selectEntity, hoverEntity, etc.) and does not test the invoke/backend-sync behavior at all. New tests need to:\n1. Mock @tauri-apps/api/core invoke\n2. Use vi.useFakeTimers() to control setTimeout\n3. Verify immediate dispatch on selection-only changes\n4. Verify debounced dispatch on hover changes\n5. Verify combined changes (both selection+hover) use debounce\n6. Verify rapid selection changes don't double-fire",
+  "prerequisites": [],
+  "steps": [
+    {
+      "id": "step-1",
+      "type": "test",
+      "description": "Write failing test: selection-only change calls invoke immediately (0ms), not after 100ms debounce. Mock @tauri-apps/api/core with vi.mock, use vi.useFakeTimers. In a createRoot, create the store, call selectEntity('Bracket'), then verify mockInvoke was called with 'update_selection' and { selectedEntity: 'Bracket', hoveredEntity: null } synchronously (before advancing timers).",
+      "status": "done",
+      "commit": "33360651"
+    },
+    {
+      "id": "step-2",
+      "type": "test",
+      "description": "Write failing test: hover-only change calls invoke only after 100ms debounce. Create store, call hoverEntity('Bracket.width'), assert mockInvoke NOT called, advance timers by 100ms, assert mockInvoke called once with { selectedEntity: null, hoveredEntity: 'Bracket.width' }.",
+      "status": "done",
+      "commit": "33360651"
+    },
+    {
+      "id": "step-3",
+      "type": "test",
+      "description": "Write failing test: combined selection+hover change is debounced at 100ms. Create store, call selectEntity('Bracket') then hoverEntity('Bracket.width') in same tick, assert invoke not called until 100ms. This tests that when hover changes alongside selection, we use the debounce path.",
+      "status": "done",
+      "commit": "33360651"
+    },
+    {
+      "id": "step-4",
+      "type": "test",
+      "description": "Write failing test: immediate selection dispatch cancels pending debounced hover. Create store, hoverEntity('X') (starts 100ms timer), then before timer fires selectEntity('Bracket') \u2014 the selection invoke fires immediately, and when 100ms passes only one additional invoke fires (not the stale hover-only one). Verify total invoke calls and argument correctness.",
+      "status": "done",
+      "commit": "33360651"
+    },
+    {
+      "id": "step-5",
+      "type": "impl",
+      "description": "Implement immediate selection dispatch in selectionStore.ts. Track prevSelected and prevHovered outside the effect. Inside the effect: (1) always clear pending timer, (2) check if only selectedEntity changed (selectedEntity !== prevSelected && hoveredEntity === prevHovered), (3) if selection-only \u2192 call invoke synchronously, (4) else \u2192 debounce at 100ms, (5) update prevSelected/prevHovered after dispatching. Fix comments to accurately describe the dual-path behavior.",
+      "status": "done",
+      "commit": "6e11d4e2"
+    },
+    {
+      "id": "step-6",
+      "type": "test",
+      "description": "Write test: rapid hover changes collapse into single invoke at 100ms (existing debounce behavior preserved). Create store, hoverEntity('A'), advance 50ms, hoverEntity('B'), advance 100ms. Assert invoke called once with hoveredEntity='B'.",
+      "status": "done",
+      "commit": "7be9a7f3"
+    },
+    {
+      "id": "step-7",
+      "type": "test",
+      "description": "Write test: cleanup disposes the debounce timer. Create store in createRoot, hoverEntity('X'), then dispose the root. Advance timers by 200ms. Assert invoke was NOT called (the onCleanup cleared the pending timer).",
+      "status": "done",
+      "commit": "7be9a7f3"
+    },
+    {
+      "id": "step-8",
+      "type": "test",
+      "description": "Write test: invoke rejection is silently caught (no unhandled promise). Create store, mockInvoke.mockRejectedValue(new Error('not in Tauri')), selectEntity('Bracket'). Assert no error thrown.",
+      "status": "done",
+      "commit": "7be9a7f3"
+    }
+  ],
+  "design_decisions": [
+    {
+      "decision": "Track previous values via closure variables (prevSelected, prevHovered) rather than using Solid's on() with defer",
+      "rationale": "SolidJS createEffect auto-tracks reactive dependencies. Using closure vars for previous state is simpler and more explicit than on() helpers. It also makes the selection-only vs hover-change comparison straightforward."
+    },
+    {
+      "decision": "Selection-only changes invoke synchronously; any change involving hover uses 100ms debounce",
+      "rationale": "The original design intent was to send selection immediately since clicks are infrequent and MCP may read selection in the same interaction. Hover changes are frequent (mouse movement) and should be debounced. When both change together (e.g. clicking a new entity while hovering), debouncing is safer to avoid duplicate rapid calls."
+    },
+    {
+      "decision": "Immediate selection dispatch clears any pending debounce timer to avoid sending stale state",
+      "rationale": "If a hover debounce is pending and then selection changes immediately, the immediate dispatch sends the latest full state. The stale debounced call would be redundant or could overwrite with old hover data."
+    },
+    {
+      "decision": "Tests use vi.useFakeTimers + vi.mock('@tauri-apps/api/core') pattern from existing codebase",
+      "rationale": "This is the established pattern in Editor.test.tsx, completions.test.ts, etc. Consistent with project conventions."
+    }
+  ],
+  "reuse": [
+    {
+      "what": "vi.mock('@tauri-apps/api/core') + vi.mocked(invoke) pattern",
+      "where": "gui/src/__tests__/completions.test.ts, gui/src/__tests__/Editor.test.tsx, gui/src/__tests__/bridge.test.ts",
+      "how": "Same mock setup: vi.mock at top level, import invoke, const mockInvoke = vi.mocked(invoke)"
+    },
+    {
+      "what": "vi.useFakeTimers / vi.advanceTimersByTime pattern for debounce testing",
+      "where": "gui/src/__tests__/useToast.test.ts, gui/src/__tests__/Editor.test.tsx",
+      "how": "beforeEach(vi.useFakeTimers), afterEach(vi.useRealTimers), vi.advanceTimersByTime(ms) to control setTimeout"
+    },
+    {
+      "what": "createRoot(dispose => { ... }) pattern for SolidJS reactive testing",
+      "where": "gui/src/__tests__/selectionStore.test.ts (existing tests), gui/src/__tests__/engineStore.test.ts",
+      "how": "Wrap all reactive code in createRoot, call dispose() at end to clean up"
+    },
+    {
+      "what": "Existing selectionStore test structure",
+      "where": "gui/src/__tests__/selectionStore.test.ts",
+      "how": "Add new describe block for backend sync tests alongside existing state-mutation tests"
+    }
+  ],
+  "_session_id": "592-ad49c338",
+  "_created_at": "2026-03-27T23:34:05.729883+00:00"
+}
