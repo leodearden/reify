@@ -200,3 +200,125 @@ fn gradient_of_valid_field_returns_gradient_field() {
         other => panic!("expected Value::Field for gradient(valid_field), got: {:?}", other),
     }
 }
+
+// ── Step 3: sampling gradient fields tests ────────────────────────────
+
+/// Build a Point3 value with given coordinates and dimension.
+fn make_point3(x: f64, y: f64, z: f64, dim: DimensionVector) -> Value {
+    Value::Point(vec![
+        Value::Scalar {
+            si_value: x,
+            dimension: dim,
+        },
+        Value::Scalar {
+            si_value: y,
+            dimension: dim,
+        },
+        Value::Scalar {
+            si_value: z,
+            dimension: dim,
+        },
+    ])
+}
+
+#[test]
+fn sample_gradient_of_constant_field_near_zero() {
+    // Build constant field f(p) = 5.0 (Scalar<Length>)
+    let field = make_valid_scalar_field(); // Point3<Length> -> Scalar<Length>, lambda body = 5.0
+
+    // Build gradient(field) expr
+    let domain = Type::point3(Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    });
+    let codomain = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+    let field_type = Type::Field {
+        domain: Box::new(domain.clone()),
+        codomain: Box::new(codomain),
+    };
+    let gradient_expr = make_call(
+        "gradient",
+        vec![CompiledExpr::literal(field, field_type)],
+        Type::Real,
+    );
+
+    // Build sample(gradient_field, point3(1,2,3)) expr
+    let point = make_point3(1.0, 2.0, 3.0, DimensionVector::LENGTH);
+    let sample_expr = make_call(
+        "sample",
+        vec![
+            gradient_expr,
+            CompiledExpr::literal(point, Type::point3(Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            })),
+        ],
+        Type::vec3(Type::Scalar {
+            dimension: DimensionVector::DIMENSIONLESS,
+        }),
+    );
+
+    let values = ValueMap::new();
+    let result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    // Gradient of a constant field should be ~[0, 0, 0]
+    match &result {
+        Value::Vector(components) => {
+            assert_eq!(components.len(), 3, "gradient should have 3 components");
+            for (i, comp) in components.iter().enumerate() {
+                let v = comp.as_f64().unwrap_or_else(|| {
+                    panic!("component {} should be numeric, got: {:?}", i, comp)
+                });
+                assert!(
+                    v.abs() < 1e-3,
+                    "gradient component {} of constant field should be ~0, got: {}",
+                    i,
+                    v
+                );
+            }
+        }
+        other => panic!(
+            "sample(gradient(constant_field), point) should return Vector, got: {:?}",
+            other
+        ),
+    }
+}
+
+#[test]
+fn sample_gradient_with_non_point3_returns_undef() {
+    // Build gradient field
+    let field = make_valid_scalar_field();
+    let domain = Type::point3(Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    });
+    let codomain = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+    let field_type = Type::Field {
+        domain: Box::new(domain),
+        codomain: Box::new(codomain),
+    };
+    let gradient_expr = make_call(
+        "gradient",
+        vec![CompiledExpr::literal(field, field_type)],
+        Type::Real,
+    );
+
+    // Try to sample with a non-Point3 value (a scalar)
+    let sample_expr = make_call(
+        "sample",
+        vec![
+            gradient_expr,
+            CompiledExpr::literal(Value::Real(42.0), Type::Real),
+        ],
+        Type::Real,
+    );
+
+    let values = ValueMap::new();
+    let result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+    assert!(
+        result.is_undef(),
+        "sample(gradient_field, non_point3) should be Undef, got: {:?}",
+        result
+    );
+}
