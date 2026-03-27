@@ -79,12 +79,11 @@ fn determine_context(source: &str, position: Position) -> CompletionContext {
     let line_before = before_cursor[line_start..].trim();
 
     // Type annotation: after ':' in param/sub declaration, no '=' yet
-    if line_before.starts_with("param ") || line_before.starts_with("sub ") {
-        if let Some(colon_pos) = line_before.find(':') {
-            if !line_before[colon_pos + 1..].contains('=') {
-                return CompletionContext::TypeAnnotation;
-            }
-        }
+    if (line_before.starts_with("param ") || line_before.starts_with("sub "))
+        && let Some(colon_pos) = line_before.find(':')
+        && !line_before[colon_pos + 1..].contains('=')
+    {
+        return CompletionContext::TypeAnnotation;
     }
 
     // Expression: after '=' assignment
