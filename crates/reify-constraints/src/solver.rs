@@ -494,6 +494,11 @@ impl ConstraintSolver for DimensionalSolver {
 
         // Pure feasibility (no objective) + already feasible: return immediately
         if initially_feasible && problem.objective.is_none() {
+            let n_params = problem.auto_params.len();
+            tracing::debug!(
+                n_params,
+                "initial point already feasible with no objective; returning early"
+            );
             let mut values = HashMap::new();
             for (param, &val) in problem.auto_params.iter().zip(initial.iter()) {
                 values.insert(
