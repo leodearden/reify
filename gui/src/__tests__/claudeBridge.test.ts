@@ -302,44 +302,94 @@ describe('subscribeToClaudeEvents', () => {
     });
   });
 
-  it('extra unknown fields in payload are not forwarded to handler', async () => {
-    let capturedHandler: ((event: { payload: unknown }) => void) | undefined;
-    mockListen.mockImplementation(async (eventName, handler) => {
-      if (eventName === 'claude-done') {
-        capturedHandler = handler as (event: { payload: unknown }) => void;
-      }
-      return vi.fn();
+  describe('payload validation rejection', () => {
+    /**
+     * Helper: set up mockListen to capture the handler for a specific event name.
+     * Returns a function that, when called, retrieves the captured handler.
+     */
+    function captureEventHandler(eventName: string) {
+      let captured: ((event: { payload: unknown }) => void) | undefined;
+      mockListen.mockImplementation(async (name, handler) => {
+        if (name === eventName) {
+          captured = handler as (event: { payload: unknown }) => void;
+        }
+        return vi.fn();
+      });
+      return () => captured!;
+    }
+
+    it('rejects malformed claude-text-delta payload (missing id) with console.warn', async () => {
+      const getCaptured = captureEventHandler('claude-text-delta');
+      const handler = vi.fn();
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      await subscribeToClaudeEvents(handler);
+
+      getCaptured()({ payload: { content: 'Hello' } }); // missing id
+
+      expect(handler).not.toHaveBeenCalled();
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(warnSpy.mock.calls[0][0]).toContain('claude-text-delta');
+      warnSpy.mockRestore();
     });
 
-    const handler = vi.fn();
-    await subscribeToClaudeEvents(handler);
+    it('rejects malformed claude-tool-call payload (tool_input is string) with console.warn', async () => {
+      const getCaptured = captureEventHandler('claude-tool-call');
+      const handler = vi.fn();
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      await subscribeToClaudeEvents(handler);
 
-    // Simulate payload with extra unknown fields that should NOT be forwarded
-    capturedHandler!({ payload: { id: 'x', _internal: true, debug_ts: 12345 } });
+      getCaptured()({ payload: { id: 'msg-2', tool_name: 'edit_file', tool_input: 'not-object' } });
 
-    expect(handler).toHaveBeenCalledWith({ type: 'done', id: 'x' });
-  });
-
-  it('payload type field does not override mapped event type', async () => {
-    let capturedHandler: ((event: { payload: unknown }) => void) | undefined;
-    mockListen.mockImplementation(async (eventName, handler) => {
-      if (eventName === 'claude-text-delta') {
-        capturedHandler = handler as (event: { payload: unknown }) => void;
-      }
-      return vi.fn();
+      expect(handler).not.toHaveBeenCalled();
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(warnSpy.mock.calls[0][0]).toContain('claude-tool-call');
+      warnSpy.mockRestore();
     });
 
-    const handler = vi.fn();
-    await subscribeToClaudeEvents(handler);
+    it('rejects malformed claude-error payload (missing message) with console.warn', async () => {
+      const getCaptured = captureEventHandler('claude-error');
+      const handler = vi.fn();
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      await subscribeToClaudeEvents(handler);
 
-    // Simulate payload with a rogue `type` field that should NOT override the mapped type
-    capturedHandler!({ payload: { id: 'x', content: 'hi', type: 'WRONG' } });
+      getCaptured()({ payload: { id: 'msg-4' } }); // missing message
 
-    expect(handler).toHaveBeenCalledWith(
-      expect.objectContaining({ type: 'text_delta' }),
-    );
-    // Explicitly verify type is NOT 'WRONG'
-    expect(handler.mock.calls[0][0].type).toBe('text_delta');
+      expect(handler).not.toHaveBeenCalled();
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(warnSpy.mock.calls[0][0]).toContain('claude-error');
+      warnSpy.mockRestore();
+    });
+
+    it('rejects malformed claude-done payload (id is number) with console.warn', async () => {
+      const getCaptured = captureEventHandler('claude-done');
+      const handler = vi.fn();
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      await subscribeToClaudeEvents(handler);
+
+      getCaptured()({ payload: { id: 42 } }); // id should be string
+
+      expect(handler).not.toHaveBeenCalled();
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(warnSpy.mock.calls[0][0]).toContain('claude-done');
+      warnSpy.mockRestore();
+    });
+
+    it('still forwards valid payloads when guards are active', async () => {
+      const getCaptured = captureEventHandler('claude-text-delta');
+      const handler = vi.fn();
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      await subscribeToClaudeEvents(handler);
+
+      getCaptured()({ payload: { id: 'msg-1', content: 'Hello' } });
+
+      expect(handler).toHaveBeenCalledWith({
+        type: 'text_delta',
+        id: 'msg-1',
+        content: 'Hello',
+      });
+      expect(warnSpy).not.toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
   });
 
   describe('listener rollback on partial failure', () => {
