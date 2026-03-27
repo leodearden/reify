@@ -6747,11 +6747,11 @@
         "description": "Fix phase(0+0i) returning Scalar{0.0, ANGLE} instead of Undef (mathematically undefined). Extract complex_component_to_value() helper to deduplicate dimension-to-value conversion pattern across re/im/magnitude (3-way duplication).\n\nMissing tests to add:\n- NaN/Inf in second arg (im) for complex functions (only first arg tested)\n- phase(0+0i) edge case\n- phase() on dimensioned Complex (documents dimension-agnostic behavior)\n- magnitude(0+0i) edge case\n- Negative assertions that re/im are NOT in LSP completions (guards design decision)\n\nMemory hints: search \"phase complex magnitude edge case\", entities: eval_builtin, phase, complex_magnitude",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-03-27T06:07:01.221Z"
+        "updatedAt": "2026-03-27T06:11:37.599Z"
       },
       {
         "id": "361",
@@ -8723,7 +8723,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-27T06:07:34.076Z",
+      "lastModified": "2026-03-27T06:11:37.599Z",
       "taskCount": 516,
       "completedCount": 253,
       "tags": [
