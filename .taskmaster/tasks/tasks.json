@@ -6829,7 +6829,10 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-27T06:25:13.458Z"
+        "updatedAt": "2026-03-27T06:25:13.458Z",
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+        }
       },
       {
         "id": 357,
