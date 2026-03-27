@@ -10766,6 +10766,19 @@
         ],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 547,
+        "title": "Extract errorMessage utility from 8 inline copies in GUI",
+        "description": "Review finding from task 522: `err instanceof Error ? err.message : String(err)` appears 8 times across App.tsx (lines ~70, 77, 163, 175, 292, 307, 321) and Editor.tsx. gui/src/utils/ already has errorClassifier.ts, making it a natural home.\n\n1. Add `export function errorMessage(err: unknown): string { return err instanceof Error ? err.message : String(err); }` to gui/src/utils/errorClassifier.ts (or new gui/src/utils/errors.ts).\n2. Replace all 8 inline occurrences across App.tsx and Editor.tsx.\n3. Update any tests that mock or assert on the inline pattern.\n\nMemory hints: search \"errorMessage utility err instanceof Error App.tsx Editor.tsx\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          522
+        ],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -10778,7 +10791,7 @@
       ],
       "created": "2026-03-27T08:55:05.090Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-27T08:55:05.095Z"
+      "updated": "2026-03-27T08:55:11.445Z"
     }
   }
 }
