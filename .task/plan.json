@@ -67,15 +67,15 @@
       "id": "step-7",
       "type": "test",
       "description": "Run full test suite for reify-constraints crate: `cargo test -p reify-constraints`. Verify all 18+ existing integration tests plus 3 new tests pass. Verify no regressions in unit tests.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "8e24f124"
     },
     {
       "id": "step-8",
       "type": "impl",
       "description": "Update the NOTE comment at line 639-643 to reflect the new TerminationReason extraction and tracing. Document that convergence quality is now logged via tracing but NOT propagated through the SolveResult API to preserve backward compatibility across 6+ consumer crates.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "0300cb89"
     }
   ],
   "design_decisions": [
