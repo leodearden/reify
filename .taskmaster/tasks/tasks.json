@@ -11139,11 +11139,11 @@
         "description": "Three test quality fixes in reify-cli tests.",
         "details": "1. Replace 9 instances of assert_ne!(response[\"result\"][\"isError\"], true) with assert_eq!(..., Value::Bool(false)) in mcp_integration.rs — catches malformed responses where isError is absent.\n2. Change mcp_server_tools_list_returns_16_tools to assert minimum count and/or check specific tool names instead of exact count. Update test name.\n3. Rename gui_with_valid_ri_file_attempts_launch to gui_with_valid_ri_file_skips_launch_when_env_set in cli_gui.rs.\n\nFiles: crates/reify-cli/tests/mcp_integration.rs, crates/reify-cli/tests/cli_gui.rs",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-27T23:31:54.305Z",
+        "updatedAt": "2026-03-27T23:46:07.150Z",
         "metadata": {
           "modules": [
             "crates/reify-cli"
@@ -12478,9 +12478,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-27T23:46:06.048Z",
+      "lastModified": "2026-03-27T23:46:07.150Z",
       "taskCount": 612,
-      "completedCount": 278,
+      "completedCount": 279,
       "tags": [
         "master"
       ]
