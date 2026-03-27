@@ -75,13 +75,17 @@ impl ConcurrentEvalAdapter {
     }
 
     /// Get a snapshot of the current values (for testing/inspection).
+    ///
+    /// Recovers gracefully from poisoned locks via `unwrap_or_else`.
     pub fn values(&self) -> ValueMap {
-        self.values.read().unwrap().clone()
+        self.values.read().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// Take the collected results (for testing/inspection).
+    ///
+    /// Recovers gracefully from poisoned locks via `unwrap_or_else`.
     pub fn take_results(&self) -> Vec<ConcurrentNodeResult> {
-        self.results.lock().unwrap().clone()
+        self.results.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// Build a `ConcurrentEditResult` via shared references (cloning).
