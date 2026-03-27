@@ -7300,7 +7300,15 @@
         "subtasks": [],
         "updatedAt": "2026-03-26T02:19:24.667Z",
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-types/src/value.rs",
+            "crates/reify-test-support/src/builders.rs"
+          ],
+          "modules": [
+            "crates/reify-types/src",
+            "crates/reify-test-support/src"
+          ]
         }
       },
       {
@@ -7317,7 +7325,17 @@
         "subtasks": [],
         "updatedAt": "2026-03-26T12:05:53.168Z",
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-types/src/value.rs",
+            "crates/reify-lsp/src/analysis.rs",
+            "gui/src-tauri/src/types.rs"
+          ],
+          "modules": [
+            "crates/reify-types/src",
+            "crates/reify-lsp/src",
+            "gui/src-tauri/src"
+          ]
         }
       },
       {
