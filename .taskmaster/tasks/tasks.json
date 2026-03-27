@@ -3468,7 +3468,7 @@
         "dependencies": [
           "201"
         ],
-        "status": "in-progress",
+        "status": "pending",
         "metadata": {
           "modules": [
             "crates/reify-eval",
@@ -3477,7 +3477,7 @@
           "milestone": "M9"
         },
         "subtasks": [],
-        "updatedAt": "2026-03-26T18:25:46.284Z"
+        "updatedAt": "2026-03-27T06:07:00.095Z"
       },
       {
         "id": "203",
@@ -3588,7 +3588,7 @@
         "dependencies": [
           "207"
         ],
-        "status": "in-progress",
+        "status": "pending",
         "metadata": {
           "modules": [
             "crates/reify-compiler"
@@ -3596,7 +3596,7 @@
           "milestone": "M9"
         },
         "subtasks": [],
-        "updatedAt": "2026-03-26T18:26:30.678Z"
+        "updatedAt": "2026-03-27T06:07:00.126Z"
       },
       {
         "id": "209",
@@ -8723,7 +8723,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-27T06:07:00.048Z",
+      "lastModified": "2026-03-27T06:07:00.126Z",
       "taskCount": 516,
       "completedCount": 253,
       "tags": [
