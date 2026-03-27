@@ -8173,7 +8173,19 @@
         "subtasks": [],
         "updatedAt": "2026-03-26T07:29:32.389Z",
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "memory_hints": {
+            "entities": [
+              "UnitRegistry",
+              "CompilationScope",
+              "unit_registry_ptr"
+            ],
+            "queries": [
+              "unsafe raw UnitRegistry pointer CompilationScope lifetime",
+              "task 208 unit registry branch status",
+              "reference threading compile_expr_guarded"
+            ]
+          }
         }
       },
       {
