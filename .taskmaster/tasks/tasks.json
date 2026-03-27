@@ -11777,6 +11777,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 587,
+        "title": "LSP: Add missing occurrence test cases",
+        "description": "Several test gaps for occurrence handling in the LSP:\n\n1. analysis.rs find_member_decl_occurrence_param: Add cell_type assertion (`assert!(matches!(info.cell_type, Type::Scalar { .. }))`) — currently only checks name and kind but not the type from the compiled module.\n2. goto_def.rs: Add `goto_def_occurrence_let_returns_location` test for Let members inside occurrences (only Param is tested).\n3. hover.rs: Add `hover_on_documented_occurrence_shows_doc` test — the integration path through hover.rs for occurrence doc comments isn't exercised.\n4. analysis.rs: Add `find_entity_doc_returns_none_for_undocumented_occurrence` negative case test.\n\nMemory hints: search \"LSP occurrence test coverage\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -11789,7 +11800,7 @@
       ],
       "created": "2026-03-27T11:29:42.301Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-27T11:29:53.187Z"
+      "updated": "2026-03-27T11:29:57.700Z"
     }
   }
 }
