@@ -10922,6 +10922,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 560,
+        "title": "Extract lock-recovery helpers on ConcurrentEvalAdapter",
+        "description": "12 inline occurrences of .unwrap_or_else(|e| e.into_inner()) pattern. Extract into private helper methods matching CliToolContext::lock_state() precedent.",
+        "details": "Add private helper methods (read_values(), write_values(), read_snapshot_values(), write_snapshot_values(), lock_results()) that encapsulate the .unwrap_or_else(|e| e.into_inner()) pattern. Replace all 12 inline occurrences.\n\nFiles: crates/reify-runtime/src/concurrent_eval.rs",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -10934,7 +10945,7 @@
       ],
       "created": "2026-03-27T09:00:04.578Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-27T09:01:06.085Z"
+      "updated": "2026-03-27T09:01:10.072Z"
     }
   }
 }
