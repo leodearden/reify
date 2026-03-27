@@ -12057,6 +12057,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 609,
+        "title": "Store grammar_hash.stamp in profile-independent location",
+        "description": "The stamp file is written to OUT_DIR which is unique per cargo profile (test/build/clippy). Switching profiles triggers redundant regeneration even when grammar.js hasn't changed. Store the stamp alongside the generated files in tree-sitter-reify/src/ (already gitignored) or at a fixed path in target/, so all cargo invocations share one stamp.",
+        "details": "File: tree-sitter-reify/build.rs:138-139. This multiplies unnecessary tree-sitter generate calls in the orchestrator's multi-command verification pipeline. Memory hint: search for \"task 563 stamp file\" for context.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -12069,7 +12080,7 @@
       ],
       "created": "2026-03-27T12:02:44.768Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-27T12:02:54.560Z"
+      "updated": "2026-03-27T12:02:59.494Z"
     }
   }
 }
