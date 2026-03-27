@@ -116,6 +116,20 @@ pub enum Value {
     Undef,
 }
 
+/// Normalize range inclusivity flags: force `inclusive=false` when the
+/// corresponding bound is `None` (unbounded endpoint cannot be inclusive).
+fn normalize_range_flags<T>(
+    lower: &Option<T>,
+    upper: &Option<T>,
+    lower_inclusive: bool,
+    upper_inclusive: bool,
+) -> (bool, bool) {
+    (
+        lower_inclusive && lower.is_some(),
+        upper_inclusive && upper.is_some(),
+    )
+}
+
 impl Value {
     /// Create a scalar with LENGTH dimension from a value in meters.
     pub fn length(meters: f64) -> Self {
