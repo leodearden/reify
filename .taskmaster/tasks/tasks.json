@@ -10510,7 +10510,9 @@
         "details": "",
         "testStrategy": "",
         "status": "pending",
-        "dependencies": [],
+        "dependencies": [
+          "495"
+        ],
         "priority": "low",
         "subtasks": []
       },
@@ -10521,7 +10523,9 @@
         "details": "",
         "testStrategy": "",
         "status": "pending",
-        "dependencies": [],
+        "dependencies": [
+          "495"
+        ],
         "priority": "medium",
         "subtasks": []
       },
