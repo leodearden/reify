@@ -8787,6 +8787,19 @@
         ],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 523,
+        "title": "Improve Claude bridge test coverage and reduce boilerplate",
+        "description": "Review findings from task 476 (Claude IPC bridge) — test coverage gaps and quality improvements:\n\n1. **App cleanup test gap** (App.test.tsx): Cleanup/unmount test doesn't verify `claudeEventUnsub` is called. Add `priorClaudeUnsub = vi.fn()`, mock `subscribeToClaudeEvents` to return it, assert it's called after unmount.\n\n2. **Missing error-path App test**: No test for `subscribeToClaudeEvents` rejection showing 'Claude assistant unavailable' toast. Add test following the pattern of other subscription-failure toasts.\n\n3. **capturedHandler assertion** (claudeBridge.test.ts:147+): All 7 payload-mapping tests use `capturedHandler!` without `expect(capturedHandler).toBeDefined()` first. Add the assertion to convert cryptic TypeError into clear failure.\n\n4. **Test boilerplate** (claudeBridge.test.ts:136-278): capturedHandler pattern repeated 7 times. Refactor to `test.each` over event name / payload / expected-message tuples, or extract a helper.\n\n5. **Missing invoke rejection tests**: No tests verifying `claudeSendMessage`/`claudeAbort`/`claudeClearSession` propagate rejections from `invoke`.\n\n6. **rAF flush path untested** (claudeIntegration.test.ts): rAF-batching flush path is never exercised — done always flushes synchronously. Add test firing text-delta without done, then manually flush rAF queue.\n\n7. **Restore globals** (claudeIntegration.test.ts:6-13): `requestAnimationFrame`/`cancelAnimationFrame` replaced but never restored. Add `afterAll` to restore originals.\n\nModules: gui/src/__tests__/claudeBridge.test.ts, gui/src/__tests__/claudeIntegration.test.ts, gui/src/__tests__/App.test.tsx\n\nMemory hints: search \"claudeBridge test capturedHandler subscribeToClaudeEvents\", entities: claudeBridge.test.ts, claudeIntegration.test.ts",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          476
+        ],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -8799,7 +8812,7 @@
       ],
       "created": "2026-03-27T06:49:14.671Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-27T06:49:14.676Z"
+      "updated": "2026-03-27T06:49:26.873Z"
     }
   }
 }
