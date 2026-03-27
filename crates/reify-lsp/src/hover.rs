@@ -459,6 +459,21 @@ mod tests {
         );
     }
 
+    // --- occurrence hover tests ---
+
+    #[test]
+    fn hover_on_occurrence_name_shows_occurrence_keyword() {
+        let source = "occurrence def Joint {\n    param diameter: Scalar = 10mm\n}";
+        // 'Joint' starts after 'occurrence def ' = col 15
+        let position = Position::new(0, 16);
+        let md = hover_markdown(source, position)
+            .expect("hover should return info for occurrence name");
+        assert!(
+            md.contains("occurrence Joint"),
+            "should show 'occurrence Joint', not 'structure Joint', got: {md}"
+        );
+    }
+
     // --- edge cases ---
 
     #[test]
