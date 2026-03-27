@@ -10870,10 +10870,11 @@
         "description": "Remove physical_own_params_are_real (exact duplicate of step-5 logic). Unify all_stdlib_modules_have_zero_error_diagnostics with all_stdlib_modules_have_no_errors in stdlib_loader_tests.rs. Fix overly strict trait_defs.is_empty assertion.",
         "details": "1. Remove physical_own_params_are_real — lines 131-157 are identical to the param-checking block at lines 178-215.\n2. Unify all_stdlib_modules_have_zero_error_diagnostics with all_stdlib_modules_have_no_errors in stdlib_loader_tests.rs — both iterate load_stdlib() and assert no Error diagnostics.\n3. Fix the !module.trait_defs.is_empty() assertion — future stdlib modules may have only functions/enums.\n\nFiles: crates/reify-compiler/tests/structural_physical_tests.rs, crates/reify-compiler/tests/stdlib_loader_tests.rs",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-03-27T09:11:06.355Z"
       },
       {
         "id": "553",
@@ -11050,7 +11051,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-27T09:11:05.972Z",
+      "lastModified": "2026-03-27T09:11:06.355Z",
       "taskCount": 567,
       "completedCount": 263,
       "tags": [
