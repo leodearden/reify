@@ -11766,6 +11766,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 586,
+        "title": "LSP: Deduplicate member iteration in find_parsed_member_span_and_doc",
+        "description": "find_parsed_member_span_and_doc in analysis.rs duplicates the full member-iteration loop for Structure and Occurrence arms (12 lines each, identical). goto_def.rs already uses the cleaner extract-then-iterate pattern: extract `let members = match decl { Structure(s) => &s.members, Occurrence(o) => &o.members, _ => continue };` then iterate once.\n\nApply the same extract-then-iterate pattern in find_parsed_member_span_and_doc to eliminate duplication and align with the pattern already used in goto_def.rs.\n\nMemory hints: search \"LSP analysis member iteration dedup pattern\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -11778,7 +11789,7 @@
       ],
       "created": "2026-03-27T11:29:42.301Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-27T11:29:48.367Z"
+      "updated": "2026-03-27T11:29:53.187Z"
     }
   }
 }
