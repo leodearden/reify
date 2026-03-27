@@ -10460,10 +10460,11 @@
         "description": "When compile_geometry_op returns None for a step in a realization sequence, no handle is pushed to step_handles. Subsequent operations referencing that missing step via GeomRef::Step(idx) silently resolve to a wrong handle or also return None, generating cascading 'failed to compile geometry operation' diagnostics that bury the root cause. Consider pushing a sentinel handle or aborting the realization early on the first failure, so downstream ops don't produce misleading redundant diagnostics. Memory hint: search for \"compile_geometry_op\" and \"realization sequence\".",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-03-27T08:19:30.581Z"
       },
       {
         "id": "528",
@@ -10578,7 +10579,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-27T08:19:29.908Z",
+      "lastModified": "2026-03-27T08:19:30.581Z",
       "taskCount": 537,
       "completedCount": 256,
       "tags": [
