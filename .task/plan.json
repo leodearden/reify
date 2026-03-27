@@ -11,7 +11,7 @@
     "crates/reify-runtime/src",
     "crates/reify-runtime/tests"
   ],
-  "analysis": "ConcurrentScheduler::execute in concurrent.rs currently takes 5 parameters (eval_set, evaluator, traces, cancel, changed_cells) and only checks cancel.is_cancelled() at the top of each level loop. It has no integration with CommitmentTracker (commitment.rs) or SharedPriorityPromoter (priority_promotion.rs), both of which are fully implemented and unit-tested from task #31.\n\nThe approach is:\n1. Create a SchedulerConfig struct holding optional commitment/priority/override data.\n2. Add execute_with_config method; existing execute delegates with SchedulerConfig::default() for backward compat.\n3. Wire priority sorting (sort dirty_nodes by effective_priority before spawning).\n4. Wire OnlyRunOnFinalInputs skip (during dirty/skip pre-computation).\n5. Wire commitment-aware result handling (spawned tasks check cancel + commitment after eval).\n6. Wire registration/cleanup lifecycle (register in tracker+promoter at spawn, remove on completion).\n\nKey design constraints:\n- Priority enum is Ord: P0Interactive < P1Fast < P1Slow < P3Speculative (lower = higher priority).\n- CommitmentTracker requires mut for register/update/remove but only & for should_continue/is_committed, so Arc<Mutex<>> is needed.\n- SharedPriorityPromoter already has internal Mutex for thread-safety.\n- #[tokio::test] uses current_thread runtime so spawn order = execution order for sync evaluators, enabling deterministic priority ordering tests.\n- Existing callers (edit_param_concurrent, all existing tests) use execute() directly and must not break.\n- Commitment check in spawned tasks: after evaluation completes, check cancel.is_cancelled(). If cancelled, update commitment status with actual elapsed time, then check should_continue. If not committed, drop the result (return None).\n- For OnlyRunOnFinalInputs: check before spawning, during dirty/skip pre-computation. If node_overrides[node] == OnlyRunOnFinalInputs && has_intermediate_inputs(node), add to skipped.\n- CommitmentTracker.should_continue returns false for unregistered nodes in dirty cone, so registration must happen before commitment checks can work.",
+  "analysis": "ConcurrentScheduler::execute in concurrent.rs currently takes 5 parameters (eval_set, evaluator, traces, cancel, changed_cells) and only checks cancel.is_cancelled() at the top of each level loop. It has no integration with CommitmentTracker (commitment.rs) or SharedPriorityPromoter (priority_promotion.rs), both of which are fully implemented and unit-tested from task #31.\n\nThe approach is:\n1. Create a SchedulerConfig struct holding optional commitment/priority/override data.\n2. Add execute_with_config method; existing execute delegates with SchedulerConfig::default() for backward compat.\n3. Wire priority sorting (sort dirty_nodes by effective_priority before spawning).\n4. Wire OnlyRunOnFinalInputs skip (during dirty/skip pre-computation).\n5. Wire commitment-aware result handling (spawned tasks check cancel + commitment after eval).\n6. Wire registration/cleanup lifecycle (register in tracker+promoter at spawn, remove on completion).\n7. Ensure cleanup runs on ALL exit paths including error returns (TaskPanicked, TaskCancelled).\n\nKey design constraints:\n- Priority enum is Ord: P0Interactive < P1Fast < P1Slow < P3Speculative (lower = higher priority).\n- CommitmentTracker requires mut for register/update/remove but only & for should_continue/is_committed, so Arc<Mutex<>> is needed.\n- SharedPriorityPromoter already has internal Mutex for thread-safety.\n- #[tokio::test] uses current_thread runtime so spawn order = execution order for sync evaluators, enabling deterministic priority ordering tests.\n- Existing callers (edit_param_concurrent, all existing tests) use execute() directly and must not break.\n- Commitment check in spawned tasks: after evaluation completes, check cancel.is_cancelled(). If cancelled, update commitment status with actual elapsed time, then check should_continue. If not committed, drop the result (return None).\n- For OnlyRunOnFinalInputs: check before spawning, during dirty/skip pre-computation. If node_overrides[node] == OnlyRunOnFinalInputs && has_intermediate_inputs(node), add to skipped.\n- CommitmentTracker.should_continue returns false for unregistered nodes in dirty cone, so registration must happen before commitment checks can work.",
   "prerequisites": [
     {
       "id": "pre-1",
@@ -112,6 +112,34 @@
       "description": "Run full test suite (cargo test -p reify-runtime) to verify all existing tests in concurrent.rs, commitment.rs, priority_promotion.rs, and tests/concurrent_eval.rs still pass unchanged. The backward-compat execute() method should produce identical behavior to before.",
       "status": "done",
       "commit": "e96e5a28"
+    },
+    {
+      "id": "step-11",
+      "type": "test",
+      "description": "Write failing test test_cleanup_on_task_panic in tests/concurrent_eval.rs. Two nodes at same level with commitment_tracker and priority_promoter wired via SchedulerConfig. Use a PanickingEvaluator (panics on evaluate). Call execute_with_config and assert it returns Err(SchedulerError::TaskPanicked(_)). Then assert tracker.lock().unwrap().task_count() == 0 and promoter.count() == 0. This test FAILS because the current code's early `return Err(SchedulerError::TaskPanicked(...))` at line 353 bypasses the cleanup block at lines 361-372, leaving stale entries in both structures.",
+      "status": "done",
+      "commit": "a8218e7d"
+    },
+    {
+      "id": "step-12",
+      "type": "test",
+      "description": "Write failing test test_cleanup_on_task_cancelled in tests/concurrent_eval.rs. Two nodes at same level with commitment_tracker and priority_promoter wired via SchedulerConfig. Use an evaluator where one node spawns tokio::spawn_blocking that aborts the JoinHandle (or use a custom setup that triggers the Err(_) non-panic branch in handle.await). Call execute_with_config and assert it returns Err(SchedulerError::TaskCancelled). Then assert tracker.lock().unwrap().task_count() == 0 and promoter.count() == 0. This test FAILS because the `return Err(SchedulerError::TaskCancelled)` at line 356 also bypasses the cleanup block.",
+      "status": "done",
+      "commit": "410b19e7"
+    },
+    {
+      "id": "step-13",
+      "type": "impl",
+      "description": "Fix resource cleanup on error paths in execute_with_config. Extract the cleanup logic (lines 361-372) into a local closure `cleanup_level` that takes &dirty_nodes, &config.commitment_tracker, &config.priority_promoter and removes all dirty_nodes from both structures using the poison-recovery lock pattern. Call this closure: (1) before each `return Err(...)` in the join loop (TaskPanicked and TaskCancelled branches), and (2) at the existing normal cleanup site after the join loop. This ensures Arc-shared tracker/promoter never retain stale entries regardless of exit path. Makes step-11 and step-12 pass.",
+      "status": "done",
+      "commit": "1397753a"
+    },
+    {
+      "id": "step-14",
+      "type": "test",
+      "description": "Run full test suite (cargo test -p reify-runtime) to verify all existing tests still pass, including the pre-existing rollback_on_task_panicked_restores_engine_state and resilient_after_panic_rollback_reeval tests which exercise the panic path via execute() (no config). Confirms the cleanup fix doesn't break any existing behavior.",
+      "status": "pending",
+      "commit": null
     }
   ],
   "design_decisions": [
@@ -142,6 +170,10 @@
     {
       "decision": "Priority ordering test relies on #[tokio::test] current_thread runtime for deterministic spawn-order execution",
       "rationale": "tokio::test defaults to current_thread runtime. With synchronous evaluators (no .await points other than the trait method), tasks execute in spawn order. This makes priority ordering assertions deterministic without needing barriers or channels."
+    },
+    {
+      "decision": "Use local closure for cleanup rather than RAII/scopeguard, called on all exit paths including error returns",
+      "rationale": "A local closure `cleanup_level` is idiomatic Rust, zero-dependency (no scopeguard crate), and explicit about when cleanup happens. Called at three sites: before return Err(TaskPanicked), before return Err(TaskCancelled), and at the normal end-of-level cleanup. This is clearer than a drop guard because the cleanup is synchronous and the logic is simple (iterate dirty_nodes, call remove on tracker and promoter). RAII guards would require capturing mutable references into a guard struct, which adds complexity for marginal benefit."
     }
   ],
   "reuse": [
@@ -179,8 +211,13 @@
       "what": "Poison-recovery pattern (unwrap_or_else(|e| e.into_inner()))",
       "where": "crates/reify-runtime/src/priority_promotion.rs SharedPriorityPromoter methods",
       "how": "Apply same Mutex poison recovery pattern when locking CommitmentTracker in spawned tasks and in the execute_with_config cleanup code. Consistent with ConcurrentEvalAdapter design decision for graceful lock recovery."
+    },
+    {
+      "what": "PanickingEvaluator test pattern",
+      "where": "crates/reify-runtime/tests/concurrent_eval.rs (rollback_on_task_panicked_restores_engine_state)",
+      "how": "Reuse the same PanickingEvaluator struct pattern (panics in evaluate) for the cleanup-on-panic test. Adapt to use execute_with_config instead of execute."
     }
   ],
   "_session_id": "477-30b2ca30",
-  "_created_at": "2026-03-27T08:47:53.954515+00:00"
+  "_created_at": "2026-03-27T09:21:48.595984+00:00"
 }
