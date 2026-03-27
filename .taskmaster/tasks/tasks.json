@@ -7511,7 +7511,8 @@
         "metadata": {
           "modules": [
             "crates/reify-kernel-occt"
-          ]
+          ],
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         },
         "subtasks": [],
         "updatedAt": "2026-03-26T02:36:50.633Z"
