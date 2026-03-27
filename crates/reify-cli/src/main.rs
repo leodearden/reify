@@ -174,20 +174,7 @@ fn cmd_build(args: &[String]) -> ExitCode {
     }
 
     // Report constraint status
-    let mut all_satisfied = true;
-    for entry in &result.constraint_results {
-        let status = match entry.satisfaction {
-            Satisfaction::Satisfied => "OK",
-            Satisfaction::Violated => {
-                all_satisfied = false;
-                "VIOLATED"
-            }
-            Satisfaction::Indeterminate => "INDETERMINATE",
-        };
-        let id_str = format!("{}", entry.id);
-        let label = entry.label.as_deref().unwrap_or(&id_str);
-        println!("  {} {}", status, label);
-    }
+    let all_satisfied = report_constraints(&result.constraint_results);
 
     match result.geometry_output {
         Some(data) => {
