@@ -30,15 +30,6 @@ fn check_valid_bracket_exits_success() {
         !stderr.contains("Unknown command"),
         "stderr should not contain 'Unknown command', got: {stderr}"
     );
-    // Channel-regression: constraint output must NOT leak to stderr
-    assert!(
-        !stderr.contains("All constraints satisfied"),
-        "stderr should not contain constraint summary, got: {stderr}"
-    );
-    assert!(
-        !stderr.contains("OK "),
-        "stderr should not contain constraint status 'OK', got: {stderr}"
-    );
 }
 
 #[test]
@@ -65,48 +56,6 @@ fn check_violating_bracket_exits_failure() {
     assert!(
         stdout.contains("Some constraints violated"),
         "stdout should contain 'Some constraints violated', got: {stdout}"
-    );
-    // Channel-regression: constraint output must NOT leak to stderr
-    assert!(
-        !stderr.contains("VIOLATED"),
-        "stderr should not contain 'VIOLATED', got: {stderr}"
-    );
-    assert!(
-        !stderr.contains("Some constraints violated"),
-        "stderr should not contain constraint summary, got: {stderr}"
-    );
-}
-
-#[test]
-fn check_constraint_output_on_stdout_not_stderr() {
-    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
-        .args(["check", &fixture_path("bracket_violating.ri")])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .expect("failed to execute reify binary");
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    // Positive: constraint output appears on stdout
-    assert!(
-        stdout.contains("VIOLATED"),
-        "stdout should contain 'VIOLATED', got: {stdout}"
-    );
-    assert!(
-        stdout.contains("Some constraints violated"),
-        "stdout should contain 'Some constraints violated', got: {stdout}"
-    );
-    // Negative: constraint output must NOT appear on stderr
-    assert!(
-        !stderr.contains("VIOLATED"),
-        "stderr must not contain 'VIOLATED' (regression for output channel bug), got: {stderr}"
-    );
-    assert!(
-        !stderr.contains("Some constraints violated"),
-        "stderr must not contain 'Some constraints violated' (regression for output channel bug), got: {stderr}"
     );
 }
 

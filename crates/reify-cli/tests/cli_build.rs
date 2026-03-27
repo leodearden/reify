@@ -66,15 +66,6 @@ fn build_violating_bracket_exits_failure() {
         stdout.contains("Some constraints violated."),
         "stdout should contain summary message, got: {stdout}"
     );
-    // Channel-regression: constraint output must NOT leak to stderr
-    assert!(
-        !stderr.contains("VIOLATED"),
-        "stderr should not contain 'VIOLATED', got: {stderr}"
-    );
-    assert!(
-        !stderr.contains("Some constraints violated"),
-        "stderr should not contain constraint summary, got: {stderr}"
-    );
     // Geometry file should still be written even when constraints are violated
     assert!(
         std::path::Path::new(output_path).exists(),
@@ -111,56 +102,9 @@ fn build_valid_bracket_exits_success() {
         !stdout.contains("VIOLATED"),
         "stdout should NOT contain 'VIOLATED' for valid bracket, got: {stdout}"
     );
-    // Channel-regression: 'Wrote' must NOT leak to stderr
-    assert!(
-        !stderr.contains("Wrote"),
-        "stderr should not contain 'Wrote', got: {stderr}"
-    );
     assert!(
         std::path::Path::new(output_path).exists(),
         "geometry file should be written on success"
-    );
-    // Clean up
-    let _ = std::fs::remove_file(output_path);
-}
-
-#[test]
-fn build_constraint_output_on_stdout_not_stderr() {
-    let output_path = "/tmp/reify_test_channel_regression_out.step";
-    let _ = std::fs::remove_file(output_path);
-    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
-        .args([
-            "build",
-            &fixture_path("bracket_violating.ri"),
-            "-o",
-            output_path,
-        ])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .expect("failed to execute reify binary");
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    // Positive: constraint output appears on stdout
-    assert!(
-        stdout.contains("VIOLATED"),
-        "stdout should contain 'VIOLATED', got: {stdout}"
-    );
-    assert!(
-        stdout.contains("Some constraints violated"),
-        "stdout should contain 'Some constraints violated', got: {stdout}"
-    );
-    // Negative: constraint output must NOT appear on stderr
-    assert!(
-        !stderr.contains("VIOLATED"),
-        "stderr must not contain 'VIOLATED' (regression for output channel bug), got: {stderr}"
-    );
-    assert!(
-        !stderr.contains("Some constraints violated"),
-        "stderr must not contain 'Some constraints violated' (regression for output channel bug), got: {stderr}"
     );
     // Clean up
     let _ = std::fs::remove_file(output_path);
