@@ -735,6 +735,21 @@ fn compile_unit(
     } else {
         1.0 // base unit with no conversion expression
     };
+    // Defense-in-depth: reject zero and non-finite factors at the compile_unit level.
+    // A zero factor destroys unit information (all values map to the same SI value).
+    // A non-finite factor poisons all downstream computations.
+    if !factor.is_finite() || factor == 0.0 {
+        let msg = if factor == 0.0 {
+            format!("unit '{}' has zero conversion factor; factor must be finite and non-zero", decl.name)
+        } else {
+            format!("unit '{}' has non-finite conversion factor ({}); factor must be finite and non-zero", decl.name, factor)
+        };
+        diagnostics.push(
+            Diagnostic::error(msg)
+                .with_label(DiagnosticLabel::new(decl.span, "invalid factor")),
+        );
+        return None;
+    }
     let offset = if let Some(expr) = &decl.offset {
         Some(evaluate_const_expr(expr, registry, diagnostics)?) // eval failed; diagnostic already emitted
     } else {
