@@ -10454,7 +10454,7 @@
         "id": 524,
         "title": "Fix bridge.ts type safety: add type-guards to subscribeToClaudeEvents event payload handlers",
         "description": "In gui/src/bridge.ts, subscribeToClaudeEvents() uses a spread-cast pattern for all 7 claude-* event types (claude-text-delta, claude-thinking-delta, claude-tool-call, claude-tool-result, claude-done, claude-error, claude-ready). Each listen() handler casts the Tauri event payload directly to an OutboundMessage shape without validation. If a payload's shape diverges from OutboundMessage (e.g. during sidecar protocol evolution or version mismatch), errors will be silent and the store will receive malformed messages.\\n\\nFix: Add discriminated type-guards (or Zod schema validation) for each event type in the listen() handlers. Each guard should validate the required fields for that event variant before calling the handler — on validation failure, log a warning and skip the message.\\n\\nSource: Stage 1 review of task 476 merge.",
-        "details": "",
+        "details": "<info added on 2026-03-27T09:02:57.775Z>\nNOTE: This task is a subset of task 522 (Harden Claude bridge payload mapping and type safety), which covers the same spread-cast/type-guard issue plus two other bridge improvements. If task 522 completes successfully, this task should be cancelled as a duplicate. Do not start this task independently — check task 522 status first.\n</info added on 2026-03-27T09:02:57.775Z>",
         "testStrategy": "",
         "status": "pending",
         "dependencies": [
