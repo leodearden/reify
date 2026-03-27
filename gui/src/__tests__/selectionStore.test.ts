@@ -171,34 +171,101 @@ describe('selectionStore', () => {
   });
 
   describe('backend sync', () => {
+    let dispose!: () => void;
+    let selectEntity!: (path: string | null) => void;
+    let hoverEntity!: (path: string | null) => void;
+
     beforeEach(() => {
       vi.useFakeTimers();
       mockInvoke.mockResolvedValue(undefined);
+
+      createRoot((d) => {
+        dispose = d;
+        const store = createSelectionStore();
+        selectEntity = store.selectEntity;
+        hoverEntity = store.hoverEntity;
+      });
+
+      // Flush the initial effect's debounced invoke (null, null)
+      vi.advanceTimersByTime(100);
+      mockInvoke.mockClear();
     });
 
     afterEach(() => {
+      dispose();
       vi.useRealTimers();
       vi.clearAllMocks();
     });
 
     it('selection-only change calls invoke immediately (not debounced)', () => {
-      createRoot((dispose) => {
-        const { selectEntity } = createSelectionStore();
+      selectEntity('Bracket');
 
-        // Clear the initial effect invocation (both null)
-        mockInvoke.mockClear();
-
-        selectEntity('Bracket');
-
-        // invoke should have been called synchronously — no timer advancement needed
-        expect(mockInvoke).toHaveBeenCalledTimes(1);
-        expect(mockInvoke).toHaveBeenCalledWith('update_selection', {
-          selectedEntity: 'Bracket',
-          hoveredEntity: null,
-        });
-
-        dispose();
+      // invoke should have been called synchronously — no timer advancement needed
+      expect(mockInvoke).toHaveBeenCalledTimes(1);
+      expect(mockInvoke).toHaveBeenCalledWith('update_selection', {
+        selectedEntity: 'Bracket',
+        hoveredEntity: null,
       });
+    });
+
+    it('hover-only change calls invoke only after 100ms debounce', () => {
+      hoverEntity('Bracket.width');
+
+      // invoke should NOT have been called yet — it's debounced
+      expect(mockInvoke).not.toHaveBeenCalled();
+
+      // Advance past the 100ms debounce
+      vi.advanceTimersByTime(100);
+
+      expect(mockInvoke).toHaveBeenCalledTimes(1);
+      expect(mockInvoke).toHaveBeenCalledWith('update_selection', {
+        selectedEntity: null,
+        hoveredEntity: 'Bracket.width',
+      });
+    });
+
+    it('combined selection+hover change is debounced at 100ms', () => {
+      selectEntity('Bracket');
+      hoverEntity('Bracket.width');
+
+      // With hover change in the mix, everything should be debounced
+      // (selectEntity fires effect, then hoverEntity fires another effect that replaces the timer)
+      // After both, the latest state is not yet sent
+      mockInvoke.mockClear();
+
+      // Nothing sent yet (debounce pending)
+      vi.advanceTimersByTime(50);
+      expect(mockInvoke).not.toHaveBeenCalled();
+
+      // After 100ms total, the combined state is sent
+      vi.advanceTimersByTime(50);
+      expect(mockInvoke).toHaveBeenCalledTimes(1);
+      expect(mockInvoke).toHaveBeenCalledWith('update_selection', {
+        selectedEntity: 'Bracket',
+        hoveredEntity: 'Bracket.width',
+      });
+    });
+
+    it('immediate selection dispatch cancels pending hover debounce', () => {
+      // Start a hover (triggers 100ms debounce)
+      hoverEntity('X');
+      expect(mockInvoke).not.toHaveBeenCalled();
+
+      // Before the hover timer fires, change selection only
+      selectEntity('Bracket');
+
+      // The selection-only change should invoke immediately with the full current state
+      expect(mockInvoke).toHaveBeenCalledTimes(1);
+      expect(mockInvoke).toHaveBeenCalledWith('update_selection', {
+        selectedEntity: 'Bracket',
+        hoveredEntity: 'X',
+      });
+
+      mockInvoke.mockClear();
+
+      // After 100ms, no additional stale invoke should fire
+      vi.advanceTimersByTime(100);
+      expect(mockInvoke).not.toHaveBeenCalled();
     });
   });
 });
