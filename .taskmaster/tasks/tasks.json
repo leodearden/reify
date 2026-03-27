@@ -11804,7 +11804,7 @@
         "description": "Address architectural robustness suggestions from task 495 reviews for the warm-start optimization path:\n\n1. **Convergence reporting**: When FEASIBLE_OPT_ITERS budget is exhausted without convergence, SolveResult::Solved is returned with no indication of suboptimality. Either add convergence metadata to SolveResult::Solved or check argmin's TerminationReason.\n2. **Dimension-scaling FEASIBLE_OPT_ITERS**: The flat 500-iteration budget doesn't scale with problem dimensionality. Nelder-Mead needs O(N²) iterations. Scale as `FEASIBLE_OPT_ITERS_BASE * (n_params + 1)` capped at MAX_ITERS. Add a multi-parameter warm-start test (N≥2).\n3. **Fallback on drift**: When initially_feasible=true but the optimizer drifts out of the feasible region during the reduced-budget run, fall back to returning the known-feasible initial point instead of Infeasible.\n\nFiles: crates/reify-constraints/src/solver.rs, crates/reify-constraints/tests/solver_integration.rs\n\nMemory hints: search \"Nelder-Mead solver\", \"constraint solver architecture\", entity NelderMeadSolver, FEASIBILITY_THRESHOLD",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -11831,7 +11831,7 @@
             ]
           }
         },
-        "updatedAt": "2026-03-27T12:04:05.793Z"
+        "updatedAt": "2026-03-27T23:31:52.932Z"
       },
       {
         "id": "584",
@@ -11839,11 +11839,11 @@
         "description": "find_member_decl and compute_goto_definition search ALL declarations for a member name match, returning the first hit regardless of which declaration the cursor is in. In a file with multiple declarations sharing member names (e.g. two occurrences both with `param diameter`), span info can come from one declaration while type info comes from another (find_member_decl), and goto-def always jumps to the first declaration's member (compute_goto_definition).\n\nFix both:\n1. analysis.rs find_member_decl: have find_parsed_member_span_and_doc also return the owning declaration name, then match both template name AND member name in the compiled-module lookup.\n2. goto_def.rs compute_goto_definition: check whether the cursor offset falls within the declaration's span and only search members of the enclosing declaration (or fall back to first-found if no enclosing declaration).\n\nMemory hints: search \"LSP cross-declaration member lookup scoping\" and \"find_member_decl ambiguity\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-03-27T11:54:23.203Z",
+        "updatedAt": "2026-03-27T23:31:52.965Z",
         "metadata": {
           "modules": [
             "crates/reify-lsp"
@@ -12473,7 +12473,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-27T23:31:52.898Z",
+      "lastModified": "2026-03-27T23:31:52.965Z",
       "taskCount": 612,
       "completedCount": 278,
       "tags": [
