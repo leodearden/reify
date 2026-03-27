@@ -10580,11 +10580,11 @@
         "description": "Tree-sitter generated files (src/parser.c at 63K lines, src/grammar.json, src/node-types.json) cause ~9 merge conflicts because they're committed by task branches. Instead:\n\n1. Add tree-sitter-reify/src/parser.c, grammar.json, node-types.json to .gitignore on task branches (or a pre-commit hook that unstages them)\n2. The orchestrator's merge worktree should run `tree-sitter generate` as a post-merge step before verification, regenerating from grammar.js\n3. Ensure CI also regenerates rather than relying on committed artifacts\n\nmemory_hints: search \"tree-sitter grammar generation\", get_entity \"tree-sitter-reify\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-03-27T09:05:04.320Z",
+        "updatedAt": "2026-03-27T09:08:29.591Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -10982,7 +10982,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-27T09:08:29.244Z",
+      "lastModified": "2026-03-27T09:08:29.591Z",
       "taskCount": 562,
       "completedCount": 262,
       "tags": [
