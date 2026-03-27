@@ -116,10 +116,10 @@ type _NoSessionStatus = import('../types').SessionStatus;
 // --- ClaudeMessageContext ↔ MessageContext structural sync guard ---
 //
 // ClaudeMessageContext (in bridge.ts) is a standalone interface that must stay
-// structurally identical to Pick<MessageContext, 'selectedEntity' | 'diagnostics' | 'constraints'>.
+// structurally identical to Pick<MessageContext, 'selectedEntity' | 'diagnostics' | 'constraints' | 'currentFile' | 'attachedContexts'>.
 //
 // We use an Equals<A,B> type-level assertion rather than bidirectional assignability
-// because all three fields are optional — `{}` satisfies any all-optional type,
+// because all five fields are optional — `{}` satisfies any all-optional type,
 // so assignability checks would pass even if the field names diverged entirely.
 // The Equals pattern compares exact structural identity and catches renames,
 // additions, and removals at compile time.
