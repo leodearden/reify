@@ -42,3 +42,35 @@ fn test_content_hash_changes_on_modification() {
 
     assert_ne!(hash1, hash2, "different content must produce different hashes");
 }
+
+/// The expected output files that tree-sitter generate produces.
+const EXPECTED_OUTPUTS: &[&str] = &["parser.c", "grammar.json", "node-types.json"];
+
+/// Duplicates needs_generate logic from build.rs for testability.
+/// Returns true if regeneration is needed based on content hash staleness.
+fn needs_generate(grammar_path: &Path, stamp_path: &Path, output_paths: &[&Path]) -> bool {
+    // Stub — will be implemented in step-8
+    let _ = (grammar_path, stamp_path, output_paths);
+    unimplemented!("needs_generate not yet implemented")
+}
+
+#[test]
+fn test_needs_generate_true_when_no_stamp() {
+    let dir = tempfile::tempdir().unwrap();
+    let grammar = dir.path().join("grammar.js");
+    std::fs::write(&grammar, b"module.exports = grammar({});").unwrap();
+    let stamp = dir.path().join("stamp.hash");
+    // stamp does not exist
+    let src_dir = dir.path().join("src");
+    std::fs::create_dir_all(&src_dir).unwrap();
+    for name in EXPECTED_OUTPUTS {
+        std::fs::write(src_dir.join(name), b"placeholder").unwrap();
+    }
+    let output_paths: Vec<_> = EXPECTED_OUTPUTS.iter().map(|n| src_dir.join(n)).collect();
+    let output_refs: Vec<&Path> = output_paths.iter().map(|p| p.as_path()).collect();
+
+    assert!(
+        needs_generate(&grammar, &stamp, &output_refs),
+        "must regenerate when stamp file is missing"
+    );
+}
