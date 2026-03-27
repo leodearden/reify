@@ -3256,8 +3256,8 @@
       {
         "id": 192,
         "title": "Qualified trait access: compiler and evaluator",
-        "description": "Resolve TypeName in qualified access to a trait def in the trait registry. Look up the member in that trait's definition. For instance-level access, resolve against the instance's members. Add QualifiedAccess and InstanceQualifiedAccess to CompiledExprKind. Evaluate by resolving to the correct ValueCell.",
-        "details": "",
+        "description": "Resolve TypeName in qualified access to a trait def in the trait registry. Look up the member in that trait's definition. For instance-level access, resolve against the instance's members. Add QualifiedAccess and InstanceQualifiedAccess to CompiledExprKind. Evaluate by resolving to the correct ValueCell. [Updated: 3/27/2026]",
+        "details": "<info added on 2026-03-27T07:21:06.709Z>\nThis task was previously marked as complete but had zero commits, indicating the code was never written. It requires a full implementation from scratch.\n</info added on 2026-03-27T07:21:06.709Z>",
         "testStrategy": "Compiler tests: trait resolution, member lookup. Eval tests: correct value returned.",
         "priority": "high",
         "dependencies": [
