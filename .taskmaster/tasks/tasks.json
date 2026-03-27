@@ -6716,7 +6716,8 @@
           "milestone": "stdlib-polish",
           "modules": [
             "crates/reify-lsp"
-          ]
+          ],
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         },
         "subtasks": [],
         "details": "Add all ~100 new stdlib functions to LSP autocompletion with signatures and brief docs. Group by category.",
