@@ -1899,7 +1899,8 @@ mod tests {
         let auto2 = auto; // Copy
         assert_eq!(auto, auto2); // PartialEq + Eq
 
-        let auto3 = Clone::clone(&auto); // Clone
+        #[allow(clippy::clone_on_copy)]
+        let auto3 = auto.clone(); // Clone
         assert_eq!(auto, auto3);
 
         // Hash: usable as HashMap key
