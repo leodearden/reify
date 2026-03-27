@@ -1,0 +1,173 @@
+{
+  "task_id": "478",
+  "title": "Wire GUI selection state through to MCP get_selection tool",
+  "files": [
+    "gui/src-tauri/src/mcp_context.rs",
+    "gui/src-tauri/src/commands.rs",
+    "gui/src-tauri/src/main.rs",
+    "gui/src-tauri/src/claude_bridge.rs",
+    "gui/src/stores/selectionStore.ts",
+    "gui/src-tauri/src/tests/mcp_context_tests.rs",
+    "gui/src-tauri/src/tests/mcp_dispatch_tests.rs",
+    "gui/src-tauri/src/tests/commands_tests.rs"
+  ],
+  "modules": [
+    "gui/src-tauri/src",
+    "gui/src/stores"
+  ],
+  "analysis": "The MCP tool `reify_get_selection` always returns null because `TauriToolContext::get_selection()` (mcp_context.rs:140-145) is hardcoded to return `None` for both fields. The frontend already tracks selection in `selectionStore.ts` but this state never reaches the Rust backend.\n\nThe fix requires threading an `Arc<RwLock<SelectionInfo>>` through three layers:\n1. **Storage**: Add `selection: Arc<RwLock<SelectionInfo>>` to `AppState` (commands.rs) and `TauriToolContext` (mcp_context.rs)\n2. **Plumbing**: Pass the selection Arc when constructing `TauriToolContext` in both MCP entry points \u2014 the direct `mcp_tool_call` Tauri command (main.rs:248) and the sidecar interception path (claude_bridge.rs:254)\n3. **Updates**: Add an `update_selection` Tauri command and call it from the frontend via `invoke()` in `selectionStore.ts`\n\nThe existing `EventEmitter` pattern (optional Box<dyn Fn> threaded via constructor) provides a template. However, selection state differs: it's shared mutable state (Arc<RwLock>) rather than a callback. The sidecar path requires threading through `from_parts_with_mcp` \u2192 `new_inner` \u2192 the closure that constructs `TauriToolContext::new()` on line 254.\n\nKey complexity: The sidecar's `new_inner` captures `engine` in a closure for the reader task. We need to also capture the selection Arc in the same closure. This means `from_parts_with_mcp`, `new_inner`, and `spawn_sidecar_impl` all need the selection parameter added.\n\nBackward compat: Tests that construct `TauriToolContext::new(engine)` need updating. A convenience method or default parameter handles this.",
+  "prerequisites": [],
+  "steps": [
+    {
+      "id": "step-1",
+      "type": "test",
+      "description": "Write failing test in mcp_context_tests.rs: create a TauriToolContext with selection Arc set to Some(\"Bracket\"), call get_selection(), assert selected_entity == Some(\"Bracket\"). This will fail because the constructor doesn't accept selection and get_selection() is hardcoded to None.",
+      "status": "done",
+      "commit": "5a3285fb"
+    },
+    {
+      "id": "step-2",
+      "type": "impl",
+      "description": "Add `selection: Arc<RwLock<SelectionInfo>>` field to TauriToolContext struct. Add `new_with_selection(engine, selection)` constructor. Update `get_selection()` to read from `self.selection.read()`. Update existing `new()` and `with_event_emitter()` to create a default empty Arc<RwLock<SelectionInfo>>. Update `make_tauri_context()` helpers in both mcp_context_tests.rs and mcp_dispatch_tests.rs to compile with unchanged signatures.",
+      "status": "done",
+      "commit": "bc2305bf"
+    },
+    {
+      "id": "step-3",
+      "type": "test",
+      "description": "Write failing test in mcp_context_tests.rs: verify get_selection returns both selected and hovered when both are set on the Arc. Also test that updating the Arc after construction is reflected in subsequent get_selection() calls (proving live state sharing).",
+      "status": "done",
+      "commit": "8d842731"
+    },
+    {
+      "id": "step-4",
+      "type": "impl",
+      "description": "Ensure step-3 test passes (should pass from step-2 implementation since Arc<RwLock> inherently supports live updates). Fix if needed.",
+      "status": "done",
+      "commit": "8d842731"
+    },
+    {
+      "id": "step-5",
+      "type": "test",
+      "description": "Write failing dispatch test in mcp_dispatch_tests.rs: create TauriToolContext with selection set to Some(\"Bracket\"), dispatch reify_get_selection via mcp_tool_call_impl, assert JSON result has non-null selected_entity. This validates end-to-end MCP dispatch with selection.",
+      "status": "done",
+      "commit": "a122d559"
+    },
+    {
+      "id": "step-6",
+      "type": "impl",
+      "description": "Ensure step-5 test passes (should pass from step-2 implementation). Fix if needed.",
+      "status": "done",
+      "commit": "a122d559"
+    },
+    {
+      "id": "step-7",
+      "type": "test",
+      "description": "Write failing test in commands_tests.rs: construct AppState with the new `selection` field, verify it compiles and the selection Arc is accessible. This will fail because AppState doesn't have the field yet.",
+      "status": "done",
+      "commit": "7047bde8"
+    },
+    {
+      "id": "step-8",
+      "type": "impl",
+      "description": "Add `selection: Arc<RwLock<SelectionInfo>>` to AppState in commands.rs. Update AppState initialization in main.rs (line 375) to include the new field. Update the app_state_constructible test in commands_tests.rs. Register the new `update_selection` Tauri command in main.rs invoke_handler.",
+      "status": "done",
+      "commit": "bf546541"
+    },
+    {
+      "id": "step-9",
+      "type": "impl",
+      "description": "Add `update_selection` Tauri command in main.rs that writes to `state.selection`. Wire `state.selection.clone()` into the `mcp_tool_call` command's TauriToolContext construction (main.rs:248) by using a new constructor that accepts both event_emitter and selection.",
+      "status": "done",
+      "commit": "150fc6ff"
+    },
+    {
+      "id": "step-10",
+      "type": "impl",
+      "description": "Thread selection Arc through the sidecar path: update `spawn_sidecar_impl` signature to accept selection Arc, update `from_parts_with_mcp` and `new_inner` to accept and capture selection Arc, update the TauriToolContext::new() call at claude_bridge.rs:254 to use new_with_selection(engine_clone, selection_clone). Update the call site in main.rs claude_send_message to pass state.selection.clone() through to spawn_sidecar_impl.",
+      "status": "done",
+      "commit": "ee175b2f"
+    },
+    {
+      "id": "step-11",
+      "type": "test",
+      "description": "Update existing test `get_selection_returns_empty` in mcp_context_tests.rs to verify it still returns empty when no selection is set (using the default constructor). Verify all existing tests compile and pass after all the signature changes.",
+      "status": "done",
+      "commit": "ee175b2f"
+    },
+    {
+      "id": "step-12",
+      "type": "impl",
+      "description": "Add createEffect in selectionStore.ts that calls invoke('update_selection', { selectedEntity: state.selectedEntity, hoveredEntity: state.hoveredEntity }) whenever selection state changes. Import invoke from @tauri-apps/api/core. Debounce hover updates with a 100ms setTimeout to avoid flooding the backend with transient hover events.",
+      "status": "done",
+      "commit": "f1768941"
+    },
+    {
+      "id": "step-13",
+      "type": "test",
+      "description": "Run full cargo test for the gui/src-tauri crate to verify all existing tests still pass with the new fields and updated constructors. Fix any compilation or test failures.",
+      "status": "done",
+      "commit": "f1768941"
+    }
+  ],
+  "design_decisions": [
+    {
+      "decision": "Use Arc<RwLock<SelectionInfo>> rather than Arc<Mutex<SelectionInfo>> for the selection state",
+      "rationale": "Selection is read-heavy (every MCP get_selection call reads it) and write-light (only updated on user interaction). RwLock allows concurrent readers without blocking, which matters when multiple MCP tool calls may overlap. This matches the task description's recommendation."
+    },
+    {
+      "decision": "Add new_with_selection() constructor rather than changing existing new() signature",
+      "rationale": "Preserves backward compatibility for existing callers. The existing new() and with_event_emitter() create a default empty selection internally. This minimizes churn in tests and call sites that don't need selection. A builder pattern would be overkill for just two optional fields."
+    },
+    {
+      "decision": "Add a full with_event_emitter_and_selection() constructor for the mcp_tool_call command path",
+      "rationale": "The mcp_tool_call Tauri command needs both event_emitter (for focus/navigate events) and selection state. Rather than a builder, a dedicated constructor keeps the API simple and matches the existing with_event_emitter() pattern."
+    },
+    {
+      "decision": "Thread selection through spawn_sidecar_impl and from_parts_with_mcp rather than using global state",
+      "rationale": "The codebase follows explicit dependency injection (engine, event_sink are passed as parameters). Using global state would break this pattern. The selection Arc is just one more parameter flowing through the same path as the engine Arc."
+    },
+    {
+      "decision": "Debounce hover updates at 100ms in the frontend",
+      "rationale": "Hover events fire at mouse-move frequency (potentially 60+ times/second). Each invoke() is a Tauri IPC round-trip. Debouncing at 100ms limits this to ~10 updates/second while still feeling responsive. Selection (click) updates are sent immediately since they are infrequent and user-initiated."
+    },
+    {
+      "decision": "Use createEffect in selectionStore.ts rather than modifying selectEntity/hoverEntity functions",
+      "rationale": "createEffect automatically tracks all reactive dependencies and fires on any change, including programmatic clears (clearHighlights, clearIfRemoved). Modifying each mutation function would require touching 5 code paths and risks missing one."
+    }
+  ],
+  "reuse": [
+    {
+      "what": "SelectionInfo struct from reify_mcp::types",
+      "where": "crates/reify-mcp/src/types.rs lines 90-95",
+      "how": "Already defined with selected_entity and hovered_entity fields. Use directly as the value inside the Arc<RwLock<>> \u2014 no new type needed."
+    },
+    {
+      "what": "EventEmitter threading pattern in TauriToolContext",
+      "where": "gui/src-tauri/src/mcp_context.rs lines 12-46",
+      "how": "The event_emitter is an optional field set via constructors, stored in the struct, and used in trait method implementations. Follow the same pattern for selection: optional field, set via constructor, read in get_selection()."
+    },
+    {
+      "what": "Engine Arc threading through sidecar",
+      "where": "claude_bridge.rs: spawn_sidecar_impl \u2192 from_parts_with_mcp \u2192 new_inner \u2192 closure capture",
+      "how": "The engine: Arc<Mutex<EngineSession>> flows through these exact functions and is captured in the reader task closure. Thread the selection Arc through the same path, captured alongside engine."
+    },
+    {
+      "what": "Tauri invoke pattern in bridge.ts",
+      "where": "gui/src/bridge.ts lines 113-131",
+      "how": "The bridge.ts file shows the pattern for calling invoke() with snake_case parameter names. Follow the same pattern for the update_selection invoke call."
+    },
+    {
+      "what": "make_tauri_context() test helper pattern",
+      "where": "gui/src-tauri/src/tests/mcp_context_tests.rs lines 20-24",
+      "how": "Existing helper creates TauriToolContext with just an engine. Add a parallel helper make_tauri_context_with_selection() that also wires in a selection Arc."
+    },
+    {
+      "what": "AppState construction pattern in commands_tests.rs",
+      "where": "gui/src-tauri/src/tests/commands_tests.rs lines 20-28",
+      "how": "Shows how to construct AppState for testing without a Tauri runtime. Add the new selection field to this pattern."
+    }
+  ],
+  "_session_id": "478-48a1b497",
+  "_created_at": "2026-03-27T11:10:36.119817+00:00"
+}
