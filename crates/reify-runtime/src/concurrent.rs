@@ -5,11 +5,46 @@
 
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use reify_eval::cache::{EvalOutcome, NodeId};
 use reify_eval::deps::DependencyTrace;
 use reify_types::ValueCellId;
+
+use crate::Priority;
+use crate::commitment::{CommitmentTracker, NodeCommitmentOverride};
+use crate::priority_promotion::SharedPriorityPromoter;
+
+/// Configuration for [`ConcurrentScheduler::execute_with_config`].
+///
+/// Controls priority-based ordering, commitment tracking, and per-node
+/// behavior overrides during concurrent evaluation. `Default` gives
+/// exact current `execute` behavior (no priority sorting, no commitment
+/// tracking, no skip overrides).
+pub struct SchedulerConfig {
+    /// Optional commitment tracker for commitment-aware cancellation.
+    pub commitment_tracker: Option<Arc<Mutex<CommitmentTracker>>>,
+    /// Optional priority promoter for priority-based spawn ordering.
+    pub priority_promoter: Option<Arc<SharedPriorityPromoter>>,
+    /// Per-node commitment behavior overrides.
+    pub node_overrides: HashMap<NodeId, NodeCommitmentOverride>,
+    /// Per-node scheduling priorities.
+    pub node_priorities: HashMap<NodeId, Priority>,
+    /// Callback to check if a node has intermediate (non-final) inputs.
+    pub has_intermediate_inputs: Arc<dyn Fn(&NodeId) -> bool + Send + Sync>,
+}
+
+impl Default for SchedulerConfig {
+    fn default() -> Self {
+        Self {
+            commitment_tracker: None,
+            priority_promoter: None,
+            node_overrides: HashMap::new(),
+            node_priorities: HashMap::new(),
+            has_intermediate_inputs: Arc::new(|_| false),
+        }
+    }
+}
 
 /// Error type for concurrent scheduler execution.
 ///
@@ -153,6 +188,34 @@ impl ConcurrentScheduler {
         traces: &HashMap<NodeId, DependencyTrace>,
         cancel: &CancellationToken,
         changed_cells: &HashSet<ValueCellId>,
+    ) -> Result<SchedulerResult, SchedulerError> {
+        self.execute_with_config(
+            eval_set,
+            evaluator,
+            traces,
+            cancel,
+            changed_cells,
+            SchedulerConfig::default(),
+        )
+        .await
+    }
+
+    /// Execute the eval set concurrently with additional configuration for
+    /// priority ordering, commitment tracking, and per-node overrides.
+    ///
+    /// Extends [`execute`](Self::execute) with:
+    /// - Priority-based spawn ordering within each level
+    /// - Commitment-aware cancellation (committed results survive cancel)
+    /// - `OnlyRunOnFinalInputs` skip logic
+    /// - Registration/cleanup lifecycle for tracker and promoter
+    pub async fn execute_with_config<E: AsyncNodeEvaluator + 'static>(
+        &self,
+        eval_set: Vec<NodeId>,
+        evaluator: Arc<E>,
+        traces: &HashMap<NodeId, DependencyTrace>,
+        cancel: &CancellationToken,
+        changed_cells: &HashSet<ValueCellId>,
+        config: SchedulerConfig,
     ) -> Result<SchedulerResult, SchedulerError> {
         if eval_set.is_empty() {
             return Ok(SchedulerResult {

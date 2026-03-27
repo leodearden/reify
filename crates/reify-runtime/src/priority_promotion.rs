@@ -57,6 +57,11 @@ impl PriorityPromoter {
         self.effective.remove(node_id);
     }
 
+    /// Return the number of tracked nodes (for test verification of cleanup).
+    pub fn count(&self) -> usize {
+        self.effective.len()
+    }
+
     /// Promote all in-flight dependencies of a demanded node transitively.
     ///
     /// Walks dependency edges from `demanded_node` and promotes all in-flight
@@ -146,6 +151,14 @@ impl SharedPriorityPromoter {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(node_id);
+    }
+
+    /// Return the number of tracked nodes (for test verification of cleanup).
+    pub fn count(&self) -> usize {
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .count()
     }
 
     /// Promote all in-flight dependencies of a demanded node transitively.
