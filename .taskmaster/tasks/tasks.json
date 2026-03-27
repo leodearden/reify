@@ -2284,7 +2284,7 @@
         "testStrategy": "Parser tests: type alias with no params, with params, with dimensional RHS, with nested generics. Verify AST structure.",
         "priority": "high",
         "dependencies": [],
-        "status": "in-progress",
+        "status": "pending",
         "metadata": {
           "modules": [
             "crates/reify-syntax"
@@ -2292,7 +2292,7 @@
           "milestone": "M8"
         },
         "subtasks": [],
-        "updatedAt": "2026-03-26T18:12:27.496Z"
+        "updatedAt": "2026-03-27T06:07:00.048Z"
       },
       {
         "id": "145",
@@ -8723,7 +8723,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-26T22:54:04.658Z",
+      "lastModified": "2026-03-27T06:07:00.048Z",
       "taskCount": 516,
       "completedCount": 253,
       "tags": [
