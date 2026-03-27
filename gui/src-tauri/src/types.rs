@@ -313,4 +313,28 @@ mod format_value_range_tests {
         assert_eq!(formatted, "(-\u{221e}..10]");
         assert_eq!(unit, "");
     }
+
+    #[test]
+    fn none_upper_inclusive_via_factory() {
+        // Factory normalizes inclusive=false for None bound
+        let range = Value::range(Some(Value::Int(1)), None, true, true);
+        let (formatted, unit) = format_value(&range);
+        assert_eq!(formatted, "[1..+\u{221e})");
+        assert_eq!(unit, "");
+    }
+
+    #[test]
+    fn none_upper_inclusive_via_direct_struct() {
+        // Bypass factory: directly construct with inclusive=true + None upper
+        // This exercises the defensive re-normalization in format_value (line 208)
+        let range = Value::Range {
+            lower: Some(Box::new(Value::Int(1))),
+            upper: None,
+            lower_inclusive: true,
+            upper_inclusive: true,
+        };
+        let (formatted, unit) = format_value(&range);
+        assert_eq!(formatted, "[1..+\u{221e})");
+        assert_eq!(unit, "");
+    }
 }
