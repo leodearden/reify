@@ -10347,6 +10347,19 @@
         ],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 525,
+        "title": "Align ClaudeMessageContext in bridge.ts with store's MessageContext (add currentFile, attachedContexts)",
+        "description": "In gui/src/bridge.ts, the ClaudeMessageContext type defines only 3 fields (selectedEntity, diagnostics, constraints). The store's MessageContext type has 5 fields (selectedEntity, diagnostics, constraints, currentFile, attachedContexts). The two extra fields (currentFile, attachedContexts) are silently dropped when the bridge constructs the Tauri invoke payload, so the Claude sidecar never receives file context or attached contexts from the GUI.\\n\\nFix:\\n1. Add currentFile (string | undefined) and attachedContexts (string[] | undefined) to ClaudeMessageContext in bridge.ts.\\n2. Update claudeSendMessage() to pass these fields through, with appropriate snake_case mapping for the Rust backend (current_file, attached_contexts).\\n3. Update the Rust ClaudeContext struct in claude_bridge.rs to accept current_file and attached_contexts fields.\\n4. Update bridge tests to cover the new fields.\\n\\nSource: Stage 1 review of task 476 merge.\\n\\nmemory_hints: search \\\"ClaudeMessageContext MessageContext field alignment\\\", entities: bridge.ts, claudeSendMessage, ClaudeContext",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          476
+        ],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -10359,7 +10372,7 @@
       ],
       "created": "2026-03-27T07:40:02.884Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-27T07:40:11.902Z"
+      "updated": "2026-03-27T07:40:18.550Z"
     }
   }
 }
