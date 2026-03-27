@@ -438,14 +438,30 @@ impl OcctKernel {
                 axis_dir,
                 angle_rad,
             } => {
-                // Validate all floats are finite
-                let all_finite = axis_origin.iter().all(|v| v.is_finite())
-                    && axis_dir.iter().all(|v| v.is_finite())
-                    && angle_rad.is_finite();
-                if !all_finite {
-                    return Err(GeometryError::OperationFailed(
-                        "revolve parameters must be finite".into(),
-                    ));
+                // Validate finiteness with parameter-specific messages
+                if !axis_origin[0].is_finite()
+                    || !axis_origin[1].is_finite()
+                    || !axis_origin[2].is_finite()
+                {
+                    return Err(GeometryError::OperationFailed(format!(
+                        "revolve axis_origin must be finite: [{}, {}, {}]",
+                        axis_origin[0], axis_origin[1], axis_origin[2]
+                    )));
+                }
+                if !axis_dir[0].is_finite()
+                    || !axis_dir[1].is_finite()
+                    || !axis_dir[2].is_finite()
+                {
+                    return Err(GeometryError::OperationFailed(format!(
+                        "revolve axis_dir must be finite: [{}, {}, {}]",
+                        axis_dir[0], axis_dir[1], axis_dir[2]
+                    )));
+                }
+                if !angle_rad.is_finite() {
+                    return Err(GeometryError::OperationFailed(format!(
+                        "revolve angle must be finite: {}",
+                        angle_rad
+                    )));
                 }
                 if *angle_rad == 0.0 {
                     return Err(GeometryError::OperationFailed(
