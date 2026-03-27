@@ -3084,16 +3084,9 @@ mod tests {
     #[test]
     fn revolve_circle_face_full_volume() {
         // Pappus' theorem: V = 2πR × A where R = centroid-to-axis distance, A = profile area.
-        // Circle face r=5 at origin in XY plane, rotate 90° around X to XZ plane,
-        // translate 20 on X → centroid at (20, 0, 0), R=20, A=π*25.
-        // Revolve around Z axis by 2π → torus volume = 2π²×20×25 ≈ 9869.6
+        // Circle face r=5 at offset R=20, revolve around Z axis by 2π → torus volume = 2π²Rr²
         let mut kernel = OcctKernel::new();
-        let face = ffi::ffi::make_circle_face(5.0, 0.0).expect("make_circle_face should succeed");
-        let rotated = ffi::ffi::rotate_shape(&face, 1.0, 0.0, 0.0, std::f64::consts::FRAC_PI_2)
-            .expect("rotate_shape should succeed");
-        let translated = ffi::ffi::translate_shape(&rotated, 20.0, 0.0, 0.0)
-            .expect("translate_shape should succeed");
-        let face_id = kernel.store_raw(translated);
+        let face_id = make_torus_profile(&mut kernel, 5.0, 20.0);
 
         let result = kernel
             .execute(&GeometryOp::Revolve {
@@ -3103,32 +3096,15 @@ mod tests {
                 angle_rad: std::f64::consts::TAU,
             })
             .expect("Revolve full should succeed");
-        let vol = kernel
-            .query(&GeometryQuery::Volume(result.id))
-            .expect("Volume query should succeed")
-            .as_f64()
-            .expect("Volume should be numeric");
         let expected = 2.0 * std::f64::consts::PI.powi(2) * 20.0 * 25.0; // 2π²Rr²
-        let rel_err = (vol - expected).abs() / expected;
-        assert!(
-            rel_err < 0.02,
-            "expected torus volume ≈ {:.2}, got {:.2} (rel_err={:.4})",
-            expected,
-            vol,
-            rel_err
-        );
+        assert_volume_near(&mut kernel, result.id, expected, 0.02, "circle torus full");
     }
 
     #[test]
     fn revolve_half_angle_half_volume() {
-        // Same setup as full volume but angle=π → half torus.
+        // Same setup as full volume but angle=π → half torus should be ~50% of full.
         let mut kernel = OcctKernel::new();
-        let face = ffi::ffi::make_circle_face(5.0, 0.0).expect("make_circle_face should succeed");
-        let rotated = ffi::ffi::rotate_shape(&face, 1.0, 0.0, 0.0, std::f64::consts::FRAC_PI_2)
-            .expect("rotate_shape should succeed");
-        let translated = ffi::ffi::translate_shape(&rotated, 20.0, 0.0, 0.0)
-            .expect("translate_shape should succeed");
-        let face_id = kernel.store_raw(translated);
+        let face_id = make_torus_profile(&mut kernel, 5.0, 20.0);
 
         let full = kernel
             .execute(&GeometryOp::Revolve {
@@ -3145,12 +3121,7 @@ mod tests {
             .expect("Volume should be numeric");
 
         // Create another face for half revolution
-        let face2 = ffi::ffi::make_circle_face(5.0, 0.0).expect("make_circle_face should succeed");
-        let rotated2 = ffi::ffi::rotate_shape(&face2, 1.0, 0.0, 0.0, std::f64::consts::FRAC_PI_2)
-            .expect("rotate_shape should succeed");
-        let translated2 = ffi::ffi::translate_shape(&rotated2, 20.0, 0.0, 0.0)
-            .expect("translate_shape should succeed");
-        let face2_id = kernel.store_raw(translated2);
+        let face2_id = make_torus_profile(&mut kernel, 5.0, 20.0);
 
         let half = kernel
             .execute(&GeometryOp::Revolve {
@@ -3208,15 +3179,8 @@ mod tests {
     fn revolve_rect_face_torus_volume() {
         // Rect face w=4, h=2, centered at (10, 0, 0) in XZ plane.
         // Pappus: V = 2π × R × A = 2π × 10 × (4×2) = 160π ≈ 502.65
-        // make_rect_face creates in XY plane, so rotate 90° around X to get XZ plane.
         let mut kernel = OcctKernel::new();
-        let face = ffi::ffi::make_rect_face(4.0, 2.0, 0.0, 0.0, 0.0)
-            .expect("make_rect_face should succeed");
-        let rotated = ffi::ffi::rotate_shape(&face, 1.0, 0.0, 0.0, std::f64::consts::FRAC_PI_2)
-            .expect("rotate_shape should succeed");
-        let translated = ffi::ffi::translate_shape(&rotated, 10.0, 0.0, 0.0)
-            .expect("translate_shape should succeed");
-        let face_id = kernel.store_raw(translated);
+        let face_id = make_rect_torus_profile(&mut kernel, 4.0, 2.0, 10.0);
 
         let result = kernel
             .execute(&GeometryOp::Revolve {
@@ -3226,20 +3190,8 @@ mod tests {
                 angle_rad: std::f64::consts::TAU,
             })
             .expect("Revolve rect should succeed");
-        let vol = kernel
-            .query(&GeometryQuery::Volume(result.id))
-            .expect("Volume query should succeed")
-            .as_f64()
-            .expect("Volume should be numeric");
         let expected = 2.0 * std::f64::consts::PI * 10.0 * (4.0 * 2.0); // 2πR×A = 160π
-        let rel_err = (vol - expected).abs() / expected;
-        assert!(
-            rel_err < 0.02,
-            "expected rect torus volume ≈ {:.2}, got {:.2} (rel_err={:.4})",
-            expected,
-            vol,
-            rel_err
-        );
+        assert_volume_near(&mut kernel, result.id, expected, 0.02, "rect torus full");
     }
 
     #[test]
