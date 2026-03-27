@@ -873,8 +873,8 @@ impl Value {
                 lower_inclusive,
                 upper_inclusive,
             } => {
-                let lower_inclusive = *lower_inclusive && lower.is_some();
-                let upper_inclusive = *upper_inclusive && upper.is_some();
+                let (lower_inclusive, upper_inclusive) =
+                    normalize_range_flags(lower, upper, *lower_inclusive, *upper_inclusive);
                 let lower_bracket = if lower_inclusive { "[" } else { "(" };
                 let upper_bracket = if upper_inclusive { "]" } else { ")" };
                 let lower_str = lower
