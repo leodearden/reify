@@ -11324,7 +11324,7 @@
         "description": "Four improvements to tree-sitter-reify/build.rs auto-generation logic.",
         "details": "1. Verify all 3 output files (parser.c, grammar.json, node-types.json) after generation, not just parser.c.\n2. Replace mtime-based staleness detection with content hash (stamp file) — mtime is unreliable in git worktree workflow.\n3. Remove redundant cargo:rerun-if-changed=src/parser.c — since build.rs now manages parser.c, it triggers double execution.\n4. Add subprocess timeout (e.g. 60s) to tree-sitter generate command to prevent hanging cargo build.\n\nFiles: tree-sitter-reify/build.rs",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -11343,7 +11343,7 @@
             ]
           }
         },
-        "updatedAt": "2026-03-27T12:03:23.705Z"
+        "updatedAt": "2026-03-27T12:04:05.630Z"
       },
       {
         "id": "564",
@@ -12083,7 +12083,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-27T12:04:05.490Z",
+      "lastModified": "2026-03-27T12:04:05.630Z",
       "taskCount": 609,
       "completedCount": 278,
       "tags": [
