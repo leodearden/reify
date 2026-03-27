@@ -1,6 +1,6 @@
 //! Option expression evaluation tests — some(expr) and none.
 
-use reify_expr::{eval_expr, EvalContext};
+use reify_expr::{EvalContext, eval_expr};
 use reify_types::{CompiledExpr, Type, Value, ValueCellId, ValueMap};
 
 // ── step-1: OptionNone tests ─────────────────────────────────────────────────

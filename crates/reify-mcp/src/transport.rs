@@ -49,11 +49,7 @@ impl McpServer {
     ///
     /// Reads newline-delimited JSON from reader, writes responses to writer.
     /// Returns `Ok(())` on graceful shutdown (EOF), `Err` on I/O failure.
-    pub async fn run_on_streams<R, W>(
-        &self,
-        reader: R,
-        mut writer: W,
-    ) -> Result<(), std::io::Error>
+    pub async fn run_on_streams<R, W>(&self, reader: R, mut writer: W) -> Result<(), std::io::Error>
     where
         R: AsyncBufRead + Unpin,
         W: AsyncWrite + Unpin,

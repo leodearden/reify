@@ -10,7 +10,10 @@ use reify_test_support::*;
 fn accept_well_formed_parsed_module() {
     let parsed = bracket_parsed_module();
     let compiled = reify_compiler::compile(&parsed);
-    assert!(compiled.diagnostics.is_empty(), "no diagnostics for valid input");
+    assert!(
+        compiled.diagnostics.is_empty(),
+        "no diagnostics for valid input"
+    );
     assert_eq!(compiled.templates.len(), 1);
     assert_eq!(compiled.templates[0].name, "Bracket");
 }
@@ -50,7 +53,10 @@ fn reject_unresolved_type_names() {
     };
 
     let compiled = reify_compiler::compile(&module);
-    assert!(!compiled.diagnostics.is_empty(), "should have diagnostics for unresolved type");
+    assert!(
+        !compiled.diagnostics.is_empty(),
+        "should have diagnostics for unresolved type"
+    );
 }
 
 /// Compiled constraints should propagate spans from parsed ConstraintDecls.

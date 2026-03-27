@@ -39,7 +39,13 @@ fn bracket_defaults_evaluated() {
     let result = engine.eval(&module);
 
     // All 5 params should have values
-    for name in &["width", "height", "thickness", "fillet_radius", "hole_diameter"] {
+    for name in &[
+        "width",
+        "height",
+        "thickness",
+        "fillet_radius",
+        "hole_diameter",
+    ] {
         let id = vcid("Bracket", name);
         let val = result.values.get(&id);
         assert!(val.is_some(), "{} should be present", name);
@@ -63,7 +69,11 @@ fn bracket_volume_computed() {
 
     // 80mm * 100mm * 5mm = 0.08 * 0.1 * 0.005 = 4e-5 m³
     let v = volume.as_f64().expect("volume should be numeric");
-    assert!((v - 4e-5).abs() < 1e-12, "volume should be 4e-5 m³, got {}", v);
+    assert!(
+        (v - 4e-5).abs() < 1e-12,
+        "volume should be 4e-5 m³, got {}",
+        v
+    );
 }
 
 /// Check bracket → all 3 constraints Satisfied with default values.

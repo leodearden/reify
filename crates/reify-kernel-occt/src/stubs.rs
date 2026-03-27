@@ -135,11 +135,7 @@ impl GeometryKernel for OcctKernelHandle {
         OcctKernelHandle::export(self, handle, format, writer)
     }
 
-    fn tessellate(
-        &self,
-        handle: GeometryHandleId,
-        tolerance: f64,
-    ) -> Result<Mesh, TessError> {
+    fn tessellate(&self, handle: GeometryHandleId, tolerance: f64) -> Result<Mesh, TessError> {
         OcctKernelHandle::tessellate(self, handle, tolerance)
     }
 }

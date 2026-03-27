@@ -18,10 +18,7 @@ use reify_types::*;
 ///   is_recursive = true
 fn build_recursive_s(n_default: i64) -> reify_compiler::TopologyTemplate {
     // guard: n > 0  (references S.n)
-    let guard = gt(
-        value_ref_typed("S", "n", Type::Int),
-        literal(Value::Int(0)),
-    );
+    let guard = gt(value_ref_typed("S", "n", Type::Int), literal(Value::Int(0)));
     // arg: n = n - 1  (references S.n)
     let n_minus_1 = binop(
         BinOp::Sub,
@@ -138,12 +135,7 @@ fn unfold_recursive_bool_guard() {
             Some(CompiledExpr::literal(Value::Bool(true), Type::Bool)),
         )
         .is_recursive(true)
-        .sub_component_with_guard(
-            "child",
-            "S",
-            vec![("active".to_string(), negated)],
-            guard,
-        )
+        .sub_component_with_guard("child", "S", vec![("active".to_string(), negated)], guard)
         .build();
 
     let result = eval_single_template(template);
@@ -175,10 +167,7 @@ fn unfold_recursive_bool_guard() {
 /// After eval(): S.child.width = 5.0, S.child.child.width = 2.5.
 #[test]
 fn unfold_recursive_multiple_params() {
-    let guard = gt(
-        value_ref_typed("S", "n", Type::Int),
-        literal(Value::Int(0)),
-    );
+    let guard = gt(value_ref_typed("S", "n", Type::Int), literal(Value::Int(0)));
     let n_minus_1 = binop(
         BinOp::Sub,
         value_ref_typed("S", "n", Type::Int),
@@ -282,10 +271,7 @@ fn unfold_recursive_non_recursive_sub_unchanged() {
 /// After eval(): S.child.doubled = 4, S.child.child.doubled = 2, S.child.child.child.doubled = 0.
 #[test]
 fn unfold_recursive_with_let_bindings() {
-    let guard = gt(
-        value_ref_typed("S", "n", Type::Int),
-        literal(Value::Int(0)),
-    );
+    let guard = gt(value_ref_typed("S", "n", Type::Int), literal(Value::Int(0)));
     let n_minus_1 = binop(
         BinOp::Sub,
         value_ref_typed("S", "n", Type::Int),
@@ -323,7 +309,9 @@ fn unfold_recursive_with_let_bindings() {
             result.values.get(&doubled_id),
             Some(&Value::Int(expected_doubled)),
             "{}.doubled should be {} (= {} * 2)",
-            entity, expected_doubled, expected_n
+            entity,
+            expected_doubled,
+            expected_n
         );
     }
 }
@@ -344,10 +332,7 @@ fn unfold_recursive_with_let_bindings() {
 /// S.child.child is elaborated first, then S.child can reference its value.
 #[test]
 fn unfold_recursive_leaves_first_order() {
-    let guard = gt(
-        value_ref_typed("S", "n", Type::Int),
-        literal(Value::Int(0)),
-    );
+    let guard = gt(value_ref_typed("S", "n", Type::Int), literal(Value::Int(0)));
     let n_minus_1 = binop(
         BinOp::Sub,
         value_ref_typed("S", "n", Type::Int),
@@ -421,7 +406,9 @@ fn unfold_recursive_depth_limit_stops_unfolding() {
             result.values.get(&id),
             Some(&Value::Int(expected_n)),
             "level {} entity {} should have n={}",
-            level, entity, expected_n
+            level,
+            entity,
+            expected_n
         );
         entity = format!("{}.child", entity);
     }
@@ -443,17 +430,14 @@ fn unfold_recursive_depth_limit_stops_unfolding() {
 #[test]
 fn unfold_recursive_undef_param_no_unfold() {
     // Build S with no default value for n (Undef)
-    let guard = gt(
-        value_ref_typed("S", "n", Type::Int),
-        literal(Value::Int(0)),
-    );
+    let guard = gt(value_ref_typed("S", "n", Type::Int), literal(Value::Int(0)));
     let n_minus_1 = binop(
         BinOp::Sub,
         value_ref_typed("S", "n", Type::Int),
         literal(Value::Int(1)),
     );
     let template = TopologyTemplateBuilder::new("S")
-        .param("S", "n", Type::Int, None)  // no default → Undef
+        .param("S", "n", Type::Int, None) // no default → Undef
         .is_recursive(true)
         .sub_component_with_guard("child", "S", vec![("n".to_string(), n_minus_1)], guard)
         .build();
@@ -520,7 +504,9 @@ fn unfold_recursive_default_depth_limit_64() {
             result.values.get(&id),
             Some(&Value::Int(expected_n)),
             "level {} entity {} should have n={} (default depth limit 64 allows this level)",
-            level, entity, expected_n
+            level,
+            entity,
+            expected_n
         );
         entity = format!("{}.child", entity);
     }
@@ -553,14 +539,8 @@ fn unfold_recursive_default_depth_limit_64() {
 #[test]
 fn unfold_recursive_multiple_subs_cross_sub_let_reference() {
     // guard: n > 0
-    let guard_left = gt(
-        value_ref_typed("S", "n", Type::Int),
-        literal(Value::Int(0)),
-    );
-    let guard_right = gt(
-        value_ref_typed("S", "n", Type::Int),
-        literal(Value::Int(0)),
-    );
+    let guard_left = gt(value_ref_typed("S", "n", Type::Int), literal(Value::Int(0)));
+    let guard_right = gt(value_ref_typed("S", "n", Type::Int), literal(Value::Int(0)));
     // args: n = n - 1
     let n_minus_1_left = binop(
         BinOp::Sub,
@@ -588,12 +568,27 @@ fn unfold_recursive_multiple_subs_cross_sub_let_reference() {
     );
 
     let template = TopologyTemplateBuilder::new("S")
-        .param("S", "n", Type::Int, Some(CompiledExpr::literal(Value::Int(2), Type::Int)))
+        .param(
+            "S",
+            "n",
+            Type::Int,
+            Some(CompiledExpr::literal(Value::Int(2), Type::Int)),
+        )
         .let_binding("S", "val", Type::Int, val_expr)
         .let_binding("S", "sum", Type::Int, sum_expr)
         .is_recursive(true)
-        .sub_component_with_guard("left", "S", vec![("n".to_string(), n_minus_1_left)], guard_left)
-        .sub_component_with_guard("right", "S", vec![("n".to_string(), n_minus_1_right)], guard_right)
+        .sub_component_with_guard(
+            "left",
+            "S",
+            vec![("n".to_string(), n_minus_1_left)],
+            guard_left,
+        )
+        .sub_component_with_guard(
+            "right",
+            "S",
+            vec![("n".to_string(), n_minus_1_right)],
+            guard_right,
+        )
         .build();
 
     let result = eval_single_template(template);
@@ -652,14 +647,8 @@ fn unfold_recursive_multiple_subs_cross_sub_let_reference() {
 #[test]
 fn unfold_recursive_multiple_subs_all_children_created() {
     // guard: n > 0
-    let guard_left = gt(
-        value_ref_typed("S", "n", Type::Int),
-        literal(Value::Int(0)),
-    );
-    let guard_right = gt(
-        value_ref_typed("S", "n", Type::Int),
-        literal(Value::Int(0)),
-    );
+    let guard_left = gt(value_ref_typed("S", "n", Type::Int), literal(Value::Int(0)));
+    let guard_right = gt(value_ref_typed("S", "n", Type::Int), literal(Value::Int(0)));
     // arg: n = n - 1
     let n_minus_1_left = binop(
         BinOp::Sub,
@@ -673,10 +662,25 @@ fn unfold_recursive_multiple_subs_all_children_created() {
     );
 
     let template = TopologyTemplateBuilder::new("S")
-        .param("S", "n", Type::Int, Some(CompiledExpr::literal(Value::Int(2), Type::Int)))
+        .param(
+            "S",
+            "n",
+            Type::Int,
+            Some(CompiledExpr::literal(Value::Int(2), Type::Int)),
+        )
         .is_recursive(true)
-        .sub_component_with_guard("left", "S", vec![("n".to_string(), n_minus_1_left)], guard_left)
-        .sub_component_with_guard("right", "S", vec![("n".to_string(), n_minus_1_right)], guard_right)
+        .sub_component_with_guard(
+            "left",
+            "S",
+            vec![("n".to_string(), n_minus_1_left)],
+            guard_left,
+        )
+        .sub_component_with_guard(
+            "right",
+            "S",
+            vec![("n".to_string(), n_minus_1_right)],
+            guard_right,
+        )
         .build();
 
     let result = eval_single_template(template);
@@ -694,7 +698,12 @@ fn unfold_recursive_multiple_subs_all_children_created() {
     );
 
     // Level 2: all 4 cross-sub children should have n=0
-    for entity in &["S.left.left", "S.left.right", "S.right.left", "S.right.right"] {
+    for entity in &[
+        "S.left.left",
+        "S.left.right",
+        "S.right.left",
+        "S.right.right",
+    ] {
         assert_eq!(
             result.values.get(&ValueCellId::new(*entity, "n")),
             Some(&Value::Int(0)),
@@ -705,11 +714,15 @@ fn unfold_recursive_multiple_subs_all_children_created() {
 
     // Level 3: nothing should exist — guard is false at n=0
     assert!(
-        !result.values.contains(&ValueCellId::new("S.left.left.left", "n")),
+        !result
+            .values
+            .contains(&ValueCellId::new("S.left.left.left", "n")),
         "S.left.left.left.n should not exist (guard false at n=0)"
     );
     assert!(
-        !result.values.contains(&ValueCellId::new("S.left.right.left", "n")),
+        !result
+            .values
+            .contains(&ValueCellId::new("S.left.right.left", "n")),
         "S.left.right.left.n should not exist (guard false at n=0)"
     );
 }
@@ -731,9 +744,10 @@ fn unfold_recursive_depth_limit_emits_error_diagnostic() {
     engine.set_max_unfold_depth(3);
     let result = engine.eval(&module);
 
-    let has_error = result.diagnostics.iter().any(|d| {
-        d.severity == Severity::Error && d.message.contains("truncated at depth limit")
-    });
+    let has_error = result
+        .diagnostics
+        .iter()
+        .any(|d| d.severity == Severity::Error && d.message.contains("truncated at depth limit"));
     assert!(
         has_error,
         "Expected an Error-severity diagnostic about depth truncation, got: {:?}",
@@ -769,10 +783,7 @@ fn unfold_recursive_depth_limit_zero_rejected() {
 /// bottom-up evaluation chain works for two levels of cascading cross-level dependency.
 #[test]
 fn unfold_recursive_cross_level_three_deep() {
-    let guard = gt(
-        value_ref_typed("S", "n", Type::Int),
-        literal(Value::Int(0)),
-    );
+    let guard = gt(value_ref_typed("S", "n", Type::Int), literal(Value::Int(0)));
     let n_minus_1 = binop(
         BinOp::Sub,
         value_ref_typed("S", "n", Type::Int),
@@ -849,33 +860,37 @@ fn unfold_recursive_cross_level_three_deep() {
 #[test]
 fn unfold_mutual_recursion_two_node_cycle() {
     // Template A: param n: Int = 2, sub b = B(n: n-1) where n > 0
-    let guard_a = gt(
-        value_ref_typed("A", "n", Type::Int),
-        literal(Value::Int(0)),
-    );
+    let guard_a = gt(value_ref_typed("A", "n", Type::Int), literal(Value::Int(0)));
     let n_minus_1_a = binop(
         BinOp::Sub,
         value_ref_typed("A", "n", Type::Int),
         literal(Value::Int(1)),
     );
     let template_a = TopologyTemplateBuilder::new("A")
-        .param("A", "n", Type::Int, Some(CompiledExpr::literal(Value::Int(2), Type::Int)))
+        .param(
+            "A",
+            "n",
+            Type::Int,
+            Some(CompiledExpr::literal(Value::Int(2), Type::Int)),
+        )
         .is_recursive(true)
         .sub_component_with_guard("b", "B", vec![("n".to_string(), n_minus_1_a)], guard_a)
         .build();
 
     // Template B: param n: Int = 0 (default irrelevant, overridden by arg), sub a = A(n: n-1) where n > 0
-    let guard_b = gt(
-        value_ref_typed("B", "n", Type::Int),
-        literal(Value::Int(0)),
-    );
+    let guard_b = gt(value_ref_typed("B", "n", Type::Int), literal(Value::Int(0)));
     let n_minus_1_b = binop(
         BinOp::Sub,
         value_ref_typed("B", "n", Type::Int),
         literal(Value::Int(1)),
     );
     let template_b = TopologyTemplateBuilder::new("B")
-        .param("B", "n", Type::Int, Some(CompiledExpr::literal(Value::Int(0), Type::Int)))
+        .param(
+            "B",
+            "n",
+            Type::Int,
+            Some(CompiledExpr::literal(Value::Int(0), Type::Int)),
+        )
         .is_recursive(true)
         .sub_component_with_guard("a", "A", vec![("n".to_string(), n_minus_1_b)], guard_b)
         .build();
@@ -938,33 +953,72 @@ fn unfold_mutual_recursion_two_node_cycle() {
 fn unfold_mutual_recursion_three_node_cycle() {
     // Template A: param n=3, sub b = B(n: n-1) where n > 0
     let template_a = TopologyTemplateBuilder::new("A")
-        .param("A", "n", Type::Int, Some(CompiledExpr::literal(Value::Int(3), Type::Int)))
+        .param(
+            "A",
+            "n",
+            Type::Int,
+            Some(CompiledExpr::literal(Value::Int(3), Type::Int)),
+        )
         .is_recursive(true)
         .sub_component_with_guard(
-            "b", "B",
-            vec![("n".to_string(), binop(BinOp::Sub, value_ref_typed("A", "n", Type::Int), literal(Value::Int(1))))],
+            "b",
+            "B",
+            vec![(
+                "n".to_string(),
+                binop(
+                    BinOp::Sub,
+                    value_ref_typed("A", "n", Type::Int),
+                    literal(Value::Int(1)),
+                ),
+            )],
             gt(value_ref_typed("A", "n", Type::Int), literal(Value::Int(0))),
         )
         .build();
 
     // Template B: param n=0, sub c = C(n: n-1) where n > 0
     let template_b = TopologyTemplateBuilder::new("B")
-        .param("B", "n", Type::Int, Some(CompiledExpr::literal(Value::Int(0), Type::Int)))
+        .param(
+            "B",
+            "n",
+            Type::Int,
+            Some(CompiledExpr::literal(Value::Int(0), Type::Int)),
+        )
         .is_recursive(true)
         .sub_component_with_guard(
-            "c", "C",
-            vec![("n".to_string(), binop(BinOp::Sub, value_ref_typed("B", "n", Type::Int), literal(Value::Int(1))))],
+            "c",
+            "C",
+            vec![(
+                "n".to_string(),
+                binop(
+                    BinOp::Sub,
+                    value_ref_typed("B", "n", Type::Int),
+                    literal(Value::Int(1)),
+                ),
+            )],
             gt(value_ref_typed("B", "n", Type::Int), literal(Value::Int(0))),
         )
         .build();
 
     // Template C: param n=0, sub a = A(n: n-1) where n > 0
     let template_c = TopologyTemplateBuilder::new("C")
-        .param("C", "n", Type::Int, Some(CompiledExpr::literal(Value::Int(0), Type::Int)))
+        .param(
+            "C",
+            "n",
+            Type::Int,
+            Some(CompiledExpr::literal(Value::Int(0), Type::Int)),
+        )
         .is_recursive(true)
         .sub_component_with_guard(
-            "a", "A",
-            vec![("n".to_string(), binop(BinOp::Sub, value_ref_typed("C", "n", Type::Int), literal(Value::Int(1))))],
+            "a",
+            "A",
+            vec![(
+                "n".to_string(),
+                binop(
+                    BinOp::Sub,
+                    value_ref_typed("C", "n", Type::Int),
+                    literal(Value::Int(1)),
+                ),
+            )],
             gt(value_ref_typed("C", "n", Type::Int), literal(Value::Int(0))),
         )
         .build();
@@ -980,10 +1034,26 @@ fn unfold_mutual_recursion_three_node_cycle() {
     let result = engine.eval(&module);
 
     // Verify chain: A(3) → A.b=B(2) → A.b.c=C(1) → A.b.c.a=A(0)
-    assert_eq!(result.values.get(&ValueCellId::new("A", "n")), Some(&Value::Int(3)), "A.n should be 3");
-    assert_eq!(result.values.get(&ValueCellId::new("A.b", "n")), Some(&Value::Int(2)), "A.b.n should be 2");
-    assert_eq!(result.values.get(&ValueCellId::new("A.b.c", "n")), Some(&Value::Int(1)), "A.b.c.n should be 1");
-    assert_eq!(result.values.get(&ValueCellId::new("A.b.c.a", "n")), Some(&Value::Int(0)), "A.b.c.a.n should be 0");
+    assert_eq!(
+        result.values.get(&ValueCellId::new("A", "n")),
+        Some(&Value::Int(3)),
+        "A.n should be 3"
+    );
+    assert_eq!(
+        result.values.get(&ValueCellId::new("A.b", "n")),
+        Some(&Value::Int(2)),
+        "A.b.n should be 2"
+    );
+    assert_eq!(
+        result.values.get(&ValueCellId::new("A.b.c", "n")),
+        Some(&Value::Int(1)),
+        "A.b.c.n should be 1"
+    );
+    assert_eq!(
+        result.values.get(&ValueCellId::new("A.b.c.a", "n")),
+        Some(&Value::Int(0)),
+        "A.b.c.a.n should be 0"
+    );
 
     // A.b.c.a.b should NOT exist (guard false at n=0)
     assert!(
@@ -1007,30 +1077,68 @@ fn unfold_mutual_recursion_three_node_cycle() {
 fn unfold_mutual_recursion_with_let_bindings() {
     // Template A: param n=2, let val = n * 10, sub b = B(n: n-1) where n > 0
     let template_a = TopologyTemplateBuilder::new("A")
-        .param("A", "n", Type::Int, Some(CompiledExpr::literal(Value::Int(2), Type::Int)))
+        .param(
+            "A",
+            "n",
+            Type::Int,
+            Some(CompiledExpr::literal(Value::Int(2), Type::Int)),
+        )
         .let_binding(
-            "A", "val", Type::Int,
-            binop(BinOp::Mul, value_ref_typed("A", "n", Type::Int), literal(Value::Int(10))),
+            "A",
+            "val",
+            Type::Int,
+            binop(
+                BinOp::Mul,
+                value_ref_typed("A", "n", Type::Int),
+                literal(Value::Int(10)),
+            ),
         )
         .is_recursive(true)
         .sub_component_with_guard(
-            "b", "B",
-            vec![("n".to_string(), binop(BinOp::Sub, value_ref_typed("A", "n", Type::Int), literal(Value::Int(1))))],
+            "b",
+            "B",
+            vec![(
+                "n".to_string(),
+                binop(
+                    BinOp::Sub,
+                    value_ref_typed("A", "n", Type::Int),
+                    literal(Value::Int(1)),
+                ),
+            )],
             gt(value_ref_typed("A", "n", Type::Int), literal(Value::Int(0))),
         )
         .build();
 
     // Template B: param n=0, let val = n * 10, sub a = A(n: n-1) where n > 0
     let template_b = TopologyTemplateBuilder::new("B")
-        .param("B", "n", Type::Int, Some(CompiledExpr::literal(Value::Int(0), Type::Int)))
+        .param(
+            "B",
+            "n",
+            Type::Int,
+            Some(CompiledExpr::literal(Value::Int(0), Type::Int)),
+        )
         .let_binding(
-            "B", "val", Type::Int,
-            binop(BinOp::Mul, value_ref_typed("B", "n", Type::Int), literal(Value::Int(10))),
+            "B",
+            "val",
+            Type::Int,
+            binop(
+                BinOp::Mul,
+                value_ref_typed("B", "n", Type::Int),
+                literal(Value::Int(10)),
+            ),
         )
         .is_recursive(true)
         .sub_component_with_guard(
-            "a", "A",
-            vec![("n".to_string(), binop(BinOp::Sub, value_ref_typed("B", "n", Type::Int), literal(Value::Int(1))))],
+            "a",
+            "A",
+            vec![(
+                "n".to_string(),
+                binop(
+                    BinOp::Sub,
+                    value_ref_typed("B", "n", Type::Int),
+                    literal(Value::Int(1)),
+                ),
+            )],
             gt(value_ref_typed("B", "n", Type::Int), literal(Value::Int(0))),
         )
         .build();
@@ -1095,10 +1203,22 @@ fn unfold_mutual_recursion_heterogeneous_members() {
     // Template A: param n=2, param width=5, let total = width + <A.b.height via child_values>,
     //             sub b = B(n: n-1) where n > 0
     let template_a = TopologyTemplateBuilder::new("A")
-        .param("A", "n", Type::Int, Some(CompiledExpr::literal(Value::Int(2), Type::Int)))
-        .param("A", "width", Type::Int, Some(CompiledExpr::literal(Value::Int(5), Type::Int)))
+        .param(
+            "A",
+            "n",
+            Type::Int,
+            Some(CompiledExpr::literal(Value::Int(2), Type::Int)),
+        )
+        .param(
+            "A",
+            "width",
+            Type::Int,
+            Some(CompiledExpr::literal(Value::Int(5), Type::Int)),
+        )
         .let_binding(
-            "A", "total", Type::Int,
+            "A",
+            "total",
+            Type::Int,
             // total = width + A.b.height
             // Cross-entity ref: entity="A.b" (the sub), member="height" (B's param).
             // After BFS projection: child_values has ValueCellId("A.b", "height") from global values.
@@ -1110,20 +1230,46 @@ fn unfold_mutual_recursion_heterogeneous_members() {
         )
         .is_recursive(true)
         .sub_component_with_guard(
-            "b", "B",
-            vec![("n".to_string(), binop(BinOp::Sub, value_ref_typed("A", "n", Type::Int), literal(Value::Int(1))))],
+            "b",
+            "B",
+            vec![(
+                "n".to_string(),
+                binop(
+                    BinOp::Sub,
+                    value_ref_typed("A", "n", Type::Int),
+                    literal(Value::Int(1)),
+                ),
+            )],
             gt(value_ref_typed("A", "n", Type::Int), literal(Value::Int(0))),
         )
         .build();
 
     // Template B: param n=0, param height=3, sub a = A(n: n-1) where n > 0
     let template_b = TopologyTemplateBuilder::new("B")
-        .param("B", "n", Type::Int, Some(CompiledExpr::literal(Value::Int(0), Type::Int)))
-        .param("B", "height", Type::Int, Some(CompiledExpr::literal(Value::Int(3), Type::Int)))
+        .param(
+            "B",
+            "n",
+            Type::Int,
+            Some(CompiledExpr::literal(Value::Int(0), Type::Int)),
+        )
+        .param(
+            "B",
+            "height",
+            Type::Int,
+            Some(CompiledExpr::literal(Value::Int(3), Type::Int)),
+        )
         .is_recursive(true)
         .sub_component_with_guard(
-            "a", "A",
-            vec![("n".to_string(), binop(BinOp::Sub, value_ref_typed("B", "n", Type::Int), literal(Value::Int(1))))],
+            "a",
+            "A",
+            vec![(
+                "n".to_string(),
+                binop(
+                    BinOp::Sub,
+                    value_ref_typed("B", "n", Type::Int),
+                    literal(Value::Int(1)),
+                ),
+            )],
             gt(value_ref_typed("B", "n", Type::Int), literal(Value::Int(0))),
         )
         .build();
@@ -1191,10 +1337,7 @@ fn cyclic_let_bindings_emit_diagnostic() {
         literal(Value::Int(1)),
     );
 
-    let guard = gt(
-        value_ref_typed("S", "n", Type::Int),
-        literal(Value::Int(0)),
-    );
+    let guard = gt(value_ref_typed("S", "n", Type::Int), literal(Value::Int(0)));
     let n_minus_1 = binop(
         BinOp::Sub,
         value_ref_typed("S", "n", Type::Int),
@@ -1202,7 +1345,12 @@ fn cyclic_let_bindings_emit_diagnostic() {
     );
 
     let template = TopologyTemplateBuilder::new("S")
-        .param("S", "n", Type::Int, Some(CompiledExpr::literal(Value::Int(2), Type::Int)))
+        .param(
+            "S",
+            "n",
+            Type::Int,
+            Some(CompiledExpr::literal(Value::Int(2), Type::Int)),
+        )
         .let_binding("S", "a", Type::Int, a_expr)
         .let_binding("S", "b", Type::Int, b_expr)
         .is_recursive(true)

@@ -63,12 +63,10 @@ pub fn register(registry: &mut ToolRegistry) {
                         },
                     }))
                 }
-                Err(_) => {
-                    Ok(serde_json::json!({
-                        "success": false,
-                        "location": null,
-                    }))
-                }
+                Err(_) => Ok(serde_json::json!({
+                    "success": false,
+                    "location": null,
+                })),
             }
         },
     );

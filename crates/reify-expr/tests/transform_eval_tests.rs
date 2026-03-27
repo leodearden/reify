@@ -1,20 +1,30 @@
 //! Transform operation evaluation tests: Transform * Vector, Transform * Point,
 //! Transform * Transform composition.
 
-use reify_expr::{eval_expr, EvalContext};
+use reify_expr::{EvalContext, eval_expr};
 use reify_types::{BinOp, CompiledExpr, DimensionVector, Type, Value, ValueMap};
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 /// Identity quaternion (no rotation).
 fn identity_orientation() -> Value {
-    Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 }
+    Value::Orientation {
+        w: 1.0,
+        x: 0.0,
+        y: 0.0,
+        z: 0.0,
+    }
 }
 
 /// 90-degree rotation about the Z axis: cos(45deg) = sin(45deg) = sqrt(2)/2.
 fn rotation_90z() -> Value {
     let s = std::f64::consts::FRAC_1_SQRT_2;
-    Value::Orientation { w: s, x: 0.0, y: 0.0, z: s }
+    Value::Orientation {
+        w: s,
+        x: 0.0,
+        y: 0.0,
+        z: s,
+    }
 }
 
 /// Identity transform (no rotation, zero LENGTH translation).
@@ -42,7 +52,13 @@ fn make_transform(rotation: Value, tx: f64, ty: f64, tz: f64) -> Value {
 }
 
 /// Evaluate a binary multiplication expression.
-fn eval_mul_expr(left_val: Value, left_ty: Type, right_val: Value, right_ty: Type, result_ty: Type) -> Value {
+fn eval_mul_expr(
+    left_val: Value,
+    left_ty: Type,
+    right_val: Value,
+    right_ty: Type,
+    result_ty: Type,
+) -> Value {
     let left = CompiledExpr::literal(left_val, left_ty);
     let right = CompiledExpr::literal(right_val, right_ty);
     let expr = CompiledExpr::binop(BinOp::Mul, left, right, result_ty);
@@ -55,7 +71,11 @@ fn eval_mul_expr(left_val: Value, left_ty: Type, right_val: Value, right_ty: Typ
 /// Identity transform * vector returns the same vector.
 #[test]
 fn identity_transform_mul_vector() {
-    let v = Value::Vector(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]);
+    let v = Value::Vector(vec![
+        Value::length(1.0),
+        Value::length(2.0),
+        Value::length(3.0),
+    ]);
     let result = eval_mul_expr(
         identity_transform(),
         Type::Transform(3),
@@ -69,7 +89,11 @@ fn identity_transform_mul_vector() {
 /// 90-degree Z rotation applied to (1,0,0) yields (0,1,0).
 #[test]
 fn transform_90z_mul_vector() {
-    let v = Value::Vector(vec![Value::length(1.0), Value::length(0.0), Value::length(0.0)]);
+    let v = Value::Vector(vec![
+        Value::length(1.0),
+        Value::length(0.0),
+        Value::length(0.0),
+    ]);
     let result = eval_mul_expr(
         make_transform(rotation_90z(), 0.0, 0.0, 0.0),
         Type::Transform(3),
@@ -94,7 +118,11 @@ fn transform_90z_mul_vector() {
 /// Translation component is ignored when multiplying Transform * Vector.
 #[test]
 fn transform_translation_ignored_for_vector() {
-    let v = Value::Vector(vec![Value::length(1.0), Value::length(0.0), Value::length(0.0)]);
+    let v = Value::Vector(vec![
+        Value::length(1.0),
+        Value::length(0.0),
+        Value::length(0.0),
+    ]);
     // Identity rotation, but large translation -- should NOT affect vector
     let t = make_transform(identity_orientation(), 100.0, 200.0, 300.0);
     let result = eval_mul_expr(
@@ -110,7 +138,11 @@ fn transform_translation_ignored_for_vector() {
 /// Transform * Vector preserves the vector's dimension.
 #[test]
 fn transform_mul_vector_preserves_dimension() {
-    let v = Value::Vector(vec![Value::length(5.0), Value::length(0.0), Value::length(0.0)]);
+    let v = Value::Vector(vec![
+        Value::length(5.0),
+        Value::length(0.0),
+        Value::length(0.0),
+    ]);
     let result = eval_mul_expr(
         make_transform(rotation_90z(), 0.0, 0.0, 0.0),
         Type::Transform(3),
@@ -134,7 +166,11 @@ fn transform_mul_vector_preserves_dimension() {
 /// Identity transform * point returns the same point.
 #[test]
 fn identity_transform_mul_point() {
-    let p = Value::Point(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]);
+    let p = Value::Point(vec![
+        Value::length(1.0),
+        Value::length(2.0),
+        Value::length(3.0),
+    ]);
     let result = eval_mul_expr(
         identity_transform(),
         Type::Transform(3),
@@ -148,7 +184,11 @@ fn identity_transform_mul_point() {
 /// Rotation-only transform (zero translation) applied to point.
 #[test]
 fn rotation_only_transform_mul_point() {
-    let p = Value::Point(vec![Value::length(1.0), Value::length(0.0), Value::length(0.0)]);
+    let p = Value::Point(vec![
+        Value::length(1.0),
+        Value::length(0.0),
+        Value::length(0.0),
+    ]);
     let result = eval_mul_expr(
         make_transform(rotation_90z(), 0.0, 0.0, 0.0),
         Type::Transform(3),
@@ -174,7 +214,11 @@ fn rotation_only_transform_mul_point() {
 /// Result = rotate(1,0,0) + (10,20,30) = (0,1,0) + (10,20,30) = (10,21,30).
 #[test]
 fn full_transform_mul_point() {
-    let p = Value::Point(vec![Value::length(1.0), Value::length(0.0), Value::length(0.0)]);
+    let p = Value::Point(vec![
+        Value::length(1.0),
+        Value::length(0.0),
+        Value::length(0.0),
+    ]);
     let result = eval_mul_expr(
         make_transform(rotation_90z(), 10.0, 20.0, 30.0),
         Type::Transform(3),
@@ -198,7 +242,11 @@ fn full_transform_mul_point() {
 /// Transform * Point with dimension mismatch (point has LENGTH, translation has ANGLE) returns Undef.
 #[test]
 fn transform_mul_point_dimension_mismatch_undef() {
-    let p = Value::Point(vec![Value::length(1.0), Value::length(0.0), Value::length(0.0)]);
+    let p = Value::Point(vec![
+        Value::length(1.0),
+        Value::length(0.0),
+        Value::length(0.0),
+    ]);
     let t = Value::Transform {
         rotation: Box::new(identity_orientation()),
         translation: Box::new(Value::Vector(vec![
@@ -214,7 +262,11 @@ fn transform_mul_point_dimension_mismatch_undef() {
         Type::point3(Type::length()),
         Type::point3(Type::length()),
     );
-    assert!(result.is_undef(), "dimension mismatch should return Undef, got {:?}", result);
+    assert!(
+        result.is_undef(),
+        "dimension mismatch should return Undef, got {:?}",
+        result
+    );
 }
 
 // ── step-5: Transform * Transform (composition) tests ────────────────────────
@@ -270,7 +322,10 @@ fn identity_mul_transform() {
         Type::Transform(3),
     );
     match result {
-        Value::Transform { rotation, translation } => {
+        Value::Transform {
+            rotation,
+            translation,
+        } => {
             let s = std::f64::consts::FRAC_1_SQRT_2;
             assert_orientation_approx(&rotation, s, 0.0, 0.0, s, "I*T rotation");
             assert_vector_approx(&translation, 10.0, 20.0, 30.0, "I*T translation");
@@ -291,7 +346,10 @@ fn transform_mul_identity() {
         Type::Transform(3),
     );
     match result {
-        Value::Transform { rotation, translation } => {
+        Value::Transform {
+            rotation,
+            translation,
+        } => {
             let s = std::f64::consts::FRAC_1_SQRT_2;
             assert_orientation_approx(&rotation, s, 0.0, 0.0, s, "T*I rotation");
             assert_vector_approx(&translation, 10.0, 20.0, 30.0, "T*I translation");
@@ -314,7 +372,10 @@ fn compose_two_rotations() {
         Type::Transform(3),
     );
     match result {
-        Value::Transform { rotation, translation } => {
+        Value::Transform {
+            rotation,
+            translation,
+        } => {
             // 180-degree Z rotation: quat = (0, 0, 0, 1)
             assert_orientation_approx(&rotation, 0.0, 0.0, 0.0, 1.0, "90Z*90Z rotation");
             assert_vector_approx(&translation, 0.0, 0.0, 0.0, "90Z*90Z translation");
@@ -338,7 +399,10 @@ fn compose_rotation_and_translation() {
         Type::Transform(3),
     );
     match result {
-        Value::Transform { rotation, translation } => {
+        Value::Transform {
+            rotation,
+            translation,
+        } => {
             let s = std::f64::consts::FRAC_1_SQRT_2;
             assert_orientation_approx(&rotation, s, 0.0, 0.0, s, "compose rot");
             assert_vector_approx(&translation, 10.0, 1.0, 0.0, "compose trans");
@@ -366,7 +430,11 @@ fn compose_dimension_mismatch_undef() {
         Type::Transform(3),
         Type::Transform(3),
     );
-    assert!(result.is_undef(), "mismatched translation dimensions should return Undef, got {:?}", result);
+    assert!(
+        result.is_undef(),
+        "mismatched translation dimensions should return Undef, got {:?}",
+        result
+    );
 }
 
 // ── step-11: Transform * Transform NaN quaternion tests ──────────────────────
@@ -376,7 +444,12 @@ fn compose_dimension_mismatch_undef() {
 #[test]
 fn compose_nan_rotation_returns_undef() {
     let nan_transform = Value::Transform {
-        rotation: Box::new(Value::Orientation { w: f64::NAN, x: 0.0, y: 0.0, z: 0.0 }),
+        rotation: Box::new(Value::Orientation {
+            w: f64::NAN,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        }),
         translation: Box::new(Value::Vector(vec![
             Value::length(0.0),
             Value::length(0.0),
@@ -390,14 +463,23 @@ fn compose_nan_rotation_returns_undef() {
         Type::Transform(3),
         Type::Transform(3),
     );
-    assert!(result.is_undef(), "NaN rotation component should return Undef, got {:?}", result);
+    assert!(
+        result.is_undef(),
+        "NaN rotation component should return Undef, got {:?}",
+        result
+    );
 }
 
 /// Transform with all-NaN rotation components * identity should return Undef.
 #[test]
 fn compose_all_nan_rotation_returns_undef() {
     let nan_transform = Value::Transform {
-        rotation: Box::new(Value::Orientation { w: f64::NAN, x: f64::NAN, y: f64::NAN, z: f64::NAN }),
+        rotation: Box::new(Value::Orientation {
+            w: f64::NAN,
+            x: f64::NAN,
+            y: f64::NAN,
+            z: f64::NAN,
+        }),
         translation: Box::new(Value::Vector(vec![
             Value::length(0.0),
             Value::length(0.0),
@@ -411,7 +493,11 @@ fn compose_all_nan_rotation_returns_undef() {
         Type::Transform(3),
         Type::Transform(3),
     );
-    assert!(result.is_undef(), "all-NaN rotation should return Undef, got {:?}", result);
+    assert!(
+        result.is_undef(),
+        "all-NaN rotation should return Undef, got {:?}",
+        result
+    );
 }
 
 // ── step-13: Transform * Vector / Point NaN quaternion tests ─────────────────
@@ -420,14 +506,23 @@ fn compose_all_nan_rotation_returns_undef() {
 #[test]
 fn nan_rotation_mul_vector_returns_undef() {
     let nan_transform = Value::Transform {
-        rotation: Box::new(Value::Orientation { w: f64::NAN, x: 0.0, y: 0.0, z: 0.0 }),
+        rotation: Box::new(Value::Orientation {
+            w: f64::NAN,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        }),
         translation: Box::new(Value::Vector(vec![
             Value::length(0.0),
             Value::length(0.0),
             Value::length(0.0),
         ])),
     };
-    let v = Value::Vector(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]);
+    let v = Value::Vector(vec![
+        Value::length(1.0),
+        Value::length(2.0),
+        Value::length(3.0),
+    ]);
     let result = eval_mul_expr(
         nan_transform,
         Type::Transform(3),
@@ -435,21 +530,34 @@ fn nan_rotation_mul_vector_returns_undef() {
         Type::vec3(Type::length()),
         Type::vec3(Type::length()),
     );
-    assert!(result.is_undef(), "NaN rotation * vector should return Undef, got {:?}", result);
+    assert!(
+        result.is_undef(),
+        "NaN rotation * vector should return Undef, got {:?}",
+        result
+    );
 }
 
 /// Transform with NaN rotation * point should return Undef.
 #[test]
 fn nan_rotation_mul_point_returns_undef() {
     let nan_transform = Value::Transform {
-        rotation: Box::new(Value::Orientation { w: f64::NAN, x: 0.0, y: 0.0, z: 0.0 }),
+        rotation: Box::new(Value::Orientation {
+            w: f64::NAN,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        }),
         translation: Box::new(Value::Vector(vec![
             Value::length(0.0),
             Value::length(0.0),
             Value::length(0.0),
         ])),
     };
-    let p = Value::Point(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]);
+    let p = Value::Point(vec![
+        Value::length(1.0),
+        Value::length(2.0),
+        Value::length(3.0),
+    ]);
     let result = eval_mul_expr(
         nan_transform,
         Type::Transform(3),
@@ -457,5 +565,9 @@ fn nan_rotation_mul_point_returns_undef() {
         Type::point3(Type::length()),
         Type::point3(Type::length()),
     );
-    assert!(result.is_undef(), "NaN rotation * point should return Undef, got {:?}", result);
+    assert!(
+        result.is_undef(),
+        "NaN rotation * point should return Undef, got {:?}",
+        result
+    );
 }

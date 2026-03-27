@@ -47,7 +47,9 @@ fn update_source_returns_success_with_diagnostics() {
     assert_eq!(result["success"], true);
     // Only diagnostics for the updated file
     assert_eq!(result["diagnostics_count"], 2);
-    let diags = result["diagnostics"].as_array().expect("diagnostics should be array");
+    let diags = result["diagnostics"]
+        .as_array()
+        .expect("diagnostics should be array");
     assert_eq!(diags.len(), 2);
     assert_eq!(diags[0]["file_path"], "main.ri");
     assert_eq!(diags[1]["file_path"], "main.ri");
@@ -93,9 +95,11 @@ fn update_source_missing_content_returns_invalid_params() {
 fn set_parameter_returns_success_with_diagnostics() {
     let registry = setup_registry();
     let ctx = MockToolContext {
-        diagnostics: vec![
-            make_diagnostic("main.ri", "warning", "constraint near limit"),
-        ],
+        diagnostics: vec![make_diagnostic(
+            "main.ri",
+            "warning",
+            "constraint near limit",
+        )],
         ..Default::default()
     };
 
@@ -110,7 +114,9 @@ fn set_parameter_returns_success_with_diagnostics() {
     assert_eq!(result["success"], true);
     assert!(result["new_value"].is_string());
     assert!(result["unit"].is_string());
-    let diags = result["diagnostics"].as_array().expect("diagnostics should be array");
+    let diags = result["diagnostics"]
+        .as_array()
+        .expect("diagnostics should be array");
     assert_eq!(diags.len(), 1);
 }
 
@@ -178,11 +184,7 @@ fn open_file_missing_file_path_returns_invalid_params() {
     let registry = setup_registry();
     let ctx = MockToolContext::default();
 
-    let result = registry.call_tool(
-        "reify_open_file",
-        serde_json::json!({}),
-        &ctx,
-    );
+    let result = registry.call_tool("reify_open_file", serde_json::json!({}), &ctx);
 
     match result {
         Err(ToolError::InvalidParams(_)) => {} // expected
@@ -299,11 +301,7 @@ fn export_missing_output_path_returns_invalid_params() {
     let registry = setup_registry();
     let ctx = MockToolContext::default();
 
-    let result = registry.call_tool(
-        "reify_export",
-        serde_json::json!({"format": "step"}),
-        &ctx,
-    );
+    let result = registry.call_tool("reify_export", serde_json::json!({"format": "step"}), &ctx);
 
     match result {
         Err(ToolError::InvalidParams(_)) => {} // expected

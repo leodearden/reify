@@ -89,10 +89,10 @@ impl AnalysisContext {
                 for member in &s.members {
                     match member {
                         reify_syntax::MemberDecl::Param(p) if p.name == name => {
-                            return Some((p.span, p.doc.as_deref()))
+                            return Some((p.span, p.doc.as_deref()));
                         }
                         reify_syntax::MemberDecl::Let(l) if l.name == name => {
-                            return Some((l.span, l.doc.as_deref()))
+                            return Some((l.span, l.doc.as_deref()));
                         }
                         _ => {}
                     }
@@ -109,17 +109,13 @@ impl AnalysisContext {
         for decl in &self.parsed.declarations {
             match decl {
                 reify_syntax::Declaration::Structure(s) if s.name == name => {
-                    return s.doc.as_deref()
+                    return s.doc.as_deref();
                 }
                 reify_syntax::Declaration::Function(f) if f.name == name => {
-                    return f.doc.as_deref()
+                    return f.doc.as_deref();
                 }
-                reify_syntax::Declaration::Trait(t) if t.name == name => {
-                    return t.doc.as_deref()
-                }
-                reify_syntax::Declaration::Enum(e) if e.name == name => {
-                    return e.doc.as_deref()
-                }
+                reify_syntax::Declaration::Trait(t) if t.name == name => return t.doc.as_deref(),
+                reify_syntax::Declaration::Enum(e) if e.name == name => return e.doc.as_deref(),
                 _ => {}
             }
         }
@@ -214,14 +210,23 @@ pub fn format_value(value: &Value) -> String {
             format!("[{}]", inner.join(", "))
         }
         Value::Lambda { .. } => "<lambda>".to_string(),
-        Value::Field { domain_type, codomain_type, source, .. } => {
+        Value::Field {
+            domain_type,
+            codomain_type,
+            source,
+            ..
+        } => {
             format!("Field<{}, {}>({:?})", domain_type, codomain_type, source)
         }
         Value::Complex { re, im, dimension } => {
             let unit = dimension_unit_label(dimension);
             // Use conditional sign handling so negative imaginary parts render
             // as "3 - 4i" instead of "3 + -4i".
-            let (sign, im_abs) = if *im < 0.0 { ("-", im.abs()) } else { ("+", *im) };
+            let (sign, im_abs) = if *im < 0.0 {
+                ("-", im.abs())
+            } else {
+                ("+", *im)
+            };
             if unit.is_empty() {
                 format!("{re} {sign} {im_abs}i")
             } else {
@@ -229,10 +234,13 @@ pub fn format_value(value: &Value) -> String {
             }
         }
         Value::Matrix(rows) => {
-            let inner: Vec<String> = rows.iter().map(|row| {
-                let cols: Vec<String> = row.iter().map(format_value).collect();
-                format!("[{}]", cols.join(", "))
-            }).collect();
+            let inner: Vec<String> = rows
+                .iter()
+                .map(|row| {
+                    let cols: Vec<String> = row.iter().map(format_value).collect();
+                    format!("[{}]", cols.join(", "))
+                })
+                .collect();
             format!("[{}]", inner.join(", "))
         }
         Value::Point(components) => {
@@ -247,23 +255,52 @@ pub fn format_value(value: &Value) -> String {
             format!("Orientation(w={w}, x={x}, y={y}, z={z})")
         }
         Value::Frame { origin, basis } => {
-            format!("Frame(origin={}, basis={})", format_value(origin), format_value(basis))
+            format!(
+                "Frame(origin={}, basis={})",
+                format_value(origin),
+                format_value(basis)
+            )
         }
-        Value::Transform { rotation, translation } => {
-            format!("Transform(rotation={}, translation={})", format_value(rotation), format_value(translation))
+        Value::Transform {
+            rotation,
+            translation,
+        } => {
+            format!(
+                "Transform(rotation={}, translation={})",
+                format_value(rotation),
+                format_value(translation)
+            )
         }
         Value::Plane { origin, normal } => {
-            format!("Plane(origin={}, normal={})", format_value(origin), format_value(normal))
+            format!(
+                "Plane(origin={}, normal={})",
+                format_value(origin),
+                format_value(normal)
+            )
         }
         Value::Axis { origin, direction } => {
-            format!("Axis(origin={}, direction={})", format_value(origin), format_value(direction))
+            format!(
+                "Axis(origin={}, direction={})",
+                format_value(origin),
+                format_value(direction)
+            )
         }
         Value::BoundingBox { min, max } => {
-            format!("BoundingBox(min={}, max={})", format_value(min), format_value(max))
+            format!(
+                "BoundingBox(min={}, max={})",
+                format_value(min),
+                format_value(max)
+            )
         }
         Value::Range { lower, upper, .. } => {
-            let lo = lower.as_ref().map(|v| format_value(v)).unwrap_or_else(|| "..".to_string());
-            let hi = upper.as_ref().map(|v| format_value(v)).unwrap_or_else(|| "..".to_string());
+            let lo = lower
+                .as_ref()
+                .map(|v| format_value(v))
+                .unwrap_or_else(|| "..".to_string());
+            let hi = upper
+                .as_ref()
+                .map(|v| format_value(v))
+                .unwrap_or_else(|| "..".to_string());
             format!("{lo}..{hi}")
         }
         Value::Undef => "(undefined)".to_string(),

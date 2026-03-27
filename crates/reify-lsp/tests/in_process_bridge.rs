@@ -15,8 +15,7 @@ async fn initialize_returns_server_capabilities() {
     // Should return ServerCapabilities with our providers
     let caps = &result["capabilities"];
     assert!(
-        caps["hoverProvider"].as_bool().unwrap_or(false)
-            || caps["hoverProvider"].is_object(),
+        caps["hoverProvider"].as_bool().unwrap_or(false) || caps["hoverProvider"].is_object(),
         "should advertise hover provider"
     );
     assert!(
@@ -75,7 +74,9 @@ async fn did_open_and_completion_returns_items() {
         .expect("completion should succeed");
 
     // Should return an array of completion items
-    let items = result.as_array().expect("completion should return an array");
+    let items = result
+        .as_array()
+        .expect("completion should return an array");
     assert!(
         !items.is_empty(),
         "completion should return non-empty items for bracket source"
@@ -86,12 +87,8 @@ async fn did_open_and_completion_returns_items() {
 async fn hover_returns_info_for_known_symbol() {
     let lsp = InProcessLsp::new();
 
-    lsp.handle_request("initialize", json!({}))
-        .await
-        .unwrap();
-    lsp.handle_request("initialized", json!({}))
-        .await
-        .unwrap();
+    lsp.handle_request("initialize", json!({})).await.unwrap();
+    lsp.handle_request("initialized", json!({})).await.unwrap();
 
     let source = reify_test_support::bracket_source();
     lsp.handle_request(
@@ -125,7 +122,9 @@ async fn hover_returns_info_for_known_symbol() {
         "hover should return info for known symbol, got null"
     );
     assert!(
-        result["contents"].is_object() || result["contents"].is_string() || result["contents"].is_array(),
+        result["contents"].is_object()
+            || result["contents"].is_string()
+            || result["contents"].is_array(),
         "hover result should have contents"
     );
 }
@@ -134,12 +133,8 @@ async fn hover_returns_info_for_known_symbol() {
 async fn hover_on_documented_structure_shows_doc_via_bridge() {
     let lsp = InProcessLsp::new();
 
-    lsp.handle_request("initialize", json!({}))
-        .await
-        .unwrap();
-    lsp.handle_request("initialized", json!({}))
-        .await
-        .unwrap();
+    lsp.handle_request("initialize", json!({})).await.unwrap();
+    lsp.handle_request("initialized", json!({})).await.unwrap();
 
     let source = "/// A bracket.\nstructure Bracket {\n    param width: Scalar = 80mm\n}";
     lsp.handle_request(
@@ -186,12 +181,8 @@ async fn hover_on_documented_structure_shows_doc_via_bridge() {
 async fn goto_definition_returns_location() {
     let lsp = InProcessLsp::new();
 
-    lsp.handle_request("initialize", json!({}))
-        .await
-        .unwrap();
-    lsp.handle_request("initialized", json!({}))
-        .await
-        .unwrap();
+    lsp.handle_request("initialize", json!({})).await.unwrap();
+    lsp.handle_request("initialized", json!({})).await.unwrap();
 
     let source = reify_test_support::bracket_source();
     lsp.handle_request(
@@ -235,12 +226,8 @@ async fn goto_definition_returns_location() {
 async fn diagnostics_captured_after_did_open_with_syntax_error() {
     let lsp = InProcessLsp::new();
 
-    lsp.handle_request("initialize", json!({}))
-        .await
-        .unwrap();
-    lsp.handle_request("initialized", json!({}))
-        .await
-        .unwrap();
+    lsp.handle_request("initialize", json!({})).await.unwrap();
+    lsp.handle_request("initialized", json!({})).await.unwrap();
 
     // Open a document with a syntax error
     let broken_source = "structure {";

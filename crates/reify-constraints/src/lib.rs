@@ -8,7 +8,7 @@ mod solvespace;
 
 pub use classifier::ConstraintClassifier;
 pub use cpsat::CpSatSolver;
-pub use decompose::{decompose_into_components, SubProblem};
+pub use decompose::{SubProblem, decompose_into_components};
 pub use registry::SolverRegistry;
 pub use solver::DimensionalSolver;
 pub use solvespace::SolveSpaceSolver;
@@ -29,9 +29,14 @@ impl ConstraintChecker for SimpleConstraintChecker {
             .constraints
             .iter()
             .map(|(id, expr)| {
-                let value = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(input.values, input.functions));
+                let value = reify_expr::eval_expr(
+                    expr,
+                    &reify_expr::EvalContext::new(input.values, input.functions),
+                );
                 let (satisfaction, diagnostics) = match value {
-                    Value::Bool(true) => (Satisfaction::Satisfied, ConstraintDiagnostics::default()),
+                    Value::Bool(true) => {
+                        (Satisfaction::Satisfied, ConstraintDiagnostics::default())
+                    }
                     Value::Bool(false) => (
                         Satisfaction::Violated,
                         ConstraintDiagnostics {
@@ -84,8 +89,7 @@ impl ConstraintChecker for SimpleConstraintChecker {
 mod tests {
     use super::*;
     use reify_types::{
-        BinOp, CompiledExpr, ConstraintNodeId, DimensionVector, Type, Value, ValueCellId,
-        ValueMap,
+        BinOp, CompiledExpr, ConstraintNodeId, DimensionVector, Type, Value, ValueCellId, ValueMap,
     };
 
     fn mm(v: f64) -> Value {

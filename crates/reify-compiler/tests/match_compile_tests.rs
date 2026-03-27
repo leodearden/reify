@@ -9,7 +9,11 @@ structure S {
     let x = match d { In => 1, Out => 2, Bidi => 3 }
 }"#;
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_match"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
 
@@ -58,7 +62,11 @@ structure S {
     let x = match d { In => 1, Out => 2 }
 }"#;
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_missing"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
 
@@ -91,7 +99,11 @@ structure S {
     let x = match d { In => 1, _ => 0 }
 }"#;
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_wildcard"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
 

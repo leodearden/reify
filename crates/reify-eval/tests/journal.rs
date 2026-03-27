@@ -1,8 +1,8 @@
 //! Integration tests for the EventJournal instrumentation in Engine.
 
+use reify_eval::Engine;
 use reify_eval::cache::NodeId;
 use reify_eval::journal::EventKind;
-use reify_eval::Engine;
 use reify_test_support::bracket_compiled_module;
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_types::{Value, ValueCellId, VersionId};
@@ -43,18 +43,25 @@ fn eval_populates_journal() {
     }
 
     // Verify Started events precede Completed events for same node
-    for param in &["width", "height", "thickness", "fillet_radius", "hole_diameter", "volume"] {
+    for param in &[
+        "width",
+        "height",
+        "thickness",
+        "fillet_radius",
+        "hole_diameter",
+        "volume",
+    ] {
         let node = NodeId::Value(ValueCellId::new(e, *param));
         let events = journal.events_for_node(&node);
         if events.len() >= 2 {
-            let first_started = events.iter().position(|e| matches!(e.kind, EventKind::Started));
-            let first_completed = events.iter().position(|e| matches!(e.kind, EventKind::Completed { .. }));
+            let first_started = events
+                .iter()
+                .position(|e| matches!(e.kind, EventKind::Started));
+            let first_completed = events
+                .iter()
+                .position(|e| matches!(e.kind, EventKind::Completed { .. }));
             if let (Some(s), Some(c)) = (first_started, first_completed) {
-                assert!(
-                    s < c,
-                    "Started should precede Completed for {}",
-                    param
-                );
+                assert!(s < c, "Started should precede Completed for {}", param);
             }
         }
     }
@@ -74,7 +81,9 @@ fn edit_param_records_journal_events() {
     // Edit width from 80mm to 100mm
     let e = "Bracket";
     let width_id = ValueCellId::new(e, "width");
-    engine.edit_param(width_id.clone(), reify_types::Value::length(0.1)).unwrap();
+    engine
+        .edit_param(width_id.clone(), reify_types::Value::length(0.1))
+        .unwrap();
 
     let journal = engine.journal();
     assert!(
@@ -102,10 +111,17 @@ fn edit_param_records_journal_events() {
     );
 
     // Verify Started precedes Completed for volume in edit_param
-    let started_pos = volume_events.iter().position(|e| matches!(e.kind, EventKind::Started));
-    let completed_pos = volume_events.iter().position(|e| matches!(e.kind, EventKind::Completed { .. }));
+    let started_pos = volume_events
+        .iter()
+        .position(|e| matches!(e.kind, EventKind::Started));
+    let completed_pos = volume_events
+        .iter()
+        .position(|e| matches!(e.kind, EventKind::Completed { .. }));
     assert!(started_pos.is_some(), "volume should have Started event");
-    assert!(completed_pos.is_some(), "volume should have Completed event");
+    assert!(
+        completed_pos.is_some(),
+        "volume should have Completed event"
+    );
     assert!(
         started_pos.unwrap() < completed_pos.unwrap(),
         "Started should precede Completed for volume in edit_param"
@@ -114,14 +130,22 @@ fn edit_param_records_journal_events() {
     // Nodes that weren't re-evaluated (directly changed param width, unchanged params)
     // should NOT have Started events in this version.
     // Width's value is set directly in edit_param, not via eval_expr.
-    for unchanged_param in &["width", "height", "thickness", "fillet_radius", "hole_diameter"] {
+    for unchanged_param in &[
+        "width",
+        "height",
+        "thickness",
+        "fillet_radius",
+        "hole_diameter",
+    ] {
         let node = NodeId::Value(ValueCellId::new(e, *unchanged_param));
         let param_edit_events: Vec<_> = journal
             .events_for_node(&node)
             .into_iter()
             .filter(|e| e.version >= VersionId(1))
             .collect();
-        let has_started = param_edit_events.iter().any(|e| matches!(e.kind, EventKind::Started));
+        let has_started = param_edit_events
+            .iter()
+            .any(|e| matches!(e.kind, EventKind::Started));
         assert!(
             !has_started,
             "{} should NOT have Started events in edit_param version",
@@ -148,7 +172,9 @@ fn eval_cached_records_cache_hit_events() {
     let e = "Bracket";
     let width_node = NodeId::Value(ValueCellId::new(e, "width"));
     let cold_width = engine.journal().events_for_node(&width_node);
-    let has_started = cold_width.iter().any(|e| matches!(e.kind, EventKind::Started));
+    let has_started = cold_width
+        .iter()
+        .any(|e| matches!(e.kind, EventKind::Started));
     assert!(has_started, "cold start should have Started for width");
 
     // Second call with same version: should get CacheHit via fast path
@@ -166,7 +192,9 @@ fn eval_cached_records_cache_hit_events() {
         .iter()
         .skip(events_after_cold)
         .collect();
-    let has_cache_hit = second_call_events.iter().any(|e| matches!(e.kind, EventKind::CacheHit));
+    let has_cache_hit = second_call_events
+        .iter()
+        .any(|e| matches!(e.kind, EventKind::CacheHit));
     assert!(has_cache_hit, "second call should have CacheHit events");
 
     // Third call after invalidation: should record mix of events
@@ -189,8 +217,12 @@ fn eval_cached_records_cache_hit_events() {
         .iter()
         .skip(events_before_dirty)
         .collect();
-    let dirty_has_started = dirty_events.iter().any(|e| matches!(e.kind, EventKind::Started));
-    let dirty_has_cache_hit = dirty_events.iter().any(|e| matches!(e.kind, EventKind::CacheHit));
+    let dirty_has_started = dirty_events
+        .iter()
+        .any(|e| matches!(e.kind, EventKind::Started));
+    let dirty_has_cache_hit = dirty_events
+        .iter()
+        .any(|e| matches!(e.kind, EventKind::CacheHit));
     assert!(
         dirty_has_started || dirty_has_cache_hit,
         "dirty eval should have Started or CacheHit events"

@@ -1,6 +1,6 @@
 //! Point/Vector component access and arithmetic evaluation tests.
 
-use reify_expr::{eval_expr, EvalContext};
+use reify_expr::{EvalContext, eval_expr};
 use reify_types::{BinOp, CompiledExpr, DimensionVector, Type, UnOp, Value, ValueCellId, ValueMap};
 
 // --- Construction ---
@@ -20,7 +20,11 @@ fn construct_point3_length_tensor() {
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert_eq!(
         result,
-        Value::Tensor(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)])
+        Value::Tensor(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0)
+        ])
     );
 }
 
@@ -39,7 +43,11 @@ fn construct_vector3_length_tensor() {
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert_eq!(
         result,
-        Value::Tensor(vec![Value::length(4.0), Value::length(5.0), Value::length(6.0)])
+        Value::Tensor(vec![
+            Value::length(4.0),
+            Value::length(5.0),
+            Value::length(6.0)
+        ])
     );
 }
 
@@ -52,7 +60,10 @@ fn construct_point2_length_tensor() {
     );
     let values = ValueMap::new();
     let result = eval_expr(&expr, &EvalContext::simple(&values));
-    assert_eq!(result, Value::Tensor(vec![Value::length(7.0), Value::length(8.0)]));
+    assert_eq!(
+        result,
+        Value::Tensor(vec![Value::length(7.0), Value::length(8.0)])
+    );
 }
 
 /// Construction of Vector2<Dimensionless> as Value::Tensor with 2 Real components.
@@ -64,7 +75,10 @@ fn construct_vector2_dimensionless_tensor() {
     );
     let values = ValueMap::new();
     let result = eval_expr(&expr, &EvalContext::simple(&values));
-    assert_eq!(result, Value::Tensor(vec![Value::Real(1.0), Value::Real(2.0)]));
+    assert_eq!(
+        result,
+        Value::Tensor(vec![Value::Real(1.0), Value::Real(2.0)])
+    );
 }
 
 // ─── step-1: Basic .x / .y / .z on Point3<Scalar[m]> ───
@@ -144,27 +158,27 @@ fn eval_vector3_x_returns_first_component() {
 #[test]
 fn eval_vector2_xy_preserves_angle_dimension() {
     let tensor = CompiledExpr::literal(
-        Value::Tensor(vec![
-            Value::angle(0.5),
-            Value::angle(1.0),
-        ]),
+        Value::Tensor(vec![Value::angle(0.5), Value::angle(1.0)]),
         Type::vec2(Type::angle()),
     );
     let expr_x = CompiledExpr::method_call(tensor.clone(), "x".to_string(), vec![], Type::angle());
     let expr_y = CompiledExpr::method_call(tensor, "y".to_string(), vec![], Type::angle());
     let values = ValueMap::new();
-    assert_eq!(eval_expr(&expr_x, &EvalContext::simple(&values)), Value::angle(0.5));
-    assert_eq!(eval_expr(&expr_y, &EvalContext::simple(&values)), Value::angle(1.0));
+    assert_eq!(
+        eval_expr(&expr_x, &EvalContext::simple(&values)),
+        Value::angle(0.5)
+    );
+    assert_eq!(
+        eval_expr(&expr_y, &EvalContext::simple(&values)),
+        Value::angle(1.0)
+    );
 }
 
 /// .x on a Point2<Scalar[m]> returns the first component (2D types work for valid components).
 #[test]
 fn eval_point2_x_returns_first_component() {
     let tensor = CompiledExpr::literal(
-        Value::Tensor(vec![
-            Value::length(5.0),
-            Value::length(6.0),
-        ]),
+        Value::Tensor(vec![Value::length(5.0), Value::length(6.0)]),
         Type::point2(Type::length()),
     );
     let expr = CompiledExpr::method_call(tensor, "x".to_string(), vec![], Type::length());
@@ -179,10 +193,7 @@ fn eval_point2_x_returns_first_component() {
 #[test]
 fn eval_point2_z_out_of_bounds_returns_undef() {
     let tensor = CompiledExpr::literal(
-        Value::Tensor(vec![
-            Value::length(1.0),
-            Value::length(2.0),
-        ]),
+        Value::Tensor(vec![Value::length(1.0), Value::length(2.0)]),
         Type::point2(Type::length()),
     );
     let expr = CompiledExpr::method_call(tensor, "z".to_string(), vec![], Type::length());
@@ -265,11 +276,19 @@ fn eval_x_on_undef_object_returns_undef() {
 #[test]
 fn vector3_add_vector3_componentwise() {
     let left = CompiledExpr::literal(
-        Value::Tensor(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]),
+        Value::Tensor(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]),
         Type::vec3(Type::length()),
     );
     let right = CompiledExpr::literal(
-        Value::Tensor(vec![Value::length(4.0), Value::length(5.0), Value::length(6.0)]),
+        Value::Tensor(vec![
+            Value::length(4.0),
+            Value::length(5.0),
+            Value::length(6.0),
+        ]),
         Type::vec3(Type::length()),
     );
     let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::vec3(Type::length()));
@@ -277,7 +296,11 @@ fn vector3_add_vector3_componentwise() {
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert_eq!(
         result,
-        Value::Tensor(vec![Value::length(5.0), Value::length(7.0), Value::length(9.0)])
+        Value::Tensor(vec![
+            Value::length(5.0),
+            Value::length(7.0),
+            Value::length(9.0)
+        ])
     );
 }
 
@@ -285,11 +308,19 @@ fn vector3_add_vector3_componentwise() {
 #[test]
 fn vector3_sub_vector3_componentwise() {
     let left = CompiledExpr::literal(
-        Value::Tensor(vec![Value::length(10.0), Value::length(20.0), Value::length(30.0)]),
+        Value::Tensor(vec![
+            Value::length(10.0),
+            Value::length(20.0),
+            Value::length(30.0),
+        ]),
         Type::vec3(Type::length()),
     );
     let right = CompiledExpr::literal(
-        Value::Tensor(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]),
+        Value::Tensor(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]),
         Type::vec3(Type::length()),
     );
     let expr = CompiledExpr::binop(BinOp::Sub, left, right, Type::vec3(Type::length()));
@@ -297,7 +328,11 @@ fn vector3_sub_vector3_componentwise() {
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert_eq!(
         result,
-        Value::Tensor(vec![Value::length(9.0), Value::length(18.0), Value::length(27.0)])
+        Value::Tensor(vec![
+            Value::length(9.0),
+            Value::length(18.0),
+            Value::length(27.0)
+        ])
     );
 }
 
@@ -305,11 +340,19 @@ fn vector3_sub_vector3_componentwise() {
 #[test]
 fn point3_add_vector3_returns_point() {
     let left = CompiledExpr::literal(
-        Value::Tensor(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]),
+        Value::Tensor(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]),
         Type::point3(Type::length()),
     );
     let right = CompiledExpr::literal(
-        Value::Tensor(vec![Value::length(1.0), Value::length(1.0), Value::length(1.0)]),
+        Value::Tensor(vec![
+            Value::length(1.0),
+            Value::length(1.0),
+            Value::length(1.0),
+        ]),
         Type::vec3(Type::length()),
     );
     let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::point3(Type::length()));
@@ -317,7 +360,11 @@ fn point3_add_vector3_returns_point() {
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert_eq!(
         result,
-        Value::Tensor(vec![Value::length(2.0), Value::length(3.0), Value::length(4.0)])
+        Value::Tensor(vec![
+            Value::length(2.0),
+            Value::length(3.0),
+            Value::length(4.0)
+        ])
     );
 }
 
@@ -325,11 +372,19 @@ fn point3_add_vector3_returns_point() {
 #[test]
 fn vector3_add_point3_returns_point() {
     let left = CompiledExpr::literal(
-        Value::Tensor(vec![Value::length(1.0), Value::length(1.0), Value::length(1.0)]),
+        Value::Tensor(vec![
+            Value::length(1.0),
+            Value::length(1.0),
+            Value::length(1.0),
+        ]),
         Type::vec3(Type::length()),
     );
     let right = CompiledExpr::literal(
-        Value::Tensor(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]),
+        Value::Tensor(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]),
         Type::point3(Type::length()),
     );
     let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::point3(Type::length()));
@@ -337,7 +392,11 @@ fn vector3_add_point3_returns_point() {
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert_eq!(
         result,
-        Value::Tensor(vec![Value::length(2.0), Value::length(3.0), Value::length(4.0)])
+        Value::Tensor(vec![
+            Value::length(2.0),
+            Value::length(3.0),
+            Value::length(4.0)
+        ])
     );
 }
 
@@ -345,11 +404,19 @@ fn vector3_add_point3_returns_point() {
 #[test]
 fn point3_sub_point3_returns_vector() {
     let left = CompiledExpr::literal(
-        Value::Tensor(vec![Value::length(3.0), Value::length(4.0), Value::length(5.0)]),
+        Value::Tensor(vec![
+            Value::length(3.0),
+            Value::length(4.0),
+            Value::length(5.0),
+        ]),
         Type::point3(Type::length()),
     );
     let right = CompiledExpr::literal(
-        Value::Tensor(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]),
+        Value::Tensor(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]),
         Type::point3(Type::length()),
     );
     let expr = CompiledExpr::binop(BinOp::Sub, left, right, Type::vec3(Type::length()));
@@ -357,7 +424,11 @@ fn point3_sub_point3_returns_vector() {
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert_eq!(
         result,
-        Value::Tensor(vec![Value::length(2.0), Value::length(2.0), Value::length(2.0)])
+        Value::Tensor(vec![
+            Value::length(2.0),
+            Value::length(2.0),
+            Value::length(2.0)
+        ])
     );
 }
 
@@ -366,11 +437,19 @@ fn point3_sub_point3_returns_vector() {
 #[test]
 fn point3_length_sub_point3_length_gives_vector3_length() {
     let left = CompiledExpr::literal(
-        Value::Tensor(vec![Value::length(10.0), Value::length(20.0), Value::length(30.0)]),
+        Value::Tensor(vec![
+            Value::length(10.0),
+            Value::length(20.0),
+            Value::length(30.0),
+        ]),
         Type::point3(Type::length()),
     );
     let right = CompiledExpr::literal(
-        Value::Tensor(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]),
+        Value::Tensor(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]),
         Type::point3(Type::length()),
     );
     let expr = CompiledExpr::binop(BinOp::Sub, left, right, Type::vec3(Type::length()));
@@ -378,7 +457,11 @@ fn point3_length_sub_point3_length_gives_vector3_length() {
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert_eq!(
         result,
-        Value::Tensor(vec![Value::length(9.0), Value::length(18.0), Value::length(27.0)])
+        Value::Tensor(vec![
+            Value::length(9.0),
+            Value::length(18.0),
+            Value::length(27.0)
+        ])
     );
 }
 
@@ -386,7 +469,11 @@ fn point3_length_sub_point3_length_gives_vector3_length() {
 #[test]
 fn vector3_add_vector2_n_mismatch_returns_undef() {
     let left = CompiledExpr::literal(
-        Value::Tensor(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]),
+        Value::Tensor(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]),
         Type::vec3(Type::length()),
     );
     let right = CompiledExpr::literal(
@@ -406,11 +493,19 @@ fn vector3_add_vector2_n_mismatch_returns_undef() {
 #[test]
 fn point3_add_point3_returns_undef() {
     let left = CompiledExpr::literal(
-        Value::Tensor(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]),
+        Value::Tensor(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]),
         Type::point3(Type::length()),
     );
     let right = CompiledExpr::literal(
-        Value::Tensor(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]),
+        Value::Tensor(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]),
         Type::point3(Type::length()),
     );
     let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::point3(Type::length()));
@@ -426,7 +521,11 @@ fn point3_add_point3_returns_undef() {
 fn scalar_mul_vector3_scales_components() {
     let left = CompiledExpr::literal(Value::length(2.0), Type::length());
     let right = CompiledExpr::literal(
-        Value::Tensor(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]),
+        Value::Tensor(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]),
         Type::vec3(Type::length()),
     );
     let expr = CompiledExpr::binop(BinOp::Mul, left, right, Type::Real);
@@ -436,9 +535,18 @@ fn scalar_mul_vector3_scales_components() {
     assert_eq!(
         result,
         Value::Tensor(vec![
-            Value::Scalar { si_value: 2.0, dimension: area },
-            Value::Scalar { si_value: 4.0, dimension: area },
-            Value::Scalar { si_value: 6.0, dimension: area },
+            Value::Scalar {
+                si_value: 2.0,
+                dimension: area
+            },
+            Value::Scalar {
+                si_value: 4.0,
+                dimension: area
+            },
+            Value::Scalar {
+                si_value: 6.0,
+                dimension: area
+            },
         ])
     );
 }
@@ -447,7 +555,11 @@ fn scalar_mul_vector3_scales_components() {
 #[test]
 fn vector3_mul_scalar_commutative() {
     let left = CompiledExpr::literal(
-        Value::Tensor(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]),
+        Value::Tensor(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]),
         Type::vec3(Type::length()),
     );
     let right = CompiledExpr::literal(Value::length(2.0), Type::length());
@@ -458,9 +570,18 @@ fn vector3_mul_scalar_commutative() {
     assert_eq!(
         result,
         Value::Tensor(vec![
-            Value::Scalar { si_value: 2.0, dimension: area },
-            Value::Scalar { si_value: 4.0, dimension: area },
-            Value::Scalar { si_value: 6.0, dimension: area },
+            Value::Scalar {
+                si_value: 2.0,
+                dimension: area
+            },
+            Value::Scalar {
+                si_value: 4.0,
+                dimension: area
+            },
+            Value::Scalar {
+                si_value: 6.0,
+                dimension: area
+            },
         ])
     );
 }
@@ -469,7 +590,11 @@ fn vector3_mul_scalar_commutative() {
 #[test]
 fn vector3_div_scalar_divides_components() {
     let left = CompiledExpr::literal(
-        Value::Tensor(vec![Value::length(10.0), Value::length(20.0), Value::length(30.0)]),
+        Value::Tensor(vec![
+            Value::length(10.0),
+            Value::length(20.0),
+            Value::length(30.0),
+        ]),
         Type::vec3(Type::length()),
     );
     let right = CompiledExpr::literal(Value::Real(2.0), Type::Real);
@@ -478,7 +603,11 @@ fn vector3_div_scalar_divides_components() {
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert_eq!(
         result,
-        Value::Tensor(vec![Value::length(5.0), Value::length(10.0), Value::length(15.0)])
+        Value::Tensor(vec![
+            Value::length(5.0),
+            Value::length(10.0),
+            Value::length(15.0)
+        ])
     );
 }
 
@@ -488,11 +617,19 @@ fn vector3_div_scalar_divides_components() {
 #[test]
 fn vector3_add_different_dimension_returns_undef() {
     let left = CompiledExpr::literal(
-        Value::Tensor(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]),
+        Value::Tensor(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]),
         Type::vec3(Type::length()),
     );
     let right = CompiledExpr::literal(
-        Value::Tensor(vec![Value::angle(0.1), Value::angle(0.2), Value::angle(0.3)]),
+        Value::Tensor(vec![
+            Value::angle(0.1),
+            Value::angle(0.2),
+            Value::angle(0.3),
+        ]),
         Type::vec3(Type::angle()),
     );
     let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::Real);
@@ -506,11 +643,20 @@ fn vector3_add_different_dimension_returns_undef() {
 fn scalar_times_vector_combines_dimensions() {
     let mass_length = DimensionVector::MASS.mul(&DimensionVector::LENGTH);
     let left = CompiledExpr::literal(
-        Value::Scalar { si_value: 3.0, dimension: DimensionVector::MASS },
-        Type::Scalar { dimension: DimensionVector::MASS },
+        Value::Scalar {
+            si_value: 3.0,
+            dimension: DimensionVector::MASS,
+        },
+        Type::Scalar {
+            dimension: DimensionVector::MASS,
+        },
     );
     let right = CompiledExpr::literal(
-        Value::Tensor(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]),
+        Value::Tensor(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]),
         Type::vec3(Type::length()),
     );
     let expr = CompiledExpr::binop(BinOp::Mul, left, right, Type::Real);
@@ -519,9 +665,18 @@ fn scalar_times_vector_combines_dimensions() {
     assert_eq!(
         result,
         Value::Tensor(vec![
-            Value::Scalar { si_value: 3.0, dimension: mass_length },
-            Value::Scalar { si_value: 6.0, dimension: mass_length },
-            Value::Scalar { si_value: 9.0, dimension: mass_length },
+            Value::Scalar {
+                si_value: 3.0,
+                dimension: mass_length
+            },
+            Value::Scalar {
+                si_value: 6.0,
+                dimension: mass_length
+            },
+            Value::Scalar {
+                si_value: 9.0,
+                dimension: mass_length
+            },
         ])
     );
 }
@@ -534,7 +689,11 @@ fn undef_operand_in_tensor_binop_propagates() {
         CompiledExpr::value_ref(missing, Type::vec3(Type::length()))
     };
     let right = CompiledExpr::literal(
-        Value::Tensor(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]),
+        Value::Tensor(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]),
         Type::vec3(Type::length()),
     );
     let expr = CompiledExpr::binop(BinOp::Add, undef_ref, right, Type::vec3(Type::length()));
@@ -551,7 +710,11 @@ fn tensor_with_undef_component_in_add_propagates() {
         Type::vec3(Type::length()),
     );
     let right = CompiledExpr::literal(
-        Value::Tensor(vec![Value::length(4.0), Value::length(5.0), Value::length(6.0)]),
+        Value::Tensor(vec![
+            Value::length(4.0),
+            Value::length(5.0),
+            Value::length(6.0),
+        ]),
         Type::vec3(Type::length()),
     );
     let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::vec3(Type::length()));
@@ -568,11 +731,19 @@ fn tensor_with_undef_component_in_add_propagates() {
 #[test]
 fn value_vector_add_vector_returns_vector() {
     let left = CompiledExpr::literal(
-        Value::Vector(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]),
+        Value::Vector(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]),
         Type::vec3(Type::length()),
     );
     let right = CompiledExpr::literal(
-        Value::Vector(vec![Value::length(4.0), Value::length(5.0), Value::length(6.0)]),
+        Value::Vector(vec![
+            Value::length(4.0),
+            Value::length(5.0),
+            Value::length(6.0),
+        ]),
         Type::vec3(Type::length()),
     );
     let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::vec3(Type::length()));
@@ -580,7 +751,11 @@ fn value_vector_add_vector_returns_vector() {
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert_eq!(
         result,
-        Value::Vector(vec![Value::length(5.0), Value::length(7.0), Value::length(9.0)])
+        Value::Vector(vec![
+            Value::length(5.0),
+            Value::length(7.0),
+            Value::length(9.0)
+        ])
     );
 }
 
@@ -588,11 +763,19 @@ fn value_vector_add_vector_returns_vector() {
 #[test]
 fn value_point_add_vector_returns_point() {
     let left = CompiledExpr::literal(
-        Value::Point(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]),
+        Value::Point(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]),
         Type::point3(Type::length()),
     );
     let right = CompiledExpr::literal(
-        Value::Vector(vec![Value::length(1.0), Value::length(1.0), Value::length(1.0)]),
+        Value::Vector(vec![
+            Value::length(1.0),
+            Value::length(1.0),
+            Value::length(1.0),
+        ]),
         Type::vec3(Type::length()),
     );
     let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::point3(Type::length()));
@@ -600,7 +783,11 @@ fn value_point_add_vector_returns_point() {
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert_eq!(
         result,
-        Value::Point(vec![Value::length(2.0), Value::length(3.0), Value::length(4.0)])
+        Value::Point(vec![
+            Value::length(2.0),
+            Value::length(3.0),
+            Value::length(4.0)
+        ])
     );
 }
 
@@ -608,11 +795,19 @@ fn value_point_add_vector_returns_point() {
 #[test]
 fn value_vector_add_point_returns_point() {
     let left = CompiledExpr::literal(
-        Value::Vector(vec![Value::length(1.0), Value::length(1.0), Value::length(1.0)]),
+        Value::Vector(vec![
+            Value::length(1.0),
+            Value::length(1.0),
+            Value::length(1.0),
+        ]),
         Type::vec3(Type::length()),
     );
     let right = CompiledExpr::literal(
-        Value::Point(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]),
+        Value::Point(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]),
         Type::point3(Type::length()),
     );
     let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::point3(Type::length()));
@@ -620,7 +815,11 @@ fn value_vector_add_point_returns_point() {
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert_eq!(
         result,
-        Value::Point(vec![Value::length(2.0), Value::length(3.0), Value::length(4.0)])
+        Value::Point(vec![
+            Value::length(2.0),
+            Value::length(3.0),
+            Value::length(4.0)
+        ])
     );
 }
 
@@ -628,11 +827,19 @@ fn value_vector_add_point_returns_point() {
 #[test]
 fn value_point_add_point_returns_undef() {
     let left = CompiledExpr::literal(
-        Value::Point(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]),
+        Value::Point(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]),
         Type::point3(Type::length()),
     );
     let right = CompiledExpr::literal(
-        Value::Point(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]),
+        Value::Point(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]),
         Type::point3(Type::length()),
     );
     let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::point3(Type::length()));
@@ -647,11 +854,19 @@ fn value_point_add_point_returns_undef() {
 #[test]
 fn value_point_sub_point_returns_vector() {
     let left = CompiledExpr::literal(
-        Value::Point(vec![Value::length(3.0), Value::length(4.0), Value::length(5.0)]),
+        Value::Point(vec![
+            Value::length(3.0),
+            Value::length(4.0),
+            Value::length(5.0),
+        ]),
         Type::point3(Type::length()),
     );
     let right = CompiledExpr::literal(
-        Value::Point(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]),
+        Value::Point(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]),
         Type::point3(Type::length()),
     );
     let expr = CompiledExpr::binop(BinOp::Sub, left, right, Type::vec3(Type::length()));
@@ -659,7 +874,11 @@ fn value_point_sub_point_returns_vector() {
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert_eq!(
         result,
-        Value::Vector(vec![Value::length(2.0), Value::length(2.0), Value::length(2.0)])
+        Value::Vector(vec![
+            Value::length(2.0),
+            Value::length(2.0),
+            Value::length(2.0)
+        ])
     );
 }
 
@@ -687,11 +906,19 @@ fn value_point2_sub_point2_returns_vector() {
 #[test]
 fn value_point_sub_vector_returns_point() {
     let left = CompiledExpr::literal(
-        Value::Point(vec![Value::length(3.0), Value::length(4.0), Value::length(5.0)]),
+        Value::Point(vec![
+            Value::length(3.0),
+            Value::length(4.0),
+            Value::length(5.0),
+        ]),
         Type::point3(Type::length()),
     );
     let right = CompiledExpr::literal(
-        Value::Vector(vec![Value::length(1.0), Value::length(1.0), Value::length(1.0)]),
+        Value::Vector(vec![
+            Value::length(1.0),
+            Value::length(1.0),
+            Value::length(1.0),
+        ]),
         Type::vec3(Type::length()),
     );
     let expr = CompiledExpr::binop(BinOp::Sub, left, right, Type::point3(Type::length()));
@@ -699,7 +926,11 @@ fn value_point_sub_vector_returns_point() {
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert_eq!(
         result,
-        Value::Point(vec![Value::length(2.0), Value::length(3.0), Value::length(4.0)])
+        Value::Point(vec![
+            Value::length(2.0),
+            Value::length(3.0),
+            Value::length(4.0)
+        ])
     );
 }
 
@@ -707,11 +938,19 @@ fn value_point_sub_vector_returns_point() {
 #[test]
 fn value_vector_sub_vector_returns_vector() {
     let left = CompiledExpr::literal(
-        Value::Vector(vec![Value::length(10.0), Value::length(20.0), Value::length(30.0)]),
+        Value::Vector(vec![
+            Value::length(10.0),
+            Value::length(20.0),
+            Value::length(30.0),
+        ]),
         Type::vec3(Type::length()),
     );
     let right = CompiledExpr::literal(
-        Value::Vector(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]),
+        Value::Vector(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]),
         Type::vec3(Type::length()),
     );
     let expr = CompiledExpr::binop(BinOp::Sub, left, right, Type::vec3(Type::length()));
@@ -719,7 +958,11 @@ fn value_vector_sub_vector_returns_vector() {
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert_eq!(
         result,
-        Value::Vector(vec![Value::length(9.0), Value::length(18.0), Value::length(27.0)])
+        Value::Vector(vec![
+            Value::length(9.0),
+            Value::length(18.0),
+            Value::length(27.0)
+        ])
     );
 }
 
@@ -727,11 +970,19 @@ fn value_vector_sub_vector_returns_vector() {
 #[test]
 fn value_vector_sub_point_returns_undef() {
     let left = CompiledExpr::literal(
-        Value::Vector(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]),
+        Value::Vector(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]),
         Type::vec3(Type::length()),
     );
     let right = CompiledExpr::literal(
-        Value::Point(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]),
+        Value::Point(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]),
         Type::point3(Type::length()),
     );
     let expr = CompiledExpr::binop(BinOp::Sub, left, right, Type::vec3(Type::length()));
@@ -746,7 +997,11 @@ fn value_vector_sub_point_returns_undef() {
 #[test]
 fn value_vector_div_scalar_returns_vector() {
     let left = CompiledExpr::literal(
-        Value::Vector(vec![Value::length(10.0), Value::length(20.0), Value::length(30.0)]),
+        Value::Vector(vec![
+            Value::length(10.0),
+            Value::length(20.0),
+            Value::length(30.0),
+        ]),
         Type::vec3(Type::length()),
     );
     let right = CompiledExpr::literal(Value::Real(2.0), Type::Real);
@@ -755,7 +1010,11 @@ fn value_vector_div_scalar_returns_vector() {
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert_eq!(
         result,
-        Value::Vector(vec![Value::length(5.0), Value::length(10.0), Value::length(15.0)])
+        Value::Vector(vec![
+            Value::length(5.0),
+            Value::length(10.0),
+            Value::length(15.0)
+        ])
     );
 }
 
@@ -763,7 +1022,11 @@ fn value_vector_div_scalar_returns_vector() {
 #[test]
 fn value_vector_div_int_returns_vector() {
     let left = CompiledExpr::literal(
-        Value::Vector(vec![Value::length(9.0), Value::length(12.0), Value::length(15.0)]),
+        Value::Vector(vec![
+            Value::length(9.0),
+            Value::length(12.0),
+            Value::length(15.0),
+        ]),
         Type::vec3(Type::length()),
     );
     let right = CompiledExpr::literal(Value::Int(3), Type::Int);
@@ -772,7 +1035,11 @@ fn value_vector_div_int_returns_vector() {
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert_eq!(
         result,
-        Value::Vector(vec![Value::length(3.0), Value::length(4.0), Value::length(5.0)])
+        Value::Vector(vec![
+            Value::length(3.0),
+            Value::length(4.0),
+            Value::length(5.0)
+        ])
     );
 }
 
@@ -780,7 +1047,11 @@ fn value_vector_div_int_returns_vector() {
 #[test]
 fn value_point_div_scalar_returns_point() {
     let left = CompiledExpr::literal(
-        Value::Point(vec![Value::length(10.0), Value::length(20.0), Value::length(30.0)]),
+        Value::Point(vec![
+            Value::length(10.0),
+            Value::length(20.0),
+            Value::length(30.0),
+        ]),
         Type::point3(Type::length()),
     );
     let right = CompiledExpr::literal(Value::Real(2.0), Type::Real);
@@ -789,7 +1060,11 @@ fn value_point_div_scalar_returns_point() {
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert_eq!(
         result,
-        Value::Point(vec![Value::length(5.0), Value::length(10.0), Value::length(15.0)])
+        Value::Point(vec![
+            Value::length(5.0),
+            Value::length(10.0),
+            Value::length(15.0)
+        ])
     );
 }
 
@@ -833,7 +1108,11 @@ fn value_point_div_vector_returns_undef() {
 #[test]
 fn value_negate_vector3_returns_negated_vector() {
     let operand = CompiledExpr::literal(
-        Value::Vector(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]),
+        Value::Vector(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]),
         Type::vec3(Type::length()),
     );
     let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::vec3(Type::length()));
@@ -841,7 +1120,11 @@ fn value_negate_vector3_returns_negated_vector() {
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert_eq!(
         result,
-        Value::Vector(vec![Value::length(-1.0), Value::length(-2.0), Value::length(-3.0)])
+        Value::Vector(vec![
+            Value::length(-1.0),
+            Value::length(-2.0),
+            Value::length(-3.0)
+        ])
     );
 }
 
@@ -849,7 +1132,11 @@ fn value_negate_vector3_returns_negated_vector() {
 #[test]
 fn value_negate_point3_returns_undef() {
     let operand = CompiledExpr::literal(
-        Value::Point(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]),
+        Value::Point(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]),
         Type::point3(Type::length()),
     );
     let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::point3(Type::length()));
@@ -865,7 +1152,11 @@ fn value_negate_point3_returns_undef() {
 fn value_scalar_mul_vector_returns_vector() {
     let left = CompiledExpr::literal(Value::Real(2.0), Type::Real);
     let right = CompiledExpr::literal(
-        Value::Vector(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]),
+        Value::Vector(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]),
         Type::vec3(Type::length()),
     );
     let expr = CompiledExpr::binop(BinOp::Mul, left, right, Type::vec3(Type::length()));
@@ -873,7 +1164,11 @@ fn value_scalar_mul_vector_returns_vector() {
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert_eq!(
         result,
-        Value::Vector(vec![Value::length(2.0), Value::length(4.0), Value::length(6.0)])
+        Value::Vector(vec![
+            Value::length(2.0),
+            Value::length(4.0),
+            Value::length(6.0)
+        ])
     );
 }
 
@@ -881,7 +1176,11 @@ fn value_scalar_mul_vector_returns_vector() {
 #[test]
 fn value_vector_mul_scalar_returns_vector() {
     let left = CompiledExpr::literal(
-        Value::Vector(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]),
+        Value::Vector(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]),
         Type::vec3(Type::length()),
     );
     let right = CompiledExpr::literal(Value::Real(2.0), Type::Real);
@@ -890,7 +1189,11 @@ fn value_vector_mul_scalar_returns_vector() {
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert_eq!(
         result,
-        Value::Vector(vec![Value::length(2.0), Value::length(4.0), Value::length(6.0)])
+        Value::Vector(vec![
+            Value::length(2.0),
+            Value::length(4.0),
+            Value::length(6.0)
+        ])
     );
 }
 
@@ -899,7 +1202,11 @@ fn value_vector_mul_scalar_returns_vector() {
 fn value_scalar_mul_point_returns_point() {
     let left = CompiledExpr::literal(Value::Real(2.0), Type::Real);
     let right = CompiledExpr::literal(
-        Value::Point(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]),
+        Value::Point(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]),
         Type::point3(Type::length()),
     );
     let expr = CompiledExpr::binop(BinOp::Mul, left, right, Type::point3(Type::length()));
@@ -907,7 +1214,11 @@ fn value_scalar_mul_point_returns_point() {
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert_eq!(
         result,
-        Value::Point(vec![Value::length(2.0), Value::length(4.0), Value::length(6.0)])
+        Value::Point(vec![
+            Value::length(2.0),
+            Value::length(4.0),
+            Value::length(6.0)
+        ])
     );
 }
 
@@ -916,7 +1227,11 @@ fn value_scalar_mul_point_returns_point() {
 fn value_int_mul_vector_returns_vector() {
     let left = CompiledExpr::literal(Value::Int(3), Type::Int);
     let right = CompiledExpr::literal(
-        Value::Vector(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]),
+        Value::Vector(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]),
         Type::vec3(Type::length()),
     );
     let expr = CompiledExpr::binop(BinOp::Mul, left, right, Type::vec3(Type::length()));
@@ -924,7 +1239,11 @@ fn value_int_mul_vector_returns_vector() {
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert_eq!(
         result,
-        Value::Vector(vec![Value::length(3.0), Value::length(6.0), Value::length(9.0)])
+        Value::Vector(vec![
+            Value::length(3.0),
+            Value::length(6.0),
+            Value::length(9.0)
+        ])
     );
 }
 
@@ -933,7 +1252,11 @@ fn value_int_mul_vector_returns_vector() {
 fn value_real_mul_point_returns_point() {
     let left = CompiledExpr::literal(Value::Real(0.5), Type::Real);
     let right = CompiledExpr::literal(
-        Value::Point(vec![Value::length(4.0), Value::length(6.0), Value::length(8.0)]),
+        Value::Point(vec![
+            Value::length(4.0),
+            Value::length(6.0),
+            Value::length(8.0),
+        ]),
         Type::point3(Type::length()),
     );
     let expr = CompiledExpr::binop(BinOp::Mul, left, right, Type::point3(Type::length()));
@@ -941,7 +1264,11 @@ fn value_real_mul_point_returns_point() {
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert_eq!(
         result,
-        Value::Point(vec![Value::length(2.0), Value::length(3.0), Value::length(4.0)])
+        Value::Point(vec![
+            Value::length(2.0),
+            Value::length(3.0),
+            Value::length(4.0)
+        ])
     );
 }
 
@@ -949,7 +1276,11 @@ fn value_real_mul_point_returns_point() {
 #[test]
 fn negate_vector3_negates_all_components() {
     let operand = CompiledExpr::literal(
-        Value::Tensor(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]),
+        Value::Tensor(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]),
         Type::vec3(Type::length()),
     );
     let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::vec3(Type::length()));
@@ -957,7 +1288,11 @@ fn negate_vector3_negates_all_components() {
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert_eq!(
         result,
-        Value::Tensor(vec![Value::length(-1.0), Value::length(-2.0), Value::length(-3.0)])
+        Value::Tensor(vec![
+            Value::length(-1.0),
+            Value::length(-2.0),
+            Value::length(-3.0)
+        ])
     );
 }
 
@@ -968,7 +1303,11 @@ fn negate_vector3_negates_all_components() {
 #[test]
 fn value_point3_add_vector2_mismatched_length_returns_undef() {
     let left = CompiledExpr::literal(
-        Value::Point(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]),
+        Value::Point(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]),
         Type::point3(Type::length()),
     );
     let right = CompiledExpr::literal(
@@ -986,7 +1325,11 @@ fn value_point3_add_vector2_mismatched_length_returns_undef() {
 #[test]
 fn value_point3_sub_vector2_mismatched_length_returns_undef() {
     let left = CompiledExpr::literal(
-        Value::Point(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]),
+        Value::Point(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]),
         Type::point3(Type::length()),
     );
     let right = CompiledExpr::literal(
@@ -1008,7 +1351,11 @@ fn value_vector_with_undef_component_add_propagates() {
         Type::vec3(Type::length()),
     );
     let right = CompiledExpr::literal(
-        Value::Vector(vec![Value::length(1.0), Value::length(1.0), Value::length(1.0)]),
+        Value::Vector(vec![
+            Value::length(1.0),
+            Value::length(1.0),
+            Value::length(1.0),
+        ]),
         Type::vec3(Type::length()),
     );
     let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::vec3(Type::length()));
@@ -1026,7 +1373,11 @@ fn value_point_with_undef_component_add_vector_propagates() {
         Type::point3(Type::length()),
     );
     let right = CompiledExpr::literal(
-        Value::Vector(vec![Value::length(1.0), Value::length(1.0), Value::length(1.0)]),
+        Value::Vector(vec![
+            Value::length(1.0),
+            Value::length(1.0),
+            Value::length(1.0),
+        ]),
         Type::vec3(Type::length()),
     );
     let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::point3(Type::length()));
@@ -1040,11 +1391,19 @@ fn value_point_with_undef_component_add_vector_propagates() {
 #[test]
 fn value_vector_mul_point_returns_undef() {
     let left = CompiledExpr::literal(
-        Value::Vector(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]),
+        Value::Vector(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]),
         Type::vec3(Type::length()),
     );
     let right = CompiledExpr::literal(
-        Value::Point(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]),
+        Value::Point(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]),
         Type::point3(Type::length()),
     );
     let expr = CompiledExpr::binop(BinOp::Mul, left, right, Type::vec3(Type::length()));
@@ -1058,11 +1417,19 @@ fn value_vector_mul_point_returns_undef() {
 #[test]
 fn value_point_mul_vector_returns_undef() {
     let left = CompiledExpr::literal(
-        Value::Point(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]),
+        Value::Point(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]),
         Type::point3(Type::length()),
     );
     let right = CompiledExpr::literal(
-        Value::Vector(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]),
+        Value::Vector(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]),
         Type::vec3(Type::length()),
     );
     let expr = CompiledExpr::binop(BinOp::Mul, left, right, Type::point3(Type::length()));
@@ -1075,7 +1442,11 @@ fn value_point_mul_vector_returns_undef() {
 #[test]
 fn value_point_div_int_returns_point() {
     let left = CompiledExpr::literal(
-        Value::Point(vec![Value::length(6.0), Value::length(9.0), Value::length(12.0)]),
+        Value::Point(vec![
+            Value::length(6.0),
+            Value::length(9.0),
+            Value::length(12.0),
+        ]),
         Type::point3(Type::length()),
     );
     let right = CompiledExpr::literal(Value::Int(3), Type::Int);
@@ -1084,7 +1455,11 @@ fn value_point_div_int_returns_point() {
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert_eq!(
         result,
-        Value::Point(vec![Value::length(2.0), Value::length(3.0), Value::length(4.0)])
+        Value::Point(vec![
+            Value::length(2.0),
+            Value::length(3.0),
+            Value::length(4.0)
+        ])
     );
 }
 
@@ -1092,7 +1467,11 @@ fn value_point_div_int_returns_point() {
 #[test]
 fn value_vector_div_zero_returns_undef() {
     let left = CompiledExpr::literal(
-        Value::Vector(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]),
+        Value::Vector(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]),
         Type::vec3(Type::length()),
     );
     let right = CompiledExpr::literal(Value::Real(0.0), Type::Real);
@@ -1106,7 +1485,11 @@ fn value_vector_div_zero_returns_undef() {
 #[test]
 fn value_point_div_zero_returns_undef() {
     let left = CompiledExpr::literal(
-        Value::Point(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]),
+        Value::Point(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]),
         Type::point3(Type::length()),
     );
     let right = CompiledExpr::literal(Value::Real(0.0), Type::Real);

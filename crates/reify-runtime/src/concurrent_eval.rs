@@ -21,7 +21,9 @@ use reify_types::{
     VersionId,
 };
 
-use crate::concurrent::{AsyncNodeEvaluator, CancellationToken, ConcurrentScheduler, SchedulerError};
+use crate::concurrent::{
+    AsyncNodeEvaluator, CancellationToken, ConcurrentScheduler, SchedulerError,
+};
 
 /// Adapter that implements `AsyncNodeEvaluator` for concurrent evaluation.
 ///
@@ -89,7 +91,11 @@ impl ConcurrentEvalAdapter {
     /// since it clones each inner container through locks.
     ///
     /// The `skipped` set is provided by the scheduler's `SchedulerResult`.
-    pub fn build_result_shared(&self, eval_set: &[NodeId], skipped: HashSet<NodeId>) -> ConcurrentEditResult {
+    pub fn build_result_shared(
+        &self,
+        eval_set: &[NodeId],
+        skipped: HashSet<NodeId>,
+    ) -> ConcurrentEditResult {
         let values = self.values.read().unwrap().clone();
         let snapshot_values = self.snapshot_values.read().unwrap().clone();
         let node_results = self.results.lock().unwrap().clone();
@@ -115,7 +121,11 @@ impl ConcurrentEvalAdapter {
     ///
     /// Extracts the final values, snapshot_values, and results.
     /// The `skipped` set is provided by the scheduler's `SchedulerResult`.
-    pub fn into_result(self, eval_set: &[NodeId], skipped: HashSet<NodeId>) -> ConcurrentEditResult {
+    pub fn into_result(
+        self,
+        eval_set: &[NodeId],
+        skipped: HashSet<NodeId>,
+    ) -> ConcurrentEditResult {
         let values = match Arc::try_unwrap(self.values) {
             Ok(lock) => lock.into_inner().unwrap(),
             Err(arc) => arc.read().unwrap().clone(),
@@ -197,21 +207,20 @@ impl AsyncNodeEvaluator for ConcurrentEvalAdapter {
             let expr = cell_node.default_expr.as_ref().unwrap();
 
             // Read current values (brief read lock)
-            let current_values = {
-                self.values.read().unwrap().clone()
-            };
+            let current_values = { self.values.read().unwrap().clone() };
 
             // Evaluate expression (pure, no lock held)
-            let val = reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(&current_values, &self.functions).with_meta(&self.meta_map));
+            let val = reify_expr::eval_expr(
+                expr,
+                &reify_expr::EvalContext::new(&current_values, &self.functions)
+                    .with_meta(&self.meta_map),
+            );
 
             // Compute dependency trace
             let trace = extract_dependency_trace(expr);
 
             // Compute content hash for early cutoff
-            let cached_result = CachedResult::Value(
-                val.clone(),
-                DeterminacyState::Determined,
-            );
+            let cached_result = CachedResult::Value(val.clone(), DeterminacyState::Determined);
             let new_hash = cached_result.content_hash();
 
             // Compare with previous hash
@@ -235,10 +244,7 @@ impl AsyncNodeEvaluator for ConcurrentEvalAdapter {
             // Write to snapshot values (brief write lock)
             {
                 let mut sv = self.snapshot_values.write().unwrap();
-                sv.insert(
-                    vcid.clone(),
-                    (val.clone(), DeterminacyState::Determined),
-                );
+                sv.insert(vcid.clone(), (val.clone(), DeterminacyState::Determined));
             }
 
             // Record result (no early cutoff propagation — skip decisions
@@ -284,7 +290,13 @@ pub async fn edit_param_concurrent(
 
     let scheduler = ConcurrentScheduler;
     match scheduler
-        .execute(eval_set.clone(), Arc::clone(&adapter_arc), &traces, cancel, &setup.changed_cells)
+        .execute(
+            eval_set.clone(),
+            Arc::clone(&adapter_arc),
+            &traces,
+            cancel,
+            &setup.changed_cells,
+        )
         .await
     {
         Ok(scheduler_result) => {

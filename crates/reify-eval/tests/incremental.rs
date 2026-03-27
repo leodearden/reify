@@ -9,12 +9,14 @@ use std::collections::HashMap;
 use reify_eval::Engine;
 use reify_eval::cache::NodeId;
 use reify_test_support::bracket_compiled_module;
-use reify_test_support::mocks::{MockConstraintChecker, MockConstraintSolver, SequencedMockConstraintSolver};
+use reify_test_support::builders::{binop, gt, literal, value_ref, value_ref_typed};
+use reify_test_support::mocks::{
+    MockConstraintChecker, MockConstraintSolver, SequencedMockConstraintSolver,
+};
 use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder, mm};
-use reify_test_support::builders::{literal, value_ref, value_ref_typed, binop, gt};
 use reify_types::{
-    BinOp, CompiledExpr, CompiledExprKind, ConstraintNodeId, ContentHash, Freshness,
-    ModulePath, SnapshotId, SnapshotProvenance, Type, Value, ValueCellId,
+    BinOp, CompiledExpr, CompiledExprKind, ConstraintNodeId, ContentHash, Freshness, ModulePath,
+    SnapshotId, SnapshotProvenance, Type, Value, ValueCellId,
 };
 
 /// Canary backward-compatibility test: verifies that cold-start eval()
@@ -146,8 +148,12 @@ fn edit_param_snapshot_provenance() {
 
     // After edit_param(): provenance should be Edit, ID = 1
     let width_id = ValueCellId::new(e, "width");
-    engine.edit_param(width_id.clone(), Value::length(0.1)).unwrap();
-    let snap = engine.snapshot().expect("snapshot should exist after edit_param");
+    engine
+        .edit_param(width_id.clone(), Value::length(0.1))
+        .unwrap();
+    let snap = engine
+        .snapshot()
+        .expect("snapshot should exist after edit_param");
     assert_eq!(snap.id, SnapshotId(1));
 
     let mut expected_changed = std::collections::HashSet::new();
@@ -310,9 +316,17 @@ fn freshness_final_after_cold_start() {
     let cache = engine.cache_store();
 
     // All 6 value cells should have Final freshness
-    for name in ["width", "height", "thickness", "fillet_radius", "hole_diameter", "volume"] {
+    for name in [
+        "width",
+        "height",
+        "thickness",
+        "fillet_radius",
+        "hole_diameter",
+        "volume",
+    ] {
         let node_id = NodeId::Value(ValueCellId::new(e, name));
-        let entry = cache.get(&node_id)
+        let entry = cache
+            .get(&node_id)
             .unwrap_or_else(|| panic!("{} should be in cache", name));
         assert_eq!(
             entry.freshness,
@@ -353,7 +367,9 @@ fn freshness_all_final_after_edit_param() {
 
     // fillet_radius was not in eval set → should still be Final
     let fillet_node = NodeId::Value(ValueCellId::new(e, "fillet_radius"));
-    let fillet_entry = cache.get(&fillet_node).expect("fillet_radius should be in cache");
+    let fillet_entry = cache
+        .get(&fillet_node)
+        .expect("fillet_radius should be in cache");
     assert_eq!(
         fillet_entry.freshness,
         Freshness::Final,
@@ -518,7 +534,9 @@ fn consecutive_edit_param_only_reevaluates_affected_nodes() {
 
     // ── (2) First edit: width 0.08 → 0.1 ────────────────────────────
     let width_id = ValueCellId::new(e, "width");
-    let result1 = engine.edit_param(width_id.clone(), Value::length(0.1)).unwrap();
+    let result1 = engine
+        .edit_param(width_id.clone(), Value::length(0.1))
+        .unwrap();
 
     // Volume recomputed: 0.1 * 0.10 * 0.005 = 5e-5
     let vol1 = result1
@@ -568,7 +586,9 @@ fn consecutive_edit_param_only_reevaluates_affected_nodes() {
 
     // ── (3) Second edit: height 0.10 → 0.12 ─────────────────────────
     let height_id = ValueCellId::new(e, "height");
-    let result2 = engine.edit_param(height_id.clone(), Value::length(0.12)).unwrap();
+    let result2 = engine
+        .edit_param(height_id.clone(), Value::length(0.12))
+        .unwrap();
 
     // Volume recomputed: 0.1 * 0.12 * 0.005 = 6e-5
     let vol2 = result2
@@ -620,8 +640,14 @@ fn consecutive_edit_param_only_reevaluates_affected_nodes() {
     );
 
     // ── (4) Snapshot provenance chain ────────────────────────────────
-    let snap = engine.snapshot().expect("snapshot should exist after second edit");
-    assert_eq!(snap.id, SnapshotId(2), "second edit should produce snapshot ID 2");
+    let snap = engine
+        .snapshot()
+        .expect("snapshot should exist after second edit");
+    assert_eq!(
+        snap.id,
+        SnapshotId(2),
+        "second edit should produce snapshot ID 2"
+    );
 
     let mut expected_changed = std::collections::HashSet::new();
     expected_changed.insert(height_id);
@@ -636,7 +662,14 @@ fn consecutive_edit_param_only_reevaluates_affected_nodes() {
 
     // ── (5) All 6 value cells should have Freshness::Final ──────────
     let cache = engine.cache_store();
-    for name in ["width", "height", "thickness", "fillet_radius", "hole_diameter", "volume"] {
+    for name in [
+        "width",
+        "height",
+        "thickness",
+        "fillet_radius",
+        "hole_diameter",
+        "volume",
+    ] {
         let node_id = NodeId::Value(ValueCellId::new(e, name));
         let entry = cache
             .get(&node_id)
@@ -690,10 +723,7 @@ fn mixed_fan_in_edit_param_unchanged_upstream_does_not_skip_shared_downstream() 
     let e = "T";
 
     // Build conditional: if a > 0 then 1 else 1 (always 1, reads a)
-    let condition = gt(
-        value_ref_typed(e, "a", Type::Int),
-        literal(Value::Int(0)),
-    );
+    let condition = gt(value_ref_typed(e, "a", Type::Int), literal(Value::Int(0)));
     let then_branch = literal(Value::Int(1));
     let else_branch = literal(Value::Int(1));
     let conditional = CompiledExpr {
@@ -784,10 +814,7 @@ fn triple_fan_in_mixed_changed_unchanged_edit_param() {
     let e = "T";
 
     // Build conditional: if a > 0 then 1 else 1 (always 1)
-    let x_cond = gt(
-        value_ref_typed(e, "a", Type::Int),
-        literal(Value::Int(0)),
-    );
+    let x_cond = gt(value_ref_typed(e, "a", Type::Int), literal(Value::Int(0)));
     let x_expr = CompiledExpr {
         kind: CompiledExprKind::Conditional {
             condition: Box::new(x_cond),
@@ -799,10 +826,7 @@ fn triple_fan_in_mixed_changed_unchanged_edit_param() {
     };
 
     // Build conditional: if a > 0 then 2 else 2 (always 2)
-    let z_cond = gt(
-        value_ref_typed(e, "a", Type::Int),
-        literal(Value::Int(0)),
-    );
+    let z_cond = gt(value_ref_typed(e, "a", Type::Int), literal(Value::Int(0)));
     let z_expr = CompiledExpr {
         kind: CompiledExprKind::Conditional {
             condition: Box::new(z_cond),
@@ -819,11 +843,7 @@ fn triple_fan_in_mixed_changed_unchanged_edit_param() {
         value_ref_typed(e, "a", Type::Int),
         value_ref_typed(e, "x", Type::Int),
     );
-    let y_expr = binop(
-        BinOp::Add,
-        a_plus_x,
-        value_ref_typed(e, "z", Type::Int),
-    );
+    let y_expr = binop(BinOp::Add, a_plus_x, value_ref_typed(e, "z", Type::Int));
 
     let module = CompiledModuleBuilder::new(ModulePath::single("test"))
         .template(
@@ -877,10 +897,7 @@ fn triple_fan_in_mixed_changed_unchanged_edit_param() {
 fn freshness_all_final_after_mixed_fan_in_edit_param() {
     let e = "T";
 
-    let condition = gt(
-        value_ref_typed(e, "a", Type::Int),
-        literal(Value::Int(0)),
-    );
+    let condition = gt(value_ref_typed(e, "a", Type::Int), literal(Value::Int(0)));
     let conditional = CompiledExpr {
         kind: CompiledExprKind::Conditional {
             condition: Box::new(condition),
@@ -922,7 +939,8 @@ fn freshness_all_final_after_mixed_fan_in_edit_param() {
     // ALL nodes must have Final freshness — none stuck in Pending
     for name in ["a", "x", "y"] {
         let node_id = NodeId::Value(ValueCellId::new(e, name));
-        let entry = cache.get(&node_id)
+        let entry = cache
+            .get(&node_id)
             .unwrap_or_else(|| panic!("{} should be in cache", name));
         assert_eq!(
             entry.freshness,
@@ -1043,8 +1061,8 @@ fn edit_param_re_resolves_auto_params_when_constraints_dirty() {
         .template(template)
         .build();
 
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
-        .with_solver(Box::new(solver));
+    let mut engine =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
 
     // Cold eval: solver resolves x to mm(5.0)
     let result = engine.eval(&module);
@@ -1123,11 +1141,7 @@ fn edit_param_let_binding_re_evaluates_after_re_resolution() {
             "S",
             "y",
             Type::length(),
-            binop(
-                BinOp::Mul,
-                value_ref("S", "x"),
-                literal(Value::Real(2.0)),
-            ),
+            binop(BinOp::Mul, value_ref("S", "x"), literal(Value::Real(2.0))),
         )
         // constraint: x > a
         .constraint("S", 0, None, gt(value_ref("S", "x"), value_ref("S", "a")))
@@ -1137,12 +1151,15 @@ fn edit_param_let_binding_re_evaluates_after_re_resolution() {
         .template(template)
         .build();
 
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
-        .with_solver(Box::new(solver));
+    let mut engine =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
 
     // Cold eval: solver returns x=mm(5.0), y = 0.005 * 2 = 0.01
     let result = engine.eval(&module);
-    let y_val = result.values.get(&y_id).expect("y should be in values after cold eval");
+    let y_val = result
+        .values
+        .get(&y_id)
+        .expect("y should be in values after cold eval");
     assert!(
         matches!(y_val, Value::Scalar { si_value, .. } if (*si_value - 0.01).abs() < 1e-10),
         "expected y ≈ 0.01 after cold eval (x=mm(5.0)*2), got {:?}",
@@ -1155,7 +1172,10 @@ fn edit_param_let_binding_re_evaluates_after_re_resolution() {
     let result2 = engine.edit_param(a_id.clone(), mm(8.0)).unwrap();
 
     // x must have the new resolved value
-    let x_val2 = result2.values.get(&x_id).expect("x should be in values after edit");
+    let x_val2 = result2
+        .values
+        .get(&x_id)
+        .expect("x should be in values after edit");
     assert!(
         matches!(x_val2, Value::Scalar { si_value, .. } if (*si_value - 0.02).abs() < 1e-10),
         "expected x = mm(20.0) = 0.02 SI, got {:?}",
@@ -1163,7 +1183,10 @@ fn edit_param_let_binding_re_evaluates_after_re_resolution() {
     );
 
     // y must be re-evaluated with new x: y = 0.02 * 2 = 0.04
-    let y_val2 = result2.values.get(&y_id).expect("y should be in values after edit");
+    let y_val2 = result2
+        .values
+        .get(&y_id)
+        .expect("y should be in values after edit");
     assert!(
         matches!(y_val2, Value::Scalar { si_value, .. } if (*si_value - 0.04).abs() < 1e-10),
         "expected y ≈ 0.04 after re-resolution (x=mm(20.0)*2), got {:?} (stale!)",
@@ -1188,12 +1211,7 @@ fn edit_check_returns_incremental_constraint_satisfaction() {
     let template = TopologyTemplateBuilder::new("S")
         .param("S", "width", Type::length(), Some(literal(mm(10.0))))
         // constraint: width > mm(5.0)
-        .constraint(
-            "S",
-            0,
-            None,
-            gt(value_ref("S", "width"), literal(mm(5.0))),
-        )
+        .constraint("S", 0, None, gt(value_ref("S", "width"), literal(mm(5.0))))
         .build();
 
     let module = CompiledModuleBuilder::new(ModulePath::single("test"))
@@ -1206,7 +1224,10 @@ fn edit_check_returns_incremental_constraint_satisfaction() {
     // Cold check: width=mm(10.0) > mm(5.0) → Satisfied
     let result = engine.check(&module);
     assert_eq!(result.constraint_results.len(), 1);
-    assert_eq!(result.constraint_results[0].satisfaction, Satisfaction::Satisfied);
+    assert_eq!(
+        result.constraint_results[0].satisfaction,
+        Satisfaction::Satisfied
+    );
 
     // edit_check: width=mm(2.0) < mm(5.0) → Violated
     let result2 = engine.edit_check(width_id.clone(), mm(2.0)).unwrap();
@@ -1218,7 +1239,10 @@ fn edit_check_returns_incremental_constraint_satisfaction() {
     );
 
     // Values should be updated
-    let width_val = result2.values.get(&width_id).expect("width should be in values");
+    let width_val = result2
+        .values
+        .get(&width_id)
+        .expect("width should be in values");
     assert!(
         matches!(width_val, Value::Scalar { si_value, .. } if (si_value - 0.002).abs() < 1e-10),
         "expected width = mm(2.0) = 0.002 SI, got {:?}",
@@ -1241,12 +1265,7 @@ fn edit_check_constraint_transitions_satisfied_to_violated_and_back() {
 
     let template = TopologyTemplateBuilder::new("S")
         .param("S", "width", Type::length(), Some(literal(mm(10.0))))
-        .constraint(
-            "S",
-            0,
-            None,
-            gt(value_ref("S", "width"), literal(mm(5.0))),
-        )
+        .constraint("S", 0, None, gt(value_ref("S", "width"), literal(mm(5.0))))
         .build();
 
     let module = CompiledModuleBuilder::new(ModulePath::single("test"))
@@ -1258,7 +1277,10 @@ fn edit_check_constraint_transitions_satisfied_to_violated_and_back() {
 
     // Cold check: width=mm(10.0) > mm(5.0) → Satisfied
     let result = engine.check(&module);
-    assert_eq!(result.constraint_results[0].satisfaction, Satisfaction::Satisfied);
+    assert_eq!(
+        result.constraint_results[0].satisfaction,
+        Satisfaction::Satisfied
+    );
 
     // edit_check: width=mm(2.0) < mm(5.0) → Violated
     let result2 = engine.edit_check(width_id.clone(), mm(2.0)).unwrap();
@@ -1296,7 +1318,9 @@ fn edit_param_solver_diagnostics_propagated() {
     solved_values.insert(x_id.clone(), mm(5.0));
 
     let solver = SequencedMockConstraintSolver::new(vec![
-        SolveResult::Solved { values: solved_values },
+        SolveResult::Solved {
+            values: solved_values,
+        },
         SolveResult::Infeasible {
             diagnostics: vec![Diagnostic::error("constraints are infeasible")],
         },
@@ -1312,12 +1336,15 @@ fn edit_param_solver_diagnostics_propagated() {
         .template(template)
         .build();
 
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
-        .with_solver(Box::new(solver));
+    let mut engine =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
 
     // Cold eval: solver returns Solved
     let result = engine.eval(&module);
-    assert!(result.diagnostics.is_empty(), "cold eval should have no diagnostics");
+    assert!(
+        result.diagnostics.is_empty(),
+        "cold eval should have no diagnostics"
+    );
 
     // Edit a → constraint in dirty cone → solver returns Infeasible
     let result2 = engine.edit_param(a_id.clone(), mm(5.0)).unwrap();
@@ -1328,7 +1355,10 @@ fn edit_param_solver_diagnostics_propagated() {
         "edit_param should propagate solver diagnostics when Infeasible"
     );
     assert!(
-        result2.diagnostics.iter().any(|d| d.message.contains("infeasible")),
+        result2
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("infeasible")),
         "expected 'infeasible' in diagnostics, got: {:?}",
         result2.diagnostics
     );
@@ -1378,8 +1408,8 @@ fn edit_param_snapshot_updated_after_re_resolution() {
         .template(template)
         .build();
 
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
-        .with_solver(Box::new(solver));
+    let mut engine =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
 
     // Cold eval
     engine.eval(&module);
@@ -1388,7 +1418,9 @@ fn edit_param_snapshot_updated_after_re_resolution() {
     engine.edit_param(a_id.clone(), mm(8.0)).unwrap();
 
     // (1) snapshot exists
-    let snap = engine.snapshot().expect("snapshot should exist after edit_param");
+    let snap = engine
+        .snapshot()
+        .expect("snapshot should exist after edit_param");
 
     // (4) provenance is Edit
     assert!(
@@ -1398,7 +1430,10 @@ fn edit_param_snapshot_updated_after_re_resolution() {
     );
 
     // (2) snapshot.values contains x with resolved value (not Undef)
-    let (x_val, x_det) = snap.values.get(&x_id).expect("x should be in snapshot values");
+    let (x_val, x_det) = snap
+        .values
+        .get(&x_id)
+        .expect("x should be in snapshot values");
     assert!(
         matches!(x_val, Value::Scalar { si_value, .. } if (*si_value - 0.02).abs() < 1e-10),
         "expected x = mm(20.0) = 0.02 SI in snapshot, got {:?}",
@@ -1407,7 +1442,10 @@ fn edit_param_snapshot_updated_after_re_resolution() {
     assert_eq!(*x_det, reify_types::DeterminacyState::Determined);
 
     // (3) snapshot.values contains y with re-evaluated value
-    let (y_val, y_det) = snap.values.get(&y_id).expect("y should be in snapshot values");
+    let (y_val, y_det) = snap
+        .values
+        .get(&y_id)
+        .expect("y should be in snapshot values");
     assert!(
         matches!(y_val, Value::Scalar { si_value, .. } if (*si_value - 0.04).abs() < 1e-10),
         "expected y = mm(20.0)*2 = 0.04 SI in snapshot, got {:?}",
@@ -1449,11 +1487,7 @@ fn edit_param_no_re_resolution_when_auto_constraints_not_dirty() {
             "S",
             "y",
             Type::length(),
-            binop(
-                BinOp::Mul,
-                value_ref("S", "b"),
-                literal(Value::Real(2.0)),
-            ),
+            binop(BinOp::Mul, value_ref("S", "b"), literal(Value::Real(2.0))),
         )
         // constraint: x > a  (does NOT reference b)
         .constraint("S", 0, None, gt(value_ref("S", "x"), value_ref("S", "a")))
@@ -1463,12 +1497,15 @@ fn edit_param_no_re_resolution_when_auto_constraints_not_dirty() {
         .template(template)
         .build();
 
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
-        .with_solver(Box::new(solver));
+    let mut engine =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
 
     // Cold eval: x resolved to mm(5.0), y = mm(2.0) * 2 = 0.004
     let result = engine.eval(&module);
-    assert!(!result.resolved_params.is_empty(), "cold eval should resolve x");
+    assert!(
+        !result.resolved_params.is_empty(),
+        "cold eval should resolve x"
+    );
 
     // Edit b from mm(2.0) to mm(3.0) — constraint `x > a` NOT in dirty cone
     let result2 = engine.edit_param(b_id.clone(), mm(3.0)).unwrap();
@@ -1547,14 +1584,22 @@ fn edit_check_preserves_constraint_labels() {
     assert_eq!(result.constraint_results.len(), 2);
 
     // Find the constraint entries by ID (iteration order may vary)
-    let c0 = result.constraint_results.iter()
+    let c0 = result
+        .constraint_results
+        .iter()
         .find(|c| c.id == ConstraintNodeId::new("S", 0))
         .expect("C0 should be in results");
-    let c1 = result.constraint_results.iter()
+    let c1 = result
+        .constraint_results
+        .iter()
         .find(|c| c.id == ConstraintNodeId::new("S", 1))
         .expect("C1 should be in results");
 
-    assert_eq!(c0.label, Some("min_width".to_string()), "cold check: C0 label");
+    assert_eq!(
+        c0.label,
+        Some("min_width".to_string()),
+        "cold check: C0 label"
+    );
     assert_eq!(c1.label, None, "cold check: C1 label");
     assert_eq!(c0.satisfaction, Satisfaction::Satisfied);
     assert_eq!(c1.satisfaction, Satisfaction::Satisfied);
@@ -1563,10 +1608,14 @@ fn edit_check_preserves_constraint_labels() {
     let result2 = engine.edit_check(width_id.clone(), mm(2.0)).unwrap();
     assert_eq!(result2.constraint_results.len(), 2);
 
-    let c0_edit = result2.constraint_results.iter()
+    let c0_edit = result2
+        .constraint_results
+        .iter()
         .find(|c| c.id == ConstraintNodeId::new("S", 0))
         .expect("C0 should be in edit_check results");
-    let c1_edit = result2.constraint_results.iter()
+    let c1_edit = result2
+        .constraint_results
+        .iter()
         .find(|c| c.id == ConstraintNodeId::new("S", 1))
         .expect("C1 should be in edit_check results");
 
@@ -1576,7 +1625,10 @@ fn edit_check_preserves_constraint_labels() {
         Some("min_width".to_string()),
         "edit_check: C0 label should be preserved as 'min_width'"
     );
-    assert_eq!(c1_edit.label, None, "edit_check: C1 label should remain None");
+    assert_eq!(
+        c1_edit.label, None,
+        "edit_check: C1 label should remain None"
+    );
 
     // Satisfaction assertions
     assert_eq!(
@@ -1616,8 +1668,8 @@ fn forward_let_ref_cold_start_simple() {
 
     let template = TopologyTemplateBuilder::new("S")
         .param("S", "a", Type::Int, Some(literal(Value::Int(5))))
-        .let_binding("S", "y", Type::Int, y_expr)  // y declared first (forward ref to x)
-        .let_binding("S", "x", Type::Int, x_expr)  // x declared second
+        .let_binding("S", "y", Type::Int, y_expr) // y declared first (forward ref to x)
+        .let_binding("S", "x", Type::Int, x_expr) // x declared second
         .build();
 
     let module = CompiledModuleBuilder::new(ModulePath::single("test"))
@@ -1657,9 +1709,9 @@ fn forward_let_ref_cold_start_deep_reverse_chain() {
 
     let template = TopologyTemplateBuilder::new("S")
         .param("S", "a", Type::Int, Some(literal(Value::Int(0))))
-        .let_binding("S", "z", Type::Int, z_expr)  // z declared first
-        .let_binding("S", "y", Type::Int, y_expr)  // y declared second
-        .let_binding("S", "x", Type::Int, x_expr)  // x declared third
+        .let_binding("S", "z", Type::Int, z_expr) // z declared first
+        .let_binding("S", "y", Type::Int, y_expr) // y declared second
+        .let_binding("S", "x", Type::Int, x_expr) // x declared third
         .build();
 
     let module = CompiledModuleBuilder::new(ModulePath::single("test"))
@@ -1701,9 +1753,9 @@ fn forward_let_ref_cold_start_diamond() {
 
     let template = TopologyTemplateBuilder::new("S")
         .param("S", "a", Type::Int, Some(literal(Value::Int(10))))
-        .let_binding("S", "d", Type::Int, d_expr)  // d declared first
-        .let_binding("S", "b", Type::Int, b_expr)  // b declared second
-        .let_binding("S", "c", Type::Int, c_expr)  // c declared third
+        .let_binding("S", "d", Type::Int, d_expr) // d declared first
+        .let_binding("S", "b", Type::Int, b_expr) // b declared second
+        .let_binding("S", "c", Type::Int, c_expr) // c declared third
         .build();
 
     let module = CompiledModuleBuilder::new(ModulePath::single("test"))
@@ -1757,8 +1809,8 @@ fn forward_let_ref_post_resolution() {
     let template = TopologyTemplateBuilder::new("S")
         .param("S", "p", Type::length(), Some(literal(mm(1.0))))
         .auto_param("S", "x", Type::length())
-        .let_binding("S", "c", Type::length(), c_expr)  // c declared first (forward ref to b)
-        .let_binding("S", "b", Type::length(), b_expr)  // b declared second
+        .let_binding("S", "c", Type::length(), c_expr) // c declared first (forward ref to b)
+        .let_binding("S", "b", Type::length(), b_expr) // b declared second
         .constraint("S", 0, None, constraint_expr)
         .build();
 
@@ -1766,8 +1818,8 @@ fn forward_let_ref_post_resolution() {
         .template(template)
         .build();
 
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
-        .with_solver(Box::new(solver));
+    let mut engine =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
 
     let result = engine.eval(&module);
 
@@ -1821,8 +1873,8 @@ fn forward_let_ref_incremental_edit_param() {
 
     let template = TopologyTemplateBuilder::new("S")
         .param("S", "a", Type::Int, Some(literal(Value::Int(5))))
-        .let_binding("S", "y", Type::Int, y_expr)  // y declared first (forward ref)
-        .let_binding("S", "x", Type::Int, x_expr)  // x declared second
+        .let_binding("S", "y", Type::Int, y_expr) // y declared first (forward ref)
+        .let_binding("S", "x", Type::Int, x_expr) // x declared second
         .build();
 
     let module = CompiledModuleBuilder::new(ModulePath::single("test"))
@@ -1914,8 +1966,14 @@ fn forward_let_ref_cold_start_matches_incremental() {
     let fresh_b = result2.values.get(&b_id).unwrap().clone();
     let fresh_c = result2.values.get(&c_id).unwrap().clone();
 
-    assert_eq!(incr_b, fresh_b, "incremental b should match fresh cold-start b");
-    assert_eq!(incr_c, fresh_c, "incremental c should match fresh cold-start c");
+    assert_eq!(
+        incr_b, fresh_b,
+        "incremental b should match fresh cold-start b"
+    );
+    assert_eq!(
+        incr_c, fresh_c,
+        "incremental c should match fresh cold-start c"
+    );
     assert_eq!(fresh_b, Value::Int(20), "b = a + 7 = 13 + 7 = 20");
     assert_eq!(fresh_c, Value::Int(40), "c = b * 2 = 20 * 2 = 40");
 }
@@ -1946,8 +2004,8 @@ fn forward_let_ref_declaration_order_irrelevant() {
 
     let template_a = TopologyTemplateBuilder::new("S")
         .param("S", "a", Type::Int, Some(literal(Value::Int(5))))
-        .let_binding("S", "y", Type::Int, y_expr_a)  // y first (forward ref to x)
-        .let_binding("S", "x", Type::Int, x_expr_a)  // x second
+        .let_binding("S", "y", Type::Int, y_expr_a) // y first (forward ref to x)
+        .let_binding("S", "x", Type::Int, x_expr_a) // x second
         .build();
 
     let module_a = CompiledModuleBuilder::new(ModulePath::single("test_a"))
@@ -1960,8 +2018,8 @@ fn forward_let_ref_declaration_order_irrelevant() {
 
     let template_b = TopologyTemplateBuilder::new("S")
         .param("S", "a", Type::Int, Some(literal(Value::Int(5))))
-        .let_binding("S", "x", Type::Int, x_expr_b)  // x first (no forward ref)
-        .let_binding("S", "y", Type::Int, y_expr_b)  // y second
+        .let_binding("S", "x", Type::Int, x_expr_b) // x first (no forward ref)
+        .let_binding("S", "y", Type::Int, y_expr_b) // y second
         .build();
 
     let module_b = CompiledModuleBuilder::new(ModulePath::single("test_b"))
@@ -2032,9 +2090,9 @@ fn forward_let_ref_diamond_incremental_edit() {
 
     let template = TopologyTemplateBuilder::new("S")
         .param("S", "a", Type::Int, Some(literal(Value::Int(10))))
-        .let_binding("S", "d", Type::Int, d_expr)  // d declared first
-        .let_binding("S", "b", Type::Int, b_expr)  // b declared second
-        .let_binding("S", "c", Type::Int, c_expr)  // c declared third
+        .let_binding("S", "d", Type::Int, d_expr) // d declared first
+        .let_binding("S", "b", Type::Int, b_expr) // b declared second
+        .let_binding("S", "c", Type::Int, c_expr) // c declared third
         .build();
 
     let module = CompiledModuleBuilder::new(ModulePath::single("test"))
@@ -2094,9 +2152,9 @@ fn forward_let_ref_deep_chain_incremental_edit() {
 
     let template = TopologyTemplateBuilder::new("S")
         .param("S", "a", Type::Int, Some(literal(Value::Int(0))))
-        .let_binding("S", "z", Type::Int, z_expr)  // z declared first
-        .let_binding("S", "y", Type::Int, y_expr)  // y declared second
-        .let_binding("S", "x", Type::Int, x_expr)  // x declared third
+        .let_binding("S", "z", Type::Int, z_expr) // z declared first
+        .let_binding("S", "y", Type::Int, y_expr) // y declared second
+        .let_binding("S", "x", Type::Int, x_expr) // x declared third
         .build();
 
     let module = CompiledModuleBuilder::new(ModulePath::single("test"))
@@ -2156,9 +2214,9 @@ fn forward_let_ref_mixed_forward_backward() {
 
     let template = TopologyTemplateBuilder::new("S")
         .param("S", "a", Type::Int, Some(literal(Value::Int(1))))
-        .let_binding("S", "b", Type::Int, b_expr)  // b first (backward ref only)
-        .let_binding("S", "d", Type::Int, d_expr)  // d second (forward ref to c)
-        .let_binding("S", "c", Type::Int, c_expr)  // c third
+        .let_binding("S", "b", Type::Int, b_expr) // b first (backward ref only)
+        .let_binding("S", "d", Type::Int, d_expr) // d second (forward ref to c)
+        .let_binding("S", "c", Type::Int, c_expr) // c third
         .build();
 
     let module = CompiledModuleBuilder::new(ModulePath::single("test"))
@@ -2169,9 +2227,21 @@ fn forward_let_ref_mixed_forward_backward() {
     let result = engine.eval(&module);
 
     // Cold-start: b=2, c=3, d=5
-    assert_eq!(*result.values.get(&b_id).unwrap(), Value::Int(2), "b = a + 1 = 1 + 1 = 2");
-    assert_eq!(*result.values.get(&c_id).unwrap(), Value::Int(3), "c = a + 2 = 1 + 2 = 3");
-    assert_eq!(*result.values.get(&d_id).unwrap(), Value::Int(5), "d = c + b = 3 + 2 = 5");
+    assert_eq!(
+        *result.values.get(&b_id).unwrap(),
+        Value::Int(2),
+        "b = a + 1 = 1 + 1 = 2"
+    );
+    assert_eq!(
+        *result.values.get(&c_id).unwrap(),
+        Value::Int(3),
+        "c = a + 2 = 1 + 2 = 3"
+    );
+    assert_eq!(
+        *result.values.get(&d_id).unwrap(),
+        Value::Int(5),
+        "d = c + b = 3 + 2 = 5"
+    );
 
     // Incremental edit: a → 10
     let edit_result = engine.edit_param(a_id.clone(), Value::Int(10)).unwrap();
@@ -2216,8 +2286,8 @@ fn forward_let_ref_early_cutoff_with_forward_decl() {
 
     let template = TopologyTemplateBuilder::new("S")
         .param("S", "a", Type::Real, Some(literal(Value::Real(5.0))))
-        .let_binding("S", "y", Type::Real, y_expr)  // y first (forward ref to x)
-        .let_binding("S", "x", Type::Real, x_expr)  // x second (always 0.0)
+        .let_binding("S", "y", Type::Real, y_expr) // y first (forward ref to x)
+        .let_binding("S", "x", Type::Real, x_expr) // x second (always 0.0)
         .build();
 
     let module = CompiledModuleBuilder::new(ModulePath::single("test"))
@@ -2228,8 +2298,16 @@ fn forward_let_ref_early_cutoff_with_forward_decl() {
     let result = engine.eval(&module);
 
     // Cold-start: x=0.0, y=1.0
-    assert_eq!(*result.values.get(&x_id).unwrap(), Value::Real(0.0), "x = a - a = 0.0");
-    assert_eq!(*result.values.get(&y_id).unwrap(), Value::Real(1.0), "y = x + 1.0 = 1.0");
+    assert_eq!(
+        *result.values.get(&x_id).unwrap(),
+        Value::Real(0.0),
+        "x = a - a = 0.0"
+    );
+    assert_eq!(
+        *result.values.get(&y_id).unwrap(),
+        Value::Real(1.0),
+        "y = x + 1.0 = 1.0"
+    );
 
     // Incremental edit: a → 7.0
     let edit_result = engine.edit_param(a_id.clone(), Value::Real(7.0)).unwrap();

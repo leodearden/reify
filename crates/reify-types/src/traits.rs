@@ -65,10 +65,7 @@ pub enum TraitMember {
         direction: PortDirection,
     },
     /// A sub-structure reference.
-    Sub {
-        name: String,
-        trait_ref: TraitRef,
-    },
+    Sub { name: String, trait_ref: TraitRef },
     /// A let binding with expression.
     Let {
         name: String,
@@ -76,9 +73,7 @@ pub enum TraitMember {
         expr: String,
     },
     /// A constraint expression.
-    Constraint {
-        expr: String,
-    },
+    Constraint { expr: String },
     /// An associated type declaration.
     AssociatedType {
         name: String,

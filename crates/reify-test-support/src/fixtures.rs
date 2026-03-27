@@ -3,8 +3,8 @@ use reify_syntax::ParsedModule;
 use reify_types::{BinOp, ContentHash, DimensionVector, ModulePath, SourceSpan, Type, Value};
 
 use crate::builders::{
-    range_constraint, CompiledFieldBuilder, CompiledModuleBuilder, CompiledPurposeBuilder,
-    CompiledTraitBuilder, TopologyTemplateBuilder, TraitDefBuilder,
+    CompiledFieldBuilder, CompiledModuleBuilder, CompiledPurposeBuilder, CompiledTraitBuilder,
+    TopologyTemplateBuilder, TraitDefBuilder, range_constraint,
 };
 
 /// The canonical bracket source code for end-to-end testing.
@@ -325,9 +325,7 @@ pub fn bracket_compiled_module() -> CompiledModule {
     let hole_diam_ref = || CompiledExpr::value_ref(crate::vcid(e, "hole_diameter"), Type::length());
 
     // Default values as compiled expressions
-    let mm_literal = |v: f64| {
-        CompiledExpr::literal(crate::mm(v), Type::length())
-    };
+    let mm_literal = |v: f64| CompiledExpr::literal(crate::mm(v), Type::length());
 
     // volume = width * height * thickness
     let width_times_height = CompiledExpr::binop(
@@ -348,12 +346,7 @@ pub fn bracket_compiled_module() -> CompiledModule {
     );
 
     // constraint 0: thickness > 2mm
-    let constraint_0 = CompiledExpr::binop(
-        BinOp::Gt,
-        thickness_ref(),
-        mm_literal(2.0),
-        Type::Bool,
-    );
+    let constraint_0 = CompiledExpr::binop(BinOp::Gt, thickness_ref(), mm_literal(2.0), Type::Bool);
 
     // constraint 1: thickness < width / 4
     let width_div_4 = CompiledExpr::binop(
@@ -362,12 +355,7 @@ pub fn bracket_compiled_module() -> CompiledModule {
         CompiledExpr::literal(Value::Int(4), Type::Int),
         Type::length(),
     );
-    let constraint_1 = CompiledExpr::binop(
-        BinOp::Lt,
-        thickness_ref(),
-        width_div_4,
-        Type::Bool,
-    );
+    let constraint_1 = CompiledExpr::binop(BinOp::Lt, thickness_ref(), width_div_4, Type::Bool);
 
     // constraint 2: hole_diameter < thickness * 2
     let thickness_times_2 = CompiledExpr::binop(
@@ -376,12 +364,8 @@ pub fn bracket_compiled_module() -> CompiledModule {
         CompiledExpr::literal(Value::Int(2), Type::Int),
         Type::length(),
     );
-    let constraint_2 = CompiledExpr::binop(
-        BinOp::Lt,
-        hole_diam_ref(),
-        thickness_times_2,
-        Type::Bool,
-    );
+    let constraint_2 =
+        CompiledExpr::binop(BinOp::Lt, hole_diam_ref(), thickness_times_2, Type::Bool);
 
     let template = TopologyTemplateBuilder::new("Bracket")
         .param(e, "width", Type::length(), Some(mm_literal(80.0)))
@@ -443,7 +427,9 @@ pub fn bracket_compiled_module() -> CompiledModule {
 pub fn generic_container_module() -> CompiledModule {
     use reify_types::{DimensionVector, TraitBound, TraitRef, TypeParam};
 
-    let mass_type = Type::Scalar { dimension: DimensionVector::MASS };
+    let mass_type = Type::Scalar {
+        dimension: DimensionVector::MASS,
+    };
 
     // Rigid trait: requires param mass: Mass
     let rigid_trait = TraitDefBuilder::new("Rigid")
@@ -469,16 +455,26 @@ pub fn generic_container_module() -> CompiledModule {
     // Bolt: Rigid with param mass = 1kg
     let bolt_template = TopologyTemplateBuilder::new("Bolt")
         .trait_bound("Rigid")
-        .param("Bolt", "mass", mass_type, Some(crate::builders::literal(Value::Scalar {
-            si_value: 1.0,
-            dimension: DimensionVector::MASS,
-        })))
+        .param(
+            "Bolt",
+            "mass",
+            mass_type,
+            Some(crate::builders::literal(Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::MASS,
+            })),
+        )
         .build();
 
     // Crate: Container with param count = 1
     let crate_template = TopologyTemplateBuilder::new("Crate")
         .trait_bound("Container")
-        .param("Crate", "count", Type::Int, Some(crate::builders::literal(Value::Int(1))))
+        .param(
+            "Crate",
+            "count",
+            Type::Int,
+            Some(crate::builders::literal(Value::Int(1))),
+        )
         .build();
 
     CompiledModuleBuilder::new(ModulePath::single("generic_container"))
@@ -504,7 +500,9 @@ pub fn rigid_trait_module() -> CompiledModule {
     use reify_syntax::{ConstraintDecl, Expr, ExprKind};
     use reify_types::DimensionVector;
 
-    let mass_type = Type::Scalar { dimension: DimensionVector::MASS };
+    let mass_type = Type::Scalar {
+        dimension: DimensionVector::MASS,
+    };
 
     // Rigid trait: requires param mass: Mass; default constraint mass > 0kg
     let mass_constraint_decl = ConstraintDecl {
@@ -533,16 +531,24 @@ pub fn rigid_trait_module() -> CompiledModule {
 
     let rigid_trait = TraitDefBuilder::new("Rigid")
         .requirement("mass", RequirementKind::Param(mass_type.clone()))
-        .add_default(Some("mass_positive"), DefaultKind::Constraint(mass_constraint_decl))
+        .add_default(
+            Some("mass_positive"),
+            DefaultKind::Constraint(mass_constraint_decl),
+        )
         .build();
 
     // Bolt: Rigid with param mass: Mass = 1kg (1.0 SI)
     let bolt_template = TopologyTemplateBuilder::new("Bolt")
         .trait_bound("Rigid")
-        .param("Bolt", "mass", mass_type, Some(crate::builders::literal(Value::Scalar {
-            si_value: 1.0,
-            dimension: DimensionVector::MASS,
-        })))
+        .param(
+            "Bolt",
+            "mass",
+            mass_type,
+            Some(crate::builders::literal(Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::MASS,
+            })),
+        )
         .build();
 
     CompiledModuleBuilder::new(ModulePath::single("rigid_trait"))
@@ -611,8 +617,7 @@ pub fn purpose_module() -> CompiledModule {
     let thickness_ref =
         CompiledExpr::value_ref(crate::vcid("subject", "thickness"), Type::length());
     let min_thickness = mm_literal(2.0);
-    let constraint_expr =
-        CompiledExpr::binop(BinOp::Gt, thickness_ref, min_thickness, Type::Bool);
+    let constraint_expr = CompiledExpr::binop(BinOp::Gt, thickness_ref, min_thickness, Type::Bool);
 
     let purpose = CompiledPurposeBuilder::new("mfg_ready")
         .param("subject", "Structure")
@@ -649,8 +654,20 @@ pub fn constrained_structure_module() -> reify_compiler::CompiledModule {
     let mm_literal = |v: f64| CompiledExpr::literal(crate::mm(v), Type::length());
 
     // Build the 4 range expressions using the helper (2 per member)
-    let width_range = range_constraint(entity, "width", Type::length(), mm_literal(10.0), mm_literal(500.0));
-    let height_range = range_constraint(entity, "height", Type::length(), mm_literal(10.0), mm_literal(1000.0));
+    let width_range = range_constraint(
+        entity,
+        "width",
+        Type::length(),
+        mm_literal(10.0),
+        mm_literal(500.0),
+    );
+    let height_range = range_constraint(
+        entity,
+        "height",
+        Type::length(),
+        mm_literal(10.0),
+        mm_literal(1000.0),
+    );
 
     // Slender ratio: height > 2 * width
     let height_ref = CompiledExpr::value_ref(crate::vcid(entity, "height"), Type::length());
@@ -698,12 +715,11 @@ pub fn parent_child_module() -> CompiledModule {
     let parent_entity = "Parent";
 
     // mm literal helper
-    let mm_literal = |v: f64| {
-        CompiledExpr::literal(crate::mm(v), Type::length())
-    };
+    let mm_literal = |v: f64| CompiledExpr::literal(crate::mm(v), Type::length());
 
     // Child template: param height = 10mm, let half_h = height / 2
-    let height_ref = || CompiledExpr::value_ref(crate::vcid(child_entity, "height"), Type::length());
+    let height_ref =
+        || CompiledExpr::value_ref(crate::vcid(child_entity, "height"), Type::length());
 
     let half_h_expr = CompiledExpr::binop(
         BinOp::Div,
@@ -713,7 +729,12 @@ pub fn parent_child_module() -> CompiledModule {
     );
 
     let child_template = TopologyTemplateBuilder::new(child_entity)
-        .param(child_entity, "height", Type::length(), Some(mm_literal(10.0)))
+        .param(
+            child_entity,
+            "height",
+            Type::length(),
+            Some(mm_literal(10.0)),
+        )
         .let_binding(child_entity, "half_h", Type::length(), half_h_expr)
         .build();
 
@@ -728,7 +749,12 @@ pub fn parent_child_module() -> CompiledModule {
     );
 
     let parent_template = TopologyTemplateBuilder::new(parent_entity)
-        .param(parent_entity, "width", Type::length(), Some(mm_literal(80.0)))
+        .param(
+            parent_entity,
+            "width",
+            Type::length(),
+            Some(mm_literal(80.0)),
+        )
         .sub_component("rib", "Child", vec![("height".to_string(), arg_expr)])
         .build();
 
@@ -751,7 +777,12 @@ pub fn recursive_tree_module() -> CompiledModule {
     let e = "TreeNode";
 
     let tree_template = TopologyTemplateBuilder::new(e)
-        .param(e, "value", Type::Int, Some(crate::builders::literal(Value::Int(0))))
+        .param(
+            e,
+            "value",
+            Type::Int,
+            Some(crate::builders::literal(Value::Int(0))),
+        )
         .sub_component("left", "TreeNode", vec![])
         .sub_component("right", "TreeNode", vec![])
         .build();
@@ -771,12 +802,22 @@ pub fn recursive_tree_module() -> CompiledModule {
 /// used to test cycle detection algorithms in the evaluation engine.
 pub fn mutual_recursion_module() -> CompiledModule {
     let node_a = TopologyTemplateBuilder::new("NodeA")
-        .param("NodeA", "a_val", Type::Int, Some(crate::builders::literal(Value::Int(0))))
+        .param(
+            "NodeA",
+            "a_val",
+            Type::Int,
+            Some(crate::builders::literal(Value::Int(0))),
+        )
         .sub_component("child", "NodeB", vec![])
         .build();
 
     let node_b = TopologyTemplateBuilder::new("NodeB")
-        .param("NodeB", "b_val", Type::Int, Some(crate::builders::literal(Value::Int(0))))
+        .param(
+            "NodeB",
+            "b_val",
+            Type::Int,
+            Some(crate::builders::literal(Value::Int(0))),
+        )
         .sub_component("ref_back", "NodeA", vec![])
         .build();
 
@@ -799,9 +840,21 @@ mod tests {
                 assert_eq!(s.name, "Bracket");
                 // 5 params + 2 lets + 3 constraints = 10 members
                 assert_eq!(s.members.len(), 10);
-                let params: Vec<_> = s.members.iter().filter(|m| matches!(m, reify_syntax::MemberDecl::Param(_))).collect();
-                let lets: Vec<_> = s.members.iter().filter(|m| matches!(m, reify_syntax::MemberDecl::Let(_))).collect();
-                let constraints: Vec<_> = s.members.iter().filter(|m| matches!(m, reify_syntax::MemberDecl::Constraint(_))).collect();
+                let params: Vec<_> = s
+                    .members
+                    .iter()
+                    .filter(|m| matches!(m, reify_syntax::MemberDecl::Param(_)))
+                    .collect();
+                let lets: Vec<_> = s
+                    .members
+                    .iter()
+                    .filter(|m| matches!(m, reify_syntax::MemberDecl::Let(_)))
+                    .collect();
+                let constraints: Vec<_> = s
+                    .members
+                    .iter()
+                    .filter(|m| matches!(m, reify_syntax::MemberDecl::Constraint(_)))
+                    .collect();
                 assert_eq!(params.len(), 5);
                 assert_eq!(lets.len(), 2); // volume + body
                 assert_eq!(constraints.len(), 3);
@@ -835,7 +888,10 @@ mod tests {
     fn bracket_source_violating_has_small_thickness() {
         let source = bracket_source_violating();
         assert!(source.contains("param thickness: Scalar = 1mm"));
-        assert!(!source.contains("param thickness: Scalar = 5mm"), "original 5mm should be replaced");
+        assert!(
+            !source.contains("param thickness: Scalar = 5mm"),
+            "original 5mm should be replaced"
+        );
         // Other params should be unchanged
         assert!(source.contains("param width: Scalar = 80mm"));
         assert!(source.contains("constraint thickness > 2mm"));
@@ -863,9 +919,16 @@ mod tests {
         assert!(width.is_some(), "Beam should have param width");
         assert!(height.is_some(), "Beam should have param height");
         // At least 4 constraints: range on width (2) + range on height (2)
-        assert!(beam.constraints.len() >= 4, "expected at least 4 constraints, got {}", beam.constraints.len());
+        assert!(
+            beam.constraints.len() >= 4,
+            "expected at least 4 constraints, got {}",
+            beam.constraints.len()
+        );
         // The ratio constraint should have label "slender"
-        let slender = beam.constraints.iter().find(|c| c.label.as_deref() == Some("slender"));
+        let slender = beam
+            .constraints
+            .iter()
+            .find(|c| c.label.as_deref() == Some("slender"));
         assert!(slender.is_some(), "expected labeled constraint 'slender'");
     }
 
@@ -892,7 +955,10 @@ mod tests {
         let crate_t = module.templates.iter().find(|t| t.name == "Crate");
         let bolt = bolt.expect("should have Bolt template");
         // Bolt conforms to Rigid
-        assert!(bolt.trait_bounds.contains(&"Rigid".to_string()), "Bolt should have Rigid trait bound");
+        assert!(
+            bolt.trait_bounds.contains(&"Rigid".to_string()),
+            "Bolt should have Rigid trait bound"
+        );
         let crate_t = crate_t.expect("should have Crate template");
         // Crate conforms to Container
         assert!(crate_t.trait_bounds.contains(&"Container".to_string()));
@@ -977,8 +1043,7 @@ mod tests {
         // First 4 have no labels
         for i in 0..4 {
             assert_eq!(
-                t.constraints[i].label,
-                None,
+                t.constraints[i].label, None,
                 "constraint {} should have no label",
                 i
             );
@@ -1030,13 +1095,25 @@ mod tests {
         let value_cell = tree.value_cells.iter().find(|vc| vc.id.member == "value");
         assert!(value_cell.is_some(), "TreeNode should have param value");
         // Has two sub-components: left and right, both referencing TreeNode
-        assert_eq!(tree.sub_components.len(), 2, "TreeNode should have 2 sub-components");
+        assert_eq!(
+            tree.sub_components.len(),
+            2,
+            "TreeNode should have 2 sub-components"
+        );
         let left = tree.sub_components.iter().find(|sc| sc.name == "left");
         let right = tree.sub_components.iter().find(|sc| sc.name == "right");
         assert!(left.is_some(), "TreeNode should have sub left");
         assert!(right.is_some(), "TreeNode should have sub right");
-        assert_eq!(left.unwrap().structure_name, "TreeNode", "left should reference TreeNode");
-        assert_eq!(right.unwrap().structure_name, "TreeNode", "right should reference TreeNode");
+        assert_eq!(
+            left.unwrap().structure_name,
+            "TreeNode",
+            "left should reference TreeNode"
+        );
+        assert_eq!(
+            right.unwrap().structure_name,
+            "TreeNode",
+            "right should reference TreeNode"
+        );
     }
 
     // step-23: failing test for mutual_recursion_module fixture

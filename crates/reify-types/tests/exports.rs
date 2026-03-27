@@ -173,8 +173,6 @@ fn all_m5_types_exported() {
     let _tt_factory = reify_types::Type::tensor(1, 4, reify_types::Type::Real);
 
     // Value::Tensor construction
-    let _vt = reify_types::Value::Tensor(vec![
-        reify_types::Value::Int(1),
-        reify_types::Value::Int(2),
-    ]);
+    let _vt =
+        reify_types::Value::Tensor(vec![reify_types::Value::Int(1), reify_types::Value::Int(2)]);
 }

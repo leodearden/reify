@@ -16,7 +16,8 @@ fn parse_decls(source: &str) -> (Vec<Declaration>, Vec<ParseError>) {
 fn parse_basic_purpose_grammar() {
     // Parse a purpose declaration and verify it produces a Purpose variant
     // (not an error). This tests that the tree-sitter grammar accepts the syntax.
-    let source = "purpose mfg_ready(subject : Structure) { constraint subject.params == subject.params }";
+    let source =
+        "purpose mfg_ready(subject : Structure) { constraint subject.params == subject.params }";
     let (decls, errors) = parse_decls(source);
     assert!(errors.is_empty(), "parse errors: {:?}", errors);
     assert_eq!(decls.len(), 1, "expected 1 declaration, got {:?}", decls);

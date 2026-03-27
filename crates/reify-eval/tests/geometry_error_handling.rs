@@ -62,8 +62,7 @@ fn module_with_box_realization() -> reify_compiler::CompiledModule {
     use reify_types::Type;
 
     let e = "TestShape";
-    let mm_literal =
-        |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
 
     let box_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
@@ -97,8 +96,7 @@ fn build_returns_no_geometry_when_all_kernel_ops_fail() {
     let module = module_with_box_realization();
     let checker = MockConstraintChecker::new();
     let kernel = FailingMockGeometryKernel;
-    let mut engine =
-        reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
     // Should have no geometry output when all ops fail
@@ -109,13 +107,18 @@ fn build_returns_no_geometry_when_all_kernel_ops_fail() {
     );
 
     // Should contain a summary diagnostic about all ops failing
-    let has_summary = result.diagnostics.iter().any(|d| {
-        d.message.contains("all geometry operations failed")
-    });
+    let has_summary = result
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("all geometry operations failed"));
     assert!(
         has_summary,
         "expected a summary diagnostic about all geometry operations failing, got: {:?}",
-        result.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+        result
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -134,8 +137,7 @@ fn build_returns_no_geometry_when_all_ops_fail_to_compile() {
     };
 
     let e = "TestShape";
-    let mm_literal =
-        |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
 
     let template = TopologyTemplateBuilder::new("TestShape")
         .param(e, "width", Type::length(), Some(mm_literal(10.0)))
@@ -149,8 +151,7 @@ fn build_returns_no_geometry_when_all_ops_fail_to_compile() {
     // Use standard MockGeometryKernel — kernel.execute() should never be called
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
-    let mut engine =
-        reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
     assert!(
@@ -158,17 +159,19 @@ fn build_returns_no_geometry_when_all_ops_fail_to_compile() {
         "expected geometry_output to be None when all ops fail to compile"
     );
 
-    let has_compile_error = result.diagnostics.iter().any(|d| {
-        d.message.contains("failed to compile geometry operation")
-    });
+    let has_compile_error = result
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("failed to compile geometry operation"));
     assert!(
         has_compile_error,
         "expected per-op compile failure diagnostic"
     );
 
-    let has_summary = result.diagnostics.iter().any(|d| {
-        d.message.contains("all geometry operations failed")
-    });
+    let has_summary = result
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("all geometry operations failed"));
     assert!(
         has_summary,
         "expected summary diagnostic about all geometry operations failing"
@@ -219,23 +222,24 @@ fn build_no_export_error_when_all_ops_fail() {
     let module = module_with_box_realization();
     let checker = MockConstraintChecker::new();
     let kernel = FailingExportMockGeometryKernel;
-    let mut engine =
-        reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
     // Export should not have been attempted
-    let has_export_error = result.diagnostics.iter().any(|d| {
-        d.message.contains("export error")
-    });
+    let has_export_error = result
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("export error"));
     assert!(
         !has_export_error,
         "export should not be attempted when all ops fail, but got an export error diagnostic"
     );
 
     // Should still have the summary diagnostic
-    let has_summary = result.diagnostics.iter().any(|d| {
-        d.message.contains("all geometry operations failed")
-    });
+    let has_summary = result
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("all geometry operations failed"));
     assert!(has_summary, "expected summary diagnostic");
 }
 
@@ -246,8 +250,7 @@ fn build_with_no_realizations_still_exports() {
     let module = bracket_compiled_module();
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
-    let mut engine =
-        reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
     assert!(
@@ -270,8 +273,7 @@ fn loft_through_full_eval_pipeline() {
     use reify_types::Type;
 
     let e = "TestLoft";
-    let mm_literal =
-        |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
 
     // Op 0: Sphere (produces handle at step index 0)
     let sphere_op_0 = CompiledGeometryOp::Primitive {
@@ -304,13 +306,17 @@ fn loft_through_full_eval_pipeline() {
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
 
-    let mut engine =
-        reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
     let _result = engine.build(&module, ExportFormat::Step);
 
     // Inspect the recorded operations
     let ops = ops_ref.lock().unwrap();
-    assert_eq!(ops.len(), 3, "expected 3 geometry operations, got {}", ops.len());
+    assert_eq!(
+        ops.len(),
+        3,
+        "expected 3 geometry operations, got {}",
+        ops.len()
+    );
 
     // Op 0: Sphere → handle 1
     // Op 1: Sphere → handle 2
@@ -321,7 +327,8 @@ fn loft_through_full_eval_pipeline() {
     match &ops[2].op {
         GeometryOp::Loft { profiles } => {
             assert_eq!(
-                profiles.len(), 2,
+                profiles.len(),
+                2,
                 "Loft should have 2 profiles, got {}",
                 profiles.len()
             );

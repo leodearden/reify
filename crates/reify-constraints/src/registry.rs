@@ -60,15 +60,9 @@ impl SolverRegistry {
     fn solver_for(&self, domain: ConstraintDomain) -> &dyn ConstraintSolver {
         match domain {
             ConstraintDomain::Dimensional => &*self.dimensional,
-            ConstraintDomain::Geometric => {
-                self.geometric.as_deref().unwrap_or(&*self.dimensional)
-            }
-            ConstraintDomain::Logical => {
-                self.logical.as_deref().unwrap_or(&*self.dimensional)
-            }
-            ConstraintDomain::CrossDomain => {
-                self.fallback.as_deref().unwrap_or(&*self.dimensional)
-            }
+            ConstraintDomain::Geometric => self.geometric.as_deref().unwrap_or(&*self.dimensional),
+            ConstraintDomain::Logical => self.logical.as_deref().unwrap_or(&*self.dimensional),
+            ConstraintDomain::CrossDomain => self.fallback.as_deref().unwrap_or(&*self.dimensional),
         }
     }
 }
@@ -101,11 +95,8 @@ impl ConstraintSolver for SolverRegistry {
         }
 
         // Build a lookup for auto params by ID
-        let param_lookup: HashMap<&ValueCellId, &AutoParam> = problem
-            .auto_params
-            .iter()
-            .map(|ap| (&ap.id, ap))
-            .collect();
+        let param_lookup: HashMap<&ValueCellId, &AutoParam> =
+            problem.auto_params.iter().map(|ap| (&ap.id, ap)).collect();
 
         // Determine which component gets the objective (if any).
         // Because decompose_into_components unions all objective-referenced

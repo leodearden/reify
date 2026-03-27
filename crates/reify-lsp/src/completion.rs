@@ -82,8 +82,20 @@ const KEYWORDS: &[&str] = &[
 
 /// Built-in geometry and math functions.
 const BUILTIN_FUNCTIONS: &[&str] = &[
-    "box", "cylinder", "sphere", "sin", "cos", "tan", "sqrt", "abs", "min", "max",
-    "dot", "cross", "normalize", "magnitude",
+    "box",
+    "cylinder",
+    "sphere",
+    "sin",
+    "cos",
+    "tan",
+    "sqrt",
+    "abs",
+    "min",
+    "max",
+    "dot",
+    "cross",
+    "normalize",
+    "magnitude",
 ];
 
 /// Built-in type names.
@@ -153,10 +165,7 @@ mod tests {
         assert!(var_labels.contains(&"volume"), "should include 'volume'");
         // Variables should have type detail
         let width_item = variables.iter().find(|v| v.label == "width").unwrap();
-        assert!(
-            width_item.detail.is_some(),
-            "width should have type detail"
-        );
+        assert!(width_item.detail.is_some(), "width should have type detail");
         assert!(
             width_item.detail.as_ref().unwrap().contains("Scalar"),
             "width detail should mention Scalar"
@@ -205,17 +214,11 @@ mod tests {
             .filter(|i| i.kind == Some(CompletionItemKind::CLASS))
             .collect();
         let type_labels: Vec<&str> = types.iter().map(|t| t.label.as_str()).collect();
-        assert!(
-            type_labels.contains(&"Scalar"),
-            "should include 'Scalar'"
-        );
+        assert!(type_labels.contains(&"Scalar"), "should include 'Scalar'");
         assert!(type_labels.contains(&"Bool"), "should include 'Bool'");
         assert!(type_labels.contains(&"Int"), "should include 'Int'");
         assert!(type_labels.contains(&"Real"), "should include 'Real'");
-        assert!(
-            type_labels.contains(&"String"),
-            "should include 'String'"
-        );
+        assert!(type_labels.contains(&"String"), "should include 'String'");
     }
 
     #[test]
@@ -258,15 +261,33 @@ mod tests {
             .collect();
 
         // At top level, structure-defining and import keywords should be present
-        assert!(keyword_labels.contains(&"structure"), "top-level should include 'structure'");
-        assert!(keyword_labels.contains(&"import"), "top-level should include 'import'");
+        assert!(
+            keyword_labels.contains(&"structure"),
+            "top-level should include 'structure'"
+        );
+        assert!(
+            keyword_labels.contains(&"import"),
+            "top-level should include 'import'"
+        );
 
         // Body-only keywords should NOT be present at top level
         // (Future keywords like fn, trait, enum would also be asserted here once added to KEYWORDS)
-        assert!(!keyword_labels.contains(&"param"), "top-level should NOT include 'param'");
-        assert!(!keyword_labels.contains(&"let"), "top-level should NOT include 'let'");
-        assert!(!keyword_labels.contains(&"constraint"), "top-level should NOT include 'constraint'");
-        assert!(!keyword_labels.contains(&"sub"), "top-level should NOT include 'sub'");
+        assert!(
+            !keyword_labels.contains(&"param"),
+            "top-level should NOT include 'param'"
+        );
+        assert!(
+            !keyword_labels.contains(&"let"),
+            "top-level should NOT include 'let'"
+        );
+        assert!(
+            !keyword_labels.contains(&"constraint"),
+            "top-level should NOT include 'constraint'"
+        );
+        assert!(
+            !keyword_labels.contains(&"sub"),
+            "top-level should NOT include 'sub'"
+        );
     }
 
     #[test]
@@ -283,14 +304,26 @@ mod tests {
             .collect();
 
         // Inside a structure body, declaration keywords should be present
-        assert!(keyword_labels.contains(&"param"), "body should include 'param'");
+        assert!(
+            keyword_labels.contains(&"param"),
+            "body should include 'param'"
+        );
         assert!(keyword_labels.contains(&"let"), "body should include 'let'");
-        assert!(keyword_labels.contains(&"constraint"), "body should include 'constraint'");
+        assert!(
+            keyword_labels.contains(&"constraint"),
+            "body should include 'constraint'"
+        );
         assert!(keyword_labels.contains(&"sub"), "body should include 'sub'");
 
         // Top-level-only keywords should NOT appear inside a body
-        assert!(!keyword_labels.contains(&"structure"), "body should NOT include 'structure'");
-        assert!(!keyword_labels.contains(&"import"), "body should NOT include 'import'");
+        assert!(
+            !keyword_labels.contains(&"structure"),
+            "body should NOT include 'structure'"
+        );
+        assert!(
+            !keyword_labels.contains(&"import"),
+            "body should NOT include 'import'"
+        );
     }
 
     #[test]
@@ -314,14 +347,32 @@ mod tests {
             .collect();
 
         // In an expression, builtin functions should be available
-        assert!(func_labels.contains(&"sin"), "expression should include 'sin'");
-        assert!(func_labels.contains(&"cos"), "expression should include 'cos'");
+        assert!(
+            func_labels.contains(&"sin"),
+            "expression should include 'sin'"
+        );
+        assert!(
+            func_labels.contains(&"cos"),
+            "expression should include 'cos'"
+        );
 
         // Declaration keywords should NOT appear in expression context
-        assert!(!keyword_labels.contains(&"param"), "expression should NOT include 'param'");
-        assert!(!keyword_labels.contains(&"let"), "expression should NOT include 'let'");
-        assert!(!keyword_labels.contains(&"constraint"), "expression should NOT include 'constraint'");
-        assert!(!keyword_labels.contains(&"structure"), "expression should NOT include 'structure'");
+        assert!(
+            !keyword_labels.contains(&"param"),
+            "expression should NOT include 'param'"
+        );
+        assert!(
+            !keyword_labels.contains(&"let"),
+            "expression should NOT include 'let'"
+        );
+        assert!(
+            !keyword_labels.contains(&"constraint"),
+            "expression should NOT include 'constraint'"
+        );
+        assert!(
+            !keyword_labels.contains(&"structure"),
+            "expression should NOT include 'structure'"
+        );
     }
 
     #[test]
@@ -352,11 +403,23 @@ mod tests {
             .collect();
 
         // After a dot, no keywords should appear
-        assert!(keyword_labels.is_empty(), "after dot should have no keywords, got: {:?}", keyword_labels);
+        assert!(
+            keyword_labels.is_empty(),
+            "after dot should have no keywords, got: {:?}",
+            keyword_labels
+        );
         // After a dot, no builtin functions should appear
-        assert!(func_labels.is_empty(), "after dot should have no builtin functions, got: {:?}", func_labels);
+        assert!(
+            func_labels.is_empty(),
+            "after dot should have no builtin functions, got: {:?}",
+            func_labels
+        );
         // After a dot, no type names should appear
-        assert!(type_labels.is_empty(), "after dot should have no type names, got: {:?}", type_labels);
+        assert!(
+            type_labels.is_empty(),
+            "after dot should have no type names, got: {:?}",
+            type_labels
+        );
         // Ideally this would also assert that Bar's members are returned,
         // but Bar is undefined so we can only check exclusions here.
     }
@@ -394,23 +457,56 @@ mod tests {
             .collect();
 
         // In type position, type names should be present
-        assert!(type_labels.contains(&"Scalar"), "type position should include 'Scalar'");
-        assert!(type_labels.contains(&"Bool"), "type position should include 'Bool'");
-        assert!(type_labels.contains(&"Int"), "type position should include 'Int'");
-        assert!(type_labels.contains(&"Real"), "type position should include 'Real'");
-        assert!(type_labels.contains(&"String"), "type position should include 'String'");
+        assert!(
+            type_labels.contains(&"Scalar"),
+            "type position should include 'Scalar'"
+        );
+        assert!(
+            type_labels.contains(&"Bool"),
+            "type position should include 'Bool'"
+        );
+        assert!(
+            type_labels.contains(&"Int"),
+            "type position should include 'Int'"
+        );
+        assert!(
+            type_labels.contains(&"Real"),
+            "type position should include 'Real'"
+        );
+        assert!(
+            type_labels.contains(&"String"),
+            "type position should include 'String'"
+        );
 
         // Structure names should be available as types
-        assert!(struct_labels.contains(&"Foo"), "type position should include struct 'Foo'");
+        assert!(
+            struct_labels.contains(&"Foo"),
+            "type position should include struct 'Foo'"
+        );
 
         // Keywords should NOT appear in type position
-        assert!(!keyword_labels.contains(&"param"), "type position should NOT include 'param'");
-        assert!(!keyword_labels.contains(&"let"), "type position should NOT include 'let'");
-        assert!(!keyword_labels.contains(&"structure"), "type position should NOT include 'structure'");
+        assert!(
+            !keyword_labels.contains(&"param"),
+            "type position should NOT include 'param'"
+        );
+        assert!(
+            !keyword_labels.contains(&"let"),
+            "type position should NOT include 'let'"
+        );
+        assert!(
+            !keyword_labels.contains(&"structure"),
+            "type position should NOT include 'structure'"
+        );
 
         // Builtin functions should NOT appear in type position
-        assert!(!func_labels.contains(&"sin"), "type position should NOT include 'sin'");
-        assert!(!func_labels.contains(&"box"), "type position should NOT include 'box'");
+        assert!(
+            !func_labels.contains(&"sin"),
+            "type position should NOT include 'sin'"
+        );
+        assert!(
+            !func_labels.contains(&"box"),
+            "type position should NOT include 'box'"
+        );
     }
 
     #[test]
@@ -439,18 +535,42 @@ mod tests {
             .collect();
 
         // In a constraint expression, member variables should be available
-        assert!(var_labels.contains(&"width"), "constraint expr should include 'width'");
-        assert!(var_labels.contains(&"height"), "constraint expr should include 'height'");
+        assert!(
+            var_labels.contains(&"width"),
+            "constraint expr should include 'width'"
+        );
+        assert!(
+            var_labels.contains(&"height"),
+            "constraint expr should include 'height'"
+        );
 
         // Builtin functions should be available in expressions
-        assert!(func_labels.contains(&"sin"), "constraint expr should include 'sin'");
-        assert!(func_labels.contains(&"abs"), "constraint expr should include 'abs'");
+        assert!(
+            func_labels.contains(&"sin"),
+            "constraint expr should include 'sin'"
+        );
+        assert!(
+            func_labels.contains(&"abs"),
+            "constraint expr should include 'abs'"
+        );
 
         // Declaration keywords should NOT appear inside a constraint expression
-        assert!(!keyword_labels.contains(&"param"), "constraint expr should NOT include 'param'");
-        assert!(!keyword_labels.contains(&"let"), "constraint expr should NOT include 'let'");
-        assert!(!keyword_labels.contains(&"constraint"), "constraint expr should NOT include 'constraint'");
-        assert!(!keyword_labels.contains(&"structure"), "constraint expr should NOT include 'structure'");
+        assert!(
+            !keyword_labels.contains(&"param"),
+            "constraint expr should NOT include 'param'"
+        );
+        assert!(
+            !keyword_labels.contains(&"let"),
+            "constraint expr should NOT include 'let'"
+        );
+        assert!(
+            !keyword_labels.contains(&"constraint"),
+            "constraint expr should NOT include 'constraint'"
+        );
+        assert!(
+            !keyword_labels.contains(&"structure"),
+            "constraint expr should NOT include 'structure'"
+        );
     }
 
     // --- linalg builtin completions (step-11) ---
@@ -466,7 +586,13 @@ mod tests {
             .collect();
         assert!(func_labels.contains(&"dot"), "should include 'dot'");
         assert!(func_labels.contains(&"cross"), "should include 'cross'");
-        assert!(func_labels.contains(&"normalize"), "should include 'normalize'");
-        assert!(func_labels.contains(&"magnitude"), "should include 'magnitude'");
+        assert!(
+            func_labels.contains(&"normalize"),
+            "should include 'normalize'"
+        );
+        assert!(
+            func_labels.contains(&"magnitude"),
+            "should include 'magnitude'"
+        );
     }
 }

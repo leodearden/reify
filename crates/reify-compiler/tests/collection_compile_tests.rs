@@ -132,9 +132,7 @@ fn compile_map_literal() {
 
 #[test]
 fn compile_index_access() {
-    let compiled = compile_no_errors(
-        "structure S { let items = [10, 20, 30]  let x = items[0] }",
-    );
+    let compiled = compile_no_errors("structure S { let items = [10, 20, 30]  let x = items[0] }");
     let expr = get_cell_expr(&compiled, "x");
     match &expr.kind {
         CompiledExprKind::IndexAccess { object, index } => {
@@ -160,9 +158,7 @@ fn compile_index_access() {
 #[test]
 fn compile_member_access_count() {
     // items.count should compile to MethodCall { method: "count", args: [] }
-    let compiled = compile_no_errors(
-        "structure S { let items = [1, 2, 3]  let n = items.count }",
-    );
+    let compiled = compile_no_errors("structure S { let items = [1, 2, 3]  let n = items.count }");
     let expr = get_cell_expr(&compiled, "n");
     match &expr.kind {
         CompiledExprKind::MethodCall {
@@ -184,9 +180,7 @@ fn compile_member_access_count() {
 
 #[test]
 fn compile_member_access_sum() {
-    let compiled = compile_no_errors(
-        "structure S { let items = [1, 2, 3]  let s = items.sum }",
-    );
+    let compiled = compile_no_errors("structure S { let items = [1, 2, 3]  let s = items.sum }");
     let expr = get_cell_expr(&compiled, "s");
     match &expr.kind {
         CompiledExprKind::MethodCall {
@@ -208,9 +202,7 @@ fn compile_member_access_sum() {
 
 #[test]
 fn compile_member_access_keys() {
-    let compiled = compile_no_errors(
-        r#"structure S { let m = map{"a" => 1}  let k = m.keys }"#,
-    );
+    let compiled = compile_no_errors(r#"structure S { let m = map{"a" => 1}  let k = m.keys }"#);
     let expr = get_cell_expr(&compiled, "k");
     match &expr.kind {
         CompiledExprKind::MethodCall {
@@ -232,9 +224,7 @@ fn compile_member_access_keys() {
 
 #[test]
 fn compile_member_access_values() {
-    let compiled = compile_no_errors(
-        r#"structure S { let m = map{"a" => 1}  let v = m.values }"#,
-    );
+    let compiled = compile_no_errors(r#"structure S { let m = map{"a" => 1}  let v = m.values }"#);
     let expr = get_cell_expr(&compiled, "v");
     match &expr.kind {
         CompiledExprKind::MethodCall {
@@ -330,9 +320,7 @@ fn e2e_empty_list() {
 
 #[test]
 fn e2e_list_count() {
-    let compiled = compile_no_errors(
-        "structure S { let items = [1, 2, 3]  let n = items.count }",
-    );
+    let compiled = compile_no_errors("structure S { let items = [1, 2, 3]  let n = items.count }");
     // First evaluate 'items' to populate the ValueMap, then evaluate 'n'
     let items_expr = get_cell_expr(&compiled, "items");
     let n_expr = get_cell_expr(&compiled, "n");
@@ -348,9 +336,7 @@ fn e2e_list_count() {
 
 #[test]
 fn e2e_list_index_access() {
-    let compiled = compile_no_errors(
-        "structure S { let items = [10, 20, 30]  let x = items[1] }",
-    );
+    let compiled = compile_no_errors("structure S { let items = [10, 20, 30]  let x = items[1] }");
     let items_expr = get_cell_expr(&compiled, "items");
     let x_expr = get_cell_expr(&compiled, "x");
 
@@ -365,9 +351,8 @@ fn e2e_list_index_access() {
 
 #[test]
 fn e2e_map_index_access() {
-    let compiled = compile_no_errors(
-        r#"structure S { let m = map{"a" => 10, "b" => 20}  let x = m["a"] }"#,
-    );
+    let compiled =
+        compile_no_errors(r#"structure S { let m = map{"a" => 10, "b" => 20}  let x = m["a"] }"#);
     let m_expr = get_cell_expr(&compiled, "m");
     let x_expr = get_cell_expr(&compiled, "x");
 
@@ -382,9 +367,7 @@ fn e2e_map_index_access() {
 
 #[test]
 fn e2e_list_sum() {
-    let compiled = compile_no_errors(
-        "structure S { let items = [1, 2, 3]  let s = items.sum }",
-    );
+    let compiled = compile_no_errors("structure S { let items = [1, 2, 3]  let s = items.sum }");
     let items_expr = get_cell_expr(&compiled, "items");
     let s_expr = get_cell_expr(&compiled, "s");
 

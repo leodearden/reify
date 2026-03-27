@@ -58,7 +58,9 @@ purpose mfg_ready(subject : Structure) {
     engine.activate_purpose("mfg_ready", "Bracket");
 
     // After activation: should have more constraints
-    let snapshot = engine.snapshot().expect("should have snapshot after activate");
+    let snapshot = engine
+        .snapshot()
+        .expect("should have snapshot after activate");
     let constraints_after = snapshot.graph.constraints.len();
     assert!(
         constraints_after > constraints_before,
@@ -71,7 +73,9 @@ purpose mfg_ready(subject : Structure) {
     engine.deactivate_purpose("mfg_ready");
 
     // After deactivation: constraints should be back to original count
-    let snapshot = engine.snapshot().expect("should have snapshot after deactivate");
+    let snapshot = engine
+        .snapshot()
+        .expect("should have snapshot after deactivate");
     let constraints_final = snapshot.graph.constraints.len();
     assert_eq!(
         constraints_final, constraints_before,
@@ -198,7 +202,10 @@ purpose manufacturing_ready(subject : Structure) {
     // Count initial constraints
     let snapshot = engine.snapshot().expect("should have snapshot");
     let initial_constraints = snapshot.graph.constraints.len();
-    assert!(initial_constraints >= 2, "Bracket has at least 2 constraints");
+    assert!(
+        initial_constraints >= 2,
+        "Bracket has at least 2 constraints"
+    );
 
     // Activate purpose
     engine.activate_purpose("manufacturing_ready", "Bracket");

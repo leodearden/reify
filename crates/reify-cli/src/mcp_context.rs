@@ -53,7 +53,9 @@ impl CliToolContext {
     /// the inner guard and continue operating on the (potentially inconsistent
     /// but non-crashed) state.
     fn lock_state(&self) -> MutexGuard<'_, CliState> {
-        self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// Load a .ri file: read from disk, parse, compile, eval.
@@ -65,8 +67,7 @@ impl CliToolContext {
             .and_then(|s| s.to_str())
             .unwrap_or("unnamed");
 
-        let parsed =
-            reify_syntax::parse(&source, reify_types::ModulePath::single(module_name));
+        let parsed = reify_syntax::parse(&source, reify_types::ModulePath::single(module_name));
 
         if !parsed.errors.is_empty() {
             let msgs: Vec<String> = parsed.errors.iter().map(|e| e.message.clone()).collect();
@@ -173,14 +174,14 @@ impl ReifyToolContext for CliToolContext {
 
             for diag in &compiled.diagnostics {
                 // Use the first label's span if available, otherwise default to (1,1)
-                let (line, column, end_line, end_column) =
-                    if let Some(label) = diag.labels.first() {
-                        let (l, c) = byte_offset_to_line_col(source, label.span.start);
-                        let (el, ec) = byte_offset_to_line_col(source, label.span.end);
-                        (l, c, el, ec)
-                    } else {
-                        (1, 1, 1, 1)
-                    };
+                let (line, column, end_line, end_column) = if let Some(label) = diag.labels.first()
+                {
+                    let (l, c) = byte_offset_to_line_col(source, label.span.start);
+                    let (el, ec) = byte_offset_to_line_col(source, label.span.end);
+                    (l, c, el, ec)
+                } else {
+                    (1, 1, 1, 1)
+                };
                 result.push(DiagnosticInfo {
                     file_path: file_path.clone(),
                     line,
@@ -368,8 +369,7 @@ impl ReifyToolContext for CliToolContext {
             .and_then(|s| s.to_str())
             .unwrap_or("unnamed");
 
-        let parsed =
-            reify_syntax::parse(content, reify_types::ModulePath::single(module_name));
+        let parsed = reify_syntax::parse(content, reify_types::ModulePath::single(module_name));
 
         if !parsed.errors.is_empty() {
             // Parse failed — return failure WITHOUT modifying any state.
@@ -418,13 +418,11 @@ impl ReifyToolContext for CliToolContext {
         }
 
         // Parse cell_id: "Entity.member"
-        let (entity, member) = cell_id
-            .split_once('.')
-            .ok_or_else(|| {
-                ToolError::InvalidParams(format!(
-                    "cell_id must be 'Entity.member' format, got: {cell_id}"
-                ))
-            })?;
+        let (entity, member) = cell_id.split_once('.').ok_or_else(|| {
+            ToolError::InvalidParams(format!(
+                "cell_id must be 'Entity.member' format, got: {cell_id}"
+            ))
+        })?;
 
         let cell_id_obj = reify_types::ValueCellId::new(entity, member);
 
@@ -449,9 +447,8 @@ impl ReifyToolContext for CliToolContext {
             }
         }
 
-        let ty = cell_type.ok_or_else(|| {
-            ToolError::InvalidParams(format!("cell not found: {}", cell_id_obj))
-        })?;
+        let ty = cell_type
+            .ok_or_else(|| ToolError::InvalidParams(format!("cell not found: {}", cell_id_obj)))?;
 
         // Construct the appropriate Value based on the cell's type
         let new_value = match &ty {
@@ -498,8 +495,7 @@ impl ReifyToolContext for CliToolContext {
                 .and_then(|s| s.to_str())
                 .unwrap_or("unnamed");
 
-            let parsed =
-                reify_syntax::parse(&source, reify_types::ModulePath::single(module_name));
+            let parsed = reify_syntax::parse(&source, reify_types::ModulePath::single(module_name));
 
             if parsed.errors.is_empty() {
                 let compiled = reify_compiler::compile(&parsed);
@@ -570,12 +566,7 @@ impl ReifyToolContext for CliToolContext {
         Ok(false)
     }
 
-    fn navigate_to_source(
-        &self,
-        _file: &str,
-        _line: u32,
-        _column: u32,
-    ) -> Result<bool, ToolError> {
+    fn navigate_to_source(&self, _file: &str, _line: u32, _column: u32) -> Result<bool, ToolError> {
         Ok(false)
     }
 }

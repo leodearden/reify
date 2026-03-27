@@ -134,11 +134,7 @@ pub fn convert_severity(severity: Severity) -> DiagnosticSeverity {
 }
 
 /// Convert a Reify Diagnostic to an LSP Diagnostic.
-pub fn convert_diagnostic(
-    diag: &Diagnostic,
-    source: &str,
-    uri: &Url,
-) -> lsp_types::Diagnostic {
+pub fn convert_diagnostic(diag: &Diagnostic, source: &str, uri: &Url) -> lsp_types::Diagnostic {
     let range = if let Some(first_label) = diag.labels.first() {
         span_to_range(source, first_label.span)
     } else {
@@ -176,11 +172,7 @@ pub fn convert_diagnostic(
 }
 
 /// Convert a ParseError to an LSP Diagnostic.
-pub fn convert_parse_error(
-    err: &ParseError,
-    source: &str,
-    _uri: &Url,
-) -> lsp_types::Diagnostic {
+pub fn convert_parse_error(err: &ParseError, source: &str, _uri: &Url) -> lsp_types::Diagnostic {
     lsp_types::Diagnostic {
         range: span_to_range(source, err.span),
         severity: Some(DiagnosticSeverity::ERROR),
@@ -242,10 +234,7 @@ mod tests {
     #[test]
     fn span_to_range_basic() {
         let source = "first\nsecond\nthird";
-        let span = SourceSpan {
-            start: 6,
-            end: 12,
-        }; // "second"
+        let span = SourceSpan { start: 6, end: 12 }; // "second"
         let range = span_to_range(source, span);
         assert_eq!(range.start, Position::new(1, 0));
         assert_eq!(range.end, Position::new(1, 6));
@@ -432,7 +421,10 @@ mod tests {
     #[test]
     fn position_to_offset_past_end() {
         let source = "hi";
-        assert_eq!(position_to_offset(source, Position::new(5, 0)), source.len());
+        assert_eq!(
+            position_to_offset(source, Position::new(5, 0)),
+            source.len()
+        );
     }
 
     #[test]

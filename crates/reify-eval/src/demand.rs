@@ -141,7 +141,12 @@ mod tests {
         let e = "M";
         // Build minimal graph: one standalone constraint with literal expr (no deps)
         let template = TopologyTemplateBuilder::new(e)
-            .constraint(e, 0, None, CompiledExpr::literal(Value::Bool(true), Type::Bool))
+            .constraint(
+                e,
+                0,
+                None,
+                CompiledExpr::literal(Value::Bool(true), Type::Bool),
+            )
             .build();
         let graph = EvaluationGraph::from_templates(&[template]);
 
@@ -151,7 +156,10 @@ mod tests {
         reg.rebuild_cone(&graph);
 
         // After rebuild, the demanded node should be in the cone
-        assert!(reg.is_demanded(&node), "add_demand node should be demanded after rebuild_cone");
+        assert!(
+            reg.is_demanded(&node),
+            "add_demand node should be demanded after rebuild_cone"
+        );
     }
 
     #[test]
@@ -162,7 +170,12 @@ mod tests {
 
         let e = "M";
         let template = TopologyTemplateBuilder::new(e)
-            .constraint(e, 0, None, CompiledExpr::literal(Value::Bool(true), Type::Bool))
+            .constraint(
+                e,
+                0,
+                None,
+                CompiledExpr::literal(Value::Bool(true), Type::Bool),
+            )
             .build();
         let graph = EvaluationGraph::from_templates(&[template]);
 
@@ -172,14 +185,24 @@ mod tests {
         // Add → rebuild → verify demanded
         reg.add_demand(node.clone());
         reg.rebuild_cone(&graph);
-        assert!(reg.is_demanded(&node), "node should be demanded after add + rebuild");
+        assert!(
+            reg.is_demanded(&node),
+            "node should be demanded after add + rebuild"
+        );
 
         // Remove → rebuild → verify NOT demanded
         reg.remove_demand(&node);
         reg.rebuild_cone(&graph);
-        assert!(!reg.is_demanded(&node), "node should not be demanded after remove + rebuild");
+        assert!(
+            !reg.is_demanded(&node),
+            "node should not be demanded after remove + rebuild"
+        );
         // Cone should be empty (no other demands exist)
-        assert_eq!(reg.cone_size(), 0, "demand cone should be empty after removing only demand");
+        assert_eq!(
+            reg.cone_size(),
+            0,
+            "demand cone should be empty after removing only demand"
+        );
     }
 
     #[test]
@@ -190,7 +213,12 @@ mod tests {
 
         let e = "M";
         let template = TopologyTemplateBuilder::new(e)
-            .constraint(e, 0, None, CompiledExpr::literal(Value::Bool(true), Type::Bool))
+            .constraint(
+                e,
+                0,
+                None,
+                CompiledExpr::literal(Value::Bool(true), Type::Bool),
+            )
             .build();
         let graph = EvaluationGraph::from_templates(&[template]);
 
@@ -200,10 +228,17 @@ mod tests {
         reg.add_demand(node.clone()); // duplicate add
         reg.rebuild_cone(&graph);
 
-        assert!(reg.is_demanded(&node), "node should be demanded after duplicate add + rebuild");
+        assert!(
+            reg.is_demanded(&node),
+            "node should be demanded after duplicate add + rebuild"
+        );
         // Cone should contain exactly 1 node (the constraint with no deps)
         // Duplicate adds should NOT inflate internal state
-        assert_eq!(reg.cone_size(), 1, "cone should contain exactly 1 node, not inflated by duplicate adds");
+        assert_eq!(
+            reg.cone_size(),
+            1,
+            "cone should contain exactly 1 node, not inflated by duplicate adds"
+        );
     }
 
     #[test]
@@ -319,33 +354,42 @@ mod tests {
         // Param 'a' (auto) and param 'b' (regular)
         for name in &["a", "b"] {
             let id = ValueCellId::new(e, *name);
-            graph.value_cells.insert(id.clone(), ValueCellNode {
-                id: id.clone(),
-                kind: ValueCellKind::Param,
-                cell_type: Type::Real,
-                default_expr: Some(CompiledExpr::literal(Value::Real(1.0), Type::Real)),
-                content_hash: ContentHash::of_str(name),
-            });
+            graph.value_cells.insert(
+                id.clone(),
+                ValueCellNode {
+                    id: id.clone(),
+                    kind: ValueCellKind::Param,
+                    cell_type: Type::Real,
+                    default_expr: Some(CompiledExpr::literal(Value::Real(1.0), Type::Real)),
+                    content_hash: ContentHash::of_str(name),
+                },
+            );
         }
 
         // Constraint C0 reading 'a'
         let c0_id = ConstraintNodeId::new(e, 0);
-        graph.constraints.insert(c0_id.clone(), crate::graph::ConstraintNodeData {
-            id: c0_id.clone(),
-            label: None,
-            expr: CompiledExpr::value_ref(ValueCellId::new(e, "a"), Type::Real),
-            content_hash: ContentHash::of_str("c0"),
-        });
+        graph.constraints.insert(
+            c0_id.clone(),
+            crate::graph::ConstraintNodeData {
+                id: c0_id.clone(),
+                label: None,
+                expr: CompiledExpr::value_ref(ValueCellId::new(e, "a"), Type::Real),
+                content_hash: ContentHash::of_str("c0"),
+            },
+        );
 
         // Resolution R0 with auto_params=['a']
         let r0_id = ResolutionNodeId::new(e, 0);
-        graph.resolutions.insert(r0_id.clone(), ResolutionNodeData {
-            id: r0_id.clone(),
-            scope: e.to_string(),
-            auto_params: vec![ValueCellId::new(e, "a")],
-            constraint_deps: vec![c0_id],
-            content_hash: ContentHash::of_str("r0"),
-        });
+        graph.resolutions.insert(
+            r0_id.clone(),
+            ResolutionNodeData {
+                id: r0_id.clone(),
+                scope: e.to_string(),
+                auto_params: vec![ValueCellId::new(e, "a")],
+                constraint_deps: vec![c0_id],
+                content_hash: ContentHash::of_str("r0"),
+            },
+        );
 
         let r0_node = NodeId::Resolution(r0_id);
         let mut reg = DemandRegistry::new();
@@ -385,8 +429,18 @@ mod tests {
         );
 
         let template = TopologyTemplateBuilder::new(e)
-            .param(e, "a", Type::Real, Some(CompiledExpr::literal(Value::Real(1.0), Type::Real)))
-            .param(e, "b", Type::Real, Some(CompiledExpr::literal(Value::Real(2.0), Type::Real)))
+            .param(
+                e,
+                "a",
+                Type::Real,
+                Some(CompiledExpr::literal(Value::Real(1.0), Type::Real)),
+            )
+            .param(
+                e,
+                "b",
+                Type::Real,
+                Some(CompiledExpr::literal(Value::Real(2.0), Type::Real)),
+            )
             .let_binding(e, "c", Type::Real, c_expr)
             .constraint(e, 0, None, c0_expr)
             .build();

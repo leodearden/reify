@@ -234,10 +234,7 @@ mod tests {
 
     #[test]
     fn collect_refs_from_value_ref() {
-        let expr = CompiledExpr::value_ref(
-            ValueCellId::new("Part", "x"),
-            Type::length(),
-        );
+        let expr = CompiledExpr::value_ref(ValueCellId::new("Part", "x"), Type::length());
         let mut refs = HashSet::new();
         collect_value_refs(&expr, &mut refs);
         assert_eq!(refs.len(), 1);

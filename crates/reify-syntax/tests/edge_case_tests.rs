@@ -118,8 +118,7 @@ fn imported_field_preserves_inner_quotes() {
     // We can't easily construct such a path through the grammar (the grammar
     // only allows one string literal), but the fix in step-4 ensures correctness
     // at the code level.
-    let source =
-        r#"field def data : Point3 -> Scalar { source = imported { "data.vtu" } }"#;
+    let source = r#"field def data : Point3 -> Scalar { source = imported { "data.vtu" } }"#;
     let (decls, errors) = parse_decls(source);
     assert!(errors.is_empty(), "parse errors: {:?}", errors);
 

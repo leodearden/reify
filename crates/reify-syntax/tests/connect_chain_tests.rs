@@ -14,7 +14,8 @@ fn parse_decls(source: &str) -> (Vec<Declaration>, Vec<ParseError>) {
 
 #[test]
 fn parse_connect_simple() {
-    let (decls, errors) = parse_decls("structure S { port a : out T  port b : in T  connect a -> b }");
+    let (decls, errors) =
+        parse_decls("structure S { port a : out T  port b : in T  connect a -> b }");
     assert!(errors.is_empty(), "parse errors: {:?}", errors);
     assert_eq!(decls.len(), 1);
 
@@ -24,7 +25,12 @@ fn parse_connect_simple() {
     };
 
     // Two ports + one connect = 3 members
-    assert_eq!(structure.members.len(), 3, "expected 3 members, got {:?}", structure.members);
+    assert_eq!(
+        structure.members.len(),
+        3,
+        "expected 3 members, got {:?}",
+        structure.members
+    );
 
     assert!(matches!(&structure.members[0], MemberDecl::Port(_)));
     assert!(matches!(&structure.members[1], MemberDecl::Port(_)));
@@ -112,9 +118,8 @@ fn parse_connect_with_port_mapping() {
 
 #[test]
 fn parse_connect_bidirectional() {
-    let (decls, errors) = parse_decls(
-        "structure S { port a : bidi T  port b : bidi T  connect a <-> b }",
-    );
+    let (decls, errors) =
+        parse_decls("structure S { port a : bidi T  port b : bidi T  connect a <-> b }");
     assert!(errors.is_empty(), "parse errors: {:?}", errors);
 
     let structure = match &decls[0] {
@@ -226,14 +231,24 @@ fn parse_connect_mixed_params_and_mappings() {
 
     assert_eq!(connect.connector_type.as_deref(), Some("BoltSet"));
 
-    assert_eq!(connect.params.len(), 1, "expected 1 param, got {:?}", connect.params);
+    assert_eq!(
+        connect.params.len(),
+        1,
+        "expected 1 param, got {:?}",
+        connect.params
+    );
     assert_eq!(connect.params[0].0, "grade");
     match &connect.params[0].1.kind {
         ExprKind::NumberLiteral(n) => assert!((*n - 8.8).abs() < 1e-10, "expected 8.8, got {}", n),
         other => panic!("expected NumberLiteral(8.8), got {:?}", other),
     }
 
-    assert_eq!(connect.port_mappings.len(), 1, "expected 1 port_mapping, got {:?}", connect.port_mappings);
+    assert_eq!(
+        connect.port_mappings.len(),
+        1,
+        "expected 1 port_mapping, got {:?}",
+        connect.port_mappings
+    );
     assert_eq!(connect.port_mappings[0].0, "shaft");
     assert_eq!(connect.port_mappings[0].1, "input_bore");
 }
@@ -259,7 +274,12 @@ fn parse_connect_mixed_multiple_entries() {
 
     assert_eq!(connect.connector_type.as_deref(), Some("BoltSet"));
 
-    assert_eq!(connect.params.len(), 2, "expected 2 params, got {:?}", connect.params);
+    assert_eq!(
+        connect.params.len(),
+        2,
+        "expected 2 params, got {:?}",
+        connect.params
+    );
     assert_eq!(connect.params[0].0, "grade");
     match &connect.params[0].1.kind {
         ExprKind::NumberLiteral(n) => assert!((*n - 8.8).abs() < 1e-10),
@@ -268,13 +288,25 @@ fn parse_connect_mixed_multiple_entries() {
     assert_eq!(connect.params[1].0, "thickness");
     match &connect.params[1].1.kind {
         ExprKind::QuantityLiteral { value, unit } => {
-            assert!((value - 2.0).abs() < f64::EPSILON, "expected value 2.0, got {}", value);
+            assert!(
+                (value - 2.0).abs() < f64::EPSILON,
+                "expected value 2.0, got {}",
+                value
+            );
             assert_eq!(unit, "mm");
         }
-        other => panic!("expected QuantityLiteral {{ value: 2.0, unit: \"mm\" }}, got {:?}", other),
+        other => panic!(
+            "expected QuantityLiteral {{ value: 2.0, unit: \"mm\" }}, got {:?}",
+            other
+        ),
     }
 
-    assert_eq!(connect.port_mappings.len(), 2, "expected 2 port_mappings, got {:?}", connect.port_mappings);
+    assert_eq!(
+        connect.port_mappings.len(),
+        2,
+        "expected 2 port_mappings, got {:?}",
+        connect.port_mappings
+    );
     assert_eq!(connect.port_mappings[0].0, "shaft");
     assert_eq!(connect.port_mappings[0].1, "bore");
     assert_eq!(connect.port_mappings[1].0, "flange");
@@ -302,14 +334,24 @@ fn parse_connect_trailing_comma() {
 
     assert_eq!(connect.connector_type.as_deref(), Some("BoltSet"));
 
-    assert_eq!(connect.params.len(), 1, "expected 1 param, got {:?}", connect.params);
+    assert_eq!(
+        connect.params.len(),
+        1,
+        "expected 1 param, got {:?}",
+        connect.params
+    );
     assert_eq!(connect.params[0].0, "grade");
     match &connect.params[0].1.kind {
         ExprKind::NumberLiteral(n) => assert!((*n - 8.8).abs() < 1e-10, "expected 8.8, got {}", n),
         other => panic!("expected NumberLiteral(8.8), got {:?}", other),
     }
 
-    assert_eq!(connect.port_mappings.len(), 1, "expected 1 port_mapping, got {:?}", connect.port_mappings);
+    assert_eq!(
+        connect.port_mappings.len(),
+        1,
+        "expected 1 port_mapping, got {:?}",
+        connect.port_mappings
+    );
     assert_eq!(connect.port_mappings[0].0, "shaft");
     assert_eq!(connect.port_mappings[0].1, "input_bore");
 }
@@ -335,14 +377,24 @@ fn parse_connect_mapping_before_param() {
 
     assert_eq!(connect.connector_type.as_deref(), Some("BoltSet"));
 
-    assert_eq!(connect.params.len(), 1, "expected 1 param, got {:?}", connect.params);
+    assert_eq!(
+        connect.params.len(),
+        1,
+        "expected 1 param, got {:?}",
+        connect.params
+    );
     assert_eq!(connect.params[0].0, "grade");
     match &connect.params[0].1.kind {
         ExprKind::NumberLiteral(n) => assert!((*n - 8.8).abs() < 1e-10, "expected 8.8, got {}", n),
         other => panic!("expected NumberLiteral(8.8), got {:?}", other),
     }
 
-    assert_eq!(connect.port_mappings.len(), 1, "expected 1 port_mapping, got {:?}", connect.port_mappings);
+    assert_eq!(
+        connect.port_mappings.len(),
+        1,
+        "expected 1 port_mapping, got {:?}",
+        connect.port_mappings
+    );
     assert_eq!(connect.port_mappings[0].0, "shaft");
     assert_eq!(connect.port_mappings[0].1, "input_bore");
 }
@@ -358,7 +410,11 @@ fn connect_body_valid_no_spurious_errors() {
     let (decls, errors) = parse_decls(
         "structure S { port a : out T  port b : in T  connect a -> b : BoltSet { grade = 8.8, shaft -> bore } }",
     );
-    assert!(errors.is_empty(), "expected no parse errors for valid connect body, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "expected no parse errors for valid connect body, got: {:?}",
+        errors
+    );
 
     let structure = match &decls[0] {
         Declaration::Structure(s) => s,
@@ -369,9 +425,19 @@ fn connect_body_valid_no_spurious_errors() {
         other => panic!("expected Connect, got {:?}", other),
     };
     assert_eq!(connect.connector_type.as_deref(), Some("BoltSet"));
-    assert_eq!(connect.params.len(), 1, "expected 1 param, got {:?}", connect.params);
+    assert_eq!(
+        connect.params.len(),
+        1,
+        "expected 1 param, got {:?}",
+        connect.params
+    );
     assert_eq!(connect.params[0].0, "grade");
-    assert_eq!(connect.port_mappings.len(), 1, "expected 1 port_mapping, got {:?}", connect.port_mappings);
+    assert_eq!(
+        connect.port_mappings.len(),
+        1,
+        "expected 1 port_mapping, got {:?}",
+        connect.port_mappings
+    );
     assert_eq!(connect.port_mappings[0].0, "shaft");
     assert_eq!(connect.port_mappings[0].1, "bore");
 }
@@ -385,9 +451,8 @@ fn connect_body_malformed_mapping_emits_diagnostic() {
     // descendants). check_and_lower! catches this before lower_connect_body
     // is reached, emitting "invalid connect: ...".
     // Body-level diagnostics are tested directly in ts_parser::tests.
-    let (_decls, errors) = parse_decls(
-        "structure S { port a : out T  port b : in T  connect a -> b { shaft -> } }",
-    );
+    let (_decls, errors) =
+        parse_decls("structure S { port a : out T  port b : in T  connect a -> b { shaft -> } }");
     assert!(
         !errors.is_empty(),
         "expected at least one parse error for malformed port mapping, got none"
@@ -431,9 +496,8 @@ fn connect_body_error_node_emits_diagnostic() {
     // propagates from descendants). check_and_lower! catches this before
     // lower_connect_body is reached, emitting "invalid connect: ...".
     // Body-level diagnostics are tested directly in ts_parser::tests.
-    let (_decls, errors) = parse_decls(
-        "structure S { port a : out T  port b : in T  connect a -> b { >= } }",
-    );
+    let (_decls, errors) =
+        parse_decls("structure S { port a : out T  port b : in T  connect a -> b { >= } }");
     assert!(
         !errors.is_empty(),
         "expected at least one parse error for invalid connect body syntax, got none"
@@ -453,9 +517,7 @@ fn connect_statement_malformed_outer_emits_diagnostic() {
     // connect_statement node with has_error() == true (MISSING "right" field).
     // Without check_and_lower!, lower_member calls lower_connect which silently
     // returns None via `?` on the missing right field — no diagnostic is emitted.
-    let (_decls, errors) = parse_decls(
-        "structure S { port a : out T  connect a -> }",
-    );
+    let (_decls, errors) = parse_decls("structure S { port a : out T  connect a -> }");
     assert!(
         !errors.is_empty(),
         "expected at least one parse error for malformed connect statement (missing right endpoint), got none"
@@ -479,9 +541,8 @@ fn connect_statement_valid_outer_no_spurious_errors() {
     // wrapping the connect_statement arm with check_and_lower!. This guards
     // against check_and_lower! accidentally triggering false positives on
     // valid connect statements where has_error() is false.
-    let (decls, errors) = parse_decls(
-        "structure S { port a : out T  port b : in T  connect a -> b }",
-    );
+    let (decls, errors) =
+        parse_decls("structure S { port a : out T  port b : in T  connect a -> b }");
     assert!(
         errors.is_empty(),
         "expected no parse errors for valid connect statement, got: {:?}",
@@ -510,9 +571,8 @@ fn connect_statement_valid_outer_no_spurious_errors() {
 
 #[test]
 fn parse_connect_reverse() {
-    let (decls, errors) = parse_decls(
-        "structure S { port a : out T  port b : in T  connect a <- b }",
-    );
+    let (decls, errors) =
+        parse_decls("structure S { port a : out T  port b : in T  connect a <- b }");
     assert!(errors.is_empty(), "parse errors: {:?}", errors);
 
     let structure = match &decls[0] {
@@ -561,4 +621,3 @@ fn connect_body_with_comment_no_spurious_errors() {
         errors
     );
 }
-

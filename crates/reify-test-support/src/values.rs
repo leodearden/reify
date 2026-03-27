@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use reify_types::{
-    dimension::{DimensionVector, FORCE},
     ConstraintNodeId, DeterminacyState, Type, Value, ValueCellId,
+    dimension::{DimensionVector, FORCE},
 };
 
 // --- Range value constructors ---
@@ -236,10 +236,7 @@ pub fn assert_value_approx_impl(left: &Value, right: &Value, tol: f64, file: &st
                 },
             ) => {
                 if da != db {
-                    return Err(format!(
-                        "{path}: dimension mismatch: {:?} vs {:?}",
-                        da, db
-                    ));
+                    return Err(format!("{path}: dimension mismatch: {:?} vs {:?}", da, db));
                 }
                 if (a - b).abs() > tol {
                     return Err(format!(
@@ -293,9 +290,7 @@ pub fn assert_value_approx_impl(left: &Value, right: &Value, tol: f64, file: &st
             }
             _ => {
                 if left != right {
-                    return Err(format!(
-                        "{path}: values differ: {left:?} vs {right:?}"
-                    ));
+                    return Err(format!("{path}: values differ: {left:?} vs {right:?}"));
                 }
                 Ok(())
             }
@@ -334,9 +329,15 @@ pub fn vec3_unit(x: f64, y: f64, z: f64) -> Value {
 /// Arguments are given row-major: `matrix3x3(r0c0, r0c1, r0c2, r1c0, ...)`.
 #[allow(clippy::too_many_arguments)]
 pub fn matrix3x3(
-    r0c0: f64, r0c1: f64, r0c2: f64,
-    r1c0: f64, r1c1: f64, r1c2: f64,
-    r2c0: f64, r2c1: f64, r2c2: f64,
+    r0c0: f64,
+    r0c1: f64,
+    r0c2: f64,
+    r1c0: f64,
+    r1c1: f64,
+    r1c2: f64,
+    r2c0: f64,
+    r2c1: f64,
+    r2c2: f64,
 ) -> Value {
     Value::Matrix(vec![
         vec![Value::Real(r0c0), Value::Real(r0c1), Value::Real(r0c2)],
@@ -456,27 +457,48 @@ impl Default for TypeAliasMap {
 pub fn common_type_aliases() -> HashMap<String, Type> {
     let pressure_dim = FORCE.div(&DimensionVector::AREA);
     let velocity_dim = DimensionVector::LENGTH.div(&DimensionVector::TIME);
-    let acceleration_dim = DimensionVector::LENGTH.div(&DimensionVector::TIME.mul(&DimensionVector::TIME));
+    let acceleration_dim =
+        DimensionVector::LENGTH.div(&DimensionVector::TIME.mul(&DimensionVector::TIME));
 
     TypeAliasMap::new()
-        .alias("Pressure", Type::Scalar { dimension: pressure_dim })
-        .alias("Velocity", Type::Scalar { dimension: velocity_dim })
-        .alias("Acceleration", Type::Scalar { dimension: acceleration_dim })
+        .alias(
+            "Pressure",
+            Type::Scalar {
+                dimension: pressure_dim,
+            },
+        )
+        .alias(
+            "Velocity",
+            Type::Scalar {
+                dimension: velocity_dim,
+            },
+        )
+        .alias(
+            "Acceleration",
+            Type::Scalar {
+                dimension: acceleration_dim,
+            },
+        )
         .build()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
     use reify_types::{DeterminacyState, Value};
+    use std::collections::HashMap;
 
     // step-1: failing tests for range value constructors
     #[test]
     fn range_inclusive_creates_both_bounds_inclusive() {
         let v = range_inclusive(mm(10.0), mm(100.0));
         match v {
-            Value::Range { lower, upper, lower_inclusive, upper_inclusive } => {
+            Value::Range {
+                lower,
+                upper,
+                lower_inclusive,
+                upper_inclusive,
+            } => {
                 assert!(lower.is_some(), "lower should be Some");
                 assert!(upper.is_some(), "upper should be Some");
                 assert!(lower_inclusive, "lower_inclusive should be true");
@@ -492,7 +514,12 @@ mod tests {
     fn range_exclusive_creates_both_bounds_exclusive() {
         let v = range_exclusive(mm(10.0), mm(100.0));
         match v {
-            Value::Range { lower, upper, lower_inclusive, upper_inclusive } => {
+            Value::Range {
+                lower,
+                upper,
+                lower_inclusive,
+                upper_inclusive,
+            } => {
                 assert!(lower.is_some(), "lower should be Some");
                 assert!(upper.is_some(), "upper should be Some");
                 assert!(!lower_inclusive, "lower_inclusive should be false");
@@ -506,11 +533,19 @@ mod tests {
     fn range_at_least_creates_lower_bound_only() {
         let v = range_at_least(mm(5.0));
         match v {
-            Value::Range { lower, upper, lower_inclusive, upper_inclusive } => {
+            Value::Range {
+                lower,
+                upper,
+                lower_inclusive,
+                upper_inclusive,
+            } => {
                 assert!(lower.is_some(), "lower should be Some");
                 assert!(upper.is_none(), "upper should be None");
                 assert!(lower_inclusive, "lower_inclusive should be true");
-                assert!(!upper_inclusive, "upper_inclusive should be false (no upper bound)");
+                assert!(
+                    !upper_inclusive,
+                    "upper_inclusive should be false (no upper bound)"
+                );
             }
             _ => panic!("expected Value::Range"),
         }
@@ -520,10 +555,18 @@ mod tests {
     fn range_at_most_creates_upper_bound_only() {
         let v = range_at_most(mm(50.0));
         match v {
-            Value::Range { lower, upper, lower_inclusive, upper_inclusive } => {
+            Value::Range {
+                lower,
+                upper,
+                lower_inclusive,
+                upper_inclusive,
+            } => {
                 assert!(lower.is_none(), "lower should be None");
                 assert!(upper.is_some(), "upper should be Some");
-                assert!(!lower_inclusive, "lower_inclusive should be false (no lower bound)");
+                assert!(
+                    !lower_inclusive,
+                    "lower_inclusive should be false (no lower bound)"
+                );
                 assert!(upper_inclusive, "upper_inclusive should be true");
             }
             _ => panic!("expected Value::Range"),
@@ -534,7 +577,12 @@ mod tests {
     fn range_half_open_creates_lower_inclusive_upper_exclusive() {
         let v = range_half_open(mm(0.0), mm(100.0));
         match v {
-            Value::Range { lower, upper, lower_inclusive, upper_inclusive } => {
+            Value::Range {
+                lower,
+                upper,
+                lower_inclusive,
+                upper_inclusive,
+            } => {
                 assert!(lower.is_some(), "lower should be Some");
                 assert!(upper.is_some(), "upper should be Some");
                 assert!(lower_inclusive, "lower_inclusive should be true");
@@ -549,7 +597,10 @@ mod tests {
     fn kelvin_creates_temperature_scalar() {
         let v = kelvin(300.0);
         match v {
-            Value::Scalar { si_value, dimension } => {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
                 assert!((si_value - 300.0).abs() < 1e-9, "si_value should be 300.0");
                 assert_eq!(dimension, DimensionVector::TEMPERATURE);
             }
@@ -562,7 +613,10 @@ mod tests {
         let v0 = celsius(0.0);
         let v100 = celsius(100.0);
         match v0 {
-            Value::Scalar { si_value, dimension } => {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
                 assert!((si_value - 273.15).abs() < 1e-9, "0°C should be 273.15 K");
                 assert_eq!(dimension, DimensionVector::TEMPERATURE);
             }
@@ -581,15 +635,26 @@ mod tests {
         let v_freeze = fahrenheit(32.0);
         let v_boil = fahrenheit(212.0);
         match v_freeze {
-            Value::Scalar { si_value, dimension } => {
-                assert!((si_value - 273.15).abs() < 1e-9, "32°F should be 273.15 K, got {}", si_value);
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
+                assert!(
+                    (si_value - 273.15).abs() < 1e-9,
+                    "32°F should be 273.15 K, got {}",
+                    si_value
+                );
                 assert_eq!(dimension, DimensionVector::TEMPERATURE);
             }
             _ => panic!("expected Value::Scalar"),
         }
         match v_boil {
             Value::Scalar { si_value, .. } => {
-                assert!((si_value - 373.15).abs() < 1e-9, "212°F should be 373.15 K, got {}", si_value);
+                assert!(
+                    (si_value - 373.15).abs() < 1e-9,
+                    "212°F should be 373.15 K, got {}",
+                    si_value
+                );
             }
             _ => panic!("expected Value::Scalar"),
         }
@@ -639,9 +704,7 @@ mod tests {
     fn snapshot_values_builder_auto_val() {
         let id = vcid("Entity", "param");
         let snapshot: HashMap<ValueCellId, (Value, DeterminacyState)> =
-            SnapshotValuesBuilder::new()
-                .auto_val(id.clone())
-                .build();
+            SnapshotValuesBuilder::new().auto_val(id.clone()).build();
         assert_eq!(snapshot.len(), 1);
         let (val, state) = &snapshot[&id];
         assert_eq!(*val, Value::Undef);
@@ -727,7 +790,9 @@ mod tests {
     #[test]
     fn enum_val_produces_enum() {
         let v = enum_val("Color", "Red");
-        assert!(matches!(v, Value::Enum { ref type_name, ref variant } if type_name == "Color" && variant == "Red"));
+        assert!(
+            matches!(v, Value::Enum { ref type_name, ref variant } if type_name == "Color" && variant == "Red")
+        );
     }
 
     #[test]
@@ -787,8 +852,8 @@ mod tests {
     // step-9: failing tests for TypeAliasMap builder
     #[test]
     fn type_alias_map_builder_stores_entries() {
-        use reify_types::{DimensionVector, Type};
         use reify_types::dimension::FORCE;
+        use reify_types::{DimensionVector, Type};
         let pressure_type = Type::Scalar {
             dimension: FORCE.div(&DimensionVector::AREA),
         };
@@ -814,11 +879,16 @@ mod tests {
                 // Each component should be a Value::Scalar with LENGTH dimension
                 for (i, expected_m) in [1.0, 2.0, 3.0].iter().enumerate() {
                     match &items[i] {
-                        Value::Scalar { si_value, dimension } => {
+                        Value::Scalar {
+                            si_value,
+                            dimension,
+                        } => {
                             assert!(
                                 (si_value - expected_m).abs() < 1e-12,
                                 "component {} si_value: expected {}, got {}",
-                                i, expected_m, si_value
+                                i,
+                                expected_m,
+                                si_value
                             );
                             assert_eq!(
                                 *dimension,
@@ -843,11 +913,16 @@ mod tests {
                 assert_eq!(items.len(), 3);
                 for (i, expected_m) in [0.5, -1.0, 0.0].iter().enumerate() {
                     match &items[i] {
-                        Value::Scalar { si_value, dimension } => {
+                        Value::Scalar {
+                            si_value,
+                            dimension,
+                        } => {
                             assert!(
                                 (si_value - expected_m).abs() < 1e-12,
                                 "component {} si_value: expected {}, got {}",
-                                i, expected_m, si_value
+                                i,
+                                expected_m,
+                                si_value
                             );
                             assert_eq!(
                                 *dimension,
@@ -876,7 +951,9 @@ mod tests {
                             assert!(
                                 (f - expected).abs() < 1e-12,
                                 "component {} Real: expected {}, got {}",
-                                i, expected, f
+                                i,
+                                expected,
+                                f
                             );
                         }
                         other => panic!("component {} should be Real, got {:?}", i, other),
@@ -889,19 +966,11 @@ mod tests {
 
     #[test]
     fn matrix3x3_creates_value_matrix_with_real_entries() {
-        let m = matrix3x3(
-            1.0, 0.0, 0.0,
-            0.0, 1.0, 0.0,
-            0.0, 0.0, 1.0,
-        );
+        let m = matrix3x3(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0);
         match m {
             Value::Matrix(rows) => {
                 assert_eq!(rows.len(), 3, "should have 3 rows");
-                let expected = [
-                    [1.0, 0.0, 0.0],
-                    [0.0, 1.0, 0.0],
-                    [0.0, 0.0, 1.0],
-                ];
+                let expected = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
                 for (r, row) in rows.iter().enumerate() {
                     assert_eq!(row.len(), 3, "row {} should have 3 columns", r);
                     for (c, val) in row.iter().enumerate() {
@@ -910,7 +979,10 @@ mod tests {
                                 assert!(
                                     (f - expected[r][c]).abs() < 1e-12,
                                     "matrix[{}][{}]: expected {}, got {}",
-                                    r, c, expected[r][c], f
+                                    r,
+                                    c,
+                                    expected[r][c],
+                                    f
                                 );
                             }
                             other => panic!("matrix[{}][{}] should be Real, got {:?}", r, c, other),
@@ -996,7 +1068,10 @@ mod tests {
         let aliases = common_type_aliases();
         assert!(aliases.contains_key("Pressure"), "should have Pressure");
         assert!(aliases.contains_key("Velocity"), "should have Velocity");
-        assert!(aliases.contains_key("Acceleration"), "should have Acceleration");
+        assert!(
+            aliases.contains_key("Acceleration"),
+            "should have Acceleration"
+        );
         // Pressure should be a Scalar with FORCE/AREA dimension
         match aliases["Pressure"] {
             reify_types::Type::Scalar { dimension } => {

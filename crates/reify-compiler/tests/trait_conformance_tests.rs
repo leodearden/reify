@@ -9,14 +9,22 @@ use reify_types::*;
 /// Helper: parse source and compile, returning the CompiledModule.
 fn compile_module(source: &str) -> CompiledModule {
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
     reify_compiler::compile(&parsed)
 }
 
 /// Helper: parse source and compile, returning first template + diagnostics.
 fn compile_first_template(source: &str) -> (TopologyTemplate, Vec<Diagnostic>) {
     let module = compile_module(source);
-    let template = module.templates.into_iter().next().expect("expected 1 template");
+    let template = module
+        .templates
+        .into_iter()
+        .next()
+        .expect("expected 1 template");
     (template, module.diagnostics)
 }
 
@@ -39,14 +47,23 @@ trait Fastener {
     assert_eq!(trait_def.name, "Fastener");
 
     // Should have 1 required member named "thread_pitch"
-    assert_eq!(trait_def.required_members.len(), 1, "expected 1 required member");
+    assert_eq!(
+        trait_def.required_members.len(),
+        1,
+        "expected 1 required member"
+    );
     let req = &trait_def.required_members[0];
     assert_eq!(req.name, "thread_pitch");
 
     // Requirement kind should be Param with type Scalar{LENGTH}
     match &req.kind {
         RequirementKind::Param(ty) => {
-            assert_eq!(*ty, Type::Scalar { dimension: DimensionVector::LENGTH });
+            assert_eq!(
+                *ty,
+                Type::Scalar {
+                    dimension: DimensionVector::LENGTH
+                }
+            );
         }
         other => panic!("expected RequirementKind::Param, got {:?}", other),
     }
@@ -122,7 +139,10 @@ structure def Bolt : Fastener {
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
-    assert!(!errors.is_empty(), "expected error diagnostic for missing member");
+    assert!(
+        !errors.is_empty(),
+        "expected error diagnostic for missing member"
+    );
 
     let error_msg = format!("{:?}", errors);
     assert!(
@@ -151,7 +171,10 @@ structure def S : Weighted {
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
-    assert!(!errors.is_empty(), "expected error diagnostic for type mismatch");
+    assert!(
+        !errors.is_empty(),
+        "expected error diagnostic for type mismatch"
+    );
 
     let error_msg = format!("{:?}", errors);
     assert!(
@@ -190,16 +213,25 @@ structure def S : HasSize {
     assert!(
         size_cell.is_some(),
         "expected 'size' value cell from trait default, got cells: {:?}",
-        template.value_cells.iter().map(|vc| &vc.id.member).collect::<Vec<_>>()
+        template
+            .value_cells
+            .iter()
+            .map(|vc| &vc.id.member)
+            .collect::<Vec<_>>()
     );
 
     let size_cell = size_cell.unwrap();
     assert_eq!(size_cell.kind, ValueCellKind::Param);
     assert_eq!(
         size_cell.cell_type,
-        Type::Scalar { dimension: DimensionVector::LENGTH }
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH
+        }
     );
-    assert!(size_cell.default_expr.is_some(), "expected default expression for 'size'");
+    assert!(
+        size_cell.default_expr.is_some(),
+        "expected default expression for 'size'"
+    );
 }
 
 /// Step 11: Default override — structure provides its own value, no error, only one cell.
@@ -262,7 +294,11 @@ structure def X : A + B {
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
-    assert!(errors.is_empty(), "unexpected errors for multi-trait: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "unexpected errors for multi-trait: {:?}",
+        errors
+    );
 }
 
 /// Step 17: Composition conflict — same name, different types across traits.
@@ -288,7 +324,10 @@ structure def X : A + B {
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
-    assert!(!errors.is_empty(), "expected error for conflicting requirements");
+    assert!(
+        !errors.is_empty(),
+        "expected error for conflicting requirements"
+    );
 
     let error_msg = format!("{:?}", errors);
     assert!(
@@ -327,7 +366,11 @@ structure def S : C {
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
-    assert!(errors.is_empty(), "unexpected errors for deep chain: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "unexpected errors for deep chain: {:?}",
+        errors
+    );
 }
 
 /// Step 21: Constraint from trait — default constraint is injected.
@@ -458,7 +501,11 @@ structure def Y : A + B {
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
-    assert!(errors.is_empty(), "unexpected errors when structure overrides: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "unexpected errors when structure overrides: {:?}",
+        errors
+    );
 
     // Only one 'size' value cell.
     let size_cells: Vec<_> = template
@@ -598,7 +645,10 @@ structure def S : A {
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
-    assert!(!errors.is_empty(), "expected at least 1 missing-member error");
+    assert!(
+        !errors.is_empty(),
+        "expected at least 1 missing-member error"
+    );
 
     // Exactly 1 error (not 2 from B-path and C-path to D).
     assert_eq!(
@@ -648,7 +698,11 @@ structure def S : A {
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
 
     // Exactly 1 value cell named 'x' (no duplication from diamond).
-    let x_cells: Vec<_> = template.value_cells.iter().filter(|vc| vc.id.member == "x").collect();
+    let x_cells: Vec<_> = template
+        .value_cells
+        .iter()
+        .filter(|vc| vc.id.member == "x")
+        .collect();
     assert_eq!(
         x_cells.len(),
         1,
@@ -769,7 +823,11 @@ structure def S : A {
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
 
     // Exactly 1 value cell named 'y' (let default dedup in diamond).
-    let y_cells: Vec<_> = template.value_cells.iter().filter(|vc| vc.id.member == "y").collect();
+    let y_cells: Vec<_> = template
+        .value_cells
+        .iter()
+        .filter(|vc| vc.id.member == "y")
+        .collect();
     assert_eq!(
         y_cells.len(),
         1,

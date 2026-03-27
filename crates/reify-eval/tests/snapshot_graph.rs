@@ -106,23 +106,49 @@ fn snapshot_clone_and_modify_independence() {
 #[test]
 fn snapshot_from_template_with_realizations() {
     use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
+    use reify_test_support::{
+        CompiledModuleBuilder, TopologyTemplateBuilder, gt, literal, value_ref,
+    };
     use reify_types::{CompiledExpr, ModulePath, Type};
-    use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder, gt, literal, value_ref};
     use std::collections::HashSet;
 
     let ops = vec![CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
         args: vec![
-            ("width".to_string(), CompiledExpr::literal(Value::length(0.08), Type::length())),
-            ("height".to_string(), CompiledExpr::literal(Value::length(0.10), Type::length())),
-            ("depth".to_string(), CompiledExpr::literal(Value::length(0.005), Type::length())),
+            (
+                "width".to_string(),
+                CompiledExpr::literal(Value::length(0.08), Type::length()),
+            ),
+            (
+                "height".to_string(),
+                CompiledExpr::literal(Value::length(0.10), Type::length()),
+            ),
+            (
+                "depth".to_string(),
+                CompiledExpr::literal(Value::length(0.005), Type::length()),
+            ),
         ],
     }];
 
     let template = TopologyTemplateBuilder::new("Widget")
-        .param("Widget", "width", Type::length(), Some(CompiledExpr::literal(Value::length(0.08), Type::length())))
-        .param("Widget", "height", Type::length(), Some(CompiledExpr::literal(Value::length(0.10), Type::length())))
-        .constraint("Widget", 0, None, gt(value_ref("Widget", "width"), literal(Value::length(0.0))))
+        .param(
+            "Widget",
+            "width",
+            Type::length(),
+            Some(CompiledExpr::literal(Value::length(0.08), Type::length())),
+        )
+        .param(
+            "Widget",
+            "height",
+            Type::length(),
+            Some(CompiledExpr::literal(Value::length(0.10), Type::length())),
+        )
+        .constraint(
+            "Widget",
+            0,
+            None,
+            gt(value_ref("Widget", "width"), literal(Value::length(0.0))),
+        )
         .realization("Widget", 0, ops)
         .build();
 
@@ -133,12 +159,19 @@ fn snapshot_from_template_with_realizations() {
     let snap = Snapshot::from_compiled_module(&module);
 
     // Verify node counts
-    assert_eq!(snap.graph.value_cells.len(), 2, "expected 2 value cells (width, height)");
+    assert_eq!(
+        snap.graph.value_cells.len(),
+        2,
+        "expected 2 value cells (width, height)"
+    );
     assert_eq!(snap.graph.constraints.len(), 1, "expected 1 constraint");
     assert_eq!(snap.graph.realizations.len(), 1, "expected 1 realization");
 
     // Verify the realization node
-    let r_node = snap.graph.realizations.get(&RealizationNodeId::new("Widget", 0))
+    let r_node = snap
+        .graph
+        .realizations
+        .get(&RealizationNodeId::new("Widget", 0))
         .expect("missing realization Widget#realization[0]");
     assert_eq!(r_node.id, RealizationNodeId::new("Widget", 0));
     assert_eq!(r_node.operations.len(), 1);

@@ -151,7 +151,10 @@ fn trait_member_port() {
         ty: reify_types::Type::Real,
         direction: reify_types::PortDirection::In,
     };
-    if let reify_types::TraitMember::Port { name, direction, .. } = &m {
+    if let reify_types::TraitMember::Port {
+        name, direction, ..
+    } = &m
+    {
         assert_eq!(name, "input");
         assert_eq!(*direction, reify_types::PortDirection::In);
     } else {
@@ -282,9 +285,7 @@ fn all_m5_types_exported_from_crate_root() {
         refinements: vec![],
         members: vec![],
     };
-    let _ = reify_types::TraitMember::Constraint {
-        expr: "x".into(),
-    };
+    let _ = reify_types::TraitMember::Constraint { expr: "x".into() };
     let _ = reify_types::TraitRef {
         name: "X".into(),
         type_args: vec![],

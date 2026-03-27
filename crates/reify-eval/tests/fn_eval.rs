@@ -47,11 +47,7 @@ structure S {
         .unwrap_or_else(|| panic!("value for {:?} not found in result", v_id));
     match v_val {
         reify_types::Value::Real(v) => {
-            assert!(
-                (v - 6.0).abs() < 1e-12,
-                "expected 6.0, got {}",
-                v
-            );
+            assert!((v - 6.0).abs() < 1e-12, "expected 6.0, got {}", v);
         }
         reify_types::Value::Int(v) => {
             // Int(3) + Int(3) = Int(6) is also valid

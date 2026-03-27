@@ -10,14 +10,20 @@ fn infer_value_type(v: &Value) -> Type {
         Value::Int(_) => Type::Int,
         Value::Real(_) => Type::Real,
         Value::String(_) => Type::String,
-        Value::Scalar { dimension, .. } => Type::Scalar { dimension: *dimension },
+        Value::Scalar { dimension, .. } => Type::Scalar {
+            dimension: *dimension,
+        },
         Value::Enum { type_name, .. } => Type::Enum(type_name.clone()),
         Value::List(items) => {
             let elem_ty = items.first().map(infer_value_type).unwrap_or(Type::Int);
             Type::List(Box::new(elem_ty))
         }
         Value::Set(items) => {
-            let elem_ty = items.iter().next().map(infer_value_type).unwrap_or(Type::Int);
+            let elem_ty = items
+                .iter()
+                .next()
+                .map(infer_value_type)
+                .unwrap_or(Type::Int);
             Type::Set(Box::new(elem_ty))
         }
         Value::Map(m) => {
@@ -37,30 +43,52 @@ fn infer_value_type(v: &Value) -> Type {
                 return_type: Box::new(body.result_type.clone()),
             }
         }
-        Value::Field { domain_type, codomain_type, .. } => Type::Field {
+        Value::Field {
+            domain_type,
+            codomain_type,
+            ..
+        } => Type::Field {
             domain: Box::new(domain_type.clone()),
             codomain: Box::new(codomain_type.clone()),
         },
         Value::Tensor(_) => {
-            panic!("literal() cannot infer Tensor type (rank/n/quantity). Use CompiledExpr::literal(value, type) directly.")
+            panic!(
+                "literal() cannot infer Tensor type (rank/n/quantity). Use CompiledExpr::literal(value, type) directly."
+            )
         }
-        Value::Complex { dimension, .. } => Type::complex(Type::Scalar { dimension: *dimension }),
+        Value::Complex { dimension, .. } => Type::complex(Type::Scalar {
+            dimension: *dimension,
+        }),
         Value::Matrix(_) => {
-            panic!("literal() cannot infer Matrix type. Use CompiledExpr::literal(value, type) directly.")
+            panic!(
+                "literal() cannot infer Matrix type. Use CompiledExpr::literal(value, type) directly."
+            )
         }
         Value::Point(components) => {
-            let q = components.first().map(infer_value_type).unwrap_or(Type::Real);
-            Type::Point { n: components.len(), quantity: Box::new(q) }
+            let q = components
+                .first()
+                .map(infer_value_type)
+                .unwrap_or(Type::Real);
+            Type::Point {
+                n: components.len(),
+                quantity: Box::new(q),
+            }
         }
         Value::Vector(components) => {
-            let q = components.first().map(infer_value_type).unwrap_or(Type::Real);
-            Type::Vector { n: components.len(), quantity: Box::new(q) }
+            let q = components
+                .first()
+                .map(infer_value_type)
+                .unwrap_or(Type::Real);
+            Type::Vector {
+                n: components.len(),
+                quantity: Box::new(q),
+            }
         }
         Value::Orientation { .. } => Type::Orientation(3),
         Value::Frame { .. } => Type::Frame(3),
         Value::Transform { .. } => Type::Transform(3),
         Value::Plane { .. } => Type::Bool, // placeholder — no Type::Plane yet
-        Value::Axis { .. } => Type::Bool, // placeholder — no Type::Axis yet
+        Value::Axis { .. } => Type::Bool,  // placeholder — no Type::Axis yet
         Value::BoundingBox { .. } => Type::Bool, // placeholder — no Type::BoundingBox yet
         Value::Range { .. } => Type::Bool, // placeholder
         Value::Undef => Type::Bool,
@@ -155,7 +183,10 @@ pub fn neg(operand: CompiledExpr) -> CompiledExpr {
 ///
 /// Panics if `elements` is empty — use `CompiledExpr::list_literal` directly for empty lists.
 pub fn list_expr(elements: Vec<CompiledExpr>) -> CompiledExpr {
-    assert!(!elements.is_empty(), "list_expr: use CompiledExpr::list_literal for empty lists");
+    assert!(
+        !elements.is_empty(),
+        "list_expr: use CompiledExpr::list_literal for empty lists"
+    );
     let elem_ty = elements[0].result_type.clone();
     let result_type = Type::List(Box::new(elem_ty));
     CompiledExpr::list_literal(elements, result_type)
@@ -165,7 +196,10 @@ pub fn list_expr(elements: Vec<CompiledExpr>) -> CompiledExpr {
 ///
 /// Panics if `elements` is empty — use `CompiledExpr::set_literal` directly for empty sets.
 pub fn set_expr(elements: Vec<CompiledExpr>) -> CompiledExpr {
-    assert!(!elements.is_empty(), "set_expr: use CompiledExpr::set_literal for empty sets");
+    assert!(
+        !elements.is_empty(),
+        "set_expr: use CompiledExpr::set_literal for empty sets"
+    );
     let elem_ty = elements[0].result_type.clone();
     let result_type = Type::Set(Box::new(elem_ty));
     CompiledExpr::set_literal(elements, result_type)
@@ -175,7 +209,10 @@ pub fn set_expr(elements: Vec<CompiledExpr>) -> CompiledExpr {
 ///
 /// Panics if `entries` is empty — use `CompiledExpr::map_literal` directly for empty maps.
 pub fn map_expr(entries: Vec<(CompiledExpr, CompiledExpr)>) -> CompiledExpr {
-    assert!(!entries.is_empty(), "map_expr: use CompiledExpr::map_literal for empty maps");
+    assert!(
+        !entries.is_empty(),
+        "map_expr: use CompiledExpr::map_literal for empty maps"
+    );
     let key_ty = entries[0].0.result_type.clone();
     let val_ty = entries[0].1.result_type.clone();
     let result_type = Type::Map(Box::new(key_ty), Box::new(val_ty));
@@ -260,7 +297,12 @@ pub fn method_call_expr(
 
 /// Create a field `sample` call: `std::field::sample(field, point) -> result_type`.
 pub fn sample_call(field: CompiledExpr, point: CompiledExpr, result_type: Type) -> CompiledExpr {
-    fn_call("sample", "std::field::sample", vec![field, point], result_type)
+    fn_call(
+        "sample",
+        "std::field::sample",
+        vec![field, point],
+        result_type,
+    )
 }
 
 /// Create a field `gradient` call: `std::field::gradient(field) -> result_type`.
@@ -270,7 +312,12 @@ pub fn gradient_call(field: CompiledExpr, result_type: Type) -> CompiledExpr {
 
 /// Create a field `divergence` call: `std::field::divergence(field) -> result_type`.
 pub fn divergence_call(field: CompiledExpr, result_type: Type) -> CompiledExpr {
-    fn_call("divergence", "std::field::divergence", vec![field], result_type)
+    fn_call(
+        "divergence",
+        "std::field::divergence",
+        vec![field],
+        result_type,
+    )
 }
 
 /// Create a field `curl` call: `std::field::curl(field) -> result_type`.
@@ -301,14 +348,17 @@ pub fn lambda_expr(params: Vec<(&str, Type)>, body: CompiledExpr) -> CompiledExp
 
 fn infer_binop_type(op: BinOp, left: &Type, right: &Type) -> Type {
     match op {
-        BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge
-        | BinOp::And | BinOp::Or => Type::Bool,
+        BinOp::Eq
+        | BinOp::Ne
+        | BinOp::Lt
+        | BinOp::Le
+        | BinOp::Gt
+        | BinOp::Ge
+        | BinOp::And
+        | BinOp::Or => Type::Bool,
         BinOp::Add | BinOp::Sub => left.clone(), // same dimension required
         BinOp::Mul => match (left, right) {
-            (
-                Type::Scalar { dimension: ld },
-                Type::Scalar { dimension: rd },
-            ) => Type::Scalar {
+            (Type::Scalar { dimension: ld }, Type::Scalar { dimension: rd }) => Type::Scalar {
                 dimension: ld.mul(rd),
             },
             (Type::Scalar { .. }, _) | (_, Type::Scalar { .. }) => left.clone(),
@@ -316,10 +366,7 @@ fn infer_binop_type(op: BinOp, left: &Type, right: &Type) -> Type {
             _ => Type::Int,
         },
         BinOp::Div => match (left, right) {
-            (
-                Type::Scalar { dimension: ld },
-                Type::Scalar { dimension: rd },
-            ) => {
+            (Type::Scalar { dimension: ld }, Type::Scalar { dimension: rd }) => {
                 let result = ld.div(rd);
                 if result.is_dimensionless() {
                     Type::Real
@@ -380,9 +427,9 @@ use std::collections::HashSet;
 use reify_compiler::{
     CompiledConstraint, CompiledField, CompiledFieldSource, CompiledGeometryOp,
     CompiledGuardedGroup, CompiledImport, CompiledModule, CompiledPurpose, CompiledPurposeParam,
-    CompiledTrait, DefaultKind, EntityKind, RealizationDecl, RequirementKind,
-    ResolvedSchemaQuery, SubComponentDecl, TopologyTemplate, TraitDefault, TraitRequirement,
-    ValueCellDecl, ValueCellKind,
+    CompiledTrait, DefaultKind, EntityKind, RealizationDecl, RequirementKind, ResolvedSchemaQuery,
+    SubComponentDecl, TopologyTemplate, TraitDefault, TraitRequirement, ValueCellDecl,
+    ValueCellKind,
 };
 use reify_types::{ConstraintNodeId, RealizationNodeId, TypeParam};
 
@@ -465,12 +512,7 @@ impl TopologyTemplateBuilder {
         self
     }
 
-    pub fn auto_param(
-        mut self,
-        entity: &str,
-        member: &str,
-        cell_type: Type,
-    ) -> Self {
+    pub fn auto_param(mut self, entity: &str, member: &str, cell_type: Type) -> Self {
         self.value_cells.push(ValueCellDecl {
             id: ValueCellId::new(entity, member),
             kind: ValueCellKind::Auto,
@@ -576,7 +618,10 @@ impl TopologyTemplateBuilder {
         let name = name.into();
         let structure_name = structure_name.into();
         self.sub_components.push(SubComponentDecl {
-            content_hash: ContentHash::of_str(&format!("sub {} = {} where ...", name, structure_name)),
+            content_hash: ContentHash::of_str(&format!(
+                "sub {} = {} where ...",
+                name, structure_name
+            )),
             name,
             structure_name,
             visibility: reify_compiler::Visibility::Public,
@@ -720,14 +765,20 @@ mod tests {
             variant: "Red".into(),
         });
         assert_eq!(expr.result_type, Type::Enum("Color".to_string()));
-        assert!(matches!(expr.kind, CompiledExprKind::Literal(Value::Enum { .. })));
+        assert!(matches!(
+            expr.kind,
+            CompiledExprKind::Literal(Value::Enum { .. })
+        ));
     }
 
     #[test]
     fn literal_list_produces_list_type() {
         let expr = literal(Value::List(vec![Value::Int(1), Value::Int(2)]));
         assert_eq!(expr.result_type, Type::List(Box::new(Type::Int)));
-        assert!(matches!(expr.kind, CompiledExprKind::Literal(Value::List(_))));
+        assert!(matches!(
+            expr.kind,
+            CompiledExprKind::Literal(Value::List(_))
+        ));
     }
 
     #[test]
@@ -799,13 +850,19 @@ mod tests {
     #[test]
     fn trait_def_builder_with_requirement() {
         let ct = TraitDefBuilder::new("Rigid")
-            .requirement("mass", RequirementKind::Param(Type::Scalar {
-                dimension: DimensionVector::LENGTH, // reuse LENGTH for test simplicity
-            }))
+            .requirement(
+                "mass",
+                RequirementKind::Param(Type::Scalar {
+                    dimension: DimensionVector::LENGTH, // reuse LENGTH for test simplicity
+                }),
+            )
             .build();
         assert_eq!(ct.required_members.len(), 1);
         assert_eq!(ct.required_members[0].name, "mass");
-        assert!(matches!(&ct.required_members[0].kind, RequirementKind::Param(_)));
+        assert!(matches!(
+            &ct.required_members[0].kind,
+            RequirementKind::Param(_)
+        ));
     }
 
     #[test]
@@ -830,9 +887,7 @@ mod tests {
             }],
             default: None,
         };
-        let ct = TraitDefBuilder::new("Container")
-            .type_param(param)
-            .build();
+        let ct = TraitDefBuilder::new("Container").type_param(param).build();
         assert_eq!(ct.type_params.len(), 1);
         assert_eq!(ct.type_params[0].name, "T");
         assert_eq!(ct.type_params[0].bounds.len(), 1);
@@ -1023,7 +1078,11 @@ mod tests {
         let arg = literal(Value::Int(1));
         let expr = user_fn_call("my_func", vec![arg], Type::Int);
         assert_eq!(expr.result_type, Type::Int);
-        if let CompiledExprKind::UserFunctionCall { function_name, args } = &expr.kind {
+        if let CompiledExprKind::UserFunctionCall {
+            function_name,
+            args,
+        } = &expr.kind
+        {
             assert_eq!(function_name, "my_func");
             assert_eq!(args.len(), 1);
         } else {
@@ -1057,7 +1116,10 @@ mod tests {
                 return_type: Box::new(Type::Real),
             }
         );
-        if let CompiledExprKind::Lambda { params, param_ids, .. } = &expr.kind {
+        if let CompiledExprKind::Lambda {
+            params, param_ids, ..
+        } = &expr.kind
+        {
             assert_eq!(params.len(), 1);
             assert_eq!(params[0].0, "x");
             assert_eq!(param_ids.len(), 1);
@@ -1130,7 +1192,10 @@ mod tests {
         assert!(!field.is_pub);
         assert_eq!(field.domain_type, Type::Geometry);
         assert_eq!(field.codomain_type, Type::Real);
-        assert!(matches!(field.source, CompiledFieldSource::Analytical { .. }));
+        assert!(matches!(
+            field.source,
+            CompiledFieldSource::Analytical { .. }
+        ));
         assert_ne!(field.content_hash, ContentHash(0));
     }
 
@@ -1227,14 +1292,10 @@ impl TraitDefBuilder {
     pub fn build(self) -> CompiledTrait {
         let content_hash = {
             let name_hash = ContentHash::of_str(&self.name);
-            let req_hashes = self
-                .required_members
-                .iter()
-                .map(|r| ContentHash::of_str(&format!("{}:{:?}", r.name, std::mem::discriminant(&r.kind))));
-            let ref_hashes = self
-                .refinements
-                .iter()
-                .map(|r| ContentHash::of_str(r));
+            let req_hashes = self.required_members.iter().map(|r| {
+                ContentHash::of_str(&format!("{}:{:?}", r.name, std::mem::discriminant(&r.kind)))
+            });
+            let ref_hashes = self.refinements.iter().map(|r| ContentHash::of_str(r));
             let type_param_hashes = self
                 .type_params
                 .iter()
@@ -1368,8 +1429,7 @@ impl CompiledModuleBuilder {
 
             let purpose_hashes = self.compiled_purposes.iter().map(|p| p.content_hash);
 
-            let enum_hashes =
-                self.enum_defs.iter().map(|e| ContentHash::of_str(&e.name));
+            let enum_hashes = self.enum_defs.iter().map(|e| ContentHash::of_str(&e.name));
 
             let all_hashes = std::iter::once(path_hash)
                 .chain(template_hashes)
@@ -1433,7 +1493,10 @@ impl CompiledFieldBuilder {
 
     /// Set source to `Sampled { config }`.
     pub fn sampled(mut self, config: Vec<(&str, CompiledExpr)>) -> Self {
-        let config = config.into_iter().map(|(k, v)| (k.to_string(), v)).collect();
+        let config = config
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v))
+            .collect();
         self.source = Some(CompiledFieldSource::Sampled { config });
         self
     }
@@ -1451,9 +1514,10 @@ impl CompiledFieldBuilder {
     }
 
     pub fn build(self) -> CompiledField {
-        let source = self.source.expect("CompiledFieldBuilder: source must be set before build()");
-        let content_hash = ContentHash::of_str(&self.name)
-            .combine(ContentHash::of(&[99])); // distinguish from zero
+        let source = self
+            .source
+            .expect("CompiledFieldBuilder: source must be set before build()");
+        let content_hash = ContentHash::of_str(&self.name).combine(ContentHash::of(&[99])); // distinguish from zero
         CompiledField {
             name: self.name,
             is_pub: self.is_pub,
@@ -1625,7 +1689,10 @@ impl CompiledTraitBuilder {
 
     pub fn build(self) -> CompiledTrait {
         let name_hash = ContentHash::of_str(&self.name);
-        let member_hashes = self.required_members.iter().map(|m| ContentHash::of_str(&m.name));
+        let member_hashes = self
+            .required_members
+            .iter()
+            .map(|m| ContentHash::of_str(&m.name));
         let content_hash = std::iter::once(name_hash)
             .chain(member_hashes)
             .fold(ContentHash::of(&[0x54]), |acc, h| acc.combine(h));
@@ -1663,16 +1730,17 @@ mod purpose_builder_tests {
         assert_eq!(purpose.params[0].name, "subject");
         assert_eq!(purpose.params[0].entity_kind, "Structure");
         assert_eq!(purpose.constraints.len(), 1);
-        assert_eq!(purpose.constraints[0].label.as_deref(), Some("thick_enough"));
+        assert_eq!(
+            purpose.constraints[0].label.as_deref(),
+            Some("thick_enough")
+        );
         assert_ne!(purpose.content_hash, ContentHash(0));
     }
 
     #[test]
     fn purpose_builder_public() {
         use reify_compiler::CompiledPurpose;
-        let purpose: CompiledPurpose = CompiledPurposeBuilder::new("opt_ready")
-            .public()
-            .build();
+        let purpose: CompiledPurpose = CompiledPurposeBuilder::new("opt_ready").public().build();
         assert!(purpose.is_pub);
     }
 
@@ -1731,9 +1799,7 @@ mod trait_builder_tests {
 
     #[test]
     fn trait_builder_public() {
-        let t: CompiledTrait = CompiledTraitBuilder::new("Rigid")
-            .public()
-            .build();
+        let t: CompiledTrait = CompiledTraitBuilder::new("Rigid").public().build();
         assert!(t.is_pub);
     }
 
@@ -1747,8 +1813,13 @@ mod trait_builder_tests {
         assert_eq!(t.refinements.len(), 1);
         assert_eq!(t.refinements[0], "Rigid");
         assert_eq!(t.required_members.len(), 2);
-        assert!(matches!(&t.required_members[0].kind, RequirementKind::Let(_)));
-        assert!(matches!(&t.required_members[1].kind, RequirementKind::Sub(s) if s == "MountPoint"));
+        assert!(matches!(
+            &t.required_members[0].kind,
+            RequirementKind::Let(_)
+        ));
+        assert!(
+            matches!(&t.required_members[1].kind, RequirementKind::Sub(s) if s == "MountPoint")
+        );
         assert_ne!(t.content_hash, ContentHash(0));
     }
 
@@ -1768,16 +1839,18 @@ mod constraint_helper_tests {
 
     #[test]
     fn equality_constraint_returns_single_bool_expr() {
-        let exprs = equality_constraint(
-            "Beam",
-            "ratio",
-            Type::Real,
-            literal(Value::Real(2.0)),
+        let exprs = equality_constraint("Beam", "ratio", Type::Real, literal(Value::Real(2.0)));
+        assert_eq!(
+            exprs.len(),
+            1,
+            "equality_constraint should return exactly 1 expr"
         );
-        assert_eq!(exprs.len(), 1, "equality_constraint should return exactly 1 expr");
         assert_eq!(exprs[0].result_type, Type::Bool, "expr should be Bool");
         assert!(
-            matches!(&exprs[0].kind, CompiledExprKind::BinOp { op: BinOp::Eq, .. }),
+            matches!(
+                &exprs[0].kind,
+                CompiledExprKind::BinOp { op: BinOp::Eq, .. }
+            ),
             "expr should be Eq"
         );
     }
@@ -1802,7 +1875,11 @@ mod constraint_helper_tests {
             literal(crate::mm(1000.0)),
         );
         let all_exprs: Vec<_> = width_exprs.into_iter().chain(height_exprs).collect();
-        assert_eq!(all_exprs.len(), 4, "should have 4 constraint expressions total");
+        assert_eq!(
+            all_exprs.len(),
+            4,
+            "should have 4 constraint expressions total"
+        );
         for expr in &all_exprs {
             assert_eq!(expr.result_type, Type::Bool, "all exprs should be Bool");
         }
@@ -1817,16 +1894,34 @@ mod constraint_helper_tests {
             literal(crate::mm(10.0)),
             literal(crate::mm(500.0)),
         );
-        assert_eq!(exprs.len(), 2, "range_constraint should return exactly 2 exprs");
-        assert_eq!(exprs[0].result_type, Type::Bool, "first expr should be Bool");
-        assert_eq!(exprs[1].result_type, Type::Bool, "second expr should be Bool");
+        assert_eq!(
+            exprs.len(),
+            2,
+            "range_constraint should return exactly 2 exprs"
+        );
+        assert_eq!(
+            exprs[0].result_type,
+            Type::Bool,
+            "first expr should be Bool"
+        );
+        assert_eq!(
+            exprs[1].result_type,
+            Type::Bool,
+            "second expr should be Bool"
+        );
         // First expr should be a Gt comparison, second a Lt comparison
         assert!(
-            matches!(&exprs[0].kind, CompiledExprKind::BinOp { op: BinOp::Gt, .. }),
+            matches!(
+                &exprs[0].kind,
+                CompiledExprKind::BinOp { op: BinOp::Gt, .. }
+            ),
             "first expr should be Gt"
         );
         assert!(
-            matches!(&exprs[1].kind, CompiledExprKind::BinOp { op: BinOp::Lt, .. }),
+            matches!(
+                &exprs[1].kind,
+                CompiledExprKind::BinOp { op: BinOp::Lt, .. }
+            ),
             "second expr should be Lt"
         );
     }
@@ -1860,10 +1955,11 @@ mod module_builder_extension_tests {
     fn module_builder_trait_defs_affect_content_hash() {
         let module_no_traits = CompiledModuleBuilder::new(module_path()).build();
         let ct = TraitDefBuilder::new("Rigid").build();
-        let module_with_trait = CompiledModuleBuilder::new(module_path()).trait_def(ct).build();
+        let module_with_trait = CompiledModuleBuilder::new(module_path())
+            .trait_def(ct)
+            .build();
         assert_ne!(
-            module_no_traits.content_hash,
-            module_with_trait.content_hash,
+            module_no_traits.content_hash, module_with_trait.content_hash,
             "modules differing only in trait_defs must produce distinct content_hashes"
         );
     }
@@ -1874,16 +1970,17 @@ mod module_builder_extension_tests {
         let f = CompiledFieldBuilder::new("temp", Type::Geometry, Type::Real)
             .analytical(body)
             .build();
-        let module = CompiledModuleBuilder::new(module_path())
-            .field(f)
-            .build();
+        let module = CompiledModuleBuilder::new(module_path()).field(f).build();
         assert_eq!(module.fields.len(), 1);
         assert_eq!(module.fields[0].name, "temp");
     }
 
     #[test]
     fn module_builder_with_enum_def() {
-        let e = EnumDef { name: "Color".to_string(), variants: vec!["Red".to_string(), "Blue".to_string()] };
+        let e = EnumDef {
+            name: "Color".to_string(),
+            variants: vec!["Red".to_string(), "Blue".to_string()],
+        };
         let module = CompiledModuleBuilder::new(module_path())
             .enum_def(e)
             .build();
@@ -1908,7 +2005,9 @@ mod module_builder_extension_tests {
     fn module_builder_hash_changes_with_new_fields() {
         let empty_module = CompiledModuleBuilder::new(module_path()).build();
         let t = CompiledTraitBuilder::new("Rigid").build();
-        let with_trait = CompiledModuleBuilder::new(module_path()).trait_def(t).build();
+        let with_trait = CompiledModuleBuilder::new(module_path())
+            .trait_def(t)
+            .build();
         assert_ne!(empty_module.content_hash, with_trait.content_hash);
     }
 }

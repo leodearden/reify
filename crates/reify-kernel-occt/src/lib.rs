@@ -208,12 +208,7 @@ impl OcctKernel {
                     "Chamfer not yet implemented".into(),
                 ));
             }
-            GeometryOp::Translate {
-                target,
-                dx,
-                dy,
-                dz,
-            } => {
+            GeometryOp::Translate { target, dx, dy, dz } => {
                 let shape = self.get_shape(*target)?;
                 if !dx.is_finite() || !dy.is_finite() || !dz.is_finite() {
                     return Err(GeometryError::OperationFailed(format!(
@@ -366,8 +361,7 @@ impl OcctKernel {
             } => {
                 let shape = self.get_shape(*target)?;
                 let th = extract_f64(thickness)?;
-                let face_indices: Vec<u32> =
-                    faces_to_remove.iter().map(|&i| i as u32).collect();
+                let face_indices: Vec<u32> = faces_to_remove.iter().map(|&i| i as u32).collect();
                 ffi::ffi::shell_shape(shape, th, &face_indices)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
@@ -408,14 +402,7 @@ impl OcctKernel {
                     ));
                 }
                 ffi::ffi::rotate_around_shape(
-                    shape,
-                    point[0],
-                    point[1],
-                    point[2],
-                    axis[0],
-                    axis[1],
-                    axis[2],
-                    *angle_rad,
+                    shape, point[0], point[1], point[2], axis[0], axis[1], axis[2], *angle_rad,
                 )
                 .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
@@ -455,9 +442,7 @@ impl OcctKernel {
                         "revolve angle must not be zero".into(),
                     ));
                 }
-                let mag_sq = axis_dir[0].powi(2)
-                    + axis_dir[1].powi(2)
-                    + axis_dir[2].powi(2);
+                let mag_sq = axis_dir[0].powi(2) + axis_dir[1].powi(2) + axis_dir[2].powi(2);
                 if mag_sq < 1e-12 {
                     return Err(GeometryError::OperationFailed(
                         "revolve axis direction must not be zero-length".into(),
@@ -574,11 +559,7 @@ impl OcctKernel {
         }
     }
 
-    pub fn tessellate(
-        &self,
-        handle: GeometryHandleId,
-        tolerance: f64,
-    ) -> Result<Mesh, TessError> {
+    pub fn tessellate(&self, handle: GeometryHandleId, tolerance: f64) -> Result<Mesh, TessError> {
         let shape = self
             .get_shape(handle)
             .map_err(|_| TessError::InvalidHandle(handle))?;
@@ -650,9 +631,7 @@ impl WarmStartable for OcctKernel {
                     staged.insert(id, shape);
                 }
                 Err(e) => {
-                    eprintln!(
-                        "warning: warm-start deserialization failed for shape {id}: {e}"
-                    );
+                    eprintln!("warning: warm-start deserialization failed for shape {id}: {e}");
                     self.last_warm_start_failures += 1;
                     continue;
                 }
@@ -679,8 +658,7 @@ impl OcctKernel {
     /// This simulates a corrupted shape handle (present in map but wrapping a
     /// null C++ pointer).
     fn insert_null_shape(&mut self, id: u64) {
-        self.shapes
-            .insert(id, cxx::UniquePtr::null());
+        self.shapes.insert(id, cxx::UniquePtr::null());
         if id >= self.next_id {
             self.next_id = id + 1;
         }
@@ -699,13 +677,21 @@ mod tests {
 
     #[test]
     fn occt_available_is_true_when_built_with_occt() {
-        const { assert!(crate::OCCT_AVAILABLE, "OCCT_AVAILABLE should be true on a system with OCCT installed") };
+        const {
+            assert!(
+                crate::OCCT_AVAILABLE,
+                "OCCT_AVAILABLE should be true on a system with OCCT installed"
+            )
+        };
     }
 
     #[test]
     fn warm_state_returns_none_on_fresh_kernel() {
         let kernel = OcctKernel::new();
-        assert!(kernel.warm_state().is_none(), "fresh kernel should have no warm state");
+        assert!(
+            kernel.warm_state().is_none(),
+            "fresh kernel should have no warm state"
+        );
     }
 
     #[test]
@@ -760,10 +746,7 @@ mod tests {
             .unwrap();
         match vol {
             Value::Real(v) => {
-                assert!(
-                    (v - 6000.0).abs() < 1.0,
-                    "expected volume ~6000, got {v}"
-                );
+                assert!((v - 6000.0).abs() < 1.0, "expected volume ~6000, got {v}");
             }
             other => panic!("expected Value::Real, got {:?}", other),
         }
@@ -838,7 +821,11 @@ mod tests {
                 radius: Value::Real(5.0),
             })
             .unwrap();
-        assert_eq!(sphere_h.id, GeometryHandleId(4), "next_id should be restored");
+        assert_eq!(
+            sphere_h.id,
+            GeometryHandleId(4),
+            "next_id should be restored"
+        );
     }
 
     #[test]
@@ -854,9 +841,7 @@ mod tests {
                 depth: Value::Real(30.0),
             })
             .unwrap();
-        let vol = kernel
-            .query(&GeometryQuery::Volume(gh.id))
-            .unwrap();
+        let vol = kernel.query(&GeometryQuery::Volume(gh.id)).unwrap();
         match vol {
             Value::Real(v) => assert!((v - 6000.0).abs() < 1.0, "vol: {v}"),
             other => panic!("expected Real, got {:?}", other),
@@ -896,7 +881,9 @@ mod tests {
         kernel.with_warm_state(corrupted_state);
 
         // The original box should still be queryable
-        let vol_after = kernel.query(&GeometryQuery::Volume(GeometryHandleId(1))).unwrap();
+        let vol_after = kernel
+            .query(&GeometryQuery::Volume(GeometryHandleId(1)))
+            .unwrap();
         match vol_after {
             Value::Real(v) => assert!(
                 (v - 6000.0).abs() < 1.0,
@@ -1579,7 +1566,9 @@ mod tests {
                 );
             }
             Err(other) => panic!("expected OperationFailed, got {:?}", other),
-            Ok(_) => panic!("expected error for near-degenerate axis [0, 1e-8, 0] in rotate_around"),
+            Ok(_) => {
+                panic!("expected error for near-degenerate axis [0, 1e-8, 0] in rotate_around")
+            }
         }
     }
 
@@ -1743,7 +1732,10 @@ mod tests {
 
         // Serialize to BRep
         let brep = ffi::ffi::serialize_brep(&shape).unwrap();
-        assert!(!brep.is_empty(), "BRep serialization should produce non-empty output");
+        assert!(
+            !brep.is_empty(),
+            "BRep serialization should produce non-empty output"
+        );
 
         // Deserialize from BRep
         cxx::let_cxx_string!(brep_cxx = brep.as_str());
@@ -1780,9 +1772,7 @@ mod tests {
             })
             .unwrap();
         // Volume should be approximately 4 * 1000 = 4000
-        let vol = kernel
-            .query(&GeometryQuery::Volume(pattern_h.id))
-            .unwrap();
+        let vol = kernel.query(&GeometryQuery::Volume(pattern_h.id)).unwrap();
         match vol {
             Value::Real(v) => {
                 assert!(
@@ -1825,9 +1815,7 @@ mod tests {
             })
             .unwrap();
         // Volume should be approximately 6 * 125 = 750
-        let vol = kernel
-            .query(&GeometryQuery::Volume(pattern_h.id))
-            .unwrap();
+        let vol = kernel.query(&GeometryQuery::Volume(pattern_h.id)).unwrap();
         match vol {
             Value::Real(v) => {
                 assert!(
@@ -1862,12 +1850,13 @@ mod tests {
             .unwrap();
 
         // Query volume - should be positive (a cone-like solid)
-        let vol = kernel
-            .query(&GeometryQuery::Volume(loft_h.id))
-            .unwrap();
+        let vol = kernel.query(&GeometryQuery::Volume(loft_h.id)).unwrap();
         match vol {
             Value::Real(v) => {
-                assert!(v > 100.0, "loft volume should be positive and significant, got {v}");
+                assert!(
+                    v > 100.0,
+                    "loft volume should be positive and significant, got {v}"
+                );
             }
             other => panic!("expected Value::Real, got {:?}", other),
         }
@@ -2013,9 +2002,7 @@ mod tests {
                 faces_to_remove: vec![0],
             })
             .unwrap();
-        let vol = kernel
-            .query(&GeometryQuery::Volume(shell_h.id))
-            .unwrap();
+        let vol = kernel.query(&GeometryQuery::Volume(shell_h.id)).unwrap();
         match vol {
             Value::Real(v) => {
                 // Should be less than 8000 (solid) but greater than 0
@@ -2067,10 +2054,7 @@ mod tests {
             .unwrap();
         match dist {
             Value::Real(d) => {
-                assert!(
-                    (d - 40.0).abs() < 1.0,
-                    "expected distance ~40, got {d}"
-                );
+                assert!((d - 40.0).abs() < 1.0, "expected distance ~40, got {d}");
             }
             other => panic!("expected Value::Real, got {:?}", other),
         }
@@ -2123,7 +2107,12 @@ mod tests {
             })
             .unwrap();
         let translated = kernel
-            .execute(&GeometryOp::Translate { target: box_h.id, dx: 15.0, dy: 0.0, dz: 0.0 })
+            .execute(&GeometryOp::Translate {
+                target: box_h.id,
+                dx: 15.0,
+                dy: 0.0,
+                dz: 0.0,
+            })
             .unwrap();
         let mirrored = kernel
             .execute(&GeometryOp::Mirror {
@@ -2133,9 +2122,14 @@ mod tests {
             })
             .unwrap();
         let mut buf = Vec::new();
-        kernel.export(mirrored.id, ExportFormat::Step, &mut buf).unwrap();
+        kernel
+            .export(mirrored.id, ExportFormat::Step, &mut buf)
+            .unwrap();
         let content = String::from_utf8(buf).unwrap();
-        assert!(content.contains("ISO-10303-21"), "STEP should contain ISO header");
+        assert!(
+            content.contains("ISO-10303-21"),
+            "STEP should contain ISO header"
+        );
 
         // LinearPattern
         let pat = kernel
@@ -2147,9 +2141,14 @@ mod tests {
             })
             .unwrap();
         let mut buf2 = Vec::new();
-        kernel.export(pat.id, ExportFormat::Step, &mut buf2).unwrap();
+        kernel
+            .export(pat.id, ExportFormat::Step, &mut buf2)
+            .unwrap();
         let content2 = String::from_utf8(buf2).unwrap();
-        assert!(content2.contains("ISO-10303-21"), "pattern STEP should contain ISO header");
+        assert!(
+            content2.contains("ISO-10303-21"),
+            "pattern STEP should contain ISO header"
+        );
     }
 
     #[test]
@@ -2163,7 +2162,12 @@ mod tests {
             })
             .unwrap();
         let translated = kernel
-            .execute(&GeometryOp::Translate { target: box_h.id, dx: 15.0, dy: 0.0, dz: 0.0 })
+            .execute(&GeometryOp::Translate {
+                target: box_h.id,
+                dx: 15.0,
+                dy: 0.0,
+                dz: 0.0,
+            })
             .unwrap();
         let mirrored = kernel
             .execute(&GeometryOp::Mirror {
@@ -2173,8 +2177,14 @@ mod tests {
             })
             .unwrap();
         let mesh = kernel.tessellate(mirrored.id, 0.1).unwrap();
-        assert!(!mesh.vertices.is_empty(), "mirrored tessellation should have vertices");
-        assert!(mesh.indices.len().is_multiple_of(3), "indices should be divisible by 3");
+        assert!(
+            !mesh.vertices.is_empty(),
+            "mirrored tessellation should have vertices"
+        );
+        assert!(
+            mesh.indices.len().is_multiple_of(3),
+            "indices should be divisible by 3"
+        );
 
         // Loft
         let w1 = ffi::ffi::make_circle_wire(10.0, 0.0).unwrap();
@@ -2182,11 +2192,19 @@ mod tests {
         let w2 = ffi::ffi::make_circle_wire(5.0, 20.0).unwrap();
         let id2 = kernel.store_raw(w2);
         let loft = kernel
-            .execute(&GeometryOp::Loft { profiles: vec![id1, id2] })
+            .execute(&GeometryOp::Loft {
+                profiles: vec![id1, id2],
+            })
             .unwrap();
         let loft_mesh = kernel.tessellate(loft.id, 0.1).unwrap();
-        assert!(!loft_mesh.vertices.is_empty(), "loft tessellation should have vertices");
-        assert!(loft_mesh.indices.len().is_multiple_of(3), "loft indices divisible by 3");
+        assert!(
+            !loft_mesh.vertices.is_empty(),
+            "loft tessellation should have vertices"
+        );
+        assert!(
+            loft_mesh.indices.len().is_multiple_of(3),
+            "loft indices divisible by 3"
+        );
     }
 
     #[test]
@@ -2214,7 +2232,12 @@ mod tests {
             .unwrap();
         // Move hole down so it passes through the plate
         let hole_pos = kernel
-            .execute(&GeometryOp::Translate { target: hole.id, dx: -30.0, dy: 0.0, dz: -10.0 })
+            .execute(&GeometryOp::Translate {
+                target: hole.id,
+                dx: -30.0,
+                dy: 0.0,
+                dz: -10.0,
+            })
             .unwrap();
 
         // Pattern: 5 holes along X
@@ -2330,9 +2353,7 @@ mod tests {
             })
             .unwrap();
         // Volume should be approximately 2 * 1000 = 2000
-        let vol = kernel
-            .query(&GeometryQuery::Volume(fused_h.id))
-            .unwrap();
+        let vol = kernel.query(&GeometryQuery::Volume(fused_h.id)).unwrap();
         match vol {
             Value::Real(v) => {
                 assert!(
@@ -2390,9 +2411,7 @@ mod tests {
                 factor: 2.0,
             })
             .unwrap();
-        let vol = kernel
-            .query(&GeometryQuery::Volume(scaled_h.id))
-            .unwrap();
+        let vol = kernel.query(&GeometryQuery::Volume(scaled_h.id)).unwrap();
         match vol {
             Value::Real(v) => {
                 assert!(
@@ -2424,9 +2443,7 @@ mod tests {
                 factor: 1.0,
             })
             .unwrap();
-        let vol = kernel
-            .query(&GeometryQuery::Volume(scaled_h.id))
-            .unwrap();
+        let vol = kernel.query(&GeometryQuery::Volume(scaled_h.id)).unwrap();
         match vol {
             Value::Real(v) => {
                 assert!(
@@ -2749,8 +2766,8 @@ mod tests {
             .expect("make_circle_face should succeed for radius=5");
         let prism = ffi::ffi::make_prism(&face, 0.0, 0.0, 10.0)
             .expect("make_prism should succeed for circle face");
-        let vol = ffi::ffi::query_volume(&prism)
-            .expect("query_volume should work for extruded circle");
+        let vol =
+            ffi::ffi::query_volume(&prism).expect("query_volume should work for extruded circle");
         let expected = std::f64::consts::PI * 25.0 * 10.0; // π * r² * h
         let rel_err = (vol - expected).abs() / expected;
         assert!(
@@ -2765,19 +2782,16 @@ mod tests {
     #[test]
     fn extrude_negative_distance_same_volume() {
         // Extruding in -Z should produce the same volume as +Z.
-        let face = ffi::ffi::make_circle_face(5.0, 0.0)
-            .expect("make_circle_face should succeed");
-        let prism_pos = ffi::ffi::make_prism(&face, 0.0, 0.0, 10.0)
-            .expect("make_prism +Z should succeed");
-        let vol_pos = ffi::ffi::query_volume(&prism_pos)
-            .expect("query_volume +Z should work");
+        let face = ffi::ffi::make_circle_face(5.0, 0.0).expect("make_circle_face should succeed");
+        let prism_pos =
+            ffi::ffi::make_prism(&face, 0.0, 0.0, 10.0).expect("make_prism +Z should succeed");
+        let vol_pos = ffi::ffi::query_volume(&prism_pos).expect("query_volume +Z should work");
 
         let face2 = ffi::ffi::make_circle_face(5.0, 0.0)
             .expect("make_circle_face should succeed for negative test");
-        let prism_neg = ffi::ffi::make_prism(&face2, 0.0, 0.0, -10.0)
-            .expect("make_prism -Z should succeed");
-        let vol_neg = ffi::ffi::query_volume(&prism_neg)
-            .expect("query_volume -Z should work");
+        let prism_neg =
+            ffi::ffi::make_prism(&face2, 0.0, 0.0, -10.0).expect("make_prism -Z should succeed");
+        let vol_neg = ffi::ffi::query_volume(&prism_neg).expect("query_volume -Z should work");
 
         let rel_diff = (vol_pos - vol_neg).abs() / vol_pos;
         assert!(
@@ -2797,8 +2811,7 @@ mod tests {
         // Store a circle face (radius=5) via store_raw, then extrude via execute().
         // Expected volume: π * r² * h = π * 25 * 10 = 785.4
         let mut kernel = OcctKernel::new();
-        let face = ffi::ffi::make_circle_face(5.0, 0.0)
-            .expect("make_circle_face should succeed");
+        let face = ffi::ffi::make_circle_face(5.0, 0.0).expect("make_circle_face should succeed");
         let face_id = kernel.store_raw(face);
 
         let result = kernel
@@ -2828,8 +2841,8 @@ mod tests {
         // Negative distance should produce same volume as positive.
         let mut kernel = OcctKernel::new();
 
-        let face_pos = ffi::ffi::make_circle_face(5.0, 0.0)
-            .expect("make_circle_face should succeed");
+        let face_pos =
+            ffi::ffi::make_circle_face(5.0, 0.0).expect("make_circle_face should succeed");
         let face_pos_id = kernel.store_raw(face_pos);
         let result_pos = kernel
             .execute(&GeometryOp::Extrude {
@@ -2877,8 +2890,7 @@ mod tests {
         }
         let face = ffi::ffi::make_rect_face(10.0, 5.0, 20.0, 0.0, 0.0)
             .expect("make_rect_face should succeed");
-        let area = ffi::ffi::query_area(&face)
-            .expect("query_area should work on rect face");
+        let area = ffi::ffi::query_area(&face).expect("query_area should work on rect face");
         let expected = 50.0;
         let rel_err = (area - expected).abs() / expected;
         assert!(
@@ -2898,12 +2910,13 @@ mod tests {
         if !crate::OCCT_AVAILABLE {
             return;
         }
-        let face = ffi::ffi::make_circle_face(5.0, 0.0)
-            .expect("make_circle_face should succeed");
+        let face = ffi::ffi::make_circle_face(5.0, 0.0).expect("make_circle_face should succeed");
         // Rotate 90° around X axis: XY plane → XZ plane
         let rotated = ffi::ffi::rotate_shape(
             &face,
-            1.0, 0.0, 0.0,  // X axis
+            1.0,
+            0.0,
+            0.0, // X axis
             std::f64::consts::FRAC_PI_2,
         )
         .expect("rotate_shape should succeed");
@@ -2912,13 +2925,17 @@ mod tests {
             .expect("translate_shape should succeed");
         let revolved = ffi::ffi::make_revolve(
             &translated,
-            0.0, 0.0, 0.0,  // axis origin
-            0.0, 0.0, 1.0,  // axis direction (Z)
+            0.0,
+            0.0,
+            0.0, // axis origin
+            0.0,
+            0.0,
+            1.0, // axis direction (Z)
             std::f64::consts::TAU,
         )
         .expect("make_revolve should succeed for full rotation");
-        let vol = ffi::ffi::query_volume(&revolved)
-            .expect("query_volume should work for revolved shape");
+        let vol =
+            ffi::ffi::query_volume(&revolved).expect("query_volume should work for revolved shape");
         assert!(
             vol > 0.0,
             "revolved circle face should have positive volume, got {}",
@@ -2937,8 +2954,7 @@ mod tests {
         // translate 20 on X → centroid at (20, 0, 0), R=20, A=π*25.
         // Revolve around Z axis by 2π → torus volume = 2π²×20×25 ≈ 9869.6
         let mut kernel = OcctKernel::new();
-        let face = ffi::ffi::make_circle_face(5.0, 0.0)
-            .expect("make_circle_face should succeed");
+        let face = ffi::ffi::make_circle_face(5.0, 0.0).expect("make_circle_face should succeed");
         let rotated = ffi::ffi::rotate_shape(&face, 1.0, 0.0, 0.0, std::f64::consts::FRAC_PI_2)
             .expect("rotate_shape should succeed");
         let translated = ffi::ffi::translate_shape(&rotated, 20.0, 0.0, 0.0)
@@ -2973,8 +2989,7 @@ mod tests {
     fn revolve_half_angle_half_volume() {
         // Same setup as full volume but angle=π → half torus.
         let mut kernel = OcctKernel::new();
-        let face = ffi::ffi::make_circle_face(5.0, 0.0)
-            .expect("make_circle_face should succeed");
+        let face = ffi::ffi::make_circle_face(5.0, 0.0).expect("make_circle_face should succeed");
         let rotated = ffi::ffi::rotate_shape(&face, 1.0, 0.0, 0.0, std::f64::consts::FRAC_PI_2)
             .expect("rotate_shape should succeed");
         let translated = ffi::ffi::translate_shape(&rotated, 20.0, 0.0, 0.0)
@@ -2996,11 +3011,9 @@ mod tests {
             .expect("Volume should be numeric");
 
         // Create another face for half revolution
-        let face2 = ffi::ffi::make_circle_face(5.0, 0.0)
-            .expect("make_circle_face should succeed");
-        let rotated2 =
-            ffi::ffi::rotate_shape(&face2, 1.0, 0.0, 0.0, std::f64::consts::FRAC_PI_2)
-                .expect("rotate_shape should succeed");
+        let face2 = ffi::ffi::make_circle_face(5.0, 0.0).expect("make_circle_face should succeed");
+        let rotated2 = ffi::ffi::rotate_shape(&face2, 1.0, 0.0, 0.0, std::f64::consts::FRAC_PI_2)
+            .expect("rotate_shape should succeed");
         let translated2 = ffi::ffi::translate_shape(&rotated2, 20.0, 0.0, 0.0)
             .expect("translate_shape should succeed");
         let face2_id = kernel.store_raw(translated2);
@@ -3054,10 +3067,7 @@ mod tests {
             profile: profile_id,
             path: box_h.id,
         });
-        assert!(
-            result.is_err(),
-            "sweep with a solid as path should fail"
-        );
+        assert!(result.is_err(), "sweep with a solid as path should fail");
     }
 
     #[test]
@@ -3213,15 +3223,18 @@ mod tests {
         // Revolve around Z axis by full rotation
         let revolved = ffi::ffi::make_revolve(
             &translated,
-            0.0, 0.0, 0.0,  // axis origin
-            0.0, 0.0, 1.0,  // axis direction (Z)
+            0.0,
+            0.0,
+            0.0, // axis origin
+            0.0,
+            0.0,
+            1.0, // axis direction (Z)
             std::f64::consts::TAU,
         )
         .expect("make_revolve should succeed");
 
         // Volume must be positive (a Shell would give 0 or near-0)
-        let vol = ffi::ffi::query_volume(&revolved)
-            .expect("query_volume should succeed");
+        let vol = ffi::ffi::query_volume(&revolved).expect("query_volume should succeed");
         assert!(
             vol > 1.0,
             "revolve result should be a Solid with positive volume, got {}",

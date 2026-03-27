@@ -111,7 +111,9 @@ impl EvaluationGraph {
         for template in templates {
             for cell in &template.value_cells {
                 let id_hash = ContentHash::of_str(&format!("{}", cell.id));
-                let expr_hash = cell.default_expr.as_ref()
+                let expr_hash = cell
+                    .default_expr
+                    .as_ref()
                     .map(|e| e.content_hash)
                     .unwrap_or(ContentHash(0));
                 let node = ValueCellNode {
@@ -138,9 +140,10 @@ impl EvaluationGraph {
             for realization in &template.realizations {
                 let id_hash = ContentHash::of_str(&format!("{}", realization.id));
                 let ops_hash = ContentHash::combine_all(
-                    realization.operations.iter().map(|op| {
-                        ContentHash::of_str(&format!("{:?}", op))
-                    }),
+                    realization
+                        .operations
+                        .iter()
+                        .map(|op| ContentHash::of_str(&format!("{:?}", op))),
                 );
                 let node = RealizationNodeData {
                     id: realization.id.clone(),
@@ -161,21 +164,32 @@ impl EvaluationGraph {
                     // Collection sub: determine count from the count cell's default_expr literal
                     let count = sub.count_cell.as_ref().and_then(|count_id| {
                         // Look up the count cell in this template's value_cells
-                        template.value_cells.iter()
+                        template
+                            .value_cells
+                            .iter()
                             .find(|vc| vc.id == *count_id)
                             .and_then(|vc| vc.default_expr.as_ref())
                             .and_then(|expr| {
                                 // If the count expr is a literal Int, use it directly
-                                if let reify_types::CompiledExprKind::Literal(Value::Int(n)) = &expr.kind {
+                                if let reify_types::CompiledExprKind::Literal(Value::Int(n)) =
+                                    &expr.kind
+                                {
                                     Some(*n)
                                 } else {
                                     // For ValueRef expressions, look up the referenced cell's default
-                                    if let reify_types::CompiledExprKind::ValueRef(ref_id) = &expr.kind {
-                                        template.value_cells.iter()
+                                    if let reify_types::CompiledExprKind::ValueRef(ref_id) =
+                                        &expr.kind
+                                    {
+                                        template
+                                            .value_cells
+                                            .iter()
                                             .find(|vc| vc.id == *ref_id)
                                             .and_then(|vc| vc.default_expr.as_ref())
                                             .and_then(|e| {
-                                                if let reify_types::CompiledExprKind::Literal(Value::Int(n)) = &e.kind {
+                                                if let reify_types::CompiledExprKind::Literal(
+                                                    Value::Int(n),
+                                                ) = &e.kind
+                                                {
                                                     Some(*n)
                                                 } else {
                                                     None
@@ -192,9 +206,12 @@ impl EvaluationGraph {
                         for i in 0..n {
                             let scoped_entity = format!("{}.{}[{}]", template.name, sub.name, i);
                             for child_cell in &child_template.value_cells {
-                                let scoped_id = ValueCellId::new(&scoped_entity, &child_cell.id.member);
+                                let scoped_id =
+                                    ValueCellId::new(&scoped_entity, &child_cell.id.member);
                                 let id_hash = ContentHash::of_str(&format!("{}", scoped_id));
-                                let expr_hash = child_cell.default_expr.as_ref()
+                                let expr_hash = child_cell
+                                    .default_expr
+                                    .as_ref()
                                     .map(|e| e.content_hash)
                                     .unwrap_or(ContentHash(0));
                                 let node = ValueCellNode {
@@ -215,9 +232,18 @@ impl EvaluationGraph {
                             sub_name: sub.name.clone(),
                             structure_name: sub.structure_name.clone(),
                             count_cell: count_id.clone(),
-                            child_value_cells: child_template.value_cells.iter().map(|vc| {
-                                (vc.id.member.clone(), vc.kind, vc.cell_type.clone(), vc.default_expr.clone())
-                            }).collect(),
+                            child_value_cells: child_template
+                                .value_cells
+                                .iter()
+                                .map(|vc| {
+                                    (
+                                        vc.id.member.clone(),
+                                        vc.kind,
+                                        vc.cell_type.clone(),
+                                        vc.default_expr.clone(),
+                                    )
+                                })
+                                .collect(),
                         });
                     }
                     // If count is None (Undef), no instances are created
@@ -228,7 +254,9 @@ impl EvaluationGraph {
                     for child_cell in &child_template.value_cells {
                         let scoped_id = ValueCellId::new(&scoped_entity, &child_cell.id.member);
                         let id_hash = ContentHash::of_str(&format!("{}", scoped_id));
-                        let expr_hash = child_cell.default_expr.as_ref()
+                        let expr_hash = child_cell
+                            .default_expr
+                            .as_ref()
                             .map(|e| e.content_hash)
                             .unwrap_or(ContentHash(0));
                         let node = ValueCellNode {
@@ -263,7 +291,9 @@ impl EvaluationGraph {
                 let mut member_ids = Vec::new();
                 for cell in &group.members {
                     let id_hash = ContentHash::of_str(&format!("{}", cell.id));
-                    let expr_hash = cell.default_expr.as_ref()
+                    let expr_hash = cell
+                        .default_expr
+                        .as_ref()
                         .map(|e| e.content_hash)
                         .unwrap_or(ContentHash(0));
                     let node = ValueCellNode {
@@ -295,7 +325,9 @@ impl EvaluationGraph {
                 let mut else_member_ids = Vec::new();
                 for cell in &group.else_members {
                     let id_hash = ContentHash::of_str(&format!("{}", cell.id));
-                    let expr_hash = cell.default_expr.as_ref()
+                    let expr_hash = cell
+                        .default_expr
+                        .as_ref()
                         .map(|e| e.content_hash)
                         .unwrap_or(ContentHash(0));
                     let node = ValueCellNode {
@@ -397,39 +429,63 @@ impl EvaluationGraph {
     /// - Domain separation: a value_cell with hash H won't alias with a constraint of hash H
     pub fn topology_fingerprint(&self) -> ContentHash {
         let vc_hash = {
-            let mut hashes: Vec<ContentHash> = self.value_cells.iter().map(|(_, n)| n.content_hash).collect();
+            let mut hashes: Vec<ContentHash> = self
+                .value_cells
+                .iter()
+                .map(|(_, n)| n.content_hash)
+                .collect();
             hashes.sort_by_key(|h| h.0);
             ContentHash::combine_all(hashes)
         };
         let cn_hash = {
-            let mut hashes: Vec<ContentHash> = self.constraints.iter().map(|(_, n)| n.content_hash).collect();
+            let mut hashes: Vec<ContentHash> = self
+                .constraints
+                .iter()
+                .map(|(_, n)| n.content_hash)
+                .collect();
             hashes.sort_by_key(|h| h.0);
             ContentHash::combine_all(hashes)
         };
         let real_hash = {
-            let mut hashes: Vec<ContentHash> = self.realizations.iter().map(|(_, n)| n.content_hash).collect();
+            let mut hashes: Vec<ContentHash> = self
+                .realizations
+                .iter()
+                .map(|(_, n)| n.content_hash)
+                .collect();
             hashes.sort_by_key(|h| h.0);
             ContentHash::combine_all(hashes)
         };
         let res_hash = {
-            let mut hashes: Vec<ContentHash> = self.resolutions.iter().map(|(_, n)| n.content_hash).collect();
+            let mut hashes: Vec<ContentHash> = self
+                .resolutions
+                .iter()
+                .map(|(_, n)| n.content_hash)
+                .collect();
             hashes.sort_by_key(|h| h.0);
             ContentHash::combine_all(hashes)
         };
 
         let guard_hash = {
-            let mut per_group: Vec<ContentHash> = self.guarded_groups.iter().map(|g| {
-                let guard_id_hash = ContentHash::of_str(&format!("{}", g.guard_cell));
-                let mut member_strs: Vec<String> = g.members.iter().map(|m| format!("{}", m)).collect();
-                member_strs.sort();
-                let member_hashes: Vec<ContentHash> = member_strs.iter().map(|s| ContentHash::of_str(s)).collect();
-                let members_hash = ContentHash::combine_all(member_hashes);
-                let mut else_strs: Vec<String> = g.else_members.iter().map(|m| format!("{}", m)).collect();
-                else_strs.sort();
-                let else_hashes: Vec<ContentHash> = else_strs.iter().map(|s| ContentHash::of_str(s)).collect();
-                let else_hash = ContentHash::combine_all(else_hashes);
-                ContentHash::combine_all([guard_id_hash, members_hash, else_hash])
-            }).collect();
+            let mut per_group: Vec<ContentHash> = self
+                .guarded_groups
+                .iter()
+                .map(|g| {
+                    let guard_id_hash = ContentHash::of_str(&format!("{}", g.guard_cell));
+                    let mut member_strs: Vec<String> =
+                        g.members.iter().map(|m| format!("{}", m)).collect();
+                    member_strs.sort();
+                    let member_hashes: Vec<ContentHash> =
+                        member_strs.iter().map(|s| ContentHash::of_str(s)).collect();
+                    let members_hash = ContentHash::combine_all(member_hashes);
+                    let mut else_strs: Vec<String> =
+                        g.else_members.iter().map(|m| format!("{}", m)).collect();
+                    else_strs.sort();
+                    let else_hashes: Vec<ContentHash> =
+                        else_strs.iter().map(|s| ContentHash::of_str(s)).collect();
+                    let else_hash = ContentHash::combine_all(else_hashes);
+                    ContentHash::combine_all([guard_id_hash, members_hash, else_hash])
+                })
+                .collect();
             per_group.sort_by_key(|h| h.0);
             ContentHash::combine_all(per_group)
         };
@@ -527,9 +583,18 @@ mod tests {
         let ops = vec![CompiledGeometryOp::Primitive {
             kind: PrimitiveKind::Box,
             args: vec![
-                ("width".to_string(), CompiledExpr::literal(Value::length(0.08), Type::length())),
-                ("height".to_string(), CompiledExpr::literal(Value::length(0.10), Type::length())),
-                ("depth".to_string(), CompiledExpr::literal(Value::length(0.005), Type::length())),
+                (
+                    "width".to_string(),
+                    CompiledExpr::literal(Value::length(0.08), Type::length()),
+                ),
+                (
+                    "height".to_string(),
+                    CompiledExpr::literal(Value::length(0.10), Type::length()),
+                ),
+                (
+                    "depth".to_string(),
+                    CompiledExpr::literal(Value::length(0.005), Type::length()),
+                ),
             ],
         }];
         let hash = ContentHash::of_str("realization0");
@@ -679,34 +744,90 @@ mod tests {
 
     #[test]
     fn evaluation_graph_from_templates() {
-        use reify_test_support::{TopologyTemplateBuilder, gt, lt, literal, value_ref};
+        use reify_test_support::{TopologyTemplateBuilder, gt, literal, lt, value_ref};
 
         let template = TopologyTemplateBuilder::new("Bracket")
-            .param("Bracket", "width", Type::length(), Some(CompiledExpr::literal(Value::length(0.08), Type::length())))
-            .param("Bracket", "height", Type::length(), Some(CompiledExpr::literal(Value::length(0.10), Type::length())))
-            .let_binding("Bracket", "volume", Type::Real, CompiledExpr::literal(Value::Real(0.0), Type::Real))
-            .constraint("Bracket", 0, None, gt(value_ref("Bracket", "width"), literal(Value::length(0.01))))
-            .constraint("Bracket", 1, Some("max_height"), lt(value_ref("Bracket", "height"), literal(Value::length(1.0))))
+            .param(
+                "Bracket",
+                "width",
+                Type::length(),
+                Some(CompiledExpr::literal(Value::length(0.08), Type::length())),
+            )
+            .param(
+                "Bracket",
+                "height",
+                Type::length(),
+                Some(CompiledExpr::literal(Value::length(0.10), Type::length())),
+            )
+            .let_binding(
+                "Bracket",
+                "volume",
+                Type::Real,
+                CompiledExpr::literal(Value::Real(0.0), Type::Real),
+            )
+            .constraint(
+                "Bracket",
+                0,
+                None,
+                gt(value_ref("Bracket", "width"), literal(Value::length(0.01))),
+            )
+            .constraint(
+                "Bracket",
+                1,
+                Some("max_height"),
+                lt(value_ref("Bracket", "height"), literal(Value::length(1.0))),
+            )
             .build();
 
         let graph = EvaluationGraph::from_templates(&[template]);
 
         // 2 params + 1 let = 3 value cells
         assert_eq!(graph.value_cells.len(), 3);
-        assert!(graph.value_cells.get(&ValueCellId::new("Bracket", "width")).is_some());
-        assert!(graph.value_cells.get(&ValueCellId::new("Bracket", "height")).is_some());
-        assert!(graph.value_cells.get(&ValueCellId::new("Bracket", "volume")).is_some());
+        assert!(
+            graph
+                .value_cells
+                .get(&ValueCellId::new("Bracket", "width"))
+                .is_some()
+        );
+        assert!(
+            graph
+                .value_cells
+                .get(&ValueCellId::new("Bracket", "height"))
+                .is_some()
+        );
+        assert!(
+            graph
+                .value_cells
+                .get(&ValueCellId::new("Bracket", "volume"))
+                .is_some()
+        );
 
         // Check kinds
-        let width_node = graph.value_cells.get(&ValueCellId::new("Bracket", "width")).unwrap();
+        let width_node = graph
+            .value_cells
+            .get(&ValueCellId::new("Bracket", "width"))
+            .unwrap();
         assert_eq!(width_node.kind, ValueCellKind::Param);
-        let vol_node = graph.value_cells.get(&ValueCellId::new("Bracket", "volume")).unwrap();
+        let vol_node = graph
+            .value_cells
+            .get(&ValueCellId::new("Bracket", "volume"))
+            .unwrap();
         assert_eq!(vol_node.kind, ValueCellKind::Let);
 
         // 2 constraints
         assert_eq!(graph.constraints.len(), 2);
-        assert!(graph.constraints.get(&ConstraintNodeId::new("Bracket", 0)).is_some());
-        assert!(graph.constraints.get(&ConstraintNodeId::new("Bracket", 1)).is_some());
+        assert!(
+            graph
+                .constraints
+                .get(&ConstraintNodeId::new("Bracket", 0))
+                .is_some()
+        );
+        assert!(
+            graph
+                .constraints
+                .get(&ConstraintNodeId::new("Bracket", 1))
+                .is_some()
+        );
 
         // 0 realizations (none added via builder)
         assert_eq!(graph.realizations.len(), 0);
@@ -717,12 +838,32 @@ mod tests {
         use reify_test_support::{TopologyTemplateBuilder, gt, literal, value_ref};
 
         let template1 = TopologyTemplateBuilder::new("A")
-            .param("A", "x", Type::length(), Some(CompiledExpr::literal(Value::length(0.08), Type::length())))
-            .constraint("A", 0, None, gt(value_ref("A", "x"), literal(Value::length(0.0))))
+            .param(
+                "A",
+                "x",
+                Type::length(),
+                Some(CompiledExpr::literal(Value::length(0.08), Type::length())),
+            )
+            .constraint(
+                "A",
+                0,
+                None,
+                gt(value_ref("A", "x"), literal(Value::length(0.0))),
+            )
             .build();
         let template2 = TopologyTemplateBuilder::new("A")
-            .param("A", "x", Type::length(), Some(CompiledExpr::literal(Value::length(0.08), Type::length())))
-            .constraint("A", 0, None, gt(value_ref("A", "x"), literal(Value::length(0.0))))
+            .param(
+                "A",
+                "x",
+                Type::length(),
+                Some(CompiledExpr::literal(Value::length(0.08), Type::length())),
+            )
+            .constraint(
+                "A",
+                0,
+                None,
+                gt(value_ref("A", "x"), literal(Value::length(0.0))),
+            )
             .build();
 
         let g1 = EvaluationGraph::from_templates(&[template1]);
@@ -736,11 +877,26 @@ mod tests {
         use reify_test_support::{TopologyTemplateBuilder, gt, literal, value_ref};
 
         let template1 = TopologyTemplateBuilder::new("A")
-            .param("A", "x", Type::length(), Some(CompiledExpr::literal(Value::length(0.08), Type::length())))
+            .param(
+                "A",
+                "x",
+                Type::length(),
+                Some(CompiledExpr::literal(Value::length(0.08), Type::length())),
+            )
             .build();
         let template2 = TopologyTemplateBuilder::new("A")
-            .param("A", "x", Type::length(), Some(CompiledExpr::literal(Value::length(0.08), Type::length())))
-            .constraint("A", 0, None, gt(value_ref("A", "x"), literal(Value::length(0.0))))
+            .param(
+                "A",
+                "x",
+                Type::length(),
+                Some(CompiledExpr::literal(Value::length(0.08), Type::length())),
+            )
+            .constraint(
+                "A",
+                0,
+                None,
+                gt(value_ref("A", "x"), literal(Value::length(0.0))),
+            )
             .build();
 
         let g1 = EvaluationGraph::from_templates(&[template1]);
@@ -788,20 +944,41 @@ mod tests {
 
         // Two params with different IDs but identical default expressions
         let template_a = TopologyTemplateBuilder::new("A")
-            .param("A", "width", Type::length(), Some(CompiledExpr::literal(Value::length(0.08), Type::length())))
+            .param(
+                "A",
+                "width",
+                Type::length(),
+                Some(CompiledExpr::literal(Value::length(0.08), Type::length())),
+            )
             .build();
         let template_b = TopologyTemplateBuilder::new("A")
-            .param("A", "height", Type::length(), Some(CompiledExpr::literal(Value::length(0.08), Type::length())))
+            .param(
+                "A",
+                "height",
+                Type::length(),
+                Some(CompiledExpr::literal(Value::length(0.08), Type::length())),
+            )
             .build();
 
         let graph_a = EvaluationGraph::from_templates(&[template_a]);
         let graph_b = EvaluationGraph::from_templates(&[template_b]);
 
-        let hash_width = graph_a.value_cells.get(&ValueCellId::new("A", "width")).unwrap().content_hash;
-        let hash_height = graph_b.value_cells.get(&ValueCellId::new("A", "height")).unwrap().content_hash;
+        let hash_width = graph_a
+            .value_cells
+            .get(&ValueCellId::new("A", "width"))
+            .unwrap()
+            .content_hash;
+        let hash_height = graph_b
+            .value_cells
+            .get(&ValueCellId::new("A", "height"))
+            .unwrap()
+            .content_hash;
 
         // Different IDs with same expression must produce different content hashes
-        assert_ne!(hash_width, hash_height, "content_hash must incorporate node ID");
+        assert_ne!(
+            hash_width, hash_height,
+            "content_hash must incorporate node ID"
+        );
     }
 
     #[test]
@@ -817,11 +994,22 @@ mod tests {
 
         let graph = EvaluationGraph::from_templates(&[template]);
 
-        let hash_0 = graph.constraints.get(&ConstraintNodeId::new("A", 0)).unwrap().content_hash;
-        let hash_1 = graph.constraints.get(&ConstraintNodeId::new("A", 1)).unwrap().content_hash;
+        let hash_0 = graph
+            .constraints
+            .get(&ConstraintNodeId::new("A", 0))
+            .unwrap()
+            .content_hash;
+        let hash_1 = graph
+            .constraints
+            .get(&ConstraintNodeId::new("A", 1))
+            .unwrap()
+            .content_hash;
 
         // Different constraint IDs with same expression must produce different content hashes
-        assert_ne!(hash_0, hash_1, "content_hash must incorporate constraint node ID");
+        assert_ne!(
+            hash_0, hash_1,
+            "content_hash must incorporate constraint node ID"
+        );
     }
 
     #[test]
@@ -836,7 +1024,11 @@ mod tests {
         let graph = EvaluationGraph::from_templates(&[template]);
         let node = graph.value_cells.get(&ValueCellId::new("A", "x")).unwrap();
 
-        assert_ne!(node.content_hash, ContentHash(0), "param without default_expr should have non-zero content_hash");
+        assert_ne!(
+            node.content_hash,
+            ContentHash(0),
+            "param without default_expr should have non-zero content_hash"
+        );
     }
 
     #[test]
@@ -846,14 +1038,28 @@ mod tests {
         let ops = vec![CompiledGeometryOp::Primitive {
             kind: PrimitiveKind::Box,
             args: vec![
-                ("width".to_string(), CompiledExpr::literal(Value::length(0.08), Type::length())),
-                ("height".to_string(), CompiledExpr::literal(Value::length(0.10), Type::length())),
-                ("depth".to_string(), CompiledExpr::literal(Value::length(0.005), Type::length())),
+                (
+                    "width".to_string(),
+                    CompiledExpr::literal(Value::length(0.08), Type::length()),
+                ),
+                (
+                    "height".to_string(),
+                    CompiledExpr::literal(Value::length(0.10), Type::length()),
+                ),
+                (
+                    "depth".to_string(),
+                    CompiledExpr::literal(Value::length(0.005), Type::length()),
+                ),
             ],
         }];
 
         let template = TopologyTemplateBuilder::new("A")
-            .param("A", "w", Type::length(), Some(CompiledExpr::literal(Value::length(0.08), Type::length())))
+            .param(
+                "A",
+                "w",
+                Type::length(),
+                Some(CompiledExpr::literal(Value::length(0.08), Type::length())),
+            )
             .realization("A", 0, ops.clone())
             .build();
 
@@ -861,7 +1067,10 @@ mod tests {
 
         // Realization should be populated
         assert_eq!(graph.realizations.len(), 1);
-        let r_node = graph.realizations.get(&RealizationNodeId::new("A", 0)).unwrap();
+        let r_node = graph
+            .realizations
+            .get(&RealizationNodeId::new("A", 0))
+            .unwrap();
         assert_eq!(r_node.id, RealizationNodeId::new("A", 0));
         assert_eq!(r_node.operations.len(), 1);
 
@@ -869,10 +1078,14 @@ mod tests {
         // id_hash.combine(ops_hash)
         let expected_id_hash = ContentHash::of_str(&format!("{}", RealizationNodeId::new("A", 0)));
         let expected_ops_hash = ContentHash::combine_all(
-            ops.iter().map(|op| ContentHash::of_str(&format!("{:?}", op)))
+            ops.iter()
+                .map(|op| ContentHash::of_str(&format!("{:?}", op))),
         );
         let expected_hash = expected_id_hash.combine(expected_ops_hash);
-        assert_eq!(r_node.content_hash, expected_hash, "realization content_hash should be id_hash.combine(ops_hash)");
+        assert_eq!(
+            r_node.content_hash, expected_hash,
+            "realization content_hash should be id_hash.combine(ops_hash)"
+        );
         assert_ne!(r_node.content_hash, ContentHash(0));
     }
 
@@ -953,9 +1166,18 @@ mod tests {
         let fp_c = graph_c.topology_fingerprint();
 
         // All three must be pairwise distinct
-        assert_ne!(fp_a, fp_b, "value_cell vs constraint fingerprints must differ");
-        assert_ne!(fp_a, fp_c, "value_cell vs realization fingerprints must differ");
-        assert_ne!(fp_b, fp_c, "constraint vs realization fingerprints must differ");
+        assert_ne!(
+            fp_a, fp_b,
+            "value_cell vs constraint fingerprints must differ"
+        );
+        assert_ne!(
+            fp_a, fp_c,
+            "value_cell vs realization fingerprints must differ"
+        );
+        assert_ne!(
+            fp_b, fp_c,
+            "constraint vs realization fingerprints must differ"
+        );
     }
 
     #[test]
@@ -964,23 +1186,29 @@ mod tests {
 
         let mut graph = EvaluationGraph::default();
         let r0_id = ResolutionNodeId::new("A", 0);
-        graph.resolutions.insert(r0_id.clone(), ResolutionNodeData {
-            id: r0_id.clone(),
-            scope: "A".to_string(),
-            auto_params: vec![ValueCellId::new("A", "x")],
-            constraint_deps: vec![],
-            content_hash: ContentHash::of_str("r0"),
-        });
+        graph.resolutions.insert(
+            r0_id.clone(),
+            ResolutionNodeData {
+                id: r0_id.clone(),
+                scope: "A".to_string(),
+                auto_params: vec![ValueCellId::new("A", "x")],
+                constraint_deps: vec![],
+                content_hash: ContentHash::of_str("r0"),
+            },
+        );
 
         let mut cloned = graph.clone();
         let r1_id = ResolutionNodeId::new("A", 1);
-        cloned.resolutions.insert(r1_id.clone(), ResolutionNodeData {
-            id: r1_id.clone(),
-            scope: "A".to_string(),
-            auto_params: vec![ValueCellId::new("A", "y")],
-            constraint_deps: vec![],
-            content_hash: ContentHash::of_str("r1"),
-        });
+        cloned.resolutions.insert(
+            r1_id.clone(),
+            ResolutionNodeData {
+                id: r1_id.clone(),
+                scope: "A".to_string(),
+                auto_params: vec![ValueCellId::new("A", "y")],
+                constraint_deps: vec![],
+                content_hash: ContentHash::of_str("r1"),
+            },
+        );
 
         // Original unchanged
         assert_eq!(graph.resolutions.len(), 1);
@@ -999,10 +1227,20 @@ mod tests {
 
         // Build two identical graphs from same template
         let template1 = TopologyTemplateBuilder::new("A")
-            .param("A", "x", Type::Real, Some(CompiledExpr::literal(Value::Real(1.0), Type::Real)))
+            .param(
+                "A",
+                "x",
+                Type::Real,
+                Some(CompiledExpr::literal(Value::Real(1.0), Type::Real)),
+            )
             .build();
         let template2 = TopologyTemplateBuilder::new("A")
-            .param("A", "x", Type::Real, Some(CompiledExpr::literal(Value::Real(1.0), Type::Real)))
+            .param(
+                "A",
+                "x",
+                Type::Real,
+                Some(CompiledExpr::literal(Value::Real(1.0), Type::Real)),
+            )
             .build();
 
         let g1 = EvaluationGraph::from_templates(&[template1]);
@@ -1013,28 +1251,37 @@ mod tests {
 
         // Add a ResolutionNodeData to g2
         let r0_id = ResolutionNodeId::new("A", 0);
-        g2.resolutions.insert(r0_id.clone(), ResolutionNodeData {
-            id: r0_id,
-            scope: "A".to_string(),
-            auto_params: vec![ValueCellId::new("A", "x")],
-            constraint_deps: vec![],
-            content_hash: ContentHash::of_str("r0"),
-        });
+        g2.resolutions.insert(
+            r0_id.clone(),
+            ResolutionNodeData {
+                id: r0_id,
+                scope: "A".to_string(),
+                auto_params: vec![ValueCellId::new("A", "x")],
+                constraint_deps: vec![],
+                content_hash: ContentHash::of_str("r0"),
+            },
+        );
 
         // After adding resolution, fingerprints must differ
-        assert_ne!(g1.topology_fingerprint(), g2.topology_fingerprint(),
-            "fingerprint must change when resolution node is added");
+        assert_ne!(
+            g1.topology_fingerprint(),
+            g2.topology_fingerprint(),
+            "fingerprint must change when resolution node is added"
+        );
 
         // Two graphs with identical resolutions should have same fingerprint
         let mut g3 = g1.clone();
         let r0_id2 = ResolutionNodeId::new("A", 0);
-        g3.resolutions.insert(r0_id2.clone(), ResolutionNodeData {
-            id: r0_id2,
-            scope: "A".to_string(),
-            auto_params: vec![ValueCellId::new("A", "x")],
-            constraint_deps: vec![],
-            content_hash: ContentHash::of_str("r0"),
-        });
+        g3.resolutions.insert(
+            r0_id2.clone(),
+            ResolutionNodeData {
+                id: r0_id2,
+                scope: "A".to_string(),
+                auto_params: vec![ValueCellId::new("A", "x")],
+                constraint_deps: vec![],
+                content_hash: ContentHash::of_str("r0"),
+            },
+        );
         assert_eq!(g2.topology_fingerprint(), g3.topology_fingerprint());
     }
 
@@ -1080,7 +1327,8 @@ mod tests {
         use reify_types::{BinOp, CompiledExpr, Type, Value};
 
         // Child: param height, let half_h = height / 2
-        let height_ref = || CompiledExpr::value_ref(ValueCellId::new("Child", "height"), Type::length());
+        let height_ref =
+            || CompiledExpr::value_ref(ValueCellId::new("Child", "height"), Type::length());
         let half_h_expr = CompiledExpr::binop(
             BinOp::Div,
             height_ref(),
@@ -1088,12 +1336,18 @@ mod tests {
             Type::length(),
         );
         let child = TopologyTemplateBuilder::new("Child")
-            .param("Child", "height", Type::length(), Some(CompiledExpr::literal(Value::length(0.01), Type::length())))
+            .param(
+                "Child",
+                "height",
+                Type::length(),
+                Some(CompiledExpr::literal(Value::length(0.01), Type::length())),
+            )
             .let_binding("Child", "half_h", Type::length(), half_h_expr)
             .build();
 
         // Parent: param width, sub rib = Child(height: width * 0.5)
-        let width_ref = || CompiledExpr::value_ref(ValueCellId::new("Parent", "width"), Type::length());
+        let width_ref =
+            || CompiledExpr::value_ref(ValueCellId::new("Parent", "width"), Type::length());
         let arg_expr = CompiledExpr::binop(
             BinOp::Mul,
             width_ref(),
@@ -1101,7 +1355,12 @@ mod tests {
             Type::length(),
         );
         let parent = TopologyTemplateBuilder::new("Parent")
-            .param("Parent", "width", Type::length(), Some(CompiledExpr::literal(Value::length(0.08), Type::length())))
+            .param(
+                "Parent",
+                "width",
+                Type::length(),
+                Some(CompiledExpr::literal(Value::length(0.08), Type::length())),
+            )
             .sub_component("rib", "Child", vec![("height".to_string(), arg_expr)])
             .build();
 
@@ -1162,7 +1421,9 @@ mod tests {
 
         // Graph A: guard_cell guards [x], else_members=[]
         let mut graph_a = EvaluationGraph::default();
-        graph_a.value_cells.insert(guard_cell.clone(), guard_node.clone());
+        graph_a
+            .value_cells
+            .insert(guard_cell.clone(), guard_node.clone());
         graph_a.value_cells.insert(x.clone(), x_node.clone());
         graph_a.value_cells.insert(y.clone(), y_node.clone());
         graph_a.guarded_groups.push(GuardedGroupInfo {

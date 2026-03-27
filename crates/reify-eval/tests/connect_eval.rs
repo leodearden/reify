@@ -55,7 +55,11 @@ structure def S {
         compat_entry.is_some(),
         "expected compatibility constraint {:?} in results, got: {:?}",
         compat_id,
-        result.constraint_results.iter().map(|e| &e.id).collect::<Vec<_>>()
+        result
+            .constraint_results
+            .iter()
+            .map(|e| &e.id)
+            .collect::<Vec<_>>()
     );
     assert_eq!(
         compat_entry.unwrap().satisfaction,
@@ -112,13 +116,16 @@ structure def S {
         assert!(
             entry.is_some(),
             "expected compatibility constraint {:?} for {}->{} in results",
-            conn.compatibility_constraint, conn.left_port, conn.right_port
+            conn.compatibility_constraint,
+            conn.left_port,
+            conn.right_port
         );
         assert_eq!(
             entry.unwrap().satisfaction,
             Satisfaction::Satisfied,
             "connection {}->{}  should be Satisfied",
-            conn.left_port, conn.right_port
+            conn.left_port,
+            conn.right_port
         );
     }
 }
@@ -136,7 +143,11 @@ structure def S {
 "#;
 
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
     // Should have a direction error diagnostic, but still produce a connection
@@ -153,7 +164,10 @@ structure def S {
         .constraint_results
         .iter()
         .find(|e| e.id == *compat_id);
-    assert!(compat_entry.is_some(), "expected compatibility constraint in results");
+    assert!(
+        compat_entry.is_some(),
+        "expected compatibility constraint in results"
+    );
     assert_eq!(
         compat_entry.unwrap().satisfaction,
         Satisfaction::Violated,

@@ -1,6 +1,6 @@
 use tower_lsp::lsp_types::{Hover, HoverContents, MarkupContent, MarkupKind, Position, Url};
 
-use crate::analysis::{format_value, AnalysisContext};
+use crate::analysis::{AnalysisContext, format_value};
 use crate::convert::{find_word_at_offset, position_to_offset};
 
 /// Compute hover information for the symbol at the given position.
@@ -69,8 +69,12 @@ pub fn compute_hover(source: &str, uri: &Url, position: Position) -> Option<Hove
                     .as_ref()
                     .map(|t| format!(" -> {}", t.name))
                     .unwrap_or_default();
-                let mut md =
-                    format!("```reify\nfn {}({}){}\n```", f.name, params_str.join(", "), ret);
+                let mut md = format!(
+                    "```reify\nfn {}({}){}\n```",
+                    f.name,
+                    params_str.join(", "),
+                    ret
+                );
                 if let Some(doc) = ctx.find_entity_doc(word) {
                     md.push_str("\n\n");
                     md.push_str(doc);
@@ -216,8 +220,8 @@ mod tests {
         let source = reify_test_support::bracket_source();
         // 'thickness' in 'constraint thickness > 2mm' is on line 9
         let position = Position::new(9, 15); // on 'thickness' in constraint
-        let md = hover_markdown(source, position)
-            .expect("hover should return info for thickness ref");
+        let md =
+            hover_markdown(source, position).expect("hover should return info for thickness ref");
         assert!(
             md.contains("param"),
             "should show param (declaration type), got: {md}"
@@ -260,8 +264,8 @@ mod tests {
         let source = reify_test_support::bracket_source();
         // 'Bracket' is on line 0: "structure Bracket {"
         let position = Position::new(0, 12); // on 'Bracket'
-        let md = hover_markdown(source, position)
-            .expect("hover should return info for structure name");
+        let md =
+            hover_markdown(source, position).expect("hover should return info for structure name");
         assert!(
             md.contains("Bracket"),
             "should mention 'Bracket', got: {md}"
@@ -308,21 +312,25 @@ mod tests {
         // (it may cause a compile error, but hover should handle it)
         let result = compute_hover(source, &test_uri(), position);
         // unknownword isn't a keyword, member, or structure — should be None
-        assert!(
-            result.is_none(),
-            "unknown word should return None hover"
-        );
+        assert!(result.is_none(), "unknown word should return None hover");
     }
 
     // --- doc comment hover on members ---
 
     #[test]
     fn hover_on_documented_param_shows_doc() {
-        let source = "structure Bracket {\n    /// The width dimension.\n    param width: Scalar = 80mm\n}";
+        let source =
+            "structure Bracket {\n    /// The width dimension.\n    param width: Scalar = 80mm\n}";
         let position = Position::new(2, 10); // on 'width'
         let md = hover_markdown(source, position).expect("hover should return info");
-        assert!(md.contains("param width: Scalar"), "should contain param signature, got: {md}");
-        assert!(md.contains("The width dimension."), "should contain doc comment, got: {md}");
+        assert!(
+            md.contains("param width: Scalar"),
+            "should contain param signature, got: {md}"
+        );
+        assert!(
+            md.contains("The width dimension."),
+            "should contain doc comment, got: {md}"
+        );
     }
 
     #[test]
@@ -330,8 +338,14 @@ mod tests {
         let source = "structure Bracket {\n    param width: Scalar = 80mm\n    param height: Scalar = 40mm\n    /// Computed volume.\n    let area = width * height\n}";
         let position = Position::new(4, 8); // on 'area'
         let md = hover_markdown(source, position).expect("hover should return info");
-        assert!(md.contains("let area"), "should contain let signature, got: {md}");
-        assert!(md.contains("Computed volume."), "should contain doc comment, got: {md}");
+        assert!(
+            md.contains("let area"),
+            "should contain let signature, got: {md}"
+        );
+        assert!(
+            md.contains("Computed volume."),
+            "should contain doc comment, got: {md}"
+        );
     }
 
     #[test]
@@ -342,18 +356,28 @@ mod tests {
         assert!(md.contains("param"), "should contain 'param', got: {md}");
         assert!(md.contains("width"), "should contain 'width', got: {md}");
         // No doc section — no trailing paragraph
-        assert!(!md.ends_with("\n\n"), "should not end with double newline (empty doc section), got: {md}");
+        assert!(
+            !md.ends_with("\n\n"),
+            "should not end with double newline (empty doc section), got: {md}"
+        );
     }
 
     // --- doc comment hover on structures ---
 
     #[test]
     fn hover_on_documented_structure_shows_doc() {
-        let source = "/// A mounting bracket.\nstructure Bracket {\n    param width: Scalar = 80mm\n}";
+        let source =
+            "/// A mounting bracket.\nstructure Bracket {\n    param width: Scalar = 80mm\n}";
         let position = Position::new(1, 12); // on 'Bracket'
         let md = hover_markdown(source, position).expect("hover should return info");
-        assert!(md.contains("structure Bracket"), "should contain structure name, got: {md}");
-        assert!(md.contains("A mounting bracket."), "should contain doc comment, got: {md}");
+        assert!(
+            md.contains("structure Bracket"),
+            "should contain structure name, got: {md}"
+        );
+        assert!(
+            md.contains("A mounting bracket."),
+            "should contain doc comment, got: {md}"
+        );
     }
 
     #[test]
@@ -361,9 +385,15 @@ mod tests {
         let source = reify_test_support::bracket_source();
         let position = Position::new(0, 12); // on 'Bracket'
         let md = hover_markdown(source, position).expect("hover should return info");
-        assert!(md.contains("Bracket"), "should contain structure name, got: {md}");
+        assert!(
+            md.contains("Bracket"),
+            "should contain structure name, got: {md}"
+        );
         // Should not have extra blank doc section
-        assert!(!md.contains("\n\n\n"), "should not have triple newline (empty doc section), got: {md}");
+        assert!(
+            !md.contains("\n\n\n"),
+            "should not have triple newline (empty doc section), got: {md}"
+        );
     }
 
     // --- doc comment hover on fn/trait/enum ---
@@ -373,8 +403,14 @@ mod tests {
         let source = "/// Compute area.\nfn area(w: Scalar, h: Scalar) -> Scalar { w * h }";
         let position = Position::new(1, 4); // on 'area'
         let md = hover_markdown(source, position).expect("hover should return info");
-        assert!(md.contains("fn area"), "should contain fn signature, got: {md}");
-        assert!(md.contains("Compute area."), "should contain doc comment, got: {md}");
+        assert!(
+            md.contains("fn area"),
+            "should contain fn signature, got: {md}"
+        );
+        assert!(
+            md.contains("Compute area."),
+            "should contain doc comment, got: {md}"
+        );
     }
 
     #[test]
@@ -382,9 +418,15 @@ mod tests {
         let source = "fn area(w: Scalar, h: Scalar) -> Scalar { w * h }";
         let position = Position::new(0, 4); // on 'area'
         let md = hover_markdown(source, position).expect("hover should return info");
-        assert!(md.contains("fn area"), "should contain fn signature, got: {md}");
+        assert!(
+            md.contains("fn area"),
+            "should contain fn signature, got: {md}"
+        );
         // No doc section
-        assert!(!md.ends_with("\n\n"), "should not end with double newline, got: {md}");
+        assert!(
+            !md.ends_with("\n\n"),
+            "should not end with double newline, got: {md}"
+        );
     }
 
     #[test]
@@ -392,8 +434,14 @@ mod tests {
         let source = "/// Rigid body trait.\ntrait Rigid {\n    param mass: Scalar\n}";
         let position = Position::new(1, 7); // on 'Rigid'
         let md = hover_markdown(source, position).expect("hover should return info");
-        assert!(md.contains("trait Rigid"), "should contain trait name, got: {md}");
-        assert!(md.contains("Rigid body trait."), "should contain doc comment, got: {md}");
+        assert!(
+            md.contains("trait Rigid"),
+            "should contain trait name, got: {md}"
+        );
+        assert!(
+            md.contains("Rigid body trait."),
+            "should contain doc comment, got: {md}"
+        );
     }
 
     #[test]
@@ -401,8 +449,14 @@ mod tests {
         let source = "/// Flow direction.\nenum Direction { In, Out }";
         let position = Position::new(1, 6); // on 'Direction'
         let md = hover_markdown(source, position).expect("hover should return info");
-        assert!(md.contains("enum Direction"), "should contain enum name, got: {md}");
-        assert!(md.contains("Flow direction."), "should contain doc comment, got: {md}");
+        assert!(
+            md.contains("enum Direction"),
+            "should contain enum name, got: {md}"
+        );
+        assert!(
+            md.contains("Flow direction."),
+            "should contain doc comment, got: {md}"
+        );
     }
 
     // --- edge cases ---
@@ -412,8 +466,14 @@ mod tests {
         let source = "/// First line.\n/// Second line.\nstructure Bracket {\n    param width: Scalar = 80mm\n}";
         let position = Position::new(2, 12); // on 'Bracket'
         let md = hover_markdown(source, position).expect("hover should return info");
-        assert!(md.contains("First line."), "should contain first line, got: {md}");
-        assert!(md.contains("Second line."), "should contain second line, got: {md}");
+        assert!(
+            md.contains("First line."),
+            "should contain first line, got: {md}"
+        );
+        assert!(
+            md.contains("Second line."),
+            "should contain second line, got: {md}"
+        );
     }
 
     #[test]
@@ -421,8 +481,14 @@ mod tests {
         let source = "/// First paragraph.\n///\n/// Second paragraph.\nstructure Bracket {\n    param width: Scalar = 80mm\n}";
         let position = Position::new(3, 12); // on 'Bracket'
         let md = hover_markdown(source, position).expect("hover should return info");
-        assert!(md.contains("First paragraph."), "should contain first para, got: {md}");
-        assert!(md.contains("Second paragraph."), "should contain second para, got: {md}");
+        assert!(
+            md.contains("First paragraph."),
+            "should contain first para, got: {md}"
+        );
+        assert!(
+            md.contains("Second paragraph."),
+            "should contain second para, got: {md}"
+        );
     }
 
     #[test]
@@ -431,7 +497,10 @@ mod tests {
         let source = "structure Bracket {\n    /// The width.\n    param width: Scalar = 80mm\n    let doubled = width * 2\n}";
         let position = Position::new(3, 18); // on 'width' in 'width * 2'
         let md = hover_markdown(source, position).expect("hover should return info");
-        assert!(md.contains("The width."), "should show doc for referenced param, got: {md}");
+        assert!(
+            md.contains("The width."),
+            "should show doc for referenced param, got: {md}"
+        );
     }
 
     #[test]

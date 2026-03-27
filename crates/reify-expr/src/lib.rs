@@ -1,6 +1,9 @@
 use std::collections::HashMap;
 
-use reify_types::{BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, DimensionVector, QuantifierKind, Type, UnOp, Value, ValueCellId, ValueMap};
+use reify_types::{
+    BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, DimensionVector, QuantifierKind, Type,
+    UnOp, Value, ValueCellId, ValueMap,
+};
 
 /// Maximum recursion depth for user-defined function calls.
 const MAX_RECURSION_DEPTH: u32 = 256;
@@ -72,13 +75,9 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
 
         CompiledExprKind::ValueRef(id) => ctx.values.get_or_undef(id),
 
-        CompiledExprKind::BinOp { op, left, right } => {
-            eval_binop(*op, left, right, ctx)
-        }
+        CompiledExprKind::BinOp { op, left, right } => eval_binop(*op, left, right, ctx),
 
-        CompiledExprKind::UnOp { op, operand } => {
-            eval_unop(*op, operand, ctx)
-        }
+        CompiledExprKind::UnOp { op, operand } => eval_unop(*op, operand, ctx),
 
         CompiledExprKind::FunctionCall { function, args } => {
             let evaluated_args: Vec<Value> = args.iter().map(|a| eval_expr(a, ctx)).collect();
@@ -106,10 +105,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             }
         }
 
-        CompiledExprKind::Match {
-            discriminant,
-            arms,
-        } => {
+        CompiledExprKind::Match { discriminant, arms } => {
             let disc_val = eval_expr(discriminant, ctx);
             if disc_val.is_undef() {
                 return Value::Undef;
@@ -126,7 +122,10 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                 }
                 _ => {
                     #[cfg(debug_assertions)]
-                    eprintln!("[reify-expr] match expression on non-enum value: {:?}", disc_val);
+                    eprintln!(
+                        "[reify-expr] match expression on non-enum value: {:?}",
+                        disc_val
+                    );
                     Value::Undef
                 }
             }
@@ -146,9 +145,10 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             }
         }
 
-        CompiledExprKind::UserFunctionCall { function_name, args } => {
-            eval_user_function_call(function_name, args, ctx)
-        }
+        CompiledExprKind::UserFunctionCall {
+            function_name,
+            args,
+        } => eval_user_function_call(function_name, args, ctx),
 
         CompiledExprKind::Lambda {
             params,
@@ -204,14 +204,16 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                     let i = *i as usize;
                     items.get(i).cloned().unwrap_or(Value::Undef)
                 }
-                (Value::Map(entries), key) => {
-                    entries.get(key).cloned().unwrap_or(Value::Undef)
-                }
+                (Value::Map(entries), key) => entries.get(key).cloned().unwrap_or(Value::Undef),
                 _ => Value::Undef,
             }
         }
 
-        CompiledExprKind::MethodCall { object, method, args } => {
+        CompiledExprKind::MethodCall {
+            object,
+            method,
+            args,
+        } => {
             let obj = eval_expr(object, ctx);
             if obj.is_undef() {
                 return Value::Undef;
@@ -246,7 +248,13 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
         // DeterminacyPredicate is engine-level only; eval layer returns Undef.
         CompiledExprKind::DeterminacyPredicate { .. } => Value::Undef,
 
-        CompiledExprKind::Quantifier { kind, variable_id, collection, predicate, .. } => {
+        CompiledExprKind::Quantifier {
+            kind,
+            variable_id,
+            collection,
+            predicate,
+            ..
+        } => {
             let coll_val = eval_expr(collection, ctx);
             if coll_val.is_undef() {
                 return Value::Undef;
@@ -274,7 +282,11 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                             _ => return Value::Undef, // type error
                         }
                     }
-                    if has_undef { Value::Undef } else { Value::Bool(true) }
+                    if has_undef {
+                        Value::Undef
+                    } else {
+                        Value::Bool(true)
+                    }
                 }
                 QuantifierKind::Exists => {
                     // Kleene exists: true short-circuits, undef tracked
@@ -290,20 +302,19 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                             _ => return Value::Undef, // type error
                         }
                     }
-                    if has_undef { Value::Undef } else { Value::Bool(false) }
+                    if has_undef {
+                        Value::Undef
+                    } else {
+                        Value::Bool(false)
+                    }
                 }
             }
         }
-
     }
 }
 
 /// Evaluate a user-defined function call.
-fn eval_user_function_call(
-    function_name: &str,
-    args: &[CompiledExpr],
-    ctx: &EvalContext,
-) -> Value {
+fn eval_user_function_call(function_name: &str, args: &[CompiledExpr], ctx: &EvalContext) -> Value {
     // Evaluate arguments
     let evaluated_args: Vec<Value> = args.iter().map(|a| eval_expr(a, ctx)).collect();
 
@@ -321,17 +332,14 @@ fn eval_user_function_call(
     // The compiler uses exact type matching during resolution, so the compiled args'
     // result_types exactly equal the selected overload's param types. Matching on
     // these result_types selects the same overload the compiler chose.
-    let func = ctx
-        .functions
-        .iter()
-        .find(|f| {
-            f.name == function_name
-                && f.params.len() == args.len()
-                && f.params
-                    .iter()
-                    .zip(args.iter())
-                    .all(|((_, param_ty), arg)| *param_ty == arg.result_type)
-        });
+    let func = ctx.functions.iter().find(|f| {
+        f.name == function_name
+            && f.params.len() == args.len()
+            && f.params
+                .iter()
+                .zip(args.iter())
+                .all(|((_, param_ty), arg)| *param_ty == arg.result_type)
+    });
 
     let func = match func {
         Some(f) => f,
@@ -341,10 +349,7 @@ fn eval_user_function_call(
     // Build fresh scope with parameter bindings
     let mut scope = ValueMap::new();
     for ((param_name, _param_type), arg_val) in func.params.iter().zip(evaluated_args) {
-        scope.insert(
-            ValueCellId::new(&func.name, param_name),
-            arg_val,
-        );
+        scope.insert(ValueCellId::new(&func.name, param_name), arg_val);
     }
 
     // Evaluate let bindings in order, growing the scope
@@ -389,15 +394,29 @@ pub fn apply_lambda(lambda: &Value, args: &[Value], ctx: &EvalContext) -> Value 
 }
 
 /// Evaluate a method call on a collection value.
-fn eval_method_call(obj: &Value, method: &str, args: &[Value], result_type: &Type, ctx: &EvalContext) -> Value {
+fn eval_method_call(
+    obj: &Value,
+    method: &str,
+    args: &[Value],
+    result_type: &Type,
+    ctx: &EvalContext,
+) -> Value {
     match method {
         "count" => match obj {
             Value::List(items) => {
-                if items.iter().any(|v| v.is_undef()) { Value::Undef } else { Value::Int(items.len() as i64) }
-            },
+                if items.iter().any(|v| v.is_undef()) {
+                    Value::Undef
+                } else {
+                    Value::Int(items.len() as i64)
+                }
+            }
             Value::Set(items) => {
-                if items.iter().any(|v| v.is_undef()) { Value::Undef } else { Value::Int(items.len() as i64) }
-            },
+                if items.iter().any(|v| v.is_undef()) {
+                    Value::Undef
+                } else {
+                    Value::Int(items.len() as i64)
+                }
+            }
             Value::Map(entries) => Value::Int(entries.len() as i64),
             _ => Value::Undef,
         },
@@ -411,39 +430,31 @@ fn eval_method_call(obj: &Value, method: &str, args: &[Value], result_type: &Typ
                 Value::Set(items) => Value::Bool(items.contains(needle)),
                 _ => Value::Undef,
             }
-        },
+        }
         "union" => {
             if args.len() != 1 {
                 return Value::Undef;
             }
             match (obj, &args[0]) {
-                (Value::Set(a), Value::Set(b)) => {
-                    Value::Set(a.union(b).cloned().collect())
-                }
+                (Value::Set(a), Value::Set(b)) => Value::Set(a.union(b).cloned().collect()),
                 _ => Value::Undef,
             }
-        },
+        }
         "intersection" => {
             if args.len() != 1 {
                 return Value::Undef;
             }
             match (obj, &args[0]) {
-                (Value::Set(a), Value::Set(b)) => {
-                    Value::Set(a.intersection(b).cloned().collect())
-                }
+                (Value::Set(a), Value::Set(b)) => Value::Set(a.intersection(b).cloned().collect()),
                 _ => Value::Undef,
             }
-        },
+        }
         "keys" => match obj {
-            Value::Map(entries) => {
-                Value::List(entries.keys().cloned().collect())
-            }
+            Value::Map(entries) => Value::List(entries.keys().cloned().collect()),
             _ => Value::Undef,
         },
         "values" => match obj {
-            Value::Map(entries) => {
-                Value::List(entries.values().cloned().collect())
-            }
+            Value::Map(entries) => Value::List(entries.values().cloned().collect()),
             _ => Value::Undef,
         },
         "contains_key" => {
@@ -454,18 +465,16 @@ fn eval_method_call(obj: &Value, method: &str, args: &[Value], result_type: &Typ
                 Value::Map(entries) => Value::Bool(entries.contains_key(&args[0])),
                 _ => Value::Undef,
             }
-        },
+        }
         "difference" => {
             if args.len() != 1 {
                 return Value::Undef;
             }
             match (obj, &args[0]) {
-                (Value::Set(a), Value::Set(b)) => {
-                    Value::Set(a.difference(b).cloned().collect())
-                }
+                (Value::Set(a), Value::Set(b)) => Value::Set(a.difference(b).cloned().collect()),
                 _ => Value::Undef,
             }
-        },
+        }
         "sum" => match obj {
             Value::List(items) => {
                 if items.is_empty() {
@@ -511,7 +520,7 @@ fn eval_method_call(obj: &Value, method: &str, args: &[Value], result_type: &Typ
                 }
                 _ => Value::Undef,
             }
-        },
+        }
         "all" => {
             if args.len() != 1 {
                 return Value::Undef;
@@ -528,11 +537,15 @@ fn eval_method_call(obj: &Value, method: &str, args: &[Value], result_type: &Typ
                             _ => return Value::Undef,
                         }
                     }
-                    if has_undef { Value::Undef } else { Value::Bool(true) }
+                    if has_undef {
+                        Value::Undef
+                    } else {
+                        Value::Bool(true)
+                    }
                 }
                 _ => Value::Undef,
             }
-        },
+        }
         "any" => {
             if args.len() != 1 {
                 return Value::Undef;
@@ -549,11 +562,15 @@ fn eval_method_call(obj: &Value, method: &str, args: &[Value], result_type: &Typ
                             _ => return Value::Undef,
                         }
                     }
-                    if has_undef { Value::Undef } else { Value::Bool(false) }
+                    if has_undef {
+                        Value::Undef
+                    } else {
+                        Value::Bool(false)
+                    }
                 }
                 _ => Value::Undef,
             }
-        },
+        }
         "fold" => {
             if args.len() != 2 {
                 return Value::Undef;
@@ -579,7 +596,7 @@ fn eval_method_call(obj: &Value, method: &str, args: &[Value], result_type: &Typ
                 }
                 _ => Value::Undef,
             }
-        },
+        }
         "concat" => {
             if args.len() != 1 {
                 return Value::Undef;
@@ -592,7 +609,7 @@ fn eval_method_call(obj: &Value, method: &str, args: &[Value], result_type: &Typ
                 }
                 _ => Value::Undef,
             }
-        },
+        }
         "generate" => {
             if args.len() != 2 {
                 return Value::Undef;
@@ -611,7 +628,7 @@ fn eval_method_call(obj: &Value, method: &str, args: &[Value], result_type: &Typ
                 }
                 _ => Value::Undef,
             }
-        },
+        }
         "filter" => {
             if args.len() != 1 {
                 return Value::Undef;
@@ -633,7 +650,7 @@ fn eval_method_call(obj: &Value, method: &str, args: &[Value], result_type: &Typ
                 }
                 _ => Value::Undef,
             }
-        },
+        }
         "magnitude" => {
             if !args.is_empty() {
                 return Value::Undef;
@@ -652,7 +669,7 @@ fn eval_method_call(obj: &Value, method: &str, args: &[Value], result_type: &Typ
                 }
                 _ => Value::Undef,
             }
-        },
+        }
         "phase" => {
             if !args.is_empty() {
                 return Value::Undef;
@@ -667,7 +684,7 @@ fn eval_method_call(obj: &Value, method: &str, args: &[Value], result_type: &Typ
                 }
                 _ => Value::Undef,
             }
-        },
+        }
         "conjugate" => {
             if !args.is_empty() {
                 return Value::Undef;
@@ -680,7 +697,7 @@ fn eval_method_call(obj: &Value, method: &str, args: &[Value], result_type: &Typ
                 },
                 _ => Value::Undef,
             }
-        },
+        }
         "re" | "im" => {
             if !args.is_empty() {
                 return Value::Undef;
@@ -699,7 +716,7 @@ fn eval_method_call(obj: &Value, method: &str, args: &[Value], result_type: &Typ
                 }
                 _ => Value::Undef,
             }
-        },
+        }
         "x" | "y" | "z" => {
             let index = match method {
                 "x" => 0,
@@ -708,12 +725,10 @@ fn eval_method_call(obj: &Value, method: &str, args: &[Value], result_type: &Typ
                 _ => unreachable!(),
             };
             match obj {
-                Value::Tensor(components) => {
-                    components.get(index).cloned().unwrap_or(Value::Undef)
-                }
+                Value::Tensor(components) => components.get(index).cloned().unwrap_or(Value::Undef),
                 _ => Value::Undef,
             }
-        },
+        }
         _ => Value::Undef,
     }
 }
@@ -852,9 +867,13 @@ fn negate_components(components: Vec<Value>, wrap: fn(Vec<Value>) -> Value) -> V
         .map(|c| match c {
             Value::Int(i) => i.checked_neg().map(Value::Int).unwrap_or(Value::Undef),
             Value::Real(r) => Value::Real(-r),
-            Value::Scalar { si_value, dimension } => {
-                Value::Scalar { si_value: -si_value, dimension }
-            }
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => Value::Scalar {
+                si_value: -si_value,
+                dimension,
+            },
             _ => Value::Undef,
         })
         .collect();
@@ -893,8 +912,16 @@ fn eval_add(lv: &Value, rv: &Value) -> Value {
         }
         // Complex + Complex: dimension must match
         (
-            Value::Complex { re: ar, im: ai, dimension: ad },
-            Value::Complex { re: br, im: bi, dimension: bd },
+            Value::Complex {
+                re: ar,
+                im: ai,
+                dimension: ad,
+            },
+            Value::Complex {
+                re: br,
+                im: bi,
+                dimension: bd,
+            },
         ) => {
             if ad != bd {
                 Value::Undef
@@ -948,8 +975,16 @@ fn eval_sub(lv: &Value, rv: &Value) -> Value {
         }
         // Complex - Complex: dimension must match
         (
-            Value::Complex { re: ar, im: ai, dimension: ad },
-            Value::Complex { re: br, im: bi, dimension: bd },
+            Value::Complex {
+                re: ar,
+                im: ai,
+                dimension: ad,
+            },
+            Value::Complex {
+                re: br,
+                im: bi,
+                dimension: bd,
+            },
         ) => {
             if ad != bd {
                 Value::Undef
@@ -1017,9 +1052,18 @@ fn make_components_3(x: f64, y: f64, z: f64, dim: DimensionVector) -> Vec<Value>
         vec![Value::Real(x), Value::Real(y), Value::Real(z)]
     } else {
         vec![
-            Value::Scalar { si_value: x, dimension: dim },
-            Value::Scalar { si_value: y, dimension: dim },
-            Value::Scalar { si_value: z, dimension: dim },
+            Value::Scalar {
+                si_value: x,
+                dimension: dim,
+            },
+            Value::Scalar {
+                si_value: y,
+                dimension: dim,
+            },
+            Value::Scalar {
+                si_value: z,
+                dimension: dim,
+            },
         ]
     }
 }
@@ -1033,8 +1077,16 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
         }
         // Complex * Complex: (ac-bd) + (ad+bc)i, dimensions multiply
         (
-            Value::Complex { re: ar, im: ai, dimension: ad },
-            Value::Complex { re: br, im: bi, dimension: bd },
+            Value::Complex {
+                re: ar,
+                im: ai,
+                dimension: ad,
+            },
+            Value::Complex {
+                re: br,
+                im: bi,
+                dimension: bd,
+            },
         ) => Value::Complex {
             re: ar * br - ai * bi,
             im: ar * bi + ai * br,
@@ -1055,24 +1107,62 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
             dimension: ad.mul(bd),
         },
         // Scalar * dimensionless numeric
-        (Value::Scalar { si_value, dimension }, Value::Int(n))
-        | (Value::Int(n), Value::Scalar { si_value, dimension }) => Value::Scalar {
+        (
+            Value::Scalar {
+                si_value,
+                dimension,
+            },
+            Value::Int(n),
+        )
+        | (
+            Value::Int(n),
+            Value::Scalar {
+                si_value,
+                dimension,
+            },
+        ) => Value::Scalar {
             si_value: si_value * *n as f64,
             dimension: *dimension,
         },
-        (Value::Scalar { si_value, dimension }, Value::Real(r))
-        | (Value::Real(r), Value::Scalar { si_value, dimension }) => Value::Scalar {
+        (
+            Value::Scalar {
+                si_value,
+                dimension,
+            },
+            Value::Real(r),
+        )
+        | (
+            Value::Real(r),
+            Value::Scalar {
+                si_value,
+                dimension,
+            },
+        ) => Value::Scalar {
             si_value: si_value * r,
             dimension: *dimension,
         },
         // Complex * Scalar | Scalar * Complex: scale re/im, combine dimensions
         (
-            Value::Complex { re, im, dimension: cd },
-            Value::Scalar { si_value, dimension: sd },
+            Value::Complex {
+                re,
+                im,
+                dimension: cd,
+            },
+            Value::Scalar {
+                si_value,
+                dimension: sd,
+            },
         )
         | (
-            Value::Scalar { si_value, dimension: sd },
-            Value::Complex { re, im, dimension: cd },
+            Value::Scalar {
+                si_value,
+                dimension: sd,
+            },
+            Value::Complex {
+                re,
+                im,
+                dimension: cd,
+            },
         ) => Value::Complex {
             re: re * si_value,
             im: im * si_value,
@@ -1100,7 +1190,10 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
         }
         // Scalar * Vector or Vector * Scalar: scale each component → Vector
         (Value::Vector(components), scalar) | (scalar, Value::Vector(components))
-            if !matches!(scalar, Value::Vector(_) | Value::Point(_) | Value::Tensor(_) | Value::Transform { .. }) =>
+            if !matches!(
+                scalar,
+                Value::Vector(_) | Value::Point(_) | Value::Tensor(_) | Value::Transform { .. }
+            ) =>
         {
             scale_components(components, scalar, eval_mul, Value::Vector)
         }
@@ -1108,15 +1201,15 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
         // Pragmatic deviation from strict affine rules: needed for weighted
         // interpolation and barycentric coordinates.
         (Value::Point(components), scalar) | (scalar, Value::Point(components))
-            if !matches!(scalar, Value::Vector(_) | Value::Point(_) | Value::Tensor(_) | Value::Transform { .. }) =>
+            if !matches!(
+                scalar,
+                Value::Vector(_) | Value::Point(_) | Value::Tensor(_) | Value::Transform { .. }
+            ) =>
         {
             scale_components(components, scalar, eval_mul, Value::Point)
         }
         // Transform * Vector: apply rotation only (translation is ignored for vectors)
-        (
-            Value::Transform { rotation, .. },
-            Value::Vector(components),
-        ) => {
+        (Value::Transform { rotation, .. }, Value::Vector(components)) => {
             if let Value::Orientation { w, x, y, z } = rotation.as_ref() {
                 if !w.is_finite() || !x.is_finite() || !y.is_finite() || !z.is_finite() {
                     return Value::Undef;
@@ -1133,7 +1226,10 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
         }
         // Transform * Point: apply rotation then add translation
         (
-            Value::Transform { rotation, translation },
+            Value::Transform {
+                rotation,
+                translation,
+            },
             Value::Point(components),
         ) => {
             if let Value::Orientation { w, x, y, z } = rotation.as_ref() {
@@ -1164,21 +1260,35 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
         }
         // Transform * Transform: composition (R1,t1)*(R2,t2) = (R1*R2, R1*t2+t1)
         (
-            Value::Transform { rotation: r1, translation: t1 },
-            Value::Transform { rotation: r2, translation: t2 },
+            Value::Transform {
+                rotation: r1,
+                translation: t1,
+            },
+            Value::Transform {
+                rotation: r2,
+                translation: t2,
+            },
         ) => {
             if let (
-                Value::Orientation { w: w1, x: x1, y: y1, z: z1 },
-                Value::Orientation { w: w2, x: x2, y: y2, z: z2 },
+                Value::Orientation {
+                    w: w1,
+                    x: x1,
+                    y: y1,
+                    z: z1,
+                },
+                Value::Orientation {
+                    w: w2,
+                    x: x2,
+                    y: y2,
+                    z: z2,
+                },
             ) = (r1.as_ref(), r2.as_ref())
             {
                 if let (Value::Vector(t1_items), Value::Vector(t2_items)) =
                     (t1.as_ref(), t2.as_ref())
                 {
-                    if let (
-                        Some((t1x, t1y, t1z, t1_dim)),
-                        Some((t2x, t2y, t2z, t2_dim)),
-                    ) = (vec3_components(t1_items), vec3_components(t2_items))
+                    if let (Some((t1x, t1y, t1z, t1_dim)), Some((t2x, t2y, t2z, t2_dim))) =
+                        (vec3_components(t1_items), vec3_components(t2_items))
                     {
                         // Dimension check: both translations must share dimension
                         if t1_dim != t2_dim {
@@ -1188,7 +1298,8 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
                         let q1 = (*w1, *x1, *y1, *z1);
                         let (rw, rx, ry, rz) = quat_mul_t(q1, (*w2, *x2, *y2, *z2));
                         // Normalize result quaternion (reject NaN/Inf/zero-length)
-                        if !rw.is_finite() || !rx.is_finite() || !ry.is_finite() || !rz.is_finite() {
+                        if !rw.is_finite() || !rx.is_finite() || !ry.is_finite() || !rz.is_finite()
+                        {
                             return Value::Undef;
                         }
                         let norm = (rw * rw + rx * rx + ry * ry + rz * rz).sqrt();
@@ -1269,18 +1380,37 @@ fn eval_div(lv: &Value, rv: &Value) -> Value {
             }
         }
         // Scalar / dimensionless
-        (Value::Scalar { si_value, dimension }, Value::Int(n)) => Value::Scalar {
+        (
+            Value::Scalar {
+                si_value,
+                dimension,
+            },
+            Value::Int(n),
+        ) => Value::Scalar {
             si_value: si_value / *n as f64,
             dimension: *dimension,
         },
-        (Value::Scalar { si_value, dimension }, Value::Real(r)) => Value::Scalar {
+        (
+            Value::Scalar {
+                si_value,
+                dimension,
+            },
+            Value::Real(r),
+        ) => Value::Scalar {
             si_value: si_value / r,
             dimension: *dimension,
         },
         // Complex / Scalar: divide re/im, combine dimensions
         (
-            Value::Complex { re, im, dimension: cd },
-            Value::Scalar { si_value, dimension: sd },
+            Value::Complex {
+                re,
+                im,
+                dimension: cd,
+            },
+            Value::Scalar {
+                si_value,
+                dimension: sd,
+            },
         ) => Value::Complex {
             re: re / si_value,
             im: im / si_value,
@@ -1304,14 +1434,20 @@ fn eval_div(lv: &Value, rv: &Value) -> Value {
         }
         // Vector / Scalar: divide each component by the scalar → Vector
         (Value::Vector(components), scalar)
-            if !matches!(scalar, Value::Vector(_) | Value::Point(_) | Value::Tensor(_)) =>
+            if !matches!(
+                scalar,
+                Value::Vector(_) | Value::Point(_) | Value::Tensor(_)
+            ) =>
         {
             scale_components(components, scalar, eval_div, Value::Vector)
         }
         // Point / Scalar: divide each component by the scalar → Point
         // Pragmatic deviation from strict affine rules (needed for interpolation).
         (Value::Point(components), scalar)
-            if !matches!(scalar, Value::Vector(_) | Value::Point(_) | Value::Tensor(_)) =>
+            if !matches!(
+                scalar,
+                Value::Vector(_) | Value::Point(_) | Value::Tensor(_)
+            ) =>
         {
             scale_components(components, scalar, eval_div, Value::Point)
         }
@@ -1352,7 +1488,13 @@ fn eval_pow(lv: &Value, rv: &Value) -> Value {
         (Value::Real(base), Value::Real(exp)) => Value::Real(base.powf(*exp)),
         (Value::Int(base), Value::Real(exp)) => Value::Real((*base as f64).powf(*exp)),
         // Scalar ^ Int: raise value, multiply dimension exponents
-        (Value::Scalar { si_value, dimension }, Value::Int(n)) => Value::Scalar {
+        (
+            Value::Scalar {
+                si_value,
+                dimension,
+            },
+            Value::Int(n),
+        ) => Value::Scalar {
             si_value: si_value.powi(*n as i32),
             dimension: dimension.pow(*n as i8),
         },
@@ -1468,7 +1610,10 @@ fn eval_unop(op: UnOp, operand: &CompiledExpr, ctx: &EvalContext) -> Value {
         UnOp::Neg => match v {
             Value::Int(i) => Value::Int(-i),
             Value::Real(r) => Value::Real(-r),
-            Value::Scalar { si_value, dimension } => Value::Scalar {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => Value::Scalar {
                 si_value: -si_value,
                 dimension,
             },
@@ -1584,7 +1729,10 @@ mod tests {
         let values = ValueMap::new();
         let result = eval_expr(&expr, &EvalContext::simple(&values));
         match &result {
-            Value::Scalar { si_value, dimension } => {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
                 assert!((si_value - 0.008).abs() < 1e-12);
                 assert_eq!(*dimension, DimensionVector::AREA);
             }
@@ -1747,7 +1895,10 @@ mod tests {
         let values = ValueMap::new();
         let result = eval_expr(&expr, &EvalContext::simple(&values));
         match &result {
-            Value::Scalar { si_value, dimension } => {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
                 assert!((si_value - 9e-6).abs() < 1e-15);
                 assert_eq!(*dimension, DimensionVector::AREA);
             }
@@ -1786,7 +1937,10 @@ mod tests {
 
         let result = eval_expr(&volume, &EvalContext::simple(&values));
         match &result {
-            Value::Scalar { si_value, dimension } => {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
                 // 0.08 * 0.1 * 0.005 = 4e-5 m³
                 assert!((si_value - 4e-5).abs() < 1e-15);
                 assert_eq!(*dimension, DimensionVector::VOLUME);
@@ -2185,12 +2339,10 @@ mod tests {
     #[test]
     fn eval_match_undef_discriminant() {
         let discriminant = lit(Value::Undef, Type::Int);
-        let arms = vec![
-            reify_types::CompiledMatchArm {
-                patterns: vec!["In".to_string()],
-                body: lit(Value::Int(1), Type::Int),
-            },
-        ];
+        let arms = vec![reify_types::CompiledMatchArm {
+            patterns: vec!["In".to_string()],
+            body: lit(Value::Int(1), Type::Int),
+        }];
         let expr = CompiledExpr {
             content_hash: reify_types::ContentHash::of(&[101]),
             result_type: Type::Int,
@@ -2478,7 +2630,11 @@ mod tests {
         let functions = [infinite_fn];
         let ctx = EvalContext::new(&values, &functions);
         let result = eval_expr(&call_expr, &ctx);
-        assert!(result.is_undef(), "expected Undef for infinite recursion, got {:?}", result);
+        assert!(
+            result.is_undef(),
+            "expected Undef for infinite recursion, got {:?}",
+            result
+        );
     }
 
     #[test]
@@ -2497,7 +2653,11 @@ mod tests {
         let functions = [double_fn];
         let ctx = EvalContext::new(&values, &functions);
         let result = eval_expr(&call_expr, &ctx);
-        assert!(result.is_undef(), "expected Undef for undef arg, got {:?}", result);
+        assert!(
+            result.is_undef(),
+            "expected Undef for undef arg, got {:?}",
+            result
+        );
     }
 
     #[test]
@@ -2556,7 +2716,10 @@ mod tests {
         let ctx = EvalContext::new(&values, &functions);
         let result = eval_expr(&call_expr, &ctx);
         match &result {
-            Value::Scalar { si_value, dimension } => {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
                 assert!(
                     (si_value - 0.008).abs() < 1e-12,
                     "expected 0.008, got {}",
@@ -2591,10 +2754,7 @@ mod tests {
         let process2 = CompiledFunction {
             name: "process".to_string(),
             is_pub: false,
-            params: vec![
-                ("x".to_string(), Type::Real),
-                ("y".to_string(), Type::Real),
-            ],
+            params: vec![("x".to_string(), Type::Real), ("y".to_string(), Type::Real)],
             return_type: Type::Real,
             body: CompiledFnBody {
                 let_bindings: vec![],

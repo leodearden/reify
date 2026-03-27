@@ -82,9 +82,7 @@ impl<K: Clone + Hash + Eq, V: Clone> Default for PersistentMap<K, V> {
     }
 }
 
-impl<K: Clone + Hash + Eq + fmt::Debug, V: Clone + fmt::Debug> fmt::Debug
-    for PersistentMap<K, V>
-{
+impl<K: Clone + Hash + Eq + fmt::Debug, V: Clone + fmt::Debug> fmt::Debug for PersistentMap<K, V> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_map().entries(self.inner.iter()).finish()
     }
@@ -202,10 +200,7 @@ mod tests {
 
         let mut pairs: Vec<_> = map.iter().map(|(k, v)| (k.clone(), *v)).collect();
         pairs.sort();
-        assert_eq!(
-            pairs,
-            vec![("a".to_string(), 1), ("b".to_string(), 2)]
-        );
+        assert_eq!(pairs, vec![("a".to_string(), 1), ("b".to_string(), 2)]);
     }
 
     #[test]
@@ -225,10 +220,7 @@ mod tests {
 
         let mut pairs: Vec<_> = map.into_iter().collect();
         pairs.sort();
-        assert_eq!(
-            pairs,
-            vec![("a".to_string(), 1), ("b".to_string(), 2)]
-        );
+        assert_eq!(pairs, vec![("a".to_string(), 1), ("b".to_string(), 2)]);
     }
 
     #[test]

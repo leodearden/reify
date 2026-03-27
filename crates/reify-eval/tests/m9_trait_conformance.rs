@@ -8,7 +8,10 @@ use reify_test_support::mocks::MockConstraintChecker;
 use reify_types::{ModulePath, Satisfaction, Severity, ValueCellId};
 
 /// Absolute path to the example file, resolved at compile time from the crate root.
-const EXAMPLE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/m9_trait_conformance.ri");
+const EXAMPLE_PATH: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../examples/m9_trait_conformance.ri"
+);
 
 // ── Helper ──────────────────────────────────────────────────────────
 
@@ -326,7 +329,10 @@ fn refinement_chain_values() {
                 si_value
             );
         }
-        other => panic!("expected Real or Scalar for Component.density, got {:?}", other),
+        other => panic!(
+            "expected Real or Scalar for Component.density, got {:?}",
+            other
+        ),
     }
 
     // All constraints from the full chain should be satisfied

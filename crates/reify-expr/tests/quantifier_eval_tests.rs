@@ -1,6 +1,6 @@
 //! Quantifier evaluation tests.
 
-use reify_expr::{eval_expr, EvalContext};
+use reify_expr::{EvalContext, eval_expr};
 use reify_types::{
     BinOp, CompiledExpr, CompiledExprKind, QuantifierKind, Type, Value, ValueCellId, ValueMap,
 };
@@ -242,7 +242,11 @@ structure S {
 }
 "#;
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("integ_test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     // Compile
     let compiled = reify_compiler::compile(&parsed);
@@ -254,7 +258,10 @@ structure S {
     assert!(errors.is_empty(), "compile errors: {:?}", errors);
 
     let template = &compiled.templates[0];
-    assert!(!template.constraints.is_empty(), "should have at least one constraint");
+    assert!(
+        !template.constraints.is_empty(),
+        "should have at least one constraint"
+    );
 
     // Find the grades value cell and the constraint
     let grades_cell = template
@@ -287,7 +294,11 @@ structure S {
     let mut values = ValueMap::new();
     values.insert(grades_cell.id.clone(), grades_value);
     let result = eval_expr(constraint_expr, &EvalContext::simple(&values));
-    assert_eq!(result, Value::Bool(true), "all grades >= 8.8 should be true");
+    assert_eq!(
+        result,
+        Value::Bool(true),
+        "all grades >= 8.8 should be true"
+    );
 }
 
 /// step-11: Integration test for exists — parse + compile + eval with a false result
@@ -300,7 +311,11 @@ structure S {
 }
 "#;
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("integ_test2"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
     let errors: Vec<_> = compiled

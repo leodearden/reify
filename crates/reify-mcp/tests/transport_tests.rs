@@ -38,11 +38,13 @@ fn in_process_tools_call_missing_params_returns_error() {
 
     assert_eq!(response["result"]["isError"], true);
     let content = response["result"]["content"].as_array().unwrap();
-    assert!(content[0]["text"]
-        .as_str()
-        .unwrap()
-        .to_lowercase()
-        .contains("invalid parameters"));
+    assert!(
+        content[0]["text"]
+            .as_str()
+            .unwrap()
+            .to_lowercase()
+            .contains("invalid parameters")
+    );
 }
 
 #[test]
@@ -68,7 +70,10 @@ async fn stream_mode_tools_list() {
     let server_clone = server.clone();
     let handle = tokio::spawn(async move {
         let reader = tokio::io::BufReader::new(server_reader);
-        server_clone.run_on_streams(reader, server_writer).await.unwrap();
+        server_clone
+            .run_on_streams(reader, server_writer)
+            .await
+            .unwrap();
     });
 
     // Write a tools/list request
@@ -140,10 +145,7 @@ fn integration_tools_list_has_all_16_correct_names() {
     ];
     let tool_names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
     for expected in &expected_names {
-        assert!(
-            tool_names.contains(expected),
-            "Missing tool: {expected}"
-        );
+        assert!(tool_names.contains(expected), "Missing tool: {expected}");
     }
 }
 
@@ -208,7 +210,10 @@ impl tokio::io::AsyncWrite for FailingWriter {
         _cx: &mut Context<'_>,
         _buf: &[u8],
     ) -> Poll<io::Result<usize>> {
-        Poll::Ready(Err(io::Error::new(io::ErrorKind::BrokenPipe, "test write error")))
+        Poll::Ready(Err(io::Error::new(
+            io::ErrorKind::BrokenPipe,
+            "test write error",
+        )))
     }
 
     fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
@@ -244,5 +249,9 @@ async fn stream_mode_graceful_eof_returns_ok() {
     let (_, writer) = tokio::io::duplex(4096);
 
     let result = server.run_on_streams(reader, writer).await;
-    assert!(result.is_ok(), "Expected Ok on graceful EOF, got Err: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Expected Ok on graceful EOF, got Err: {:?}",
+        result.err()
+    );
 }

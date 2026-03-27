@@ -173,7 +173,11 @@ fn parse_auto_param() {
     param thickness: Scalar = auto
 }"#;
     let module = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
-    assert!(module.errors.is_empty(), "expected no parse errors: {:?}", module.errors);
+    assert!(
+        module.errors.is_empty(),
+        "expected no parse errors: {:?}",
+        module.errors
+    );
     assert_eq!(module.declarations.len(), 1);
 
     let structure = match &module.declarations[0] {
@@ -190,7 +194,11 @@ fn parse_auto_param() {
     assert_eq!(param.name, "thickness");
     match &param.default {
         Some(expr) => {
-            assert!(matches!(expr.kind, ExprKind::Auto), "expected ExprKind::Auto, got {:?}", expr.kind);
+            assert!(
+                matches!(expr.kind, ExprKind::Auto),
+                "expected ExprKind::Auto, got {:?}",
+                expr.kind
+            );
         }
         None => panic!("expected auto default, got None"),
     }
@@ -205,7 +213,11 @@ fn parse_mixed_auto_and_normal_params() {
     param z: Scalar
 }"#;
     let module = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
-    assert!(module.errors.is_empty(), "expected no parse errors: {:?}", module.errors);
+    assert!(
+        module.errors.is_empty(),
+        "expected no parse errors: {:?}",
+        module.errors
+    );
 
     let structure = match &module.declarations[0] {
         Declaration::Structure(s) => s,
@@ -219,7 +231,10 @@ fn parse_mixed_auto_and_normal_params() {
         other => panic!("expected Param, got {:?}", other),
     };
     assert_eq!(x.name, "x");
-    assert!(matches!(x.default.as_ref().unwrap().kind, ExprKind::QuantityLiteral { .. }));
+    assert!(matches!(
+        x.default.as_ref().unwrap().kind,
+        ExprKind::QuantityLiteral { .. }
+    ));
 
     // y has Auto default
     let y = match &structure.members[1] {
@@ -246,7 +261,11 @@ fn parse_line_comment_double_slash() {
     param x: Scalar = 1mm
 }"#;
     let module = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
-    assert!(module.errors.is_empty(), "expected no parse errors: {:?}", module.errors);
+    assert!(
+        module.errors.is_empty(),
+        "expected no parse errors: {:?}",
+        module.errors
+    );
 }
 
 /// Line comment with `//` after a member (inline comment) should parse without errors.
@@ -256,7 +275,11 @@ fn parse_line_comment_after_member() {
     param x: Scalar = 1mm // inline comment
 }"#;
     let module = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
-    assert!(module.errors.is_empty(), "expected no parse errors: {:?}", module.errors);
+    assert!(
+        module.errors.is_empty(),
+        "expected no parse errors: {:?}",
+        module.errors
+    );
 }
 
 /// Simple `/* */` block comment in a structure body should parse without errors.
@@ -267,7 +290,11 @@ fn parse_block_comment_simple() {
     param x: Scalar = 1mm
 }"#;
     let module = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
-    assert!(module.errors.is_empty(), "expected no parse errors: {:?}", module.errors);
+    assert!(
+        module.errors.is_empty(),
+        "expected no parse errors: {:?}",
+        module.errors
+    );
 }
 
 /// Multi-line `/* */` block comment should parse without errors.
@@ -281,7 +308,11 @@ fn parse_block_comment_multiline() {
     param x: Scalar = 1mm
 }"#;
     let module = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
-    assert!(module.errors.is_empty(), "expected no parse errors: {:?}", module.errors);
+    assert!(
+        module.errors.is_empty(),
+        "expected no parse errors: {:?}",
+        module.errors
+    );
 }
 
 /// `#` is no longer a valid comment marker — should produce parse errors.
@@ -292,7 +323,10 @@ fn parse_hash_comment_is_error() {
     param x: Scalar = 1mm
 }"#;
     let module = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
-    assert!(!module.errors.is_empty(), "# should no longer be a valid comment");
+    assert!(
+        !module.errors.is_empty(),
+        "# should no longer be a valid comment"
+    );
 }
 
 /// `///` (triple-slash doc comment) should parse fine since it starts with `//`.
@@ -304,7 +338,11 @@ structure S {
     param x: Scalar = 1mm
 }"#;
     let module = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
-    assert!(module.errors.is_empty(), "expected no parse errors: {:?}", module.errors);
+    assert!(
+        module.errors.is_empty(),
+        "expected no parse errors: {:?}",
+        module.errors
+    );
 }
 
 /// Comments (// and /* */) should not affect AST structure.
@@ -319,13 +357,14 @@ fn parse_comments_preserve_ast() {
             "param width: Scalar = 80mm",
             "// width parameter\nparam width: Scalar = 80mm",
         )
-        .replace(
-            "let volume",
-            "/* volume computation */ let volume",
-        );
+        .replace("let volume", "/* volume computation */ let volume");
     let commented = reify_syntax::parse(&commented_source, reify_types::ModulePath::single("test"));
 
-    assert!(commented.errors.is_empty(), "expected no parse errors: {:?}", commented.errors);
+    assert!(
+        commented.errors.is_empty(),
+        "expected no parse errors: {:?}",
+        commented.errors
+    );
     assert_eq!(baseline.declarations.len(), commented.declarations.len());
 
     let base_s = match &baseline.declarations[0] {

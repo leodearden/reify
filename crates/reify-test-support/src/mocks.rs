@@ -117,7 +117,12 @@ impl ConstraintSolver for SequencedMockConstraintSolver {
         let r = {
             let mut results = self.results.lock().unwrap();
             if results.is_empty() {
-                return self.last.lock().unwrap().clone().expect("no results configured");
+                return self
+                    .last
+                    .lock()
+                    .unwrap()
+                    .clone()
+                    .expect("no results configured");
             }
             results.remove(0)
         };
@@ -169,11 +174,7 @@ impl QueryKey {
             },
             GeometryQuery::MomentOfInertia { handle, axis } => QueryKey::MomentOfInertia {
                 handle: *handle,
-                axis_bits: [
-                    axis[0].to_bits(),
-                    axis[1].to_bits(),
-                    axis[2].to_bits(),
-                ],
+                axis_bits: [axis[0].to_bits(), axis[1].to_bits(), axis[2].to_bits()],
             },
         }
     }
@@ -207,8 +208,7 @@ impl MockGeometryKernel {
 
     /// Configure a Volume query result for a specific handle.
     pub fn with_volume_result(mut self, handle: GeometryHandleId, value: Value) -> Self {
-        self.typed_queries
-            .insert(QueryKey::Volume(handle), value);
+        self.typed_queries.insert(QueryKey::Volume(handle), value);
         self
     }
 
@@ -221,8 +221,7 @@ impl MockGeometryKernel {
 
     /// Configure a Centroid query result for a specific handle.
     pub fn with_centroid_result(mut self, handle: GeometryHandleId, value: Value) -> Self {
-        self.typed_queries
-            .insert(QueryKey::Centroid(handle), value);
+        self.typed_queries.insert(QueryKey::Centroid(handle), value);
         self
     }
 
@@ -255,11 +254,7 @@ impl MockGeometryKernel {
         self.typed_queries.insert(
             QueryKey::MomentOfInertia {
                 handle,
-                axis_bits: [
-                    axis[0].to_bits(),
-                    axis[1].to_bits(),
-                    axis[2].to_bits(),
-                ],
+                axis_bits: [axis[0].to_bits(), axis[1].to_bits(), axis[2].to_bits()],
             },
             value,
         );
@@ -362,11 +357,7 @@ impl GeometryKernel for MockGeometryKernel {
             .map_err(|e| ExportError::IoError(e.to_string()))
     }
 
-    fn tessellate(
-        &self,
-        _handle: GeometryHandleId,
-        _tolerance: f64,
-    ) -> Result<Mesh, TessError> {
+    fn tessellate(&self, _handle: GeometryHandleId, _tolerance: f64) -> Result<Mesh, TessError> {
         // Return a minimal valid mesh (one triangle)
         Ok(Mesh {
             vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
@@ -413,14 +404,14 @@ impl ConstraintSolver for SpyConstraintSolver {
 mod tests {
     use super::*;
     use crate::assert_value_approx;
-    use crate::values::{meters, mm3, mm2, point3};
+    use crate::values::{meters, mm2, mm3, point3};
     use reify_types::{CompiledExpr, Type, Value, ValueMap};
 
     #[test]
     fn mock_constraint_checker_predetermined() {
         let cnid = ConstraintNodeId::new("Bracket", 0);
-        let checker = MockConstraintChecker::new()
-            .with_result(cnid.clone(), Satisfaction::Violated);
+        let checker =
+            MockConstraintChecker::new().with_result(cnid.clone(), Satisfaction::Violated);
 
         let expr = CompiledExpr::literal(Value::Bool(true), Type::Bool);
         let values = ValueMap::new();
@@ -486,9 +477,9 @@ mod tests {
 
     #[test]
     fn mock_constraint_solver_infeasible() {
-        let solver = MockConstraintSolver::new_infeasible(vec![
-            Diagnostic::error("constraints are infeasible"),
-        ]);
+        let solver = MockConstraintSolver::new_infeasible(vec![Diagnostic::error(
+            "constraints are infeasible",
+        )]);
         let problem = ResolutionProblem {
             auto_params: vec![],
             constraints: vec![],
@@ -530,17 +521,15 @@ mod tests {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<MockConstraintSolver>();
 
-        let _boxed: Box<dyn ConstraintSolver> = Box::new(
-            MockConstraintSolver::new_no_progress("test"),
-        );
+        let _boxed: Box<dyn ConstraintSolver> =
+            Box::new(MockConstraintSolver::new_no_progress("test"));
     }
 
     // step-5: failing tests for per-query-type mock configuration
     #[test]
     fn mock_with_volume_result_returns_for_volume_query() {
         let id = GeometryHandleId(1);
-        let kernel = MockGeometryKernel::new()
-            .with_volume_result(id, mm3(1000.0));
+        let kernel = MockGeometryKernel::new().with_volume_result(id, mm3(1000.0));
 
         let result = kernel.query(&GeometryQuery::Volume(id)).unwrap();
         assert_eq!(result, mm3(1000.0));
@@ -549,8 +538,7 @@ mod tests {
     #[test]
     fn mock_with_surface_area_result_returns_for_surface_area_query() {
         let id = GeometryHandleId(1);
-        let kernel = MockGeometryKernel::new()
-            .with_surface_area_result(id, mm2(600.0));
+        let kernel = MockGeometryKernel::new().with_surface_area_result(id, mm2(600.0));
 
         let result = kernel.query(&GeometryQuery::SurfaceArea(id)).unwrap();
         assert_eq!(result, mm2(600.0));
@@ -560,8 +548,7 @@ mod tests {
     fn mock_with_centroid_result_returns_for_centroid_query() {
         let id = GeometryHandleId(1);
         let centroid = point3(0.5, 0.5, 0.5);
-        let kernel = MockGeometryKernel::new()
-            .with_centroid_result(id, centroid.clone());
+        let kernel = MockGeometryKernel::new().with_centroid_result(id, centroid.clone());
 
         let result = kernel.query(&GeometryQuery::Centroid(id)).unwrap();
         assert_eq!(result, centroid);
@@ -571,8 +558,7 @@ mod tests {
     fn mock_with_bbox_result_returns_for_bounding_box_query() {
         let id = GeometryHandleId(1);
         let bbox = Value::List(vec![point3(0.0, 0.0, 0.0), point3(1.0, 1.0, 1.0)]);
-        let kernel = MockGeometryKernel::new()
-            .with_bbox_result(id, bbox.clone());
+        let kernel = MockGeometryKernel::new().with_bbox_result(id, bbox.clone());
 
         let result = kernel.query(&GeometryQuery::BoundingBox(id)).unwrap();
         assert_eq!(result, bbox);
@@ -582,8 +568,7 @@ mod tests {
     fn mock_with_distance_result_returns_for_distance_query() {
         let from = GeometryHandleId(1);
         let to = GeometryHandleId(2);
-        let kernel = MockGeometryKernel::new()
-            .with_distance_result(from, to, meters(5.0));
+        let kernel = MockGeometryKernel::new().with_distance_result(from, to, meters(5.0));
 
         let result = kernel.query(&GeometryQuery::Distance { from, to }).unwrap();
         assert_eq!(result, meters(5.0));
@@ -593,10 +578,11 @@ mod tests {
     fn mock_with_inertia_result_returns_for_moment_of_inertia_query() {
         let id = GeometryHandleId(1);
         let axis = [0.0, 0.0, 1.0];
-        let kernel = MockGeometryKernel::new()
-            .with_inertia_result(id, axis, Value::Real(42.0));
+        let kernel = MockGeometryKernel::new().with_inertia_result(id, axis, Value::Real(42.0));
 
-        let result = kernel.query(&GeometryQuery::MomentOfInertia { handle: id, axis }).unwrap();
+        let result = kernel
+            .query(&GeometryQuery::MomentOfInertia { handle: id, axis })
+            .unwrap();
         assert_eq!(result, Value::Real(42.0));
     }
 
@@ -618,8 +604,7 @@ mod tests {
     fn mock_per_query_type_falls_back_to_generic() {
         // with_query_result (generic) should be used when no typed config exists
         let id = GeometryHandleId(1);
-        let kernel = MockGeometryKernel::new()
-            .with_query_result(id, mm3(500.0));
+        let kernel = MockGeometryKernel::new().with_query_result(id, mm3(500.0));
 
         let result = kernel.query(&GeometryQuery::Volume(id)).unwrap();
         assert_eq!(result, mm3(500.0));
@@ -738,12 +723,7 @@ mod tests {
         let ops = kernel.operations();
         assert_eq!(ops.len(), 2);
         match &ops[1].op {
-            GeometryOp::Translate {
-                target,
-                dx,
-                dy,
-                dz,
-            } => {
+            GeometryOp::Translate { target, dx, dy, dz } => {
                 assert_eq!(*target, GeometryHandleId(1));
                 assert!((dx - 1.0).abs() < 1e-12);
                 assert!((dy - 2.0).abs() < 1e-12);
@@ -1078,7 +1058,11 @@ mod tests {
             GeometryOp::Loft { profiles } => {
                 assert_eq!(
                     *profiles,
-                    vec![GeometryHandleId(1), GeometryHandleId(2), GeometryHandleId(3)]
+                    vec![
+                        GeometryHandleId(1),
+                        GeometryHandleId(2),
+                        GeometryHandleId(3)
+                    ]
                 );
             }
             other => panic!("expected Loft, got {:?}", other),
@@ -1358,8 +1342,8 @@ mod tests {
         // Typed config should take precedence over generic
         let id = GeometryHandleId(1);
         let kernel = MockGeometryKernel::new()
-            .with_query_result(id, mm3(500.0))       // generic
-            .with_volume_result(id, mm3(1000.0));     // typed
+            .with_query_result(id, mm3(500.0)) // generic
+            .with_volume_result(id, mm3(1000.0)); // typed
 
         let vol = kernel.query(&GeometryQuery::Volume(id)).unwrap();
         assert_eq!(vol, mm3(1000.0)); // typed wins
@@ -1473,7 +1457,7 @@ mod tests {
 
     #[test]
     fn mock_find_ops_does_not_poison_mutex_on_closure_panic() {
-        use std::panic::{catch_unwind, AssertUnwindSafe};
+        use std::panic::{AssertUnwindSafe, catch_unwind};
 
         let mut kernel = MockGeometryKernel::new();
         kernel
@@ -1496,7 +1480,7 @@ mod tests {
 
     #[test]
     fn mock_has_op_does_not_poison_mutex_on_closure_panic() {
-        use std::panic::{catch_unwind, AssertUnwindSafe};
+        use std::panic::{AssertUnwindSafe, catch_unwind};
 
         let mut kernel = MockGeometryKernel::new();
         kernel

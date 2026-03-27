@@ -25,7 +25,8 @@ pub trait NotificationSink: Send + Sync {
 pub struct NoOpSink;
 
 impl NotificationSink for NoOpSink {
-    fn publish_diagnostics(&self, _uri: Url, _diagnostics: Vec<Diagnostic>, _version: Option<i32>) {}
+    fn publish_diagnostics(&self, _uri: Url, _diagnostics: Vec<Diagnostic>, _version: Option<i32>) {
+    }
 }
 
 /// A sink that wraps the tower-lsp [`Client`] for stdio/TCP mode.
@@ -150,18 +151,12 @@ impl LanguageServer for ReifyLanguageServer {
         // Eval runs outside the RwLock, using only the eval_state Mutex.
         // Recovers from poisoned lock (e.g., prior panic during eval).
         let diagnostics = {
-            let mut eval_state = self
-                .eval_state
-                .lock()
-                .unwrap_or_else(|e| {
-                    eprintln!("eval_state lock poisoned, recovering");
-                    e.into_inner()
-                });
-            let result = crate::diagnostics::compute_diagnostics_with_state(
-                &mut eval_state,
-                &text,
-                &uri,
-            );
+            let mut eval_state = self.eval_state.lock().unwrap_or_else(|e| {
+                eprintln!("eval_state lock poisoned, recovering");
+                e.into_inner()
+            });
+            let result =
+                crate::diagnostics::compute_diagnostics_with_state(&mut eval_state, &text, &uri);
             result.diagnostics
         };
 
@@ -173,7 +168,8 @@ impl LanguageServer for ReifyLanguageServer {
                 .insert(uri.clone(), diagnostics.clone());
         }
 
-        self.sink.publish_diagnostics(uri, diagnostics, Some(version));
+        self.sink
+            .publish_diagnostics(uri, diagnostics, Some(version));
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
@@ -197,18 +193,12 @@ impl LanguageServer for ReifyLanguageServer {
         // Eval runs outside the RwLock, using only the eval_state Mutex.
         // Recovers from poisoned lock (e.g., prior panic during eval).
         let diagnostics = {
-            let mut eval_state = self
-                .eval_state
-                .lock()
-                .unwrap_or_else(|e| {
-                    eprintln!("eval_state lock poisoned, recovering");
-                    e.into_inner()
-                });
-            let result = crate::diagnostics::compute_diagnostics_with_state(
-                &mut eval_state,
-                &text,
-                &uri,
-            );
+            let mut eval_state = self.eval_state.lock().unwrap_or_else(|e| {
+                eprintln!("eval_state lock poisoned, recovering");
+                e.into_inner()
+            });
+            let result =
+                crate::diagnostics::compute_diagnostics_with_state(&mut eval_state, &text, &uri);
             result.diagnostics
         };
 
@@ -220,7 +210,8 @@ impl LanguageServer for ReifyLanguageServer {
                 .insert(uri.clone(), diagnostics.clone());
         }
 
-        self.sink.publish_diagnostics(uri, diagnostics, Some(version));
+        self.sink
+            .publish_diagnostics(uri, diagnostics, Some(version));
     }
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
@@ -317,10 +308,7 @@ pub mod test_support {
             diagnostics: Vec<Diagnostic>,
             version: Option<i32>,
         ) {
-            self.calls
-                .lock()
-                .unwrap()
-                .push((uri, diagnostics, version));
+            self.calls.lock().unwrap().push((uri, diagnostics, version));
         }
     }
 
@@ -334,8 +322,8 @@ pub mod test_support {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::test_support::RecordingSink;
+    use super::*;
     use tower_lsp::LspService;
 
     fn test_uri() -> Url {
@@ -351,19 +339,14 @@ mod tests {
     fn noop_sink_implements_notification_sink() {
         let sink: Arc<dyn NotificationSink> = Arc::new(NoOpSink);
         // Should not panic
-        sink.publish_diagnostics(
-            Url::parse("file:///test.ri").unwrap(),
-            vec![],
-            None,
-        );
+        sink.publish_diagnostics(Url::parse("file:///test.ri").unwrap(), vec![], None);
     }
 
     #[tokio::test]
     async fn sink_receives_diagnostics_on_did_open() {
         let sink = Arc::new(RecordingSink::default());
-        let (service, _socket) = LspService::new(|client| {
-            ReifyLanguageServer::with_sink(client, sink.clone())
-        });
+        let (service, _socket) =
+            LspService::new(|client| ReifyLanguageServer::with_sink(client, sink.clone()));
         let server = service.inner();
         let uri = test_uri();
         let source = reify_test_support::bracket_source();
@@ -380,7 +363,11 @@ mod tests {
             .await;
 
         let calls = sink.take_calls();
-        assert_eq!(calls.len(), 1, "sink should receive exactly one publish_diagnostics call");
+        assert_eq!(
+            calls.len(),
+            1,
+            "sink should receive exactly one publish_diagnostics call"
+        );
         assert_eq!(calls[0].0, uri, "sink should receive the correct URI");
         assert_eq!(calls[0].2, Some(1), "sink should receive version 1");
     }
@@ -388,9 +375,8 @@ mod tests {
     #[tokio::test]
     async fn sink_receives_diagnostics_on_did_change() {
         let sink = Arc::new(RecordingSink::default());
-        let (service, _socket) = LspService::new(|client| {
-            ReifyLanguageServer::with_sink(client, sink.clone())
-        });
+        let (service, _socket) =
+            LspService::new(|client| ReifyLanguageServer::with_sink(client, sink.clone()));
         let server = service.inner();
         let uri = test_uri();
 
@@ -422,7 +408,11 @@ mod tests {
             .await;
 
         let calls = sink.take_calls();
-        assert_eq!(calls.len(), 2, "sink should receive 2 calls (did_open + did_change)");
+        assert_eq!(
+            calls.len(),
+            2,
+            "sink should receive 2 calls (did_open + did_change)"
+        );
 
         // Second call (did_change with broken source) should contain error diagnostics
         let (_, ref diags, version) = calls[1];
@@ -430,15 +420,17 @@ mod tests {
         let has_error = diags
             .iter()
             .any(|d| d.severity == Some(DiagnosticSeverity::ERROR));
-        assert!(has_error, "did_change with broken source should produce error diagnostics");
+        assert!(
+            has_error,
+            "did_change with broken source should produce error diagnostics"
+        );
     }
 
     #[tokio::test]
     async fn sink_receives_clear_on_did_close() {
         let sink = Arc::new(RecordingSink::default());
-        let (service, _socket) = LspService::new(|client| {
-            ReifyLanguageServer::with_sink(client, sink.clone())
-        });
+        let (service, _socket) =
+            LspService::new(|client| ReifyLanguageServer::with_sink(client, sink.clone()));
         let server = service.inner();
         let uri = test_uri();
 
@@ -462,12 +454,19 @@ mod tests {
             .await;
 
         let calls = sink.take_calls();
-        assert_eq!(calls.len(), 2, "sink should receive 2 calls (did_open + did_close)");
+        assert_eq!(
+            calls.len(),
+            2,
+            "sink should receive 2 calls (did_open + did_close)"
+        );
 
         // Last call should be the clear (empty diagnostics, no version)
         let (ref close_uri, ref close_diags, close_version) = calls[1];
         assert_eq!(close_uri, &uri, "close should clear the same URI");
-        assert!(close_diags.is_empty(), "close should send empty diagnostics");
+        assert!(
+            close_diags.is_empty(),
+            "close should send empty diagnostics"
+        );
         assert_eq!(close_version, None, "close should send version=None");
     }
 
@@ -493,7 +492,11 @@ mod tests {
             .expect("didOpen should succeed");
 
         let calls = sink.take_calls();
-        assert_eq!(calls.len(), 1, "sink should receive diagnostics from InProcessLsp");
+        assert_eq!(
+            calls.len(),
+            1,
+            "sink should receive diagnostics from InProcessLsp"
+        );
         assert_eq!(
             calls[0].0,
             Url::parse("file:///test.ri").unwrap(),
@@ -503,11 +506,13 @@ mod tests {
 
     #[tokio::test]
     async fn server_with_sink_initializes() {
-        let (service, _socket) = LspService::new(|client| {
-            ReifyLanguageServer::with_sink(client, Arc::new(NoOpSink))
-        });
+        let (service, _socket) =
+            LspService::new(|client| ReifyLanguageServer::with_sink(client, Arc::new(NoOpSink)));
         let server = service.inner();
-        let result = server.initialize(InitializeParams::default()).await.unwrap();
+        let result = server
+            .initialize(InitializeParams::default())
+            .await
+            .unwrap();
 
         // Verify same capabilities as the default constructor
         match result.capabilities.text_document_sync {
@@ -543,7 +548,10 @@ mod tests {
     async fn initialize_advertises_hover_definition_completion() {
         let (service, _socket) = test_service();
         let server = service.inner();
-        let init_result = server.initialize(InitializeParams::default()).await.unwrap();
+        let init_result = server
+            .initialize(InitializeParams::default())
+            .await
+            .unwrap();
 
         let caps = &init_result.capabilities;
         assert!(
@@ -717,13 +725,13 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(
-            comp_result.is_some(),
-            "completion should return items"
-        );
+        assert!(comp_result.is_some(), "completion should return items");
         match comp_result.unwrap() {
             CompletionResponse::Array(items) => {
-                assert!(!items.is_empty(), "completion should return non-empty items");
+                assert!(
+                    !items.is_empty(),
+                    "completion should return non-empty items"
+                );
             }
             CompletionResponse::List(list) => {
                 assert!(

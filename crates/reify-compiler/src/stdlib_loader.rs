@@ -10,8 +10,7 @@ use reify_types::ModulePath;
 use crate::CompiledModule;
 
 /// Embedded source for stdlib/materials_mechanical.ri.
-const MATERIALS_MECHANICAL_SRC: &str =
-    include_str!("../stdlib/materials_mechanical.ri");
+const MATERIALS_MECHANICAL_SRC: &str = include_str!("../stdlib/materials_mechanical.ri");
 
 /// Global cache for compiled stdlib modules.
 static STDLIB_CACHE: OnceLock<Vec<CompiledModule>> = OnceLock::new();
@@ -22,9 +21,7 @@ static STDLIB_CACHE: OnceLock<Vec<CompiledModule>> = OnceLock::new();
 /// Subsequent calls return the cached result with zero overhead.
 pub fn load_stdlib() -> &'static [CompiledModule] {
     STDLIB_CACHE.get_or_init(|| {
-        let sources: &[(&str, &str)] = &[
-            ("std.materials.mechanical", MATERIALS_MECHANICAL_SRC),
-        ];
+        let sources: &[(&str, &str)] = &[("std.materials.mechanical", MATERIALS_MECHANICAL_SRC)];
 
         sources
             .iter()

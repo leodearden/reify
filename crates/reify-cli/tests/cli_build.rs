@@ -80,12 +80,7 @@ fn build_valid_bracket_exits_success() {
     let output_path = "/tmp/reify_test_valid_build_out.step";
     let _ = std::fs::remove_file(output_path);
     let output = Command::new(env!("CARGO_BIN_EXE_reify"))
-        .args([
-            "build",
-            &fixture_path("bracket.ri"),
-            "-o",
-            output_path,
-        ])
+        .args(["build", &fixture_path("bracket.ri"), "-o", output_path])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())

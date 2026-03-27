@@ -24,7 +24,10 @@ pub enum Type {
     /// Optional type.
     Option(Box<Type>),
     /// Function type.
-    Function { params: Vec<Type>, return_type: Box<Type> },
+    Function {
+        params: Vec<Type>,
+        return_type: Box<Type>,
+    },
     /// Unresolved type parameter reference (e.g., `T` in a generic definition).
     TypeParam(String),
     /// Concrete structure name reference at an instantiation site
@@ -32,7 +35,10 @@ pub enum Type {
     /// represents unresolved type variables needing substitution.
     StructureRef(String),
     /// Field type: a mapping from domain to codomain (e.g., Field<Point3, Scalar>).
-    Field { domain: Box<Type>, codomain: Box<Type> },
+    Field {
+        domain: Box<Type>,
+        codomain: Box<Type>,
+    },
     /// Geometry handle (a reference to a realization, not a scalar value).
     Geometry,
     /// N-dimensional point with a quantity type (e.g., Point3<Scalar[m]>).
@@ -40,7 +46,11 @@ pub enum Type {
     /// N-dimensional vector with a quantity type (e.g., Vector3<Scalar[m]>).
     Vector { n: usize, quantity: Box<Type> },
     /// Rank-r tensor with n elements per dimension and a quantity type (e.g., Tensor2x3<Scalar[m]>).
-    Tensor { rank: usize, n: usize, quantity: Box<Type> },
+    Tensor {
+        rank: usize,
+        n: usize,
+        quantity: Box<Type>,
+    },
     /// Complex number type with a quantity type (e.g., Complex<Scalar[Ω]>).
     Complex(Box<Type>),
     /// Orientation in N-dimensional space (unit quaternion for N=3, angle for N=2).
@@ -62,7 +72,11 @@ pub enum Type {
     /// Semantically, evaluation treats matrices as rank-2 tensors; `Type::Matrix` preserves
     /// distinct row (`m`) and column (`n`) dimensions while `Type::Tensor` uses a single
     /// `n` for all dimensions.
-    Matrix { m: usize, n: usize, quantity: Box<Type> },
+    Matrix {
+        m: usize,
+        n: usize,
+        quantity: Box<Type>,
+    },
 }
 
 impl Type {
@@ -89,27 +103,43 @@ impl Type {
 
     /// Shorthand for a 2D vector with a given quantity type.
     pub fn vec2(quantity: Type) -> Self {
-        Type::Vector { n: 2, quantity: Box::new(quantity) }
+        Type::Vector {
+            n: 2,
+            quantity: Box::new(quantity),
+        }
     }
 
     /// Shorthand for a 3D vector with a given quantity type.
     pub fn vec3(quantity: Type) -> Self {
-        Type::Vector { n: 3, quantity: Box::new(quantity) }
+        Type::Vector {
+            n: 3,
+            quantity: Box::new(quantity),
+        }
     }
 
     /// Shorthand for a 2D point with a given quantity type.
     pub fn point2(quantity: Type) -> Self {
-        Type::Point { n: 2, quantity: Box::new(quantity) }
+        Type::Point {
+            n: 2,
+            quantity: Box::new(quantity),
+        }
     }
 
     /// Shorthand for a 3D point with a given quantity type.
     pub fn point3(quantity: Type) -> Self {
-        Type::Point { n: 3, quantity: Box::new(quantity) }
+        Type::Point {
+            n: 3,
+            quantity: Box::new(quantity),
+        }
     }
 
     /// Shorthand for a rank-r tensor with n elements per dimension and a given quantity type.
     pub fn tensor(rank: usize, n: usize, quantity: Type) -> Self {
-        Type::Tensor { rank, n, quantity: Box::new(quantity) }
+        Type::Tensor {
+            rank,
+            n,
+            quantity: Box::new(quantity),
+        }
     }
 
     /// Shorthand for a complex number type with a given quantity type.
@@ -154,7 +184,11 @@ impl Type {
 
     /// Shorthand for an m×n matrix with a given quantity type.
     pub fn matrix(m: usize, n: usize, quantity: Type) -> Self {
-        Type::Matrix { m, n, quantity: Box::new(quantity) }
+        Type::Matrix {
+            m,
+            n,
+            quantity: Box::new(quantity),
+        }
     }
 
     /// Is this type a numeric type (Int, Real, or Scalar)?
@@ -191,7 +225,10 @@ impl std::fmt::Display for Type {
             Type::Set(inner) => write!(f, "Set<{}>", inner),
             Type::Map(k, v) => write!(f, "Map<{}, {}>", k, v),
             Type::Option(inner) => write!(f, "Option<{}>", inner),
-            Type::Function { params, return_type } => {
+            Type::Function {
+                params,
+                return_type,
+            } => {
                 let params_str: Vec<String> = params.iter().map(|p| format!("{}", p)).collect();
                 write!(f, "Function({}) -> {}", params_str.join(", "), return_type)
             }
@@ -288,7 +325,10 @@ mod tests {
     #[test]
     fn type_structure_ref_display() {
         assert_eq!(format!("{}", Type::StructureRef("Bolt".into())), "Bolt");
-        assert_eq!(format!("{}", Type::StructureRef("Bracket".into())), "Bracket");
+        assert_eq!(
+            format!("{}", Type::StructureRef("Bracket".into())),
+            "Bracket"
+        );
     }
 
     #[test]
@@ -379,11 +419,17 @@ mod tests {
     fn type_vec_factory_methods() {
         assert_eq!(
             Type::vec2(Type::length()),
-            Type::Vector { n: 2, quantity: Box::new(Type::length()) }
+            Type::Vector {
+                n: 2,
+                quantity: Box::new(Type::length())
+            }
         );
         assert_eq!(
             Type::vec3(Type::Real),
-            Type::Vector { n: 3, quantity: Box::new(Type::Real) }
+            Type::Vector {
+                n: 3,
+                quantity: Box::new(Type::Real)
+            }
         );
     }
 
@@ -391,11 +437,17 @@ mod tests {
     fn type_point_factory_methods() {
         assert_eq!(
             Type::point2(Type::length()),
-            Type::Point { n: 2, quantity: Box::new(Type::length()) }
+            Type::Point {
+                n: 2,
+                quantity: Box::new(Type::length())
+            }
         );
         assert_eq!(
             Type::point3(Type::Real),
-            Type::Point { n: 3, quantity: Box::new(Type::Real) }
+            Type::Point {
+                n: 3,
+                quantity: Box::new(Type::Real)
+            }
         );
     }
 
@@ -421,12 +473,20 @@ mod tests {
         // rank-2 tensor, 3 elements per level, quantity = length scalar
         assert_eq!(
             Type::tensor(2, 3, Type::length()),
-            Type::Tensor { rank: 2, n: 3, quantity: Box::new(Type::length()) }
+            Type::Tensor {
+                rank: 2,
+                n: 3,
+                quantity: Box::new(Type::length())
+            }
         );
         // rank-1 tensor, 4 elements, quantity = Real
         assert_eq!(
             Type::tensor(1, 4, Type::Real),
-            Type::Tensor { rank: 1, n: 4, quantity: Box::new(Type::Real) }
+            Type::Tensor {
+                rank: 1,
+                n: 4,
+                quantity: Box::new(Type::Real)
+            }
         );
     }
 
@@ -499,10 +559,7 @@ mod tests {
             Type::complex(Type::Real),
             Type::Complex(Box::new(Type::Real))
         );
-        assert_eq!(
-            Type::complex(Type::Int),
-            Type::Complex(Box::new(Type::Int))
-        );
+        assert_eq!(Type::complex(Type::Int), Type::Complex(Box::new(Type::Int)));
     }
 
     #[test]
@@ -617,12 +674,18 @@ mod tests {
         // Distinct inner types
         assert_ne!(r_int, r_real);
         // Same inner type equal
-        assert_eq!(Type::Range(Box::new(Type::Int)), Type::Range(Box::new(Type::Int)));
+        assert_eq!(
+            Type::Range(Box::new(Type::Int)),
+            Type::Range(Box::new(Type::Int))
+        );
     }
 
     #[test]
     fn type_range_display_int() {
-        assert_eq!(format!("{}", Type::Range(Box::new(Type::Int))), "Range<Int>");
+        assert_eq!(
+            format!("{}", Type::Range(Box::new(Type::Int))),
+            "Range<Int>"
+        );
     }
 
     #[test]
@@ -635,7 +698,10 @@ mod tests {
 
     #[test]
     fn type_range_display_real() {
-        assert_eq!(format!("{}", Type::Range(Box::new(Type::Real))), "Range<Real>");
+        assert_eq!(
+            format!("{}", Type::Range(Box::new(Type::Real))),
+            "Range<Real>"
+        );
     }
 
     #[test]
@@ -682,28 +748,68 @@ mod tests {
     fn type_matrix_construction_and_equality() {
         // (a) Same dimensions and quantity are equal
         assert_eq!(
-            Type::Matrix { m: 3, n: 2, quantity: Box::new(Type::Real) },
-            Type::Matrix { m: 3, n: 2, quantity: Box::new(Type::Real) },
+            Type::Matrix {
+                m: 3,
+                n: 2,
+                quantity: Box::new(Type::Real)
+            },
+            Type::Matrix {
+                m: 3,
+                n: 2,
+                quantity: Box::new(Type::Real)
+            },
         );
         // Different m — not equal
         assert_ne!(
-            Type::Matrix { m: 3, n: 2, quantity: Box::new(Type::Real) },
-            Type::Matrix { m: 2, n: 3, quantity: Box::new(Type::Real) },
+            Type::Matrix {
+                m: 3,
+                n: 2,
+                quantity: Box::new(Type::Real)
+            },
+            Type::Matrix {
+                m: 2,
+                n: 3,
+                quantity: Box::new(Type::Real)
+            },
         );
         // Different n — not equal
         assert_ne!(
-            Type::Matrix { m: 3, n: 2, quantity: Box::new(Type::Real) },
-            Type::Matrix { m: 3, n: 3, quantity: Box::new(Type::Real) },
+            Type::Matrix {
+                m: 3,
+                n: 2,
+                quantity: Box::new(Type::Real)
+            },
+            Type::Matrix {
+                m: 3,
+                n: 3,
+                quantity: Box::new(Type::Real)
+            },
         );
         // Different quantity — not equal
         assert_ne!(
-            Type::Matrix { m: 3, n: 2, quantity: Box::new(Type::Real) },
-            Type::Matrix { m: 3, n: 2, quantity: Box::new(Type::Int) },
+            Type::Matrix {
+                m: 3,
+                n: 2,
+                quantity: Box::new(Type::Real)
+            },
+            Type::Matrix {
+                m: 3,
+                n: 2,
+                quantity: Box::new(Type::Int)
+            },
         );
         // Matrix != Tensor with same n/quantity
         assert_ne!(
-            Type::Matrix { m: 2, n: 3, quantity: Box::new(Type::Real) },
-            Type::Tensor { rank: 2, n: 3, quantity: Box::new(Type::Real) },
+            Type::Matrix {
+                m: 2,
+                n: 3,
+                quantity: Box::new(Type::Real)
+            },
+            Type::Tensor {
+                rank: 2,
+                n: 3,
+                quantity: Box::new(Type::Real)
+            },
         );
     }
 
@@ -711,11 +817,25 @@ mod tests {
     fn type_matrix_display() {
         // (d) Display: Matrix{m}x{n}<{quantity}>
         assert_eq!(
-            format!("{}", Type::Matrix { m: 3, n: 2, quantity: Box::new(Type::Real) }),
+            format!(
+                "{}",
+                Type::Matrix {
+                    m: 3,
+                    n: 2,
+                    quantity: Box::new(Type::Real)
+                }
+            ),
             "Matrix3x2<Real>"
         );
         assert_eq!(
-            format!("{}", Type::Matrix { m: 4, n: 4, quantity: Box::new(Type::length()) }),
+            format!(
+                "{}",
+                Type::Matrix {
+                    m: 4,
+                    n: 4,
+                    quantity: Box::new(Type::length())
+                }
+            ),
             "Matrix4x4<Scalar[m]>"
         );
     }
@@ -725,11 +845,19 @@ mod tests {
         // (b) Type::matrix(m, n, q) factory method
         assert_eq!(
             Type::matrix(3, 2, Type::Real),
-            Type::Matrix { m: 3, n: 2, quantity: Box::new(Type::Real) },
+            Type::Matrix {
+                m: 3,
+                n: 2,
+                quantity: Box::new(Type::Real)
+            },
         );
         assert_eq!(
             Type::matrix(1, 1, Type::Int),
-            Type::Matrix { m: 1, n: 1, quantity: Box::new(Type::Int) },
+            Type::Matrix {
+                m: 1,
+                n: 1,
+                quantity: Box::new(Type::Int)
+            },
         );
     }
 

@@ -27,10 +27,7 @@ fn single_param_feasibility_via_trait_object() {
             param_type: Type::length(),
             bounds: Some((0.001, 0.1)),
         }],
-        constraints: vec![
-            (cnid("Bracket", 0), gt_expr),
-            (cnid("Bracket", 1), lt_expr),
-        ],
+        constraints: vec![(cnid("Bracket", 0), gt_expr), (cnid("Bracket", 1), lt_expr)],
         current_values: ValueMap::new(),
         objective: None,
         functions: vec![],
@@ -39,11 +36,7 @@ fn single_param_feasibility_via_trait_object() {
     let result = solver.solve(&problem);
     match result {
         SolveResult::Solved { values } => {
-            let si = values
-                .get(&thickness_id)
-                .unwrap()
-                .as_f64()
-                .unwrap();
+            let si = values.get(&thickness_id).unwrap().as_f64().unwrap();
             assert!(
                 si > 0.002 && si < 0.020,
                 "thickness should be in feasible range, got {} m",
@@ -76,10 +69,7 @@ fn maximize_objective() {
             param_type: Type::length(),
             bounds: Some((0.001, 0.1)),
         }],
-        constraints: vec![
-            (cnid("Bracket", 0), gt_expr),
-            (cnid("Bracket", 1), lt_expr),
-        ],
+        constraints: vec![(cnid("Bracket", 0), gt_expr), (cnid("Bracket", 1), lt_expr)],
         current_values: ValueMap::new(),
         objective: Some(objective),
         functions: vec![],
@@ -88,11 +78,7 @@ fn maximize_objective() {
     let result = solver.solve(&problem);
     match result {
         SolveResult::Solved { values } => {
-            let si = values
-                .get(&thickness_id)
-                .unwrap()
-                .as_f64()
-                .unwrap();
+            let si = values.get(&thickness_id).unwrap().as_f64().unwrap();
             // Maximizing thickness subject to < 20mm should push close to 20mm
             assert!(
                 si > 0.017 && si < 0.021,
@@ -141,10 +127,13 @@ fn false_negative_small_violation() {
     let x_ref = value_ref("Part", "x");
 
     // constraint: x > 2.0
-    let constraint = gt(x_ref, literal(Value::Scalar {
-        si_value: 2.0,
-        dimension: DimensionVector::LENGTH,
-    }));
+    let constraint = gt(
+        x_ref,
+        literal(Value::Scalar {
+            si_value: 2.0,
+            dimension: DimensionVector::LENGTH,
+        }),
+    );
 
     // Current value already at the max bound
     let mut current = ValueMap::new();
@@ -187,14 +176,20 @@ fn false_negative_multiple_small_violations() {
     let x_ref = value_ref("Part", "x");
     let y_ref = value_ref("Part", "y");
 
-    let c1 = gt(x_ref, literal(Value::Scalar {
-        si_value: 2.0,
-        dimension: DimensionVector::LENGTH,
-    }));
-    let c2 = gt(y_ref, literal(Value::Scalar {
-        si_value: 1.0,
-        dimension: DimensionVector::LENGTH,
-    }));
+    let c1 = gt(
+        x_ref,
+        literal(Value::Scalar {
+            si_value: 2.0,
+            dimension: DimensionVector::LENGTH,
+        }),
+    );
+    let c2 = gt(
+        y_ref,
+        literal(Value::Scalar {
+            si_value: 1.0,
+            dimension: DimensionVector::LENGTH,
+        }),
+    );
 
     let mut current = ValueMap::new();
     current.insert(
@@ -225,10 +220,7 @@ fn false_negative_multiple_small_violations() {
                 bounds: Some((0.0, 0.9999999)),
             },
         ],
-        constraints: vec![
-            (cnid("Part", 0), c1),
-            (cnid("Part", 1), c2),
-        ],
+        constraints: vec![(cnid("Part", 0), c1), (cnid("Part", 1), c2)],
         current_values: current,
         objective: None,
         functions: vec![],
@@ -254,16 +246,22 @@ fn false_negative_mixed_scale() {
     let y_ref = value_ref("Part", "y");
 
     // x > 0.002 (constraint in SI meters, x bounded to max 0.001999999)
-    let c1 = gt(x_ref, literal(Value::Scalar {
-        si_value: 0.002,
-        dimension: DimensionVector::LENGTH,
-    }));
+    let c1 = gt(
+        x_ref,
+        literal(Value::Scalar {
+            si_value: 0.002,
+            dimension: DimensionVector::LENGTH,
+        }),
+    );
 
     // y > 100 (dimensionless, y bounded to max 99.9999999)
-    let c2 = gt(y_ref, literal(Value::Scalar {
-        si_value: 100.0,
-        dimension: DimensionVector::DIMENSIONLESS,
-    }));
+    let c2 = gt(
+        y_ref,
+        literal(Value::Scalar {
+            si_value: 100.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        }),
+    );
 
     let mut current = ValueMap::new();
     current.insert(
@@ -294,10 +292,7 @@ fn false_negative_mixed_scale() {
                 bounds: Some((0.0, 99.9999999)),
             },
         ],
-        constraints: vec![
-            (cnid("Part", 0), c1),
-            (cnid("Part", 1), c2),
-        ],
+        constraints: vec![(cnid("Part", 0), c1), (cnid("Part", 1), c2)],
         current_values: current,
         objective: None,
         functions: vec![],
@@ -320,10 +315,13 @@ fn bounds_dont_hide_infeasibility() {
     let x_ref = value_ref("Part", "x");
 
     // constraint: x > 0.015 (15mm)
-    let constraint = gt(x_ref, literal(Value::Scalar {
-        si_value: 0.015,
-        dimension: DimensionVector::LENGTH,
-    }));
+    let constraint = gt(
+        x_ref,
+        literal(Value::Scalar {
+            si_value: 0.015,
+            dimension: DimensionVector::LENGTH,
+        }),
+    );
 
     let problem = ResolutionProblem {
         auto_params: vec![AutoParam {
@@ -340,10 +338,7 @@ fn bounds_dont_hide_infeasibility() {
     let result = solver.solve(&problem);
     match result {
         SolveResult::Infeasible { diagnostics } => {
-            assert!(
-                !diagnostics.is_empty(),
-                "should have diagnostic messages"
-            );
+            assert!(!diagnostics.is_empty(), "should have diagnostic messages");
             let msg = &diagnostics[0].message;
             assert!(
                 msg.contains("residual"),
@@ -421,10 +416,7 @@ fn minimize_undef_objective_returns_no_progress() {
             param_type: Type::length(),
             bounds: Some((0.001, 0.1)),
         }],
-        constraints: vec![
-            (cnid("Part", 0), gt_expr),
-            (cnid("Part", 1), lt_expr),
-        ],
+        constraints: vec![(cnid("Part", 0), gt_expr), (cnid("Part", 1), lt_expr)],
         current_values: ValueMap::new(),
         objective: Some(objective),
         functions: vec![],
@@ -461,10 +453,7 @@ fn maximize_undef_objective_returns_no_progress() {
             param_type: Type::length(),
             bounds: Some((0.001, 0.1)),
         }],
-        constraints: vec![
-            (cnid("Part", 0), gt_expr),
-            (cnid("Part", 1), lt_expr),
-        ],
+        constraints: vec![(cnid("Part", 0), gt_expr), (cnid("Part", 1), lt_expr)],
         current_values: ValueMap::new(),
         objective: Some(objective),
         functions: vec![],
@@ -497,10 +486,7 @@ fn nelder_mead_tolerance_config_does_not_degenerate() {
             param_type: Type::length(),
             bounds: Some((0.001, 0.1)),
         }],
-        constraints: vec![
-            (cnid("Box", 0), gt_expr),
-            (cnid("Box", 1), lt_expr),
-        ],
+        constraints: vec![(cnid("Box", 0), gt_expr), (cnid("Box", 1), lt_expr)],
         current_values: ValueMap::new(),
         objective: None,
         functions: vec![],

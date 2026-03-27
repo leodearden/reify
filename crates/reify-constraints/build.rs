@@ -61,12 +61,8 @@ fn main() {
     }
 
     // 4. Nothing found — emit a clear error.
-    println!(
-        "cargo:warning=libslvs not found. Install with: sudo apt install libslvs1-dev"
-    );
-    println!(
-        "cargo:warning=Or set SLVS_LIB_DIR to the directory containing libslvs.so"
-    );
+    println!("cargo:warning=libslvs not found. Install with: sudo apt install libslvs1-dev");
+    println!("cargo:warning=Or set SLVS_LIB_DIR to the directory containing libslvs.so");
     println!("cargo:rustc-cfg=slvs_not_found");
     println!("cargo:rustc-link-lib=slvs");
 }

@@ -18,7 +18,11 @@ fn run_boolean_e2e(source: &str) -> Option<String> {
 
     // Parse
     let parsed = reify_syntax::parse(source, ModulePath::single("test_bool"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     // Compile
     let compiled = reify_compiler::compile(&parsed);
@@ -45,7 +49,9 @@ fn run_boolean_e2e(source: &str) -> Option<String> {
     let result = engine.build(&compiled, ExportFormat::Step);
 
     // Geometry output should be present
-    let output = result.geometry_output.expect("build should produce geometry output");
+    let output = result
+        .geometry_output
+        .expect("build should produce geometry output");
     assert!(!output.is_empty(), "STEP output should be non-empty");
 
     let step_str = String::from_utf8(output).expect("STEP should be valid UTF-8");
@@ -118,7 +124,11 @@ fn boolean_multi_realization_nested_e2e() {
 
     // Parse
     let parsed = reify_syntax::parse(source, ModulePath::single("test_bool_nested_multi"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     // Compile
     let compiled = reify_compiler::compile(&parsed);
@@ -205,7 +215,11 @@ fn boolean_multi_realization_step_index_e2e() {
 
     // Parse
     let parsed = reify_syntax::parse(source, ModulePath::single("test_bool_multi"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     // Compile
     let compiled = reify_compiler::compile(&parsed);

@@ -63,7 +63,9 @@ fn mock_kernel_export() {
         .unwrap();
 
     let mut output = Vec::new();
-    kernel.export(handle.id, ExportFormat::Step, &mut output).unwrap();
+    kernel
+        .export(handle.id, ExportFormat::Step, &mut output)
+        .unwrap();
     assert!(!output.is_empty(), "export should produce output");
 }
 
@@ -71,14 +73,15 @@ fn mock_kernel_export() {
 fn mock_kernel_tessellate() {
     let mut kernel = MockGeometryKernel::new();
     let handle = kernel
-        .execute(&GeometryOp::Sphere {
-            radius: mm(10.0),
-        })
+        .execute(&GeometryOp::Sphere { radius: mm(10.0) })
         .unwrap();
 
     let mesh = kernel.tessellate(handle.id, 0.1).unwrap();
     assert!(!mesh.vertices.is_empty(), "mesh should have vertices");
-    assert!(mesh.indices.len().is_multiple_of(3), "indices should be triangle triples");
+    assert!(
+        mesh.indices.len().is_multiple_of(3),
+        "indices should be triangle triples"
+    );
 }
 
 #[test]
@@ -124,7 +127,10 @@ fn mock_kernel_translate() {
         })
         .unwrap();
 
-    assert_ne!(handle.id, translated.id, "translation should create new handle");
+    assert_ne!(
+        handle.id, translated.id,
+        "translation should create new handle"
+    );
 }
 
 /// Tests that will run against the real OCCT kernel — ignored until implemented.
@@ -132,8 +138,7 @@ mod occt_tests {
     use reify_kernel_occt::OcctKernel;
     use reify_test_support::*;
     use reify_types::{
-        ExportFormat, GeometryError, GeometryHandleId, GeometryOp, GeometryQuery,
-        Value,
+        ExportFormat, GeometryError, GeometryHandleId, GeometryOp, GeometryQuery, Value,
     };
     #[test]
     fn create_box_export_step() {
@@ -177,9 +182,7 @@ mod occt_tests {
             })
             .unwrap();
 
-        let result = kernel
-            .query(&GeometryQuery::Volume(handle.id))
-            .unwrap();
+        let result = kernel.query(&GeometryQuery::Volume(handle.id)).unwrap();
         match result {
             Value::Real(v) => {
                 // r = 0.005m, h = 0.02m, V = π·r²·h ≈ 1.5708e-6 m³
@@ -313,21 +316,13 @@ mod occt_tests {
                 let y_start = s.find("\"y\":").unwrap() + 4;
                 let y_end = s[y_start..].find([',', '}']).unwrap() + y_start;
                 let y: f64 = s[y_start..y_end].parse().unwrap();
-                assert!(
-                    y.abs() < 1e-9,
-                    "centroid y should be ≈ 0, got {}",
-                    y
-                );
+                assert!(y.abs() < 1e-9, "centroid y should be ≈ 0, got {}", y);
 
                 // Assert z ≈ 0
                 let z_start = s.find("\"z\":").unwrap() + 4;
                 let z_end = s[z_start..].find([',', '}']).unwrap() + z_start;
                 let z: f64 = s[z_start..z_end].parse().unwrap();
-                assert!(
-                    z.abs() < 1e-9,
-                    "centroid z should be ≈ 0, got {}",
-                    z
-                );
+                assert!(z.abs() < 1e-9, "centroid z should be ≈ 0, got {}", z);
             }
             other => panic!("expected String (centroid JSON), got {:?}", other),
         }
@@ -368,18 +363,15 @@ mod occt_tests {
             .unwrap();
 
         // Volume should be preserved
-        let vol_before = kernel
-            .query(&GeometryQuery::Volume(offset.id))
-            .unwrap();
-        let vol_after = kernel
-            .query(&GeometryQuery::Volume(rotated.id))
-            .unwrap();
+        let vol_before = kernel.query(&GeometryQuery::Volume(offset.id)).unwrap();
+        let vol_after = kernel.query(&GeometryQuery::Volume(rotated.id)).unwrap();
         match (&vol_before, &vol_after) {
             (Value::Real(vb), Value::Real(va)) => {
                 assert!(
                     (vb - va).abs() < 1e-12,
                     "rotation should preserve volume: before={}, after={}",
-                    vb, va
+                    vb,
+                    va
                 );
             }
             _ => panic!(
@@ -389,9 +381,7 @@ mod occt_tests {
         }
 
         // Centroid should have moved: x ≈ 0, y ≈ 0.05
-        let result = kernel
-            .query(&GeometryQuery::Centroid(rotated.id))
-            .unwrap();
+        let result = kernel.query(&GeometryQuery::Centroid(rotated.id)).unwrap();
         match result {
             Value::String(s) => {
                 let x_start = s.find("\"x\":").unwrap() + 4;
@@ -430,10 +420,7 @@ mod occt_tests {
 
         match result {
             Err(GeometryError::InvalidReference(_)) => {} // expected
-            other => panic!(
-                "expected GeometryError::InvalidReference, got {:?}",
-                other
-            ),
+            other => panic!("expected GeometryError::InvalidReference, got {:?}", other),
         }
     }
 
@@ -467,25 +454,17 @@ mod occt_tests {
         }
         let mut kernel = OcctKernel::new();
         let handle = kernel
-            .execute(&GeometryOp::Sphere {
-                radius: mm(10.0),
-            })
+            .execute(&GeometryOp::Sphere { radius: mm(10.0) })
             .unwrap();
 
         let mesh = kernel.tessellate(handle.id, 0.1).unwrap();
-        assert!(
-            !mesh.vertices.is_empty(),
-            "mesh should have vertices"
-        );
+        assert!(!mesh.vertices.is_empty(), "mesh should have vertices");
         assert!(
             mesh.indices.len().is_multiple_of(3),
             "indices should be triangle triples, got len={}",
             mesh.indices.len()
         );
-        assert!(
-            mesh.normals.is_some(),
-            "mesh normals should be present"
-        );
+        assert!(mesh.normals.is_some(), "mesh normals should be present");
     }
 
     #[test]
@@ -503,9 +482,7 @@ mod occt_tests {
             })
             .unwrap();
 
-        let result = kernel
-            .query(&GeometryQuery::Volume(handle.id))
-            .unwrap();
+        let result = kernel.query(&GeometryQuery::Volume(handle.id)).unwrap();
         match result {
             Value::Real(v) => {
                 // 10mm = 0.01m, volume = 0.01³ = 1e-6 m³
