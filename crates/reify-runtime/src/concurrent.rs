@@ -259,6 +259,24 @@ impl ConcurrentScheduler {
                 }
             }
 
+            // Register dirty nodes in priority promoter and sort by priority
+            if let Some(ref promoter) = config.priority_promoter {
+                for node in &dirty_nodes {
+                    let priority = config
+                        .node_priorities
+                        .get(node)
+                        .copied()
+                        .unwrap_or(Priority::P3Speculative);
+                    promoter.register(node.clone(), priority);
+                }
+                // Sort by effective priority: ascending (P0 < P3 in Ord)
+                dirty_nodes.sort_by_key(|node| {
+                    promoter
+                        .effective_priority(node)
+                        .unwrap_or(Priority::P3Speculative)
+                });
+            }
+
             // Spawn tasks for dirty nodes in this level
             let mut handles = Vec::new();
             for node in dirty_nodes {
