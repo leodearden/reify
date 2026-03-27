@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { createLineReader } from './ipc.js';
-import type { InboundMessage, OutboundMessage } from './types.js';
+import type { InboundMessage, OutboundMessage, SendMessage } from './types.js';
 
 export interface SessionConfig {
   model: string;
@@ -73,7 +73,7 @@ export class SidecarSession {
   private async handleSendMessage(
     id: string,
     text: string,
-    context?: { selected_entity?: string; diagnostics?: string[]; constraints?: string[] }
+    context?: SendMessage['context']
   ): Promise<void> {
     // Build the prompt with optional context
     let prompt = text;
