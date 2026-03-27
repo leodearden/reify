@@ -55,6 +55,16 @@ struct OcctWarmState {
 }
 
 #[cfg(has_occt)]
+/// Minimum squared magnitude for axis/direction vectors.
+///
+/// Vectors with mag² below this threshold are treated as zero-length and rejected.
+/// This catches physically meaningless axes (e.g. sub-micrometer) while allowing
+/// any vector representable in normal CAD geometry.
+///
+/// Value: 1e-12 → minimum magnitude ~1e-6 → ~1 micrometer.
+const AXIS_MAG_SQ_MIN: f64 = 1e-12;
+
+#[cfg(has_occt)]
 /// Extract an f64 from a Value (Int, Real, or Scalar → SI value).
 fn extract_f64(v: &Value) -> Result<f64, GeometryError> {
     v.as_f64()
@@ -235,7 +245,7 @@ impl OcctKernel {
                     )));
                 }
                 let mag_sq = axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2];
-                if mag_sq < 1e-12 {
+                if mag_sq < AXIS_MAG_SQ_MIN {
                     return Err(GeometryError::OperationFailed(
                         "rotation axis must not be zero-length".into(),
                     ));
@@ -396,7 +406,7 @@ impl OcctKernel {
                     )));
                 }
                 let mag_sq = axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2];
-                if mag_sq < 1e-12 {
+                if mag_sq < AXIS_MAG_SQ_MIN {
                     return Err(GeometryError::OperationFailed(
                         "rotate_around axis must not be zero-length".into(),
                     ));
@@ -443,7 +453,7 @@ impl OcctKernel {
                     ));
                 }
                 let mag_sq = axis_dir[0].powi(2) + axis_dir[1].powi(2) + axis_dir[2].powi(2);
-                if mag_sq < 1e-12 {
+                if mag_sq < AXIS_MAG_SQ_MIN {
                     return Err(GeometryError::OperationFailed(
                         "revolve axis direction must not be zero-length".into(),
                     ));
