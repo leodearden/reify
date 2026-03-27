@@ -141,6 +141,12 @@ impl AnalysisContext {
             for vc in &template.value_cells {
                 result.push((vc.id.member.as_str(), vc.kind, &vc.cell_type));
             }
+            // Also include members inside guarded groups (where blocks)
+            for group in &template.guarded_groups {
+                for vc in group.members.iter().chain(group.else_members.iter()) {
+                    result.push((vc.id.member.as_str(), vc.kind, &vc.cell_type));
+                }
+            }
         }
         result
     }
