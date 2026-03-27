@@ -3416,6 +3416,46 @@ mod tests {
     }
 
     #[test]
+    fn revolve_zero_angle_error_includes_value() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(1.0),
+            })
+            .unwrap();
+        let result = kernel.execute(&GeometryOp::Revolve {
+            profile: box_h.id,
+            axis_origin: [0.0, 0.0, 0.0],
+            axis_dir: [0.0, 0.0, 1.0],
+            angle_rad: 0.0,
+        });
+        // Error should include the actual value "0" for debuggability
+        assert_operation_fails_with(result, "0");
+    }
+
+    #[test]
+    fn revolve_zero_axis_error_includes_values() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(1.0),
+            })
+            .unwrap();
+        let result = kernel.execute(&GeometryOp::Revolve {
+            profile: box_h.id,
+            axis_origin: [0.0, 0.0, 0.0],
+            axis_dir: [0.0, 0.0, 0.0],
+            angle_rad: std::f64::consts::TAU,
+        });
+        // Error should include the axis values
+        assert_operation_fails_with(result, "0, 0, 0");
+    }
+
+    #[test]
     fn sweep_circle_along_line_creates_pipe() {
         if !crate::OCCT_AVAILABLE {
             eprintln!("skipping: OCCT not available");
