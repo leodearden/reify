@@ -268,3 +268,17 @@ fn format_number(v: f64) -> String {
         format!("{}", v)
     }
 }
+
+#[cfg(test)]
+mod format_value_range_tests {
+    use super::*;
+    use reify_types::Value;
+
+    #[test]
+    fn both_bounds_exclusive() {
+        let range = Value::range(Some(Value::Int(1)), Some(Value::Int(10)), false, false);
+        let (formatted, unit) = format_value(&range);
+        assert_eq!(formatted, "(1..10)");
+        assert_eq!(unit, "");
+    }
+}
