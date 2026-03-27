@@ -3724,7 +3724,20 @@
             "crates/reify-eval"
           ],
           "milestone": "M9",
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "memory_hints": {
+            "entities": [
+              "UnitRegistry",
+              "unit declarations",
+              "DimensionVector",
+              "CompiledUnit"
+            ],
+            "queries": [
+              "unit declarations registry compiler pre-pass conversion factor",
+              "task 208 unit registry branch status",
+              "custom unit declaration user-defined cross-module import"
+            ]
+          }
         },
         "subtasks": [],
         "updatedAt": "2026-03-24T06:01:46.000Z"
