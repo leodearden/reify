@@ -5,7 +5,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { save, open } from '@tauri-apps/plugin-dialog';
-import type { MessageContext } from './stores/claudeStore';
 import type {
   GuiState,
   MeshData,
@@ -111,8 +110,19 @@ export async function lspRequest(method: string, params: unknown): Promise<unkno
 
 // ── Claude commands ─────────────────────────────────────────────────
 
-/** Context for a Claude message — narrowed from MessageContext to what the sidecar accepts. */
-export type ClaudeMessageContext = Pick<MessageContext, 'selectedEntity' | 'diagnostics' | 'constraints' | 'currentFile' | 'attachedContexts'>;
+/**
+ * Context for a Claude message — the subset of MessageContext that the sidecar accepts.
+ * This is a standalone interface to keep the wire layer (bridge.ts) independent of the
+ * domain store (claudeStore.ts). Structural drift is caught at compile time by the
+ * Equals<A,B> assertion in __tests__/types.typecheck.ts.
+ */
+export interface ClaudeMessageContext {
+  selectedEntity?: string;
+  diagnostics?: string[];
+  constraints?: string[];
+  currentFile?: string;
+  attachedContexts?: string[];
+}
 
 /** Send a message to the Claude sidecar. Maps camelCase context to snake_case for Rust. */
 export async function claudeSendMessage(text: string, context?: ClaudeMessageContext): Promise<void> {
