@@ -8242,11 +8242,11 @@
         "description": "Multiple eval functions use guards like `denom == 0.0` or `magnitude < 1e-12` that silently pass NaN through (IEEE 754: NaN comparisons return false). Affected locations:\n\n1. **eval_div** (crates/reify-expr/src/lib.rs): `denom == 0.0` guard — NaN denominator bypasses, producing NaN results instead of Undef\n2. **Revolve axis magnitude guard** (crates/reify-eval/src/lib.rs ~line 3264): magnitude check uses `< 1e-12` — NaN axis vector bypasses\n3. **orient_basis** and similar geometry helpers: magnitude/epsilon guards that don't handle NaN\n\nFix: Replace `x == 0.0` with `x == 0.0 || x.is_nan()`, and `x < threshold` with `!(x >= threshold)` (or explicit `x.is_nan() || x < threshold`). Add comprehensive tests for NaN input at each guard.\n\nmemory_hints: search \"NaN bypass pattern geometry magnitude guards\", search \"eval_div denom == 0.0 NaN\", search \"Revolve axis magnitude guard\", entities: eval_div, Revolve",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-03-27T06:11:37.683Z"
+        "updatedAt": "2026-03-27T06:18:14.872Z"
       },
       {
         "id": "476",
@@ -8723,7 +8723,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-27T06:16:51.758Z",
+      "lastModified": "2026-03-27T06:18:14.872Z",
       "taskCount": 516,
       "completedCount": 253,
       "tags": [
