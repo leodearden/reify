@@ -12147,7 +12147,33 @@
         "status": "pending",
         "dependencies": [],
         "priority": "high",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "source": "reconciliation-stage2",
+          "flag": "FLAG-S2-COMPILE-GEOMETRY-OP-BUG",
+          "related_memories": [
+            "67a018f9-2786-45de-b175-56d447d99982",
+            "818e7314-6409-426f-89c3-275441a9d4cb"
+          ],
+          "modules": [
+            "crates/reify-compiler",
+            "crates/reify-eval"
+          ],
+          "memory_hints": {
+            "entities": [
+              "GeometryKernel",
+              "DispatchPlanner",
+              "compile_geometry_op",
+              "GeomRef",
+              "step_handles"
+            ],
+            "queries": [
+              "compile_geometry_op None placeholder step_handles silent corruption",
+              "compile_geometry_call GeomRef Step(0) hardcoded target",
+              "geometry name to step index map resolution"
+            ]
+          }
+        }
       }
     ],
     "metadata": {
