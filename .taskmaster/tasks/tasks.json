@@ -7825,7 +7825,15 @@
         "subtasks": [],
         "updatedAt": "2026-03-26T12:05:53.305Z",
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-expr/tests/tensor_matrix_arithmetic_tests.rs",
+            "crates/reify-types/src/value.rs"
+          ],
+          "modules": [
+            "crates/reify-expr/tests",
+            "crates/reify-types/src"
+          ]
         }
       },
       {
@@ -7852,7 +7860,15 @@
         "subtasks": [],
         "updatedAt": "2026-03-27T06:12:59.230Z",
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/tests/termination_check_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/src",
+            "crates/reify-compiler/tests"
+          ]
         }
       },
       {
