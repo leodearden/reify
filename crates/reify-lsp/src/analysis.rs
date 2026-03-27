@@ -2,7 +2,7 @@ use reify_compiler::{CompiledModule, ValueCellKind};
 use reify_constraints::SimpleConstraintChecker;
 use reify_eval::CheckResult;
 use reify_syntax::ParsedModule;
-use reify_types::{DimensionVector, ModulePath, SourceSpan, Type, Value, ValueCellId};
+use reify_types::{ModulePath, SourceSpan, Type, Value, ValueCellId};
 use tower_lsp::lsp_types::Url;
 
 /// Extract a module name from a file URI.
@@ -168,168 +168,17 @@ impl AnalysisContext {
 }
 
 /// Format a `Value` for user-friendly display in hover tooltips.
+///
+/// Delegates to [`Value::format_hover()`] — the canonical implementation lives
+/// on Value itself so that adding a new variant only requires editing value.rs.
 pub fn format_value(value: &Value) -> String {
-    match value {
-        Value::Bool(b) => format!("{b}"),
-        Value::Int(i) => format!("{i}"),
-        Value::Real(r) => format!("{r}"),
-        Value::String(s) => format!("\"{s}\""),
-        Value::Scalar {
-            si_value,
-            dimension,
-        } => {
-            let unit = dimension_unit_label(dimension);
-            if unit.is_empty() {
-                format!("{si_value}")
-            } else {
-                format!("{si_value} {unit}")
-            }
-        }
-        Value::Enum { type_name, variant } => format!("{type_name}::{variant}"),
-        Value::List(items) => {
-            let inner: Vec<String> = items.iter().map(format_value).collect();
-            format!("[{}]", inner.join(", "))
-        }
-        Value::Set(items) => {
-            let inner: Vec<String> = items.iter().map(format_value).collect();
-            format!("{{{}}}", inner.join(", "))
-        }
-        Value::Map(entries) => {
-            let inner: Vec<String> = entries
-                .iter()
-                .map(|(k, v)| format!("{}: {}", format_value(k), format_value(v)))
-                .collect();
-            format!("{{{}}}", inner.join(", "))
-        }
-        Value::Option(inner) => match inner {
-            None => "none".to_string(),
-            Some(v) => format!("some({})", format_value(v)),
-        },
-        Value::Tensor(items) => {
-            let inner: Vec<String> = items.iter().map(format_value).collect();
-            format!("[{}]", inner.join(", "))
-        }
-        Value::Lambda { .. } => "<lambda>".to_string(),
-        Value::Field {
-            domain_type,
-            codomain_type,
-            source,
-            ..
-        } => {
-            format!("Field<{}, {}>({:?})", domain_type, codomain_type, source)
-        }
-        Value::Complex { re, im, dimension } => {
-            let unit = dimension_unit_label(dimension);
-            // Use conditional sign handling so negative imaginary parts render
-            // as "3 - 4i" instead of "3 + -4i".
-            let (sign, im_abs) = if *im < 0.0 {
-                ("-", im.abs())
-            } else {
-                ("+", *im)
-            };
-            if unit.is_empty() {
-                format!("{re} {sign} {im_abs}i")
-            } else {
-                format!("{re} {sign} {im_abs}i {unit}")
-            }
-        }
-        Value::Matrix(rows) => {
-            let inner: Vec<String> = rows
-                .iter()
-                .map(|row| {
-                    let cols: Vec<String> = row.iter().map(format_value).collect();
-                    format!("[{}]", cols.join(", "))
-                })
-                .collect();
-            format!("[{}]", inner.join(", "))
-        }
-        Value::Point(components) => {
-            let inner: Vec<String> = components.iter().map(format_value).collect();
-            format!("Point({})", inner.join(", "))
-        }
-        Value::Vector(components) => {
-            let inner: Vec<String> = components.iter().map(format_value).collect();
-            format!("Vector({})", inner.join(", "))
-        }
-        Value::Orientation { w, x, y, z } => {
-            format!("Orientation(w={w}, x={x}, y={y}, z={z})")
-        }
-        Value::Frame { origin, basis } => {
-            format!(
-                "Frame(origin={}, basis={})",
-                format_value(origin),
-                format_value(basis)
-            )
-        }
-        Value::Transform {
-            rotation,
-            translation,
-        } => {
-            format!(
-                "Transform(rotation={}, translation={})",
-                format_value(rotation),
-                format_value(translation)
-            )
-        }
-        Value::Plane { origin, normal } => {
-            format!(
-                "Plane(origin={}, normal={})",
-                format_value(origin),
-                format_value(normal)
-            )
-        }
-        Value::Axis { origin, direction } => {
-            format!(
-                "Axis(origin={}, direction={})",
-                format_value(origin),
-                format_value(direction)
-            )
-        }
-        Value::BoundingBox { min, max } => {
-            format!(
-                "BoundingBox(min={}, max={})",
-                format_value(min),
-                format_value(max)
-            )
-        }
-        Value::Range { lower, upper, .. } => {
-            let lo = lower
-                .as_ref()
-                .map(|v| format_value(v))
-                .unwrap_or_else(|| "..".to_string());
-            let hi = upper
-                .as_ref()
-                .map(|v| format_value(v))
-                .unwrap_or_else(|| "..".to_string());
-            format!("{lo}..{hi}")
-        }
-        Value::Undef => "(undefined)".to_string(),
-    }
-}
-
-/// Map a DimensionVector to a human-readable unit label.
-fn dimension_unit_label(dim: &DimensionVector) -> &'static str {
-    if *dim == DimensionVector::LENGTH {
-        "m"
-    } else if *dim == DimensionVector::AREA {
-        "m\u{00B2}"
-    } else if *dim == DimensionVector::VOLUME {
-        "m\u{00B3}"
-    } else if *dim == DimensionVector::MASS {
-        "kg"
-    } else if *dim == DimensionVector::ANGLE {
-        "rad"
-    } else if dim.is_dimensionless() {
-        ""
-    } else {
-        // Fallback for complex dimensions
-        "SI"
-    }
+    value.format_hover()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reify_types::DimensionVector;
     use tower_lsp::lsp_types::Url;
 
     fn test_uri() -> Url {
