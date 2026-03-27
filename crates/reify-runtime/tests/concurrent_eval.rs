@@ -2249,3 +2249,76 @@ async fn test_uncommitted_in_dirty_cone_cancelled() {
         "node_b should NOT be in changed (uncommitted, cancelled)"
     );
 }
+
+/// Test that commitment tracker and priority promoter are cleaned up after execution.
+/// Two nodes, normal execution (no cancel). After execute_with_config completes,
+/// tracker.task_count() == 0 and promoter.count() == 0.
+#[tokio::test]
+async fn test_cleanup_on_completion() {
+    use reify_eval::cache::{EvalOutcome, NodeId};
+    use reify_eval::deps::DependencyTrace;
+    use reify_runtime::commitment::{CommitmentPolicy, CommitmentTracker};
+    use reify_runtime::concurrent::{
+        AsyncNodeEvaluator, CancellationToken, ConcurrentScheduler, SchedulerConfig,
+    };
+    use reify_runtime::priority_promotion::SharedPriorityPromoter;
+    use reify_runtime::Priority;
+    use reify_types::ValueCellId;
+    use std::collections::{HashMap, HashSet};
+    use std::sync::{Arc, Mutex};
+
+    struct AllChangedAsync;
+    impl AsyncNodeEvaluator for AllChangedAsync {
+        async fn evaluate(&self, _node: NodeId) -> EvalOutcome {
+            EvalOutcome::Changed
+        }
+    }
+
+    let e = "CLN";
+    let node_a = NodeId::Value(ValueCellId::new(e, "a"));
+    let node_b = NodeId::Value(ValueCellId::new(e, "b"));
+
+    let mut traces = HashMap::new();
+    traces.insert(node_a.clone(), DependencyTrace::default());
+    traces.insert(node_b.clone(), DependencyTrace::default());
+
+    let tracker = Arc::new(Mutex::new(CommitmentTracker::new(
+        CommitmentPolicy::default(),
+    )));
+    let promoter = Arc::new(SharedPriorityPromoter::new());
+
+    let mut node_priorities = HashMap::new();
+    node_priorities.insert(node_a.clone(), Priority::P0Interactive);
+    node_priorities.insert(node_b.clone(), Priority::P1Slow);
+
+    let config = SchedulerConfig {
+        commitment_tracker: Some(Arc::clone(&tracker)),
+        priority_promoter: Some(Arc::clone(&promoter)),
+        node_priorities,
+        ..SchedulerConfig::default()
+    };
+
+    let cancel = CancellationToken::new();
+    let scheduler = ConcurrentScheduler;
+    let evaluator = Arc::new(AllChangedAsync);
+    let eval_set = vec![node_a.clone(), node_b.clone()];
+
+    let result = scheduler
+        .execute_with_config(eval_set, evaluator, &traces, &cancel, &HashSet::new(), config)
+        .await
+        .unwrap();
+
+    assert_eq!(result.changed.len(), 2);
+
+    // After execution, all nodes should be cleaned up from tracker and promoter
+    let tracker_count = tracker.lock().unwrap().task_count();
+    assert_eq!(
+        tracker_count, 0,
+        "tracker should have 0 tasks after completion, got {tracker_count}"
+    );
+    let promoter_count = promoter.count();
+    assert_eq!(
+        promoter_count, 0,
+        "promoter should have 0 nodes after completion, got {promoter_count}"
+    );
+}
