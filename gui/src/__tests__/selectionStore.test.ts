@@ -1,6 +1,15 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createRoot } from 'solid-js';
+
+// Mock Tauri API modules
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: vi.fn(),
+}));
+
+import { invoke } from '@tauri-apps/api/core';
 import { createSelectionStore } from '../stores/selectionStore';
+
+const mockInvoke = vi.mocked(invoke);
 
 describe('selectionStore', () => {
   it('has null selectedEntity and hoveredEntity initially', () => {
@@ -158,6 +167,38 @@ describe('selectionStore', () => {
       expect(state.selectedEntity).toBeNull();
       expect(state.hoveredEntity).toBeNull();
       dispose();
+    });
+  });
+
+  describe('backend sync', () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+      mockInvoke.mockResolvedValue(undefined);
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+      vi.clearAllMocks();
+    });
+
+    it('selection-only change calls invoke immediately (not debounced)', () => {
+      createRoot((dispose) => {
+        const { selectEntity } = createSelectionStore();
+
+        // Clear the initial effect invocation (both null)
+        mockInvoke.mockClear();
+
+        selectEntity('Bracket');
+
+        // invoke should have been called synchronously — no timer advancement needed
+        expect(mockInvoke).toHaveBeenCalledTimes(1);
+        expect(mockInvoke).toHaveBeenCalledWith('update_selection', {
+          selectedEntity: 'Bracket',
+          hoveredEntity: null,
+        });
+
+        dispose();
+      });
     });
   });
 });
