@@ -10560,6 +10560,17 @@
         "dependencies": [],
         "priority": "high",
         "subtasks": []
+      },
+      {
+        "id": 537,
+        "title": "Expand PropertyEditor quantity-literal test coverage",
+        "description": "Add missing test coverage for PropertyEditor's quantity-literal validation identified during task 486 code review.",
+        "details": "## Gaps identified\n\n1. **Blur path**: The `handleBlur` path also calls `isValidValue` but no quantity-literal tests exercise it. Add blur tests for accepted (`80mm`) and rejected (`mm80`) literals — blur reverts rather than sets `data-invalid`.\n\n2. **Scientific notation + unit**: `QUANTITY_RE` accepts `1e3mm`, `1.5e-2deg` via the `([eE][+-]?\\d+)?` group, but no tests cover this. Add to accepted `it.each`.\n\n3. **No leading digit**: `QUANTITY_RE` accepts `.5mm`, `.25deg` via the `\\.\\d+` branch. Untested. Add to accepted `it.each`.\n\n4. **Rejection near-misses**: Missing rejection cases for `+10mm` (no leading `+` in regex), `mm` (standalone unit, no number), `deg` (standalone unit). Add to rejected `it.each`.\n\n### Files\n- `gui/src/__tests__/PropertyEditor.test.tsx`\n\n### memory_hints\n- `search(query=\"PropertyEditor quantity literal QUANTITY_RE\", project_id=\"reify\")`",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -10572,7 +10583,7 @@
       ],
       "created": "2026-03-27T08:12:47.223Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-27T08:12:53.538Z"
+      "updated": "2026-03-27T08:19:24.784Z"
     }
   }
 }
