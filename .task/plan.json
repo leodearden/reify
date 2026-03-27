@@ -1,0 +1,186 @@
+{
+  "task_id": "477",
+  "title": "Wire CommitmentTracker and PriorityPromoter into ConcurrentScheduler::execute",
+  "files": [
+    "crates/reify-runtime/src/concurrent.rs",
+    "crates/reify-runtime/src/commitment.rs",
+    "crates/reify-runtime/src/priority_promotion.rs",
+    "crates/reify-runtime/tests/concurrent_eval.rs"
+  ],
+  "modules": [
+    "crates/reify-runtime/src",
+    "crates/reify-runtime/tests"
+  ],
+  "analysis": "ConcurrentScheduler::execute in concurrent.rs currently takes 5 parameters (eval_set, evaluator, traces, cancel, changed_cells) and only checks cancel.is_cancelled() at the top of each level loop. It has no integration with CommitmentTracker (commitment.rs) or SharedPriorityPromoter (priority_promotion.rs), both of which are fully implemented and unit-tested from task #31.\n\nThe approach is:\n1. Create a SchedulerConfig struct holding optional commitment/priority/override data.\n2. Add execute_with_config method; existing execute delegates with SchedulerConfig::default() for backward compat.\n3. Wire priority sorting (sort dirty_nodes by effective_priority before spawning).\n4. Wire OnlyRunOnFinalInputs skip (during dirty/skip pre-computation).\n5. Wire commitment-aware result handling (spawned tasks check cancel + commitment after eval).\n6. Wire registration/cleanup lifecycle (register in tracker+promoter at spawn, remove on completion).\n\nKey design constraints:\n- Priority enum is Ord: P0Interactive < P1Fast < P1Slow < P3Speculative (lower = higher priority).\n- CommitmentTracker requires mut for register/update/remove but only & for should_continue/is_committed, so Arc<Mutex<>> is needed.\n- SharedPriorityPromoter already has internal Mutex for thread-safety.\n- #[tokio::test] uses current_thread runtime so spawn order = execution order for sync evaluators, enabling deterministic priority ordering tests.\n- Existing callers (edit_param_concurrent, all existing tests) use execute() directly and must not break.\n- Commitment check in spawned tasks: after evaluation completes, check cancel.is_cancelled(). If cancelled, update commitment status with actual elapsed time, then check should_continue. If not committed, drop the result (return None).\n- For OnlyRunOnFinalInputs: check before spawning, during dirty/skip pre-computation. If node_overrides[node] == OnlyRunOnFinalInputs && has_intermediate_inputs(node), add to skipped.\n- CommitmentTracker.should_continue returns false for unregistered nodes in dirty cone, so registration must happen before commitment checks can work.",
+  "prerequisites": [
+    {
+      "id": "pre-1",
+      "description": "Add task_count() method to CommitmentTracker for test verification of cleanup. Returns self.states.len().",
+      "status": "done",
+      "commit": "d3916cc7",
+      "tests": []
+    },
+    {
+      "id": "pre-2",
+      "description": "Add count() method to PriorityPromoter and SharedPriorityPromoter for test verification of cleanup. PriorityPromoter returns self.effective.len(); SharedPriorityPromoter delegates through lock.",
+      "status": "done",
+      "commit": "d3916cc7",
+      "tests": []
+    },
+    {
+      "id": "pre-3",
+      "description": "Create SchedulerConfig struct in concurrent.rs with fields: commitment_tracker (Option<Arc<Mutex<CommitmentTracker>>>), priority_promoter (Option<Arc<SharedPriorityPromoter>>), node_overrides (HashMap<NodeId, NodeCommitmentOverride>), node_priorities (HashMap<NodeId, Priority>), has_intermediate_inputs (Arc<dyn Fn(&NodeId) -> bool + Send + Sync>). Implement Default (all None/empty, has_intermediate_inputs defaults to |_| false).",
+      "status": "done",
+      "commit": "d3916cc7",
+      "tests": []
+    },
+    {
+      "id": "pre-4",
+      "description": "Add execute_with_config method to ConcurrentScheduler. Initially it just copies the current execute body. Refactor execute to delegate to execute_with_config with SchedulerConfig::default(). Verify all existing tests still pass with zero behavior change.",
+      "status": "done",
+      "commit": "d3916cc7",
+      "tests": []
+    }
+  ],
+  "steps": [
+    {
+      "id": "step-1",
+      "type": "test",
+      "description": "Write failing test test_priority_ordering_within_level in tests/concurrent_eval.rs. Three nodes at same level (no inter-dependencies, empty traces \u2192 dirty by default) with priorities P0Interactive, P1Slow, P3Speculative. Use a TrackingAsyncEvaluator that pushes NodeId to an Arc<Mutex<Vec<NodeId>>> on each evaluate call. Call execute_with_config with SchedulerConfig containing priority_promoter and node_priorities. Assert the recorded order is [P0, P1Slow, P3]. Uses #[tokio::test] (current_thread) so spawn order = eval order for synchronous evaluators.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-2",
+      "type": "impl",
+      "description": "Implement priority-based sorting in execute_with_config. After filtering dirty_nodes for a level: (1) register each node in the priority_promoter with its priority from config.node_priorities (default P3Speculative), (2) sort dirty_nodes by effective_priority from the promoter (ascending = highest priority first, since P0 < P3 in Ord). This makes step-1 test pass.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-3",
+      "type": "test",
+      "description": "Write failing test test_only_run_on_final_inputs_skipped in tests/concurrent_eval.rs. Two nodes at same level: node_a (default CommitIfSlow) and node_b (OnlyRunOnFinalInputs override). has_intermediate_inputs returns true for node_b. Both have empty traces (dirty by default). Assert node_b is in result.skipped and NOT in result.changed. Assert node_a IS in result.changed. Fails because execute_with_config has no skip logic for OnlyRunOnFinalInputs.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-4",
+      "type": "impl",
+      "description": "Implement OnlyRunOnFinalInputs skip logic in execute_with_config. During dirty/skip pre-computation for each level, after determining a node is dirty: check if config.node_overrides[node] == OnlyRunOnFinalInputs && (config.has_intermediate_inputs)(node). If so, add to skipped instead of dirty_nodes. This makes step-3 test pass.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-5",
+      "type": "test",
+      "description": "Write failing test test_committed_node_survives_cancellation in tests/concurrent_eval.rs. Two nodes at same level. Use CommitmentPolicy with always_commit_after=10ms. Evaluator: fast_node takes <1ms and fires cancel, slow_node sleeps 50ms (accumulating elapsed > 10ms). After execute_with_config: assert slow_node IS in result.changed (committed, survived cancel), fast_node NOT in result.changed (uncommitted, cancelled). Fails because no commitment check in spawned tasks.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-6",
+      "type": "impl",
+      "description": "Implement commitment-aware task handling in execute_with_config. (1) Before spawning, register each dirty node in commitment_tracker with its override from node_overrides. (2) In spawned tasks: record Instant::now() before eval, after eval compute elapsed time. If cancel.is_cancelled() and tracker is Some, lock tracker, call update_status with TaskProgress{elapsed, None, None} and has_intermediate_inputs for this node, then check should_continue(node, in_dirty_cone=true). If false, return (node, None) instead of (node, Some(outcome)). (3) In join loop, handle None (commitment-cancelled) by not adding to changed. Makes step-5 pass.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-7",
+      "type": "test",
+      "description": "Write test test_uncommitted_in_dirty_cone_cancelled in tests/concurrent_eval.rs. Two nodes at same level. CommitmentPolicy with always_commit_after=5s (long). One node fires cancel during eval. Both nodes are fast (<1ms elapsed, well below threshold). Assert neither node is in result.changed (both uncommitted when cancel fires). Should pass with step-6 implementation.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-8",
+      "type": "test",
+      "description": "Write failing test test_cleanup_on_completion in tests/concurrent_eval.rs. Two nodes, normal execution (no cancel). Pass commitment_tracker and priority_promoter via config. After execute_with_config completes, lock tracker and assert task_count() == 0. Assert promoter.count() == 0. Fails because execute_with_config doesn't remove nodes from tracker/promoter on completion.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-9",
+      "type": "impl",
+      "description": "Implement cleanup in execute_with_config. After joining all tasks in a level, iterate all processed nodes (both completed and commitment-cancelled). Remove each from commitment_tracker (remove_task) and priority_promoter (remove). Also remove skipped nodes from promoter (they were registered but never spawned). Makes step-8 pass.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-10",
+      "type": "test",
+      "description": "Run full test suite (cargo test -p reify-runtime) to verify all existing tests in concurrent.rs, commitment.rs, priority_promotion.rs, and tests/concurrent_eval.rs still pass unchanged. The backward-compat execute() method should produce identical behavior to before.",
+      "status": "pending",
+      "commit": null
+    }
+  ],
+  "design_decisions": [
+    {
+      "decision": "Use SchedulerConfig struct with Default impl rather than adding optional parameters to execute signature",
+      "rationale": "Avoids signature bloat (6+ params) and allows future extension without breaking API. Default::default() gives exact current behavior. execute() delegates to execute_with_config(SchedulerConfig::default()) for zero-cost backward compat."
+    },
+    {
+      "decision": "Commitment check happens after evaluation completes (not mid-evaluation cancellation)",
+      "rationale": "The AsyncNodeEvaluator::evaluate is an opaque future \u2014 we can't cancel it mid-execution without cooperative cancellation support in the evaluator itself. Post-completion commitment check achieves the correct semantic (committed results kept, uncommitted results dropped) without requiring changes to the evaluator trait. True mid-evaluation cancellation would be a future enhancement requiring tokio::select! + evaluator-side cancellation support."
+    },
+    {
+      "decision": "Use Arc<dyn Fn(&NodeId) -> bool + Send + Sync> for has_intermediate_inputs callback",
+      "rationale": "Needs to be callable from spawned tasks (Send + Sync), clonable into spawned tasks (Arc), and stored in a struct with Default impl. Arc<dyn Fn> satisfies all constraints. The per-node boolean is captured before spawning and moved into the task closure."
+    },
+    {
+      "decision": "Register nodes in promoter/tracker inside execute_with_config, not externally",
+      "rationale": "Per task spec: 'Register each node in the promoter when it enters the eval set.' Internal registration ensures consistent lifecycle management. node_priorities and node_overrides in SchedulerConfig provide the initial data; execute handles the registration/cleanup lifecycle."
+    },
+    {
+      "decision": "Spawned tasks return (NodeId, Option<EvalOutcome>) where None means commitment-cancelled",
+      "rationale": "Avoids adding an EvalOutcome::Cancelled variant to reify-eval (which is outside this task's module scope). None cleanly signals 'result discarded by commitment policy' and the join loop simply doesn't add the node to changed or skipped."
+    },
+    {
+      "decision": "Use Instant::now() inside spawned tasks to measure elapsed time for commitment decisions",
+      "rationale": "Each spawned task tracks its own start time and computes elapsed after evaluation. This elapsed is used in TaskProgress for update_status. Measuring inside the task is accurate (measures actual wall-clock time of that task) and requires no shared state beyond the existing Arc<Mutex<CommitmentTracker>>."
+    },
+    {
+      "decision": "Priority ordering test relies on #[tokio::test] current_thread runtime for deterministic spawn-order execution",
+      "rationale": "tokio::test defaults to current_thread runtime. With synchronous evaluators (no .await points other than the trait method), tasks execute in spawn order. This makes priority ordering assertions deterministic without needing barriers or channels."
+    }
+  ],
+  "reuse": [
+    {
+      "what": "CommitmentTracker (register_task, update_status, should_continue, remove_task)",
+      "where": "crates/reify-runtime/src/commitment.rs",
+      "how": "Wrap in Arc<Mutex<>> and pass via SchedulerConfig. Register nodes before spawning, update_status inside spawned tasks after eval, should_continue for commitment check when cancel fires, remove_task for cleanup."
+    },
+    {
+      "what": "SharedPriorityPromoter (register, effective_priority, remove)",
+      "where": "crates/reify-runtime/src/priority_promotion.rs",
+      "how": "Already thread-safe via internal Mutex. Pass via SchedulerConfig as Arc<SharedPriorityPromoter>. Register with initial priorities, query effective_priority for sorting, remove for cleanup."
+    },
+    {
+      "what": "CommitmentPolicy, NodeCommitmentOverride, TaskProgress",
+      "where": "crates/reify-runtime/src/commitment.rs",
+      "how": "CommitmentPolicy for tracker construction. NodeCommitmentOverride in node_overrides map. TaskProgress constructed inside spawned tasks with measured elapsed time."
+    },
+    {
+      "what": "Priority enum (P0Interactive..P3Speculative) with derived Ord",
+      "where": "crates/reify-runtime/src/lib.rs",
+      "how": "Used in node_priorities map. Ord trait allows sorting dirty_nodes: lower enum value = higher priority. sort_by_key with effective_priority."
+    },
+    {
+      "what": "CancellationToken (is_cancelled, child_token)",
+      "where": "crates/reify-runtime/src/concurrent.rs",
+      "how": "Existing cancel token passed to spawned tasks. is_cancelled() check gates commitment decision. child_token() available for future per-node cancellation."
+    },
+    {
+      "what": "Existing test patterns (mock evaluators, simple_setup, TrackingAsyncEvaluator)",
+      "where": "crates/reify-runtime/tests/concurrent_eval.rs",
+      "how": "Follow existing patterns for test helpers. Use similar MockAsyncEvaluator pattern with AtomicUsize/Mutex<Vec> for tracking. Use the same ValueCellId::new(e, name) helper pattern for node creation."
+    },
+    {
+      "what": "Poison-recovery pattern (unwrap_or_else(|e| e.into_inner()))",
+      "where": "crates/reify-runtime/src/priority_promotion.rs SharedPriorityPromoter methods",
+      "how": "Apply same Mutex poison recovery pattern when locking CommitmentTracker in spawned tasks and in the execute_with_config cleanup code. Consistent with ConcurrentEvalAdapter design decision for graceful lock recovery."
+    }
+  ],
+  "_session_id": "477-30b2ca30",
+  "_created_at": "2026-03-27T08:47:53.954515+00:00"
+}
