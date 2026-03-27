@@ -42,7 +42,7 @@ pub fn compute_hover(source: &str, uri: &Url, position: Position) -> Option<Hove
     }
 
     // Try structure name
-    for (name, params, lets, constraints) in ctx.structure_names() {
+    for (name, params, lets, constraints, _kind) in ctx.structure_names() {
         if name == word {
             let mut md = format!(
                 "```reify\nstructure {name}\n```\n\n{params} params, {lets} lets, {constraints} constraints"

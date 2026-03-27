@@ -50,7 +50,7 @@ pub fn compute_completions(source: &str, uri: &Url, _position: Position) -> Vec<
     }
 
     // (e) Structure names
-    for (name, _params, _lets, _constraints) in ctx.structure_names() {
+    for (name, _params, _lets, _constraints, _kind) in ctx.structure_names() {
         items.push(CompletionItem {
             label: name.to_string(),
             kind: Some(CompletionItemKind::STRUCT),

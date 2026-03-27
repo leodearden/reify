@@ -152,29 +152,33 @@ impl AnalysisContext {
         result
     }
 
-    /// Return all structure names with member counts:
-    /// `(name, param_count, let_count, constraint_count)`.
-    pub fn structure_names(&self) -> Vec<(&str, usize, usize, usize)> {
+    /// Return all structure/occurrence names with member counts:
+    /// `(name, param_count, let_count, constraint_count, kind)`.
+    pub fn structure_names(&self) -> Vec<(&str, usize, usize, usize, &str)> {
         let mut result = Vec::new();
         for decl in &self.parsed.declarations {
-            if let reify_syntax::Declaration::Structure(s) = decl {
-                let param_count = s
-                    .members
-                    .iter()
-                    .filter(|m| matches!(m, reify_syntax::MemberDecl::Param(_)))
-                    .count();
-                let let_count = s
-                    .members
-                    .iter()
-                    .filter(|m| matches!(m, reify_syntax::MemberDecl::Let(_)))
-                    .count();
-                let constraint_count = s
-                    .members
-                    .iter()
-                    .filter(|m| matches!(m, reify_syntax::MemberDecl::Constraint(_)))
-                    .count();
-                result.push((s.name.as_str(), param_count, let_count, constraint_count));
-            }
+            let (members, name, kind) = match decl {
+                reify_syntax::Declaration::Structure(s) => {
+                    (&s.members, s.name.as_str(), "structure")
+                }
+                reify_syntax::Declaration::Occurrence(o) => {
+                    (&o.members, o.name.as_str(), "occurrence")
+                }
+                _ => continue,
+            };
+            let param_count = members
+                .iter()
+                .filter(|m| matches!(m, reify_syntax::MemberDecl::Param(_)))
+                .count();
+            let let_count = members
+                .iter()
+                .filter(|m| matches!(m, reify_syntax::MemberDecl::Let(_)))
+                .count();
+            let constraint_count = members
+                .iter()
+                .filter(|m| matches!(m, reify_syntax::MemberDecl::Constraint(_)))
+                .count();
+            result.push((name, param_count, let_count, constraint_count, kind));
         }
         result
     }
@@ -321,11 +325,12 @@ mod tests {
         let ctx = AnalysisContext::new(source, &test_uri());
         let structs = ctx.structure_names();
         assert_eq!(structs.len(), 1);
-        let (name, params, lets, constraints) = structs[0];
+        let (name, params, lets, constraints, kind) = structs[0];
         assert_eq!(name, "Bracket");
         assert_eq!(params, 5);
         assert_eq!(lets, 2); // volume + body
         assert_eq!(constraints, 3);
+        assert_eq!(kind, "structure");
     }
 
     #[test]
