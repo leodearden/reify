@@ -6867,11 +6867,11 @@
         "description": "No warning when only one port satisfies LocatedPort (asymmetric frame mismatch) — likely user error goes unreported. Extract `const LOCATED_PORT_TRAIT` to replace hardcoded \"LocatedPort\" magic string (lib.rs:3931-3932). Fix HashSet iteration order in error message (lib.rs:3862-3866) — sort before join for deterministic output.\n\nMissing tests:\n- Asymmetric LocatedPort (one located, one not)\n- Forward-ref connector type (design decision: best-effort skip)\n- Dotted-port connections not emitting false type warnings\n- Dead OR branch in test assertion (line 497 — `port type mismatch` never matches)\n\nMemory hints: search \"LocatedPort frame_alignment connect_compile HashSet\", entities: compile_connections, LocatedPort",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-27T06:25:13.855Z"
+        "updatedAt": "2026-03-27T06:33:15.178Z"
       },
       {
         "id": "371",
@@ -6927,11 +6927,11 @@
         "description": "Missing tests in crates/reify-expr/tests/tensor_matrix_arithmetic_tests.rs:\n\n1. vector_times_matrix_returns_undef — Vector*Matrix (v*M instead of M*v) should return Undef.\n2. Multi-row undef propagation — 2x2 matrix where row 0 adds cleanly (Length+Length) but row 1 has dimension mismatch (Length+Angle), assert whole result is Undef.\n3. Dimension mismatch in dot product — A=[[1m, 1rad]], B=[[1m],[1m]], so C[0][0] = Area + rad·Length = Undef.\n4. Add comment on mat()/vec_lit() helpers documenting Type::Real as dummy annotation (actual types carried by Value variants).\n\nMemory hints: search \"tensor_matrix_arithmetic_tests mat vec_lit eval\", entities: tensor_matrix_arithmetic_tests",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-27T06:25:20.303Z"
+        "updatedAt": "2026-03-27T06:33:11.278Z"
       },
       {
         "id": "376",
@@ -7043,11 +7043,11 @@
         "description": "Review findings from task 189 (diamond trait hierarchy) that need follow-up:\n\nTESTS:\n1. Add diamond_type_conflict_produces_error test — two traits declare same param name with different types merged via diamond, assert exactly 1 conflicting-trait-requirements diagnostic. Exercises seen_names conflict path in collect_all_requirements (lib.rs:4321-4330).\n2. Add dedup count assertions to diamond_members_at_every_level — verify param d appears exactly once in template.value_cells.\n3. Add dedup count assertions to diamond_deep_five_level — verify x and y appear once each in value_cells.\n4. Add cell count assertion to diamond_single_bound_satisfied — verify x appears exactly once.\n5. Use errors[0].message instead of format!(\"{:?}\", errors[0]) in diamond_missing_member_single_error — Debug format is not stable API.\n6. Use more specific error message match than contains(\"x\") — match on \"missing required member 'x'\" or similar.\n\nCODE QUALITY:\n7. Add comment above unnamed defaults branch (lib.rs:4341) explaining dedup is via visited set, not seen_defaults.\n\nMemory hints: search \"diamond trait conformance collect_all_requirements seen_names\", entities: collect_all_requirements, diamond_missing_member_single_error",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-27T06:28:55.904Z"
+        "updatedAt": "2026-03-27T06:32:09.950Z"
       },
       {
         "id": "385",
@@ -7342,11 +7342,11 @@
         "description": "In `collect_all_requirements` (crates/reify-compiler/src/lib.rs:4546-4558), the depth-limit check fires BEFORE the visited-set check. This means:\n\n1. When depth > MAX_TRAIT_DEPTH, the trait is NOT inserted into `state.visited`\n2. If the same deep trait is reachable via multiple paths (diamond pattern), each path emits its own \"too deep\" diagnostic — duplicate errors\n\nFix: Swap the two guards so the visited check comes first. Insert `trait_name` into `state.visited` before the depth check. This ensures duplicate paths silently skip already-processed traits.\n\n```rust\n// BEFORE (current):\nif depth > MAX_TRAIT_DEPTH { ... return; }\nif !state.visited.insert(trait_name.to_string()) { return; }\n\n// AFTER (fixed):\nif !state.visited.insert(trait_name.to_string()) { return; }\nif depth > MAX_TRAIT_DEPTH { ... return; }\n```\n\nmemory_hints: search \"collect_all_requirements depth MAX_TRAIT_DEPTH visited\" in reify project",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-27T06:29:21.347Z"
+        "updatedAt": "2026-03-27T06:33:17.801Z"
       },
       {
         "id": "404",
@@ -7366,11 +7366,11 @@
         "description": "Extract a `negate_value(v: Value) -> Value` helper in reify-expr to replace the current pattern in eval_unop where nested Tensor elements are wrapped in `CompiledExpr::literal(c, Type::Real)` to recurse. This has multiple issues:\n\n1. **Wrong type annotation**: Type::Real is passed for a Value::Tensor, violating CompiledExpr's type contract\n2. **Unnecessary allocation**: One CompiledExpr heap allocation per matrix row\n3. **Silent Undef for unexpected elements**: The `_ => Value::Undef` catch-all silently converts Value::Matrix elements to Undef instead of canonicalizing them first\n4. **Confusing code path**: Re-enters eval_expr → eval_unop when direct Value manipulation suffices\n\nFix: Create `fn negate_value(v: Value) -> Value` that directly handles Int/Real/Scalar/Tensor/Matrix recursion without CompiledExpr wrapping. Add explicit Value::Matrix arm that canonicalizes before recursing.\n\nLocation: crates/reify-expr/src/lib.rs lines 1118-1141\nmemory_hints: search \"eval_unop CompiledExpr literal Type::Real tensor negation\" entity \"eval_unop\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-26T18:37:08.940Z"
+        "updatedAt": "2026-03-27T06:32:10.797Z"
       },
       {
         "id": "406",
@@ -7426,11 +7426,11 @@
         "description": "Add tests to crates/reify-compiler/tests/termination_check_tests.rs:\n\n1. Assert no errors in sub_where_clause_compiles_to_guard_expr (currently discards diagnostics).\n2. Add test asserting template.is_recursive == true for a known recursive structure.\n3. Add test asserting the cycle detection warning diagnostic ('recursive structure cycle detected: ...') is emitted.\n4. Add test for undef in recursive sub args WITHOUT a guard (existing test only covers undef WITH guard).\n5. Add documenting test for the BinOp::Add false negative (n+1 with guard n>0 accepted but non-terminating).\n\nSource: review suggestions from esc-204-20 (task 204).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-27T06:07:00.227Z"
+        "updatedAt": "2026-03-27T06:32:56.884Z"
       },
       {
         "id": "411",
@@ -7450,11 +7450,11 @@
         "description": "Three allocation issues in the gradient sampling path (crates/reify-expr/src/lib.rs):\n\n1. Use Arc instead of Box+clone for the lambda slot in eval_gradient (~line 429) to avoid deep-cloning the original field on every gradient() call.\n2. Reuse a mutable buffer in compute_numerical_gradient instead of cloning coords Vec 6 times per sample (lines 475-476).\n3. Reduce or eliminate captures.clone() in apply_lambda (~line 376) which is called 6 times per gradient sample.\n\nSource: review suggestions from esc-281-11 (task 281).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-27T06:07:00.259Z"
+        "updatedAt": "2026-03-27T06:33:15.799Z"
       },
       {
         "id": "413",
@@ -7474,11 +7474,11 @@
         "description": "Three missing test cases in crates/reify-expr/tests/gradient_tests.rs:\n\n1. Point3 with non-Scalar quantity (e.g., Vec3) as domain -> eval_gradient should return Undef.\n2. Wrong-sized Tensor point (e.g., 2-component instead of 3) -> compute_numerical_gradient should return Undef.\n3. Partial Undef propagation: lambda returns Undef only for perturbations on one axis, verifying the early-exit behavior.\n\nSource: review suggestions from esc-281-11 (task 281).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-27T06:07:00.294Z"
+        "updatedAt": "2026-03-27T06:33:18.466Z"
       },
       {
         "id": "415",
@@ -8254,7 +8254,7 @@
         "description": "The Claude chat panel UI works (store, components, tests all pass) and the Tauri backend exposes `claude_send_message`, `claude_abort`, `claude_clear_session` commands plus seven `claude-*` event types. But nothing connects them:\n\n1. **`bridge.ts` has no Claude IPC functions.** Task 140 specified `claudeSendMessage()`, `claudeAbort()`, `claudeClearSession()` invoke wrappers and six `onClaude*` listen wrappers, but they were never added to bridge.ts.\n\n2. **`App.tsx` passes no-op callbacks** to `createClaudeStore()` at line 60-63: `onSend: () => {}` and `onAbort: () => {}`. These must call the bridge invoke wrappers.\n\n3. **No Tauri event subscription** for `claude-*` events. The engineStore has `subscribeToEvents()` that calls `listen()` for engine events and pipes them into store methods. There is no equivalent for Claude events — nobody calls `listen('claude-text-delta', ...)` etc. and feeds payloads into `claudeStore.handleOutboundMessage()`.\n\n**What \"done\" looks like:**\n- `bridge.ts` exports typed invoke wrappers: `claudeSendMessage(text, context?)`, `claudeAbort()`, `claudeClearSession()`\n- `bridge.ts` exports typed listen wrappers for all 7 claude event types that convert payloads to `OutboundMessage` and call a callback\n- A `subscribeToClaudeEvents(handler)` function (in bridge.ts or a new claude bridge module) that subscribes to all 7 event types and returns a combined unlisten function\n- `App.tsx` wires `onSend` to call `claudeSendMessage` and pipe the message ID back, `onAbort` to call `claudeAbort`\n- `App.tsx` calls `subscribeToClaudeEvents(claudeStore.handleOutboundMessage)` during init (alongside the existing engine event subscription) and unsubscribes on cleanup\n- All existing tests still pass\n- New unit tests in `gui/src/__tests__/claudeBridge.test.ts` verify the bridge wrappers call `invoke`/`listen` with correct arguments (following the pattern of existing bridge tests if any, or mocking `@tauri-apps/api`)\n- New integration-style test proves end-to-end: `createClaudeStore` with real bridge callbacks, mock Tauri invoke/listen, simulate sending a message and receiving `text_delta` + `done` events, assert store state updates\n\n**Test-first workflow:**\n1. Write failing tests that import the missing bridge functions and assert they call invoke/listen correctly\n2. Write a failing integration test that creates a claudeStore with bridge-wired callbacks, simulates Tauri events, and asserts messages appear in the store\n3. Implement the bridge functions to make tests pass\n4. Wire App.tsx and verify no regressions\n\nMemory hints:\n- Search: \"bridge.ts invoke listen\", \"claudeStore onSend onAbort\", \"subscribeToEvents engineStore\", \"claude-text-delta Tauri event\"\n- Entities: claudeStore, bridge.ts, App.tsx, ChatPanel, claude_send_message, OutboundMessage, SidecarHandle",
         "details": "## Implementation guide\n\n### Step 1: Add Claude invoke wrappers to `gui/src/bridge.ts`\n\nAdd after the existing command wrappers (around line 108):\n\n```typescript\n// ── Claude sidecar commands ──────────────────────────────────────\n\n/** Send a message to Claude via the sidecar. Returns the generated message ID. */\nexport async function claudeSendMessage(\n  text: string,\n  context?: { selectedEntity?: string; diagnostics?: string[]; constraints?: string[] },\n): Promise<string> {\n  // The Tauri command uses snake_case field names\n  const ctx = context ? {\n    selected_entity: context.selectedEntity,\n    diagnostics: context.diagnostics,\n    constraints: context.constraints,\n  } : undefined;\n  return invoke<string>('claude_send_message', { text, context: ctx });\n}\n\n/** Abort the current Claude generation. */\nexport async function claudeAbort(): Promise<void> {\n  return invoke('claude_abort');\n}\n\n/** Clear the Claude conversation session. */\nexport async function claudeClearSession(): Promise<void> {\n  return invoke('claude_clear_session');\n}\n```\n\n### Step 2: Add Claude event listeners to `gui/src/bridge.ts`\n\nAdd after the existing event listeners:\n\n```typescript\n// ── Claude event listeners ───────────────────────────────────────\n\nimport type { OutboundMessage } from '../sidecar/src/types';\n\n/** Subscribe to all Claude sidecar events. Returns a single unlisten function. */\nexport async function subscribeToClaudeEvents(\n  handler: (msg: OutboundMessage) => void,\n): Promise<UnlistenFn> {\n  const unlisteners = await Promise.all([\n    listen<{ id: string; content: string }>('claude-text-delta', (e) =>\n      handler({ type: 'text_delta', id: e.payload.id, content: e.payload.content })),\n    listen<{ id: string; content: string }>('claude-thinking-delta', (e) =>\n      handler({ type: 'thinking_delta', id: e.payload.id, content: e.payload.content })),\n    listen<{ id: string; tool_name: string; tool_input: Record<string, unknown> }>('claude-tool-call', (e) =>\n      handler({ type: 'tool_call', id: e.payload.id, tool_name: e.payload.tool_name, tool_input: e.payload.tool_input })),\n    listen<{ id: string; tool_name: string; result: unknown }>('claude-tool-result', (e) =>\n      handler({ type: 'tool_result', id: e.payload.id, tool_name: e.payload.tool_name, result: e.payload.result })),\n    listen<{ id: string }>('claude-done', (e) =>\n      handler({ type: 'done', id: e.payload.id })),\n    listen<{ id: string; message: string }>('claude-error', (e) =>\n      handler({ type: 'error', id: e.payload.id, message: e.payload.message })),\n    listen<Record<string, never>>('claude-ready', () =>\n      handler({ type: 'ready' })),\n  ]);\n  return () => unlisteners.forEach((u) => u());\n}\n```\n\n### Step 3: Wire `App.tsx`\n\nReplace the no-op callbacks (lines 60-63) and add event subscription:\n\n```typescript\nimport {\n  // ... existing imports ...\n  claudeSendMessage,\n  claudeAbort,\n  subscribeToClaudeEvents,\n} from './bridge';\n\n// In the App component:\nconst claudeStore = createClaudeStore({\n  onSend: (id, text, context) => {\n    claudeSendMessage(text, {\n      selectedEntity: context.selectedEntity,\n      diagnostics: context.diagnostics,\n      constraints: context.constraints,\n    }).catch((err) => {\n      const msg = err instanceof Error ? err.message : String(err);\n      claudeStore.addSystemMessage('sidecar', `Failed to send: ${msg}`);\n    });\n  },\n  onAbort: () => {\n    claudeAbort().catch((err) => {\n      console.error('Claude abort failed:', err);\n    });\n  },\n});\n```\n\nIn the `initApp()` function, after the engine event subscription block (~line 222), add:\n\n```typescript\n// Subscribe to Claude sidecar events\ntry {\n  const claudeUnsub = await subscribeToClaudeEvents(claudeStore.handleOutboundMessage);\n  if (!alive) {\n    claudeUnsub();\n    return;\n  }\n  claudeEventUnsub = claudeUnsub;\n} catch (_err) {\n  showToast('Claude event subscription failed', 'error');\n}\n```\n\nAdd `claudeEventUnsub` to the cleanup in `onCleanup`.\n\n### Step 4: Tests\n\n**`gui/src/__tests__/claudeBridge.test.ts`** — unit tests for bridge wrappers:\n- Mock `@tauri-apps/api/core` invoke and `@tauri-apps/api/event` listen\n- Test `claudeSendMessage` calls `invoke('claude_send_message', { text, context })` with correct snake_case field mapping\n- Test `claudeAbort` calls `invoke('claude_abort')`\n- Test `subscribeToClaudeEvents` subscribes to all 7 event names\n- Test that firing a mock `claude-text-delta` event invokes the handler with correct OutboundMessage shape\n\n**Integration test** in `gui/src/__tests__/claudeIntegration.test.ts`:\n- Create a claudeStore with real bridge callbacks (mocked Tauri layer)\n- Call `sendMessage` → assert invoke was called\n- Simulate `claude-text-delta` and `claude-done` events → assert store.state.messages updated\n\n### Key field-name mapping concern\n\nThe Rust backend uses `snake_case` (`selected_entity`, `tool_name`, `tool_input`). The TS store uses `camelCase` in its interface but the `OutboundMessage` type from `sidecar/src/types.ts` uses `snake_case` (`tool_name`, `tool_input`). The `MessageContext` in the store uses `camelCase` (`selectedEntity`). The bridge layer must handle this translation — the Tauri command expects `{ selected_entity }` but the store passes `{ selectedEntity }`.\n\n### Files to modify\n- `gui/src/bridge.ts` — add Claude invoke + listen wrappers\n- `gui/src/App.tsx` — wire callbacks + event subscription + cleanup\n- `gui/src/__tests__/claudeBridge.test.ts` — new test file\n- `gui/src/__tests__/claudeIntegration.test.ts` — new test file",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "139",
           "140",
@@ -8262,7 +8262,7 @@
         ],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-03-27T06:29:20.729Z"
+        "updatedAt": "2026-03-27T06:32:10.405Z"
       },
       {
         "id": "477",
@@ -8515,11 +8515,11 @@
         "description": "The non-guarded first pass in eval() (crates/reify-eval/src/lib.rs:981-1021) skips Param cells with default_expr: None — they are not inserted into the values map or snapshot. The guarded-group path (lib.rs:1056-1072) correctly handles this case by inserting Value::Undef with DeterminacyState::Undetermined.\n\nThe language spec (docs/reify-language-spec.md, lines 820-823) says: \"Default value optional (if absent, parameter is undef). undef means not yet decided — it is the default state of every unassigned parameter without a default value.\"\n\n**What's wrong:** After eval(), a Param without a default is absent from values/snapshot. edit_param may fail to find it. Let cells referencing it get Undef from EvalContext (correct value but no audit trail in snapshot).\n\n**Fix:** Add an else branch after the `cell.kind == ValueCellKind::Param && let Some(ref expr) = cell.default_expr` block:\n```rust\n} else if cell.kind == ValueCellKind::Param && cell.default_expr.is_none() {\n    values.insert(cell.id.clone(), Value::Undef);\n    snapshot.values.insert(cell.id.clone(), (Value::Undef, DeterminacyState::Undetermined));\n}\n```\nThis matches the guarded-group path at lines 1056-1072. Also check edit_param and resolve_concurrent_edit for the same pattern.\n\n**Memory hints:** search for \"param without default\", \"Undef Undetermined\", entity names: ValueCellKind::Param, default_expr, DeterminacyState",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-03-27T06:16:19.109Z"
+        "updatedAt": "2026-03-27T06:32:56.793Z"
       },
       {
         "id": "499",
@@ -8778,7 +8778,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-27T06:29:21.348Z",
+      "lastModified": "2026-03-27T06:33:18.467Z",
       "taskCount": 521,
       "completedCount": 253,
       "tags": [
