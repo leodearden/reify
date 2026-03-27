@@ -12519,6 +12519,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 617,
+        "title": "Add missing test coverage for mock solver and kernel (task 430 followup)",
+        "description": "Three test coverage gaps identified in crates/reify-test-support/src/mocks.rs after task 430's deadlock fix and distance normalization:\n\n1. **Empty-vec panic path**: No test for `SequencedMockConstraintSolver::new(vec![])` followed by `solve()`. Add a `#[should_panic(expected = \"no results configured\")]` test.\n\n2. **Negative case for distance queries**: No test that querying an unregistered Distance pair returns an error. Add a test: configure Distance(1,2), query Distance(1,3), assert Err.\n\n3. **Concurrency regression test**: The primary motivation for the refactor was eliminating nested lock acquisition (deadlock risk), but no multi-threaded test exercises this. Add a smoke test using `std::thread::scope` with 2-4 threads calling `solver.solve()` concurrently.\n\nmemory_hints: search \"SequencedMockConstraintSolver\" and \"distance query key\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -12531,7 +12542,7 @@
       ],
       "created": "2026-03-27T23:54:13.869Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-27T23:54:13.888Z"
+      "updated": "2026-03-27T23:54:19.869Z"
     }
   }
 }
