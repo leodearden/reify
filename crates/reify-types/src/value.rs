@@ -3747,10 +3747,11 @@ mod tests {
         assert_eq!(format!("{}", r), "(-inf..inf)");
     }
 
-    // ── Range invariant enforcement tests (step-9) ───────────────────────────
+    // ── Range invariant re-normalization tests (step-9) ───────────────────────
     // These tests bypass Value::range() factory and directly construct Value::Range
     // with an invariant violation (lower/upper_inclusive=true when bound is None).
-    // Each impl (content_hash, PartialEq, Ord, Display) must panic via debug_assert!.
+    // Each impl (content_hash, PartialEq, Ord, Display) silently re-normalizes
+    // via normalize_range_flags.
 
     #[test]
     fn value_range_bypass_hash_renormalizes() {
