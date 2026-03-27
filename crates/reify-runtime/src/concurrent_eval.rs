@@ -138,12 +138,9 @@ impl ConcurrentEvalAdapter {
 
     /// Take the collected results (for testing/inspection).
     ///
-    /// Recovers gracefully from poisoned locks via `unwrap_or_else`.
+    /// Recovers gracefully from poisoned locks via `lock_results()` helper.
     pub fn take_results(&self) -> Vec<ConcurrentNodeResult> {
-        self.results
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
+        self.lock_results().clone()
     }
 
     /// Build a `ConcurrentEditResult` via shared references (cloning).
@@ -152,8 +149,9 @@ impl ConcurrentEvalAdapter {
     /// references still exist. Slightly less efficient than `into_result`
     /// since it clones each inner container through locks.
     ///
-    /// Recovers gracefully from poisoned locks — if a prior evaluation task
-    /// panicked, the data may be partially updated but this method will not panic.
+    /// Recovers gracefully from poisoned locks via helper methods — if a prior
+    /// evaluation task panicked, the data may be partially updated but this
+    /// method will not panic.
     ///
     /// The `skipped` set is provided by the scheduler's `SchedulerResult`.
     pub fn build_result_shared(
@@ -161,21 +159,9 @@ impl ConcurrentEvalAdapter {
         eval_set: &[NodeId],
         skipped: HashSet<NodeId>,
     ) -> ConcurrentEditResult {
-        let values = self
-            .values
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone();
-        let snapshot_values = self
-            .snapshot_values
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone();
-        let node_results = self
-            .results
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone();
+        let values = self.read_values().clone();
+        let snapshot_values = self.read_snapshot_values().clone();
+        let node_results = self.lock_results().clone();
 
         let actual_eval_set: Vec<NodeId> = eval_set
             .iter()
