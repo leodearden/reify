@@ -112,7 +112,7 @@ export async function lspRequest(method: string, params: unknown): Promise<unkno
 // ── Claude commands ─────────────────────────────────────────────────
 
 /** Context for a Claude message — narrowed from MessageContext to what the sidecar accepts. */
-export type ClaudeMessageContext = Pick<MessageContext, 'selectedEntity' | 'diagnostics' | 'constraints'>;
+export type ClaudeMessageContext = Pick<MessageContext, 'selectedEntity' | 'diagnostics' | 'constraints' | 'currentFile' | 'attachedContexts'>;
 
 /** Send a message to the Claude sidecar. Maps camelCase context to snake_case for Rust. */
 export async function claudeSendMessage(text: string, context?: ClaudeMessageContext): Promise<void> {
@@ -123,6 +123,8 @@ export async function claudeSendMessage(text: string, context?: ClaudeMessageCon
           selected_entity: context.selectedEntity,
           diagnostics: context.diagnostics,
           constraints: context.constraints,
+          current_file: context.currentFile,
+          attached_contexts: context.attachedContexts,
         }
       : undefined,
   });
