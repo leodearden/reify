@@ -98,3 +98,26 @@ fn test_needs_generate_false_when_stamp_matches() {
         "must NOT regenerate when stamp matches and all outputs exist"
     );
 }
+
+#[test]
+fn test_needs_generate_true_when_stamp_stale() {
+    let dir = tempfile::tempdir().unwrap();
+    let grammar = dir.path().join("grammar.js");
+    std::fs::write(&grammar, b"module.exports = grammar({name: 'new'});").unwrap();
+    let stamp = dir.path().join("stamp.hash");
+    // Write a stale (old) hash to stamp file
+    std::fs::write(&stamp, "0000000000000000").unwrap();
+    // Create all 3 output files
+    let src_dir = dir.path().join("src");
+    std::fs::create_dir_all(&src_dir).unwrap();
+    for name in EXPECTED_OUTPUTS {
+        std::fs::write(src_dir.join(name), b"placeholder").unwrap();
+    }
+    let output_paths: Vec<_> = EXPECTED_OUTPUTS.iter().map(|n| src_dir.join(n)).collect();
+    let output_refs: Vec<&Path> = output_paths.iter().map(|p| p.as_path()).collect();
+
+    assert!(
+        needs_generate(&grammar, &stamp, &output_refs),
+        "must regenerate when stamp hash differs from current grammar hash"
+    );
+}
