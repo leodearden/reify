@@ -1662,6 +1662,41 @@ impl ValueMap {
 mod tests {
     use super::*;
 
+    // ── normalize_range_flags unit tests ─────────────────────────────────────
+
+    #[test]
+    fn test_normalize_range_flags() {
+        // Both bounds present → flags pass through unchanged
+        assert_eq!(
+            normalize_range_flags(&Some(1), &Some(2), true, true),
+            (true, true)
+        );
+
+        // Lower is None → lower_inclusive forced false
+        assert_eq!(
+            normalize_range_flags::<i32>(&None, &Some(2), true, true),
+            (false, true)
+        );
+
+        // Upper is None → upper_inclusive forced false
+        assert_eq!(
+            normalize_range_flags(&Some(1), &None::<i32>, true, true),
+            (true, false)
+        );
+
+        // Both None → both forced false
+        assert_eq!(
+            normalize_range_flags::<i32>(&None, &None, true, true),
+            (false, false)
+        );
+
+        // Both present but flags already false → stays false
+        assert_eq!(
+            normalize_range_flags(&Some(1), &Some(2), false, false),
+            (false, false)
+        );
+    }
+
     #[test]
     fn value_content_hash_determinism() {
         let v1 = Value::Scalar {
