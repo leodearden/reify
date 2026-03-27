@@ -8740,7 +8740,10 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-27T06:16:22.408Z"
+        "updatedAt": "2026-03-27T06:16:22.408Z",
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+        }
       },
       {
         "id": 482,
@@ -8753,7 +8756,10 @@
           "481"
         ],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+        }
       },
       {
         "id": 483,
@@ -9228,8 +9234,4 @@
       "tags": [
         "master"
       ],
-      "created": "2026-03-27T07:21:01.637Z",
-      "description": "Tasks for master context"
-    }
-  }
-}
+      "create
