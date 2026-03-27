@@ -635,3 +635,53 @@ fn maximize_with_feasible_initial_point() {
         other => panic!("expected Solved, got {:?}", other),
     }
 }
+
+/// Infeasible constraints with an objective present should still be detected.
+/// Bounds [0, 10mm], constraint x > 15mm — impossible within bounds.
+/// Regression guard: the feasibility check must NOT short-circuit the
+/// infeasibility detection path when an objective is present.
+#[test]
+fn infeasible_with_objective_still_detected() {
+    let solver = DimensionalSolver;
+
+    let x_id = vcid("Part", "x");
+    let x_ref = value_ref("Part", "x");
+
+    // constraint: x > 15mm — impossible with bounds [0, 10mm]
+    let constraint = gt(x_ref.clone(), literal(mm(15.0)));
+
+    // Maximize x — the objective shouldn't mask the infeasibility
+    let objective = OptimizationObjective::Maximize(x_ref);
+
+    let problem = ResolutionProblem {
+        auto_params: vec![AutoParam {
+            id: x_id.clone(),
+            param_type: Type::length(),
+            bounds: Some((0.0, 0.010)), // max 10mm
+        }],
+        constraints: vec![(cnid("Part", 0), constraint)],
+        current_values: ValueMap::new(),
+        objective: Some(objective),
+        functions: vec![],
+    };
+
+    let result = solver.solve(&problem);
+    match result {
+        SolveResult::Infeasible { diagnostics } => {
+            assert!(
+                !diagnostics.is_empty(),
+                "should have diagnostic messages"
+            );
+            let msg = &diagnostics[0].message;
+            assert!(
+                msg.contains("residual"),
+                "diagnostic should mention residual, got: {}",
+                msg
+            );
+        }
+        other => panic!(
+            "expected Infeasible for constraint beyond bounds with objective, got {:?}",
+            other
+        ),
+    }
+}
