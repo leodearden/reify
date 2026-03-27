@@ -310,6 +310,50 @@ fn get_selection_returns_selected_entity_from_arc() {
     assert_eq!(result.hovered_entity, None);
 }
 
+#[test]
+fn get_selection_returns_both_selected_and_hovered() {
+    let session = make_loaded_session();
+    let engine = Arc::new(Mutex::new(session));
+    let selection = Arc::new(RwLock::new(SelectionInfo {
+        selected_entity: Some("Bracket".to_string()),
+        hovered_entity: Some("Bracket.width".to_string()),
+    }));
+    let ctx = TauriToolContext::new_with_selection(engine, selection);
+    let result = ctx.get_selection().expect("get_selection should succeed");
+    assert_eq!(result.selected_entity, Some("Bracket".to_string()));
+    assert_eq!(result.hovered_entity, Some("Bracket.width".to_string()));
+}
+
+#[test]
+fn get_selection_reflects_live_arc_updates() {
+    let session = make_loaded_session();
+    let engine = Arc::new(Mutex::new(session));
+    let selection = Arc::new(RwLock::new(SelectionInfo {
+        selected_entity: None,
+        hovered_entity: None,
+    }));
+    let ctx = TauriToolContext::new_with_selection(engine, selection.clone());
+
+    // Initially empty
+    let result = ctx.get_selection().expect("get_selection should succeed");
+    assert_eq!(result.selected_entity, None);
+
+    // Update the Arc externally (simulating frontend invoke)
+    {
+        let mut sel = selection.write().unwrap();
+        sel.selected_entity = Some("Bracket.height".to_string());
+        sel.hovered_entity = Some("Bracket.thickness".to_string());
+    }
+
+    // Subsequent call reflects the update
+    let result = ctx.get_selection().expect("get_selection should succeed");
+    assert_eq!(result.selected_entity, Some("Bracket.height".to_string()));
+    assert_eq!(
+        result.hovered_entity,
+        Some("Bracket.thickness".to_string())
+    );
+}
+
 // --- Compile-time trait assertions ---
 
 #[test]
