@@ -643,14 +643,14 @@ fn evaluate_const_expr(
                 }
             };
             // Guard: reject non-finite arithmetic results (inf, NaN from overflow).
-            if let Some(v) = result {
-                if !v.is_finite() {
-                    diagnostics.push(
-                        Diagnostic::error("overflow in unit conversion expression")
-                            .with_label(DiagnosticLabel::new(expr.span, "result is not finite")),
-                    );
-                    return None;
-                }
+            if let Some(v) = result
+                && !v.is_finite()
+            {
+                diagnostics.push(
+                    Diagnostic::error("overflow in unit conversion expression")
+                        .with_label(DiagnosticLabel::new(expr.span, "result is not finite")),
+                );
+                return None;
             }
             result
         }
@@ -763,17 +763,17 @@ fn compile_unit(
         None // non-affine unit with no offset
     };
     // Defense-in-depth: reject non-finite offset values.
-    if let Some(off) = offset {
-        if !off.is_finite() {
-            diagnostics.push(
-                Diagnostic::error(format!(
-                    "unit '{}' has non-finite offset ({}); offset must be finite",
-                    decl.name, off
-                ))
-                .with_label(DiagnosticLabel::new(decl.span, "invalid offset")),
-            );
-            return None;
-        }
+    if let Some(off) = offset
+        && !off.is_finite()
+    {
+        diagnostics.push(
+            Diagnostic::error(format!(
+                "unit '{}' has non-finite offset ({}); offset must be finite",
+                decl.name, off
+            ))
+            .with_label(DiagnosticLabel::new(decl.span, "invalid offset")),
+        );
+        return None;
     }
     // Content hash: name + dimension bits + factor + offset
     let hash = {
