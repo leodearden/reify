@@ -6782,13 +6782,13 @@
         "description": "Address review suggestions from task 139 reviews in main.rs:\n\n1. **WindowEvent::Destroyed for shutdown (S6)**: Change sidecar shutdown hook from `WindowEvent::Destroyed` to `WindowEvent::CloseRequested` for more reliable graceful shutdown while Tauri runtime is still operational.\n\n2. **Untestable spawn logic in command handler (S7)**: Extract the ~55-line lazy-spawn block from claude_send_message into `pub fn spawn_sidecar_impl(path: &Path, engine: Arc<Mutex<EngineSession>>, event_sink: impl Fn(&str, Value)) -> Result<SidecarHandle, String>` in claude_bridge.rs. The Tauri command keeps only path resolution (requires AppHandle) and plumbing.\n\nFiles: gui/src-tauri/src/main.rs, gui/src-tauri/src/claude_bridge.rs\n\nMemory hints:\n- Search: \"Tauri sidecar shutdown\", \"spawn_sidecar_impl\", \"WindowEvent\"\n- Entities: claude_send_message, SidecarHandle, AppState",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "139"
         ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-27T07:37:17.962Z",
+        "updatedAt": "2026-03-27T07:37:19.439Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -10285,7 +10285,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-27T07:37:19.259Z",
+      "lastModified": "2026-03-27T07:37:19.439Z",
       "taskCount": 523,
       "completedCount": 251,
       "tags": [
