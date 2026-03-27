@@ -16,3 +16,8 @@ test_bracket.reify
 .orchestrator/reconciliation/*.db*
 .orchestrator/queue/*.db*
 *.kate-swp
+
+# Tree-sitter generated (regenerate via scripts/tree-sitter-generate.sh)
+tree-sitter-reify/src/parser.c
+tree-sitter-reify/src/grammar.json
+tree-sitter-reify/src/node-types.json
