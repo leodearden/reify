@@ -746,6 +746,7 @@ std::unique_ptr<OcctShape> make_pipe(const OcctShape& profile, const OcctShape& 
 
 std::unique_ptr<OcctShape> make_prism(const OcctShape& profile, double dx, double dy, double dz) {
     try {
+        // DEFENSE-IN-DEPTH: Rust extrude validates distance; this catches direct FFI calls.
         double mag_sq = dx*dx + dy*dy + dz*dz;
         if (!(std::isfinite(dx) && std::isfinite(dy) && std::isfinite(dz))) {
             throw std::runtime_error("make_prism: direction vector components must be finite");
@@ -775,6 +776,9 @@ std::unique_ptr<OcctShape> make_revolve(const OcctShape& profile,
     double ax, double ay, double az,
     double angle_rad) {
     try {
+        // DEFENSE-IN-DEPTH: Rust validates first with stricter threshold (1e-12 for axis).
+        // These C++ checks (1e-30) are a safety net for future code paths that may bypass
+        // the Rust layer (e.g., direct FFI calls from tests or hot-path optimizations).
         if (!(std::isfinite(ox) && std::isfinite(oy) && std::isfinite(oz) &&
               std::isfinite(ax) && std::isfinite(ay) && std::isfinite(az) &&
               std::isfinite(angle_rad))) {
