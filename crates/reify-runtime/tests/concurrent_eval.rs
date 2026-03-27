@@ -1976,3 +1976,97 @@ mod poison_panics {
         );
     }
 }
+
+// Tests for evaluate() recovering from poisoned locks. The evaluate method
+// acquires 4 locks: values read, values write, snapshot_values write, and
+// results lock. These tests verify each lock site recovers gracefully.
+
+#[cfg(feature = "test-utils")]
+mod poison_evaluate {
+    use super::*;
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    /// evaluate() recovers from poisoned values RwLock (read path at start of evaluation).
+    #[test]
+    fn evaluate_recovers_poisoned_values_read() {
+        let setup = simple_setup();
+        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+        let node = NodeId::Value(ValueCellId::new("T", "b"));
+
+        // Poison the values lock — affects both read and write
+        adapter.poison_values();
+
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            tokio::runtime::Runtime::new().unwrap().block_on(async {
+                adapter.evaluate(node).await
+            })
+        }));
+        assert!(result.is_ok(), "evaluate() should recover from poisoned values lock, not panic");
+        let outcome = result.unwrap();
+        // b = a * 2 where a=10, so b=20 which differs from old hash → Changed
+        assert_eq!(outcome, EvalOutcome::Changed);
+    }
+
+    /// evaluate() recovers from poisoned values RwLock (write path after computation).
+    /// The write lock is the same RwLock as the read lock — this test verifies the
+    /// write acquisition (used to store computed values) also recovers.
+    #[test]
+    fn evaluate_recovers_poisoned_values_write() {
+        let setup = simple_setup();
+        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+        let node = NodeId::Value(ValueCellId::new("T", "b"));
+
+        // Poison the values lock — both read and write acquisitions must recover
+        adapter.poison_values();
+
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            tokio::runtime::Runtime::new().unwrap().block_on(async {
+                adapter.evaluate(node).await
+            })
+        }));
+        assert!(result.is_ok(), "evaluate() should recover from poisoned values write lock, not panic");
+        // Verify the value was written despite poisoning
+        let values = adapter.values();
+        assert_eq!(values.get(&ValueCellId::new("T", "b")), Some(&Value::Real(20.0)));
+    }
+
+    /// evaluate() recovers from poisoned snapshot_values RwLock.
+    #[test]
+    fn evaluate_recovers_poisoned_snapshot_values() {
+        let setup = simple_setup();
+        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+        let node = NodeId::Value(ValueCellId::new("T", "b"));
+
+        // Poison only snapshot_values
+        adapter.poison_snapshot_values();
+
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            tokio::runtime::Runtime::new().unwrap().block_on(async {
+                adapter.evaluate(node).await
+            })
+        }));
+        assert!(result.is_ok(), "evaluate() should recover from poisoned snapshot_values lock, not panic");
+        let outcome = result.unwrap();
+        assert_eq!(outcome, EvalOutcome::Changed);
+    }
+
+    /// evaluate() recovers from poisoned results Mutex.
+    #[test]
+    fn evaluate_recovers_poisoned_results() {
+        let setup = simple_setup();
+        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+        let node = NodeId::Value(ValueCellId::new("T", "b"));
+
+        // Poison only results
+        adapter.poison_results();
+
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            tokio::runtime::Runtime::new().unwrap().block_on(async {
+                adapter.evaluate(node).await
+            })
+        }));
+        assert!(result.is_ok(), "evaluate() should recover from poisoned results lock, not panic");
+        let outcome = result.unwrap();
+        assert_eq!(outcome, EvalOutcome::Changed);
+    }
+}
