@@ -10165,7 +10165,14 @@
         "priority": "low",
         "subtasks": [],
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "gui/src/bridge.ts",
+            "gui/src/App.tsx"
+          ],
+          "modules": [
+            "gui/src"
+          ]
         }
       },
       {
@@ -10179,7 +10186,13 @@
         "priority": "medium",
         "subtasks": [],
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "gui/src/__tests__/App.test.tsx"
+          ],
+          "modules": [
+            "gui/src/__tests__"
+          ]
         }
       },
       {
