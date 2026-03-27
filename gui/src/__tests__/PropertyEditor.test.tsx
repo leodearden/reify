@@ -534,7 +534,7 @@ describe('PropertyEditor validation - trailing non-numeric characters', () => {
     c1: makeValue({ cell_id: 'c1', name: 'width', value: '50', determinacy: 'determined', entity_path: 'Bracket.width' }),
   };
 
-  it("'10mm' on Enter does NOT call onSetParameter and sets data-invalid", () => {
+  it("'10mm' on Enter DOES call onSetParameter (quantity literal)", () => {
     const onSetParam = vi.fn();
     render(() => (
       <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
@@ -544,8 +544,8 @@ describe('PropertyEditor validation - trailing non-numeric characters', () => {
     fireEvent.focus(input);
     fireEvent.input(input, { target: { value: '10mm' } });
     fireEvent.keyDown(input, { key: 'Enter' });
-    expect(onSetParam).not.toHaveBeenCalled();
-    expect(input.hasAttribute('data-invalid')).toBe(true);
+    expect(onSetParam).toHaveBeenCalledWith('c1', '10mm');
+    expect(input.hasAttribute('data-invalid')).toBe(false);
   });
 
   it("'1.5abc' on Enter does NOT call onSetParameter and sets data-invalid", () => {
@@ -587,6 +587,67 @@ describe('PropertyEditor validation - trailing non-numeric characters', () => {
     fireEvent.input(input, { target: { value: ' 42 ' } });
     fireEvent.keyDown(input, { key: 'Enter' });
     expect(onSetParam).toHaveBeenCalledWith('c1', ' 42 ');
+    expect(input.hasAttribute('data-invalid')).toBe(false);
+  });
+});
+
+describe('PropertyEditor quantity literal acceptance', () => {
+  const values: Record<string, ValueData> = {
+    c1: makeValue({ cell_id: 'c1', name: 'width', value: '50', determinacy: 'determined', entity_path: 'Bracket.width' }),
+  };
+
+  it.each([
+    ['80mm'],
+    ['90deg'],
+    ['1.5m'],
+    ['100cm'],
+    ['1rad'],
+    ['-10mm'],
+  ])("'%s' on Enter DOES call onSetParameter", (qtyLiteral) => {
+    const onSetParam = vi.fn();
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: qtyLiteral } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onSetParam).toHaveBeenCalledWith('c1', qtyLiteral);
+    expect(input.hasAttribute('data-invalid')).toBe(false);
+  });
+
+  it.each([
+    ['10xyz'],
+    ['mm80'],
+    ['5 mm'],
+    ['5  mm'],
+    ['5\tmm'],
+  ])("'%s' on Enter does NOT call onSetParameter", (invalidLiteral) => {
+    const onSetParam = vi.fn();
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: invalidLiteral } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onSetParam).not.toHaveBeenCalled();
+    expect(input.hasAttribute('data-invalid')).toBe(true);
+  });
+
+  it("'10' (plain number, no unit) on Enter DOES call onSetParameter", () => {
+    const onSetParam = vi.fn();
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: '10' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onSetParam).toHaveBeenCalledWith('c1', '10');
     expect(input.hasAttribute('data-invalid')).toBe(false);
   });
 });
