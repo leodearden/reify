@@ -3611,6 +3611,37 @@ mod tests {
         );
     }
 
+    // ── Source file defensive catch-all tests ──────────────────
+
+    #[test]
+    fn lower_source_file_catch_all_emits_for_unexpected_named_children() {
+        // Pass a structure_definition node to lower_source_file. Its named
+        // children (identifier, param_declaration, port_declaration, etc.)
+        // don't match any top-level declaration kind and should hit the catch-all.
+        let source = "structure S { param x: Scalar = 1  port a : in T { param y: Scalar = 2 } }";
+        let mut ts_parser = tree_sitter::Parser::new();
+        ts_parser
+            .set_language(&tree_sitter_reify::language().into())
+            .expect("Error loading Reify grammar");
+        let tree = ts_parser.parse(source, None).expect("Failed to parse");
+        let root = tree.root_node();
+
+        let struct_node = find_node_by_kind(root, "structure_definition")
+            .expect("no structure_definition node found in parse tree");
+
+        let mut lowering = Lowering::new(source);
+        lowering.lower_source_file(struct_node);
+        assert!(
+            !lowering.errors.is_empty(),
+            "expected diagnostics for unexpected named children in source file catch-all, got none"
+        );
+        assert!(
+            lowering.errors.iter().any(|e| e.message.contains("unexpected")),
+            "expected at least one error containing 'unexpected', got: {:?}",
+            lowering.errors
+        );
+    }
+
     // ── Doc comment extraction tests ─────────────────────────
 
     #[test]
