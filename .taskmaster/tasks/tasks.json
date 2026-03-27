@@ -6820,13 +6820,13 @@
         "description": "Address review suggestions from task 139 reviews in main.rs:\n\n1. **WindowEvent::Destroyed for shutdown (S6)**: Change sidecar shutdown hook from `WindowEvent::Destroyed` to `WindowEvent::CloseRequested` for more reliable graceful shutdown while Tauri runtime is still operational.\n\n2. **Untestable spawn logic in command handler (S7)**: Extract the ~55-line lazy-spawn block from claude_send_message into `pub fn spawn_sidecar_impl(path: &Path, engine: Arc<Mutex<EngineSession>>, event_sink: impl Fn(&str, Value)) -> Result<SidecarHandle, String>` in claude_bridge.rs. The Tauri command keeps only path resolution (requires AppHandle) and plumbing.\n\nFiles: gui/src-tauri/src/main.rs, gui/src-tauri/src/claude_bridge.rs\n\nMemory hints:\n- Search: \"Tauri sidecar shutdown\", \"spawn_sidecar_impl\", \"WindowEvent\"\n- Entities: claude_send_message, SidecarHandle, AppState",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [
           "139"
         ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-27T07:37:19.439Z",
+        "updatedAt": "2026-03-27T08:00:26.675Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -9767,7 +9767,13 @@
           ],
           "modules": [
             "crates/reify-constraints/src"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Solver: allow early-exit feasibility check when objective is present"
+            ]
+          }
         },
         "updatedAt": "2026-03-27T07:59:43.454Z"
       },
@@ -10427,9 +10433,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-27T07:59:43.455Z",
+      "lastModified": "2026-03-27T08:00:26.675Z",
       "taskCount": 527,
-      "completedCount": 253,
+      "completedCount": 254,
       "tags": [
         "master"
       ]
