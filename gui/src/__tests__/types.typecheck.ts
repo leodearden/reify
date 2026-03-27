@@ -132,9 +132,13 @@ type _ExpectedClaudeContext = Pick<MessageContext, 'selectedEntity' | 'diagnosti
 type Equals<A, B> =
   (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;
 
-// Compile-time assertion: if the types diverge, this line produces a type error.
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-type _AssertClaudeContextSync = Equals<ClaudeMessageContext, _ExpectedClaudeContext> extends true ? true : never;
+/** Constrained generic that causes a compile error when T is not `true`. */
+type AssertTrue<T extends true> = T;
+
+// Compile-time assertion: if ClaudeMessageContext diverges from _ExpectedClaudeContext,
+// Equals<> returns `false` and AssertTrue's constraint `T extends true` fails with
+// "Type 'false' does not satisfy the constraint 'true'".
+type _AssertClaudeContextSync = AssertTrue<Equals<ClaudeMessageContext, _ExpectedClaudeContext>>;
 
 // Suppress unused variable warnings — this file is only for type checking
 void mesh;
