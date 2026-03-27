@@ -10994,7 +10994,17 @@
         "priority": "low",
         "subtasks": [],
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "gui/src/utils/errorClassifier.ts",
+            "gui/src/App.tsx",
+            "gui/src/editor/Editor.tsx"
+          ],
+          "modules": [
+            "gui/src",
+            "gui/src/utils",
+            "gui/src/editor"
+          ]
         }
       },
       {
@@ -11010,7 +11020,14 @@
         "priority": "low",
         "subtasks": [],
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "gui/src/__tests__/App.test.tsx",
+            "gui/src/__tests__/claudeBridge.test.ts"
+          ],
+          "modules": [
+            "gui/src/__tests__"
+          ]
         }
       },
       {
