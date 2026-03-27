@@ -2032,4 +2032,72 @@ mod tests {
             result
         );
     }
+
+    #[test]
+    fn params_to_value_map_builds_correct_hashmap() {
+        use super::params_to_value_map;
+        use reify_types::{AutoParam, DimensionVector, Type, Value, ValueCellId};
+
+        let length_id = ValueCellId::new("Part", "length");
+        let angle_id = ValueCellId::new("Part", "angle");
+
+        let params = vec![
+            AutoParam {
+                id: length_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.001, 1.0)),
+            },
+            AutoParam {
+                id: angle_id.clone(),
+                param_type: Type::angle(),
+                bounds: Some((0.0, std::f64::consts::TAU)),
+            },
+        ];
+
+        let x = [0.025, 1.5708]; // 25mm, ~90°
+
+        let result = params_to_value_map(&params, &x);
+
+        assert_eq!(result.len(), 2, "should contain exactly 2 entries");
+
+        // Check length entry
+        match result.get(&length_id) {
+            Some(Value::Scalar {
+                si_value,
+                dimension,
+            }) => {
+                assert!(
+                    (si_value - 0.025).abs() < 1e-15,
+                    "length si_value should be 0.025, got {}",
+                    si_value
+                );
+                assert_eq!(
+                    dimension,
+                    DimensionVector::LENGTH,
+                    "length dimension should be LENGTH"
+                );
+            }
+            other => panic!("expected Scalar for length, got {:?}", other),
+        }
+
+        // Check angle entry
+        match result.get(&angle_id) {
+            Some(Value::Scalar {
+                si_value,
+                dimension,
+            }) => {
+                assert!(
+                    (si_value - 1.5708).abs() < 1e-15,
+                    "angle si_value should be 1.5708, got {}",
+                    si_value
+                );
+                assert_eq!(
+                    dimension,
+                    DimensionVector::ANGLE,
+                    "angle dimension should be ANGLE"
+                );
+            }
+            other => panic!("expected Scalar for angle, got {:?}", other),
+        }
+    }
 }
