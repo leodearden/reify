@@ -7759,7 +7759,7 @@
         "testStrategy": "",
         "priority": "low",
         "dependencies": [],
-        "status": "pending",
+        "status": "in-progress",
         "metadata": {
           "modules": [
             "crates/reify-kernel-occt"
@@ -7767,7 +7767,7 @@
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         },
         "subtasks": [],
-        "updatedAt": "2026-03-26T02:36:50.633Z"
+        "updatedAt": "2026-03-27T08:45:00.487Z"
       },
       {
         "id": "401",
@@ -10749,7 +10749,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-27T08:44:52.991Z",
+      "lastModified": "2026-03-27T08:45:00.533Z",
       "taskCount": 545,
       "completedCount": 260,
       "tags": [
