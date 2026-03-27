@@ -10238,7 +10238,7 @@
         "description": "The `subscribeToClaudeEvents` function in `gui/src/bridge.ts` uses `{ type: 'X', ...event.payload } as OutboundMessage` for all 6 payload-bearing event handlers. This has three issues:\n\n1. **Type safety**: The `as OutboundMessage` cast suppresses TS verification — a renamed Rust field would compile cleanly but produce structurally wrong objects.\n2. **Correctness trap**: The hardcoded `type` appears before the spread, meaning any `type` in the payload would silently override it.\n3. **Allocation on hot path**: The spread creates a new heap object per event. During streaming, `text_delta` events arrive at 50-200 Hz.\n\n**Fix**: Replace spread-cast pattern with explicit destructuring for all event handlers:\n```typescript\n['claude-text-delta', (event) => {\n  const p = event.payload as { id: string; content: string };\n  handler({ type: 'text_delta', id: p.id, content: p.content });\n}],\n```\n\nThis makes field mapping explicit, lets TypeScript verify the OutboundMessage discriminated union shape, and avoids unnecessary object allocation on the hot streaming path.\n\nMemory hints:\n- Search: \"subscribeToClaudeEvents OutboundMessage payload spread\"\n- Entities: bridge.ts, OutboundMessage, subscribeToClaudeEvents",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -10250,7 +10250,8 @@
           "modules": [
             "gui/src"
           ]
-        }
+        },
+        "updatedAt": "2026-03-27T08:00:28.699Z"
       },
       {
         "id": "518",
@@ -10433,7 +10434,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-27T08:00:26.675Z",
+      "lastModified": "2026-03-27T08:00:28.699Z",
       "taskCount": 527,
       "completedCount": 254,
       "tags": [
