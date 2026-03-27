@@ -2284,7 +2284,7 @@
         "testStrategy": "Parser tests: type alias with no params, with params, with dimensional RHS, with nested generics. Verify AST structure.",
         "priority": "high",
         "dependencies": [],
-        "status": "pending",
+        "status": "in-progress",
         "metadata": {
           "modules": [
             "crates/reify-syntax"
@@ -2293,7 +2293,7 @@
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         },
         "subtasks": [],
-        "updatedAt": "2026-03-27T07:37:17.734Z"
+        "updatedAt": "2026-03-27T07:37:18.829Z"
       },
       {
         "id": "145",
@@ -10285,7 +10285,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-27T07:37:18.710Z",
+      "lastModified": "2026-03-27T07:37:18.829Z",
       "taskCount": 523,
       "completedCount": 251,
       "tags": [
