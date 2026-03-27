@@ -11971,6 +11971,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 602,
+        "title": "Fix incomplete content_hash in test builder build() methods",
+        "description": "Several test builders in crates/reify-test-support/src/builders/ compute content_hash values that ignore semantically significant fields, which could cause false cache hits in tests exercising the incremental evaluation engine.\n\nAffected builders:\n1. **CompiledFieldBuilder::build()** (field.rs:63) — hash uses only `name` + constant `[99]`, ignoring `domain_type`, `codomain_type`, and `source`. Two fields with the same name but different types/sources produce identical hashes.\n2. **TraitDefBuilder::build()** (trait_def.rs:68) — requirement hashing uses `std::mem::discriminant(&r.kind)` but ignores the inner type values. Two `Param(Type::Real)` vs `Param(Type::Int)` requirements with the same name produce identical hash contributions.\n3. **CompiledTraitBuilder::build()** (trait_def.rs:162-168) — hashes only member names, ignoring requirement kinds entirely.\n\nFix each build() to incorporate all semantically significant fields into the content_hash, and add tests asserting hash distinctness (e.g., same name + different source → different hash; same requirement variant + different inner type → different hash).\n\nmemory_hints: search \"content_hash builder test support\", get_entity \"CompiledFieldBuilder\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -11983,7 +11994,7 @@
       ],
       "created": "2026-03-27T11:57:08.074Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-27T11:57:08.084Z"
+      "updated": "2026-03-27T11:57:09.503Z"
     }
   }
 }
