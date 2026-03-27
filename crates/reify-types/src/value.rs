@@ -159,8 +159,8 @@ impl Value {
         lower_inclusive: bool,
         upper_inclusive: bool,
     ) -> Value {
-        let lower_inclusive = lower_inclusive && lower.is_some();
-        let upper_inclusive = upper_inclusive && upper.is_some();
+        let (lower_inclusive, upper_inclusive) =
+            normalize_range_flags(&lower, &upper, lower_inclusive, upper_inclusive);
         Value::Range {
             lower: lower.map(Box::new),
             upper: upper.map(Box::new),
