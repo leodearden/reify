@@ -11993,6 +11993,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 604,
+        "title": "LSP: fix pre-existing robustness issues (cross-structure collision, recursion depth, index corruption)",
+        "description": "Pre-existing robustness issues surfaced during task 437 review. (1) find_member_decl searches ALL structures for parsed span then ALL compiled templates — cross-structure name collision silently mixes span from structure A with type from structure B. Fix: anchor span lookup to a specific structure name. (2) find_named_member_span has unbounded recursion — add depth limit or use explicit stack. (3) reify-eval geometry-op compile_geometry_op returning None doesn't push placeholder into step_handles, corrupting relative GeomRef::Step(n) indexing for subsequent ops. Fix: push sentinel or break loop on None/Err.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -12005,7 +12016,7 @@
       ],
       "created": "2026-03-27T11:57:08.074Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-27T11:57:14.669Z"
+      "updated": "2026-03-27T11:57:20.697Z"
     }
   }
 }
