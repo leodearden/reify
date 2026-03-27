@@ -8332,11 +8332,11 @@
         "description": "In crates/reify-test-support/src/values.rs: (1) Guard assert_value_approx_impl against NaN inputs. (2) Add #[should_panic] tests for dimension-mismatch, component-count-mismatch, and type-variant-mismatch panic paths. In crates/reify-test-support/src/mocks.rs: (3) Add debug_assert guarding MomentOfInertia QueryKey against NaN axis values. (Review followup from task 351)",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-27T07:37:19.648Z",
+        "updatedAt": "2026-03-27T07:43:54.832Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -10388,7 +10388,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-27T07:42:05.987Z",
+      "lastModified": "2026-03-27T07:43:54.832Z",
       "taskCount": 525,
       "completedCount": 251,
       "tags": [
