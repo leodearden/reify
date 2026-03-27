@@ -10491,7 +10491,10 @@
         ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-27T08:54:04.904Z"
+        "updatedAt": "2026-03-27T08:54:04.904Z",
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+        }
       },
       {
         "id": 525,
@@ -10511,7 +10514,8 @@
             "gui/sidecar",
             "gui/src",
             "gui/src-tauri"
-          ]
+          ],
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         }
       },
       {
