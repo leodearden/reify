@@ -11166,6 +11166,19 @@
         ],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 576,
+        "title": "Reduce mutex acquisitions in ConcurrentScheduler priority sort and cleanup",
+        "description": "Two performance issues in `crates/reify-runtime/src/concurrent.rs`:\n\n1. **Sort acquires mutex O(N log N) times** (lines 285-289): `dirty_nodes.sort_by_key` calls `promoter.effective_priority()` per comparison, each locking the internal mutex. Since nodes are freshly registered and no promotions have occurred, sort directly from `config.node_priorities` — zero mutex acquisitions, same result.\n\n2. **cleanup_level per-node mutex** (lines 349-353): `promoter.remove(node)` acquires and releases the mutex per node. Add a `batch_remove` method to `SharedPriorityPromoter` or lock the inner field once outside the loop.\n\n**Files:** `crates/reify-runtime/src/concurrent.rs`, `crates/reify-runtime/src/priority_promotion.rs`",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          477
+        ],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -11178,7 +11191,7 @@
       ],
       "created": "2026-03-27T09:55:03.636Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-27T09:55:03.639Z"
+      "updated": "2026-03-27T09:55:09.099Z"
     }
   }
 }
