@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use argmin::core::{CostFunction, Error as ArgminError, Executor, State};
+use argmin::core::{CostFunction, Error as ArgminError, Executor, State, TerminationReason};
 use argmin::solver::neldermead::NelderMead;
 use reify_types::{
     AutoParam, BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, ConstraintNodeId,
@@ -494,6 +494,11 @@ impl ConstraintSolver for DimensionalSolver {
 
         // Pure feasibility (no objective) + already feasible: return immediately
         if initially_feasible && problem.objective.is_none() {
+            let n_params = problem.auto_params.len();
+            tracing::debug!(
+                n_params,
+                "initial point already feasible with no objective; returning early"
+            );
             let mut values = HashMap::new();
             for (param, &val) in problem.auto_params.iter().zip(initial.iter()) {
                 values.insert(
@@ -570,6 +575,27 @@ impl ConstraintSolver for DimensionalSolver {
             }
         };
 
+        // Extract and log convergence information from the solver result.
+        let termination_reason = result.state().get_termination_reason().cloned();
+        let has_objective = problem.objective.is_some();
+        let n_params = problem.auto_params.len();
+        tracing::debug!(
+            ?termination_reason,
+            n_params,
+            max_iters,
+            has_objective,
+            initially_feasible,
+            "solver completed"
+        );
+        if termination_reason == Some(TerminationReason::MaxItersReached) && has_objective {
+            tracing::debug!(
+                n_params,
+                max_iters,
+                "solver hit iteration limit while optimizing objective; \
+                 solution satisfies constraints but objective may be suboptimal"
+            );
+        }
+
         let best_param: Vec<f64> = match result.state().get_best_param() {
             Some(p) => p.clone(),
             None => {
@@ -600,6 +626,12 @@ impl ConstraintSolver for DimensionalSolver {
             // while chasing an objective, fall back to the initial feasible values
             // rather than reporting a false Infeasible.
             if let Some(fallback) = initial_fallback_values {
+                tracing::debug!(
+                    n_params,
+                    final_max_residual,
+                    "optimizer drifted infeasible while chasing objective; \
+                     falling back to initial feasible point"
+                );
                 return SolveResult::Solved { values: fallback };
             }
             return SolveResult::Infeasible {
@@ -638,9 +670,11 @@ impl ConstraintSolver for DimensionalSolver {
 
         // NOTE: Solved indicates constraint satisfaction but does NOT guarantee objective
         // optimality. The Nelder-Mead optimizer may have hit the iteration limit without
-        // full convergence. Convergence quality (e.g., TerminationReason::MaxItersReached
-        // vs actual convergence) is not propagated through SolveResult to avoid a breaking
-        // API change across 6+ crates. See design_decisions in the task plan for rationale.
+        // full convergence. Convergence quality is logged via tracing::debug! (see above)
+        // including TerminationReason, iteration budget, and whether fallback was used.
+        // This information is NOT propagated through SolveResult to avoid a breaking API
+        // change across 6+ consumer crates. Enable RUST_LOG=reify_constraints=debug to
+        // inspect convergence details at runtime.
         SolveResult::Solved { values }
     }
 }
@@ -1938,6 +1972,63 @@ mod tests {
         assert!(
             matches!(result, SolveResult::Solved { .. }),
             "feasible initial point with objective should return Solved, got {:?}",
+            result
+        );
+    }
+
+    /// Running the solver through TerminationReason extraction must not panic
+    /// or regress the result. A minimal 1-param feasible problem should still
+    /// return Solved or Infeasible (never NoProgress for a well-formed problem).
+    #[test]
+    fn termination_reason_extracted_without_panic() {
+        use crate::DimensionalSolver;
+        use reify_types::{
+            AutoParam, BinOp, CompiledExpr, ConstraintNodeId, DimensionVector, Type, Value,
+            ValueCellId,
+        };
+
+        let solver = DimensionalSolver;
+        let x_id = ValueCellId::new("Part", "x");
+
+        // Simple feasibility: x > 5mm AND x < 50mm
+        let x_ref = CompiledExpr::value_ref(x_id.clone(), Type::length());
+        let five_mm = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: 0.005,
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::length(),
+        );
+        let fifty_mm = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: 0.050,
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::length(),
+        );
+        let gt_expr =
+            CompiledExpr::binop(BinOp::Gt, x_ref.clone(), five_mm, Type::Bool);
+        let lt_expr = CompiledExpr::binop(BinOp::Lt, x_ref, fifty_mm, Type::Bool);
+
+        let problem = ResolutionProblem {
+            auto_params: vec![AutoParam {
+                id: x_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.1)),
+            }],
+            constraints: vec![
+                (ConstraintNodeId::new("Part", 0), gt_expr),
+                (ConstraintNodeId::new("Part", 1), lt_expr),
+            ],
+            current_values: ValueMap::new(),
+            objective: None,
+            functions: vec![],
+        };
+
+        let result = solver.solve(&problem);
+        assert!(
+            matches!(result, SolveResult::Solved { .. } | SolveResult::Infeasible { .. }),
+            "well-formed 1-param problem should return Solved or Infeasible, got {:?}",
             result
         );
     }
