@@ -1842,4 +1842,63 @@ mod tests {
         let simplex = build_simplex(&initial_3d, &params_3d);
         assert_eq!(simplex.len(), 4, "3D simplex must have N+1=4 vertices");
     }
+
+    /// Feasibility check should run even when an objective is present.
+    /// A trivially-satisfied constraint with an objective should return Solved
+    /// (not NoProgress or other error), confirming the restructured code path
+    /// evaluates feasibility for optimization problems.
+    #[test]
+    fn feasibility_check_runs_with_objective() {
+        use crate::DimensionalSolver;
+        use reify_types::{
+            AutoParam, BinOp, CompiledExpr, ConstraintNodeId, DimensionVector,
+            OptimizationObjective, Type, Value, ValueCellId,
+        };
+
+        let solver = DimensionalSolver;
+        let x_id = ValueCellId::new("Part", "x");
+
+        // x > 1mm — trivially satisfied when x starts at 10mm
+        let x_ref = CompiledExpr::value_ref(x_id.clone(), Type::length());
+        let one_mm = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: 0.001,
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::length(),
+        );
+        let gt_expr = CompiledExpr::binop(BinOp::Gt, x_ref.clone(), one_mm, Type::Bool);
+
+        // Minimize x — with auto param bounds [5mm, 100mm], the minimum
+        // is at 5mm which is still above the 1mm constraint.
+        let objective = OptimizationObjective::Minimize(x_ref);
+
+        let mut current = ValueMap::new();
+        current.insert(
+            x_id.clone(),
+            Value::Scalar {
+                si_value: 0.010, // 10mm — already feasible
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+
+        let problem = ResolutionProblem {
+            auto_params: vec![AutoParam {
+                id: x_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.005, 0.100)), // 5mm–100mm
+            }],
+            constraints: vec![(ConstraintNodeId::new("Part", 0), gt_expr)],
+            current_values: current,
+            objective: Some(objective),
+            functions: vec![],
+        };
+
+        let result = solver.solve(&problem);
+        assert!(
+            matches!(result, SolveResult::Solved { .. }),
+            "feasible initial point with objective should return Solved, got {:?}",
+            result
+        );
+    }
 }
