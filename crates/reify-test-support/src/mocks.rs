@@ -1532,6 +1532,24 @@ mod tests {
         assert_eq!(result, meters(5.0));
     }
 
+    #[test]
+    fn distance_result_symmetric_via_reversed_config() {
+        // Configure with higher id first: (3, 1), query with lower id first: (1, 3)
+        let kernel = MockGeometryKernel::new().with_distance_result(
+            GeometryHandleId(3),
+            GeometryHandleId(1),
+            meters(7.0),
+        );
+
+        let result = kernel
+            .query(&GeometryQuery::Distance {
+                from: GeometryHandleId(1),
+                to: GeometryHandleId(3),
+            })
+            .unwrap();
+        assert_eq!(result, meters(7.0));
+    }
+
     // --- SequencedMockConstraintSolver tests (step-1, task 430) ---
 
     #[test]
