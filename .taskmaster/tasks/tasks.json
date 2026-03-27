@@ -11192,6 +11192,19 @@
         ],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 578,
+        "title": "Deduplicate test helpers and consolidate imports in concurrent_eval.rs",
+        "description": "In `crates/reify-runtime/tests/concurrent_eval.rs`, the execute_with_config test section has significant code duplication:\n\n1. **AllChangedAsync** — defined identically at lines ~2034 and ~2270 (2 copies).\n2. **PanickingEvaluator** — defined identically at lines ~638, ~740, ~2344, and ~2432 (4 copies total).\n3. **Import blocks** — ~10 identical `use` lines repeated in each of the 7 new test functions.\n\n**Fix:** Wrap the execute_with_config tests in a `mod execute_with_config_tests { use super::*; ... }` block (like the existing `mod poison_panics` pattern). Hoist `AllChangedAsync` and `PanickingEvaluator` to module-level helpers visible to all tests.\n\n**File:** `crates/reify-runtime/tests/concurrent_eval.rs`",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          477
+        ],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -11204,7 +11217,7 @@
       ],
       "created": "2026-03-27T09:55:03.636Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-27T09:55:14.002Z"
+      "updated": "2026-03-27T09:55:18.944Z"
     }
   }
 }
