@@ -8560,11 +8560,11 @@
         "description": "Add Declaration::Occurrence arms alongside Declaration::Structure in analysis.rs (find_parsed_member_span, structure_names) and goto_def.rs. Occurrence is structurally identical to Structure, so each match arm can be duplicated or extracted into a helper. Currently, members inside occurrence declarations are invisible to hover, goto-def, and completions. (Review followup from task 216)",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-27T11:07:17.694Z",
+        "updatedAt": "2026-03-27T11:30:14.396Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -11792,9 +11792,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-27T11:30:02.535Z",
+      "lastModified": "2026-03-27T11:30:14.398Z",
       "taskCount": 587,
-      "completedCount": 271,
+      "completedCount": 272,
       "tags": [
         "master"
       ]
