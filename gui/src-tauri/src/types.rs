@@ -337,4 +337,27 @@ mod format_value_range_tests {
         assert_eq!(formatted, "[1..+\u{221e})");
         assert_eq!(unit, "");
     }
+
+    #[test]
+    fn both_bounds_none_inclusive_normalizes_to_parentheses() {
+        // Both None + both inclusive=true: defensive re-normalization must fix both brackets
+        let range = Value::Range {
+            lower: None,
+            upper: None,
+            lower_inclusive: true,
+            upper_inclusive: true,
+        };
+        let (formatted, unit) = format_value(&range);
+        assert_eq!(formatted, "(-\u{221e}..+\u{221e})");
+        assert_eq!(unit, "");
+    }
+
+    #[test]
+    fn mixed_inclusive_exclusive() {
+        // Lower inclusive, upper exclusive: half-open interval [0..5)
+        let range = Value::range(Some(Value::Int(0)), Some(Value::Int(5)), true, false);
+        let (formatted, unit) = format_value(&range);
+        assert_eq!(formatted, "[0..5)");
+        assert_eq!(unit, "");
+    }
 }
