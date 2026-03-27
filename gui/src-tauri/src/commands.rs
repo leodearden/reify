@@ -1,7 +1,9 @@
 // Tauri command handlers — thin wrappers around EngineSession methods.
 
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
+
+use reify_mcp::SelectionInfo;
 
 use crate::claude_bridge::SidecarHandle;
 use crate::engine::EngineSession;
@@ -18,6 +20,8 @@ pub struct AppState {
     /// Claude Code SDK sidecar handle (lazily spawned on first claude_send_message).
     /// Uses tokio::sync::Mutex because sidecar operations span await points.
     pub sidecar: tokio::sync::Mutex<Option<SidecarHandle>>,
+    /// Shared selection state updated by the frontend, read by MCP tools.
+    pub selection: Arc<RwLock<SelectionInfo>>,
 }
 
 // --- Helper functions for testability ---

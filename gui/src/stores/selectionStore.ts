@@ -1,4 +1,6 @@
+import { createEffect, onCleanup } from 'solid-js';
 import { createStore } from 'solid-js/store';
+import { invoke } from '@tauri-apps/api/core';
 
 export interface SelectionState {
   selectedEntity: string | null;
@@ -11,6 +13,39 @@ export function createSelectionStore() {
     selectedEntity: null,
     hoveredEntity: null,
     highlightedParams: [],
+  });
+
+  // Sync selection state to the Rust backend so MCP tools can read it.
+  // Hover updates are debounced at 100ms to avoid flooding the backend;
+  // selection (click) updates are sent immediately since they are infrequent.
+  let hoverTimer: ReturnType<typeof setTimeout> | null = null;
+
+  createEffect(() => {
+    const selected = state.selectedEntity;
+    const hovered = state.hoveredEntity;
+
+    // Clear any pending debounce so we always send the latest state
+    if (hoverTimer !== null) {
+      clearTimeout(hoverTimer);
+      hoverTimer = null;
+    }
+
+    // Debounce hover updates (100ms), but send immediately if only selection changed
+    hoverTimer = setTimeout(() => {
+      hoverTimer = null;
+      invoke('update_selection', {
+        selectedEntity: selected,
+        hoveredEntity: hovered,
+      }).catch(() => {
+        // Ignore errors (e.g. when running outside Tauri in tests)
+      });
+    }, 100);
+  });
+
+  onCleanup(() => {
+    if (hoverTimer !== null) {
+      clearTimeout(hoverTimer);
+    }
   });
 
   function selectEntity(entityPath: string | null) {
