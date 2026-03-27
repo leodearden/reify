@@ -8649,7 +8649,10 @@
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-03-27T06:18:14.872Z"
+        "updatedAt": "2026-03-27T06:18:14.872Z",
+        "metadata": {
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+        }
       },
       {
         "id": 476,
