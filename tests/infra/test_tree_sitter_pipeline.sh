@@ -13,6 +13,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
+# Ensure parser.c is restored on exit (even on failure).
+trap '"$ROOT/scripts/tree-sitter-generate.sh" >/dev/null 2>&1 || true' EXIT
+
 PASS=0
 FAIL=0
 
@@ -52,7 +55,7 @@ assert "node-types.json was generated" \
     test -f "$ROOT/tree-sitter-reify/src/node-types.json"
 
 # parser.c should be non-trivial (>100KB).
-parser_size=$(stat -c%s "$ROOT/tree-sitter-reify/src/parser.c" 2>/dev/null || echo 0)
+parser_size=$(wc -c < "$ROOT/tree-sitter-reify/src/parser.c" 2>/dev/null || echo 0)
 assert "parser.c is non-trivial (>100KB, got ${parser_size} bytes)" \
     test "$parser_size" -gt 102400
 
@@ -86,9 +89,6 @@ assert "node-types.json is not tracked by git" \
 # Delete parser.c, regenerate, then verify cargo check succeeds.
 rm -f "$ROOT/tree-sitter-reify/src/parser.c"
 
-assert "parser.c deleted for regen test" \
-    test ! -f "$ROOT/tree-sitter-reify/src/parser.c"
-
 assert "tree-sitter-generate.sh regenerates after deletion" \
     "$ROOT/scripts/tree-sitter-generate.sh"
 
@@ -99,22 +99,19 @@ assert "cargo check -p tree-sitter-reify succeeds after regeneration" \
     cargo check -p tree-sitter-reify
 
 # ── Step 6: Orchestrator verification commands include generation ───
-assert "orchestrator.yaml test_command includes tree-sitter generate" \
-    grep -q "tree-sitter generate" "$ROOT/orchestrator.yaml"
+# Check that tree-sitter generation appears in each verification command.
+assert "test_command includes tree-sitter generation" \
+    bash -c "grep '^test_command:' '$ROOT/orchestrator.yaml' | grep -q 'tree-sitter-generate'"
 
-# Check that the tree-sitter generate appears in test_command, lint_command, type_check_command lines.
-assert "test_command includes tree-sitter generate" \
-    bash -c "grep '^test_command:' '$ROOT/orchestrator.yaml' | grep -q 'tree-sitter generate'"
+assert "lint_command includes tree-sitter generation" \
+    bash -c "grep '^lint_command:' '$ROOT/orchestrator.yaml' | grep -q 'tree-sitter-generate'"
 
-assert "lint_command includes tree-sitter generate" \
-    bash -c "grep '^lint_command:' '$ROOT/orchestrator.yaml' | grep -q 'tree-sitter generate'"
-
-assert "type_check_command includes tree-sitter generate" \
-    bash -c "grep '^type_check_command:' '$ROOT/orchestrator.yaml' | grep -q 'tree-sitter generate'"
+assert "type_check_command includes tree-sitter generation" \
+    bash -c "grep '^type_check_command:' '$ROOT/orchestrator.yaml' | grep -q 'tree-sitter-generate'"
 
 # ── Step 7: hooks/project-checks includes tree-sitter generation ───
-assert "hooks/project-checks includes tree-sitter generate" \
-    grep -q "tree-sitter generate" "$ROOT/hooks/project-checks"
+assert "hooks/project-checks includes tree-sitter generation" \
+    grep -q "tree-sitter-generate" "$ROOT/hooks/project-checks"
 
 # ── Summary ─────────────────────────────────────────────────────────
 echo ""
