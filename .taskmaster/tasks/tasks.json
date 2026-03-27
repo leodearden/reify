@@ -8340,7 +8340,13 @@
           ],
           "modules": [
             "crates/reify-types/src"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Add Range test coverage: upper-bound bypass and inclusive flag differentiation"
+            ]
+          }
         }
       },
       {
@@ -10449,13 +10455,13 @@
         "description": "In gui/src/bridge.ts, subscribeToClaudeEvents() uses a spread-cast pattern for all 7 claude-* event types (claude-text-delta, claude-thinking-delta, claude-tool-call, claude-tool-result, claude-done, claude-error, claude-ready). Each listen() handler casts the Tauri event payload directly to an OutboundMessage shape without validation. If a payload's shape diverges from OutboundMessage (e.g. during sidecar protocol evolution or version mismatch), errors will be silent and the store will receive malformed messages.\\n\\nFix: Add discriminated type-guards (or Zod schema validation) for each event type in the listen() handlers. Each guard should validate the required fields for that event variant before calling the handler — on validation failure, log a warning and skip the message.\\n\\nSource: Stage 1 review of task 476 merge.",
         "details": "",
         "testStrategy": "",
-        "status": "cancelled",
+        "status": "pending",
         "dependencies": [
           "476"
         ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-27T07:54:43.727Z"
+        "updatedAt": "2026-03-27T08:54:04.904Z"
       },
       {
         "id": "525",
@@ -10751,7 +10757,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-27T08:52:25.198Z",
+      "lastModified": "2026-03-27T08:54:04.904Z",
       "taskCount": 545,
       "completedCount": 260,
       "tags": [
