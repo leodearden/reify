@@ -1,6 +1,7 @@
 use tower_lsp::lsp_types::{CompletionItem, CompletionItemKind, Position, Url};
 
 use crate::analysis::AnalysisContext;
+use crate::convert::position_to_offset;
 
 /// Cursor context for position-sensitive completions.
 #[derive(Debug)]
@@ -36,18 +37,6 @@ const BUILTIN_FUNCTIONS: &[&str] = &[
 
 /// Built-in type names.
 const TYPE_NAMES: &[&str] = &["Scalar", "Bool", "Int", "Real", "String"];
-
-/// Convert an LSP Position to a byte offset in the source string.
-fn position_to_offset(source: &str, position: Position) -> usize {
-    let mut offset = 0;
-    for (i, line) in source.split('\n').enumerate() {
-        if i == position.line as usize {
-            return offset + (position.character as usize).min(line.len());
-        }
-        offset += line.len() + 1;
-    }
-    source.len()
-}
 
 /// Determine the completion context from the cursor position.
 fn determine_context(source: &str, position: Position) -> CompletionContext {
