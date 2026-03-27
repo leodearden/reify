@@ -10900,6 +10900,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 558,
+        "title": "Add physical-range constraints to Plastic trait",
+        "description": "Plastic trait is the only trait in structural_physical.ri with no constraints. Negative plastic_strain and zero hardening_modulus are physically nonsensical.",
+        "details": "Add constraint hardening_modulus > 0 and constraint plastic_strain >= 0 to the Plastic trait definition in crates/reify-compiler/stdlib/structural_physical.ri, consistent with the constraint pattern used by all other traits in the file.\n\nFiles: crates/reify-compiler/stdlib/structural_physical.ri",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -10912,7 +10923,7 @@
       ],
       "created": "2026-03-27T09:00:04.578Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-27T09:00:57.554Z"
+      "updated": "2026-03-27T09:01:01.250Z"
     }
   }
 }
