@@ -10810,11 +10810,11 @@
         "description": "gui/package-lock.json causes merge conflicts when multiple tasks modify GUI dependencies. Instead of committing lockfile changes on task branches:\n\n1. Add gui/package-lock.json to .gitignore (or unstage in pre-commit hook) for task branches\n2. Add a post-merge step in the orchestrator merge worktree: cd gui && npm install (regenerates lockfile from package.json)\n3. Ensure CI regenerates the lockfile rather than relying on committed version\n\nSame pattern as the tree-sitter generated files task.\n\nmemory_hints: search \"package-lock merge conflicts\", search \"gui dependencies\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-03-27T11:07:16.524Z",
+        "updatedAt": "2026-03-27T23:42:15.616Z",
         "metadata": {
           "modules": [
             ".gitignore",
@@ -12484,7 +12484,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-27T23:42:14.941Z",
+      "lastModified": "2026-03-27T23:42:15.616Z",
       "taskCount": 612,
       "completedCount": 278,
       "tags": [
