@@ -1,0 +1,387 @@
+use reify_types::{ContentHash, DimensionVector, SourceSpan, Type, TypeParam};
+
+use reify_compiler::{
+    CompiledTrait, DefaultKind, RequirementKind, TraitDefault, TraitRequirement,
+};
+
+/// Builder for `CompiledTrait`.
+///
+/// Follows the same fluent pattern as `TopologyTemplateBuilder`.
+pub struct TraitDefBuilder {
+    name: String,
+    is_pub: bool,
+    type_params: Vec<TypeParam>,
+    refinements: Vec<String>,
+    required_members: Vec<TraitRequirement>,
+    defaults: Vec<TraitDefault>,
+}
+
+impl TraitDefBuilder {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            is_pub: false,
+            type_params: Vec::new(),
+            refinements: Vec::new(),
+            required_members: Vec::new(),
+            defaults: Vec::new(),
+        }
+    }
+
+    pub fn is_pub(mut self) -> Self {
+        self.is_pub = true;
+        self
+    }
+
+    pub fn refinement(mut self, trait_name: impl Into<String>) -> Self {
+        self.refinements.push(trait_name.into());
+        self
+    }
+
+    pub fn type_param(mut self, param: TypeParam) -> Self {
+        self.type_params.push(param);
+        self
+    }
+
+    pub fn requirement(mut self, name: impl Into<String>, kind: RequirementKind) -> Self {
+        self.required_members.push(TraitRequirement {
+            name: name.into(),
+            kind,
+            span: reify_types::SourceSpan::new(0, 0),
+        });
+        self
+    }
+
+    pub fn add_default(mut self, name: Option<impl Into<String>>, kind: DefaultKind) -> Self {
+        self.defaults.push(TraitDefault {
+            name: name.map(|n| n.into()),
+            kind,
+            span: reify_types::SourceSpan::new(0, 0),
+        });
+        self
+    }
+
+    pub fn build(self) -> CompiledTrait {
+        let content_hash = {
+            let name_hash = ContentHash::of_str(&self.name);
+            let req_hashes = self.required_members.iter().map(|r| {
+                ContentHash::of_str(&format!("{}:{:?}", r.name, std::mem::discriminant(&r.kind)))
+            });
+            let ref_hashes = self.refinements.iter().map(|r| ContentHash::of_str(r));
+            let type_param_hashes = self
+                .type_params
+                .iter()
+                .map(|p| ContentHash::of_str(&p.name));
+            let default_hashes = self
+                .defaults
+                .iter()
+                .map(|d| ContentHash::of_str(d.name.as_deref().unwrap_or("")));
+            let all_hashes = std::iter::once(name_hash)
+                .chain(req_hashes)
+                .chain(ref_hashes)
+                .chain(type_param_hashes)
+                .chain(default_hashes);
+            ContentHash::combine_all(all_hashes)
+        };
+
+        CompiledTrait {
+            name: self.name,
+            is_pub: self.is_pub,
+            type_params: self.type_params,
+            refinements: self.refinements,
+            required_members: self.required_members,
+            defaults: self.defaults,
+            content_hash,
+        }
+    }
+}
+
+// --- CompiledTraitBuilder (step-18) ---
+
+/// Builder for `CompiledTrait`.
+pub struct CompiledTraitBuilder {
+    name: String,
+    is_pub: bool,
+    type_params: Vec<reify_types::TypeParam>,
+    refinements: Vec<String>,
+    required_members: Vec<TraitRequirement>,
+    defaults: Vec<reify_compiler::TraitDefault>,
+}
+
+impl CompiledTraitBuilder {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            is_pub: false,
+            type_params: Vec::new(),
+            refinements: Vec::new(),
+            required_members: Vec::new(),
+            defaults: Vec::new(),
+        }
+    }
+
+    pub fn public(mut self) -> Self {
+        self.is_pub = true;
+        self
+    }
+
+    pub fn refinement(mut self, name: impl Into<String>) -> Self {
+        self.refinements.push(name.into());
+        self
+    }
+
+    pub fn require_param(mut self, name: impl Into<String>, ty: Type) -> Self {
+        self.required_members.push(TraitRequirement {
+            name: name.into(),
+            kind: RequirementKind::Param(ty),
+            span: SourceSpan::new(0, 0),
+        });
+        self
+    }
+
+    pub fn require_let(mut self, name: impl Into<String>, ty: Type) -> Self {
+        self.required_members.push(TraitRequirement {
+            name: name.into(),
+            kind: RequirementKind::Let(ty),
+            span: SourceSpan::new(0, 0),
+        });
+        self
+    }
+
+    pub fn require_sub(mut self, name: impl Into<String>, structure: impl Into<String>) -> Self {
+        self.required_members.push(TraitRequirement {
+            name: name.into(),
+            kind: RequirementKind::Sub(structure.into()),
+            span: SourceSpan::new(0, 0),
+        });
+        self
+    }
+
+    pub fn build(self) -> CompiledTrait {
+        let name_hash = ContentHash::of_str(&self.name);
+        let member_hashes = self
+            .required_members
+            .iter()
+            .map(|m| ContentHash::of_str(&m.name));
+        let content_hash = std::iter::once(name_hash)
+            .chain(member_hashes)
+            .fold(ContentHash::of(&[0x54]), |acc, h| acc.combine(h));
+
+        CompiledTrait {
+            name: self.name,
+            is_pub: self.is_pub,
+            type_params: self.type_params,
+            refinements: self.refinements,
+            required_members: self.required_members,
+            defaults: self.defaults,
+            content_hash,
+        }
+    }
+}
+
+// Tests remaining in mod.rs pending extraction to their target submodules:
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reify_types::Value;
+
+    // step-1: failing test for TraitDefBuilder minimal
+    #[test]
+    fn trait_def_builder_minimal() {
+        let ct = TraitDefBuilder::new("Rigid").build();
+        assert_eq!(ct.name, "Rigid");
+        assert!(!ct.is_pub);
+        assert!(ct.required_members.is_empty());
+        assert!(ct.defaults.is_empty());
+        assert!(ct.refinements.is_empty());
+        assert!(ct.type_params.is_empty());
+        // content_hash should be non-zero (derived from name)
+        assert_ne!(ct.content_hash, reify_types::ContentHash(0));
+    }
+
+    // step-3: failing tests for TraitDefBuilder members
+    #[test]
+    fn trait_def_builder_with_requirement() {
+        let ct = TraitDefBuilder::new("Rigid")
+            .requirement(
+                "mass",
+                RequirementKind::Param(Type::Scalar {
+                    dimension: DimensionVector::LENGTH, // reuse LENGTH for test simplicity
+                }),
+            )
+            .build();
+        assert_eq!(ct.required_members.len(), 1);
+        assert_eq!(ct.required_members[0].name, "mass");
+        assert!(matches!(
+            &ct.required_members[0].kind,
+            RequirementKind::Param(_)
+        ));
+    }
+
+    #[test]
+    fn trait_def_builder_with_refinement() {
+        let ct = TraitDefBuilder::new("StronglyRigid")
+            .refinement("Rigid")
+            .build();
+        assert_eq!(ct.refinements.len(), 1);
+        assert_eq!(ct.refinements[0], "Rigid");
+    }
+
+    #[test]
+    fn trait_def_builder_with_type_param() {
+        use reify_types::{TraitBound, TraitRef};
+        let param = TypeParam {
+            name: "T".to_string(),
+            bounds: vec![TraitBound {
+                trait_ref: TraitRef {
+                    name: "Rigid".to_string(),
+                    type_args: vec![],
+                },
+            }],
+            default: None,
+        };
+        let ct = TraitDefBuilder::new("Container").type_param(param).build();
+        assert_eq!(ct.type_params.len(), 1);
+        assert_eq!(ct.type_params[0].name, "T");
+        assert_eq!(ct.type_params[0].bounds.len(), 1);
+        assert_eq!(ct.type_params[0].bounds[0].trait_ref.name, "Rigid");
+    }
+
+    #[test]
+    fn trait_def_builder_is_pub() {
+        let ct = TraitDefBuilder::new("Rigid").is_pub().build();
+        assert!(ct.is_pub);
+    }
+
+    #[test]
+    fn trait_def_builder_content_hash_differs_by_name() {
+        let ct1 = TraitDefBuilder::new("Rigid").build();
+        let ct2 = TraitDefBuilder::new("Flexible").build();
+        assert_ne!(ct1.content_hash, ct2.content_hash);
+    }
+
+    #[test]
+    fn trait_def_builder_with_default() {
+        let ct = TraitDefBuilder::new("Rigid")
+            .add_default(
+                Some("mass_positive"),
+                DefaultKind::Constraint(reify_syntax::ConstraintDecl {
+                    label: Some("mass_positive".to_string()),
+                    expr: reify_syntax::Expr {
+                        kind: reify_syntax::ExprKind::BoolLiteral(true),
+                        span: SourceSpan::new(0, 0),
+                    },
+                    where_clause: None,
+                    span: SourceSpan::new(0, 0),
+                    content_hash: ContentHash::of_str("true"),
+                }),
+            )
+            .build();
+        assert_eq!(ct.defaults.len(), 1);
+        assert_eq!(ct.defaults[0].name.as_deref(), Some("mass_positive"));
+    }
+
+    #[test]
+    fn trait_def_content_hash_differs_by_type_param() {
+        use reify_types::{TraitBound, TraitRef};
+        let ct1 = TraitDefBuilder::new("Container").build();
+        let ct2 = TraitDefBuilder::new("Container")
+            .type_param(TypeParam {
+                name: "T".to_string(),
+                bounds: vec![TraitBound {
+                    trait_ref: TraitRef {
+                        name: "Rigid".to_string(),
+                        type_args: vec![],
+                    },
+                }],
+                default: None,
+            })
+            .build();
+        assert_ne!(
+            ct1.content_hash, ct2.content_hash,
+            "traits differing only in type_params must produce distinct content_hashes"
+        );
+    }
+
+    #[test]
+    fn trait_def_content_hash_differs_by_default() {
+        let ct1 = TraitDefBuilder::new("Rigid").build();
+        let ct2 = TraitDefBuilder::new("Rigid")
+            .add_default(
+                Some("mass_positive"),
+                DefaultKind::Constraint(reify_syntax::ConstraintDecl {
+                    label: Some("mass_positive".to_string()),
+                    expr: reify_syntax::Expr {
+                        kind: reify_syntax::ExprKind::BoolLiteral(true),
+                        span: SourceSpan::new(0, 0),
+                    },
+                    where_clause: None,
+                    span: SourceSpan::new(0, 0),
+                    content_hash: ContentHash::of_str("true"),
+                }),
+            )
+            .build();
+        assert_ne!(
+            ct1.content_hash, ct2.content_hash,
+            "traits differing only in defaults must produce distinct content_hashes"
+        );
+    }
+}
+
+// --- Tests for CompiledTraitBuilder (step-17) ---
+
+#[cfg(test)]
+mod trait_builder_tests {
+    use super::*;
+    use reify_compiler::{CompiledTrait, RequirementKind};
+
+    #[test]
+    fn trait_builder_require_param_produces_required_member() {
+        let t: CompiledTrait = CompiledTraitBuilder::new("Rigid")
+            .require_param("thickness", Type::length())
+            .build();
+        assert_eq!(t.name, "Rigid");
+        assert!(!t.is_pub);
+        assert_eq!(t.required_members.len(), 1);
+        assert_eq!(t.required_members[0].name, "thickness");
+        if let RequirementKind::Param(ty) = &t.required_members[0].kind {
+            assert_eq!(*ty, Type::length());
+        } else {
+            panic!("expected RequirementKind::Param");
+        }
+        assert_ne!(t.content_hash, ContentHash(0));
+    }
+
+    #[test]
+    fn trait_builder_public() {
+        let t: CompiledTrait = CompiledTraitBuilder::new("Rigid").public().build();
+        assert!(t.is_pub);
+    }
+
+    #[test]
+    fn trait_builder_refinement_and_multiple_requirements() {
+        let t: CompiledTrait = CompiledTraitBuilder::new("RigidMount")
+            .refinement("Rigid")
+            .require_let("vol", Type::Real)
+            .require_sub("mount", "MountPoint")
+            .build();
+        assert_eq!(t.refinements.len(), 1);
+        assert_eq!(t.refinements[0], "Rigid");
+        assert_eq!(t.required_members.len(), 2);
+        assert!(matches!(
+            &t.required_members[0].kind,
+            RequirementKind::Let(_)
+        ));
+        assert!(
+            matches!(&t.required_members[1].kind, RequirementKind::Sub(s) if s == "MountPoint")
+        );
+        assert_ne!(t.content_hash, ContentHash(0));
+    }
+
+    #[test]
+    fn trait_builder_defaults_initially_empty() {
+        let t: CompiledTrait = CompiledTraitBuilder::new("Bounded").build();
+        assert_eq!(t.defaults.len(), 0);
+        assert_eq!(t.type_params.len(), 0);
+    }
+}
