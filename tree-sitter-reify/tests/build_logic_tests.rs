@@ -204,3 +204,16 @@ fn test_all_three_outputs_verified() {
         std::fs::write(&path, b"placeholder").unwrap();
     }
 }
+
+#[test]
+fn test_no_redundant_rerun_if_changed() {
+    // Source-level regression guard: build.rs must NOT contain rerun-if-changed=src/parser.c
+    let build_rs = std::fs::read_to_string("build.rs")
+        .expect("should be able to read build.rs from tree-sitter-reify crate root");
+    assert!(
+        !build_rs.contains("rerun-if-changed=src/parser.c"),
+        "build.rs must NOT contain 'rerun-if-changed=src/parser.c' — \
+         src/parser.c is a generated output managed by build.rs itself. \
+         Watching it causes double execution."
+    );
+}
