@@ -1,6 +1,6 @@
 // TauriToolContext — bridges MCP tool context to EngineSession for Tauri GUI
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 use reify_mcp::{
     ConstraintInfo, DiagnosticInfo, EvalStatusInfo, OpenFileInfo, ParameterInfo, ReifyToolContext,
@@ -20,17 +20,37 @@ type EventEmitter = Box<dyn Fn(&str, serde_json::Value) + Send + Sync>;
 ///
 /// An optional event emitter callback is used for navigation tools (`focus_entity`,
 /// `navigate_to_source`), keeping the struct testable without a Tauri runtime.
+///
+/// Selection state is read from a shared `Arc<RwLock<SelectionInfo>>` that the frontend
+/// updates via the `update_selection` Tauri command.
 pub struct TauriToolContext {
     engine: Arc<Mutex<EngineSession>>,
     event_emitter: Option<EventEmitter>,
+    selection: Arc<RwLock<SelectionInfo>>,
 }
 
 impl TauriToolContext {
-    /// Create a new TauriToolContext with no event emitter.
+    /// Create a new TauriToolContext with no event emitter and empty selection.
     pub fn new(engine: Arc<Mutex<EngineSession>>) -> Self {
         Self {
             engine,
             event_emitter: None,
+            selection: Arc::new(RwLock::new(SelectionInfo {
+                selected_entity: None,
+                hovered_entity: None,
+            })),
+        }
+    }
+
+    /// Create a new TauriToolContext with a shared selection state.
+    pub fn new_with_selection(
+        engine: Arc<Mutex<EngineSession>>,
+        selection: Arc<RwLock<SelectionInfo>>,
+    ) -> Self {
+        Self {
+            engine,
+            event_emitter: None,
+            selection,
         }
     }
 
@@ -42,6 +62,23 @@ impl TauriToolContext {
         Self {
             engine,
             event_emitter: Some(Box::new(emitter)),
+            selection: Arc::new(RwLock::new(SelectionInfo {
+                selected_entity: None,
+                hovered_entity: None,
+            })),
+        }
+    }
+
+    /// Create a new TauriToolContext with both an event emitter and shared selection state.
+    pub fn with_event_emitter_and_selection(
+        engine: Arc<Mutex<EngineSession>>,
+        emitter: impl Fn(&str, serde_json::Value) + Send + Sync + 'static,
+        selection: Arc<RwLock<SelectionInfo>>,
+    ) -> Self {
+        Self {
+            engine,
+            event_emitter: Some(Box::new(emitter)),
+            selection,
         }
     }
 }
@@ -138,10 +175,11 @@ impl ReifyToolContext for TauriToolContext {
     }
 
     fn get_selection(&self) -> Result<SelectionInfo, ToolError> {
-        Ok(SelectionInfo {
-            selected_entity: None,
-            hovered_entity: None,
-        })
+        let sel = self
+            .selection
+            .read()
+            .map_err(|e| ToolError::InternalError(format!("Selection lock poisoned: {}", e)))?;
+        Ok(sel.clone())
     }
 
     fn get_source_location(&self, entity_path: &str) -> Result<SourceLocationInfo, ToolError> {
