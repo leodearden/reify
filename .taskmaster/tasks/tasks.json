@@ -9650,7 +9650,7 @@
         "description": "5 clippy warnings cause `cargo clippy --workspace -- -D warnings` to fail:\n\n1. crates/reify-types/tests/m5_types.rs:41 — clone_on_copy on PortDirection\n2. crates/reify-types/src/dimension.rs:280 — init_numbered_fields (use tuple syntax for DimensionVector)\n3. crates/reify-types/src/ty.rs:176 — items_after_test_module (move impl Display before #[cfg(test)])\n4. crates/reify-types/src/value.rs:1151 — clone_on_copy on DeterminacyState\n5. crates/reify-types/src/constraint.rs:135 — clone_on_copy on ConstraintDomain\n\nAll are trivial auto-fixes concentrated in reify-types.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -9667,7 +9667,8 @@
             "crates/reify-types/src",
             "crates/reify-types/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-03-27T07:37:20.127Z"
       },
       {
         "id": "495",
@@ -10286,7 +10287,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-27T07:37:19.983Z",
+      "lastModified": "2026-03-27T07:37:20.128Z",
       "taskCount": 523,
       "completedCount": 251,
       "tags": [
