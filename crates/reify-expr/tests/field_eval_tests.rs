@@ -322,3 +322,118 @@ fn sample_gradient_with_non_point3_returns_undef() {
         result
     );
 }
+
+// ── Step 5: linear field gradient test ────────────────────────────────
+
+/// Build a field lambda: f(p) = dot(p, vec3(a, b, c))
+/// The lambda's param is `p` with the given ValueCellId.
+fn make_dot_lambda(
+    p_id: ValueCellId,
+    coeffs: [f64; 3],
+    domain_type: Type,
+    result_type: Type,
+) -> Value {
+    // Build vec3(a, b, c) call
+    let vec3_call = make_call(
+        "vec3",
+        vec![
+            CompiledExpr::literal(Value::Real(coeffs[0]), Type::Real),
+            CompiledExpr::literal(Value::Real(coeffs[1]), Type::Real),
+            CompiledExpr::literal(Value::Real(coeffs[2]), Type::Real),
+        ],
+        Type::vec3(Type::dimensionless_scalar()),
+    );
+
+    // Build dot(p, vec3(a,b,c)) call
+    let dot_call = make_call(
+        "dot",
+        vec![
+            CompiledExpr::value_ref(p_id.clone(), domain_type),
+            vec3_call,
+        ],
+        result_type.clone(),
+    );
+
+    Value::Lambda {
+        params: vec![("p".to_string(), p_id)],
+        body: Box::new(dot_call),
+        captures: ValueMap::new(),
+    }
+}
+
+#[test]
+fn gradient_of_linear_field_dot_123() {
+    // f(p) = dot(p, vec3(1, 2, 3)) = x + 2y + 3z
+    // Domain: Point3<Length>, Codomain: Scalar<Length>
+    // Gradient = [1, 2, 3] dimensionless (Length/Length)
+    let p_id = ValueCellId::new("$lambda_field", "p");
+    let domain = Type::point3(Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    });
+    let codomain = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+
+    let lambda = make_dot_lambda(p_id, [1.0, 2.0, 3.0], domain.clone(), codomain.clone());
+    let field = Value::Field {
+        domain_type: domain.clone(),
+        codomain_type: codomain.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    // gradient(field)
+    let field_type = Type::Field {
+        domain: Box::new(domain.clone()),
+        codomain: Box::new(codomain),
+    };
+    let gradient_expr = make_call(
+        "gradient",
+        vec![CompiledExpr::literal(field, field_type)],
+        Type::Real,
+    );
+
+    // sample(gradient_field, point3(1m, 2m, 3m))
+    let point = make_point3(1.0, 2.0, 3.0, DimensionVector::LENGTH);
+    let sample_expr = make_call(
+        "sample",
+        vec![
+            gradient_expr,
+            CompiledExpr::literal(
+                point,
+                Type::point3(Type::Scalar {
+                    dimension: DimensionVector::LENGTH,
+                }),
+            ),
+        ],
+        Type::vec3(Type::Scalar {
+            dimension: DimensionVector::DIMENSIONLESS,
+        }),
+    );
+
+    let values = ValueMap::new();
+    let result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    match &result {
+        Value::Vector(components) => {
+            assert_eq!(components.len(), 3, "gradient should have 3 components");
+            let expected = [1.0, 2.0, 3.0];
+            for (i, (comp, &exp)) in components.iter().zip(expected.iter()).enumerate() {
+                let v = comp
+                    .as_f64()
+                    .unwrap_or_else(|| panic!("component {} should be numeric, got: {:?}", i, comp));
+                assert!(
+                    (v - exp).abs() < 1e-4,
+                    "gradient component {} should be ~{}, got: {}",
+                    i,
+                    exp,
+                    v
+                );
+            }
+        }
+        other => panic!(
+            "sample(gradient(linear_field), point) should return Vector, got: {:?}",
+            other
+        ),
+    }
+}
