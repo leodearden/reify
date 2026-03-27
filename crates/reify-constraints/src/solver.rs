@@ -506,6 +506,30 @@ impl ConstraintSolver for DimensionalSolver {
             return SolveResult::Solved { values };
         }
 
+        // Capture initial point as fallback values before optimization.
+        // If initially_feasible and the optimizer drifts infeasible, we fall
+        // back to these values rather than returning Infeasible.
+        let initial_fallback_values: Option<HashMap<_, _>> = if initially_feasible {
+            Some(
+                problem
+                    .auto_params
+                    .iter()
+                    .zip(initial.iter())
+                    .map(|(param, &val)| {
+                        (
+                            param.id.clone(),
+                            Value::Scalar {
+                                si_value: val,
+                                dimension: dimension_of(&param.param_type),
+                            },
+                        )
+                    })
+                    .collect(),
+            )
+        } else {
+            None
+        };
+
         // Choose iteration budget: reduced when warm-starting from feasible point
         let max_iters = if initially_feasible && problem.objective.is_some() {
             FEASIBLE_OPT_ITERS
@@ -567,6 +591,12 @@ impl ConstraintSolver for DimensionalSolver {
         let final_max_residual =
             max_constraint_residual(&problem.constraints, &final_values, &problem.functions);
         if final_max_residual > FEASIBILITY_THRESHOLD {
+            // If the initial point was feasible but the optimizer drifted infeasible
+            // while chasing an objective, fall back to the initial feasible values
+            // rather than reporting a false Infeasible.
+            if let Some(fallback) = initial_fallback_values {
+                return SolveResult::Solved { values: fallback };
+            }
             return SolveResult::Infeasible {
                 diagnostics: vec![reify_types::Diagnostic {
                     severity: reify_types::Severity::Error,
