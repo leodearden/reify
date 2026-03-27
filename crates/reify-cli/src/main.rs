@@ -179,7 +179,7 @@ fn cmd_build(args: &[String]) -> ExitCode {
         };
         let id_str = format!("{}", entry.id);
         let label = entry.label.as_deref().unwrap_or(&id_str);
-        println!("  {} {}", status, label);
+        eprintln!("  {} {}", status, label);
     }
 
     match result.geometry_output {
@@ -192,7 +192,7 @@ fn cmd_build(args: &[String]) -> ExitCode {
             if all_satisfied {
                 ExitCode::SUCCESS
             } else {
-                println!("Some constraints violated.");
+                eprintln!("Some constraints violated.");
                 ExitCode::FAILURE
             }
         }
