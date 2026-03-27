@@ -11920,11 +11920,11 @@
         "description": "Two related bugs where guarded-group members are excluded from LSP features:\n1. member_names() in analysis.rs:138-145 only iterates template.value_cells but the compiler stores guarded members in template.guarded_groups.members/else_members. This means completions (completion.rs:43) miss all params/lets inside where-blocks.\n2. structure_names() in analysis.rs:150-177 flat-counts members without recursing into GuardedGroup variants, undercounting params/lets.\nBoth need to iterate guarded_groups in addition to value_cells/top-level members.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-03-27T12:03:28.088Z",
+        "updatedAt": "2026-03-27T12:12:43.242Z",
         "metadata": {
           "modules": [
             "crates/reify-lsp"
@@ -12101,7 +12101,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-27T12:12:42.786Z",
+      "lastModified": "2026-03-27T12:12:43.242Z",
       "taskCount": 609,
       "completedCount": 278,
       "tags": [
