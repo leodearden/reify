@@ -1615,6 +1615,7 @@ fn warn_counting_subscriber() -> (impl tracing::Subscriber, Arc<std::sync::atomi
     (WarnCounter(count_clone), count)
 }
 
+#[cfg(feature = "test-utils")]
 mod poison_recovery {
     use super::*;
     use std::panic::{AssertUnwindSafe, catch_unwind};
