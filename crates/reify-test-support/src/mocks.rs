@@ -1494,6 +1494,97 @@ mod tests {
         assert!(kernel.last_op().is_some());
     }
 
+    // --- SequencedMockConstraintSolver tests (step-1, task 430) ---
+
+    #[test]
+    fn sequenced_solver_returns_results_in_order() {
+        let mut values1 = HashMap::new();
+        values1.insert(ValueCellId::new("S", "x"), Value::length(0.001));
+        let mut values2 = HashMap::new();
+        values2.insert(ValueCellId::new("S", "x"), Value::length(0.002));
+        let mut values3 = HashMap::new();
+        values3.insert(ValueCellId::new("S", "x"), Value::length(0.003));
+
+        let solver = SequencedMockConstraintSolver::new(vec![
+            SolveResult::Solved {
+                values: values1.clone(),
+            },
+            SolveResult::Solved {
+                values: values2.clone(),
+            },
+            SolveResult::Solved {
+                values: values3.clone(),
+            },
+        ]);
+
+        let problem = ResolutionProblem {
+            auto_params: vec![],
+            constraints: vec![],
+            current_values: ValueMap::new(),
+            objective: None,
+            functions: vec![],
+        };
+
+        // Each call returns the next result in sequence
+        match solver.solve(&problem) {
+            SolveResult::Solved { values } => assert_eq!(values, values1),
+            other => panic!("expected Solved #1, got {:?}", other),
+        }
+        match solver.solve(&problem) {
+            SolveResult::Solved { values } => assert_eq!(values, values2),
+            other => panic!("expected Solved #2, got {:?}", other),
+        }
+        match solver.solve(&problem) {
+            SolveResult::Solved { values } => assert_eq!(values, values3),
+            other => panic!("expected Solved #3, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn sequenced_solver_repeats_last_after_exhaustion() {
+        let mut values1 = HashMap::new();
+        values1.insert(ValueCellId::new("S", "a"), Value::length(0.01));
+        let mut values2 = HashMap::new();
+        values2.insert(ValueCellId::new("S", "b"), Value::length(0.02));
+
+        let solver = SequencedMockConstraintSolver::new(vec![
+            SolveResult::Solved {
+                values: values1.clone(),
+            },
+            SolveResult::Solved {
+                values: values2.clone(),
+            },
+        ]);
+
+        let problem = ResolutionProblem {
+            auto_params: vec![],
+            constraints: vec![],
+            current_values: ValueMap::new(),
+            objective: None,
+            functions: vec![],
+        };
+
+        // Consume both results
+        match solver.solve(&problem) {
+            SolveResult::Solved { values } => assert_eq!(values, values1),
+            other => panic!("expected Solved #1, got {:?}", other),
+        }
+        match solver.solve(&problem) {
+            SolveResult::Solved { values } => assert_eq!(values, values2),
+            other => panic!("expected Solved #2, got {:?}", other),
+        }
+
+        // 3rd and 4th calls should repeat the last result
+        match solver.solve(&problem) {
+            SolveResult::Solved { values } => assert_eq!(values, values2),
+            other => panic!("expected Solved #3 (repeated last), got {:?}", other),
+        }
+        match solver.solve(&problem) {
+            SolveResult::Solved { values } => assert_eq!(values, values2),
+            other => panic!("expected Solved #4 (repeated last), got {:?}", other),
+        }
+    }
+
     #[test]
     fn mock_has_op_does_not_poison_mutex_on_closure_panic() {
         use std::panic::{AssertUnwindSafe, catch_unwind};
