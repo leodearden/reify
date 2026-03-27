@@ -3338,7 +3338,18 @@
             "crates/reify-eval"
           ],
           "milestone": "M9",
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "memory_hints": {
+            "entities": [
+              "qualified_access",
+              "trait disambiguation"
+            ],
+            "queries": [
+              "qualified trait access test cases disambiguation same member name",
+              "phantom-done 193 reverted commit 3a248e07 re-implementation",
+              "instance qualified access error cases"
+            ]
+          }
         },
         "subtasks": [],
         "updatedAt": "2026-03-27T06:59:47.249Z"
