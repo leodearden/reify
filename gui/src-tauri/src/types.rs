@@ -289,4 +289,28 @@ mod format_value_range_tests {
         assert_eq!(formatted, "[1..10]");
         assert_eq!(unit, "");
     }
+
+    #[test]
+    fn none_lower_inclusive_via_factory() {
+        // Factory normalizes inclusive=false for None bound
+        let range = Value::range(None, Some(Value::Int(10)), true, true);
+        let (formatted, unit) = format_value(&range);
+        assert_eq!(formatted, "(-\u{221e}..10]");
+        assert_eq!(unit, "");
+    }
+
+    #[test]
+    fn none_lower_inclusive_via_direct_struct() {
+        // Bypass factory: directly construct with inclusive=true + None lower
+        // This exercises the defensive re-normalization in format_value (line 207)
+        let range = Value::Range {
+            lower: None,
+            upper: Some(Box::new(Value::Int(10))),
+            lower_inclusive: true,
+            upper_inclusive: true,
+        };
+        let (formatted, unit) = format_value(&range);
+        assert_eq!(formatted, "(-\u{221e}..10]");
+        assert_eq!(unit, "");
+    }
 }
