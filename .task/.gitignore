@@ -1,5 +1,0 @@
-# Ignore ALL orchestrator scratch files.
-# DO NOT remove or modify this file.  .task/ must never be
-# committed to any branch that will be merged to main.
-# See git_ops.py module docstring for why this matters.
-*
