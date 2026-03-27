@@ -421,6 +421,25 @@ describe('App async mount/cleanup race conditions', () => {
     // With current code: initFromState runs, then subscribeToEvents runs → onMeshUpdate called
     expect(bridge.onMeshUpdate).not.toHaveBeenCalled();
   });
+
+  it('unmount calls claudeEventUnsub cleanup function', async () => {
+    const claudeUnsub = vi.fn();
+    vi.mocked(bridge.subscribeToClaudeEvents).mockResolvedValueOnce(claudeUnsub);
+
+    const { unmount } = render(() => <App />);
+    await waitFor(() => {
+      expect(screen.getByTestId('app-layout')).toBeTruthy();
+    });
+
+    // Claude unsub should not have been called while component is alive
+    expect(claudeUnsub).not.toHaveBeenCalled();
+
+    // Unmount — onCleanup should call claudeEventUnsub?.()
+    unmount();
+
+    // Verify the Claude event unsubscribe was called during cleanup
+    expect(claudeUnsub).toHaveBeenCalled();
+  });
 });
 
 describe('App new component integration', () => {
