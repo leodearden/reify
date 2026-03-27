@@ -91,6 +91,9 @@ export class SidecarSession {
       if (context.constraints?.length) {
         contextParts.push(`Constraints:\n${context.constraints.join('\n')}`);
       }
+      if (context.attached_contexts?.length) {
+        contextParts.push(`Attached contexts:\n${context.attached_contexts.join('\n')}`);
+      }
       if (contextParts.length > 0) {
         prompt = `${text}\n\n[Context]\n${contextParts.join('\n\n')}`;
       }
