@@ -1974,4 +1974,44 @@ describe('App Claude error handling', () => {
 
     consoleSpy.mockRestore();
   });
+
+  it('shows toast when claudeAbort fails', async () => {
+    const abortError = new Error('abort failed');
+    vi.mocked(bridge.claudeAbort).mockRejectedValue(abortError);
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    // Capture the handler passed to subscribeToClaudeEvents
+    let claudeHandler: ((msg: any) => void) | undefined;
+    vi.mocked(bridge.subscribeToClaudeEvents).mockImplementation(async (handler) => {
+      claudeHandler = handler;
+      return () => {};
+    });
+
+    render(() => <App />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('app-layout')).toBeTruthy();
+    });
+
+    // Fire a text_delta event to put claudeStore into 'responding' state
+    claudeHandler!({ type: 'text_delta', id: 'msg-1', content: 'Hello' });
+
+    // Wait for abort button to appear
+    await waitFor(() => {
+      expect(screen.getByTestId('abort-button')).toBeTruthy();
+    });
+
+    // Click the abort button
+    fireEvent.click(screen.getByTestId('abort-button'));
+
+    // Wait for the toast to appear (claudeAbort rejection triggers async catch)
+    await waitFor(() => {
+      expect(consoleSpy).toHaveBeenCalledWith(
+        '[claude] abort failed:',
+        abortError,
+      );
+    });
+
+    consoleSpy.mockRestore();
+  });
 });
