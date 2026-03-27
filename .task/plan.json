@@ -1,0 +1,85 @@
+{
+  "task_id": "208",
+  "title": "Fix post-merge verification failures: TypeScript type errors and stdout/stderr contract violation",
+  "files": [
+    "gui/src/__tests__/claudeIntegration.test.ts",
+    "crates/reify-cli/src/main.rs",
+    "crates/reify-cli/tests/cli_build.rs"
+  ],
+  "modules": [
+    "gui/src/__tests__",
+    "crates/reify-cli/src",
+    "crates/reify-cli/tests"
+  ],
+  "analysis": "Two blocking issues found during post-merge verification:\n\n1. (Already fixed) TypeScript TS2339 errors in claudeIntegration.test.ts \u2014 union type narrowing through Array.find().\n\n2. (New) API contract violation in cmd_build: constraint status lines (line 182) and the violation summary (line 195) use `println!` (stdout) instead of `eprintln!` (stderr). Diagnostic messages on stdout break pipe chains (`reify build ... | downstream_processor`) and violate the UNIX CLI contract (stdout=data, stderr=diagnostics). The plan's own design decision for cmd_build stated these should go to stderr. The fix is to revert both lines to `eprintln!` and update cli_build.rs tests to assert VIOLATED/summary on stderr instead of stdout.\n\nNote: cmd_check (lines 105, 113, 116) has the same println-for-diagnostics pattern, but the reviewer's finding is scoped to cmd_build only. The cli_check.rs tests also assert on stdout for VIOLATED \u2014 that's a separate consistency issue not in scope for this task.\n\nImpacted tests in cli_build.rs:\n- build_violating_bracket_exits_failure: lines 62-63 check stdout.contains(\"VIOLATED\"), lines 66-67 check stdout.contains(\"Some constraints violated.\") \u2014 both must switch to stderr.\n- build_valid_bracket_exits_success: line 102 checks !stdout.contains(\"VIOLATED\") \u2014 this still passes after the fix (VIOLATED won't be in stdout), but should be updated to check stderr for correctness.",
+  "prerequisites": [],
+  "steps": [
+    {
+      "id": "step-1",
+      "type": "impl",
+      "description": "Fix TS2339 errors in claudeIntegration.test.ts by narrowing ChatMessage union type after find(). On lines 129-131 and 160-161, the result of `store.state.messages.find()` is typed as `ChatMessage | undefined`. Even though the callback filters by `m.role === 'assistant'`, TypeScript cannot narrow through find(). Fix by casting the find() result to `AssistantMessage` using `as AssistantMessage` after the non-null assertion, e.g.: `const assistantMsg = store.state.messages.find((m) => m.role === 'assistant' && m.id === msgId) as AssistantMessage | undefined;`. This fixes all 4 errors (lines 133, 134, 163, 164) since `responseText`, `complete`, and `error` all exist on `AssistantMessage`.",
+      "status": "done",
+      "commit": "cf75a722"
+    },
+    {
+      "id": "step-2",
+      "type": "test",
+      "description": "Verify fix by running `tsc --noEmit` in gui/ directory \u2014 should exit 0 with no type errors. Also run `npx vitest run` to confirm no runtime regressions (should still be 844+ tests passing).",
+      "status": "done",
+      "commit": "cf75a722"
+    },
+    {
+      "id": "step-3",
+      "type": "test",
+      "description": "Update cli_build.rs tests to assert constraint diagnostics on stderr (not stdout), making tests reflect the correct UNIX CLI contract. In build_violating_bracket_exits_failure: change line 62 `stdout.contains(\"VIOLATED\")` to `stderr.contains(\"VIOLATED\")` and line 66 `stdout.contains(\"Some constraints violated.\")` to `stderr.contains(\"Some constraints violated.\")`. Update the assertion messages accordingly. In build_valid_bracket_exits_success: change line 102 `!stdout.contains(\"VIOLATED\")` to `!stderr.contains(\"VIOLATED\")`. These tests will FAIL against current code since cmd_build still uses println!.",
+      "status": "done",
+      "commit": "6aef8434"
+    },
+    {
+      "id": "step-4",
+      "type": "impl",
+      "description": "Fix cmd_build in main.rs to use eprintln! for constraint diagnostic output. Change line 182 `println!(\"  {} {}\", status, label)` to `eprintln!(\"  {} {}\", status, label)` and line 195 `println!(\"Some constraints violated.\")` to `eprintln!(\"Some constraints violated.\")`. The 'Wrote N bytes' message on line 191 stays as println! since it is the success data output. This makes the tests from step-3 pass.",
+      "status": "done",
+      "commit": "4c574d05"
+    },
+    {
+      "id": "step-5",
+      "type": "test",
+      "description": "Run `cargo test -p reify-cli` to verify all cli_build and cli_check tests pass. Then run the full `cargo test --workspace` to confirm no regressions across the project.",
+      "status": "pending",
+      "commit": null
+    }
+  ],
+  "design_decisions": [
+    {
+      "decision": "Use `as AssistantMessage | undefined` cast rather than a user-defined type guard function",
+      "rationale": "The cast is local to the test file, used only twice, and the runtime check (`m.role === 'assistant'`) is already in the find() callback. A type guard function would be overkill for 2 usage sites in a test file. The cast accurately reflects what find() returns given the role filter."
+    },
+    {
+      "decision": "Do not restructure the test to avoid the union type issue",
+      "rationale": "The test logic is correct and well-structured. The issue is purely a TypeScript narrowing limitation with Array.find(). A minimal type annotation fix preserves the test's readability and intent."
+    },
+    {
+      "decision": "Only fix cmd_build stdout/stderr, not cmd_check",
+      "rationale": "The reviewer's finding is scoped to cmd_build (main.rs:183,194). cmd_check has the same println-for-constraint-status pattern (lines 105, 113, 116) and cli_check.rs also asserts on stdout. Fixing cmd_check would be a separate change outside the review finding's scope and could introduce inconsistency if done piecemeal."
+    },
+    {
+      "decision": "Keep 'Wrote N bytes' message on stdout in cmd_build",
+      "rationale": "The 'Wrote {path} ({bytes} bytes)' message (line 191) is a success confirmation of the primary build output. It is not a diagnostic. Keeping it on stdout is consistent with the UNIX convention \u2014 it describes the data output, and a downstream consumer might parse it."
+    }
+  ],
+  "reuse": [
+    {
+      "what": "AssistantMessage type from claudeStore",
+      "where": "gui/src/stores/claudeStore.ts:18-27",
+      "how": "Import AssistantMessage type and use it to narrow the find() result in the test assertions."
+    },
+    {
+      "what": "Existing cli_build.rs test structure with stdout/stderr capture",
+      "where": "crates/reify-cli/tests/cli_build.rs",
+      "how": "Tests already capture both stdout and stderr via Stdio::piped(). Only the assertion targets need to change from stdout to stderr for VIOLATED/summary messages."
+    }
+  ],
+  "_session_id": "208-d4c9d12f",
+  "_created_at": "2026-03-27T10:14:40.287240+00:00"
+}
