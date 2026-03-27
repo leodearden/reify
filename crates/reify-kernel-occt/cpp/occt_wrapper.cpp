@@ -92,6 +92,22 @@
 
 namespace occt {
 
+// --- Validation thresholds ---
+//
+// DEFENSE-IN-DEPTH: The Rust layer validates first with stricter thresholds
+// (AXIS_MAG_SQ_MIN = 1e-12). These C++ thresholds are a safety net for any
+// future code paths that may bypass the Rust layer (e.g., direct FFI testing,
+// hot-path optimizations).
+
+/// Minimum squared magnitude for axis/direction vectors (catches true zeros and denormals).
+constexpr double CPP_AXIS_MAG_SQ_MIN = 1e-30;
+
+/// Minimum magnitude for direction vectors used in normalization (linear_pattern, normals).
+constexpr double CPP_DIR_MAG_MIN = 1e-10;
+
+/// Minimum absolute angle for revolve operations (catches effectively-zero angles).
+constexpr double CPP_ANGLE_ABS_MIN = 1e-30;
+
 // --- Primitive construction ---
 
 std::unique_ptr<OcctShape> make_box(double width, double height, double depth) {
@@ -364,7 +380,7 @@ std::unique_ptr<OcctShape> linear_pattern(const OcctShape& shape,
         }
         // Normalize direction
         double mag = std::sqrt(dx*dx + dy*dy + dz*dz);
-        if (mag < 1e-10) {
+        if (mag < CPP_DIR_MAG_MIN) {
             throw std::runtime_error("linear_pattern: direction must be non-zero");
         }
         double ndx = dx / mag, ndy = dy / mag, ndz = dz / mag;
@@ -654,7 +670,7 @@ std::unique_ptr<OcctShape> make_line_wire(double x1, double y1, double z1,
         gp_Pnt p1(x1, y1, z1);
         gp_Pnt p2(x2, y2, z2);
         double dist_sq = (x2-x1)*(x2-x1) + (y2-y1)*(y2-y1) + (z2-z1)*(z2-z1);
-        if (dist_sq < 1e-30) {
+        if (dist_sq < CPP_AXIS_MAG_SQ_MIN) {
             throw std::runtime_error("make_line_wire: start and end points must be distinct");
         }
         BRepBuilderAPI_MakeEdge edgeBuilder(p1, p2);
@@ -734,7 +750,7 @@ std::unique_ptr<OcctShape> make_prism(const OcctShape& profile, double dx, doubl
         if (!(std::isfinite(dx) && std::isfinite(dy) && std::isfinite(dz))) {
             throw std::runtime_error("make_prism: direction vector components must be finite");
         }
-        if (mag_sq < 1e-30) {
+        if (mag_sq < CPP_AXIS_MAG_SQ_MIN) {
             throw std::runtime_error("make_prism: direction vector magnitude must be > 0");
         }
         gp_Vec vec(dx, dy, dz);
@@ -765,10 +781,10 @@ std::unique_ptr<OcctShape> make_revolve(const OcctShape& profile,
             throw std::runtime_error("make_revolve: all parameters must be finite");
         }
         double axis_mag_sq = ax*ax + ay*ay + az*az;
-        if (axis_mag_sq < 1e-30) {
+        if (axis_mag_sq < CPP_AXIS_MAG_SQ_MIN) {
             throw std::runtime_error("make_revolve: axis direction must not be zero-length");
         }
-        if (std::abs(angle_rad) < 1e-30) {
+        if (std::abs(angle_rad) < CPP_ANGLE_ABS_MIN) {
             throw std::runtime_error("make_revolve: angle must not be zero");
         }
         gp_Pnt origin(ox, oy, oz);
@@ -1140,7 +1156,7 @@ TessResult tessellate_shape(const OcctShape& shape, double tolerance) {
                 for (int i = 0; i < nb_nodes; ++i) {
                     gp_Vec n = vertex_normals[i];
                     double mag = n.Magnitude();
-                    if (mag > 1e-10) {
+                    if (mag > CPP_DIR_MAG_MIN) {
                         n /= mag;
                     }
                     if (!loc.IsIdentity()) {
