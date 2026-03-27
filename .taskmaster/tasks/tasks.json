@@ -11817,7 +11817,19 @@
           "modules": [
             "crates/reify-constraints/src",
             "crates/reify-constraints/tests"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "NelderMeadSolver",
+              "FEASIBILITY_THRESHOLD",
+              "SolveResult"
+            ],
+            "queries": [
+              "Nelder-Mead solver warm-start convergence",
+              "task 531 warm-start robustness feasible fallback completed",
+              "constraint solver architecture FEASIBLE_OPT_ITERS"
+            ]
+          }
         },
         "updatedAt": "2026-03-27T12:04:05.793Z"
       },
