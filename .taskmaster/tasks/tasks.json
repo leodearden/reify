@@ -12137,6 +12137,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 612,
+        "title": "Fix compile_geometry_op None placeholder and GeomRef::Step(0) hardcoding bugs",
+        "description": "Two pre-existing bugs in geometry compilation (crates/reify-compiler/src/lib.rs and crates/reify-eval):\n\n1. **compile_geometry_op None placeholder**: When compile_geometry_op returns None (compilation failure), no placeholder is pushed into step_handles. This causes silent corruption in GeomRef::Step(n) relative indexing — all subsequent step indices are off by one per failed op, leading to wrong geometry references downstream.\n\n2. **compile_geometry_call GeomRef::Step(0) hardcoding**: compile_geometry_call() hardcodes target: GeomRef::Step(0) for all pattern/modify/transform ops. This means all geometry operations target the first step regardless of the intended target geometry.\n\nFix: (1) Push a sentinel/error placeholder into step_handles when compile_geometry_op returns None. (2) Resolve the correct GeomRef target based on the geometry name→step index map.\n\nmemory_hints: search \"compile_geometry_op None placeholder step_handles\", search \"compile_geometry_call GeomRef Step hardcoded\", get_entity \"GeometryKernel\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -12148,7 +12159,8 @@
         "master"
       ],
       "created": "2026-03-27T13:31:36.974Z",
-      "description": "Tasks for master context"
+      "description": "Tasks for master context",
+      "updated": "2026-03-27T13:31:45.992Z"
     }
   }
 }
