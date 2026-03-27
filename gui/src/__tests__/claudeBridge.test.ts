@@ -232,6 +232,51 @@ describe('subscribeToClaudeEvents', () => {
     });
   });
 
+  it('maps claude-thinking-delta event to OutboundMessage { type: "thinking_delta" }', async () => {
+    let capturedHandler: ((event: { payload: unknown }) => void) | undefined;
+    mockListen.mockImplementation(async (eventName, handler) => {
+      if (eventName === 'claude-thinking-delta') {
+        capturedHandler = handler as (event: { payload: unknown }) => void;
+      }
+      return vi.fn();
+    });
+
+    const handler = vi.fn();
+    await subscribeToClaudeEvents(handler);
+
+    capturedHandler!({ payload: { id: 'msg-t1', content: 'Let me think...' } });
+
+    expect(handler).toHaveBeenCalledWith({
+      type: 'thinking_delta',
+      id: 'msg-t1',
+      content: 'Let me think...',
+    });
+  });
+
+  it('maps claude-tool-result event to OutboundMessage { type: "tool_result" }', async () => {
+    let capturedHandler: ((event: { payload: unknown }) => void) | undefined;
+    mockListen.mockImplementation(async (eventName, handler) => {
+      if (eventName === 'claude-tool-result') {
+        capturedHandler = handler as (event: { payload: unknown }) => void;
+      }
+      return vi.fn();
+    });
+
+    const handler = vi.fn();
+    await subscribeToClaudeEvents(handler);
+
+    capturedHandler!({
+      payload: { id: 'msg-tr1', tool_name: 'read_file', result: 'file contents here' },
+    });
+
+    expect(handler).toHaveBeenCalledWith({
+      type: 'tool_result',
+      id: 'msg-tr1',
+      tool_name: 'read_file',
+      result: 'file contents here',
+    });
+  });
+
   describe('listener rollback on partial failure', () => {
     it('cleans up already-registered listeners when a middle listen() fails', async () => {
       const unlisteners = [vi.fn(), vi.fn(), vi.fn()];
