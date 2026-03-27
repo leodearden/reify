@@ -78,9 +78,13 @@ const EXPECTED_OUTPUTS: &[&str] = &["parser.c", "grammar.json", "node-types.json
 
 /// Check if regeneration is needed based on content hash staleness.
 /// Returns true if any output file is missing, stamp file is missing,
-/// or stamp hash doesn't match grammar.js content hash.
+/// or stamp hash doesn't match the provided grammar hash.
+///
+/// The caller must compute `grammar_hash` once and pass it here as well as
+/// to the stamp-write step — this avoids a TOCTOU race where grammar.js
+/// could change between the staleness check and the stamp write.
 fn needs_generate(
-    grammar_path: &std::path::Path,
+    grammar_hash: &str,
     stamp_path: &std::path::Path,
     output_paths: &[&std::path::Path],
 ) -> bool {
@@ -96,8 +100,7 @@ fn needs_generate(
         Err(_) => return true,
     };
     // Must regenerate if grammar hash differs from stamp.
-    let current_hash = content_hash(grammar_path);
-    stamp_content.trim() != current_hash
+    stamp_content.trim() != grammar_hash
 }
 
 /// Verify that all expected output files exist after generation.
@@ -138,13 +141,18 @@ fn main() {
     let out_dir = std::env::var("OUT_DIR").unwrap_or_else(|_| ".".to_string());
     let stamp_path = std::path::Path::new(&out_dir).join("grammar_hash.stamp");
 
-    if needs_generate(grammar_path, &stamp_path, &output_refs) {
+    // Capture the grammar hash once, before generation, and reuse it for both
+    // the staleness check and the stamp write.  This eliminates a TOCTOU race
+    // where grammar.js could change between the two reads.
+    let grammar_hash = content_hash(grammar_path);
+
+    if needs_generate(&grammar_hash, &stamp_path, &output_refs) {
         run_tree_sitter_generate();
         // Verify all 3 output files were created.
         verify_outputs(src_dir);
-        // Write updated stamp.
-        let hash = content_hash(grammar_path);
-        std::fs::write(&stamp_path, &hash).unwrap_or_else(|e| {
+        // Write stamp using the *same* hash that was checked — guarantees the
+        // stamp reflects the grammar version that produced these outputs.
+        std::fs::write(&stamp_path, &grammar_hash).unwrap_or_else(|e| {
             eprintln!("warning: failed to write stamp file: {}", e);
         });
     }
