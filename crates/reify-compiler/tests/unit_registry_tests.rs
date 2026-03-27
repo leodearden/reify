@@ -716,3 +716,27 @@ fn non_finite_offset_rejected() {
         "expected error diagnostic for non-finite offset; got none"
     );
 }
+
+// ─── step-7 (task-208): QuantityLiteral overflow in evaluate_const_expr ───────
+
+#[test]
+fn quantity_literal_overflow_rejected() {
+    // Define a unit with small factor, then reference it with a huge value.
+    // value * factor overflows: MAX * 0.001 doesn't overflow, but MAX * 1.0 stays MAX,
+    // and we need value * entry.factor → inf. Use MAX as value with factor > 1.
+    let src = format!(
+        "unit big : Length = 2.0\nunit derived : Length = {}big",
+        f64::MAX
+    );
+    let module = parse_and_compile(&src);
+    assert!(
+        !module.units.iter().any(|u| u.name == "derived"),
+        "unit with quantity-literal overflow should not be registered"
+    );
+    let errors = errors_only(&module);
+    assert!(
+        errors.iter().any(|d| d.message.contains("overflow")),
+        "expected overflow diagnostic for quantity literal; got: {:?}",
+        errors
+    );
+}
