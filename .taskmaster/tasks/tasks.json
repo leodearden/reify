@@ -10541,7 +10541,13 @@
         "priority": "low",
         "subtasks": [],
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-eval/tests/geometry_error_handling.rs"
+          ],
+          "modules": [
+            "crates/reify-eval/tests"
+          ]
         }
       },
       {
@@ -10575,7 +10581,13 @@
         "priority": "low",
         "subtasks": [],
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-constraints/tests/solver_integration.rs"
+          ],
+          "modules": [
+            "crates/reify-constraints/tests"
+          ]
         }
       },
       {
@@ -10591,7 +10603,15 @@
         "priority": "low",
         "subtasks": [],
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-constraints/src/solver.rs",
+            "crates/reify-constraints/tests/solver_integration.rs"
+          ],
+          "modules": [
+            "crates/reify-constraints/src",
+            "crates/reify-constraints/tests"
+          ]
         }
       },
       {
@@ -10607,7 +10627,13 @@
         "priority": "low",
         "subtasks": [],
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-constraints/src/solver.rs"
+          ],
+          "modules": [
+            "crates/reify-constraints/src"
+          ]
         }
       },
       {
@@ -10623,7 +10649,13 @@
         "priority": "medium",
         "subtasks": [],
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-constraints/src/solver.rs"
+          ],
+          "modules": [
+            "crates/reify-constraints/src"
+          ]
         }
       },
       {
