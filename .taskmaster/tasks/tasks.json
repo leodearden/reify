@@ -11018,7 +11018,7 @@
         "description": "Review finding from task 522: bridge.ts (wire/transport layer) now imports from claudeStore.ts (domain/state layer) via `import type { MessageContext }`, inverting the natural layering (sidecar/types → bridge.ts → claudeStore.ts → App.tsx). The original standalone `ClaudeMessageContext` interface was architecturally correct — bridge defines its own wire contract, App.tsx reconciles domain to wire types.\n\n1. Revert `ClaudeMessageContext` in bridge.ts to a standalone interface with the 3 fields (selectedEntity, diagnostics, constraints) — remove the `import type { MessageContext }` from claudeStore.\n2. Fix types.typecheck.ts: the bidirectional assignability assertions (`_fwd`/`_rev`) are now tautological since ClaudeMessageContext IS `Pick<MessageContext, ...>`. After reverting to standalone, the assertions recover their original meaning. Also fix the all-optional type issue: since all 3 fields are optional, `{}` satisfies both types regardless. Use a mapped-type equality assertion or at minimum document the limitation.\n3. The typecheck.ts file already serves as the structural drift guard — add a comment in bridge.ts pointing to it.\n\nMemory hints: search \"ClaudeMessageContext bridge.ts standalone interface layering\", entities: ClaudeMessageContext, bridge.ts, claudeStore.ts",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [
           "522"
         ],
@@ -11043,7 +11043,7 @@
             ]
           }
         },
-        "updatedAt": "2026-03-27T12:17:43.754Z"
+        "updatedAt": "2026-03-27T23:31:52.785Z"
       },
       {
         "id": "547",
@@ -12473,7 +12473,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-27T23:31:52.754Z",
+      "lastModified": "2026-03-27T23:31:52.785Z",
       "taskCount": 612,
       "completedCount": 278,
       "tags": [
