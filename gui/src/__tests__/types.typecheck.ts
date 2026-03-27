@@ -105,6 +105,14 @@ const meshUpdate: MeshUpdate = mesh;
 const valueUpdate: ValueUpdate = value;
 const constraintUpdate: ConstraintUpdate = constraint;
 
+// --- Negative assertions: ChatMessage and SessionStatus must NOT be exported from types.ts ---
+// These @ts-expect-error directives verify the types have been removed.
+// If the types still exist, these directives are "unused" and tsc will error.
+// @ts-expect-error ChatMessage should not exist in types.ts (superseded by claudeStore.ts)
+type _NoChatMessage = import('../types').ChatMessage;
+// @ts-expect-error SessionStatus should not exist in types.ts (superseded by claudeStore.ts)
+type _NoSessionStatus = import('../types').SessionStatus;
+
 // Suppress unused variable warnings — this file is only for type checking
 void mesh;
 void meshNoNormals;
