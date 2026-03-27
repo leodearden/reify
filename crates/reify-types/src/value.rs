@@ -1095,10 +1095,8 @@ impl PartialEq for Value {
                 },
             ) => {
                 // Defensive re-normalization: None bounds → inclusive=false
-                let ali = *ali && al.is_some();
-                let aui = *aui && au.is_some();
-                let bli = *bli && bl.is_some();
-                let bui = *bui && bu.is_some();
+                let (ali, aui) = normalize_range_flags(al, au, *ali, *aui);
+                let (bli, bui) = normalize_range_flags(bl, bu, *bli, *bui);
                 al == bl && au == bu && ali == bli && aui == bui
             }
             (Value::Matrix(a), Value::Matrix(b)) => a == b,
