@@ -7006,7 +7006,17 @@
         "subtasks": [],
         "updatedAt": "2026-03-27T06:21:14.126Z",
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "tree-sitter-reify/grammar.js",
+            "crates/reify-syntax/src/ts_parser.rs",
+            "crates/reify-syntax/tests/edge_case_tests.rs"
+          ],
+          "modules": [
+            "tree-sitter-reify",
+            "crates/reify-syntax/src",
+            "crates/reify-syntax/tests"
+          ]
         }
       },
       {
@@ -7021,7 +7031,15 @@
         "subtasks": [],
         "updatedAt": "2026-03-27T06:20:32.089Z",
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-types/src/ty.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/src",
+            "crates/reify-types/src"
+          ]
         }
       },
       {
