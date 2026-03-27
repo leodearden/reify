@@ -1533,6 +1533,17 @@ mod tests {
     }
 
     #[test]
+    fn distance_same_handle_is_identity() {
+        let id = GeometryHandleId(1);
+        let kernel = MockGeometryKernel::new().with_distance_result(id, id, meters(0.0));
+
+        let result = kernel
+            .query(&GeometryQuery::Distance { from: id, to: id })
+            .unwrap();
+        assert_eq!(result, meters(0.0));
+    }
+
+    #[test]
     fn distance_result_symmetric_via_reversed_config() {
         // Configure with higher id first: (3, 1), query with lower id first: (1, 3)
         let kernel = MockGeometryKernel::new().with_distance_result(
