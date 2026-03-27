@@ -157,3 +157,39 @@ fn test_needs_generate_true_when_output_missing() {
         "must regenerate when any output file is missing"
     );
 }
+
+/// Duplicates verify_outputs logic from build.rs for testability.
+/// Returns Err with a message naming the missing file(s).
+fn verify_outputs(src_dir: &Path) -> Result<(), String> {
+    // Stub — will be implemented in step-10
+    let _ = src_dir;
+    unimplemented!("verify_outputs not yet implemented")
+}
+
+#[test]
+fn test_all_three_outputs_verified() {
+    let dir = tempfile::tempdir().unwrap();
+    let src_dir = dir.path().join("src");
+    std::fs::create_dir_all(&src_dir).unwrap();
+
+    // With all 3 files present, verification succeeds.
+    for name in EXPECTED_OUTPUTS {
+        std::fs::write(src_dir.join(name), b"placeholder").unwrap();
+    }
+    assert!(verify_outputs(&src_dir).is_ok(), "all files present should verify ok");
+
+    // Remove each file in turn and verify it's detected as missing.
+    for name in EXPECTED_OUTPUTS {
+        let path = src_dir.join(name);
+        std::fs::remove_file(&path).unwrap();
+        let err = verify_outputs(&src_dir).unwrap_err();
+        assert!(
+            err.contains(name),
+            "error message should name the missing file '{}', got: {}",
+            name,
+            err
+        );
+        // Restore for next iteration
+        std::fs::write(&path, b"placeholder").unwrap();
+    }
+}
