@@ -221,9 +221,43 @@ fn test_no_redundant_rerun_if_changed() {
 /// Duplicates run_with_timeout logic from build.rs for testability.
 /// Returns Ok(()) on success, Err(message) on failure or timeout.
 fn run_with_timeout(cmd: &str, args: &[&str], timeout_secs: u64) -> Result<(), String> {
-    // Stub — will be implemented in step-14
-    let _ = (cmd, args, timeout_secs);
-    unimplemented!("run_with_timeout not yet implemented")
+    use std::time::{Duration, Instant};
+
+    let mut child = std::process::Command::new(cmd)
+        .args(args)
+        .spawn()
+        .map_err(|e| format!("Failed to spawn '{}': {}", cmd, e))?;
+
+    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                if status.success() {
+                    return Ok(());
+                } else {
+                    return Err(format!(
+                        "'{}' failed with exit code {}",
+                        cmd,
+                        status.code().unwrap_or(-1)
+                    ));
+                }
+            }
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!(
+                        "'{}' timed out after {}s",
+                        cmd, timeout_secs
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Err(e) => {
+                return Err(format!("Error waiting for '{}': {}", cmd, e));
+            }
+        }
+    }
 }
 
 #[test]

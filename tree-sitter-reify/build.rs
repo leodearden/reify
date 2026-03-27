@@ -11,29 +11,63 @@ fn content_hash(path: &std::path::Path) -> String {
     format!("{:016x}", hasher.finish())
 }
 
+/// Run a command with a timeout. Returns Ok(()) on success, Err on failure/timeout.
+fn run_with_timeout(
+    cmd: &str,
+    args: &[&str],
+    timeout_secs: u64,
+) -> Result<(), String> {
+    use std::time::{Duration, Instant};
+
+    let mut child = std::process::Command::new(cmd)
+        .args(args)
+        .spawn()
+        .map_err(|e| format!("Failed to spawn '{}': {}", cmd, e))?;
+
+    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                if status.success() {
+                    return Ok(());
+                } else {
+                    return Err(format!(
+                        "'{}' failed with exit code {}",
+                        cmd,
+                        status.code().unwrap_or(-1)
+                    ));
+                }
+            }
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait(); // Reap the process.
+                    return Err(format!(
+                        "'{}' timed out after {}s",
+                        cmd, timeout_secs
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Err(e) => {
+                return Err(format!("Error waiting for '{}': {}", cmd, e));
+            }
+        }
+    }
+}
+
+/// Default timeout for tree-sitter generate subprocess (seconds).
+const GENERATE_TIMEOUT_SECS: u64 = 60;
+
 fn run_tree_sitter_generate() {
     eprintln!("tree-sitter-reify: running tree-sitter generate...");
-    let status = std::process::Command::new("tree-sitter")
-        .arg("generate")
-        .status();
-    match status {
-        Ok(s) if s.success() => {}
-        Ok(s) => {
-            panic!(
-                "tree-sitter generate failed with exit code {}.\n\
-                 Ensure tree-sitter CLI is installed.\n\
-                 Or run: scripts/tree-sitter-generate.sh",
-                s.code().unwrap_or(-1)
-            );
-        }
-        Err(e) => {
-            panic!(
-                "Failed to run tree-sitter generate: {}\n\
-                 Ensure tree-sitter CLI is installed.\n\
-                 Or run: scripts/tree-sitter-generate.sh",
-                e
-            );
-        }
+    if let Err(msg) = run_with_timeout("tree-sitter", &["generate"], GENERATE_TIMEOUT_SECS) {
+        panic!(
+            "tree-sitter generate failed: {}\n\
+             Ensure tree-sitter CLI is installed.\n\
+             Or run: scripts/tree-sitter-generate.sh",
+            msg
+        );
     }
 }
 
