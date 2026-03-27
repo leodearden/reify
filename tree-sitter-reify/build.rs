@@ -87,9 +87,10 @@ fn main() {
     let parser_path = src_dir.join("parser.c");
     let grammar_path = std::path::Path::new("grammar.js");
 
-    // Re-run if the grammar source or generated parser changes.
+    // Re-run if the grammar source changes.
+    // Note: we do NOT watch src/parser.c — it's a generated output managed by
+    // this build script. Watching it would cause double execution.
     println!("cargo:rerun-if-changed=grammar.js");
-    println!("cargo:rerun-if-changed=src/parser.c");
 
     // Auto-generate from grammar.js when missing or stale.
     let output_paths: Vec<std::path::PathBuf> = EXPECTED_OUTPUTS
