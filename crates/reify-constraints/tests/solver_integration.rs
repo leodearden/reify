@@ -636,6 +636,73 @@ fn maximize_with_feasible_initial_point() {
     }
 }
 
+/// When the initial point is feasible and the optimizer drifts infeasible
+/// while chasing an objective, the solver must fall back to the initial
+/// feasible point rather than returning Infeasible.
+///
+/// Setup: tight constraints (x > 5mm AND x < 6mm), current = 5.5mm (feasible),
+/// minimize(x) objective, but param bounds [0, 100mm] let the optimizer explore
+/// well below the constraint floor. With only 500 warm-start iterations, the
+/// penalty-based optimizer may converge to a point below 5mm.
+/// Pre-fix: solver returns Infeasible (bug). Post-fix: Solved with initial values.
+#[test]
+fn warm_start_falls_back_to_initial_when_optimizer_drifts_infeasible() {
+    let solver = DimensionalSolver;
+
+    let x_id = vcid("Part", "x");
+    let x_ref = value_ref("Part", "x");
+
+    // Tight constraints: x > 5mm AND x < 6mm (only 1mm feasible window)
+    let gt_expr = gt(x_ref.clone(), literal(mm(5.0)));
+    let lt_expr = lt(x_ref.clone(), literal(mm(6.0)));
+
+    // Minimize x — pushes toward 0, trying to leave the feasible window
+    let objective = OptimizationObjective::Minimize(x_ref);
+
+    // Current value = 5.5mm — right in the feasible window
+    let mut current = ValueMap::new();
+    current.insert(
+        x_id.clone(),
+        Value::Scalar {
+            si_value: 0.0055,
+            dimension: DimensionVector::LENGTH,
+        },
+    );
+
+    let problem = ResolutionProblem {
+        auto_params: vec![AutoParam {
+            id: x_id.clone(),
+            param_type: Type::length(),
+            // Wide bounds [0, 100mm] — optimizer CAN explore below 5mm
+            bounds: Some((0.0, 0.1)),
+        }],
+        constraints: vec![
+            (cnid("Part", 0), gt_expr),
+            (cnid("Part", 1), lt_expr),
+        ],
+        current_values: current,
+        objective: Some(objective),
+        functions: vec![],
+    };
+
+    let result = solver.solve(&problem);
+    match result {
+        SolveResult::Solved { values } => {
+            let si = values.get(&x_id).unwrap().as_f64().unwrap();
+            // The result must satisfy constraints: 5mm < x < 6mm
+            assert!(
+                si > 0.005 && si < 0.006,
+                "result should satisfy constraints (5mm < x < 6mm), got {} m",
+                si
+            );
+        }
+        other => panic!(
+            "expected Solved (fallback to feasible initial), got {:?}",
+            other
+        ),
+    }
+}
+
 /// Infeasible constraints with an objective present should still be detected.
 /// Bounds [0, 10mm], constraint x > 15mm — impossible within bounds.
 /// Regression guard: the feasibility check must NOT short-circuit the
