@@ -9427,7 +9427,8 @@
             "gui/src-tauri/src/claude_bridge.rs"
           ],
           "modules": [
-            "gui/src-tauri/src"
+            "gui/src",
+            "gui/src-tauri"
           ]
         },
         "updatedAt": "2026-03-27T08:01:47.625Z"
