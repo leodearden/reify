@@ -2097,3 +2097,567 @@ mod poison_evaluate {
         assert_eq!(outcome, EvalOutcome::Changed);
     }
 }
+
+
+// --- Tests for execute_with_config: priority, commitment, overrides ---
+
+/// Test that nodes within a level are spawned in priority order.
+/// Three nodes at the same level with priorities P0Interactive, P1Slow, P3Speculative.
+/// Uses TrackingAsyncEvaluator to record evaluation order.
+/// With #[tokio::test] (current_thread runtime), spawn order == eval order for
+/// synchronous evaluators.
+#[tokio::test]
+async fn test_priority_ordering_within_level() {
+    use reify_eval::cache::{EvalOutcome, NodeId};
+    use reify_eval::deps::DependencyTrace;
+    use reify_runtime::concurrent::{
+        AsyncNodeEvaluator, CancellationToken, ConcurrentScheduler, SchedulerConfig,
+    };
+    use reify_runtime::priority_promotion::SharedPriorityPromoter;
+    use reify_runtime::Priority;
+    use reify_types::ValueCellId;
+    use std::collections::{HashMap, HashSet};
+    use std::sync::{Arc, Mutex};
+
+    // TrackingAsyncEvaluator: records NodeId on each evaluate call
+    struct TrackingAsyncEvaluator {
+        eval_order: Arc<Mutex<Vec<NodeId>>>,
+    }
+    impl AsyncNodeEvaluator for TrackingAsyncEvaluator {
+        async fn evaluate(&self, node: NodeId) -> EvalOutcome {
+            self.eval_order.lock().unwrap().push(node);
+            EvalOutcome::Changed
+        }
+    }
+
+    let e = "PRI";
+    // Use names whose hash order differs from priority order.
+    // "zz_high" (P0) should be evaluated first despite hashing differently than "aa_low" (P3).
+    let node_p0 = NodeId::Value(ValueCellId::new(e, "zz_high"));
+    let node_p1slow = NodeId::Value(ValueCellId::new(e, "mm_mid"));
+    let node_p3 = NodeId::Value(ValueCellId::new(e, "aa_low"));
+
+    // All at same level (no inter-dependencies, empty traces → dirty by default)
+    let mut traces = HashMap::new();
+    traces.insert(node_p0.clone(), DependencyTrace::default());
+    traces.insert(node_p1slow.clone(), DependencyTrace::default());
+    traces.insert(node_p3.clone(), DependencyTrace::default());
+
+    let eval_order = Arc::new(Mutex::new(Vec::new()));
+    let evaluator = Arc::new(TrackingAsyncEvaluator {
+        eval_order: Arc::clone(&eval_order),
+    });
+
+    // Set up priorities
+    let mut node_priorities = HashMap::new();
+    node_priorities.insert(node_p0.clone(), Priority::P0Interactive);
+    node_priorities.insert(node_p1slow.clone(), Priority::P1Slow);
+    node_priorities.insert(node_p3.clone(), Priority::P3Speculative);
+
+    let promoter = Arc::new(SharedPriorityPromoter::new());
+
+    let config = SchedulerConfig {
+        priority_promoter: Some(Arc::clone(&promoter)),
+        node_priorities,
+        ..SchedulerConfig::default()
+    };
+
+    let cancel = CancellationToken::new();
+    let scheduler = ConcurrentScheduler;
+    // Reverse order in eval_set to ensure sorting actually reorders
+    let eval_set = vec![node_p3.clone(), node_p1slow.clone(), node_p0.clone()];
+
+    let result = scheduler
+        .execute_with_config(eval_set, evaluator, &traces, &cancel, &HashSet::new(), config)
+        .await
+        .unwrap();
+
+    assert_eq!(result.changed.len(), 3);
+
+    // With priority sorting, spawn order should be: P0, P1Slow, P3
+    let order = eval_order.lock().unwrap();
+    assert_eq!(order.len(), 3);
+    assert_eq!(order[0], node_p0, "P0Interactive should be evaluated first");
+    assert_eq!(order[1], node_p1slow, "P1Slow should be evaluated second");
+    assert_eq!(order[2], node_p3, "P3Speculative should be evaluated last");
+}
+
+/// Test that OnlyRunOnFinalInputs nodes with intermediate inputs are skipped.
+/// Two nodes at same level: node_a (default CommitIfSlow) and node_b
+/// (OnlyRunOnFinalInputs override). has_intermediate_inputs returns true for node_b.
+/// node_b should be in result.skipped and NOT in result.changed.
+/// node_a should be in result.changed.
+#[tokio::test]
+async fn test_only_run_on_final_inputs_skipped() {
+    use reify_eval::cache::{EvalOutcome, NodeId};
+    use reify_eval::deps::DependencyTrace;
+    use reify_runtime::commitment::NodeCommitmentOverride;
+    use reify_runtime::concurrent::{
+        AsyncNodeEvaluator, CancellationToken, ConcurrentScheduler, SchedulerConfig,
+    };
+    use reify_types::ValueCellId;
+    use std::collections::{HashMap, HashSet};
+    use std::sync::Arc;
+
+    struct AllChangedAsync;
+    impl AsyncNodeEvaluator for AllChangedAsync {
+        async fn evaluate(&self, _node: NodeId) -> EvalOutcome {
+            EvalOutcome::Changed
+        }
+    }
+
+    let e = "SKIP";
+    let node_a = NodeId::Value(ValueCellId::new(e, "a"));
+    let node_b = NodeId::Value(ValueCellId::new(e, "b"));
+
+    // Both at same level, empty traces → dirty by default
+    let mut traces = HashMap::new();
+    traces.insert(node_a.clone(), DependencyTrace::default());
+    traces.insert(node_b.clone(), DependencyTrace::default());
+
+    // node_b has OnlyRunOnFinalInputs override
+    let mut node_overrides = HashMap::new();
+    node_overrides.insert(node_b.clone(), NodeCommitmentOverride::OnlyRunOnFinalInputs);
+
+    // has_intermediate_inputs returns true for node_b
+    let b_clone = node_b.clone();
+    let config = SchedulerConfig {
+        node_overrides,
+        has_intermediate_inputs: Arc::new(move |n| *n == b_clone),
+        ..SchedulerConfig::default()
+    };
+
+    let cancel = CancellationToken::new();
+    let scheduler = ConcurrentScheduler;
+    let evaluator = Arc::new(AllChangedAsync);
+    let eval_set = vec![node_a.clone(), node_b.clone()];
+
+    let result = scheduler
+        .execute_with_config(eval_set, evaluator, &traces, &cancel, &HashSet::new(), config)
+        .await
+        .unwrap();
+
+    // node_b should be in skipped (OnlyRunOnFinalInputs with intermediate inputs)
+    assert!(
+        result.skipped.contains(&node_b),
+        "node_b should be in skipped set (OnlyRunOnFinalInputs with intermediate inputs)"
+    );
+    assert!(
+        !result.changed.contains(&node_b),
+        "node_b should NOT be in changed set"
+    );
+
+    // node_a should be evaluated and in changed
+    assert!(
+        result.changed.contains(&node_a),
+        "node_a should be in changed set (default CommitIfSlow)"
+    );
+}
+
+/// Test that a committed node's result survives cancellation.
+/// Two nodes at same level. CommitmentPolicy with always_commit_after=10ms.
+/// fast_node takes <1ms and fires cancel; slow_node sleeps 50ms (accumulating
+/// elapsed > 10ms → committed). After execute_with_config:
+/// - slow_node IS in result.changed (committed, survived cancel)
+/// - fast_node NOT in result.changed (uncommitted, cancelled)
+#[tokio::test]
+async fn test_committed_node_survives_cancellation() {
+    use reify_eval::cache::{EvalOutcome, NodeId};
+    use reify_eval::deps::DependencyTrace;
+    use reify_runtime::commitment::{CommitmentPolicy, CommitmentTracker};
+    use reify_runtime::concurrent::{
+        AsyncNodeEvaluator, CancellationToken, ConcurrentScheduler, SchedulerConfig,
+    };
+    use reify_types::ValueCellId;
+    use std::collections::{HashMap, HashSet};
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    let e = "CMT";
+    let fast_node = NodeId::Value(ValueCellId::new(e, "fast"));
+    let slow_node = NodeId::Value(ValueCellId::new(e, "slow"));
+
+    // Both at same level, empty traces → dirty by default
+    let mut traces = HashMap::new();
+    traces.insert(fast_node.clone(), DependencyTrace::default());
+    traces.insert(slow_node.clone(), DependencyTrace::default());
+
+    // Evaluator: fast_node fires cancel instantly, slow_node sleeps 50ms
+    let cancel = CancellationToken::new();
+
+    struct CommitmentTestEvaluator {
+        cancel: CancellationToken,
+        fast_node: NodeId,
+    }
+    impl AsyncNodeEvaluator for CommitmentTestEvaluator {
+        async fn evaluate(&self, node: NodeId) -> EvalOutcome {
+            if node == self.fast_node {
+                // Fast node: cancel immediately
+                self.cancel.cancel();
+                EvalOutcome::Changed
+            } else {
+                // Slow node: sleep long enough to exceed always_commit_after
+                std::thread::sleep(Duration::from_millis(50));
+                EvalOutcome::Changed
+            }
+        }
+    }
+
+    let evaluator = Arc::new(CommitmentTestEvaluator {
+        cancel: cancel.clone(),
+        fast_node: fast_node.clone(),
+    });
+
+    // CommitmentPolicy: commit after 10ms (slow_node's 50ms will exceed this)
+    let policy = CommitmentPolicy {
+        always_commit_after: Duration::from_millis(10),
+        commit_when_proportion_done: 0.5,
+    };
+    let tracker = Arc::new(Mutex::new(CommitmentTracker::new(policy)));
+
+    let config = SchedulerConfig {
+        commitment_tracker: Some(Arc::clone(&tracker)),
+        ..SchedulerConfig::default()
+    };
+
+    let scheduler = ConcurrentScheduler;
+    let eval_set = vec![fast_node.clone(), slow_node.clone()];
+
+    let result = scheduler
+        .execute_with_config(eval_set, evaluator, &traces, &cancel, &HashSet::new(), config)
+        .await
+        .unwrap();
+
+    // slow_node should survive cancellation because it's committed (elapsed > 10ms)
+    assert!(
+        result.changed.contains(&slow_node),
+        "slow_node should be in changed (committed, survived cancel)"
+    );
+    // fast_node should be dropped because it's uncommitted when cancel fires
+    assert!(
+        !result.changed.contains(&fast_node),
+        "fast_node should NOT be in changed (uncommitted, cancelled)"
+    );
+}
+
+/// Test that uncommitted nodes in dirty cone are cancelled.
+/// Two nodes at same level. CommitmentPolicy with always_commit_after=5s (long).
+/// One node fires cancel during eval. Both are fast (<1ms, well below threshold).
+/// Assert neither node is in result.changed (both uncommitted when cancel fires).
+#[tokio::test]
+async fn test_uncommitted_in_dirty_cone_cancelled() {
+    use reify_eval::cache::{EvalOutcome, NodeId};
+    use reify_eval::deps::DependencyTrace;
+    use reify_runtime::commitment::{CommitmentPolicy, CommitmentTracker};
+    use reify_runtime::concurrent::{
+        AsyncNodeEvaluator, CancellationToken, ConcurrentScheduler, SchedulerConfig,
+    };
+    use reify_types::ValueCellId;
+    use std::collections::{HashMap, HashSet};
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    let e = "UNC";
+    let node_a = NodeId::Value(ValueCellId::new(e, "a"));
+    let node_b = NodeId::Value(ValueCellId::new(e, "b"));
+
+    let mut traces = HashMap::new();
+    traces.insert(node_a.clone(), DependencyTrace::default());
+    traces.insert(node_b.clone(), DependencyTrace::default());
+
+    let cancel = CancellationToken::new();
+
+    // Evaluator: node_a fires cancel, both are fast
+    struct CancellingEvaluator {
+        cancel: CancellationToken,
+        trigger_node: NodeId,
+    }
+    impl AsyncNodeEvaluator for CancellingEvaluator {
+        async fn evaluate(&self, node: NodeId) -> EvalOutcome {
+            if node == self.trigger_node {
+                self.cancel.cancel();
+            }
+            EvalOutcome::Changed
+        }
+    }
+
+    let evaluator = Arc::new(CancellingEvaluator {
+        cancel: cancel.clone(),
+        trigger_node: node_a.clone(),
+    });
+
+    // CommitmentPolicy: 5s threshold — neither node will reach this
+    let policy = CommitmentPolicy {
+        always_commit_after: Duration::from_secs(5),
+        commit_when_proportion_done: 0.99,
+    };
+    let tracker = Arc::new(Mutex::new(CommitmentTracker::new(policy)));
+
+    let config = SchedulerConfig {
+        commitment_tracker: Some(Arc::clone(&tracker)),
+        ..SchedulerConfig::default()
+    };
+
+    let scheduler = ConcurrentScheduler;
+    let eval_set = vec![node_a.clone(), node_b.clone()];
+
+    let result = scheduler
+        .execute_with_config(eval_set, evaluator, &traces, &cancel, &HashSet::new(), config)
+        .await
+        .unwrap();
+
+    // Both nodes are uncommitted (fast, below 5s threshold) and cancel is fired
+    // → both should be dropped
+    assert!(
+        !result.changed.contains(&node_a),
+        "node_a should NOT be in changed (uncommitted, cancelled)"
+    );
+    assert!(
+        !result.changed.contains(&node_b),
+        "node_b should NOT be in changed (uncommitted, cancelled)"
+    );
+}
+
+/// Test that commitment tracker and priority promoter are cleaned up after execution.
+/// Two nodes, normal execution (no cancel). After execute_with_config completes,
+/// tracker.task_count() == 0 and promoter.count() == 0.
+#[tokio::test]
+async fn test_cleanup_on_completion() {
+    use reify_eval::cache::{EvalOutcome, NodeId};
+    use reify_eval::deps::DependencyTrace;
+    use reify_runtime::commitment::{CommitmentPolicy, CommitmentTracker};
+    use reify_runtime::concurrent::{
+        AsyncNodeEvaluator, CancellationToken, ConcurrentScheduler, SchedulerConfig,
+    };
+    use reify_runtime::priority_promotion::SharedPriorityPromoter;
+    use reify_runtime::Priority;
+    use reify_types::ValueCellId;
+    use std::collections::{HashMap, HashSet};
+    use std::sync::{Arc, Mutex};
+
+    struct AllChangedAsync;
+    impl AsyncNodeEvaluator for AllChangedAsync {
+        async fn evaluate(&self, _node: NodeId) -> EvalOutcome {
+            EvalOutcome::Changed
+        }
+    }
+
+    let e = "CLN";
+    let node_a = NodeId::Value(ValueCellId::new(e, "a"));
+    let node_b = NodeId::Value(ValueCellId::new(e, "b"));
+
+    let mut traces = HashMap::new();
+    traces.insert(node_a.clone(), DependencyTrace::default());
+    traces.insert(node_b.clone(), DependencyTrace::default());
+
+    let tracker = Arc::new(Mutex::new(CommitmentTracker::new(
+        CommitmentPolicy::default(),
+    )));
+    let promoter = Arc::new(SharedPriorityPromoter::new());
+
+    let mut node_priorities = HashMap::new();
+    node_priorities.insert(node_a.clone(), Priority::P0Interactive);
+    node_priorities.insert(node_b.clone(), Priority::P1Slow);
+
+    let config = SchedulerConfig {
+        commitment_tracker: Some(Arc::clone(&tracker)),
+        priority_promoter: Some(Arc::clone(&promoter)),
+        node_priorities,
+        ..SchedulerConfig::default()
+    };
+
+    let cancel = CancellationToken::new();
+    let scheduler = ConcurrentScheduler;
+    let evaluator = Arc::new(AllChangedAsync);
+    let eval_set = vec![node_a.clone(), node_b.clone()];
+
+    let result = scheduler
+        .execute_with_config(eval_set, evaluator, &traces, &cancel, &HashSet::new(), config)
+        .await
+        .unwrap();
+
+    assert_eq!(result.changed.len(), 2);
+
+    // After execution, all nodes should be cleaned up from tracker and promoter
+    let tracker_count = tracker.lock().unwrap().task_count();
+    assert_eq!(
+        tracker_count, 0,
+        "tracker should have 0 tasks after completion, got {tracker_count}"
+    );
+    let promoter_count = promoter.count();
+    assert_eq!(
+        promoter_count, 0,
+        "promoter should have 0 nodes after completion, got {promoter_count}"
+    );
+}
+
+/// Test that commitment tracker and priority promoter are cleaned up even when a task panics.
+/// The `return Err(TaskPanicked)` at line 353 bypasses the cleanup block, so this test
+/// should FAIL until the cleanup-on-error-path fix is implemented.
+#[tokio::test]
+async fn test_cleanup_on_task_panic() {
+    use reify_eval::cache::{EvalOutcome, NodeId};
+    use reify_eval::deps::DependencyTrace;
+    use reify_runtime::commitment::{CommitmentPolicy, CommitmentTracker};
+    use reify_runtime::concurrent::{
+        AsyncNodeEvaluator, CancellationToken, ConcurrentScheduler, SchedulerConfig,
+        SchedulerError,
+    };
+    use reify_runtime::priority_promotion::SharedPriorityPromoter;
+    use reify_runtime::Priority;
+    use reify_types::ValueCellId;
+    use std::collections::{HashMap, HashSet};
+    use std::sync::{Arc, Mutex};
+
+    struct PanickingEvaluator;
+    impl AsyncNodeEvaluator for PanickingEvaluator {
+        async fn evaluate(&self, _node: NodeId) -> EvalOutcome {
+            panic!("intentional panic in evaluator");
+        }
+    }
+
+    let e = "PNC";
+    let node_a = NodeId::Value(ValueCellId::new(e, "a"));
+    let node_b = NodeId::Value(ValueCellId::new(e, "b"));
+
+    let mut traces = HashMap::new();
+    traces.insert(node_a.clone(), DependencyTrace::default());
+    traces.insert(node_b.clone(), DependencyTrace::default());
+
+    let tracker = Arc::new(Mutex::new(CommitmentTracker::new(
+        CommitmentPolicy::default(),
+    )));
+    let promoter = Arc::new(SharedPriorityPromoter::new());
+
+    let mut node_priorities = HashMap::new();
+    node_priorities.insert(node_a.clone(), Priority::P0Interactive);
+    node_priorities.insert(node_b.clone(), Priority::P1Slow);
+
+    let config = SchedulerConfig {
+        commitment_tracker: Some(Arc::clone(&tracker)),
+        priority_promoter: Some(Arc::clone(&promoter)),
+        node_priorities,
+        ..SchedulerConfig::default()
+    };
+
+    let cancel = CancellationToken::new();
+    let scheduler = ConcurrentScheduler;
+    let evaluator = Arc::new(PanickingEvaluator);
+    let eval_set = vec![node_a.clone(), node_b.clone()];
+
+    let result = scheduler
+        .execute_with_config(eval_set, evaluator, &traces, &cancel, &HashSet::new(), config)
+        .await;
+
+    // Should return TaskPanicked error
+    assert!(result.is_err(), "scheduler should return error on panic");
+    match result.unwrap_err() {
+        SchedulerError::TaskPanicked(_) => {} // expected
+        other => panic!("Expected TaskPanicked, got {:?}", other),
+    }
+
+    // After error, all nodes should still be cleaned up from tracker and promoter
+    let tracker_count = tracker.lock().unwrap().task_count();
+    assert_eq!(
+        tracker_count, 0,
+        "tracker should have 0 tasks after panic, got {tracker_count}"
+    );
+    let promoter_count = promoter.count();
+    assert_eq!(
+        promoter_count, 0,
+        "promoter should have 0 nodes after panic, got {promoter_count}"
+    );
+}
+
+/// Test that commitment tracker and priority promoter are cleaned up on task cancellation.
+///
+/// The `TaskCancelled` error path (`Err(_)` non-panic in `handle.await`) shares the same
+/// cleanup closure as `TaskPanicked` (both call `cleanup_level` before returning).
+/// Since triggering a true `JoinError::Cancelled` through `execute_with_config`'s public API
+/// requires externally aborting internally-held JoinHandles (not accessible), this test
+/// exercises the error-path cleanup through `execute_with_config` using a `PanickingEvaluator`
+/// (TaskPanicked path) with three nodes. The cleanup closure handles all dirty_nodes for the
+/// level, so verifying cleanup on the panic path also validates the cancellation path's
+/// identical cleanup behavior.
+///
+/// This test FAILS because the early `return Err(...)` bypasses the cleanup block,
+/// leaving stale entries in both structures.
+#[tokio::test]
+async fn test_cleanup_on_task_cancelled() {
+    use reify_eval::cache::{EvalOutcome, NodeId};
+    use reify_eval::deps::DependencyTrace;
+    use reify_runtime::commitment::{CommitmentPolicy, CommitmentTracker};
+    use reify_runtime::concurrent::{
+        AsyncNodeEvaluator, CancellationToken, ConcurrentScheduler, SchedulerConfig,
+        SchedulerError,
+    };
+    use reify_runtime::priority_promotion::SharedPriorityPromoter;
+    use reify_runtime::Priority;
+    use reify_types::ValueCellId;
+    use std::collections::{HashMap, HashSet};
+    use std::sync::{Arc, Mutex};
+
+    struct PanickingEvaluator;
+    impl AsyncNodeEvaluator for PanickingEvaluator {
+        async fn evaluate(&self, _node: NodeId) -> EvalOutcome {
+            panic!("intentional panic to trigger error path");
+        }
+    }
+
+    let e = "CXL";
+    let node_a = NodeId::Value(ValueCellId::new(e, "a"));
+    let node_b = NodeId::Value(ValueCellId::new(e, "b"));
+    let node_c = NodeId::Value(ValueCellId::new(e, "c"));
+
+    let mut traces = HashMap::new();
+    traces.insert(node_a.clone(), DependencyTrace::default());
+    traces.insert(node_b.clone(), DependencyTrace::default());
+    traces.insert(node_c.clone(), DependencyTrace::default());
+
+    let tracker = Arc::new(Mutex::new(CommitmentTracker::new(
+        CommitmentPolicy::default(),
+    )));
+    let promoter = Arc::new(SharedPriorityPromoter::new());
+
+    let mut node_priorities = HashMap::new();
+    node_priorities.insert(node_a.clone(), Priority::P0Interactive);
+    node_priorities.insert(node_b.clone(), Priority::P1Slow);
+    node_priorities.insert(node_c.clone(), Priority::P3Speculative);
+
+    let config = SchedulerConfig {
+        commitment_tracker: Some(Arc::clone(&tracker)),
+        priority_promoter: Some(Arc::clone(&promoter)),
+        node_priorities,
+        ..SchedulerConfig::default()
+    };
+
+    let cancel = CancellationToken::new();
+    let scheduler = ConcurrentScheduler;
+    let evaluator = Arc::new(PanickingEvaluator);
+    let eval_set = vec![node_a.clone(), node_b.clone(), node_c.clone()];
+
+    let result = scheduler
+        .execute_with_config(eval_set, evaluator, &traces, &cancel, &HashSet::new(), config)
+        .await;
+
+    // Should return an error (TaskPanicked since that's what we can trigger)
+    assert!(result.is_err(), "scheduler should return error on panic");
+    match result.unwrap_err() {
+        SchedulerError::TaskPanicked(_) => {} // expected — exercises same cleanup path as TaskCancelled
+        other => panic!("Expected TaskPanicked, got {:?}", other),
+    }
+
+    // After error, ALL three nodes should be cleaned up from tracker and promoter.
+    // This verifies cleanup_level handles the full dirty_nodes list, not just the
+    // node that caused the error — same behavior needed for TaskCancelled path.
+    let tracker_count = tracker.lock().unwrap().task_count();
+    assert_eq!(
+        tracker_count, 0,
+        "tracker should have 0 tasks after error, got {tracker_count}"
+    );
+    let promoter_count = promoter.count();
+    assert_eq!(
+        promoter_count, 0,
+        "promoter should have 0 nodes after error, got {promoter_count}"
+    );
+}
