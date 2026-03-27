@@ -66,6 +66,22 @@ assert ".gitignore contains tree-sitter-reify/src/grammar.json" \
 assert ".gitignore contains tree-sitter-reify/src/node-types.json" \
     grep -qF "tree-sitter-reify/src/node-types.json" "$ROOT/.gitignore"
 
+# ── Step 4: Generated files are NOT tracked by git ─────────────────
+# git ls-files returns empty for untracked files.
+assert_not_tracked() {
+    local f="$1"
+    [ -z "$(cd "$ROOT" && git ls-files "$f")" ]
+}
+
+assert "parser.c is not tracked by git" \
+    assert_not_tracked "tree-sitter-reify/src/parser.c"
+
+assert "grammar.json is not tracked by git" \
+    assert_not_tracked "tree-sitter-reify/src/grammar.json"
+
+assert "node-types.json is not tracked by git" \
+    assert_not_tracked "tree-sitter-reify/src/node-types.json"
+
 # ── Summary ─────────────────────────────────────────────────────────
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
