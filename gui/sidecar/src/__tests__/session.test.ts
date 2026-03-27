@@ -278,6 +278,31 @@ describe('SidecarSession', () => {
     expect((toolResults[0] as any).result).toBe('file contents');
   });
 
+  it('handleSendMessage includes current_file in constructed prompt', async () => {
+    vi.mocked(spawn).mockImplementation((() => createMockProcess([
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'OK' }] } },
+      { type: 'result', session_id: 'sess-cf' },
+    ])) as any);
+
+    await session.init();
+    outputs.length = 0;
+
+    await session.handleMessage({
+      type: 'send_message',
+      id: 'msg-cf',
+      text: 'Explain this',
+      context: { current_file: 'src/main.ri' },
+    });
+
+    // Extract the prompt (last arg after '--') from the spawn call
+    const callArgs = vi.mocked(spawn).mock.calls[0]?.[1] as string[];
+    const dashIdx = callArgs.indexOf('--');
+    const prompt = callArgs[dashIdx + 1];
+
+    expect(prompt).toContain('Current file: src/main.ri');
+    expect(prompt).toContain('[Context]');
+  });
+
   it('multiple sequential messages use session_id for resume', async () => {
     const mockSpawn = vi.mocked(spawn);
 
