@@ -5,13 +5,18 @@
 //! re-implements the pure logic (content hashing, staleness detection,
 //! output verification) to validate correctness.
 
+use std::hash::{Hash, Hasher};
 use std::path::Path;
 
 /// Duplicates the content_hash logic from build.rs for testability.
 /// Returns hex-encoded u64 hash of file contents.
-fn content_hash(_path: &Path) -> String {
-    // Stub — will be implemented in step-3
-    unimplemented!("content_hash not yet implemented")
+fn content_hash(path: &Path) -> String {
+    let bytes = std::fs::read(path).unwrap_or_else(|e| {
+        panic!("Failed to read {} for hashing: {}", path.display(), e)
+    });
+    let mut hasher = std::hash::DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
 }
 
 #[test]

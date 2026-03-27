@@ -1,3 +1,16 @@
+use std::hash::{Hash, Hasher};
+
+/// Compute a content hash of a file's bytes, returning a hex-encoded u64.
+/// Used for staleness detection — not for security.
+fn content_hash(path: &std::path::Path) -> String {
+    let bytes = std::fs::read(path).unwrap_or_else(|e| {
+        panic!("Failed to read {} for hashing: {}", path.display(), e)
+    });
+    let mut hasher = std::hash::DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
 fn run_tree_sitter_generate() {
     eprintln!("tree-sitter-reify: running tree-sitter generate...");
     let status = std::process::Command::new("tree-sitter")
