@@ -72,7 +72,10 @@ const App: Component = () => {
       });
     },
     onAbort: () => {
-      claudeAbort().catch(console.error);
+      claudeAbort().catch((err) => {
+        console.error('[claude] abort failed:', err);
+        showToast(`Abort failed: ${err instanceof Error ? err.message : String(err)}`, 'error');
+      });
     },
   });
 
