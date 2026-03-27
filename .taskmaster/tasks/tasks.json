@@ -11912,6 +11912,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 597,
+        "title": "Fix find_member_decl cross-structure name collision",
+        "description": "find_member_decl in analysis.rs:63-97 gets the span from the first matching parsed declaration and the type from the first matching compiled template, but these searches are not coordinated by structure name. If two structures share a member name (e.g., both have 'width'), the span could come from structure A while the type comes from structure B. Fix by threading the structure name through both lookups.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -11924,7 +11935,7 @@
       ],
       "created": "2026-03-27T11:53:55.691Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-27T11:53:59.495Z"
+      "updated": "2026-03-27T11:54:03.947Z"
     }
   }
 }
