@@ -3340,6 +3340,27 @@ mod tests {
         );
     }
 
+    // --- Revolve error specificity tests (task-400) ---
+
+    #[test]
+    fn revolve_nan_axis_origin_error_mentions_origin() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(1.0),
+            })
+            .unwrap();
+        let result = kernel.execute(&GeometryOp::Revolve {
+            profile: box_h.id,
+            axis_origin: [f64::NAN, 0.0, 0.0],
+            axis_dir: [0.0, 0.0, 1.0],
+            angle_rad: std::f64::consts::TAU,
+        });
+        assert_operation_fails_with(result, "axis_origin");
+    }
+
     #[test]
     fn sweep_circle_along_line_creates_pipe() {
         if !crate::OCCT_AVAILABLE {
