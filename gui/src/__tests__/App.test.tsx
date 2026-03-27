@@ -1954,3 +1954,24 @@ describe('App keyboard help overlay', () => {
     });
   });
 });
+
+describe('App Claude error handling', () => {
+  it('logs error to console when subscribeToClaudeEvents fails', async () => {
+    const subscribeError = new Error('subscribe failed');
+    vi.mocked(bridge.subscribeToClaudeEvents).mockRejectedValue(subscribeError);
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    render(() => <App />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('app-layout')).toBeTruthy();
+    });
+
+    expect(consoleSpy).toHaveBeenCalledWith(
+      '[claude] subscribeToClaudeEvents failed:',
+      subscribeError,
+    );
+
+    consoleSpy.mockRestore();
+  });
+});
