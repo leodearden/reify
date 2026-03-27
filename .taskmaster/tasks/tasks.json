@@ -10856,6 +10856,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 554,
+        "title": "Add missing test coverage for under-tested stdlib traits",
+        "description": "Five of eight traits (Flexible, Plastic, ThermallyConductive, ElectricallyConductive, Sealed) only tested for name presence. Need member, type, constraint, and conformance tests.",
+        "details": "Add per-trait tests covering: (a) required_member names and types, (b) conforming structure compiles without errors, (c) constraints injected correctly. Add missing-member negative tests for Rigid (moment_of_inertia) and ElasticallyDeformable (max_elastic_strain). Add centroid_y/z assertions to rigid_cross_module_three_level_refinement_chain.\n\nFiles: crates/reify-compiler/tests/structural_physical_tests.rs",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -10868,7 +10879,7 @@
       ],
       "created": "2026-03-27T09:00:04.578Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-27T09:00:44.728Z"
+      "updated": "2026-03-27T09:00:49.075Z"
     }
   }
 }
