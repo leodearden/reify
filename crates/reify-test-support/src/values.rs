@@ -1151,6 +1151,102 @@ mod tests {
         assert_value_approx!(Value::Real(f64::NAN), Value::Real(1.0));
     }
 
+    // Complex value tests for assert_value_approx
+    #[test]
+    fn assert_value_approx_complex_within_tolerance_pass() {
+        let a = Value::Complex {
+            re: 1.0,
+            im: 2.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let b = Value::Complex {
+            re: 1.0 + 1e-11,
+            im: 2.0 - 1e-11,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert_value_approx!(a, b, 1e-9);
+    }
+
+    #[test]
+    #[should_panic(expected = "values differ")]
+    fn assert_value_approx_complex_re_out_of_tolerance_panics() {
+        let a = Value::Complex {
+            re: 1.0,
+            im: 2.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let b = Value::Complex {
+            re: 3.0,
+            im: 2.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert_value_approx!(a, b, 1e-9);
+    }
+
+    #[test]
+    #[should_panic(expected = "values differ")]
+    fn assert_value_approx_complex_im_out_of_tolerance_panics() {
+        let a = Value::Complex {
+            re: 1.0,
+            im: 2.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let b = Value::Complex {
+            re: 1.0,
+            im: 5.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert_value_approx!(a, b, 1e-9);
+    }
+
+    #[test]
+    #[should_panic(expected = "dimension mismatch")]
+    fn assert_value_approx_complex_dimension_mismatch_panics() {
+        let a = Value::Complex {
+            re: 1.0,
+            im: 2.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let b = Value::Complex {
+            re: 1.0,
+            im: 2.0,
+            dimension: DimensionVector::LENGTH,
+        };
+        assert_value_approx!(a, b);
+    }
+
+    #[test]
+    #[should_panic(expected = "NaN detected")]
+    fn assert_value_approx_complex_nan_re_panics() {
+        let a = Value::Complex {
+            re: f64::NAN,
+            im: 2.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let b = Value::Complex {
+            re: 1.0,
+            im: 2.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert_value_approx!(a, b);
+    }
+
+    #[test]
+    #[should_panic(expected = "NaN detected")]
+    fn assert_value_approx_complex_nan_im_panics() {
+        let a = Value::Complex {
+            re: 1.0,
+            im: f64::NAN,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let b = Value::Complex {
+            re: 1.0,
+            im: 2.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert_value_approx!(a, b);
+    }
+
     #[test]
     fn common_type_aliases_has_standard_engineering_types() {
         let aliases = common_type_aliases();
