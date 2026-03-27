@@ -7155,8 +7155,11 @@
             "crates/reify-syntax/tests/edge_case_tests.rs"
           ],
           "modules": [
-            "crates/reify-syntax/src",
-            "crates/reify-syntax/tests"
+            "crates/reify-compiler",
+            "crates/reify-syntax",
+            "crates/reify-test-support",
+            "tree-sitter-reify/grammar.js",
+            "tree-sitter-reify/src"
           ]
         }
       },
