@@ -2085,3 +2085,89 @@ async fn test_only_run_on_final_inputs_skipped() {
         "node_a should be in changed set (default CommitIfSlow)"
     );
 }
+
+/// Test that a committed node's result survives cancellation.
+/// Two nodes at same level. CommitmentPolicy with always_commit_after=10ms.
+/// fast_node takes <1ms and fires cancel; slow_node sleeps 50ms (accumulating
+/// elapsed > 10ms → committed). After execute_with_config:
+/// - slow_node IS in result.changed (committed, survived cancel)
+/// - fast_node NOT in result.changed (uncommitted, cancelled)
+#[tokio::test]
+async fn test_committed_node_survives_cancellation() {
+    use reify_eval::cache::{EvalOutcome, NodeId};
+    use reify_eval::deps::DependencyTrace;
+    use reify_runtime::commitment::{CommitmentPolicy, CommitmentTracker};
+    use reify_runtime::concurrent::{
+        AsyncNodeEvaluator, CancellationToken, ConcurrentScheduler, SchedulerConfig,
+    };
+    use reify_types::ValueCellId;
+    use std::collections::{HashMap, HashSet};
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    let e = "CMT";
+    let fast_node = NodeId::Value(ValueCellId::new(e, "fast"));
+    let slow_node = NodeId::Value(ValueCellId::new(e, "slow"));
+
+    // Both at same level, empty traces → dirty by default
+    let mut traces = HashMap::new();
+    traces.insert(fast_node.clone(), DependencyTrace::default());
+    traces.insert(slow_node.clone(), DependencyTrace::default());
+
+    // Evaluator: fast_node fires cancel instantly, slow_node sleeps 50ms
+    let cancel = CancellationToken::new();
+
+    struct CommitmentTestEvaluator {
+        cancel: CancellationToken,
+        fast_node: NodeId,
+    }
+    impl AsyncNodeEvaluator for CommitmentTestEvaluator {
+        async fn evaluate(&self, node: NodeId) -> EvalOutcome {
+            if node == self.fast_node {
+                // Fast node: cancel immediately
+                self.cancel.cancel();
+                EvalOutcome::Changed
+            } else {
+                // Slow node: sleep long enough to exceed always_commit_after
+                std::thread::sleep(Duration::from_millis(50));
+                EvalOutcome::Changed
+            }
+        }
+    }
+
+    let evaluator = Arc::new(CommitmentTestEvaluator {
+        cancel: cancel.clone(),
+        fast_node: fast_node.clone(),
+    });
+
+    // CommitmentPolicy: commit after 10ms (slow_node's 50ms will exceed this)
+    let policy = CommitmentPolicy {
+        always_commit_after: Duration::from_millis(10),
+        commit_when_proportion_done: 0.5,
+    };
+    let tracker = Arc::new(Mutex::new(CommitmentTracker::new(policy)));
+
+    let config = SchedulerConfig {
+        commitment_tracker: Some(Arc::clone(&tracker)),
+        ..SchedulerConfig::default()
+    };
+
+    let scheduler = ConcurrentScheduler;
+    let eval_set = vec![fast_node.clone(), slow_node.clone()];
+
+    let result = scheduler
+        .execute_with_config(eval_set, evaluator, &traces, &cancel, &HashSet::new(), config)
+        .await
+        .unwrap();
+
+    // slow_node should survive cancellation because it's committed (elapsed > 10ms)
+    assert!(
+        result.changed.contains(&slow_node),
+        "slow_node should be in changed (committed, survived cancel)"
+    );
+    // fast_node should be dropped because it's uncommitted when cancel fires
+    assert!(
+        !result.changed.contains(&fast_node),
+        "fast_node should NOT be in changed (uncommitted, cancelled)"
+    );
+}
