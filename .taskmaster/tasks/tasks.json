@@ -10073,7 +10073,7 @@
         "description": "Three small gaps in CLI build test assertions need fixing.",
         "details": "In crates/reify-cli/tests/cli_build.rs:\n1. build_valid_bracket_exits_success lacks pre-run cleanup — add let _ = std::fs::remove_file(output_path) before the Command, matching the pattern in build_violating_bracket.\n2. build_valid_bracket only checks stdout for 'Wrote' but never asserts the output file exists on disk — add Path::exists() assertion.\n3. build_violating_bracket checks for 'VIOLATED' but does not assert the summary message 'Some constraints violated.' — add assertion.\n\nFiles: crates/reify-cli/tests/cli_build.rs\n\nmemory_hints: search \"cli_build test\" | entities: cmd_build",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -10092,7 +10092,7 @@
             ]
           }
         },
-        "updatedAt": "2026-03-27T07:57:30.527Z"
+        "updatedAt": "2026-03-27T08:02:30.922Z"
       },
       {
         "id": "511",
@@ -10435,7 +10435,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-27T08:02:18.124Z",
+      "lastModified": "2026-03-27T08:02:30.923Z",
       "taskCount": 527,
       "completedCount": 254,
       "tags": [
