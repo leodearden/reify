@@ -267,5 +267,48 @@ describe('selectionStore', () => {
       vi.advanceTimersByTime(100);
       expect(mockInvoke).not.toHaveBeenCalled();
     });
+
+    it('rapid hover changes collapse into single invoke at 100ms', () => {
+      hoverEntity('A');
+      vi.advanceTimersByTime(50);
+
+      // Second hover before the first fires — should reset the debounce
+      hoverEntity('B');
+      expect(mockInvoke).not.toHaveBeenCalled();
+
+      // 50ms after second hover — still within debounce window
+      vi.advanceTimersByTime(50);
+      expect(mockInvoke).not.toHaveBeenCalled();
+
+      // 100ms after second hover — should fire with latest value
+      vi.advanceTimersByTime(50);
+      expect(mockInvoke).toHaveBeenCalledTimes(1);
+      expect(mockInvoke).toHaveBeenCalledWith('update_selection', {
+        selectedEntity: null,
+        hoveredEntity: 'B',
+      });
+    });
+
+    it('cleanup disposes the debounce timer', () => {
+      hoverEntity('X');
+      // Timer is pending
+      expect(mockInvoke).not.toHaveBeenCalled();
+
+      // Dispose the root — onCleanup should clear the timer
+      dispose();
+
+      // Advance timers well past the debounce window
+      vi.advanceTimersByTime(200);
+      expect(mockInvoke).not.toHaveBeenCalled();
+    });
+
+    it('invoke rejection is silently caught (no unhandled promise)', () => {
+      mockInvoke.mockRejectedValue(new Error('not in Tauri'));
+
+      // Should not throw
+      expect(() => {
+        selectEntity('Bracket');
+      }).not.toThrow();
+    });
   });
 });
