@@ -8102,9 +8102,18 @@
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "memory_hints": {
-            "entities": [],
+            "entities": [
+              "UnitRegistry",
+              "compile_purpose",
+              "evaluate_const_expr",
+              "CompiledUnit",
+              "UnitEntry"
+            ],
             "queries": [
-              "resolution for: Fix correctness bugs in unit compilation (purpose threading, affine offset, silent factor default)"
+              "compile_purpose set_unit_registry threading bug",
+              "affine offset conversion factor scaling only",
+              "unwrap_or silent default factor reify compiler",
+              "task 208 unit declarations registry"
             ]
           }
         }
