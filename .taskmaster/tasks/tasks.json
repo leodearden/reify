@@ -10271,7 +10271,15 @@
         "priority": "low",
         "subtasks": [],
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "gui/src/__tests__/claudeBridge.test.ts",
+            "gui/src/__tests__/claudeIntegration.test.ts",
+            "gui/src/__tests__/App.test.tsx"
+          ],
+          "modules": [
+            "gui/src/__tests__"
+          ]
         }
       }
     ],
