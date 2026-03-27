@@ -670,9 +670,11 @@ impl ConstraintSolver for DimensionalSolver {
 
         // NOTE: Solved indicates constraint satisfaction but does NOT guarantee objective
         // optimality. The Nelder-Mead optimizer may have hit the iteration limit without
-        // full convergence. Convergence quality (e.g., TerminationReason::MaxItersReached
-        // vs actual convergence) is not propagated through SolveResult to avoid a breaking
-        // API change across 6+ crates. See design_decisions in the task plan for rationale.
+        // full convergence. Convergence quality is logged via tracing::debug! (see above)
+        // including TerminationReason, iteration budget, and whether fallback was used.
+        // This information is NOT propagated through SolveResult to avoid a breaking API
+        // change across 6+ consumer crates. Enable RUST_LOG=reify_constraints=debug to
+        // inspect convergence details at runtime.
         SolveResult::Solved { values }
     }
 }
