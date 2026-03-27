@@ -1567,18 +1567,7 @@ impl<'a> Lowering<'a> {
                         span: self.span(child),
                     });
                 }
-                _ => {
-                    if child.is_named() && !child.is_extra() {
-                        self.errors.push(ParseError {
-                            message: format!(
-                                "unexpected '{}' in connect body: {}",
-                                child.kind(),
-                                self.node_text(child)
-                            ),
-                            span: self.span(child),
-                        });
-                    }
-                }
+                _ => self.warn_unexpected_child(child, "connect body"),
             }
         }
 
