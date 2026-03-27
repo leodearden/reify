@@ -10903,7 +10903,16 @@
         "priority": "low",
         "subtasks": [],
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-runtime/src/concurrent_eval.rs",
+            "crates/reify-runtime/src/lib.rs",
+            "crates/reify-runtime/tests/concurrent_eval.rs"
+          ],
+          "modules": [
+            "crates/reify-runtime/src",
+            "crates/reify-runtime/tests"
+          ]
         }
       },
       {
@@ -10917,7 +10926,13 @@
         "priority": "low",
         "subtasks": [],
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-runtime/tests/concurrent_eval.rs"
+          ],
+          "modules": [
+            "crates/reify-runtime/tests"
+          ]
         }
       },
       {
