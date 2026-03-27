@@ -8231,7 +8231,13 @@
         "subtasks": [],
         "updatedAt": "2026-03-26T12:05:53.436Z",
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-types/src/value.rs"
+          ],
+          "modules": [
+            "crates/reify-types/src"
+          ]
         }
       },
       {
@@ -8246,7 +8252,13 @@
         "subtasks": [],
         "updatedAt": "2026-03-26T12:05:53.467Z",
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "gui/src-tauri/src/types.rs"
+          ],
+          "modules": [
+            "gui/src-tauri/src"
+          ]
         }
       },
       {
