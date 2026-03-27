@@ -698,3 +698,21 @@ fn zero_from_arithmetic_factor_rejected() {
         errors
     );
 }
+
+// ─── step-5 (task-208): compile_unit rejects non-finite offset ────────────────
+
+#[test]
+fn non_finite_offset_rejected() {
+    // Offset expression overflows: MAX + MAX → inf.
+    let src = format!("unit bad_off : Temperature = 1 offset {} + {}", f64::MAX, f64::MAX);
+    let module = parse_and_compile(&src);
+    assert!(
+        !module.units.iter().any(|u| u.name == "bad_off"),
+        "unit with non-finite offset should not be registered"
+    );
+    let errors = errors_only(&module);
+    assert!(
+        !errors.is_empty(),
+        "expected error diagnostic for non-finite offset; got none"
+    );
+}
