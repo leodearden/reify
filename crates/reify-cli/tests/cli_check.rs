@@ -30,6 +30,15 @@ fn check_valid_bracket_exits_success() {
         !stderr.contains("Unknown command"),
         "stderr should not contain 'Unknown command', got: {stderr}"
     );
+    // Channel-regression: constraint output must NOT leak to stderr
+    assert!(
+        !stderr.contains("All constraints satisfied"),
+        "stderr should not contain constraint summary, got: {stderr}"
+    );
+    assert!(
+        !stderr.contains("OK "),
+        "stderr should not contain constraint status 'OK', got: {stderr}"
+    );
 }
 
 #[test]
@@ -56,6 +65,15 @@ fn check_violating_bracket_exits_failure() {
     assert!(
         stdout.contains("Some constraints violated"),
         "stdout should contain 'Some constraints violated', got: {stdout}"
+    );
+    // Channel-regression: constraint output must NOT leak to stderr
+    assert!(
+        !stderr.contains("VIOLATED"),
+        "stderr should not contain 'VIOLATED', got: {stderr}"
+    );
+    assert!(
+        !stderr.contains("Some constraints violated"),
+        "stderr should not contain constraint summary, got: {stderr}"
     );
 }
 
