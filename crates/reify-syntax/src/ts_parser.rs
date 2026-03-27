@@ -698,6 +698,9 @@ impl<'a> Lowering<'a> {
                         predicates.push(expr);
                     }
                 }
+                // identifier (name) and type_parameters are already handled
+                // before the loop via child_by_field_name / lower_type_parameters.
+                "identifier" | "type_parameters" => {}
                 "ERROR" => {
                     self.errors.push(ParseError {
                         message: format!(
@@ -707,7 +710,7 @@ impl<'a> Lowering<'a> {
                         span: self.span(child),
                     });
                 }
-                _ => {}
+                _ => self.warn_unexpected_child(child, "constraint body"),
             }
         }
 
@@ -3564,10 +3567,12 @@ mod tests {
 
     #[test]
     fn lower_constraint_def_catch_all_emits_for_unexpected_named_children() {
-        // Pass a port_body node to lower_constraint_def. Its named children
-        // (param_declaration, port_direction_setting, etc.) include kinds that
+        // Pass a structure_definition node to lower_constraint_def. Its named
+        // children (sub_declaration, port_declaration, connect_declaration)
         // don't match constraint_def arms and should hit the catch-all.
-        let source = "structure S { port a : in T { param x: Scalar = 1  direction = out } }";
+        // We use structure_definition because it has a "name" field (required
+        // by lower_constraint_def) and body children outside constraint scope.
+        let source = "structure S { port a : in T { param x: Scalar = 1 }  sub b = T() }";
         let mut ts_parser = tree_sitter::Parser::new();
         ts_parser
             .set_language(&tree_sitter_reify::language().into())
@@ -3575,11 +3580,11 @@ mod tests {
         let tree = ts_parser.parse(source, None).expect("Failed to parse");
         let root = tree.root_node();
 
-        let port_body_node = find_node_by_kind(root, "port_body")
-            .expect("no port_body node found in parse tree");
+        let struct_node = find_node_by_kind(root, "structure_definition")
+            .expect("no structure_definition node found in parse tree");
 
         let mut lowering = Lowering::new(source);
-        lowering.lower_constraint_def(port_body_node);
+        lowering.lower_constraint_def(struct_node);
         assert!(
             !lowering.errors.is_empty(),
             "expected diagnostics for unexpected named children in constraint def catch-all, got none"
