@@ -10734,6 +10734,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 545,
+        "title": "Add race-condition test for subscribeToClaudeEvents alive guard",
+        "description": "The `App.tsx` alive guard for `subscribeToClaudeEvents` (lines 261-264) has no test coverage. When unmount fires while the subscription promise is still pending, the guard calls `unlistenClaude()` directly and returns without assigning `claudeEventUnsub`. This is a distinct code path from the happy-path cleanup test.\n\nAdd a test in the 'App async mount/cleanup race conditions' describe block that:\n1. Mocks `subscribeToClaudeEvents` with a deferred promise\n2. Renders App, then unmounts while the promise is still pending\n3. Resolves the deferred promise\n4. Asserts the returned unlisten function was called (via alive guard)\n5. Asserts no double-cleanup occurs\n\nThis mirrors the existing 'does not leak event listeners when unmounted before subscribeToEvents resolves' pattern.\n\nMemory hints:\n- Search: \"App.test.tsx race condition subscribeToEvents unmount alive guard\"\n- Entities: App.tsx, subscribeToClaudeEvents, claudeEventUnsub",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -10745,7 +10756,8 @@
         "master"
       ],
       "created": "2026-03-27T08:43:20.838Z",
-      "description": "Tasks for master context"
+      "description": "Tasks for master context",
+      "updated": "2026-03-27T08:44:29.583Z"
     }
   }
 }
