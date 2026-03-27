@@ -6593,7 +6593,8 @@
           "milestone": "stdlib-M8.4",
           "modules": [
             "crates/reify-eval/tests"
-          ]
+          ],
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         },
         "subtasks": [],
         "details": "Three .ri tests: (1) linalg — rotation matrix det=1, inverse=transpose, eigenvalues of diagonal, complex ops; (2) fields — temperature field gradient, von_mises stress, safety_factor; (3) io — part with material+tolerance, STEP/STL/Display output.",
@@ -6614,7 +6615,8 @@
           "milestone": "stdlib-stress",
           "modules": [
             "crates/reify-eval/tests"
-          ]
+          ],
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         },
         "subtasks": [],
         "details": "Degenerate booleans: coincident faces, tangent solids, union of identical shapes, difference→empty, nested ((A∪B)∩C)\\D, thin solid (1μm), union_all 20+ solids. Verify no panics, graceful errors.",
