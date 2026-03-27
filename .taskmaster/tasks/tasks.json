@@ -10418,9 +10418,18 @@
             "gui/src"
           ],
           "memory_hints": {
-            "entities": [],
+            "entities": [
+              "subscribeToClaudeEvents",
+              "ClaudeMessageContext",
+              "MessageContext",
+              "OutboundMessage",
+              "bridge.ts"
+            ],
             "queries": [
-              "resolution for: Harden Claude bridge payload mapping and type safety"
+              "Claude bridge subscribeToClaudeEvents OutboundMessage spread-cast type safety",
+              "ClaudeMessageContext vs MessageContext field alignment currentFile attachedContexts",
+              "bridge.ts swallowed errors toast feedback pattern",
+              "task 476 Claude IPC bridge review findings"
             ]
           }
         },
