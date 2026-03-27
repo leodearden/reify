@@ -26,10 +26,11 @@ const PENALTY_WEIGHT: f64 = 1e6;
 /// regions, but not so large as to cause overflow when added to other penalties.
 const UNDEF_OBJECTIVE_PENALTY: f64 = f64::MAX / 2.0;
 
-/// Reduced iteration budget when the initial point is already feasible and an
-/// objective is present. The optimizer only needs to explore the feasible region
-/// for a better objective value, not search for feasibility first.
-const FEASIBLE_OPT_ITERS: u64 = 500;
+/// Per-simplex-vertex iteration budget when the initial point is already feasible
+/// and an objective is present. Nelder-Mead uses an (N+1)-vertex simplex, so the
+/// total warm-start budget is `FEASIBLE_OPT_ITERS_PER_DIM * (n_params + 1)`,
+/// capped at MAX_ITERS. This scales naturally with problem dimensionality.
+const FEASIBLE_OPT_ITERS_PER_DIM: u64 = 500;
 
 /// Derivative-free constraint solver using Nelder-Mead optimization.
 ///
@@ -530,9 +531,13 @@ impl ConstraintSolver for DimensionalSolver {
             None
         };
 
-        // Choose iteration budget: reduced when warm-starting from feasible point
+        // Choose iteration budget: scaled by simplex size when warm-starting.
+        // Nelder-Mead needs O(N+1) evaluations per simplex sweep, so scale
+        // the budget proportionally to give higher-dimensional problems enough
+        // iterations to converge.
         let max_iters = if initially_feasible && problem.objective.is_some() {
-            FEASIBLE_OPT_ITERS
+            let n_params = problem.auto_params.len() as u64;
+            (FEASIBLE_OPT_ITERS_PER_DIM * (n_params + 1)).min(MAX_ITERS)
         } else {
             MAX_ITERS
         };
