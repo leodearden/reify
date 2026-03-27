@@ -127,6 +127,9 @@ impl AnalysisContext {
                 reify_syntax::Declaration::Structure(s) if s.name == name => {
                     return s.doc.as_deref();
                 }
+                reify_syntax::Declaration::Occurrence(o) if o.name == name => {
+                    return o.doc.as_deref();
+                }
                 reify_syntax::Declaration::Function(f) if f.name == name => {
                     return f.doc.as_deref();
                 }
