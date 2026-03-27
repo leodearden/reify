@@ -9320,7 +9320,15 @@
         "priority": "medium",
         "subtasks": [],
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "gui/src-tauri/src/mcp_context.rs",
+            "gui/src-tauri/src/main.rs",
+            "gui/src-tauri/src/claude_bridge.rs"
+          ],
+          "modules": [
+            "gui/src-tauri/src"
+          ]
         }
       },
       {
@@ -9334,7 +9342,15 @@
         "priority": "low",
         "subtasks": [],
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-lsp/src/diagnostics.rs",
+            "crates/reify-lsp/tests/incremental_eval_benchmark.rs"
+          ],
+          "modules": [
+            "crates/reify-lsp/src",
+            "crates/reify-lsp/tests"
+          ]
         }
       },
       {
