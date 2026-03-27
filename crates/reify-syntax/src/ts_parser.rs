@@ -3642,6 +3642,20 @@ mod tests {
         );
     }
 
+    #[test]
+    fn lower_source_file_extras_not_flagged() {
+        // Comments are tree-sitter extras — they must NOT trigger the catch-all
+        // diagnostic. Verify that a source file with a block comment before a
+        // valid structure produces no errors mentioning "unexpected".
+        let source = "/* comment */\nstructure S { param x: Scalar = 1 }";
+        let module = parse(source, ModulePath::single("test"));
+        assert!(
+            !module.errors.iter().any(|e| e.message.contains("unexpected")),
+            "expected no 'unexpected' errors for comment extras, got: {:?}",
+            module.errors
+        );
+    }
+
     // ── Doc comment extraction tests ─────────────────────────
 
     #[test]
