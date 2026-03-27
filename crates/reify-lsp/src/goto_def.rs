@@ -17,8 +17,33 @@ pub fn compute_goto_definition(source: &str, uri: &Url, position: Position) -> O
     let module_name = module_name_from_uri(uri);
     let parsed = reify_syntax::parse(source, ModulePath::single(module_name));
 
-    // Search for a param or let declaration with matching name
-    // (recursing into guarded groups via find_named_member_span)
+    let offset_u32 = offset as u32;
+
+    // Try to find the enclosing declaration by checking if the cursor offset
+    // falls within a declaration's span. If found, search only that declaration
+    // first for scoped resolution.
+    for decl in &parsed.declarations {
+        let (members, decl_span) = match decl {
+            reify_syntax::Declaration::Structure(s) => (&s.members, s.span),
+            reify_syntax::Declaration::Occurrence(o) => (&o.members, o.span),
+            _ => continue,
+        };
+        if offset_u32 >= decl_span.start && offset_u32 < decl_span.end {
+            // Cursor is inside this declaration — search its members only
+            if let Some((span, _doc)) = find_named_member_span(members, word) {
+                return Some(Location {
+                    uri: uri.clone(),
+                    range: span_to_range(source, span),
+                });
+            }
+            // Member not found in enclosing declaration; fall through to
+            // the all-declarations search below.
+            break;
+        }
+    }
+
+    // Fallback: search all declarations (cursor outside any declaration,
+    // or enclosing declaration didn't contain the member).
     for decl in &parsed.declarations {
         let members = match decl {
             reify_syntax::Declaration::Structure(s) => &s.members,
