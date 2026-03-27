@@ -11008,6 +11008,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 565,
+        "title": "Pre-merge cleanup: remove .task/ files and fix install guidance in tree-sitter scripts",
+        "description": "Two cleanup items for task-532 branch before merge.",
+        "details": "1. Remove .task/plan.json and .task/iterations.jsonl from task-532 branch (convention violation per no-task-on-main).\n2. Fix error message in scripts/tree-sitter-generate.sh that recommends cargo install tree-sitter-cli — project uses system package manager. Update to reflect actual install method.\n\nFiles: .task/plan.json, .task/iterations.jsonl, scripts/tree-sitter-generate.sh",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -11020,7 +11031,7 @@
       ],
       "created": "2026-03-27T09:09:24.273Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-27T09:09:28.571Z"
+      "updated": "2026-03-27T09:09:33.519Z"
     }
   }
 }
