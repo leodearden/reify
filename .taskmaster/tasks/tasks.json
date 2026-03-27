@@ -11205,6 +11205,19 @@
         ],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 579,
+        "title": "Add missing test coverage for AlwaysCancelWhenStale and OnlyRunOnFinalInputs-runs-when-final",
+        "description": "Two commitment override paths lack test coverage in `crates/reify-runtime/tests/concurrent_eval.rs`:\n\n1. **AlwaysCancelWhenStale** — fully implemented in `commitment.rs:115-117` but has no integration test. A node with this override should always be dropped when cancel fires, regardless of elapsed time. Add `test_always_cancel_when_stale_drops_result`: set a node with AlwaysCancelWhenStale override and CommitmentPolicy with always_commit_after=0ms (would normally commit), fire cancel, assert NOT in changed.\n\n2. **OnlyRunOnFinalInputs with final inputs (false branch)** — `test_only_run_on_final_inputs_skipped` only tests the true case. Add `test_only_run_on_final_inputs_runs_when_final`: give node OnlyRunOnFinalInputs override, set `has_intermediate_inputs` to `|_| false`, assert node IS in changed.\n\n**File:** `crates/reify-runtime/tests/concurrent_eval.rs`",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          477
+        ],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -11217,7 +11230,7 @@
       ],
       "created": "2026-03-27T09:55:03.636Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-27T09:55:18.944Z"
+      "updated": "2026-03-27T09:55:25.679Z"
     }
   }
 }
