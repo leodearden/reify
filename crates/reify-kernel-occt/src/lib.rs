@@ -3196,10 +3196,6 @@ mod tests {
 
     #[test]
     fn revolve_zero_angle_returns_error() {
-        if !crate::OCCT_AVAILABLE {
-            eprintln!("skipping: OCCT not available");
-            return;
-        }
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
@@ -3214,24 +3210,11 @@ mod tests {
             axis_dir: [0.0, 0.0, 1.0],
             angle_rad: 0.0,
         });
-        match result {
-            Err(GeometryError::OperationFailed(msg)) => {
-                assert!(
-                    msg.contains("zero"),
-                    "expected error message containing 'zero', got: {msg}"
-                );
-            }
-            Ok(_) => panic!("expected OperationFailed for zero angle, got Ok"),
-            Err(other) => panic!("expected OperationFailed, got {:?}", other),
-        }
+        assert_operation_fails_with(result, "zero");
     }
 
     #[test]
     fn revolve_nan_params_returns_error() {
-        if !crate::OCCT_AVAILABLE {
-            eprintln!("skipping: OCCT not available");
-            return;
-        }
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
@@ -3246,24 +3229,11 @@ mod tests {
             axis_dir: [0.0, 0.0, 1.0],
             angle_rad: f64::NAN,
         });
-        match result {
-            Err(GeometryError::OperationFailed(msg)) => {
-                assert!(
-                    msg.contains("finite"),
-                    "expected error message containing 'finite', got: {msg}"
-                );
-            }
-            Ok(_) => panic!("expected OperationFailed for NaN angle, got Ok"),
-            Err(other) => panic!("expected OperationFailed, got {:?}", other),
-        }
+        assert_operation_fails_with(result, "finite");
     }
 
     #[test]
     fn revolve_zero_axis_dir_returns_error() {
-        if !crate::OCCT_AVAILABLE {
-            eprintln!("skipping: OCCT not available");
-            return;
-        }
         let mut kernel = OcctKernel::new();
         let box_h = kernel
             .execute(&GeometryOp::Box {
@@ -3278,16 +3248,7 @@ mod tests {
             axis_dir: [0.0, 0.0, 0.0],
             angle_rad: std::f64::consts::TAU,
         });
-        match result {
-            Err(GeometryError::OperationFailed(msg)) => {
-                assert!(
-                    msg.contains("zero"),
-                    "expected error message containing 'zero', got: {msg}"
-                );
-            }
-            Ok(_) => panic!("expected OperationFailed for zero axis dir, got Ok"),
-            Err(other) => panic!("expected OperationFailed, got {:?}", other),
-        }
+        assert_operation_fails_with(result, "zero");
     }
 
     #[test]
