@@ -11802,6 +11802,19 @@
         ],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 589,
+        "title": "Solver fallback path: defer allocation, extract helper, validate objective",
+        "description": "Three related improvements to the warm-start fallback path in solver.rs:\n\n1. **Defer fallback HashMap** (perf): `initial_fallback_values` HashMap is built eagerly on every warm-start solve but only consumed on the error path. Since `initial: Vec<f64>` stays in scope, defer construction into the `if final_max_residual > FEASIBILITY_THRESHOLD` block. Zero cost on success path.\n\n2. **Extract params_to_value_map helper** (DRY): The fallback block (lines 513-532) duplicates the zip-and-collect from `build_trial_values` (lines 51-67). Extract `fn params_to_value_map(params: &[AutoParam], x: &[f64]) -> HashMap<ValueCellId, Value>` and call from both.\n\n3. **Validate objective on fallback** (correctness): The fallback path (line 602-603) bypasses post-solve objective validation at lines 619-625. If the initial point produces undefined objective (div-by-zero, missing value), fallback silently promotes to Solved. Add the same objective check before returning fallback.\n\nMemory hints: search \"solver fallback warm-start\", entity DimensionalSolver, entity build_trial_values",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          531
+        ],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -11814,7 +11827,7 @@
       ],
       "created": "2026-03-27T11:33:05.228Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-27T11:33:05.262Z"
+      "updated": "2026-03-27T11:33:13.187Z"
     }
   }
 }
