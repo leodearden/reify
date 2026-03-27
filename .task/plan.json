@@ -1,0 +1,134 @@
+{
+  "task_id": "542",
+  "title": "Extract lock helper methods and add tracing::warn on poison recovery in ConcurrentEvalAdapter",
+  "files": [
+    "Cargo.toml",
+    "crates/reify-runtime/Cargo.toml",
+    "crates/reify-runtime/src/concurrent_eval.rs",
+    "crates/reify-runtime/tests/concurrent_eval.rs"
+  ],
+  "modules": [
+    "crates/reify-runtime"
+  ],
+  "analysis": "ConcurrentEvalAdapter in concurrent_eval.rs has 15 inline `.unwrap_or_else(|e| e.into_inner())` calls for lock poisoning recovery spread across 6 methods: values(), take_results(), build_result_shared(), evaluate(), and into_result(). Nine of these follow the recurring pattern `self.<field>.<read|write|lock>().unwrap_or_else(|e| e.into_inner())` and can be extracted into 5 private helper methods: read_values(), write_values(), read_snapshot_values(), write_snapshot_values(), lock_results(). The remaining 6 are in into_result()'s Arc::try_unwrap paths where `self` is consumed, so helpers can't be used \u2014 but tracing::warn! should be added inline.\n\nThe project does not currently use `tracing` anywhere \u2014 it needs to be added as a workspace dependency and to reify-runtime's Cargo.toml. The existing CliToolContext::lock_state() pattern in reify-cli silently recovers without logging; this task adds observability via tracing::warn!.\n\nExisting test coverage is strong: 3 test modules (poison_recovery, poison_panics, poison_evaluate) with 13 tests verify all poison recovery paths using catch_unwind. These serve as regression tests for the refactoring. New tests will verify that tracing::warn! is actually emitted when poison recovery occurs, using a custom tracing::Subscriber with tracing::subscriber::with_default().\n\nImport changes needed: add `MutexGuard, RwLockReadGuard, RwLockWriteGuard` to the std::sync import for helper return types.",
+  "prerequisites": [
+    {
+      "id": "pre-1",
+      "description": "Add `tracing = \"0.1\"` to [workspace.dependencies] in root Cargo.toml",
+      "status": "done",
+      "commit": "ca3b482e",
+      "tests": []
+    },
+    {
+      "id": "pre-2",
+      "description": "Add `tracing.workspace = true` to [dependencies] in crates/reify-runtime/Cargo.toml",
+      "status": "done",
+      "commit": "ca3b482e",
+      "tests": []
+    }
+  ],
+  "steps": [
+    {
+      "id": "step-1",
+      "type": "test",
+      "description": "Write test `tracing_warn_emitted_on_poison_values_read` in poison_recovery module: uses a custom tracing::Subscriber to capture warn events, poisons values lock, calls values(), asserts at least one WARN event was captured. Test will fail because values() has no tracing::warn! yet. Also add helper fn `count_warn_events()` that builds a subscriber counting WARN-level events via AtomicUsize.",
+      "status": "done",
+      "commit": "be8a0ec6"
+    },
+    {
+      "id": "step-2",
+      "type": "impl",
+      "description": "Add 5 private helper methods to ConcurrentEvalAdapter: read_values() -> RwLockReadGuard, write_values() -> RwLockWriteGuard, read_snapshot_values() -> RwLockReadGuard, write_snapshot_values() -> RwLockWriteGuard, lock_results() -> MutexGuard. Each uses tracing::warn! in the unwrap_or_else closure. Add `use std::sync::{MutexGuard, RwLockReadGuard, RwLockWriteGuard}` to imports. Refactor values() to use self.read_values().",
+      "status": "done",
+      "commit": "f0fdf717"
+    },
+    {
+      "id": "step-3",
+      "type": "test",
+      "description": "Write tests `tracing_warn_emitted_on_poison_results_lock` and `tracing_warn_emitted_on_poison_snapshot_values_read` in poison_recovery module: poison respective locks, call take_results() and build_result_shared(), assert WARN events captured.",
+      "status": "done",
+      "commit": "b6efb4ce"
+    },
+    {
+      "id": "step-4",
+      "type": "impl",
+      "description": "Refactor take_results() to use self.lock_results(). Refactor build_result_shared() to use self.read_values(), self.read_snapshot_values(), self.lock_results() \u2014 replacing 3 inline unwrap_or_else calls.",
+      "status": "done",
+      "commit": "070130bb"
+    },
+    {
+      "id": "step-5",
+      "type": "test",
+      "description": "Write test `tracing_warn_emitted_on_poison_evaluate` in poison_evaluate module: poison values lock, call evaluate() via tokio runtime, assert WARN events captured (evaluate touches read_values, write_values, write_snapshot_values, and lock_results).",
+      "status": "done",
+      "commit": "423340fa"
+    },
+    {
+      "id": "step-6",
+      "type": "impl",
+      "description": "Refactor evaluate() to use all 4 helpers: self.read_values() for the value snapshot, self.write_values() for writing computed value, self.write_snapshot_values() for updating snapshot, self.lock_results() for pushing the result \u2014 replacing 4 inline unwrap_or_else calls.",
+      "status": "done",
+      "commit": "f1865bec"
+    },
+    {
+      "id": "step-7",
+      "type": "test",
+      "description": "Write test `tracing_warn_emitted_on_poison_into_result` in poison_panics module: poison values lock, call into_result(), assert WARN events captured from the Arc::try_unwrap closure paths.",
+      "status": "done",
+      "commit": "d027a2e6"
+    },
+    {
+      "id": "step-8",
+      "type": "impl",
+      "description": "Add tracing::warn! to all 6 unwrap_or_else closures in into_result(): 3 Ok(lock) paths (values, snapshot_values, results) and 3 Err(arc) paths. These stay inline because self is consumed by Arc::try_unwrap. Update module-level doc comment to reference helper methods instead of inline pattern.",
+      "status": "done",
+      "commit": "1076c319"
+    }
+  ],
+  "design_decisions": [
+    {
+      "decision": "Use tracing::warn! (not eprintln! or log::warn!)",
+      "rationale": "Task explicitly requires tracing::warn!. While the project currently uses eprintln! in GUI code, tracing is the idiomatic Rust structured logging framework and better suited for library crates. It's zero-cost when no subscriber is installed."
+    },
+    {
+      "decision": "Helper methods return guard types (RwLockReadGuard, etc.) not cloned data",
+      "rationale": "Returning guards preserves the existing lock-scope patterns where callers control exactly when the lock is released. Matches the task description's API signatures and the CliToolContext::lock_state() pattern."
+    },
+    {
+      "decision": "into_result() keeps inline tracing::warn! instead of using helpers",
+      "rationale": "into_result() consumes self via Arc::try_unwrap, destructuring the struct fields. The helpers take &self which is unavailable after partial move. The 6 closures in into_result() get tracing::warn! added directly."
+    },
+    {
+      "decision": "Test tracing::warn! emission using a custom tracing::Subscriber with AtomicUsize counter",
+      "rationale": "Avoids adding tracing-test or tracing-subscriber as dependencies. A minimal Subscriber implementation counting WARN events is ~15 lines and uses only the tracing crate already being added. Uses tracing::subscriber::with_default() for thread-local subscriber scoping."
+    },
+    {
+      "decision": "New tracing tests go in the integration test file alongside existing poison tests",
+      "rationale": "The existing test file already has poison_recovery, poison_panics, and poison_evaluate modules with all necessary setup infrastructure (simple_setup(), builder imports, test-utils feature gate). Adding tracing verification tests to these same modules keeps related tests together."
+    }
+  ],
+  "reuse": [
+    {
+      "what": "CliToolContext::lock_state() pattern",
+      "where": "crates/reify-cli/src/mcp_context.rs:55-59",
+      "how": "Follow the same helper-method pattern: private method that calls .read()/.write()/.lock() with unwrap_or_else recovery, but add tracing::warn! that the existing pattern lacks."
+    },
+    {
+      "what": "simple_setup() test helper",
+      "where": "crates/reify-runtime/tests/concurrent_eval.rs:21-107",
+      "how": "Reuse in all new tracing tests to create ConcurrentEvalAdapter instances for poison testing."
+    },
+    {
+      "what": "Existing poison_*() test helpers",
+      "where": "crates/reify-runtime/src/concurrent_eval.rs:202-236",
+      "how": "Use poison_values(), poison_results(), poison_snapshot_values() in new tracing verification tests \u2014 they're already gated behind cfg(any(test, feature = \"test-utils\"))."
+    },
+    {
+      "what": "catch_unwind + AssertUnwindSafe pattern",
+      "where": "crates/reify-runtime/tests/concurrent_eval.rs:1578,1865,1999",
+      "how": "Follow the same catch_unwind pattern in new tracing tests to ensure tests don't panic on poison recovery."
+    }
+  ],
+  "_session_id": "542-3d5f0ab0",
+  "_created_at": "2026-03-27T11:22:02.861935+00:00"
+}
