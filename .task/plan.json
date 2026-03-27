@@ -1,0 +1,119 @@
+{
+  "task_id": "495",
+  "title": "Solver: allow early-exit feasibility check when objective is present",
+  "files": [
+    "crates/reify-constraints/src/solver.rs",
+    "crates/reify-constraints/tests/solver_integration.rs"
+  ],
+  "modules": [
+    "crates/reify-constraints/src",
+    "crates/reify-constraints/tests"
+  ],
+  "analysis": "The DimensionalSolver at solver.rs:391-518 has an early-exit feasibility check (lines 400-423) that is guarded by `if problem.objective.is_none()`. This means optimization problems where all constraints are already satisfied at the initial point skip the early-exit and run the full 5000 Nelder-Mead iterations unnecessarily.\n\nThe fix is two-fold:\n1. Lift the feasibility check out of the `objective.is_none()` guard so it runs for ALL problems.\n2. When an objective IS present and constraints are already feasible, still run the optimizer but with reduced iterations (e.g., 500 instead of 5000) since we already have a feasible baseline \u2014 the optimizer only needs to explore the feasible region for a better objective value, not search for feasibility first.\n\nKey insight: For pure feasibility (no objective), early-exit returns immediately when feasible \u2014 this is correct and unchanged. For optimization, we can't skip the optimizer entirely (we still want to optimize the objective), but we can use a much tighter iteration budget since the feasible initial point gives us a warm start.\n\nThe implementation adds a new constant FEASIBLE_OPT_ITERS (e.g., 500) for the reduced iteration count. The feasibility check is restructured: extract initial point once, check feasibility, then branch on whether objective is present.",
+  "prerequisites": [],
+  "steps": [
+    {
+      "id": "step-1",
+      "type": "test",
+      "description": "Write integration test: optimization with already-feasible initial point should still produce a solved result (verifies correctness of the new path). Create `optimize_with_feasible_initial_point` test that sets current_values to a feasible point, adds a Minimize objective, and asserts Solved with the objective driven toward its optimum.",
+      "status": "done",
+      "commit": "61191cc4"
+    },
+    {
+      "id": "step-2",
+      "type": "impl",
+      "description": "Restructure the feasibility check in DimensionalSolver::solve to run for ALL problems (not just objective.is_none()). Extract the initial point and feasibility check before the objective branch. For objective.is_none() + feasible: return immediately (existing behavior). For objective.is_some() + feasible: proceed to optimizer but with FEASIBLE_OPT_ITERS (500) instead of MAX_ITERS (5000). Add const FEASIBLE_OPT_ITERS: u64 = 500.",
+      "status": "done",
+      "commit": "8a5ca7ac"
+    },
+    {
+      "id": "step-3",
+      "type": "test",
+      "description": "Write integration test: `maximize_with_feasible_initial_point` \u2014 sets current_values so constraints are satisfied, objective is Maximize(x), verifies solver pushes x toward the constraint boundary (not stuck at initial point). This confirms the optimizer still runs and improves the objective even with the reduced iteration budget.",
+      "status": "done",
+      "commit": "a2693639"
+    },
+    {
+      "id": "step-4",
+      "type": "impl",
+      "description": "Verify step-3 test passes with the implementation from step-2. If the reduced iteration count is insufficient for the maximize test to converge near the boundary, adjust FEASIBLE_OPT_ITERS upward (but keep it well below 5000).",
+      "status": "done",
+      "commit": "a2693639"
+    },
+    {
+      "id": "step-5",
+      "type": "test",
+      "description": "Write integration test: `infeasible_with_objective_still_detected` \u2014 constraints that cannot be satisfied (bounds too tight) with an objective present should still return Infeasible. This is a regression guard ensuring the feasibility check doesn't accidentally short-circuit the infeasibility detection path.",
+      "status": "done",
+      "commit": "bb7b26e6"
+    },
+    {
+      "id": "step-6",
+      "type": "impl",
+      "description": "Verify step-5 test passes (it should already pass since the infeasible path is unchanged \u2014 the feasibility check only triggers early-exit/reduced-iters when constraints ARE satisfied). Fix if needed.",
+      "status": "done",
+      "commit": "bb7b26e6"
+    },
+    {
+      "id": "step-7",
+      "type": "test",
+      "description": "Write unit test in solver.rs mod tests: `feasibility_check_runs_with_objective` \u2014 directly test that the restructured code path evaluates feasibility even when objective is present, by constructing a problem with a trivially-satisfied constraint and an objective, and verifying Solved is returned (not NoProgress or other error).",
+      "status": "done",
+      "commit": "cde3d63a"
+    },
+    {
+      "id": "step-8",
+      "type": "impl",
+      "description": "Run the full test suite for reify-constraints to verify no regressions. All existing tests (maximize_objective, minimize_undef_objective_returns_no_progress, etc.) must still pass. The existing maximize_objective test is particularly important as it uses an infeasible initial point with an objective.",
+      "status": "done",
+      "commit": "cde3d63a"
+    }
+  ],
+  "design_decisions": [
+    {
+      "decision": "Use reduced iteration count (FEASIBLE_OPT_ITERS = 500) instead of skipping optimizer entirely when objective is present and constraints are feasible",
+      "rationale": "We cannot skip the optimizer when an objective is present \u2014 the initial feasible point may not be optimal. However, since we already start in the feasible region, the optimizer only needs to explore locally for a better objective value, not search for feasibility. 500 iterations (10% of 5000) is sufficient for Nelder-Mead to converge in a warm-start scenario."
+    },
+    {
+      "decision": "Extract initial point computation once before the feasibility check, reuse for simplex construction",
+      "rationale": "Currently extract_initial_point is called twice when objective.is_none() \u2014 once for the feasibility check and once for simplex building (line 434). By restructuring, we compute it once and reuse, which is both cleaner and avoids redundant work."
+    },
+    {
+      "decision": "Keep the feasibility check logic (max_constraint_residual <= FEASIBILITY_THRESHOLD) unchanged",
+      "rationale": "The L1 feasibility check with FEASIBILITY_THRESHOLD=1e-12 is well-tested and correct. The only change is removing the `objective.is_none()` guard so it also runs for optimization problems."
+    },
+    {
+      "decision": "Do not change convergence tolerance (sd_tolerance) \u2014 only reduce max_iters for warm-start",
+      "rationale": "The task mentions 'tighter convergence criterion' as an option. However, sd_tolerance=1e-15 is already very tight. Reducing max_iters is simpler, more predictable, and achieves the goal of faster termination for already-feasible optimization problems."
+    }
+  ],
+  "reuse": [
+    {
+      "what": "extract_initial_point() function",
+      "where": "solver.rs:67-86",
+      "how": "Already extracts the initial point from current_values/bounds. Reuse directly \u2014 just call it once before the feasibility check instead of twice."
+    },
+    {
+      "what": "max_constraint_residual() function",
+      "where": "solver.rs:263-272",
+      "how": "Already computes L1 feasibility check. Reuse as-is for the feasibility check in the objective-present path."
+    },
+    {
+      "what": "build_trial_values() function",
+      "where": "solver.rs:49-61",
+      "how": "Already builds a ValueMap from base + trial params. Reuse for feasibility evaluation in both paths."
+    },
+    {
+      "what": "reify-test-support helpers (vcid, cnid, value_ref, literal, gt, lt, mm, binop)",
+      "where": "crates/reify-test-support/src/{builders,values}.rs",
+      "how": "Use these for constructing test problems in integration tests, matching existing test patterns."
+    },
+    {
+      "what": "Existing integration test patterns",
+      "where": "crates/reify-constraints/tests/solver_integration.rs",
+      "how": "Follow the same structure: create solver, build problem with helpers, match on SolveResult, assert numeric bounds."
+    }
+  ],
+  "_session_id": "495-e294a8c5",
+  "_created_at": "2026-03-27T07:39:32.738312+00:00"
+}

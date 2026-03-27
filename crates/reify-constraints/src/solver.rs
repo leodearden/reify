@@ -26,6 +26,11 @@ const PENALTY_WEIGHT: f64 = 1e6;
 /// regions, but not so large as to cause overflow when added to other penalties.
 const UNDEF_OBJECTIVE_PENALTY: f64 = f64::MAX / 2.0;
 
+/// Reduced iteration budget when the initial point is already feasible and an
+/// objective is present. The optimizer only needs to explore the feasible region
+/// for a better objective value, not search for feasibility first.
+const FEASIBLE_OPT_ITERS: u64 = 500;
+
 /// Derivative-free constraint solver using Nelder-Mead optimization.
 ///
 /// Solves for auto parameters by minimizing a penalty function that
@@ -476,28 +481,37 @@ impl ConstraintSolver for DimensionalSolver {
             };
         }
 
-        // Early-exit: if all constraints are already satisfied with current values,
-        // return current auto param values without running the optimizer
-        if problem.objective.is_none() {
-            let initial = extract_initial_point(problem);
-            let trial_values =
-                build_trial_values(&problem.current_values, &problem.auto_params, &initial);
-            let max_residual =
-                max_constraint_residual(&problem.constraints, &trial_values, &problem.functions);
-            if max_residual <= FEASIBILITY_THRESHOLD {
-                let mut values = HashMap::new();
-                for (param, &val) in problem.auto_params.iter().zip(initial.iter()) {
-                    values.insert(
-                        param.id.clone(),
-                        Value::Scalar {
-                            si_value: val,
-                            dimension: dimension_of(&param.param_type),
-                        },
-                    );
-                }
-                return SolveResult::Solved { values };
+        // Check feasibility at the initial point for ALL problems (not just
+        // pure feasibility). This enables early-exit for no-objective problems
+        // and a reduced iteration budget for optimization warm-starts.
+        let initial = extract_initial_point(problem);
+        let trial_values =
+            build_trial_values(&problem.current_values, &problem.auto_params, &initial);
+        let initially_feasible =
+            max_constraint_residual(&problem.constraints, &trial_values, &problem.functions)
+                <= FEASIBILITY_THRESHOLD;
+
+        // Pure feasibility (no objective) + already feasible: return immediately
+        if initially_feasible && problem.objective.is_none() {
+            let mut values = HashMap::new();
+            for (param, &val) in problem.auto_params.iter().zip(initial.iter()) {
+                values.insert(
+                    param.id.clone(),
+                    Value::Scalar {
+                        si_value: val,
+                        dimension: dimension_of(&param.param_type),
+                    },
+                );
             }
+            return SolveResult::Solved { values };
         }
+
+        // Choose iteration budget: reduced when warm-starting from feasible point
+        let max_iters = if initially_feasible && problem.objective.is_some() {
+            FEASIBLE_OPT_ITERS
+        } else {
+            MAX_ITERS
+        };
 
         let cost_fn = ConstraintCostFunction {
             auto_params: &problem.auto_params,
@@ -507,8 +521,7 @@ impl ConstraintSolver for DimensionalSolver {
             functions: &problem.functions,
         };
 
-        // Extract initial point and build simplex
-        let initial = extract_initial_point(problem);
+        // Build simplex from the already-extracted initial point
         let simplex = build_simplex(&initial, &problem.auto_params);
 
         // Configure and run Nelder-Mead
@@ -516,7 +529,8 @@ impl ConstraintSolver for DimensionalSolver {
             .with_sd_tolerance(1e-15)
             .expect("sd_tolerance 1e-15 is always valid");
 
-        let executor = Executor::new(cost_fn, solver).configure(|state| state.max_iters(MAX_ITERS));
+        let executor =
+            Executor::new(cost_fn, solver).configure(|state| state.max_iters(max_iters));
 
         let result = match executor.run() {
             Ok(res) => res,
@@ -1827,5 +1841,64 @@ mod tests {
         let initial_3d = vec![0.5, 0.5, 0.5];
         let simplex = build_simplex(&initial_3d, &params_3d);
         assert_eq!(simplex.len(), 4, "3D simplex must have N+1=4 vertices");
+    }
+
+    /// Feasibility check should run even when an objective is present.
+    /// A trivially-satisfied constraint with an objective should return Solved
+    /// (not NoProgress or other error), confirming the restructured code path
+    /// evaluates feasibility for optimization problems.
+    #[test]
+    fn feasibility_check_runs_with_objective() {
+        use crate::DimensionalSolver;
+        use reify_types::{
+            AutoParam, BinOp, CompiledExpr, ConstraintNodeId, DimensionVector,
+            OptimizationObjective, Type, Value, ValueCellId,
+        };
+
+        let solver = DimensionalSolver;
+        let x_id = ValueCellId::new("Part", "x");
+
+        // x > 1mm — trivially satisfied when x starts at 10mm
+        let x_ref = CompiledExpr::value_ref(x_id.clone(), Type::length());
+        let one_mm = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: 0.001,
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::length(),
+        );
+        let gt_expr = CompiledExpr::binop(BinOp::Gt, x_ref.clone(), one_mm, Type::Bool);
+
+        // Minimize x — with auto param bounds [5mm, 100mm], the minimum
+        // is at 5mm which is still above the 1mm constraint.
+        let objective = OptimizationObjective::Minimize(x_ref);
+
+        let mut current = ValueMap::new();
+        current.insert(
+            x_id.clone(),
+            Value::Scalar {
+                si_value: 0.010, // 10mm — already feasible
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+
+        let problem = ResolutionProblem {
+            auto_params: vec![AutoParam {
+                id: x_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.005, 0.100)), // 5mm–100mm
+            }],
+            constraints: vec![(ConstraintNodeId::new("Part", 0), gt_expr)],
+            current_values: current,
+            objective: Some(objective),
+            functions: vec![],
+        };
+
+        let result = solver.solve(&problem);
+        assert!(
+            matches!(result, SolveResult::Solved { .. }),
+            "feasible initial point with objective should return Solved, got {:?}",
+            result
+        );
     }
 }
