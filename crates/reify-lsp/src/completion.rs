@@ -565,6 +565,28 @@ mod tests {
         assert!(!keyword_labels.contains(&"structure"), "constraint expr should NOT include 'structure'");
     }
 
+    #[test]
+    fn completion_after_dot_includes_scope_members() {
+        // After a dot, member variables should still be returned (section (d)).
+        // This tests the positive case that completion_after_dot_returns_only_members misses:
+        // it only checks exclusions (no keywords, no builtins, no types) but doesn't verify
+        // that member VARIABLE items are actually present.
+        let source = "structure Foo {\n    param a: Scalar = 1mm\n    param b: Scalar = 2mm\n    let x = a.\n}";
+        // Line 3, col 14 is after "    let x = a." — after the dot
+        let items = compute_completions(source, &test_uri(), Position::new(3, 14));
+
+        let var_labels: Vec<&str> = items
+            .iter()
+            .filter(|i| i.kind == Some(CompletionItemKind::VARIABLE))
+            .map(|v| v.label.as_str())
+            .collect();
+
+        // After a dot, scope members should be available as completions
+        assert!(!var_labels.is_empty(), "after dot should include scope members, got empty list");
+        assert!(var_labels.contains(&"a"), "after dot should include member 'a'");
+        assert!(var_labels.contains(&"b"), "after dot should include member 'b'");
+    }
+
     // --- linalg builtin completions (step-11) ---
 
     #[test]
