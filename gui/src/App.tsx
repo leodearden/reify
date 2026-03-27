@@ -263,7 +263,8 @@ const App: Component = () => {
         return;
       }
       claudeEventUnsub = unlistenClaude;
-    } catch (_err) {
+    } catch (err) {
+      console.error('[claude] subscribeToClaudeEvents failed:', err);
       showToast('Claude assistant unavailable — chat features may not work', 'error');
     }
 
