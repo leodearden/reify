@@ -47,71 +47,71 @@
       "id": "step-1",
       "type": "test",
       "description": "Write failing test test_priority_ordering_within_level in tests/concurrent_eval.rs. Three nodes at same level (no inter-dependencies, empty traces \u2192 dirty by default) with priorities P0Interactive, P1Slow, P3Speculative. Use a TrackingAsyncEvaluator that pushes NodeId to an Arc<Mutex<Vec<NodeId>>> on each evaluate call. Call execute_with_config with SchedulerConfig containing priority_promoter and node_priorities. Assert the recorded order is [P0, P1Slow, P3]. Uses #[tokio::test] (current_thread) so spawn order = eval order for synchronous evaluators.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "0e832343"
     },
     {
       "id": "step-2",
       "type": "impl",
       "description": "Implement priority-based sorting in execute_with_config. After filtering dirty_nodes for a level: (1) register each node in the priority_promoter with its priority from config.node_priorities (default P3Speculative), (2) sort dirty_nodes by effective_priority from the promoter (ascending = highest priority first, since P0 < P3 in Ord). This makes step-1 test pass.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "eedd6c5d"
     },
     {
       "id": "step-3",
       "type": "test",
       "description": "Write failing test test_only_run_on_final_inputs_skipped in tests/concurrent_eval.rs. Two nodes at same level: node_a (default CommitIfSlow) and node_b (OnlyRunOnFinalInputs override). has_intermediate_inputs returns true for node_b. Both have empty traces (dirty by default). Assert node_b is in result.skipped and NOT in result.changed. Assert node_a IS in result.changed. Fails because execute_with_config has no skip logic for OnlyRunOnFinalInputs.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "f07db318"
     },
     {
       "id": "step-4",
       "type": "impl",
       "description": "Implement OnlyRunOnFinalInputs skip logic in execute_with_config. During dirty/skip pre-computation for each level, after determining a node is dirty: check if config.node_overrides[node] == OnlyRunOnFinalInputs && (config.has_intermediate_inputs)(node). If so, add to skipped instead of dirty_nodes. This makes step-3 test pass.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "5a35d5ee"
     },
     {
       "id": "step-5",
       "type": "test",
       "description": "Write failing test test_committed_node_survives_cancellation in tests/concurrent_eval.rs. Two nodes at same level. Use CommitmentPolicy with always_commit_after=10ms. Evaluator: fast_node takes <1ms and fires cancel, slow_node sleeps 50ms (accumulating elapsed > 10ms). After execute_with_config: assert slow_node IS in result.changed (committed, survived cancel), fast_node NOT in result.changed (uncommitted, cancelled). Fails because no commitment check in spawned tasks.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "42ca26f7"
     },
     {
       "id": "step-6",
       "type": "impl",
       "description": "Implement commitment-aware task handling in execute_with_config. (1) Before spawning, register each dirty node in commitment_tracker with its override from node_overrides. (2) In spawned tasks: record Instant::now() before eval, after eval compute elapsed time. If cancel.is_cancelled() and tracker is Some, lock tracker, call update_status with TaskProgress{elapsed, None, None} and has_intermediate_inputs for this node, then check should_continue(node, in_dirty_cone=true). If false, return (node, None) instead of (node, Some(outcome)). (3) In join loop, handle None (commitment-cancelled) by not adding to changed. Makes step-5 pass.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "35722643"
     },
     {
       "id": "step-7",
       "type": "test",
       "description": "Write test test_uncommitted_in_dirty_cone_cancelled in tests/concurrent_eval.rs. Two nodes at same level. CommitmentPolicy with always_commit_after=5s (long). One node fires cancel during eval. Both nodes are fast (<1ms elapsed, well below threshold). Assert neither node is in result.changed (both uncommitted when cancel fires). Should pass with step-6 implementation.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "3bd2bec1"
     },
     {
       "id": "step-8",
       "type": "test",
       "description": "Write failing test test_cleanup_on_completion in tests/concurrent_eval.rs. Two nodes, normal execution (no cancel). Pass commitment_tracker and priority_promoter via config. After execute_with_config completes, lock tracker and assert task_count() == 0. Assert promoter.count() == 0. Fails because execute_with_config doesn't remove nodes from tracker/promoter on completion.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "d4f3a87e"
     },
     {
       "id": "step-9",
       "type": "impl",
       "description": "Implement cleanup in execute_with_config. After joining all tasks in a level, iterate all processed nodes (both completed and commitment-cancelled). Remove each from commitment_tracker (remove_task) and priority_promoter (remove). Also remove skipped nodes from promoter (they were registered but never spawned). Makes step-8 pass.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "ffe2f538"
     },
     {
       "id": "step-10",
       "type": "test",
       "description": "Run full test suite (cargo test -p reify-runtime) to verify all existing tests in concurrent.rs, commitment.rs, priority_promotion.rs, and tests/concurrent_eval.rs still pass unchanged. The backward-compat execute() method should produce identical behavior to before.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "e96e5a28"
     }
   ],
   "design_decisions": [
