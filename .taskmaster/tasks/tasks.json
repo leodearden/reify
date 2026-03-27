@@ -8172,7 +8172,13 @@
               "UnitRegistry API cleanup dimension mapping DRY entry API",
               "task 208 unit declarations registry branch"
             ]
-          }
+          },
+          "files": [
+            "crates/reify-compiler/src/lib.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/src"
+          ]
         }
       },
       {
@@ -10493,7 +10499,13 @@
         "subtasks": [],
         "updatedAt": "2026-03-27T08:54:04.904Z",
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "gui/src/bridge.ts"
+          ],
+          "modules": [
+            "gui/src"
+          ]
         }
       },
       {
