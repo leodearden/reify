@@ -1,0 +1,163 @@
+{
+  "task_id": "522",
+  "title": "Harden Claude bridge payload mapping and type safety",
+  "files": [
+    "gui/src/bridge.ts",
+    "gui/src/App.tsx",
+    "gui/src/__tests__/claudeBridge.test.ts",
+    "gui/src/__tests__/App.test.tsx",
+    "gui/src/__tests__/types.typecheck.ts"
+  ],
+  "modules": [
+    "gui/src"
+  ],
+  "analysis": "Three distinct hardening issues in the Claude IPC bridge layer:\n\n1. **Spread-cast vulnerability (bridge.ts:158-166)**: `subscribeToClaudeEvents` uses `{ type: 'text_delta', ...event.payload } as OutboundMessage` for each event variant. Because JS spread applies properties in source order, a payload containing a `type` field (e.g. from a malformed sidecar message) would silently OVERRIDE the hardcoded discriminant \u2014 `{ type: 'text_delta', ...{type:'EVIL'} }` produces `{type:'EVIL'}`. The `as OutboundMessage` cast hides this from TypeScript. Fix: explicit field extraction per variant so only known fields are forwarded and the discriminant is always hardcoded. This also eliminates the minor per-event object allocation from spread on high-frequency delta events.\n\n2. **ClaudeMessageContext drift risk (bridge.ts:114-118)**: `ClaudeMessageContext` (3 fields) is an independent interface from `MessageContext` (5 fields, in claudeStore.ts). App.tsx's onSend manually picks 3 fields from MessageContext to pass to `claudeSendMessage`, silently dropping `currentFile` and `attachedContexts`. If MessageContext gains fields, the bridge type won't flag the omission. Fix: replace the standalone interface with `Pick<MessageContext, 'selectedEntity' | 'diagnostics' | 'constraints'>` to make the coupling explicit. The sidecar's SendMessage type only accepts these 3 fields, so the narrowing is correct but should be documented via Pick.\n\n3. **Swallowed errors (App.tsx:266-268, 74-76)**: The `subscribeToClaudeEvents` catch block uses `catch (_err)` discarding the error before showing a generic toast. The `claudeAbort` failure handler only calls `console.error` with no user feedback. Fix: log the error with a `[claude]` prefix for both, and show a toast for abort failures.\n\nExisting test coverage: `claudeBridge.test.ts` has 14 tests covering all 7 event types, invoke wrappers, and listener rollback. `App.test.tsx` mocks all bridge functions. `types.typecheck.ts` has compile-time assertions for IPC types. All three files will be extended.",
+  "prerequisites": [
+    {
+      "id": "pre-1",
+      "description": "Verify existing test suite passes as baseline before changes",
+      "status": "done",
+      "commit": null,
+      "tests": [
+        "gui/src/__tests__/claudeBridge.test.ts",
+        "gui/src/__tests__/App.test.tsx"
+      ]
+    }
+  ],
+  "steps": [
+    {
+      "id": "step-1",
+      "type": "test",
+      "description": "Add test 'payload type field does not override event discriminant' to claudeBridge.test.ts. Send a text_delta event where payload contains `{ type: 'EVIL', id: 'msg-1', content: 'Hello' }`. Assert handler receives `{ type: 'text_delta', id: 'msg-1', content: 'Hello' }` \u2014 the hardcoded discriminant must win. This test FAILS with the current spread implementation because `{ type: 'text_delta', ...{type:'EVIL'} }` evaluates to `{type:'EVIL'}`.",
+      "status": "done",
+      "commit": "69287c36"
+    },
+    {
+      "id": "step-2",
+      "type": "impl",
+      "description": "Replace spread-cast pattern in subscribeToClaudeEvents (bridge.ts:158-166) with explicit field extraction for all 7 event types. Keep the EventEntry array and registration loop but change each handler to extract only expected fields from `event.payload` (e.g. `const p = e.payload; handler({ type: 'text_delta', id: p.id as string, content: p.content as string })`) instead of spreading. The `as string`/`as Record<...>` casts are equivalent safety to the prior `as OutboundMessage` \u2014 we trust the Tauri contract for field shapes but construct the discriminated union ourselves. The 'claude-ready' handler remains unchanged (no payload). All existing claudeBridge.test.ts tests must continue to pass.",
+      "status": "done",
+      "commit": "f7dfcc8f"
+    },
+    {
+      "id": "step-3",
+      "type": "test",
+      "description": "Add test 'logs error to console when subscribeToClaudeEvents fails' in App.test.tsx. Mock `subscribeToClaudeEvents` to reject with `new Error('subscribe failed')`, spy on `console.error`, render App, wait for ready phase. Assert `console.error` was called with arguments matching `'[claude] subscribeToClaudeEvents failed:'` and the error. Also assert the existing toast ('Claude assistant unavailable') still appears. This FAILS because current code uses `catch (_err)` without calling console.error.",
+      "status": "done",
+      "commit": "5c69b819"
+    },
+    {
+      "id": "step-4",
+      "type": "impl",
+      "description": "In App.tsx initApp(), change the subscribeToClaudeEvents catch block (line 266-268) from `catch (_err) { showToast(...) }` to `catch (err) { console.error('[claude] subscribeToClaudeEvents failed:', err); showToast('Claude assistant unavailable \u2014 chat features may not work', 'error'); }`.",
+      "status": "done",
+      "commit": "1e48f5cd"
+    },
+    {
+      "id": "step-5",
+      "type": "test",
+      "description": "Add test 'shows toast when claudeAbort fails' in App.test.tsx. Mock `claudeAbort` to reject with `new Error('abort failed')`. Render App, wait for ready. Simulate the abort flow: capture the `subscribeToClaudeEvents` handler callback, fire a `text_delta` event to put claudeStore into 'responding' state, then find and click the AbortButton. Assert a toast containing 'abort' and the error message appears, and console.error was called. This FAILS because current `onAbort` only calls `console.error` with no toast.",
+      "status": "done",
+      "commit": "dad1d1de"
+    },
+    {
+      "id": "step-6",
+      "type": "impl",
+      "description": "In App.tsx, change the onAbort handler (line 74-76) from `claudeAbort().catch(console.error)` to `claudeAbort().catch((err) => { console.error('[claude] abort failed:', err); showToast(`Abort failed: ${err instanceof Error ? err.message : String(err)}`, 'error'); })`.",
+      "status": "done",
+      "commit": "fd575921"
+    },
+    {
+      "id": "step-7",
+      "type": "test",
+      "description": "Add compile-time type assertions to types.typecheck.ts: import ClaudeMessageContext from bridge and MessageContext from claudeStore, define `type _Expected = Pick<MessageContext, 'selectedEntity' | 'diagnostics' | 'constraints'>`, assert bidirectional assignability (`_Expected assignable to ClaudeMessageContext` and vice versa). This serves as a guard that both types stay in structural sync. Verify tsc --noEmit passes.",
+      "status": "done",
+      "commit": "7031a533"
+    },
+    {
+      "id": "step-8",
+      "type": "impl",
+      "description": "In bridge.ts, replace the standalone `ClaudeMessageContext` interface (lines 114-118) with `export type ClaudeMessageContext = Pick<MessageContext, 'selectedEntity' | 'diagnostics' | 'constraints'>`. Add `import type { MessageContext } from './stores/claudeStore'`. This makes the bridge\u2194store type coupling explicit. No circular dependency: bridge\u2192claudeStore is a type-only import; claudeStore does not import from bridge. All existing tests and the new type assertions must pass.",
+      "status": "done",
+      "commit": "cc31e4cd"
+    },
+    {
+      "id": "step-9",
+      "type": "test",
+      "description": "Fix misleading test assertion in 'shows toast when claudeAbort fails' (App.test.tsx ~line 1978). The test title promises toast verification but only asserts console.error. After the existing consoleSpy assertion (line 2009-2012), add a second waitFor block that asserts the toast DOM element: `await waitFor(() => { const toastEl = screen.getByTestId('toast'); expect(toastEl.dataset.type).toBe('error'); expect(toastEl.textContent).toContain('Abort failed: abort failed'); });`. This aligns the test with every other error-path test in the file that verifies the toast via screen.getByTestId('toast'). No impl change needed \u2014 step-6 already emits the toast; this step only fixes the incomplete test assertion.",
+      "status": "done",
+      "commit": "a755d945"
+    },
+    {
+      "id": "step-10",
+      "type": "impl",
+      "description": "Rebase task branch onto latest origin/main to resolve fast-forward merge failure. Fetch origin, rebase onto origin/main, resolve any conflicts in gui/src/App.tsx or gui/src/__tests__/App.test.tsx (the files most likely to have diverged from concurrent tasks). Run vitest on the 3 test files to verify no regressions after rebase. Force-push the rebased branch.",
+      "status": "done",
+      "commit": "e076c9fe"
+    },
+    {
+      "id": "step-11",
+      "type": "impl",
+      "description": "Retry merge after second merge_ff_failed. Main advanced again between step-10 rebase and the merge attempt. Fetch origin/main, rebase onto latest origin/main (branch is currently ff-mergeable \u2014 verified 0 commits ahead on main \u2014 but rebase again at merge time to handle any race). Run vitest on claudeBridge.test.ts and App.test.tsx from gui/ directory to confirm 95 tests pass post-rebase. Force-push rebased branch.",
+      "status": "pending",
+      "commit": null
+    }
+  ],
+  "design_decisions": [
+    {
+      "decision": "Keep the EventEntry array-based registration loop rather than switching to individual listen() calls",
+      "rationale": "The array loop provides DRY registration with built-in rollback on partial failure. Switching to 7 individual listen() calls with try/catch would duplicate the rollback logic. The explicit field extraction happens inside each handler callback, preserving the loop pattern."
+    },
+    {
+      "decision": "Use `p.id as string` field casts instead of importing individual variant types (TextDelta, ThinkingDelta, etc.)",
+      "rationale": "The payload arrives as Record<string, unknown> from Tauri's untyped event system. Either approach requires a cast at the boundary. Field-level casts (`as string`) are more granular and self-documenting than a bulk `as Omit<TextDelta, 'type'>`. The safety level is identical to the prior `as OutboundMessage` cast."
+    },
+    {
+      "decision": "Use Pick<MessageContext, ...> rather than extending ClaudeMessageContext to include currentFile and attachedContexts",
+      "rationale": "The sidecar's SendMessage.context type only accepts 3 fields (selected_entity, diagnostics, constraints). The bridge correctly narrows MessageContext to what the sidecar accepts. Pick makes this narrowing explicit and compile-checked. Extending ClaudeMessageContext to 5 fields would require mapping 2 additional fields through to Rust that the sidecar doesn't consume."
+    },
+    {
+      "decision": "Import MessageContext from claudeStore into bridge.ts (type-only)",
+      "rationale": "Creates an explicit dependency from the bridge to the store's type definition. This is the correct dependency direction: the bridge is a lower-level module that defines the wire contract, and the store defines the domain model. The bridge narrows the domain model for the wire. No circular dependency exists since claudeStore does not import from bridge."
+    },
+    {
+      "decision": "Use showToast for claudeAbort failures, matching the pattern used for claudeSendMessage failures",
+      "rationale": "claudeSendMessage failures use claudeStore.addSystemMessage (chat-visible). Abort failures use showToast (transient notification) because abort failure is a system-level issue, not a conversation event. The user needs to know the abort didn't work but shouldn't see it pollute the chat history."
+    }
+  ],
+  "reuse": [
+    {
+      "what": "Existing EventEntry array-based registration + rollback pattern",
+      "where": "gui/src/bridge.ts subscribeToClaudeEvents",
+      "how": "Keep the array loop and rollback logic, only change handler bodies from spread to explicit field extraction"
+    },
+    {
+      "what": "Existing error message formatting pattern `err instanceof Error ? err.message : String(err)`",
+      "where": "gui/src/App.tsx lines 70, 161, 171, 237, 303",
+      "how": "Reuse same pattern for claudeAbort toast message"
+    },
+    {
+      "what": "Existing claudeBridge.test.ts captured handler pattern",
+      "where": "gui/src/__tests__/claudeBridge.test.ts lines 136-153",
+      "how": "Extend with additional test case using same mockListen.mockImplementation capture pattern"
+    },
+    {
+      "what": "Existing types.typecheck.ts compile-time assertion pattern",
+      "where": "gui/src/__tests__/types.typecheck.ts",
+      "how": "Add ClaudeMessageContext \u2194 MessageContext bidirectional assignability check using same void-suppression pattern"
+    },
+    {
+      "what": "Existing App.test.tsx bridge mock pattern",
+      "where": "gui/src/__tests__/App.test.tsx lines 58-80",
+      "how": "Override specific mock implementations (subscribeToClaudeEvents, claudeAbort) to test error paths"
+    },
+    {
+      "what": "Existing App.test.tsx toast assertion pattern (screen.getByTestId('toast') + dataset.type + textContent)",
+      "where": "gui/src/__tests__/App.test.tsx (multiple error-path tests)",
+      "how": "Apply same toast DOM assertion pattern to the abort-failure test for consistency"
+    }
+  ],
+  "_session_id": "522-44ce85a2",
+  "_created_at": "2026-03-27T11:38:15.757216+00:00",
+  "_schema_version": 1
+}
