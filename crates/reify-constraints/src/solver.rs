@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use argmin::core::{CostFunction, Error as ArgminError, Executor, State};
+use argmin::core::{CostFunction, Error as ArgminError, Executor, State, TerminationReason};
 use argmin::solver::neldermead::NelderMead;
 use reify_types::{
     AutoParam, BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, ConstraintNodeId,
@@ -570,6 +570,27 @@ impl ConstraintSolver for DimensionalSolver {
             }
         };
 
+        // Extract and log convergence information from the solver result.
+        let termination_reason = result.state().get_termination_reason().cloned();
+        let has_objective = problem.objective.is_some();
+        let n_params = problem.auto_params.len();
+        tracing::debug!(
+            ?termination_reason,
+            n_params,
+            max_iters,
+            has_objective,
+            initially_feasible,
+            "solver completed"
+        );
+        if termination_reason == Some(TerminationReason::MaxItersReached) && has_objective {
+            tracing::debug!(
+                n_params,
+                max_iters,
+                "solver hit iteration limit while optimizing objective; \
+                 solution satisfies constraints but objective may be suboptimal"
+            );
+        }
+
         let best_param: Vec<f64> = match result.state().get_best_param() {
             Some(p) => p.clone(),
             None => {
@@ -600,6 +621,12 @@ impl ConstraintSolver for DimensionalSolver {
             // while chasing an objective, fall back to the initial feasible values
             // rather than reporting a false Infeasible.
             if let Some(fallback) = initial_fallback_values {
+                tracing::debug!(
+                    n_params,
+                    final_max_residual,
+                    "optimizer drifted infeasible while chasing objective; \
+                     falling back to initial feasible point"
+                );
                 return SolveResult::Solved { values: fallback };
             }
             return SolveResult::Infeasible {
