@@ -303,6 +303,32 @@ describe('SidecarSession', () => {
     expect(prompt).toContain('[Context]');
   });
 
+  it('handleSendMessage includes attached_contexts in constructed prompt', async () => {
+    vi.mocked(spawn).mockImplementation((() => createMockProcess([
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'OK' }] } },
+      { type: 'result', session_id: 'sess-ac' },
+    ])) as any);
+
+    await session.init();
+    outputs.length = 0;
+
+    await session.handleMessage({
+      type: 'send_message',
+      id: 'msg-ac',
+      text: 'Help me',
+      context: { attached_contexts: ['file: lib.ri\nfn add(a, b) = a + b', 'file: util.ri\nfn clamp(v) = max(0, v)'] },
+    });
+
+    const callArgs = vi.mocked(spawn).mock.calls[0]?.[1] as string[];
+    const dashIdx = callArgs.indexOf('--');
+    const prompt = callArgs[dashIdx + 1];
+
+    expect(prompt).toContain('[Context]');
+    expect(prompt).toContain('Attached contexts:');
+    expect(prompt).toContain('file: lib.ri\nfn add(a, b) = a + b');
+    expect(prompt).toContain('file: util.ri\nfn clamp(v) = max(0, v)');
+  });
+
   it('multiple sequential messages use session_id for resume', async () => {
     const mockSpawn = vi.mocked(spawn);
 
