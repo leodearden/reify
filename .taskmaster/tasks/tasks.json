@@ -8515,11 +8515,11 @@
         "description": "The non-guarded first pass in eval() (crates/reify-eval/src/lib.rs:981-1021) skips Param cells with default_expr: None — they are not inserted into the values map or snapshot. The guarded-group path (lib.rs:1056-1072) correctly handles this case by inserting Value::Undef with DeterminacyState::Undetermined.\n\nThe language spec (docs/reify-language-spec.md, lines 820-823) says: \"Default value optional (if absent, parameter is undef). undef means not yet decided — it is the default state of every unassigned parameter without a default value.\"\n\n**What's wrong:** After eval(), a Param without a default is absent from values/snapshot. edit_param may fail to find it. Let cells referencing it get Undef from EvalContext (correct value but no audit trail in snapshot).\n\n**Fix:** Add an else branch after the `cell.kind == ValueCellKind::Param && let Some(ref expr) = cell.default_expr` block:\n```rust\n} else if cell.kind == ValueCellKind::Param && cell.default_expr.is_none() {\n    values.insert(cell.id.clone(), Value::Undef);\n    snapshot.values.insert(cell.id.clone(), (Value::Undef, DeterminacyState::Undetermined));\n}\n```\nThis matches the guarded-group path at lines 1056-1072. Also check edit_param and resolve_concurrent_edit for the same pattern.\n\n**Memory hints:** search for \"param without default\", \"Undef Undetermined\", entity names: ValueCellKind::Param, default_expr, DeterminacyState",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-03-26T18:25:44.270Z"
+        "updatedAt": "2026-03-27T06:16:19.109Z"
       },
       {
         "id": "499",
@@ -8723,7 +8723,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-27T06:16:19.035Z",
+      "lastModified": "2026-03-27T06:16:19.109Z",
       "taskCount": 516,
       "completedCount": 253,
       "tags": [
