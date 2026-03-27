@@ -10669,7 +10669,8 @@
             "crates/reify-compiler",
             "crates/reify-eval",
             "crates/reify-expr"
-          ]
+          ],
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         }
       },
       {
