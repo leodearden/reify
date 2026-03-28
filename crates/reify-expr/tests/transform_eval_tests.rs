@@ -682,6 +682,52 @@ fn transform_mul_point_nan_component_returns_undef() {
     );
 }
 
+// ── Unnormalized quaternion in Transform*Transform tests ─────────────────────
+
+/// Transform*Transform with unnormalized q1 (w1=2) composing with transform
+/// that has translation t2=(1,0,0). The translation rotation quat_rotate(q1, t2)
+/// should use normalized q1, producing (1,0,0) not (4,0,0).
+/// Compose: (R1=2*identity,t1=(10,0,0)) * (R2=identity,t2=(1,0,0))
+///   rotation = R1*R2 = 2*identity (normalized to identity)
+///   translation = R1*t2 + t1 = normalized_rotate(1,0,0) + (10,0,0) = (11,0,0)
+/// Without q1 normalization: translation = 4*(1,0,0) + (10,0,0) = (14,0,0)
+#[test]
+fn unnormalized_q1_transform_compose_translation() {
+    let t1 = Value::Transform {
+        rotation: Box::new(Value::Orientation {
+            w: 2.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        }),
+        translation: Box::new(Value::Vector(vec![
+            Value::length(10.0),
+            Value::length(0.0),
+            Value::length(0.0),
+        ])),
+    };
+    let t2 = make_transform(identity_orientation(), 1.0, 0.0, 0.0);
+    let result = eval_mul_expr(
+        t1,
+        Type::Transform(3),
+        t2,
+        Type::Transform(3),
+        Type::Transform(3),
+    );
+    match result {
+        Value::Transform {
+            rotation,
+            translation,
+        } => {
+            // Composed rotation should be normalized identity
+            assert_orientation_approx(&rotation, 1.0, 0.0, 0.0, 0.0, "unnorm q1 rotation");
+            // Translation should be (11,0,0), not (14,0,0)
+            assert_vector_approx(&translation, 11.0, 0.0, 0.0, "unnorm q1 translation");
+        }
+        other => panic!("expected Transform, got {:?}", other),
+    }
+}
+
 // ── step-11: Transform * Transform NaN quaternion tests ──────────────────────
 
 /// Transform with NaN in one rotation component * identity should return Undef,
