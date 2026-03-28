@@ -170,70 +170,29 @@ describe('selectionStore', () => {
     });
   });
 
-  it('no invoke is dispatched on store creation (no spurious initial sync)', () => {
-    vi.useFakeTimers();
-    mockInvoke.mockResolvedValue(undefined);
-
-    let dispose!: () => void;
-    createRoot((d) => {
-      dispose = d;
-      createSelectionStore();
+  describe('initialization', () => {
+    afterEach(() => {
+      vi.useRealTimers();
+      vi.clearAllMocks();
     });
 
-    // Advance past the debounce window — if a spurious dispatch was
-    // scheduled on creation, it would fire here.
-    vi.advanceTimersByTime(100);
+    it('no invoke is dispatched on store creation (no spurious initial sync)', () => {
+      vi.useFakeTimers();
+      mockInvoke.mockResolvedValue(undefined);
 
-    expect(mockInvoke).not.toHaveBeenCalled();
+      let dispose!: () => void;
+      createRoot((d) => {
+        dispose = d;
+        createSelectionStore();
+      });
 
-    dispose();
-    vi.useRealTimers();
-    vi.clearAllMocks();
-  });
+      // Advance past the debounce window — if a spurious dispatch was
+      // scheduled on creation, it would fire here.
+      vi.advanceTimersByTime(100);
 
-  it('clearHighlights triggers only one backend sync (atomic batch update)', () => {
-    vi.useFakeTimers();
-    mockInvoke.mockResolvedValue(undefined);
-
-    let dispose!: () => void;
-    let selectEntity!: (path: string | null) => void;
-    let clearHighlights!: () => void;
-
-    createRoot((d) => {
-      dispose = d;
-      const store = createSelectionStore();
-      selectEntity = store.selectEntity;
-      clearHighlights = store.clearHighlights;
+      expect(mockInvoke).not.toHaveBeenCalled();
+      dispose();
     });
-
-    // Flush any initial effect + clear mock
-    vi.advanceTimersByTime(100);
-    mockInvoke.mockClear();
-
-    // Set up: select an entity
-    selectEntity('Bracket');
-    // This triggers an immediate invoke (selection-only change)
-    expect(mockInvoke).toHaveBeenCalledTimes(1);
-    mockInvoke.mockClear();
-
-    // Act: call clearHighlights — should batch both setState calls
-    // into a single atomic reactive update
-    clearHighlights();
-
-    // Advance past any pending debounce
-    vi.advanceTimersByTime(100);
-
-    // Assert: exactly one invoke call for the selection→null change,
-    // not two separate dispatches
-    expect(mockInvoke).toHaveBeenCalledTimes(1);
-    expect(mockInvoke).toHaveBeenCalledWith('update_selection', {
-      selectedEntity: null,
-      hoveredEntity: null,
-    });
-
-    dispose();
-    vi.useRealTimers();
-    vi.clearAllMocks();
   });
 
   describe('backend sync', () => {
@@ -241,6 +200,7 @@ describe('selectionStore', () => {
     let selectEntity!: (path: string | null) => void;
     let hoverEntity!: (path: string | null) => void;
     let clearIfRemoved!: (path: string) => void;
+    let clearHighlights!: () => void;
 
     beforeEach(() => {
       vi.useFakeTimers();
@@ -252,6 +212,7 @@ describe('selectionStore', () => {
         selectEntity = store.selectEntity;
         hoverEntity = store.hoverEntity;
         clearIfRemoved = store.clearIfRemoved;
+        clearHighlights = store.clearHighlights;
       });
 
       // No initial dispatch occurs (effect early-returns when nothing changed).
@@ -481,6 +442,29 @@ describe('selectionStore', () => {
 
       // Single debounced dispatch with both fields null
       vi.advanceTimersByTime(100);
+      expect(mockInvoke).toHaveBeenCalledTimes(1);
+      expect(mockInvoke).toHaveBeenCalledWith('update_selection', {
+        selectedEntity: null,
+        hoveredEntity: null,
+      });
+    });
+
+    it('clearHighlights dispatches exactly one backend sync for selection→null', () => {
+      // Set up: select an entity (triggers immediate invoke)
+      selectEntity('Bracket');
+      expect(mockInvoke).toHaveBeenCalledTimes(1);
+      mockInvoke.mockClear();
+
+      // Act: clearHighlights uses batch() to set selectedEntity=null and
+      // highlightedParams=[] atomically. The sync effect only tracks
+      // selectedEntity/hoveredEntity, so the invoke count is 1 regardless,
+      // but batch() prevents intermediate state from being visible to other
+      // reactive subscribers.
+      clearHighlights();
+
+      // Advance past any pending debounce
+      vi.advanceTimersByTime(100);
+
       expect(mockInvoke).toHaveBeenCalledTimes(1);
       expect(mockInvoke).toHaveBeenCalledWith('update_selection', {
         selectedEntity: null,
