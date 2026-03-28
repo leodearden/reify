@@ -4570,25 +4570,36 @@
         "updatedAt": "2026-03-26T04:43:51.852Z"
       },
       {
-        "id": 249,
+        "id": "249",
         "title": "Ad-hoc port selectors: compiler",
-        "description": "Compile ad-hoc selectors to CompiledAdHocPort { base_entity, selector_kind, args }. Selector kinds: Face, Point, Edge, Region, Body. Generate a synthetic port with a frame derived from the geometry query result. The synthetic port is created in the parent scope.",
-        "details": "",
-        "testStrategy": "Compiler tests: ad-hoc port compiled, synthetic port created.",
-        "priority": "high",
+        "description": "Compile ad-hoc selectors to CompiledAdHocPort { base_entity, selector_kind, args, memory_hints }. Selector kinds: Face, Point, Edge, Region, Body. Generate a synthetic port with a frame derived from the geometry query result. The synthetic port is created in the parent scope. Incorporate memory_hints to optimize knowledge context during execution.",
+        "status": "pending",
         "dependencies": [
           "248"
         ],
-        "status": "pending",
+        "priority": "high",
+        "details": "Integrate memory_hints into the compilation process to enhance execution efficiency and context awareness.",
+        "testStrategy": "Compiler tests: ad-hoc port compiled, synthetic port created, memory_hints integrated.",
+        "subtasks": [],
         "metadata": {
           "modules": [
             "crates/reify-compiler"
           ],
           "milestone": "M10",
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
-        },
-        "subtasks": [],
-        "updatedAt": "2026-03-24T06:01:46.000Z"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "memory_hints": {
+            "entities": [
+              "AdHocSelector",
+              "CompiledAdHocPort",
+              "reify-compiler"
+            ],
+            "queries": [
+              "ad-hoc port selector compilation synthetic port",
+              "connect statement port reference @ operator",
+              "geometry kernel face point edge query"
+            ]
+          }
+        }
       },
       {
         "id": 250,
