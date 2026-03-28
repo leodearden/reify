@@ -14132,7 +14132,15 @@
           "548"
         ],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "gui/src/__tests__/claudeBridge.test.ts"
+          ],
+          "modules": [
+            "gui/src/__tests__"
+          ]
+        }
       },
       {
         "id": 688,
@@ -14145,7 +14153,15 @@
           "530"
         ],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-constraints/src/solver.rs"
+          ],
+          "modules": [
+            "crates/reify-constraints/src"
+          ]
+        }
       },
       {
         "id": 689,
