@@ -1965,8 +1965,10 @@ mod tests {
     }
 
     /// Running the solver through TerminationReason extraction must not panic
-    /// or regress the result. A minimal 1-param feasible problem should still
-    /// return Solved or Infeasible (never NoProgress for a well-formed problem).
+    /// or regress the result. A trivially feasible 1-param problem (x > 5mm AND
+    /// x < 50mm with bounds [1mm, 100mm]) must return Solved with x in the
+    /// feasible range, verifying both the solver result variant and constraint
+    /// satisfaction.
     #[test]
     fn termination_reason_extracted_without_panic() {
         use crate::DimensionalSolver;
@@ -2014,11 +2016,26 @@ mod tests {
         };
 
         let result = solver.solve(&problem);
-        assert!(
-            matches!(result, SolveResult::Solved { .. } | SolveResult::Infeasible { .. }),
-            "well-formed 1-param problem should return Solved or Infeasible, got {:?}",
-            result
-        );
+        let SolveResult::Solved { values } = result else {
+            panic!(
+                "trivially feasible 1-param problem must return Solved, got {:?}",
+                result
+            );
+        };
+
+        // Verify constraint satisfaction: solved x must be within (5mm, 50mm).
+        let x_val = values
+            .get(&x_id)
+            .expect("solved values must contain x");
+        if let Value::Scalar { si_value, .. } = x_val {
+            assert!(
+                *si_value > 0.005 && *si_value < 0.050,
+                "solved x SI value {} must be in (0.005, 0.050)",
+                si_value
+            );
+        } else {
+            panic!("expected Scalar value for x, got {:?}", x_val);
+        }
     }
 
     #[test]
