@@ -758,6 +758,45 @@ mod tests {
     }
 
     #[test]
+    fn determine_context_expression_after_equals() {
+        // "let x = " — cursor after '=' on a let line
+        let source = "structure Foo {\n    let x = \n}";
+        let ctx = AnalysisContext::new(source, &test_uri());
+        let result = determine_context(source, Position::new(1, 12), &ctx);
+        assert!(
+            matches!(result, CursorContext::Expression { .. }),
+            "expected Expression after '=', got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn determine_context_expression_in_constraint() {
+        // "constraint thickness > 2mm" — cursor inside the expression
+        let source = reify_test_support::bracket_source();
+        let ctx = AnalysisContext::new(source, &test_uri());
+        let result = determine_context(source, Position::new(9, 27), &ctx);
+        assert!(
+            matches!(result, CursorContext::Expression { .. }),
+            "expected Expression in constraint, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn determine_context_expression_param_default() {
+        // "param x: Scalar = " — cursor after '=' in a param default
+        let source = "structure Foo {\n    param x: Scalar = \n}";
+        let ctx = AnalysisContext::new(source, &test_uri());
+        let result = determine_context(source, Position::new(1, 23), &ctx);
+        assert!(
+            matches!(result, CursorContext::Expression { .. }),
+            "expected Expression after param default '=', got {:?}",
+            result
+        );
+    }
+
+    #[test]
     fn determine_context_empty_source_is_top_level() {
         let source = "";
         let ctx = AnalysisContext::new(source, &test_uri());
