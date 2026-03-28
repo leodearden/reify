@@ -13283,6 +13283,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 664,
+        "title": "PropertyEditor: add overflow guard on QUANTITY_RE validation path",
+        "description": "The NUM_RE path has a Number.isFinite guard catching overflow (e.g. 1e999), but the QUANTITY_RE path does not. An input like '1e999mm' passes QUANTITY_RE and reaches the backend unchecked.",
+        "details": "## Problem\n\nIn `isValidValue` (PropertyEditor.tsx:99-104), the numeric path correctly uses `NUM_RE.test(trimmed) && Number.isFinite(Number(trimmed))` to catch overflow. But the quantity path uses only `QUANTITY_RE.test(trimmed)` with no overflow check, so `'1e999mm'` passes validation.\n\nThis is pre-existing behavior not introduced by task 652, but the inconsistency was surfaced during review.\n\n## Fix\n\nAdd an overflow guard before returning on the QUANTITY_RE path:\n```typescript\nif (QUANTITY_RE.test(trimmed)) {\n  const numPart = trimmed.replace(/(mm|cm|deg|rad|m)$/, '');\n  return Number.isFinite(Number(numPart));\n}\nreturn false;\n```\n\nOr, if backend rejection is the intended design choice, document it with a comment.\n\n## Files\n- `gui/src/panels/PropertyEditor.tsx`\n- `gui/src/__tests__/PropertyEditor.test.tsx` — add test for '1e999mm'\n\n## Notes\nSource: review suggestion 11 from task 652 review.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -13295,7 +13306,7 @@
       ],
       "created": "2026-03-28T04:28:13.784Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-28T04:28:24.651Z"
+      "updated": "2026-03-28T04:28:31.837Z"
     }
   }
 }
