@@ -757,16 +757,7 @@ fn determinacy_predicate_hash_differs_from_option_none() {
     let cell_id = ValueCellId::new("S", "a");
     let kind = DeterminacyPredicateKind::Determined;
 
-    let det_expr = CompiledExpr {
-        kind: CompiledExprKind::DeterminacyPredicate {
-            kind,
-            cell: cell_id.clone(),
-        },
-        result_type: Type::Bool,
-        content_hash: ContentHash::of(&[17])
-            .combine(ContentHash::of_str(&format!("{:?}", kind)))
-            .combine(ContentHash::of_str(&format!("{}", cell_id))),
-    };
+    let det_expr = CompiledExpr::determinacy_predicate(kind, cell_id.clone());
 
     // OptionNone uses discriminator byte [15].
     let option_none_expr = CompiledExpr::option_none(Type::Option(Box::new(Type::Bool)));

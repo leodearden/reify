@@ -259,6 +259,13 @@ fn cmd_lsp() -> ExitCode {
 /// Returns `true` if all constraints are satisfied, `false` otherwise.
 /// Each entry is printed as `  {STATUS} {label}` where label falls back to the
 /// constraint id's Display representation when `entry.label` is `None`.
+///
+/// **Indeterminate constraints are intentionally treated as non-violating.**
+/// `Indeterminate` arises when a constraint's inputs are undefined — typically
+/// from `auto` parameters not yet resolved by the solver. Treating these as
+/// violations would block builds that are otherwise valid and break the
+/// incremental evaluation engine. Only explicit `Violated` results cause
+/// `all_satisfied` to be `false`.
 fn report_constraint_results(
     results: &[reify_eval::ConstraintCheckEntry],
     out: &mut impl std::io::Write,
@@ -271,6 +278,9 @@ fn report_constraint_results(
                 all_satisfied = false;
                 "VIOLATED"
             }
+            // Indeterminate does not set all_satisfied=false — undef inputs
+            // (auto params, partial evaluation) are not violations.
+            // Undef propagates as quiet-NaN semantics.
             Satisfaction::Indeterminate => "INDETERMINATE",
         };
         let id_str = format!("{}", entry.id);

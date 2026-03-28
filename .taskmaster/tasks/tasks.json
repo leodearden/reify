@@ -5262,7 +5262,22 @@
             "crates/reify-expr"
           ],
           "milestone": "M11",
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "memory_hints": {
+            "entities": [
+              "Field",
+              "Point3",
+              "Vector3",
+              "Scalar",
+              "numerical gradient",
+              "central differences"
+            ],
+            "queries": [
+              "field gradient numerical central differences implementation",
+              "Point Vector types M10 milestone reify",
+              "reify-stdlib field operations analytical gradient"
+            ]
+          }
         },
         "subtasks": [],
         "updatedAt": "2026-03-28T00:32:42.431Z"
@@ -8629,11 +8644,11 @@
         "description": "Make find_parsed_member_span in analysis.rs recurse into GuardedGroupDecl.members and else_members so params/lets inside where-guarded blocks are visible to hover and goto-def. Also affects goto_def.rs which has the same flat traversal. (Review followup from task 216)",
         "details": "<info added on 2026-03-27T14:46:16.277Z>\nRECONCILIATION NOTE (2026-03-27): Memory records this task was unblocked and merged to main, with the member_names() fix folded into the merge commit. However, status was reverted from done→in-progress→pending via buffered events around 12:01-12:07 UTC. Current status (pending) may be stale if the code is actually merged. Human should verify: (1) check git log for the merge commit, (2) if merged, set status to done; if not, leave as pending.\n</info added on 2026-03-27T14:46:16.277Z>",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-28T01:09:48.939Z",
+        "updatedAt": "2026-03-28T01:23:31.848Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -9608,7 +9623,7 @@
         "description": "**Problem:** `compute_completions` in `crates/reify-lsp/src/completion.rs` ignores the cursor `Position` parameter (named `_position`). It returns a flat merged list of all keywords + builtins + types + member names + structure names regardless of cursor location.\n\n**What this task does:** Implement position-aware context detection in `compute_completions` so it returns contextually appropriate completions. This makes the failing tests from task #481 pass.\n\n**Done when:**\n- All tests from task #481 pass\n- All pre-existing completion tests still pass\n- `compute_completions` uses the `position` parameter to determine cursor context\n- At minimum, these contexts are distinguished: top-level, structure-body, expression, type-position\n- `cargo test -p reify-lsp` passes with zero failures",
         "details": "## Implementation guidance\n\n### Core change: cursor context detection\n\nAdd a `CursorContext` enum and a `determine_context` function:\n\n```rust\n/// The syntactic context the cursor is in, used to narrow completions.\nenum CursorContext {\n    /// Outside any structure/fn/trait — top-level declarations\n    TopLevel,\n    /// Inside a structure body at statement level (beginning of a new member)\n    StructureBody { structure_idx: usize },\n    /// Inside an expression (after `=`, inside a constraint, function arg, etc.)\n    Expression { structure_idx: Option<usize> },\n    /// After a dot — member access completion\n    DotAccess { object_word: String, structure_idx: Option<usize> },\n    /// In a type annotation position (after `:` in param/let)\n    TypePosition,\n}\n```\n\n### How to determine context\n\nUse `position_to_offset` (from `crate::convert`) to get the byte offset, then examine the source text around the cursor:\n\n1. **Parse the module** to get structure spans. Check if `offset` falls within any `StructureDef.span`.\n\n2. **Look at the character just before the cursor:**\n   - If it's `.` → `DotAccess`. Scan backward from the dot to find the object word.\n   - If it's `:` (with optional whitespace) and we're inside a param/let declaration → `TypePosition`.\n\n3. **If inside a structure span:** Look at the current line's prefix before the cursor.\n   - If the line (trimmed) starts with a keyword like `let x =` or `constraint` and cursor is past the `=` or past the keyword → `Expression`.\n   - If the line is blank or only has indent → `StructureBody`.\n   - Otherwise heuristic: if we're after `=` on the line → `Expression`; else → `StructureBody`.\n\n4. **If outside all structure spans** → `TopLevel`.\n\n### Completion narrowing per context\n\n```\nTopLevel:\n  - Keywords: structure, import, fn, trait, enum, occurrence, purpose\n  - Structure names (as references)\n  - Type names\n\nStructureBody:\n  - Keywords: param, let, constraint, sub, minimize, maximize, port, connect, where, auto, if\n  - Member names from this structure\n  - Structure names (for sub declarations)\n  - Builtin functions (for expressions that follow)\n\nExpression:\n  - Member names (identifiers in scope)\n  - Builtin functions\n  - Structure names\n  - Expression keywords: if, then, else, and, or, not, true, false\n  - Type names (for constructor calls)\n\nDotAccess:\n  - Member names only (ideally of the referenced structure, but even just all members is an improvement over everything)\n\nTypePosition:\n  - Type names: Scalar, Bool, Int, Real, String\n  - Structure names (as types)\n  - Trait names\n```\n\n### Key functions to use\n\n- `crate::convert::position_to_offset(source, position)` — converts LSP Position to byte offset\n- `crate::convert::find_word_at_offset(source, offset)` — finds the word at a byte offset\n- `AnalysisContext::new(source, uri)` — already used, provides parsed + compiled state\n- `AnalysisContext.structure_names()` — returns `(name, params, lets, constraints)`\n- `AnalysisContext.member_names()` — returns `(name, kind, type)`\n- The `ParsedModule` has `declarations` with `StructureDef.span` for structure boundaries\n\n### Structure span containment check\n\nEach `StructureDef` has a `span: SourceSpan` with `start` and `end` byte offsets. To check if cursor is inside:\n```rust\nlet offset = position_to_offset(source, position) as u32;\nfor (idx, decl) in ctx.parsed.declarations.iter().enumerate() {\n    if let Declaration::Structure(s) = decl {\n        if offset > s.span.start && offset < s.span.end {\n            // Cursor is inside this structure body\n        }\n    }\n}\n```\n\n### Detecting dot-access\n\nLook at the character immediately before the cursor offset:\n```rust\nlet offset = position_to_offset(source, position);\nif offset > 0 {\n    let before = source.as_bytes()[offset - 1];\n    if before == b'.' {\n        // This is a dot-access context\n        // Scan backward from offset-2 to find the object name\n    }\n}\n```\n\nAlso handle trailing whitespace after dot (cursor may be a space or two past the dot).\n\n### Detecting type position\n\nScan backward from cursor on the current line. If we find `: ` (colon + optional whitespace) without an intervening `=`, we're in type position:\n```rust\nlet line_start = source[..offset].rfind('\\n').map(|i| i + 1).unwrap_or(0);\nlet line_prefix = &source[line_start..offset];\n// Check if line_prefix matches pattern like \"    param x: \" or \"    let y: \"\n```\n\n### Refactoring compute_completions\n\nThe current function body should be restructured:\n1. Build `AnalysisContext` (already done)\n2. Determine `CursorContext`\n3. Match on context and push only relevant items\n\n### Keyword partitioning\n\nSplit the current `KEYWORDS` array into:\n```rust\nconst TOP_LEVEL_KEYWORDS: &[&str] = &[\"structure\", \"import\", \"fn\", \"trait\", \"enum\", \"occurrence\", \"purpose\"];\nconst BODY_KEYWORDS: &[&str] = &[\"param\", \"let\", \"constraint\", \"sub\", \"minimize\", \"maximize\", \"port\", \"connect\", \"where\", \"auto\"];\nconst EXPR_KEYWORDS: &[&str] = &[\"if\", \"then\", \"else\", \"and\", \"or\", \"not\", \"true\", \"false\"];\n```\n\n### Edge cases\n- Empty source → TopLevel (already handled)\n- Cursor past end of source → TopLevel\n- Malformed/partial source (mid-edit) → fall back to StructureBody if inside structure span, else TopLevel\n- Multiple structures → use the one whose span contains the cursor\n\n### Files to modify\n- `crates/reify-lsp/src/completion.rs` — main implementation\n- Possibly `crates/reify-lsp/src/analysis.rs` — if new helper methods are needed on `AnalysisContext`\n\n### Testing\n- Run `cargo test -p reify-lsp` — all tests including the new ones from task #481 must pass\n- Verify existing integration test `did_open_and_completion_returns_items` in `tests/in_process_bridge.rs` still passes\n\n## memory_hints\n- search: \"LSP completion implementation reify\"\n- search: \"AnalysisContext structure spans\"\n- search: \"position_to_offset convert\"\n- entity: \"reify-lsp\"\n- entity: \"AnalysisContext\"\n- entity: \"compute_completions\"",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "481"
         ],
@@ -9621,9 +9636,23 @@
           ],
           "modules": [
             "crates/reify-lsp/src"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "AnalysisContext",
+              "compute_completions",
+              "CursorContext",
+              "reify-lsp",
+              "position_to_offset"
+            ],
+            "queries": [
+              "LSP completion implementation reify position-aware",
+              "AnalysisContext structure spans member names",
+              "cursor context detection completion narrowing"
+            ]
+          }
         },
-        "updatedAt": "2026-03-27T23:31:52.689Z"
+        "updatedAt": "2026-03-28T01:23:37.232Z"
       },
       {
         "id": "483",
@@ -10240,7 +10269,7 @@
         "description": "Builds with Indeterminate constraints succeed silently — this design choice has no test or documentation.",
         "details": "In crates/reify-cli/src/main.rs, the Indeterminate arm in the constraint-status match does not set all_satisfied=false, meaning builds with indeterminate constraints succeed. Add a test in cli_build.rs with a fixture that produces Indeterminate satisfaction, and add a doc-comment in main.rs explaining the rationale (indeterminate != violated).\n\nFiles: crates/reify-cli/src/main.rs, crates/reify-cli/tests/cli_build.rs\n\nmemory_hints: search \"Indeterminate Satisfaction constraint\" | entities: cmd_build, Satisfaction",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -10254,9 +10283,22 @@
           "modules": [
             "crates/reify-cli/src",
             "crates/reify-cli/tests"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "cmd_build",
+              "Satisfaction",
+              "Indeterminate",
+              "constraint-status"
+            ],
+            "queries": [
+              "Indeterminate Satisfaction constraint behavior",
+              "constraint status match build succeed silently",
+              "reify-cli build constraint satisfaction rationale"
+            ]
+          }
         },
-        "updatedAt": "2026-03-28T01:09:50.087Z"
+        "updatedAt": "2026-03-28T01:32:33.748Z"
       },
       {
         "id": "512",
@@ -10358,7 +10400,7 @@
         "description": "Follow-up from task 493 review suggestions. Four areas to address in crates/reify-cli:\n\n1. **Output channel inconsistency** (main.rs): cmd_check prints constraint summary to stdout (println!), cmd_build prints to stderr (eprintln!). Resolve asymmetry — either both stdout or both stderr for constraint output.\n\n2. **Code duplication** (main.rs): constraint-reporting loop in cmd_build (lines ~162-175) is a near-exact copy of cmd_check (lines ~89-102). Extract a helper like `fn report_constraint_results(results: &[ConstraintEntry], use_stderr: bool) -> bool` or separate the printing from the all_satisfied check.\n\n3. **Hardcoded /tmp test paths** (tests/cli_build.rs): All tests use fixed /tmp/reify_test_*.step paths. Use tempfile crate or PID-based unique paths to avoid cross-run races. Add pre-cleanup to all tests that write files (currently inconsistent).\n\n4. **Indeterminate satisfaction behavior** (main.rs): Satisfaction::Indeterminate is treated as success in both cmd_build and cmd_check. Add a test documenting this behavior and consider whether CI should fail-open on indeterminate constraints.\n\nMemory hints: search \"CLI constraint reporting\", entity names: cmd_build, cmd_check, Satisfaction",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -10372,7 +10414,8 @@
             "crates/reify-cli/src",
             "crates/reify-cli/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-03-28T01:32:35.959Z"
       },
       {
         "id": "517",
@@ -10407,7 +10450,7 @@
         "description": "In `gui/src/bridge.ts`, `ClaudeMessageContext` duplicates 3 of 5 fields from `MessageContext` (in `claudeStore.ts`), silently dropping `currentFile` and `attachedContexts` at the bridge boundary. `App.tsx` `onSend` receives the full `MessageContext` but only forwards 3 fields to `claudeSendMessage`.\n\n**Fix**: Either:\n1. Import `MessageContext` from `./stores/claudeStore` and use `Pick<MessageContext, 'selectedEntity' | 'diagnostics' | 'constraints'>` with a comment explaining why `currentFile` and `attachedContexts` are intentionally excluded, OR\n2. Extend `ClaudeMessageContext` to include all 5 fields and handle the snake_case mapping for `current_file` and `attached_contexts`.\n\nOption depends on whether the Rust sidecar accepts those extra fields.\n\nMemory hints:\n- Search: \"ClaudeMessageContext MessageContext bridge context fields\"\n- Entities: ClaudeMessageContext, MessageContext, bridge.ts, claudeSendMessage",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -10421,7 +10464,7 @@
             "gui/src"
           ]
         },
-        "updatedAt": "2026-03-28T01:19:19.375Z"
+        "updatedAt": "2026-03-28T01:23:36.864Z"
       },
       {
         "id": "519",
@@ -10640,7 +10683,7 @@
         "description": "Several new solver integration tests have loose or misaligned assertion bounds and miss the existing mm() helper.\n\nFixes:\n1. `optimize_with_feasible_initial_point` (solver_integration.rs:579-580): Change `si > 0.002` to `si >= 0.005` — the meaningful floor is the auto param bound (5mm), not the constraint floor (2mm). Tighten upper to `si < 0.008` to match the \"near 5mm\" comment.\n2. `maximize_with_feasible_initial_point` (solver_integration.rs:643-644): Tighten `si <= 0.051` to `si <= 0.0505` — 1mm slack is 20× larger than reasonable float tolerance.\n3. Replace raw `Value::Scalar { si_value: 0.025, dimension: DimensionVector::LENGTH }` with `mm(25.0)` and similarly for `mm(10.0)` in the new integration tests (lines ~546-551, ~607-612) — `reify_test_support::mm()` is already imported.\n\nMemory hints: search for \"solver test helpers\", entity names: DimensionalSolver, mm helper",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [
           "495"
         ],
@@ -10655,7 +10698,7 @@
             "crates/reify-constraints/tests"
           ]
         },
-        "updatedAt": "2026-03-28T01:09:57.374Z"
+        "updatedAt": "2026-03-28T01:30:49.884Z"
       },
       {
         "id": "529",
@@ -10663,7 +10706,7 @@
         "description": "Three gaps in solver test coverage after the warm-start feasibility feature:\n\n1. **Incomplete unit test assertion** (solver.rs:1714-1749): `feasibility_check_runs_with_objective` only asserts `Solved` but never checks the optimizer actually moved toward the objective minimum. Add assertion that returned x is near 5mm (lower bound), e.g. `assert!(si < 0.008)`.\n\n2. **No multi-param warm-start test** (solver_integration.rs): All 4 new tests use a single auto parameter. Add a test with 2+ auto params, a feasible initial point, and an objective to exercise `build_simplex`, `build_trial_values`, and the returned values map for N > 1.\n\n3. **No partial-feasibility test**: Add a test where `current_values` provides a partially-feasible starting point (satisfies some constraints but not all) with an objective present. This confirms `initially_feasible` is computed correctly over all constraints.\n\nMemory hints: search for \"solver test coverage\", \"warm-start optimization\", entity names: NelderMeadSolver, FEASIBLE_OPT_ITERS",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "495"
         ],
@@ -10679,7 +10722,8 @@
             "crates/reify-constraints/src",
             "crates/reify-constraints/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-03-28T01:32:34.849Z"
       },
       {
         "id": "530",
@@ -10846,7 +10890,7 @@
         "description": "Add missing test coverage for PropertyEditor's quantity-literal validation identified during task 486 code review.",
         "details": "## Gaps identified\n\n1. **Blur path**: The `handleBlur` path also calls `isValidValue` but no quantity-literal tests exercise it. Add blur tests for accepted (`80mm`) and rejected (`mm80`) literals — blur reverts rather than sets `data-invalid`.\n\n2. **Scientific notation + unit**: `QUANTITY_RE` accepts `1e3mm`, `1.5e-2deg` via the `([eE][+-]?\\d+)?` group, but no tests cover this. Add to accepted `it.each`.\n\n3. **No leading digit**: `QUANTITY_RE` accepts `.5mm`, `.25deg` via the `\\.\\d+` branch. Untested. Add to accepted `it.each`.\n\n4. **Rejection near-misses**: Missing rejection cases for `+10mm` (no leading `+` in regex), `mm` (standalone unit, no number), `deg` (standalone unit). Add to rejected `it.each`.\n\n### Files\n- `gui/src/__tests__/PropertyEditor.test.tsx`\n\n### memory_hints\n- `search(query=\"PropertyEditor quantity literal QUANTITY_RE\", project_id=\"reify\")`",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -10861,7 +10905,7 @@
             "gui/src/panels"
           ]
         },
-        "updatedAt": "2026-03-28T01:12:27.553Z"
+        "updatedAt": "2026-03-28T01:32:34.470Z"
       },
       {
         "id": "538",
@@ -10892,7 +10936,7 @@
         "description": "The six inline payload cast shapes in `subscribeToClaudeEvents` (gui/src/bridge.ts:159-182) re-declare field lists already defined by the exported interfaces in `gui/sidecar/src/types.ts`. For example, `{ id: string; content: string }` duplicates `Omit<TextDelta, 'type'>`. If a field is added or renamed in a constituent interface, the inline casts silently fall out of sync.\n\n**Fix**: Expand the import on line 20 to also bring in `TextDelta`, `ThinkingDelta`, `ToolCall`, `ToolResult`, `Done`, `ErrorMessage`. Then replace each inline anonymous shape with `Omit<Interface, 'type'>`, e.g.:\n```typescript\nconst p = event.payload as Omit<TextDelta, 'type'>;\n```\n\nAlso rename `p` to `payload` for readability (per codebase convention).\n\nMemory hints:\n- Search: \"OutboundMessage bridge.ts payload cast types\"\n- Entities: bridge.ts, OutboundMessage, subscribeToClaudeEvents",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -10904,7 +10948,8 @@
           "modules": [
             "gui/src"
           ]
-        }
+        },
+        "updatedAt": "2026-03-28T01:30:51.035Z"
       },
       {
         "id": "540",
@@ -11416,9 +11461,15 @@
             "tree-sitter-reify"
           ],
           "memory_hints": {
-            "entities": [],
+            "entities": [
+              "build.rs",
+              "tree-sitter-reify",
+              "tree-sitter generate"
+            ],
             "queries": [
-              "resolution for: build.rs robustness: verify all outputs, content hash staleness, timeout, remove redundant rerun"
+              "build.rs auto-generation robustness staleness detection",
+              "tree-sitter-reify build output verification content hash",
+              "git worktree mtime unreliable cargo rerun-if-changed"
             ]
           }
         },
@@ -12108,7 +12159,7 @@
         "description": "## Problem\n\nThe selection sync path added in task 478 has several test coverage gaps:\n\n1. **Frontend:** selectionStore.test.ts has 13 tests but none cover the createEffect + invoke('update_selection') behavior. The entire debounce/cleanup path has zero coverage.\n2. **Rust constructor:** `with_event_emitter_and_selection()` is the primary production constructor (used in mcp_tool_call) but is never exercised by any test.\n3. **Claude bridge:** `from_parts_with_mcp_intercepts_reify_tool_calls` passes a selection Arc but never asserts the selection state is threaded into the TauriToolContext — the test would pass even if the parameter were silently ignored.\n4. **Dispatch:** Only tests selected_entity set + hovered_entity null. No test for both fields populated.\n\n## What \"done\" looks like\n\n1. selectionStore.test.ts: mock invoke, verify correct args after state change, verify debounce coalescing, verify cleanup cancels timer\n2. mcp_context_tests.rs: test with_event_emitter_and_selection() — verify selection reads and event emission\n3. claude_bridge_tests.rs: pre-populate selection Arc with `Some(\"Bracket\")`, assert JSON tool_result contains the selection\n4. mcp_dispatch_tests.rs: add test with both fields populated\n5. All existing tests pass\n\n## Files to modify\n- gui/src/__tests__/selectionStore.test.ts — add invoke mock tests\n- gui/src-tauri/src/tests/mcp_context_tests.rs — test with_event_emitter_and_selection\n- gui/src-tauri/src/tests/claude_bridge_tests.rs — assert selection threading\n- gui/src-tauri/src/tests/mcp_dispatch_tests.rs — both-fields test\n\n### memory_hints\n- search: \"selectionStore test invoke mock\"\n- search: \"TauriToolContext test coverage\"",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -12125,13 +12176,21 @@
             "gui/src-tauri/src/tests"
           ],
           "memory_hints": {
-            "entities": [],
+            "entities": [
+              "selectionStore",
+              "TauriToolContext",
+              "ClaudeMessageContext",
+              "update_selection"
+            ],
             "queries": [
-              "resolution for: Add test coverage for selection sync path (frontend invoke + Rust constructors + dispatch)"
+              "selectionStore test invoke mock selection sync",
+              "TauriToolContext test coverage with_event_emitter_and_selection",
+              "claude bridge selection arc threading test"
             ]
-          }
+          },
+          "reconciliation_note": "STAGE-2 2026-03-28: Task is blocked with no listed dependencies. Block reason undocumented. Check if worktree issue (like task 369) or upstream dependency. May need unblocking."
         },
-        "updatedAt": "2026-03-27T23:46:43.435Z"
+        "updatedAt": "2026-03-28T01:44:34.511Z"
       },
       {
         "id": "595",
@@ -12187,7 +12246,20 @@
           "modules": [
             "crates/reify-lsp"
           ],
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "memory_hints": {
+            "entities": [
+              "find_member_decl",
+              "analysis.rs",
+              "CompiledTemplate",
+              "ParsedDeclaration"
+            ],
+            "queries": [
+              "find_member_decl cross-structure name collision member lookup",
+              "LSP member declaration span type coordination by structure name",
+              "task 597 status churn done reverted pending"
+            ]
+          }
         }
       },
       {
@@ -12694,7 +12766,22 @@
         ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-28T00:44:00.677Z"
+        "updatedAt": "2026-03-28T00:44:00.677Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [
+              "DimensionalSolver",
+              "build_trial_values",
+              "params_to_value_map",
+              "ConstraintCostFunction"
+            ],
+            "queries": [
+              "params_to_value_map build_trial_values hot path allocation",
+              "solver fallback path task 589 refactor",
+              "task 624 status churn done reverted pending"
+            ]
+          }
+        }
       },
       {
         "id": "625",
@@ -13041,9 +13128,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T01:19:20.130Z",
+      "lastModified": "2026-03-28T01:44:34.511Z",
       "taskCount": 650,
-      "completedCount": 301,
+      "completedCount": 305,
       "tags": [
         "master"
       ]

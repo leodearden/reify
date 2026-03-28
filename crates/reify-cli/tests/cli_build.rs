@@ -139,3 +139,49 @@ fn build_compile_error_exits_failure() {
         "stderr should contain 'error:', got: {stderr}"
     );
 }
+
+#[test]
+fn build_indeterminate_constraint_exits_success() {
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let output_path = dir.path().join("out.step");
+    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
+        .args([
+            "build",
+            &fixture_path("bracket_indeterminate.ri"),
+            "-o",
+            output_path.to_str().unwrap(),
+        ])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .expect("failed to execute reify binary");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        output.status.success(),
+        "reify build should exit 0 when constraints are indeterminate (not violated).\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("INDETERMINATE"),
+        "stdout should contain 'INDETERMINATE', got: {stdout}"
+    );
+    assert!(
+        stdout.contains("Wrote"),
+        "stdout should contain 'Wrote', got: {stdout}"
+    );
+    assert!(
+        !stdout.contains("VIOLATED"),
+        "stdout should NOT contain 'VIOLATED', got: {stdout}"
+    );
+    assert!(
+        !stdout.contains("Some constraints violated"),
+        "stdout should NOT contain violation summary, got: {stdout}"
+    );
+    assert!(
+        output_path.exists(),
+        "geometry file should be written when constraints are only indeterminate"
+    );
+}
