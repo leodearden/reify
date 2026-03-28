@@ -17,7 +17,15 @@ import type {
   FileData,
 } from './types';
 import { convertRawMesh, convertRawGuiState } from './types';
-import type { OutboundMessage } from '../sidecar/src/types';
+import type {
+  OutboundMessage,
+  TextDelta,
+  ThinkingDelta,
+  ToolCall,
+  ToolResult,
+  Done,
+  ErrorMessage,
+} from '../sidecar/src/types';
 
 // ── Commands (invoke wrappers) ──────────────────────────────────────
 
@@ -160,28 +168,28 @@ export async function subscribeToClaudeEvents(
 
   const entries: EventEntry[] = [
     ['claude-text-delta', (event) => {
-      const p = event.payload as { id: string; content: string };
-      handler({ type: 'text_delta', id: p.id, content: p.content });
+      const payload = event.payload as Omit<TextDelta, 'type'>;
+      handler({ type: 'text_delta', id: payload.id, content: payload.content });
     }],
     ['claude-thinking-delta', (event) => {
-      const p = event.payload as { id: string; content: string };
-      handler({ type: 'thinking_delta', id: p.id, content: p.content });
+      const payload = event.payload as Omit<ThinkingDelta, 'type'>;
+      handler({ type: 'thinking_delta', id: payload.id, content: payload.content });
     }],
     ['claude-tool-call', (event) => {
-      const p = event.payload as { id: string; tool_name: string; tool_input: Record<string, unknown> };
-      handler({ type: 'tool_call', id: p.id, tool_name: p.tool_name, tool_input: p.tool_input });
+      const payload = event.payload as Omit<ToolCall, 'type'>;
+      handler({ type: 'tool_call', id: payload.id, tool_name: payload.tool_name, tool_input: payload.tool_input });
     }],
     ['claude-tool-result', (event) => {
-      const p = event.payload as { id: string; tool_name: string; result: unknown };
-      handler({ type: 'tool_result', id: p.id, tool_name: p.tool_name, result: p.result });
+      const payload = event.payload as Omit<ToolResult, 'type'>;
+      handler({ type: 'tool_result', id: payload.id, tool_name: payload.tool_name, result: payload.result });
     }],
     ['claude-done', (event) => {
-      const p = event.payload as { id: string };
-      handler({ type: 'done', id: p.id });
+      const payload = event.payload as Omit<Done, 'type'>;
+      handler({ type: 'done', id: payload.id });
     }],
     ['claude-error', (event) => {
-      const p = event.payload as { id: string; message: string };
-      handler({ type: 'error', id: p.id, message: p.message });
+      const payload = event.payload as Omit<ErrorMessage, 'type'>;
+      handler({ type: 'error', id: payload.id, message: payload.message });
     }],
     ['claude-ready', () => handler({ type: 'ready' })],
   ];
