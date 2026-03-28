@@ -2679,7 +2679,7 @@
         "testStrategy": "Parser tests: some/none in various positions. Compiler tests: type inference for none.",
         "priority": "high",
         "dependencies": [],
-        "status": "pending",
+        "status": "done",
         "metadata": {
           "modules": [
             "crates/reify-syntax",
@@ -2688,7 +2688,7 @@
           "milestone": "M8"
         },
         "subtasks": [],
-        "updatedAt": "2026-03-28T06:43:32.488Z"
+        "updatedAt": "2026-03-28T06:43:50.781Z"
       },
       {
         "id": "163",
@@ -13668,9 +13668,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T06:43:32.488Z",
+      "lastModified": "2026-03-28T06:43:50.781Z",
       "taskCount": 691,
-      "completedCount": 325,
+      "completedCount": 326,
       "tags": [
         "master"
       ]
