@@ -409,3 +409,30 @@ fn parse_type_alias_type_params_with_dimensional_rhs() {
         other => panic!("expected Declaration::TypeAlias, got {:?}", other),
     }
 }
+
+// ── Nested parameterized types ───────────────────────────────────
+
+#[test]
+fn parse_type_alias_nested_parameterized_types() {
+    // Nested type arguments: Map<String, List<Int>> — previously only single-level tested.
+    let source = "type Registry = Map<String, List<Int>>";
+    let (decls, errors) = parse_decls(source);
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+    assert_eq!(decls.len(), 1);
+
+    match &decls[0] {
+        Declaration::TypeAlias(ta) => {
+            assert_eq!(ta.name, "Registry");
+            assert_eq!(ta.type_expr.name, "Map");
+            assert_eq!(ta.type_expr.type_args.len(), 2);
+            // First type arg: String (simple)
+            assert_eq!(ta.type_expr.type_args[0].name, "String");
+            assert!(ta.type_expr.type_args[0].type_args.is_empty());
+            // Second type arg: List<Int> (nested parameterized)
+            assert_eq!(ta.type_expr.type_args[1].name, "List");
+            assert_eq!(ta.type_expr.type_args[1].type_args.len(), 1);
+            assert_eq!(ta.type_expr.type_args[1].type_args[0].name, "Int");
+        }
+        other => panic!("expected Declaration::TypeAlias, got {:?}", other),
+    }
+}
