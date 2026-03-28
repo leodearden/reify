@@ -918,6 +918,55 @@ fn compile_expr(
     )
 }
 
+/// Try to resolve a function call as a determinacy predicate intrinsic.
+///
+/// Returns `Some(compiled_expr)` if the name matches one of the four intrinsics
+/// (`determined`, `undetermined`, `constrained`, `partially_determined`),
+/// or `None` if the name is not an intrinsic.
+///
+/// This is called from both `NoMatch` and `NoUserFunctions` arms so that
+/// user-defined functions with the same name (but wrong arity/types) cannot
+/// shadow the intrinsics.
+fn try_determinacy_intrinsic(
+    name: &str,
+    compiled_args: &[CompiledExpr],
+    span: SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<CompiledExpr> {
+    let kind = match name {
+        "determined" => DeterminacyPredicateKind::Determined,
+        "undetermined" => DeterminacyPredicateKind::Undetermined,
+        "constrained" => DeterminacyPredicateKind::Constrained,
+        "partially_determined" => DeterminacyPredicateKind::PartiallyDetermined,
+        _ => return None,
+    };
+
+    if compiled_args.len() != 1 {
+        diagnostics.push(
+            Diagnostic::error(format!(
+                "{}() requires exactly 1 argument, got {}",
+                name,
+                compiled_args.len()
+            ))
+            .with_label(DiagnosticLabel::new(span, "wrong number of arguments")),
+        );
+        return Some(CompiledExpr::literal(Value::Undef, Type::Bool));
+    }
+
+    if let CompiledExprKind::ValueRef(cell_id) = &compiled_args[0].kind {
+        Some(CompiledExpr::determinacy_predicate(kind, cell_id.clone()))
+    } else {
+        diagnostics.push(
+            Diagnostic::error(format!(
+                "{}() argument must be a direct cell reference, not a computed expression",
+                name
+            ))
+            .with_label(DiagnosticLabel::new(span, "expected cell reference")),
+        );
+        Some(CompiledExpr::literal(Value::Undef, Type::Bool))
+    }
+}
+
 /// Compile an `Expr` from the AST into a `CompiledExpr`, with guard context.
 ///
 /// When `current_guard` is Some, references to names guarded by a different
@@ -1221,89 +1270,51 @@ fn compile_expr_guarded(
                     CompiledExpr::literal(Value::Undef, Type::Real)
                 }
                 OverloadResolution::NoMatch(named_candidates) => {
-                    // User functions with this name exist, but none match — error with candidates
-                    let candidate_sigs: Vec<String> = named_candidates
-                        .iter()
-                        .map(|f| format_fn_signature(f))
-                        .collect();
-                    diagnostics.push(
-                        Diagnostic::error(format!(
-                            "no matching overload for {}({}), candidates: {}",
-                            name,
-                            arg_types
-                                .iter()
-                                .map(|t| format!("{}", t))
-                                .collect::<Vec<_>>()
-                                .join(", "),
-                            candidate_sigs.join(", ")
-                        ))
-                        .with_label(DiagnosticLabel::new(expr.span, "no matching overload")),
-                    );
-                    CompiledExpr::literal(Value::Undef, Type::Real)
+                    // Before reporting an error, check if the name is a
+                    // determinacy intrinsic — user functions with the same name
+                    // (but wrong arity/types) must not shadow intrinsics.
+                    if let Some(result) = try_determinacy_intrinsic(
+                        name,
+                        &compiled_args,
+                        expr.span,
+                        diagnostics,
+                    ) {
+                        result
+                    } else {
+                        let candidate_sigs: Vec<String> = named_candidates
+                            .iter()
+                            .map(|f| format_fn_signature(f))
+                            .collect();
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "no matching overload for {}({}), candidates: {}",
+                                name,
+                                arg_types
+                                    .iter()
+                                    .map(|t| format!("{}", t))
+                                    .collect::<Vec<_>>()
+                                    .join(", "),
+                                candidate_sigs.join(", ")
+                            ))
+                            .with_label(DiagnosticLabel::new(
+                                expr.span,
+                                "no matching overload",
+                            )),
+                        );
+                        CompiledExpr::literal(Value::Undef, Type::Real)
+                    }
                 }
                 OverloadResolution::NoUserFunctions => {
-                    // Determinacy predicate intrinsics — compiler transforms these
-                    // calls into DeterminacyPredicate nodes evaluated by the engine
-                    // using the snapshot's DeterminacyState for each ValueCellId.
-                    //
-                    // User-facing semantic contract:
-                    //   determined(x)           — true iff x is fully resolved
-                    //                             (state == Determined)
-                    //   undetermined(x)         — true iff x has no value
-                    //                             (state == Undetermined),
-                    //                             regardless of constraints
-                    //   constrained(x)          — true iff x is a solver variable
-                    //                             (state == Auto || Provisional);
-                    //                             tests solver involvement, NOT
-                    //                             constraint presence
-                    //   partially_determined(x) — true iff x is in solver
-                    //                             intermediate state
-                    //                             (state == Provisional only);
-                    //                             narrowed from original spec to
-                    //                             distinguish from Auto (which is
-                    //                             covered by constrained())
-                    let determinacy_kind = match name.as_str() {
-                        "determined" => Some(DeterminacyPredicateKind::Determined),
-                        "undetermined" => Some(DeterminacyPredicateKind::Undetermined),
-                        "constrained" => Some(DeterminacyPredicateKind::Constrained),
-                        "partially_determined" => {
-                            Some(DeterminacyPredicateKind::PartiallyDetermined)
-                        }
-                        _ => None,
-                    };
-
-                    if let Some(kind) = determinacy_kind {
-                        if compiled_args.len() != 1 {
-                            diagnostics.push(
-                                Diagnostic::error(format!(
-                                    "{}() requires exactly 1 argument, got {}",
-                                    name,
-                                    compiled_args.len()
-                                ))
-                                .with_label(DiagnosticLabel::new(
-                                    expr.span,
-                                    "wrong number of arguments",
-                                )),
-                            );
-                            return CompiledExpr::literal(Value::Undef, Type::Bool);
-                        }
-
-                        let arg = &compiled_args[0];
-                        if let CompiledExprKind::ValueRef(cell_id) = &arg.kind {
-                            return CompiledExpr::determinacy_predicate(kind, cell_id.clone());
-                        } else {
-                            diagnostics.push(
-                                Diagnostic::error(format!(
-                                    "{}() argument must be a direct cell reference, not a computed expression",
-                                    name
-                                ))
-                                .with_label(DiagnosticLabel::new(expr.span, "expected cell reference")),
-                            );
-                            return CompiledExpr::literal(Value::Undef, Type::Bool);
-                        }
+                    if let Some(result) = try_determinacy_intrinsic(
+                        name,
+                        &compiled_args,
+                        expr.span,
+                        diagnostics,
+                    ) {
+                        return result;
                     }
 
-                    // No user fn with this name — fall through to stdlib FunctionCall
+                    // No user fn and not an intrinsic — fall through to stdlib FunctionCall
                     let resolved = ResolvedFunction {
                         name: name.clone(),
                         qualified_name: format!("std::{}", name),
