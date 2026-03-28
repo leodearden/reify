@@ -14214,7 +14214,22 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-mcp/src/types.rs",
+            "gui/src-tauri/src/mcp_context.rs",
+            "gui/src-tauri/src/tests/mcp_context_tests.rs",
+            "gui/src-tauri/src/tests/mcp_dispatch_tests.rs",
+            "gui/src-tauri/src/tests/commands_tests.rs",
+            "gui/src-tauri/src/tests/claude_bridge_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-mcp/src",
+            "gui/src-tauri/src",
+            "gui/src-tauri/src/tests"
+          ]
+        }
       },
       {
         "id": 692,
@@ -14225,7 +14240,17 @@
         "status": "pending",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-cli/tests/cli_check.rs",
+            "data/fixtures/bracket_violated_indeterminate.ri"
+          ],
+          "modules": [
+            "crates/reify-cli/tests",
+            "data/fixtures"
+          ]
+        }
       },
       {
         "id": 693,
