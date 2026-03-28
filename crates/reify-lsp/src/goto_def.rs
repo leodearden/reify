@@ -161,6 +161,7 @@ mod tests {
         // Should point to the param declaration on line 3:
         // "        param guarded_x : Scalar = 5mm"
         assert_eq!(loc.range.start.line, 3);
+        assert_eq!(loc.range.start.character, 8, "param keyword starts after 8-space indent");
     }
 
     #[test]
@@ -177,6 +178,7 @@ mod tests {
         // Should point to the let declaration on line 5:
         // "        let fallback = 10"
         assert_eq!(loc.range.start.line, 5);
+        assert_eq!(loc.range.start.character, 8, "let keyword starts after 8-space indent");
     }
 
     // --- enclosing-declaration scoping tests ---
