@@ -12305,7 +12305,7 @@
         "description": "In gui/sidecar/src/session.ts, the `handleSendMessage` method has an inline type annotation for the `context` parameter that duplicates — and diverges from — the `SendMessage.context` type in types.ts. The inline type only includes `selected_entity`, `diagnostics`, `constraints`, missing the `current_file` and `attached_contexts` fields added in task 525. There is also no prompt-building logic for the new fields, so they are silently dropped even though the full stack (bridge.ts → Rust → sidecar types.ts) now transmits them.\n\nFix:\n1. Replace the inline type annotation on handleSendMessage's `context` parameter with `SendMessage['context']` imported from `./types.js`.\n2. Add `contextParts.push(...)` branches for `current_file` and `attached_contexts` in the prompt-building section.\n3. Add tests verifying the new fields appear in the constructed prompt.\n\nSource: Review suggestions 3+7 from task 525 triage.\n\nmemory_hints: search \"handleSendMessage context prompt building\", entities: session.ts, SendMessage, types.ts",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -12320,7 +12320,7 @@
             "gui/sidecar/src/__tests__"
           ]
         },
-        "updatedAt": "2026-03-27T23:46:09.630Z"
+        "updatedAt": "2026-03-28T00:10:35.591Z"
       },
       {
         "id": "606",
@@ -12613,9 +12613,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T00:10:31.529Z",
+      "lastModified": "2026-03-28T00:10:35.591Z",
       "taskCount": 623,
-      "completedCount": 283,
+      "completedCount": 284,
       "tags": [
         "master"
       ]
