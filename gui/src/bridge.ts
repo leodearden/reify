@@ -111,21 +111,15 @@ export async function lspRequest(method: string, params: unknown): Promise<unkno
 // ── Claude commands ─────────────────────────────────────────────────
 
 /**
- * Context for a Claude message — the subset of MessageContext that the sidecar accepts.
- * This is a standalone interface to keep the wire layer (bridge.ts) independent of the
- * domain store (claudeStore.ts). Structural drift is caught at compile time by the
- * Equals<A,B> assertion in __tests__/types.typecheck.ts.
+ * Re-export MessageContext as ClaudeMessageContext for backward compatibility.
+ * The canonical definition lives in stores/claudeStore.ts — this alias preserves
+ * the existing export name so all downstream imports continue to work.
  */
-export interface ClaudeMessageContext {
-  selectedEntity?: string;
-  diagnostics?: string[];
-  constraints?: string[];
-  currentFile?: string;
-  attachedContexts?: string[];
-}
+import type { MessageContext } from './stores/claudeStore';
+export type { MessageContext as ClaudeMessageContext } from './stores/claudeStore';
 
 /** Send a message to the Claude sidecar. Maps camelCase context to snake_case for Rust. */
-export async function claudeSendMessage(text: string, context?: ClaudeMessageContext): Promise<void> {
+export async function claudeSendMessage(text: string, context?: MessageContext): Promise<void> {
   return invoke('claude_send_message', {
     text,
     context: context
