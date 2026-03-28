@@ -11558,7 +11558,7 @@
         "description": "In report_constraints (crates/reify-cli/src/main.rs), Satisfaction::Indeterminate does not set all_satisfied = false, meaning indeterminate constraints are treated as success. This was an intentional decision but is not documented in the code. Add a comment explaining the choice, and add a CLI integration test that exercises Indeterminate constraints — verifying exit code is 0 and INDETERMINATE text appears on stdout (not stderr).\n\nMemory hints: search \"Indeterminate constraint semantics intentional\", entity: report_constraints",
         "details": "Locations:\n- crates/reify-cli/src/main.rs:49 — add comment on the Indeterminate match arm\n- crates/reify-cli/tests/cli_check.rs — add test with fixture producing Indeterminate constraints\n- May need a new fixture file under crates/reify-cli/tests/fixtures/\n\nThe decision \"A build with only indeterminate constraints exits 0 and does not block the build\" is already recorded in project memory. This task is about making the code self-documenting and adding regression test coverage.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "blocked",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -11572,7 +11572,8 @@
             "crates/reify-cli/src",
             "crates/reify-cli/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-03-28T16:27:48.808Z"
       },
       {
         "id": "572",
@@ -12142,7 +12143,13 @@
           ],
           "modules": [
             "crates/reify-lsp/src"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Strengthen guarded-group test assertions in LSP"
+            ]
+          }
         },
         "updatedAt": "2026-03-28T16:25:53.847Z"
       },
@@ -12792,7 +12799,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T16:25:53.847Z",
+      "lastModified": "2026-03-28T16:27:48.808Z",
       "taskCount": 635,
       "completedCount": 296,
       "tags": [
