@@ -15395,6 +15395,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 747,
+        "title": "Add missing gradient test coverage: non-Field input and stub baseline",
+        "description": "Add tests: (1) gradient_non_field_argument_returns_undef — calls gradient with Value::Real(1.0) and asserts Undef. (2) gradient_valid_scalar_field_currently_returns_undef — calls gradient with a properly-formed scalar-domain field and asserts Undef as documented stub expectation, with TODO noting it should return Vec3<Real> once implemented. Also rename misleading tests (gradient_wrong_size_tensor → sample_wrong_size_tensor) and fix vacuous test guardrails (use valid Lambda instead of Value::Undef in field fixtures).",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -15407,7 +15418,7 @@
       ],
       "created": "2026-03-28T19:31:32.357Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-28T19:31:32.365Z"
+      "updated": "2026-03-28T19:31:36.150Z"
     }
   }
 }
