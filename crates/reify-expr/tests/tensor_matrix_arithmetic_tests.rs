@@ -65,3 +65,28 @@ fn vector_times_matrix_returns_undef() {
     let expr = CompiledExpr::binop(BinOp::Mul, lit(v, Type::Real), lit(m, Type::Real), Type::Real);
     assert_eq!(eval(&expr), Value::Undef);
 }
+
+// ── Dimension-mismatch propagation through rank-2 matrices ─────────────────
+
+/// Adding two 2x2 dimensioned matrices where one row has a dimension mismatch
+/// should return Undef for the whole result. Row 0 adds cleanly (Length+Length),
+/// but row 1 has dimension mismatch (Length+Angle → Undef per element).
+/// `componentwise_binop` checks `results.iter().any(|v| v.is_undef())` and
+/// propagates the inner row failure to the outer result.
+#[test]
+fn multi_row_undef_propagation() {
+    // A = [[1m, 2m], [3m, 4m]]  — all Length
+    let a = mat(vec![
+        vec![Value::length(1.0), Value::length(2.0)],
+        vec![Value::length(3.0), Value::length(4.0)],
+    ]);
+
+    // B = [[5m, 6m], [1rad, 2rad]]  — row 0 is Length, row 1 is Angle
+    let b = mat(vec![
+        vec![Value::length(5.0), Value::length(6.0)],
+        vec![Value::angle(1.0), Value::angle(2.0)],
+    ]);
+
+    let expr = CompiledExpr::binop(BinOp::Add, lit(a, Type::Real), lit(b, Type::Real), Type::Real);
+    assert_eq!(eval(&expr), Value::Undef);
+}
