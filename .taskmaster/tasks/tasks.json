@@ -12649,6 +12649,19 @@
         ],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 626,
+        "title": "Add debug_assert for params/x length mismatch in params_to_value_map",
+        "description": "params_to_value_map (solver.rs:55) uses Iterator::zip which silently truncates to the shorter slice if params.len() != x.len(). Add debug_assert_eq!(params.len(), x.len()) as the first line to catch caller bugs in tests at zero release cost. Also add a test for the empty-params case (params=[], x=[]) asserting result.is_empty().\n\nMemory hints: search \"params_to_value_map\", entity DimensionalSolver",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          589
+        ],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -12661,7 +12674,7 @@
       ],
       "created": "2026-03-28T00:16:44.236Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-28T00:16:50.493Z"
+      "updated": "2026-03-28T00:16:54.035Z"
     }
   }
 }
