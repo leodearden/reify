@@ -267,12 +267,7 @@ impl MockGeometryKernel {
         to: GeometryHandleId,
         value: Value,
     ) -> Self {
-        // Normalize to (min, max) so Distance(A,B) == Distance(B,A)
-        let (lo, hi) = if from.0 <= to.0 {
-            (from, to)
-        } else {
-            (to, from)
-        };
+        let (lo, hi) = normalize_distance_pair(from, to);
         self.typed_queries
             .insert(QueryKey::Distance { from: lo, to: hi }, value);
         self
