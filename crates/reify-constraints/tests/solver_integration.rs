@@ -848,55 +848,68 @@ fn warm_start_scales_iterations_with_dimension() {
     }
 }
 
-/// Budget-exhaustion scenario: 2-param problem with tight constraints
-/// (each param 10mm-12mm window), wide auto param bounds (0-100mm), both
-/// params start feasible at 11mm, minimize(p0+p1) objective. With the
-/// dimension-scaled iteration budget, the solver may exhaust its budget
-/// without fully converging the objective, but the result must still be
-/// Solved with all constraints satisfied.
+/// Budget-exhaustion scenario: 12-param problem with tight constraints
+/// (each param 10mm-12mm window), wide auto param bounds (0-100mm), all
+/// params start feasible at 11mm, minimize(sum) objective. With 12 params
+/// the iteration budget is min(500 * 13, 5000) = 5000 — Nelder-Mead in
+/// 12 dimensions with tight 2mm windows cannot converge in 5000 iterations.
 ///
 /// This tests the convergence-without-full-optimality scenario — the solver
 /// returns Solved even when the optimizer hits MaxItersReached, as long as
-/// the final point satisfies all constraints.
+/// the final point satisfies all constraints. The suboptimality assertion
+/// confirms the optimizer did NOT reach the global minimum (all params at
+/// lower bound), proving budget exhaustion actually occurred.
 #[test]
 fn warm_start_budget_exhaustion_stays_feasible() {
     let solver = DimensionalSolver;
 
-    let p0_id = vcid("Part", "p0");
-    let p1_id = vcid("Part", "p1");
-    let p0_ref = value_ref("Part", "p0");
-    let p1_ref = value_ref("Part", "p1");
+    // 12 parameters — budget = min(500 * 13, 5000) = 5000 iterations.
+    // Nelder-Mead in 12 dimensions with tight 2mm windows won't converge
+    // in 5000 iters, forcing the budget-exhaustion fallback path.
+    let n_params: usize = 12;
+
+    let ids: Vec<_> = (0..n_params)
+        .map(|i| vcid("Part", &format!("p{}", i)))
+        .collect();
+    let refs: Vec<_> = (0..n_params)
+        .map(|i| value_ref("Part", &format!("p{}", i)))
+        .collect();
 
     // Tight constraints: each param in [10mm, 12mm] — only 2mm feasible window
-    let constraints = vec![
-        (cnid("Part", 0), gt(p0_ref.clone(), literal(mm(10.0)))),
-        (cnid("Part", 1), lt(p0_ref.clone(), literal(mm(12.0)))),
-        (cnid("Part", 2), gt(p1_ref.clone(), literal(mm(10.0)))),
-        (cnid("Part", 3), lt(p1_ref.clone(), literal(mm(12.0)))),
-    ];
+    let mut constraints = Vec::new();
+    for i in 0..n_params {
+        constraints.push((
+            cnid("Part", (i * 2) as u32),
+            gt(refs[i].clone(), literal(mm(10.0))),
+        ));
+        constraints.push((
+            cnid("Part", (i * 2 + 1) as u32),
+            lt(refs[i].clone(), literal(mm(12.0))),
+        ));
+    }
 
-    // Minimize(p0 + p1) — pushes both params toward their lower constraint bound
-    let sum_expr = binop(BinOp::Add, p0_ref, p1_ref);
+    // Minimize(p0 + p1 + ... + p11) — pushes all params toward lower bound
+    let sum_expr = refs
+        .iter()
+        .skip(1)
+        .fold(refs[0].clone(), |acc, r| binop(BinOp::Add, acc, r.clone()));
     let objective = OptimizationObjective::Minimize(sum_expr);
 
-    // Both params start at 11mm — feasible, centered in constraint window
+    // All params start at 11mm — feasible, centered in constraint window
     let mut current = ValueMap::new();
-    current.insert(p0_id.clone(), mm(11.0));
-    current.insert(p1_id.clone(), mm(11.0));
+    for id in &ids {
+        current.insert(id.clone(), mm(11.0));
+    }
 
     let problem = ResolutionProblem {
-        auto_params: vec![
-            AutoParam {
-                id: p0_id.clone(),
+        auto_params: ids
+            .iter()
+            .map(|id| AutoParam {
+                id: id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.0, 0.1)), // Wide bounds [0, 100mm]
-            },
-            AutoParam {
-                id: p1_id.clone(),
-                param_type: Type::length(),
-                bounds: Some((0.0, 0.1)), // Wide bounds [0, 100mm]
-            },
-        ],
+            })
+            .collect(),
         constraints,
         current_values: current,
         objective: Some(objective),
@@ -906,16 +919,34 @@ fn warm_start_budget_exhaustion_stays_feasible() {
     let result = solver.solve(&problem);
     match result {
         SolveResult::Solved { values } => {
-            // Both params must satisfy constraints: 10mm < p < 12mm
-            for pid in [&p0_id, &p1_id] {
-                let si = values.get(pid).unwrap().as_f64().unwrap();
+            // All params must satisfy constraints: 10mm < p < 12mm (feasibility preserved)
+            for id in &ids {
+                let si = values.get(id).unwrap().as_f64().unwrap();
                 assert!(
                     si > 0.010 && si < 0.012,
                     "param {:?} should satisfy constraints (10mm < p < 12mm), got {} m",
-                    pid,
+                    id,
                     si
                 );
             }
+            // Suboptimality check: a fully converged optimizer would push all params
+            // to the lower bound (~10mm = 0.010 m), giving sum ≈ 0.120.
+            // We use a threshold of 10.5mm per param (midpoint between lower bound
+            // 10mm and start 11mm). A converged optimizer yields sum < threshold,
+            // while a budget-exhausted optimizer (params still near 11mm) yields
+            // sum > threshold — making this a meaningful discriminator.
+            let sum: f64 = ids
+                .iter()
+                .map(|id| values.get(id).unwrap().as_f64().unwrap())
+                .sum();
+            let suboptimality_threshold = n_params as f64 * 0.0105;
+            assert!(
+                sum > suboptimality_threshold,
+                "sum of params ({}) should be above suboptimality threshold ({}) — \
+                 budget exhaustion should leave params well above the optimum",
+                sum,
+                suboptimality_threshold
+            );
         }
         other => panic!(
             "expected Solved for budget-exhaustion scenario, got {:?}",
