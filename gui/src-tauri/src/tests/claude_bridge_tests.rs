@@ -40,6 +40,39 @@ fn make_ready_handle() -> SidecarHandle {
     SidecarHandle::from_parts(writer, empty_reader, state)
 }
 
+/// Async body for a standard ready-signaling `spawn_fn`.
+///
+/// Creates a `Starting` handle, writes `{"type":"ready"}` so the reader task
+/// will transition to `Ready`, and sends the `data_writer` over `writer_tx`
+/// to keep it alive (preventing EOF → Crashed).
+///
+/// Usage:
+/// ```ignore
+/// let (writer_tx, writer_rx) = tokio::sync::oneshot::channel();
+/// let spawn_fn = || make_ready_spawn_fn(writer_tx);
+/// let result = ensure_sidecar_ready(&sidecar, spawn_fn, timeout).await;
+/// let _held = writer_rx.await.ok(); // keep data_writer alive
+/// ```
+async fn make_ready_spawn_fn(
+    writer_tx: tokio::sync::oneshot::Sender<tokio::io::DuplexStream>,
+) -> Result<SidecarHandle, String> {
+    use std::sync::Arc;
+    use tokio::io::{AsyncWriteExt, BufReader};
+    use tokio::sync::Mutex;
+
+    let state = Arc::new(Mutex::new(SidecarState::Starting));
+    let (mut data_writer, data_reader) = tokio::io::duplex(1024);
+    data_writer
+        .write_all(b"{\"type\":\"ready\"}\n")
+        .await
+        .map_err(|e| e.to_string())?;
+    let reader = BufReader::new(data_reader);
+    let (stdin_writer, _stdin_reader) = tokio::io::duplex(1024);
+    let handle = SidecarHandle::from_parts(stdin_writer, reader, state);
+    let _ = writer_tx.send(data_writer);
+    Ok(handle)
+}
+
 // --- IPC message type tests (step-1) ---
 
 #[test]
@@ -1372,38 +1405,15 @@ async fn wait_ready_returns_err_on_crash_during_wait() {
 
 #[tokio::test]
 async fn ensure_sidecar_ready_spawns_and_waits_when_none() {
-    use std::sync::Arc;
     use std::time::Duration;
-    use tokio::io::{AsyncWriteExt, BufReader};
     use tokio::sync::Mutex;
 
-    // Hold data_writer alive outside the spawn closure to prevent EOF → Crashed
-    // race: if the duplex closes before ensure_sidecar_ready checks state, the
-    // reader task would overwrite Ready with Crashed.
-    let held_writer: Arc<Mutex<Option<tokio::io::DuplexStream>>> = Arc::new(Mutex::new(None));
-    let held_clone = Arc::clone(&held_writer);
-
-    let spawn_fn = move || {
-        let held = Arc::clone(&held_clone);
-        async move {
-            let state = Arc::new(Mutex::new(SidecarState::Starting));
-            let (mut data_writer, data_reader) = tokio::io::duplex(1024);
-            // Write the "ready" JSON line to simulate the sidecar signalling ready.
-            data_writer
-                .write_all(b"{\"type\":\"ready\"}\n")
-                .await
-                .map_err(|e| e.to_string())?;
-            let reader = BufReader::new(data_reader);
-            let (stdin_writer, _stdin_reader) = tokio::io::duplex(1024);
-            let handle = SidecarHandle::from_parts(stdin_writer, reader, state);
-            // Keep data_writer alive to prevent EOF/crash detection during wait.
-            *held.lock().await = Some(data_writer);
-            Ok(handle)
-        }
-    };
+    let (writer_tx, writer_rx) = tokio::sync::oneshot::channel();
+    let spawn_fn = || make_ready_spawn_fn(writer_tx);
 
     let sidecar: Mutex<Option<SidecarHandle>> = Mutex::new(None);
     let result = ensure_sidecar_ready(&sidecar, spawn_fn, Duration::from_secs(5)).await;
+    let _held = writer_rx.await.ok();
 
     assert!(
         result.is_ok(),
@@ -1594,7 +1604,7 @@ async fn ensure_sidecar_ready_rejects_crashed_existing_handle() {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
-    use tokio::io::{AsyncWriteExt, BufReader};
+    use tokio::io::BufReader;
     use tokio::sync::Mutex;
 
     // Pre-populate the slot with a Crashed handle.
@@ -1608,28 +1618,15 @@ async fn ensure_sidecar_ready_rejects_crashed_existing_handle() {
     // Working spawn_fn that produces a Ready handle.
     let spawn_called = Arc::new(AtomicBool::new(false));
     let spawn_called_clone = Arc::clone(&spawn_called);
-    let held_writer: Arc<Mutex<Option<tokio::io::DuplexStream>>> = Arc::new(Mutex::new(None));
-    let held_clone = Arc::clone(&held_writer);
+    let (writer_tx, writer_rx) = tokio::sync::oneshot::channel();
 
     let spawn_fn = move || {
         spawn_called_clone.store(true, Ordering::SeqCst);
-        let held = Arc::clone(&held_clone);
-        async move {
-            let state = Arc::new(Mutex::new(SidecarState::Starting));
-            let (mut data_writer, data_reader) = tokio::io::duplex(1024);
-            data_writer
-                .write_all(b"{\"type\":\"ready\"}\n")
-                .await
-                .map_err(|e| e.to_string())?;
-            let reader = BufReader::new(data_reader);
-            let (stdin_writer, _stdin_reader) = tokio::io::duplex(1024);
-            let handle = SidecarHandle::from_parts(stdin_writer, reader, state);
-            *held.lock().await = Some(data_writer);
-            Ok(handle)
-        }
+        make_ready_spawn_fn(writer_tx)
     };
 
     let result = ensure_sidecar_ready(&sidecar, spawn_fn, Duration::from_secs(5)).await;
+    let _held = writer_rx.await.ok();
 
     assert!(
         result.is_ok(),
@@ -1653,7 +1650,6 @@ async fn ensure_sidecar_ready_respawns_starting_stale_handle() {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
-    use tokio::io::{AsyncWriteExt, BufReader};
     use tokio::sync::Mutex;
 
     // Pre-populate with a Starting handle that will never become Ready.
@@ -1662,28 +1658,15 @@ async fn ensure_sidecar_ready_respawns_starting_stale_handle() {
 
     let spawn_called = Arc::new(AtomicBool::new(false));
     let spawn_called_clone = Arc::clone(&spawn_called);
-    let held_writer: Arc<Mutex<Option<tokio::io::DuplexStream>>> = Arc::new(Mutex::new(None));
-    let held_clone = Arc::clone(&held_writer);
+    let (writer_tx, writer_rx) = tokio::sync::oneshot::channel();
 
     let spawn_fn = move || {
         spawn_called_clone.store(true, Ordering::SeqCst);
-        let held = Arc::clone(&held_clone);
-        async move {
-            let state = Arc::new(Mutex::new(SidecarState::Starting));
-            let (mut data_writer, data_reader) = tokio::io::duplex(1024);
-            data_writer
-                .write_all(b"{\"type\":\"ready\"}\n")
-                .await
-                .map_err(|e| e.to_string())?;
-            let reader = BufReader::new(data_reader);
-            let (stdin_writer, _stdin_reader) = tokio::io::duplex(1024);
-            let handle = SidecarHandle::from_parts(stdin_writer, reader, state);
-            *held.lock().await = Some(data_writer);
-            Ok(handle)
-        }
+        make_ready_spawn_fn(writer_tx)
     };
 
     let result = ensure_sidecar_ready(&sidecar, spawn_fn, Duration::from_secs(5)).await;
+    let _held = writer_rx.await.ok();
 
     assert!(
         result.is_ok(),
@@ -1728,26 +1711,11 @@ async fn ensure_sidecar_ready_kills_evicted_stale_handle() {
     let sidecar: Mutex<Option<SidecarHandle>> = Mutex::new(Some(stale_handle));
 
     // Working spawn_fn that produces a Ready handle.
-    let held_writer: Arc<Mutex<Option<tokio::io::DuplexStream>>> = Arc::new(Mutex::new(None));
-    let held_clone = Arc::clone(&held_writer);
-    let spawn_fn = move || {
-        let held = Arc::clone(&held_clone);
-        async move {
-            let state = Arc::new(Mutex::new(SidecarState::Starting));
-            let (mut data_writer, data_reader) = tokio::io::duplex(1024);
-            data_writer
-                .write_all(b"{\"type\":\"ready\"}\n")
-                .await
-                .map_err(|e| e.to_string())?;
-            let reader = BufReader::new(data_reader);
-            let (stdin_writer, _stdin_reader) = tokio::io::duplex(1024);
-            let handle = SidecarHandle::from_parts(stdin_writer, reader, state);
-            *held.lock().await = Some(data_writer);
-            Ok(handle)
-        }
-    };
+    let (writer_tx, writer_rx) = tokio::sync::oneshot::channel();
+    let spawn_fn = || make_ready_spawn_fn(writer_tx);
 
     let result = ensure_sidecar_ready(&sidecar, spawn_fn, Duration::from_secs(5)).await;
+    let _held = writer_rx.await.ok();
 
     assert!(
         result.is_ok(),
