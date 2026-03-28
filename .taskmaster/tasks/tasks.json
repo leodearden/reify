@@ -9910,11 +9910,11 @@
         "description": "edit_param has two sequential guard re-elaboration blocks with the solver running between them. The second block can overwrite solver-resolved auto param values.\n\n**What's wrong:**\n- Block A (lib.rs:1562-1646): re-evaluates guard expressions when structure_controlling cells are dirty\n- Solver (lib.rs:1655-1797): resolves auto params and writes values\n- Block B (lib.rs:1799-1881): re-evaluates guard members when guard values changed — overwrites solver values with Undef for members whose guard is now false\n\nIf an auto param lives in a guarded group whose guard transitions to false, Block B sets it to Undef AFTER the solver resolved it. The solver's work is lost.\n\n**Fix:** Merge the two guard re-elaboration blocks into one that runs BEFORE the solver, or ensure Block B does not overwrite auto param values that were set by the solver. The simplest fix: in Block B, skip cells with kind == ValueCellKind::Auto when deactivating guarded members (they should remain at their solver-resolved value or be explicitly invalidated through the dirty cone).\n\n**Memory hints:** search for \"guard re-elaboration\", \"edit_param resolution\", entity names: edit_param, structure_controlling, guard_changed",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-03-28T05:40:41.698Z",
+        "updatedAt": "2026-03-28T09:04:26.762Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -10500,7 +10500,7 @@
         "description": "In `gui/src/bridge.ts`, `ClaudeMessageContext` duplicates 3 of 5 fields from `MessageContext` (in `claudeStore.ts`), silently dropping `currentFile` and `attachedContexts` at the bridge boundary. `App.tsx` `onSend` receives the full `MessageContext` but only forwards 3 fields to `claudeSendMessage`.\n\n**Fix**: Either:\n1. Import `MessageContext` from `./stores/claudeStore` and use `Pick<MessageContext, 'selectedEntity' | 'diagnostics' | 'constraints'>` with a comment explaining why `currentFile` and `attachedContexts` are intentionally excluded, OR\n2. Extend `ClaudeMessageContext` to include all 5 fields and handle the snake_case mapping for `current_file` and `attached_contexts`.\n\nOption depends on whether the Rust sidecar accepts those extra fields.\n\nMemory hints:\n- Search: \"ClaudeMessageContext MessageContext bridge context fields\"\n- Entities: ClaudeMessageContext, MessageContext, bridge.ts, claudeSendMessage",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -10514,7 +10514,7 @@
             "gui/src"
           ]
         },
-        "updatedAt": "2026-03-28T01:23:36.864Z"
+        "updatedAt": "2026-03-28T09:04:26.794Z"
       },
       {
         "id": "519",
@@ -14621,7 +14621,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T09:04:26.729Z",
+      "lastModified": "2026-03-28T09:04:26.794Z",
       "taskCount": 710,
       "completedCount": 329,
       "tags": [
