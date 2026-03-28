@@ -1295,6 +1295,10 @@ fn vec3_components(items: &[Value]) -> Option<(f64, f64, f64, DimensionVector)> 
     let x = items[0].as_f64()?;
     let y = items[1].as_f64()?;
     let z = items[2].as_f64()?;
+    // Reject NaN and Infinity
+    if !x.is_finite() || !y.is_finite() || !z.is_finite() {
+        return None;
+    }
     let dim = items[0].dimension();
     // All three components must share the same dimension
     if items[1].dimension() != dim || items[2].dimension() != dim {
