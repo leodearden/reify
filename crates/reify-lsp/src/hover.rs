@@ -12,8 +12,11 @@ pub fn compute_hover(source: &str, uri: &Url, position: Position) -> Option<Hove
 
     let ctx = AnalysisContext::new(source, uri);
 
+    // Determine the enclosing structure so member lookup is scoped correctly
+    let enclosing = ctx.enclosing_structure_name_at(offset);
+
     // Try member lookup first
-    if let Some(info) = ctx.find_member_decl(word) {
+    if let Some(info) = ctx.find_member_decl(word, enclosing) {
         let kind_str = match info.kind {
             reify_compiler::ValueCellKind::Param => "param",
             reify_compiler::ValueCellKind::Let => "let",
@@ -21,12 +24,9 @@ pub fn compute_hover(source: &str, uri: &Url, position: Position) -> Option<Hove
         };
         let type_str = info.cell_type.to_string();
 
-        // Try to get the evaluated value
+        // Try to get the evaluated value using the member's owning declaration
         let value_str = ctx
-            .compiled
-            .templates
-            .first()
-            .and_then(|t| ctx.get_value(&t.name, word))
+            .get_value(info.decl_name, word)
             .map(|v| format!(" = {}", format_value(v)));
 
         let mut md = format!(
@@ -495,6 +495,42 @@ mod tests {
         );
     }
 
+    // --- guarded-group hover tests ---
+
+    #[test]
+    fn hover_on_structure_with_where_block_shows_correct_counts() {
+        let source = r#"structure S {
+    param a : Bool = true
+    param b : Scalar = 1mm
+    where a {
+        param guarded_x : Scalar = 5mm
+        let guarded_y = 2
+    }
+    constraint b > 0mm
+}"#;
+        // 'S' is on line 0 at col 10 (after 'structure ')
+        let position = Position::new(0, 10);
+        let md = hover_markdown(source, position)
+            .expect("hover should return info for structure S");
+        assert!(
+            md.contains("structure S"),
+            "should mention 'structure S', got: {md}"
+        );
+        // Should show correct recursive counts: 3 params, 1 let, 1 constraint
+        assert!(
+            md.contains("3 params"),
+            "should show 3 params (a, b, guarded_x), got: {md}"
+        );
+        assert!(
+            md.contains("1 lets"),
+            "should show 1 lets (guarded_y), got: {md}"
+        );
+        assert!(
+            md.contains("1 constraints"),
+            "should show 1 constraints, got: {md}"
+        );
+    }
+
     // --- edge cases ---
 
     #[test]
@@ -543,5 +579,27 @@ mod tests {
     fn hover_on_empty_source_returns_none() {
         let result = compute_hover("", &test_uri(), Position::new(0, 0));
         assert!(result.is_none(), "empty source should return None hover");
+    }
+
+    // --- cross-structure scoping tests ---
+
+    #[test]
+    fn hover_on_shared_member_in_second_structure() {
+        // Two structures with identically-named member 'width' but different types.
+        // Hover on 'width' inside B should show Bool, not Scalar.
+        let source =
+            "structure A {\n    param width: Scalar = 5mm\n}\nstructure B {\n    param width: Bool = true\n}";
+        // 'width' inside B is on line 4, col 10
+        let position = Position::new(4, 10);
+        let md = hover_markdown(source, position)
+            .expect("hover should return info for width in B");
+        assert!(
+            md.contains("Bool"),
+            "should show Bool type from structure B, got: {md}"
+        );
+        assert!(
+            !md.contains("Scalar"),
+            "should NOT show Scalar type from structure A, got: {md}"
+        );
     }
 }

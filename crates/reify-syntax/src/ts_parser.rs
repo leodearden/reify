@@ -3327,9 +3327,16 @@ mod tests {
         None
     }
 
-    /// Helper: parse source, find the connect_body node, call lower_connect_body
-    /// directly (bypassing check_and_lower!), and return the errors.
-    fn lower_body_directly(source: &str) -> Vec<ParseError> {
+    /// Generic helper: parse source, find the first node of `kind`, run `lower_fn`
+    /// on it via a fresh `Lowering`, and return collected errors.
+    ///
+    /// The closure pattern avoids lifetime issues: `tree_sitter::Node` borrows from
+    /// `Tree`, so both must live inside the same scope — the closure receives them
+    /// without the caller needing to hold the `Tree`.
+    fn lower_node_directly<F>(source: &str, kind: &str, lower_fn: F) -> Vec<ParseError>
+    where
+        F: FnOnce(&mut Lowering, tree_sitter::Node),
+    {
         let mut ts_parser = tree_sitter::Parser::new();
         ts_parser
             .set_language(&tree_sitter_reify::language().into())
@@ -3337,12 +3344,18 @@ mod tests {
         let tree = ts_parser.parse(source, None).expect("Failed to parse");
         let root = tree.root_node();
 
-        let body_node = find_node_by_kind(root, "connect_body")
-            .expect("no connect_body node found in parse tree");
+        let node = find_node_by_kind(root, kind)
+            .unwrap_or_else(|| panic!("no {kind} node found in parse tree"));
 
         let mut lowering = Lowering::new(source);
-        lowering.lower_connect_body(body_node);
+        lower_fn(&mut lowering, node);
         lowering.errors
+    }
+
+    /// Helper: parse source, find the connect_body node, call lower_connect_body
+    /// directly (bypassing check_and_lower!), and return the errors.
+    fn lower_body_directly(source: &str) -> Vec<ParseError> {
+        lower_node_directly(source, "connect_body", |l, n| { l.lower_connect_body(n); })
     }
 
     #[test]
@@ -3406,23 +3419,38 @@ mod tests {
     #[test]
     fn lower_connect_body_extras_not_flagged() {
         // Comments are tree-sitter extras — they must NOT trigger the catch-all
-        // diagnostic. Verify that a connect body containing a block comment
-        // produces no errors mentioning "unexpected".
+        // diagnostic. The source is syntactically valid, so zero errors is the
+        // correct assertion (not just "no 'unexpected' errors").
         let errors = lower_body_directly(
             "structure S { port a : out T  port b : in T  connect a -> b { /* comment */ grade = 8.8 }  }",
         );
         assert!(
-            !errors.iter().any(|e| e.message.contains("unexpected")),
-            "expected no 'unexpected' errors for comment extras, got: {:?}",
+            errors.is_empty(),
+            "expected no errors for syntactically valid connect body with comment, got: {:?}",
             errors
         );
     }
 
     #[test]
+    fn lower_connect_body_anonymous_tokens_not_flagged() {
+        // An empty connect body `{ }` has only anonymous tokens (braces).
+        // The named-children iteration must skip them without producing errors.
+        let errors = lower_body_directly(
+            "structure S { port a : out T  port b : in T  connect a -> b { } }",
+        );
+        assert!(
+            errors.is_empty(),
+            "expected no errors for empty connect body (anonymous tokens only), got: {:?}",
+            errors
+        );
+    }
+
+    /// Deliberately passes a `constraint_definition` node to `lower_connect_body`
+    /// to exercise the catch-all branch. The constraint_definition has 3 named
+    /// children (identifier, param_declaration, constraint_def_predicate), none of
+    /// which match any connect_body arm — so the catch-all should fire for each.
+    #[test]
     fn lower_connect_body_catch_all_emits_for_unexpected_named_children() {
-        // Pass a constraint_definition node to lower_connect_body. Its named
-        // children (identifier, param_declaration, constraint_def_predicate)
-        // don't match any connect_body arm and should hit the catch-all.
         let source = "constraint def Eq { param x: Scalar  x > 0 }";
         let mut ts_parser = tree_sitter::Parser::new();
         ts_parser
@@ -3431,14 +3459,23 @@ mod tests {
         let tree = ts_parser.parse(source, None).expect("Failed to parse");
         let root = tree.root_node();
 
-        let constraint_node = find_node_by_kind(root, "constraint_definition")
-            .expect("no constraint_definition node found in parse tree");
+        assert!(
+            !root.has_error(),
+            "source should parse without errors — grammar regression?"
+        );
+
+        let Some(constraint_node) = find_node_by_kind(root, "constraint_definition") else {
+            panic!("no constraint_definition node found in parse tree — grammar regression?");
+        };
 
         let mut lowering = Lowering::new(source);
         lowering.lower_connect_body(constraint_node);
         assert!(
-            !lowering.errors.is_empty(),
-            "expected diagnostics for unexpected named children in catch-all, got none"
+            lowering.errors.len() >= 3,
+            "expected at least 3 diagnostics (one per named child: identifier, \
+             param_declaration, constraint_def_predicate), got {}: {:?}",
+            lowering.errors.len(),
+            lowering.errors
         );
         assert!(
             lowering
@@ -3455,19 +3492,7 @@ mod tests {
     /// Helper: parse source, find the port_body node, call lower_port_body
     /// directly (bypassing check_and_lower!), and return the errors.
     fn lower_port_body_directly(source: &str) -> Vec<ParseError> {
-        let mut ts_parser = tree_sitter::Parser::new();
-        ts_parser
-            .set_language(&tree_sitter_reify::language().into())
-            .expect("Error loading Reify grammar");
-        let tree = ts_parser.parse(source, None).expect("Failed to parse");
-        let root = tree.root_node();
-
-        let body_node = find_node_by_kind(root, "port_body")
-            .expect("no port_body node found in parse tree");
-
-        let mut lowering = Lowering::new(source);
-        lowering.lower_port_body(body_node);
-        lowering.errors
+        lower_node_directly(source, "port_body", |l, n| { l.lower_port_body(n); })
     }
 
     #[test]
@@ -3539,19 +3564,7 @@ mod tests {
     /// Helper: parse source, find the constraint_definition node, call
     /// lower_constraint_def directly, and return the errors.
     fn lower_constraint_def_directly(source: &str) -> Vec<ParseError> {
-        let mut ts_parser = tree_sitter::Parser::new();
-        ts_parser
-            .set_language(&tree_sitter_reify::language().into())
-            .expect("Error loading Reify grammar");
-        let tree = ts_parser.parse(source, None).expect("Failed to parse");
-        let root = tree.root_node();
-
-        let constraint_node = find_node_by_kind(root, "constraint_definition")
-            .expect("no constraint_definition node found in parse tree");
-
-        let mut lowering = Lowering::new(source);
-        lowering.lower_constraint_def(constraint_node);
-        lowering.errors
+        lower_node_directly(source, "constraint_definition", |l, n| { l.lower_constraint_def(n); })
     }
 
     #[test]

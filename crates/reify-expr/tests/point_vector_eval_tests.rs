@@ -1498,3 +1498,24 @@ fn value_point_div_zero_returns_undef() {
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert_eq!(result, Value::Undef);
 }
+
+/// Scalar/Scalar division producing a dimensionless result must return
+/// Value::Scalar { dimension: DIMENSIONLESS }, not Value::Real.
+/// This ensures consistency with eval_mul which always returns Scalar.
+#[test]
+fn scalar_div_scalar_dimensionless_returns_scalar() {
+    // 4m / 2m = 2 (dimensionless), should be Scalar not Real
+    let left = CompiledExpr::literal(Value::length(4.0), Type::length());
+    let right = CompiledExpr::literal(Value::length(2.0), Type::length());
+    let expr = CompiledExpr::binop(BinOp::Div, left, right, Type::dimensionless_scalar());
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Scalar {
+            si_value: 2.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        },
+        "Scalar/Scalar with same dimension must produce Scalar{{dimensionless}}, not Real"
+    );
+}

@@ -48,11 +48,11 @@ fn dimension_of(ty: &Type) -> DimensionVector {
     }
 }
 
-/// Zip auto params with f64 values into a HashMap<ValueCellId, Value>.
+/// Build the solved-values HashMap from auto params and their f64 solutions.
 ///
 /// Each param is mapped to a Value::Scalar with the correct SI value
 /// and dimension. Used by early-exit, fallback, and solution construction paths.
-fn params_to_value_map(params: &[AutoParam], x: &[f64]) -> HashMap<ValueCellId, Value> {
+fn build_solved_values(params: &[AutoParam], x: &[f64]) -> HashMap<ValueCellId, Value> {
     params
         .iter()
         .zip(x.iter())
@@ -72,10 +72,19 @@ fn params_to_value_map(params: &[AutoParam], x: &[f64]) -> HashMap<ValueCellId, 
 ///
 /// Clones the base map (O(1) via PersistentMap structural sharing) and
 /// inserts each auto param as a Value::Scalar with the correct dimension.
+/// Maps params directly to avoid the intermediate HashMap allocation that
+/// `build_solved_values` would create — this is the hot path called on
+/// every Nelder-Mead iteration.
 fn build_trial_values(base: &ValueMap, params: &[AutoParam], x: &[f64]) -> ValueMap {
     let mut values = base.clone();
-    for (id, value) in params_to_value_map(params, x) {
-        values.insert(id, value);
+    for (param, &val) in params.iter().zip(x.iter()) {
+        values.insert(
+            param.id.clone(),
+            Value::Scalar {
+                si_value: val,
+                dimension: dimension_of(&param.param_type),
+            },
+        );
     }
     values
 }
@@ -514,7 +523,7 @@ impl ConstraintSolver for DimensionalSolver {
                 "initial point already feasible with no objective; returning early"
             );
             return SolveResult::Solved {
-                values: params_to_value_map(&problem.auto_params, &initial),
+                values: build_solved_values(&problem.auto_params, &initial),
             };
         }
 
@@ -545,8 +554,7 @@ impl ConstraintSolver for DimensionalSolver {
             .with_sd_tolerance(1e-15)
             .expect("sd_tolerance 1e-15 is always valid");
 
-        let executor =
-            Executor::new(cost_fn, solver).configure(|state| state.max_iters(max_iters));
+        let executor = Executor::new(cost_fn, solver).configure(|state| state.max_iters(max_iters));
 
         let result = match executor.run() {
             Ok(res) => res,
@@ -622,7 +630,7 @@ impl ConstraintSolver for DimensionalSolver {
                 // Construct fallback HashMap lazily — only on the error path
                 // where the optimizer drifted infeasible. The `initial` Vec<f64>
                 // is still in scope from the extraction at the top of solve().
-                let fallback = params_to_value_map(&problem.auto_params, &initial);
+                let fallback = build_solved_values(&problem.auto_params, &initial);
                 tracing::debug!(
                     n_params,
                     final_max_residual,
@@ -654,7 +662,7 @@ impl ConstraintSolver for DimensionalSolver {
         }
 
         // Build solution values
-        let values = params_to_value_map(&problem.auto_params, &clamped);
+        let values = build_solved_values(&problem.auto_params, &clamped);
 
         // NOTE: Solved indicates constraint satisfaction but does NOT guarantee objective
         // optimality. The Nelder-Mead optimizer may have hit the iteration limit without
@@ -730,6 +738,122 @@ mod tests {
                 assert!((si_value - 0.080).abs() < 1e-15, "width should be 0.080");
             }
             other => panic!("expected Scalar, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn build_trial_values_multi_param_regression() {
+        use super::build_trial_values;
+        use reify_types::{AutoParam, DimensionVector, Type, Value, ValueCellId};
+
+        let thickness_id = ValueCellId::new("Bracket", "thickness");
+        let angle_id = ValueCellId::new("Bracket", "angle");
+        let width_id = ValueCellId::new("Bracket", "width");
+
+        // Base map has a pre-existing non-auto value (width=80mm)
+        let mut base = ValueMap::new();
+        base.insert(
+            width_id.clone(),
+            Value::Scalar {
+                si_value: 0.080,
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+
+        let params = vec![
+            AutoParam {
+                id: thickness_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.1)),
+            },
+            AutoParam {
+                id: angle_id.clone(),
+                param_type: Type::angle(),
+                bounds: Some((0.0, std::f64::consts::PI)),
+            },
+        ];
+
+        let trial = build_trial_values(&base, &params, &[0.005, 1.2]);
+
+        // First auto param: length with correct dimension
+        let thickness = trial.get(&thickness_id).expect("thickness should exist");
+        match thickness {
+            &Value::Scalar {
+                si_value,
+                dimension,
+            } => {
+                assert!(
+                    (si_value - 0.005).abs() < 1e-15,
+                    "thickness si_value should be 0.005, got {}",
+                    si_value
+                );
+                assert_eq!(dimension, DimensionVector::LENGTH);
+            }
+            other => panic!("expected Scalar for thickness, got {:?}", other),
+        }
+
+        // Second auto param: angle with correct dimension
+        let angle = trial.get(&angle_id).expect("angle should exist");
+        match angle {
+            &Value::Scalar {
+                si_value,
+                dimension,
+            } => {
+                assert!(
+                    (si_value - 1.2).abs() < 1e-15,
+                    "angle si_value should be 1.2, got {}",
+                    si_value
+                );
+                assert_eq!(dimension, DimensionVector::ANGLE);
+            }
+            other => panic!("expected Scalar for angle, got {:?}", other),
+        }
+
+        // Non-auto value should be preserved unchanged
+        let width = trial.get(&width_id).expect("width should be preserved");
+        match width {
+            &Value::Scalar { si_value, .. } => {
+                assert!(
+                    (si_value - 0.080).abs() < 1e-15,
+                    "width should remain 0.080, got {}",
+                    si_value
+                );
+            }
+            other => panic!("expected Scalar for width, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn build_trial_values_empty_params() {
+        use super::build_trial_values;
+        use reify_types::{DimensionVector, Value, ValueCellId};
+
+        let width_id = ValueCellId::new("Bracket", "width");
+
+        // Base map has one pre-existing value
+        let mut base = ValueMap::new();
+        base.insert(
+            width_id.clone(),
+            Value::Scalar {
+                si_value: 0.080,
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+
+        // Empty params slice — should return base unchanged
+        let trial = build_trial_values(&base, &[], &[]);
+
+        // Base value preserved
+        let width = trial.get(&width_id).expect("width should be preserved");
+        match width {
+            &Value::Scalar { si_value, .. } => {
+                assert!(
+                    (si_value - 0.080).abs() < 1e-15,
+                    "width should remain 0.080, got {}",
+                    si_value
+                );
+            }
+            other => panic!("expected Scalar for width, got {:?}", other),
         }
     }
 
@@ -1957,16 +2081,29 @@ mod tests {
         };
 
         let result = solver.solve(&problem);
-        assert!(
-            matches!(result, SolveResult::Solved { .. }),
-            "feasible initial point with objective should return Solved, got {:?}",
-            result
-        );
+        match result {
+            SolveResult::Solved { values } => {
+                let si = values.get(&x_id).unwrap().as_f64().unwrap();
+                assert!(
+                    si > 0.004 && si < 0.008,
+                    "optimizer should drive x toward 5mm lower bound, got {} m \
+                     (expected 4mm < x < 8mm — lower bound catches zero/negative, \
+                     upper bound confirms convergence near 5mm)",
+                    si
+                );
+            }
+            other => panic!(
+                "feasible initial point with objective should return Solved, got {:?}",
+                other
+            ),
+        }
     }
 
     /// Running the solver through TerminationReason extraction must not panic
-    /// or regress the result. A minimal 1-param feasible problem should still
-    /// return Solved or Infeasible (never NoProgress for a well-formed problem).
+    /// or regress the result. A trivially feasible 1-param problem (x > 5mm AND
+    /// x < 50mm with bounds [1mm, 100mm]) must return Solved with x in the
+    /// feasible range, verifying both the solver result variant and constraint
+    /// satisfaction.
     #[test]
     fn termination_reason_extracted_without_panic() {
         use crate::DimensionalSolver;
@@ -1994,8 +2131,7 @@ mod tests {
             },
             Type::length(),
         );
-        let gt_expr =
-            CompiledExpr::binop(BinOp::Gt, x_ref.clone(), five_mm, Type::Bool);
+        let gt_expr = CompiledExpr::binop(BinOp::Gt, x_ref.clone(), five_mm, Type::Bool);
         let lt_expr = CompiledExpr::binop(BinOp::Lt, x_ref, fifty_mm, Type::Bool);
 
         let problem = ResolutionProblem {
@@ -2014,16 +2150,29 @@ mod tests {
         };
 
         let result = solver.solve(&problem);
-        assert!(
-            matches!(result, SolveResult::Solved { .. } | SolveResult::Infeasible { .. }),
-            "well-formed 1-param problem should return Solved or Infeasible, got {:?}",
-            result
-        );
+        let SolveResult::Solved { values } = result else {
+            panic!(
+                "trivially feasible 1-param problem must return Solved, got {:?}",
+                result
+            );
+        };
+
+        // Verify constraint satisfaction: solved x must be within (5mm, 50mm).
+        let x_val = values.get(&x_id).expect("solved values must contain x");
+        if let Value::Scalar { si_value, .. } = x_val {
+            assert!(
+                *si_value > 0.005 && *si_value < 0.050,
+                "solved x SI value {} must be in (0.005, 0.050)",
+                si_value
+            );
+        } else {
+            panic!("expected Scalar value for x, got {:?}", x_val);
+        }
     }
 
     #[test]
-    fn params_to_value_map_builds_correct_hashmap() {
-        use super::params_to_value_map;
+    fn build_solved_values_builds_correct_hashmap() {
+        use super::build_solved_values;
         use reify_types::{AutoParam, DimensionVector, Type, Value, ValueCellId};
 
         let length_id = ValueCellId::new("Part", "length");
@@ -2044,7 +2193,7 @@ mod tests {
 
         let x = [0.025, std::f64::consts::FRAC_PI_2]; // 25mm, ~90°
 
-        let result = params_to_value_map(&params, &x);
+        let result = build_solved_values(&params, &x);
 
         assert_eq!(result.len(), 2, "should contain exactly 2 entries");
 
@@ -2086,6 +2235,50 @@ mod tests {
                 );
             }
             other => panic!("expected Scalar for angle, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn build_solved_values_empty_params_returns_empty_map() {
+        use super::build_solved_values;
+
+        let result = build_solved_values(&[], &[]);
+        assert!(result.is_empty(), "empty params should produce empty map");
+    }
+
+    #[test]
+    fn build_solved_values_dimensionless_type() {
+        use super::build_solved_values;
+        use reify_types::{AutoParam, DimensionVector, Type, Value, ValueCellId};
+
+        let id = ValueCellId::new("Part", "ratio");
+        let params = vec![AutoParam {
+            id: id.clone(),
+            param_type: Type::Real,
+            bounds: None,
+        }];
+        let x = [3.125];
+
+        let result = build_solved_values(&params, &x);
+        assert_eq!(result.len(), 1);
+
+        match result.get(&id) {
+            Some(Value::Scalar {
+                si_value,
+                dimension,
+            }) => {
+                assert!(
+                    (si_value - 3.125).abs() < 1e-15,
+                    "si_value should be 3.125, got {}",
+                    si_value
+                );
+                assert_eq!(
+                    *dimension,
+                    DimensionVector::DIMENSIONLESS,
+                    "Type::Real should map to DIMENSIONLESS"
+                );
+            }
+            other => panic!("expected Scalar for ratio, got {:?}", other),
         }
     }
 

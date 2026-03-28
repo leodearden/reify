@@ -1675,4 +1675,30 @@ mod tests {
         assert_eq!(kernel.op_count(), 1);
         assert!(kernel.last_op().is_some());
     }
+
+    #[test]
+    fn mock_unconfigured_handle_query_returns_error() {
+        let mut kernel = MockGeometryKernel::new();
+        let handle = kernel
+            .execute(&GeometryOp::Sphere {
+                radius: Value::length(0.01),
+            })
+            .unwrap();
+
+        // Query without configuring any result for the handle
+        let result = kernel.query(&GeometryQuery::Volume(handle.id));
+        match result {
+            Err(QueryError::QueryFailed(msg)) => {
+                assert!(
+                    msg.contains(&format!("{:?}", handle.id)),
+                    "error message should contain handle id, got: {}",
+                    msg
+                );
+            }
+            other => panic!(
+                "expected Err(QueryFailed) for unconfigured handle, got {:?}",
+                other
+            ),
+        }
+    }
 }

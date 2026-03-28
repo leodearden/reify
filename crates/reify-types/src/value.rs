@@ -755,13 +755,11 @@ impl Value {
             Value::String(s) => (s.clone(), String::new()),
             Value::Enum { variant, .. } => (variant.clone(), String::new()),
             Value::List(items) => {
-                let strs: Vec<String> =
-                    items.iter().map(|v| v.format_display_pair().0).collect();
+                let strs: Vec<String> = items.iter().map(|v| v.format_display_pair().0).collect();
                 (format!("[{}]", strs.join(", ")), String::new())
             }
             Value::Set(items) => {
-                let strs: Vec<String> =
-                    items.iter().map(|v| v.format_display_pair().0).collect();
+                let strs: Vec<String> = items.iter().map(|v| v.format_display_pair().0).collect();
                 (format!("set{{{}}}", strs.join(", ")), String::new())
             }
             Value::Map(entries) => {
@@ -792,18 +790,15 @@ impl Value {
                 String::new(),
             ),
             Value::Tensor(items) => {
-                let strs: Vec<String> =
-                    items.iter().map(|v| v.format_display_pair().0).collect();
+                let strs: Vec<String> = items.iter().map(|v| v.format_display_pair().0).collect();
                 (format!("[{}]", strs.join(", ")), String::new())
             }
             Value::Point(items) => {
-                let strs: Vec<String> =
-                    items.iter().map(|v| v.format_display_pair().0).collect();
+                let strs: Vec<String> = items.iter().map(|v| v.format_display_pair().0).collect();
                 (format!("point({})", strs.join(", ")), String::new())
             }
             Value::Vector(items) => {
-                let strs: Vec<String> =
-                    items.iter().map(|v| v.format_display_pair().0).collect();
+                let strs: Vec<String> = items.iter().map(|v| v.format_display_pair().0).collect();
                 (format!("vec({})", strs.join(", ")), String::new())
             }
             Value::Matrix(rows) => {

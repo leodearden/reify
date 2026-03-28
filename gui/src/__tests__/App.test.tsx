@@ -440,6 +440,34 @@ describe('App async mount/cleanup race conditions', () => {
     // Verify the Claude event unsubscribe was called during cleanup
     expect(claudeUnsub).toHaveBeenCalled();
   });
+
+  it('does not leak Claude event listeners when unmounted before subscribeToClaudeEvents resolves', async () => {
+    // Create a deferred promise for subscribeToClaudeEvents
+    const unlistenClaude = vi.fn();
+    let resolveClaudeSub!: (unsub: () => void) => void;
+    vi.mocked(bridge.subscribeToClaudeEvents).mockReturnValue(
+      new Promise<() => void>((resolve) => { resolveClaudeSub = resolve; }),
+    );
+
+    const { unmount } = render(() => <App />);
+
+    // Wait for getInitialState to resolve and initApp to reach subscribeToClaudeEvents
+    await new Promise((r) => setTimeout(r, 0));
+
+    // Unmount while subscribeToClaudeEvents is still pending
+    unmount();
+
+    // Resolve the deferred subscribeToClaudeEvents — alive guard should fire
+    resolveClaudeSub(unlistenClaude);
+
+    // Flush microtasks so the await in initApp resolves
+    await new Promise((r) => setTimeout(r, 0));
+
+    // The alive guard (lines 260-263) calls unlistenClaude() and returns early,
+    // never assigning claudeEventUnsub. So onCleanup's claudeEventUnsub?.() is a no-op.
+    // The unlisten should be called exactly once — via the alive guard, not via onCleanup.
+    expect(unlistenClaude).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('App new component integration', () => {
@@ -2002,10 +2030,17 @@ describe('App keyboard help overlay', () => {
 });
 
 describe('App Claude error handling', () => {
+  let consoleSpy: ReturnType<typeof vi.spyOn> | undefined;
+
+  afterEach(() => {
+    consoleSpy?.mockRestore();
+    consoleSpy = undefined;
+  });
+
   it('logs error to console when subscribeToClaudeEvents fails', async () => {
     const subscribeError = new Error('subscribe failed');
     vi.mocked(bridge.subscribeToClaudeEvents).mockRejectedValue(subscribeError);
-    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     render(() => <App />);
 
@@ -2013,18 +2048,29 @@ describe('App Claude error handling', () => {
       expect(screen.getByTestId('app-layout')).toBeTruthy();
     });
 
-    expect(consoleSpy).toHaveBeenCalledWith(
-      '[claude] subscribeToClaudeEvents failed:',
-      subscribeError,
-    );
+    await waitFor(() => {
+      expect(consoleSpy).toHaveBeenCalledWith(
+        '[claude] subscribeToClaudeEvents failed:',
+        subscribeError,
+      );
+    });
 
-    consoleSpy.mockRestore();
+    // Verify the toast DOM element appears with the correct error message
+    await waitFor(() => {
+      const toasts = screen.getAllByTestId('toast');
+      const claudeToast = toasts.find((t) =>
+        t.textContent?.includes('Claude assistant unavailable'),
+      );
+      expect(claudeToast).toBeTruthy();
+      expect(claudeToast!.dataset.type).toBe('error');
+      expect(claudeToast!.textContent).toContain('chat features may not work');
+    });
   });
 
   it('shows toast when claudeAbort fails', async () => {
     const abortError = new Error('abort failed');
     vi.mocked(bridge.claudeAbort).mockRejectedValue(abortError);
-    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     // Capture the handler passed to subscribeToClaudeEvents
     let claudeHandler: ((msg: any) => void) | undefined;
@@ -2038,6 +2084,9 @@ describe('App Claude error handling', () => {
     await waitFor(() => {
       expect(screen.getByTestId('app-layout')).toBeTruthy();
     });
+
+    // Guard: ensure subscribeToClaudeEvents was called and captured the handler
+    await waitFor(() => expect(claudeHandler).toBeDefined());
 
     // Fire a text_delta event to put claudeStore into 'responding' state
     claudeHandler!({ type: 'text_delta', id: 'msg-1', content: 'Hello' });
@@ -2065,7 +2114,58 @@ describe('App Claude error handling', () => {
       expect(toastEl.dataset.type).toBe('error');
       expect(toastEl.textContent).toContain('Abort failed: abort failed');
     });
+  });
+});
 
-    consoleSpy.mockRestore();
+describe('App onSend context forwarding', () => {
+  it('forwards currentFile and attachedContexts to claudeSendMessage', async () => {
+    // Set up initial state with a file so activeFile is set in ChatPanel
+    const testState: GuiState = {
+      meshes: [],
+      values: [],
+      constraints: [],
+      files: [{ path: 'bracket.ri', content: 'structure Bracket {}' }],
+    };
+    vi.mocked(bridge.getInitialState).mockResolvedValue(testState);
+
+    render(() => <App />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('app-layout')).toBeTruthy();
+    });
+
+    // Open context picker and attach 'file' context
+    const pickerBtn = screen.getByTestId('context-picker-btn');
+    fireEvent.click(pickerBtn);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('context-picker-dropdown')).toBeTruthy();
+    });
+
+    // Click "Current file" option (4th button in the dropdown)
+    const dropdown = screen.getByTestId('context-picker-dropdown');
+    const options = dropdown.querySelectorAll('button');
+    const fileOption = Array.from(options).find((btn) => btn.textContent === 'Current file');
+    expect(fileOption).toBeTruthy();
+    fireEvent.click(fileOption!);
+
+    // Type a message in the chat input
+    const chatInput = screen.getByTestId('chat-input');
+    fireEvent.input(chatInput, { target: { value: 'help with this file' } });
+
+    // Click send button
+    const sendBtn = screen.getByTestId('send-button');
+    fireEvent.click(sendBtn);
+
+    // Verify claudeSendMessage was called with currentFile and attachedContexts
+    await waitFor(() => {
+      expect(bridge.claudeSendMessage).toHaveBeenCalledTimes(1);
+    });
+
+    const callArgs = vi.mocked(bridge.claudeSendMessage).mock.calls[0];
+    const contextArg = callArgs[1];
+    expect(contextArg).toBeDefined();
+    expect(contextArg!.currentFile).toBe('bracket.ri');
+    expect(contextArg!.attachedContexts).toContain('file');
   });
 });

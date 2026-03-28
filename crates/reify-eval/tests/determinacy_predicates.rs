@@ -757,16 +757,7 @@ fn determinacy_predicate_hash_differs_from_option_none() {
     let cell_id = ValueCellId::new("S", "a");
     let kind = DeterminacyPredicateKind::Determined;
 
-    let det_expr = CompiledExpr {
-        kind: CompiledExprKind::DeterminacyPredicate {
-            kind,
-            cell: cell_id.clone(),
-        },
-        result_type: Type::Bool,
-        content_hash: ContentHash::of(&[17])
-            .combine(ContentHash::of_str(&format!("{:?}", kind)))
-            .combine(ContentHash::of_str(&format!("{}", cell_id))),
-    };
+    let det_expr = CompiledExpr::determinacy_predicate(kind, cell_id.clone());
 
     // OptionNone uses discriminator byte [15].
     let option_none_expr = CompiledExpr::option_none(Type::Option(Box::new(Type::Bool)));
@@ -775,6 +766,74 @@ fn determinacy_predicate_hash_differs_from_option_none() {
         det_expr.content_hash, option_none_expr.content_hash,
         "DeterminacyPredicate and OptionNone must have different content hashes"
     );
+}
+
+// == Constructor + stable hash regression test ===============================
+
+/// The `CompiledExpr::determinacy_predicate()` constructor must produce a stable
+/// content hash based on byte discriminators (not Debug repr). This mirrors the
+/// pattern used by `CompiledExpr::quantifier()` and other constructors.
+///
+/// Hash formula: `ContentHash::of(&[17, kind_byte]).combine(of_str(cell_id))`
+/// where kind_byte is: Determined=0, Undetermined=1, Constrained=2, PartiallyDetermined=3.
+#[test]
+fn determinacy_predicate_constructor_produces_stable_hash() {
+    let cell_id = ValueCellId::new("S", "a");
+
+    // Test all 4 variants produce correct kind, result_type, and stable hash.
+    let variants: Vec<(DeterminacyPredicateKind, u8)> = vec![
+        (DeterminacyPredicateKind::Determined, 0),
+        (DeterminacyPredicateKind::Undetermined, 1),
+        (DeterminacyPredicateKind::Constrained, 2),
+        (DeterminacyPredicateKind::PartiallyDetermined, 3),
+    ];
+
+    let mut hashes = Vec::new();
+
+    for (kind, kind_byte) in &variants {
+        let expr = CompiledExpr::determinacy_predicate(*kind, cell_id.clone());
+
+        // Verify kind is correct.
+        if let CompiledExprKind::DeterminacyPredicate {
+            kind: ref k,
+            cell: ref c,
+        } = expr.kind
+        {
+            assert_eq!(k, kind, "constructor should produce correct kind");
+            assert_eq!(c, &cell_id, "constructor should produce correct cell");
+        } else {
+            panic!("expected DeterminacyPredicate, got {:?}", expr.kind);
+        }
+
+        // Verify result_type is Bool.
+        assert_eq!(
+            expr.result_type,
+            Type::Bool,
+            "determinacy predicate result_type should be Bool"
+        );
+
+        // Verify content_hash matches the stable byte-discriminator formula.
+        let expected_hash = ContentHash::of(&[17u8, *kind_byte])
+            .combine(ContentHash::of_str(&format!("{}", cell_id)));
+        assert_eq!(
+            expr.content_hash, expected_hash,
+            "content_hash for {:?} should use stable byte encoding [17, {}]",
+            kind, kind_byte
+        );
+
+        hashes.push(expr.content_hash);
+    }
+
+    // All 4 variants must produce distinct hashes.
+    for i in 0..hashes.len() {
+        for j in (i + 1)..hashes.len() {
+            assert_ne!(
+                hashes[i], hashes[j],
+                "hash for variant {} must differ from variant {}",
+                i, j
+            );
+        }
+    }
 }
 
 // == Silent failure regression test ==========================================
