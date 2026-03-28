@@ -354,6 +354,26 @@ fn get_selection_reflects_live_arc_updates() {
     );
 }
 
+// --- Builder tests ---
+
+#[test]
+fn builder_with_no_options_matches_new() {
+    let session = make_loaded_session();
+    let engine = Arc::new(Mutex::new(session));
+    let ctx = TauriToolContext::builder(engine).build();
+
+    // Selection should be empty (matches `new()` behavior)
+    let selection = ctx.get_selection().expect("get_selection should succeed");
+    assert!(selection.selected_entity.is_none());
+    assert!(selection.hovered_entity.is_none());
+
+    // focus_entity should succeed without an emitter (no-op)
+    let result = ctx
+        .focus_entity("Bracket.width")
+        .expect("focus_entity without emitter should succeed");
+    assert!(result);
+}
+
 // --- Compile-time trait assertions ---
 
 #[test]
