@@ -4405,6 +4405,25 @@ mod tests {
     }
 
     #[test]
+    fn orient_quaternion_rejects_angle_dimension() {
+        // ANGLE-dimensioned Scalars must also be rejected — quaternion components
+        // are dimensionless, not angles.
+        assert!(eval_builtin(
+            "orient_quaternion",
+            &[
+                Value::Scalar {
+                    si_value: 1.0,
+                    dimension: DimensionVector::ANGLE,
+                },
+                Value::Real(0.0),
+                Value::Real(0.0),
+                Value::Real(0.0),
+            ]
+        )
+        .is_undef());
+    }
+
+    #[test]
     fn orient_euler_inf_angle_returns_undef() {
         // Inf angle must be rejected in orient_euler.
         assert!(
