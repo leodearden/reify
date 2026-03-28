@@ -13243,12 +13243,13 @@
         "description": "Several solver test assertions are weaker than their doc comments claim. Fix these:\n\n1. **partial_feasibility_not_treated_as_warm_start dual-accept path** (solver_integration.rs:1224-1325): The test name and doc claim strict Infeasible invariant, but the body accepts both Infeasible and Solved. Either split into two focused single-outcome tests (matching the file's established convention from `infeasible_initial_not_rescued_by_fallback`), or rename and update the doc comment to accurately describe the dual-accept semantics.\n\n2. **multi_param_warm_start_with_objective assertion** (solver_integration.rs:1199-1203): `sum_si <= 0.090` accepts no improvement (3×30mm = 0.090). Also fragile due to IEEE 754 float accumulation (`0.030 + 0.030 + 0.030` can be > 0.090). Either: (a) add epsilon margin `sum_si <= 0.090 + 1e-9` and update doc to say \"non-regression\", or (b) use `sum_si < 0.085` to prove actual improvement and keep the \"proves optimizer improved\" claim.\n\n3. **feasibility_check_runs_with_objective missing lower bound** (solver.rs ~line 2088): `si < 0.008` has no lower bound. Add `si > 0.004` to verify the solver returned a physically meaningful value near 5mm, not zero or negative.\n\nMemory hints: search for \"warm-start optimization\", \"solver test coverage\", entity: NelderMeadSolver",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "529"
         ],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-03-28T04:28:45.608Z"
       },
       {
         "id": "661",
@@ -13299,7 +13300,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T04:28:43.076Z",
+      "lastModified": "2026-03-28T04:28:45.608Z",
       "taskCount": 664,
       "completedCount": 313,
       "tags": [
