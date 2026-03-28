@@ -3419,14 +3419,14 @@ mod tests {
     #[test]
     fn lower_connect_body_extras_not_flagged() {
         // Comments are tree-sitter extras — they must NOT trigger the catch-all
-        // diagnostic. Verify that a connect body containing a block comment
-        // produces no errors mentioning "unexpected".
+        // diagnostic. The source is syntactically valid, so zero errors is the
+        // correct assertion (not just "no 'unexpected' errors").
         let errors = lower_body_directly(
             "structure S { port a : out T  port b : in T  connect a -> b { /* comment */ grade = 8.8 }  }",
         );
         assert!(
-            !errors.iter().any(|e| e.message.contains("unexpected")),
-            "expected no 'unexpected' errors for comment extras, got: {:?}",
+            errors.is_empty(),
+            "expected no errors for syntactically valid connect body with comment, got: {:?}",
             errors
         );
     }
