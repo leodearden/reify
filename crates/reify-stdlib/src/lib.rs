@@ -487,11 +487,11 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
 
         // conjugate(z): negate the imaginary part, preserve re and dimension.
         "conjugate" => unary(args, |v| match v {
-            Value::Complex { re, im, dimension } => Value::Complex {
+            Value::Complex { re, im, dimension } => sanitize_value(Value::Complex {
                 re: *re,
                 im: -im,
                 dimension: *dimension,
-            },
+            }),
             _ => Value::Undef,
         }),
 
