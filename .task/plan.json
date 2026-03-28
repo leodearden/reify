@@ -1,0 +1,83 @@
+{
+  "task_id": "571",
+  "title": "Document Indeterminate-as-success semantics and add CLI test",
+  "files": [
+    "crates/reify-cli/src/main.rs",
+    "crates/reify-cli/tests/cli_check.rs",
+    "crates/reify-cli/tests/fixtures/bracket_indeterminate.ri",
+    "crates/reify-cli/tests/fixtures/bracket_all_indeterminate.ri",
+    "crates/reify-cli/tests/fixtures/bracket_violated_indeterminate.ri"
+  ],
+  "modules": [
+    "crates/reify-cli/src",
+    "crates/reify-cli/tests"
+  ],
+  "analysis": "This task is ALREADY COMPLETE in the current codebase. All requested changes exist:\n\n1. **Comments on Indeterminate match arm (main.rs:306-311)**: The `Satisfaction::Indeterminate` match arm has a 5-line inline comment explaining the design decision: 'Indeterminate does not set all_satisfied=false. A build with only indeterminate constraints exits 0 and does not block the build. Indeterminate arises from undef inputs (auto params, partial evaluation) which propagate as quiet-NaN semantics and are not violations.'\n\n2. **Doc-comment on report_constraint_results (main.rs:288-293)**: Comprehensive doc-comment: 'Indeterminate constraints are intentionally treated as non-violating. Indeterminate arises when a constraint's inputs are undefined \u2014 typically from auto parameters not yet resolved by the solver. Treating these as violations would block evaluations that are otherwise valid and break the incremental evaluation engine. Only explicit Violated results cause all_satisfied to be false.'\n\n3. **Call-site comments**: Both cmd_check (line 93) and cmd_build (line 159) have brief comments noting indeterminate counts as satisfied.\n\n4. **CLI integration tests in cli_check.rs**:\n   - `check_indeterminate_constraint_exits_success` (line 107): Mixed OK+INDETERMINATE, verifies exit 0, INDETERMINATE on stdout (not stderr), correct summary 'No constraint violations (some indeterminate).'\n   - `check_all_indeterminate_exits_success` (line 207): All INDETERMINATE, verifies exit 0, no OK/VIOLATED, correct summary.\n   - `check_violated_and_indeterminate_exits_failure` (line 176): VIOLATED+INDETERMINATE, verifies exit non-zero, both statuses present, 'Some constraints violated.' summary.\n\n5. **Fixture files**: bracket_indeterminate.ri (1 satisfied + 1 auto/indeterminate), bracket_all_indeterminate.ri (2 auto/indeterminate), bracket_violated_indeterminate.ri (1 violated + 1 auto/indeterminate).\n\n6. **Unit tests**: `indeterminate_formats_correctly_and_counts_as_satisfied` (main.rs:424), `summary_message_indeterminate_no_violations` (main.rs:484).\n\nNo new code is needed. The plan steps are verification-only. The initial merge attempt failed because main advanced (merge_ff_failed); resolved by resetting task branch to latest main (all code already present there). Second merge_ff_failed due to task/596 merging to main during retry.",
+  "prerequisites": [],
+  "steps": [
+    {
+      "id": "step-1",
+      "type": "test",
+      "description": "Verify existing CLI integration tests for indeterminate semantics pass: run `cargo test --package reify-cli --test cli_check` and confirm all 8 tests pass including check_indeterminate_constraint_exits_success, check_all_indeterminate_exits_success, and check_violated_and_indeterminate_exits_failure. No new test code to write \u2014 tests already exist.",
+      "status": "done",
+      "commit": "0ec41c4728ee15748f56387d83d7af9012b6702d"
+    },
+    {
+      "id": "step-2",
+      "type": "impl",
+      "description": "Verify existing documentation: (a) doc-comment on report_constraint_results (main.rs:288-293) explains Indeterminate semantics and rationale, (b) inline comment on Indeterminate match arm (main.rs:306-311) explains the design decision, (c) call-site comments in cmd_check (line 93) and cmd_build (line 159). No new code to write \u2014 comments already exist.",
+      "status": "done",
+      "commit": "0ec41c4728ee15748f56387d83d7af9012b6702d"
+    },
+    {
+      "id": "step-3",
+      "type": "impl",
+      "description": "Retry merge after merge_ff_failed: main advanced during initial merge. Reset task branch to latest origin/main (all task code already present on main). Re-verify all 8 CLI tests pass on fresh branch. Commit task metadata (.task/plan.json) and push for merge.",
+      "status": "done",
+      "commit": "552bc628a311562634c99e753675ed097c6dc900"
+    },
+    {
+      "id": "step-4",
+      "type": "impl",
+      "description": "Second merge retry after merge_ff_failed: main advanced again (task/596 merged as c7a75c7a). Reset task branch to latest origin/main (all task 571 code already on main). Commit .task/plan.json metadata and push for merge.",
+      "status": "done",
+      "commit": "c7a75c7a"
+    },
+    {
+      "id": "step-5",
+      "type": "impl",
+      "description": "Third merge retry after merge_ff_failed: main advanced during previous merge attempt. Reset task branch to latest origin/main (c7a75c7a). All task 571 code already on main \u2014 only .task/plan.json metadata commit needed. Push for merge.",
+      "status": "done",
+      "commit": "c7a75c7a"
+    }
+  ],
+  "design_decisions": [
+    {
+      "decision": "No new code needed \u2014 task is already fully implemented",
+      "rationale": "All three deliverables in the task description are present: (1) inline comment on the Indeterminate match arm explaining the design choice, (2) doc-comment on report_constraint_results with full rationale, (3) three CLI integration tests covering indeterminate-only, mixed, and violated+indeterminate scenarios with fixture files. The tests verify exit code 0 for indeterminate, INDETERMINATE text on stdout not stderr, and correct summary messages."
+    },
+    {
+      "decision": "Fresh branch from main instead of rebase for merge retry",
+      "rationale": "Task branch had 255+ commits to replay with cascading tasks.json conflicts. Since all actual code changes are already on main (verification-only task), resetting to origin/main is the cleanest approach per project conventions (feedback_clean_branch_for_stale_rebase, feedback_patch_over_rebase)."
+    }
+  ],
+  "reuse": [
+    {
+      "what": "fixture_path helper function",
+      "where": "crates/reify-cli/tests/cli_check.rs:3-6",
+      "how": "Uses env!(\"CARGO_MANIFEST_DIR\") to locate fixture files \u2014 already used by all existing tests"
+    },
+    {
+      "what": "Indeterminate fixture files using auto params",
+      "where": "crates/reify-cli/tests/fixtures/bracket_indeterminate.ri, bracket_all_indeterminate.ri, bracket_violated_indeterminate.ri",
+      "how": "Fixtures use `param ... = auto` to produce Indeterminate constraint satisfaction \u2014 the auto keyword creates unresolved params that propagate as Indeterminate through constraint evaluation"
+    },
+    {
+      "what": "CLI test pattern with Command::new + CARGO_BIN_EXE_reify",
+      "where": "crates/reify-cli/tests/cli_check.rs",
+      "how": "All 8 tests follow consistent pattern: build Command, capture stdout/stderr, assert exit code, assert text presence/absence in stdout vs stderr"
+    }
+  ],
+  "_session_id": "571-65a560a2",
+  "_created_at": "2026-03-28T19:33:54.039611+00:00"
+}
