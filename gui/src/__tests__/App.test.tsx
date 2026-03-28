@@ -2002,10 +2002,17 @@ describe('App keyboard help overlay', () => {
 });
 
 describe('App Claude error handling', () => {
+  let consoleSpy: ReturnType<typeof vi.spyOn> | undefined;
+
+  afterEach(() => {
+    consoleSpy?.mockRestore();
+    consoleSpy = undefined;
+  });
+
   it('logs error to console when subscribeToClaudeEvents fails', async () => {
     const subscribeError = new Error('subscribe failed');
     vi.mocked(bridge.subscribeToClaudeEvents).mockRejectedValue(subscribeError);
-    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     render(() => <App />);
 
@@ -2013,18 +2020,29 @@ describe('App Claude error handling', () => {
       expect(screen.getByTestId('app-layout')).toBeTruthy();
     });
 
-    expect(consoleSpy).toHaveBeenCalledWith(
-      '[claude] subscribeToClaudeEvents failed:',
-      subscribeError,
-    );
+    await waitFor(() => {
+      expect(consoleSpy).toHaveBeenCalledWith(
+        '[claude] subscribeToClaudeEvents failed:',
+        subscribeError,
+      );
+    });
 
-    consoleSpy.mockRestore();
+    // Verify the toast DOM element appears with the correct error message
+    await waitFor(() => {
+      const toasts = screen.getAllByTestId('toast');
+      const claudeToast = toasts.find((t) =>
+        t.textContent?.includes('Claude assistant unavailable'),
+      );
+      expect(claudeToast).toBeTruthy();
+      expect(claudeToast!.dataset.type).toBe('error');
+      expect(claudeToast!.textContent).toContain('chat features may not work');
+    });
   });
 
   it('shows toast when claudeAbort fails', async () => {
     const abortError = new Error('abort failed');
     vi.mocked(bridge.claudeAbort).mockRejectedValue(abortError);
-    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     // Capture the handler passed to subscribeToClaudeEvents
     let claudeHandler: ((msg: any) => void) | undefined;
@@ -2038,6 +2056,9 @@ describe('App Claude error handling', () => {
     await waitFor(() => {
       expect(screen.getByTestId('app-layout')).toBeTruthy();
     });
+
+    // Guard: ensure subscribeToClaudeEvents was called and captured the handler
+    await waitFor(() => expect(claudeHandler).toBeDefined());
 
     // Fire a text_delta event to put claudeStore into 'responding' state
     claudeHandler!({ type: 'text_delta', id: 'msg-1', content: 'Hello' });
@@ -2065,7 +2086,5 @@ describe('App Claude error handling', () => {
       expect(toastEl.dataset.type).toBe('error');
       expect(toastEl.textContent).toContain('Abort failed: abort failed');
     });
-
-    consoleSpy.mockRestore();
   });
 });

@@ -17,7 +17,15 @@ import type {
   FileData,
 } from './types';
 import { convertRawMesh, convertRawGuiState } from './types';
-import type { OutboundMessage } from '../sidecar/src/types';
+import type {
+  OutboundMessage,
+  TextDelta,
+  ThinkingDelta,
+  ToolCall,
+  ToolResult,
+  Done,
+  ErrorMessage,
+} from '../sidecar/src/types';
 
 // ── Commands (invoke wrappers) ──────────────────────────────────────
 
@@ -111,21 +119,15 @@ export async function lspRequest(method: string, params: unknown): Promise<unkno
 // ── Claude commands ─────────────────────────────────────────────────
 
 /**
- * Context for a Claude message — the subset of MessageContext that the sidecar accepts.
- * This is a standalone interface to keep the wire layer (bridge.ts) independent of the
- * domain store (claudeStore.ts). Structural drift is caught at compile time by the
- * Equals<A,B> assertion in __tests__/types.typecheck.ts.
+ * Re-export MessageContext as ClaudeMessageContext for backward compatibility.
+ * The canonical definition lives in stores/claudeStore.ts — this alias preserves
+ * the existing export name so all downstream imports continue to work.
  */
-export interface ClaudeMessageContext {
-  selectedEntity?: string;
-  diagnostics?: string[];
-  constraints?: string[];
-  currentFile?: string;
-  attachedContexts?: string[];
-}
+import type { MessageContext } from './stores/claudeStore';
+export type { MessageContext as ClaudeMessageContext } from './stores/claudeStore';
 
 /** Send a message to the Claude sidecar. Maps camelCase context to snake_case for Rust. */
-export async function claudeSendMessage(text: string, context?: ClaudeMessageContext): Promise<void> {
+export async function claudeSendMessage(text: string, context?: MessageContext): Promise<void> {
   return invoke('claude_send_message', {
     text,
     context: context
@@ -150,6 +152,11 @@ export async function claudeClearSession(): Promise<void> {
   return invoke('claude_clear_session');
 }
 
+/** Runtime guard: true for plain objects, false for null/undefined/primitives/arrays. */
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return v != null && typeof v === 'object' && !Array.isArray(v);
+}
+
 // ── Claude event subscription ───────────────────────────────────────
 
 /**
@@ -166,27 +173,58 @@ export async function subscribeToClaudeEvents(
 
   const entries: EventEntry[] = [
     ['claude-text-delta', (event) => {
-      const p = event.payload as { id: string; content: string };
+      if (!isRecord(event.payload)) return;
+      const p = event.payload;
+      if (typeof p.id !== 'string' || typeof p.content !== 'string') {
+        console.warn('claude-text-delta: invalid payload, expected {id: string, content: string}', p);
+        return;
+      }
       handler({ type: 'text_delta', id: p.id, content: p.content });
     }],
     ['claude-thinking-delta', (event) => {
-      const p = event.payload as { id: string; content: string };
+      if (!isRecord(event.payload)) return;
+      const p = event.payload;
+      if (typeof p.id !== 'string' || typeof p.content !== 'string') {
+        console.warn('claude-thinking-delta: invalid payload, expected {id: string, content: string}', p);
+        return;
+      }
       handler({ type: 'thinking_delta', id: p.id, content: p.content });
     }],
     ['claude-tool-call', (event) => {
-      const p = event.payload as { id: string; tool_name: string; tool_input: Record<string, unknown> };
-      handler({ type: 'tool_call', id: p.id, tool_name: p.tool_name, tool_input: p.tool_input });
+      if (!isRecord(event.payload)) return;
+      const p = event.payload;
+      if (typeof p.id !== 'string' || typeof p.tool_name !== 'string') {
+        console.warn('claude-tool-call: invalid payload, expected {id: string, tool_name: string}', p);
+        return;
+      }
+      const tool_input = isRecord(p.tool_input) ? (p.tool_input as Record<string, unknown>) : {};
+      handler({ type: 'tool_call', id: p.id, tool_name: p.tool_name, tool_input });
     }],
     ['claude-tool-result', (event) => {
-      const p = event.payload as { id: string; tool_name: string; result: unknown };
+      if (!isRecord(event.payload)) return;
+      const p = event.payload;
+      if (typeof p.id !== 'string' || typeof p.tool_name !== 'string') {
+        console.warn('claude-tool-result: invalid payload, expected {id: string, tool_name: string}', p);
+        return;
+      }
       handler({ type: 'tool_result', id: p.id, tool_name: p.tool_name, result: p.result });
     }],
     ['claude-done', (event) => {
-      const p = event.payload as { id: string };
+      if (!isRecord(event.payload)) return;
+      const p = event.payload;
+      if (typeof p.id !== 'string') {
+        console.warn('claude-done: invalid payload, expected {id: string}', p);
+        return;
+      }
       handler({ type: 'done', id: p.id });
     }],
     ['claude-error', (event) => {
-      const p = event.payload as { id: string; message: string };
+      if (!isRecord(event.payload)) return;
+      const p = event.payload;
+      if (typeof p.id !== 'string' || typeof p.message !== 'string') {
+        console.warn('claude-error: invalid payload, expected {id: string, message: string}', p);
+        return;
+      }
       handler({ type: 'error', id: p.id, message: p.message });
     }],
     ['claude-ready', () => handler({ type: 'ready' })],

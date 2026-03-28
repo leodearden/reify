@@ -228,6 +228,7 @@ impl Value {
                 .first()
                 .map(|v| v.dimension())
                 .unwrap_or(DimensionVector::DIMENSIONLESS),
+            Value::Frame { .. } => DimensionVector::DIMENSIONLESS,
             _ => DimensionVector::DIMENSIONLESS,
         }
     }
@@ -559,7 +560,12 @@ impl Value {
                 }
             }
             Value::Orientation { .. } => Type::Orientation(3),
-            Value::Frame { .. } => Type::Frame(3),
+            Value::Frame { .. } => {
+                panic!(
+                    "infer_type() cannot infer Frame dimensionality. \
+                     Use CompiledExpr::literal(value, type) directly."
+                )
+            }
             Value::Transform { .. } => Type::Transform(3),
             Value::Plane { .. } => Type::Plane,
             Value::Axis { .. } => Type::Axis,
@@ -4238,6 +4244,20 @@ mod tests {
         let f1 = make_frame(origin_pos, basis.clone());
         let f2 = make_frame(origin_neg, basis);
         assert_ne!(f1.content_hash(), f2.content_hash());
+    }
+
+    #[test]
+    fn value_frame_dimension_explicit_arm() {
+        // Ensures dimension() has an explicit Frame arm (not just the wildcard).
+        let frame = make_frame(make_point3_length(), make_orientation_identity());
+        assert_eq!(frame.dimension(), DimensionVector::DIMENSIONLESS);
+    }
+
+    #[test]
+    #[should_panic(expected = "infer_type() cannot infer Frame")]
+    fn value_frame_infer_type_panics() {
+        let frame = make_frame(make_point3_length(), make_orientation_identity());
+        let _ = frame.infer_type();
     }
 
     // ── Value::Transform tests (step-3) ──────────────────────────────────────

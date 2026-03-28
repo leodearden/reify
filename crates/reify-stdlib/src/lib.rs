@@ -1092,7 +1092,6 @@ fn unary(args: &[Value], f: impl FnOnce(&Value) -> Value) -> Value {
 /// Returns `Value::Real(mag)` when `dimension` is dimensionless, or
 /// `Value::Scalar { si_value: mag, dimension }` otherwise. Non-finite
 /// results are converted to `Undef` by [`sanitize_value`].
-#[inline(always)]
 fn complex_abs(re: f64, im: f64, dimension: DimensionVector) -> Value {
     let mag = (re * re + im * im).sqrt();
     if dimension == DimensionVector::DIMENSIONLESS {
@@ -4593,6 +4592,20 @@ mod tests {
         );
     }
 
+    #[test]
+    fn magnitude_complex_overflow_returns_undef() {
+        // magnitude delegates to complex_abs for Complex inputs; overflow → Undef.
+        let z = Value::Complex {
+            re: f64::MAX,
+            im: f64::MAX,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            eval_builtin("magnitude", &[z]).is_undef(),
+            "magnitude with f64::MAX complex components must return Undef (Inf overflow)"
+        );
+    }
+
     // ── phase() tests (step-13) ───────────────────────────────────────────────
 
     #[test]
@@ -5143,6 +5156,34 @@ mod tests {
         assert!(
             eval_builtin("complex_magnitude", &[z]).is_undef(),
             "complex_magnitude with f64::MAX components must return Undef (Inf overflow)"
+        );
+    }
+
+    #[test]
+    fn complex_magnitude_overflow_dimensioned_returns_undef() {
+        // Same overflow but through the Scalar branch (non-dimensionless).
+        let z = Value::Complex {
+            re: f64::MAX,
+            im: f64::MAX,
+            dimension: DimensionVector::LENGTH,
+        };
+        assert!(
+            eval_builtin("complex_magnitude", &[z]).is_undef(),
+            "complex_magnitude with f64::MAX components and LENGTH dimension must return Undef"
+        );
+    }
+
+    #[test]
+    fn complex_magnitude_nan_component_returns_undef() {
+        // A NaN component propagates through hypot and sanitize_value catches it.
+        let z = Value::Complex {
+            re: f64::NAN,
+            im: 1.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            eval_builtin("complex_magnitude", &[z]).is_undef(),
+            "complex_magnitude with NaN component must return Undef"
         );
     }
 

@@ -113,6 +113,24 @@ describe('claude invoke wrappers', () => {
 
     expect(mockInvoke).toHaveBeenCalledWith('claude_clear_session');
   });
+
+  it('claudeSendMessage propagates invoke rejection', async () => {
+    mockInvoke.mockRejectedValue(new Error('IPC failed'));
+
+    await expect(claudeSendMessage('hello')).rejects.toThrow('IPC failed');
+  });
+
+  it('claudeAbort propagates invoke rejection', async () => {
+    mockInvoke.mockRejectedValue(new Error('IPC failed'));
+
+    await expect(claudeAbort()).rejects.toThrow('IPC failed');
+  });
+
+  it('claudeClearSession propagates invoke rejection', async () => {
+    mockInvoke.mockRejectedValue(new Error('IPC failed'));
+
+    await expect(claudeClearSession()).rejects.toThrow('IPC failed');
+  });
 });
 
 describe('subscribeToClaudeEvents', () => {
@@ -320,6 +338,74 @@ describe('subscribeToClaudeEvents', () => {
     expect(handler).toHaveBeenCalledWith({ type: 'done', id: 'x' });
   });
 
+  it('extra unknown fields in tool_call payload are not forwarded to handler', async () => {
+    let capturedHandler: ((event: { payload: unknown }) => void) | undefined;
+    mockListen.mockImplementation(async (eventName, handler) => {
+      if (eventName === 'claude-tool-call') {
+        capturedHandler = handler as (event: { payload: unknown }) => void;
+      }
+      return vi.fn();
+    });
+
+    const handler = vi.fn();
+    await subscribeToClaudeEvents(handler);
+
+    // Simulate tool_call payload with extra _debug field that should NOT be forwarded
+    capturedHandler!({
+      payload: {
+        id: 'tc1',
+        tool_name: 'read',
+        tool_input: { path: '/f' },
+        _debug: true,
+      },
+    });
+
+    expect(handler).toHaveBeenCalledWith({
+      type: 'tool_call',
+      id: 'tc1',
+      tool_name: 'read',
+      tool_input: { path: '/f' },
+    });
+  });
+
+  it('extra unknown fields in tool_call are excluded with complex nested tool_input', async () => {
+    let capturedHandler: ((event: { payload: unknown }) => void) | undefined;
+    mockListen.mockImplementation(async (eventName, handler) => {
+      if (eventName === 'claude-tool-call') {
+        capturedHandler = handler as (event: { payload: unknown }) => void;
+      }
+      return vi.fn();
+    });
+
+    const handler = vi.fn();
+    await subscribeToClaudeEvents(handler);
+
+    const complexInput = {
+      file: '/src/main.rs',
+      edits: [{ line: 10, text: 'new code' }],
+      options: { format: true, backup: false },
+    };
+
+    // Simulate tool_call with complex nested tool_input AND multiple extra top-level fields
+    capturedHandler!({
+      payload: {
+        id: 'tc-complex',
+        tool_name: 'edit_file',
+        tool_input: complexInput,
+        _debug: true,
+        _trace_id: 'abc',
+        timestamp: 99999,
+      },
+    });
+
+    expect(handler).toHaveBeenCalledWith({
+      type: 'tool_call',
+      id: 'tc-complex',
+      tool_name: 'edit_file',
+      tool_input: complexInput,
+    });
+  });
+
   it('payload type field does not override mapped event type', async () => {
     let capturedHandler: ((event: { payload: unknown }) => void) | undefined;
     mockListen.mockImplementation(async (eventName, handler) => {
@@ -338,8 +424,28 @@ describe('subscribeToClaudeEvents', () => {
     expect(handler).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'text_delta' }),
     );
-    // Explicitly verify type is NOT 'WRONG'
-    expect(handler.mock.calls[0][0].type).toBe('text_delta');
+  });
+
+  it('payload type field does not override mapped event type for claude-error', async () => {
+    let capturedHandler: ((event: { payload: unknown }) => void) | undefined;
+    mockListen.mockImplementation(async (eventName, handler) => {
+      if (eventName === 'claude-error') {
+        capturedHandler = handler as (event: { payload: unknown }) => void;
+      }
+      return vi.fn();
+    });
+
+    const handler = vi.fn();
+    await subscribeToClaudeEvents(handler);
+
+    // Simulate payload with a rogue `type` field that should NOT override the mapped type
+    capturedHandler!({ payload: { id: 'x', message: 'oops', type: 'WRONG' } });
+
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'error', id: 'x', message: 'oops' }),
+    );
+    // Explicitly verify type is 'error', NOT 'WRONG'
+    expect(handler.mock.calls[0][0].type).toBe('error');
   });
 
   describe('listener rollback on partial failure', () => {
@@ -392,4 +498,200 @@ describe('subscribeToClaudeEvents', () => {
       }
     });
   });
+
+  describe('payload validation guards', () => {
+    /** Helper: capture the internal listener for a given event name */
+    function captureListener(eventName: string) {
+      let captured: ((event: { payload: unknown }) => void) | undefined;
+      mockListen.mockImplementation(async (name, handler) => {
+        if (name === eventName) {
+          captured = handler as (event: { payload: unknown }) => void;
+        }
+        return vi.fn();
+      });
+      return {
+        async setup(handler: ReturnType<typeof vi.fn>) {
+          await subscribeToClaudeEvents(handler);
+          return captured!;
+        },
+      };
+    }
+
+    const PAYLOAD_EVENTS = [
+      'claude-text-delta',
+      'claude-thinking-delta',
+      'claude-tool-call',
+      'claude-tool-result',
+      'claude-done',
+      'claude-error',
+    ] as const;
+
+    const INVALID_PAYLOADS = [
+      ['null', null],
+      ['undefined', undefined],
+      ['string', 'some-string'],
+      ['number', 42],
+      ['array', [1, 2, 3]],
+    ] as const;
+
+    for (const eventName of PAYLOAD_EVENTS) {
+      for (const [label, payload] of INVALID_PAYLOADS) {
+        it(`drops ${eventName} when payload is ${label}`, async () => {
+          const { setup } = captureListener(eventName);
+          const handler = vi.fn();
+          const listener = await setup(handler);
+
+          listener({ payload });
+
+          expect(handler).not.toHaveBeenCalled();
+        });
+      }
+    }
+
+    describe('required string field validation', () => {
+      it('drops text_delta when id is a number', async () => {
+        const { setup } = captureListener('claude-text-delta');
+        const handler = vi.fn();
+        const listener = await setup(handler);
+        listener({ payload: { id: 123, content: 'hello' } });
+        expect(handler).not.toHaveBeenCalled();
+      });
+
+      it('drops text_delta when content field is missing', async () => {
+        const { setup } = captureListener('claude-text-delta');
+        const handler = vi.fn();
+        const listener = await setup(handler);
+        listener({ payload: { id: 'msg-1' } });
+        expect(handler).not.toHaveBeenCalled();
+      });
+
+      it('drops thinking_delta when content is null', async () => {
+        const { setup } = captureListener('claude-thinking-delta');
+        const handler = vi.fn();
+        const listener = await setup(handler);
+        listener({ payload: { id: 'msg-t1', content: null } });
+        expect(handler).not.toHaveBeenCalled();
+      });
+
+      it('drops tool_call when tool_name is missing', async () => {
+        const { setup } = captureListener('claude-tool-call');
+        const handler = vi.fn();
+        const listener = await setup(handler);
+        listener({ payload: { id: 'tc1', tool_input: {} } });
+        expect(handler).not.toHaveBeenCalled();
+      });
+
+      it('drops tool_result when tool_name is a number', async () => {
+        const { setup } = captureListener('claude-tool-result');
+        const handler = vi.fn();
+        const listener = await setup(handler);
+        listener({ payload: { id: 'tr1', tool_name: 42, result: 'ok' } });
+        expect(handler).not.toHaveBeenCalled();
+      });
+
+      it('drops done when id is undefined', async () => {
+        const { setup } = captureListener('claude-done');
+        const handler = vi.fn();
+        const listener = await setup(handler);
+        listener({ payload: { id: undefined } });
+        expect(handler).not.toHaveBeenCalled();
+      });
+
+      it('drops error when message is an array', async () => {
+        const { setup } = captureListener('claude-error');
+        const handler = vi.fn();
+        const listener = await setup(handler);
+        listener({ payload: { id: 'e1', message: ['bad', 'stuff'] } });
+        expect(handler).not.toHaveBeenCalled();
+      });
+
+      it('drops error when id is missing', async () => {
+        const { setup } = captureListener('claude-error');
+        const handler = vi.fn();
+        const listener = await setup(handler);
+        listener({ payload: { message: 'rate limit exceeded' } });
+        expect(handler).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('tool_input normalization', () => {
+      it('normalizes tool_input=null to empty object', async () => {
+        const { setup } = captureListener('claude-tool-call');
+        const handler = vi.fn();
+        const listener = await setup(handler);
+        listener({ payload: { id: 'tc1', tool_name: 'edit', tool_input: null } });
+        expect(handler).toHaveBeenCalledWith({
+          type: 'tool_call', id: 'tc1', tool_name: 'edit', tool_input: {},
+        });
+      });
+
+      it('normalizes tool_input=[1,2,3] (array) to empty object', async () => {
+        const { setup } = captureListener('claude-tool-call');
+        const handler = vi.fn();
+        const listener = await setup(handler);
+        listener({ payload: { id: 'tc2', tool_name: 'read', tool_input: [1, 2, 3] } });
+        expect(handler).toHaveBeenCalledWith({
+          type: 'tool_call', id: 'tc2', tool_name: 'read', tool_input: {},
+        });
+      });
+
+      it('normalizes tool_input=undefined to empty object', async () => {
+        const { setup } = captureListener('claude-tool-call');
+        const handler = vi.fn();
+        const listener = await setup(handler);
+        listener({ payload: { id: 'tc3', tool_name: 'write', tool_input: undefined } });
+        expect(handler).toHaveBeenCalledWith({
+          type: 'tool_call', id: 'tc3', tool_name: 'write', tool_input: {},
+        });
+      });
+
+      it('normalizes tool_input="string" to empty object', async () => {
+        const { setup } = captureListener('claude-tool-call');
+        const handler = vi.fn();
+        const listener = await setup(handler);
+        listener({ payload: { id: 'tc4', tool_name: 'run', tool_input: 'bad' } });
+        expect(handler).toHaveBeenCalledWith({
+          type: 'tool_call', id: 'tc4', tool_name: 'run', tool_input: {},
+        });
+      });
+
+      it('passes through valid tool_input object unchanged', async () => {
+        const { setup } = captureListener('claude-tool-call');
+        const handler = vi.fn();
+        const listener = await setup(handler);
+        listener({ payload: { id: 'tc5', tool_name: 'edit', tool_input: { path: '/f' } } });
+        expect(handler).toHaveBeenCalledWith({
+          type: 'tool_call', id: 'tc5', tool_name: 'edit', tool_input: { path: '/f' },
+        });
+      });
+    });
+  });
 });
+
+// ── Compile-time type assertions ───────────────────────────────────
+// ClaudeMessageContext (bridge.ts) must be exactly MessageContext (claudeStore.ts).
+// This catches any divergence at compile time — tsc will fail if they differ.
+import type { ClaudeMessageContext } from '../bridge';
+import type { MessageContext } from '../stores/claudeStore';
+import type {
+  TextDelta,
+  ThinkingDelta,
+  ToolCall,
+  ToolResult,
+  Done,
+  ErrorMessage,
+} from '../../sidecar/src/types';
+
+type Equals<A, B> =
+  (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;
+type AssertTrue<T extends true> = T;
+type _AssertClaudeContextIsMessageContext = AssertTrue<Equals<ClaudeMessageContext, MessageContext>>;
+
+// Each Omit<Interface, 'type'> must match the payload shape used in subscribeToClaudeEvents.
+// If a field is added/removed/renamed in types.ts, tsc will fail here.
+type _AssertTextDeltaPayload = AssertTrue<Equals<Omit<TextDelta, 'type'>, { id: string; content: string }>>;
+type _AssertThinkingDeltaPayload = AssertTrue<Equals<Omit<ThinkingDelta, 'type'>, { id: string; content: string }>>;
+type _AssertToolCallPayload = AssertTrue<Equals<Omit<ToolCall, 'type'>, { id: string; tool_name: string; tool_input: Record<string, unknown> }>>;
+type _AssertToolResultPayload = AssertTrue<Equals<Omit<ToolResult, 'type'>, { id: string; tool_name: string; result: unknown }>>;
+type _AssertDonePayload = AssertTrue<Equals<Omit<Done, 'type'>, { id: string }>>;
+type _AssertErrorMessagePayload = AssertTrue<Equals<Omit<ErrorMessage, 'type'>, { id: string; message: string }>>;
