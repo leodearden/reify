@@ -239,6 +239,18 @@ mod tests {
     use super::*;
     use reify_types::DimensionVector;
 
+    #[test]
+    fn requirement_kind_str_covers_all_variants() {
+        let param_str = requirement_kind_str(&RequirementKind::Param(Type::Real));
+        assert_eq!(param_str, "Param:Real");
+
+        let let_str = requirement_kind_str(&RequirementKind::Let(Type::Int));
+        assert_eq!(let_str, "Let:Int");
+
+        let sub_str = requirement_kind_str(&RequirementKind::Sub("MountPoint".to_string()));
+        assert_eq!(sub_str, "Sub:MountPoint");
+    }
+
     // step-1: failing test for TraitDefBuilder minimal
     #[test]
     fn trait_def_builder_minimal() {
