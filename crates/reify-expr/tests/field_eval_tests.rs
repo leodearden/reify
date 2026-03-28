@@ -168,6 +168,7 @@ fn gradient_of_valid_field_returns_gradient_field() {
             codomain_type,
             source,
             lambda,
+            inner_field,
         } => {
             // Source should be Gradient
             assert_eq!(
@@ -190,11 +191,26 @@ fn gradient_of_valid_field_returns_gradient_field() {
                 *codomain_type, expected_codomain,
                 "gradient codomain should be Vector3<Scalar<gradient_dim>>"
             );
-            // Lambda should contain the original field (not Undef)
+            // Lambda must be Undef (data contract: lambda is always callable-or-Undef)
             assert!(
-                matches!(**lambda, Value::Field { .. }),
-                "gradient field lambda should store the original field, got: {:?}",
+                matches!(**lambda, Value::Undef),
+                "gradient field lambda should be Undef (data contract), got: {:?}",
                 lambda
+            );
+            // inner_field must hold the original field
+            let inner = inner_field
+                .as_ref()
+                .expect("gradient field should have inner_field = Some(...)");
+            assert!(
+                matches!(
+                    inner.as_ref(),
+                    Value::Field {
+                        source: FieldSourceKind::Analytical,
+                        ..
+                    }
+                ),
+                "inner_field should be the original Analytical field, got: {:?}",
+                inner
             );
         }
         other => panic!("expected Value::Field for gradient(valid_field), got: {:?}", other),
@@ -680,5 +696,91 @@ fn gradient_at_origin_stable() {
             "sample(gradient(field), origin) should return Vector, got: {:?}",
             other
         ),
+    }
+}
+
+// ── Step 9: data contract tests ──────────────────────────────────────
+
+#[test]
+fn gradient_field_lambda_data_contract() {
+    // After constructing a gradient field, the lambda data contract must hold:
+    //   - lambda is Value::Undef (not a Field — callable-or-Undef invariant)
+    //   - inner_field is Some(original_field) with source=Analytical
+    let field = make_valid_scalar_field();
+    let domain = Type::point3(Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    });
+    let codomain = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+    let expr = make_call(
+        "gradient",
+        vec![CompiledExpr::literal(
+            field,
+            Type::Field {
+                domain: Box::new(domain.clone()),
+                codomain: Box::new(codomain),
+            },
+        )],
+        Type::Real,
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+
+    match &result {
+        Value::Field {
+            source,
+            lambda,
+            inner_field,
+            ..
+        } => {
+            assert_eq!(*source, FieldSourceKind::Gradient);
+
+            // Lambda must be Undef — not a Field value.
+            // This enforces the documented invariant that lambda is always
+            // "the callable lambda for analytical/composed fields, or Undef".
+            assert!(
+                lambda.is_undef(),
+                "gradient field lambda must be Undef (data contract), got: {:?}",
+                lambda
+            );
+
+            // inner_field must be Some(original field) with source=Analytical
+            let inner = inner_field
+                .as_ref()
+                .expect("gradient field inner_field should be Some(...)");
+            match inner.as_ref() {
+                Value::Field {
+                    source: inner_source,
+                    domain_type: inner_domain,
+                    codomain_type: inner_codomain,
+                    lambda: inner_lambda,
+                    ..
+                } => {
+                    assert!(
+                        matches!(inner_source, FieldSourceKind::Analytical),
+                        "inner field source should be Analytical, got: {:?}",
+                        inner_source
+                    );
+                    // The inner field should have the same domain
+                    assert_eq!(
+                        format!("{}", inner_domain),
+                        format!("{}", domain),
+                        "inner field domain should match original"
+                    );
+                    // The inner field's lambda should be callable (Lambda, not Undef)
+                    assert!(
+                        matches!(inner_lambda.as_ref(), Value::Lambda { .. }),
+                        "inner field lambda should be callable, got: {:?}",
+                        inner_lambda
+                    );
+                }
+                other => panic!(
+                    "inner_field should contain a Value::Field, got: {:?}",
+                    other
+                ),
+            }
+        }
+        other => panic!("expected gradient Value::Field, got: {:?}", other),
     }
 }
