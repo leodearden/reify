@@ -132,12 +132,22 @@ describe('claude bridge integration', () => {
       payload: { id: msgId, content: 'Here is my response' },
     });
 
-    // Simulate claude-done event (flushes buffers)
+    // Flush rAF to exercise the batching path — responseText should already be populated
+    // before the done event fires (the done event's cancelAndFlush is a fallback, not the
+    // primary mechanism for applying buffered text).
+    flushRaf();
+    const midMsg = store.state.messages.find(
+      (m): m is AssistantMessage => m.role === 'assistant' && m.id === msgId,
+    );
+    expect(midMsg!.responseText).toBe('Here is my response');
+    expect(midMsg!.complete).toBe(false);
+
+    // Simulate claude-done event (marks message complete, flushes any remaining buffers)
     capturedHandlers['claude-done']({
       payload: { id: msgId },
     });
 
-    // Check store state reflects the events
+    // Check final store state reflects the events
     const assistantMsg = store.state.messages.find(
       (m): m is AssistantMessage => m.role === 'assistant' && m.id === msgId,
     );
