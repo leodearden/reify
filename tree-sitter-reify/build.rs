@@ -12,15 +12,29 @@ fn content_hash(path: &std::path::Path) -> String {
 }
 
 /// Run a command with a timeout. Returns Ok(()) on success, Err on failure/timeout.
+///
+/// IMPORTANT: Child stdout is discarded (Stdio::null) for two reasons:
+///   1. Cargo parses build-script stdout line-by-line for "cargo:" directives.
+///      If the child emits anything to stdout, Cargo would misinterpret it.
+///   2. Using Stdio::piped() creates a deadlock risk: the parent only drains
+///      the pipe after try_wait() returns Some(status), but if the child writes
+///      \>64KB to stdout, the pipe buffer fills, the child blocks, and try_wait()
+///      returns Ok(None) indefinitely — a hard deadlock until the timeout fires.
+///
+/// tree-sitter generate writes its useful diagnostics to stderr, which is
+/// inherited directly (Stdio::inherit) and displayed by Cargo as-is.
 fn run_with_timeout(
     cmd: &str,
     args: &[&str],
     timeout_secs: u64,
 ) -> Result<(), String> {
+    use std::process::Stdio;
     use std::time::{Duration, Instant};
 
     let mut child = std::process::Command::new(cmd)
         .args(args)
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
         .spawn()
         .map_err(|e| format!("Failed to spawn '{}': {}", cmd, e))?;
 
@@ -138,7 +152,7 @@ fn main() {
         .collect();
     let output_refs: Vec<&std::path::Path> = output_paths.iter().map(|p| p.as_path()).collect();
     // Stamp file stored in OUT_DIR (cargo build directory).
-    let out_dir = std::env::var("OUT_DIR").unwrap_or_else(|_| ".".to_string());
+    let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR must be set by cargo");
     let stamp_path = std::path::Path::new(&out_dir).join("grammar_hash.stamp");
 
     // Capture the grammar hash once, before generation, and reuse it for both

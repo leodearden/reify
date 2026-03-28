@@ -175,4 +175,27 @@ fn all_m5_types_exported() {
     // Value::Tensor construction
     let _vt =
         reify_types::Value::Tensor(vec![reify_types::Value::Int(1), reify_types::Value::Int(2)]);
+
+    // --- Frame variant ---
+
+    // Type::Frame (direct construction)
+    let _tf3 = reify_types::Type::Frame(3);
+
+    // Type::frame factory method
+    let _tf3_factory = reify_types::Type::frame(3);
+
+    // Value::Frame construction
+    let _vf = reify_types::Value::Frame {
+        origin: Box::new(reify_types::Value::Point(vec![
+            reify_types::Value::Real(0.0),
+            reify_types::Value::Real(0.0),
+            reify_types::Value::Real(0.0),
+        ])),
+        basis: Box::new(reify_types::Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        }),
+    };
 }

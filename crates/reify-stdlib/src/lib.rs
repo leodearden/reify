@@ -487,11 +487,11 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
 
         // conjugate(z): negate the imaginary part, preserve re and dimension.
         "conjugate" => unary(args, |v| match v {
-            Value::Complex { re, im, dimension } => Value::Complex {
+            Value::Complex { re, im, dimension } => sanitize_value(Value::Complex {
                 re: *re,
                 im: -im,
                 dimension: *dimension,
-            },
+            }),
             _ => Value::Undef,
         }),
 
@@ -871,6 +871,14 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
         }
         "orient_quaternion" => {
             if args.len() != 4 {
+                return Value::Undef;
+            }
+            // Quaternion components are pure numbers — reject dimensioned Scalars.
+            if args[0].dimension() != DimensionVector::DIMENSIONLESS
+                || args[1].dimension() != DimensionVector::DIMENSIONLESS
+                || args[2].dimension() != DimensionVector::DIMENSIONLESS
+                || args[3].dimension() != DimensionVector::DIMENSIONLESS
+            {
                 return Value::Undef;
             }
             match (
@@ -1431,6 +1439,63 @@ mod tests {
                 ),
             }
         };
+    }
+
+    /// Assert that an expression evaluates to a 3-component wrapper variant
+    /// (`Value::Tensor`, `Value::Vector`, or `Value::Point`) where each component
+    /// is approximately equal to the expected `[x, y, z]` values within 1e-12.
+    macro_rules! assert_vector3_approx {
+        ($variant:ident, $expr:expr, [$ex:expr, $ey:expr, $ez:expr]) => {
+            match $expr {
+                Value::$variant(items) => {
+                    assert_eq!(
+                        items.len(),
+                        3,
+                        "expected 3-component {}",
+                        stringify!($variant)
+                    );
+                    let vals: Vec<f64> = items.iter().map(|x| x.as_f64().unwrap()).collect();
+                    assert!(
+                        (vals[0] - $ex).abs() < 1e-12,
+                        "x: expected {}, got {}",
+                        $ex,
+                        vals[0]
+                    );
+                    assert!(
+                        (vals[1] - $ey).abs() < 1e-12,
+                        "y: expected {}, got {}",
+                        $ey,
+                        vals[1]
+                    );
+                    assert!(
+                        (vals[2] - $ez).abs() < 1e-12,
+                        "z: expected {}, got {}",
+                        $ez,
+                        vals[2]
+                    );
+                }
+                other => panic!(
+                    "expected {}([{}, {}, {}]), got {:?}",
+                    stringify!($variant),
+                    $ex,
+                    $ey,
+                    $ez,
+                    other
+                ),
+            }
+        };
+    }
+
+    /// Build a `Value::Vector` of 3 `Value::Scalar` components from `[f64; 3]` and a dimension.
+    fn make_scalar_vec3(vals: [f64; 3], dim: DimensionVector) -> Value {
+        Value::Vector(
+            vals.iter()
+                .map(|&v| Value::Scalar {
+                    si_value: v,
+                    dimension: dim,
+                })
+                .collect(),
+        )
     }
 
     #[test]
@@ -3034,33 +3099,7 @@ mod tests {
         // normalize([3,4,0]) ≈ [0.6, 0.8, 0.0]
         let v = Value::Tensor(vec![Value::Real(3.0), Value::Real(4.0), Value::Real(0.0)]);
         let result = eval_builtin("normalize", &[v]);
-        match result {
-            Value::Tensor(items) => {
-                assert_eq!(items.len(), 3, "normalize must return 3 components");
-                let vals: Vec<f64> = items.iter().map(|x| x.as_f64().unwrap()).collect();
-                assert!(
-                    (vals[0] - 0.6).abs() < 1e-12,
-                    "x: expected 0.6, got {}",
-                    vals[0]
-                );
-                assert!(
-                    (vals[1] - 0.8).abs() < 1e-12,
-                    "y: expected 0.8, got {}",
-                    vals[1]
-                );
-                assert!(
-                    (vals[2] - 0.0).abs() < 1e-12,
-                    "z: expected 0.0, got {}",
-                    vals[2]
-                );
-                // Components must be Real (dimensionless)
-                assert!(
-                    items.iter().all(|x| matches!(x, Value::Real(_))),
-                    "normalize must return Real components"
-                );
-            }
-            other => panic!("expected Tensor, got {:?}", other),
-        }
+        assert_vector3_approx!(Tensor, result, [0.6, 0.8, 0.0]);
     }
 
     #[test]
@@ -3090,32 +3129,7 @@ mod tests {
             },
         ]);
         let result = eval_builtin("normalize", &[v]);
-        match result {
-            Value::Tensor(items) => {
-                assert_eq!(items.len(), 3);
-                let vals: Vec<f64> = items.iter().map(|x| x.as_f64().unwrap()).collect();
-                assert!(
-                    (vals[0] - 0.6).abs() < 1e-12,
-                    "x: expected 0.6, got {}",
-                    vals[0]
-                );
-                assert!(
-                    (vals[1] - 0.8).abs() < 1e-12,
-                    "y: expected 0.8, got {}",
-                    vals[1]
-                );
-                assert!(
-                    (vals[2] - 0.0).abs() < 1e-12,
-                    "z: expected 0.0, got {}",
-                    vals[2]
-                );
-                assert!(
-                    items.iter().all(|x| matches!(x, Value::Real(_))),
-                    "normalize must return Real (dimensionless) components"
-                );
-            }
-            other => panic!("expected Tensor, got {:?}", other),
-        }
+        assert_vector3_approx!(Tensor, result, [0.6, 0.8, 0.0]);
     }
 
     #[test]
@@ -3260,28 +3274,7 @@ mod tests {
         let a = Value::Tensor(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
         let b = Value::Tensor(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
         let result = eval_builtin("cross", &[a, b]);
-        match result {
-            Value::Tensor(items) => {
-                assert_eq!(items.len(), 3, "cross product must have 3 components");
-                let v: Vec<f64> = items.iter().map(|x| x.as_f64().unwrap()).collect();
-                assert!(
-                    (v[0] - 0.0).abs() < 1e-12,
-                    "x component: expected 0.0, got {}",
-                    v[0]
-                );
-                assert!(
-                    (v[1] - 0.0).abs() < 1e-12,
-                    "y component: expected 0.0, got {}",
-                    v[1]
-                );
-                assert!(
-                    (v[2] - 1.0).abs() < 1e-12,
-                    "z component: expected 1.0, got {}",
-                    v[2]
-                );
-            }
-            other => panic!("expected Tensor([0,0,1]), got {:?}", other),
-        }
+        assert_vector3_approx!(Tensor, result, [0.0, 0.0, 1.0]);
     }
 
     #[test]
@@ -3474,34 +3467,8 @@ mod tests {
     fn dot_vector_dimensioned() {
         // dot(Vector([1m,0,0]), Vector([1N,0,0])) -> Scalar{1.0, Length*Force}
         let length_force = DimensionVector::LENGTH.mul(&reify_types::dimension::FORCE);
-        let a = Value::Vector(vec![
-            Value::Scalar {
-                si_value: 1.0,
-                dimension: DimensionVector::LENGTH,
-            },
-            Value::Scalar {
-                si_value: 0.0,
-                dimension: DimensionVector::LENGTH,
-            },
-            Value::Scalar {
-                si_value: 0.0,
-                dimension: DimensionVector::LENGTH,
-            },
-        ]);
-        let b = Value::Vector(vec![
-            Value::Scalar {
-                si_value: 1.0,
-                dimension: reify_types::dimension::FORCE,
-            },
-            Value::Scalar {
-                si_value: 0.0,
-                dimension: reify_types::dimension::FORCE,
-            },
-            Value::Scalar {
-                si_value: 0.0,
-                dimension: reify_types::dimension::FORCE,
-            },
-        ]);
+        let a = make_scalar_vec3([1.0, 0.0, 0.0], DimensionVector::LENGTH);
+        let b = make_scalar_vec3([1.0, 0.0, 0.0], reify_types::dimension::FORCE);
         assert_scalar_approx!(eval_builtin("dot", &[a, b]), 1.0, length_force);
     }
 
@@ -3514,50 +3481,15 @@ mod tests {
         let a = Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
         let b = Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
         let result = eval_builtin("cross", &[a, b]);
-        match result {
-            Value::Vector(items) => {
-                assert_eq!(items.len(), 3, "cross product must have 3 components");
-                let v: Vec<f64> = items.iter().map(|x| x.as_f64().unwrap()).collect();
-                assert!((v[0] - 0.0).abs() < 1e-12, "x: expected 0.0, got {}", v[0]);
-                assert!((v[1] - 0.0).abs() < 1e-12, "y: expected 0.0, got {}", v[1]);
-                assert!((v[2] - 1.0).abs() < 1e-12, "z: expected 1.0, got {}", v[2]);
-            }
-            other => panic!("expected Value::Vector([0,0,1]), got {:?}", other),
-        }
+        assert_vector3_approx!(Vector, result, [0.0, 0.0, 1.0]);
     }
 
     #[test]
     fn cross_vector_dimensioned_preserves_dimension() {
         // cross(Vector([1m,0,0]), Vector([0,1N,0])) each component has Length*Force dimension
         let length_force = DimensionVector::LENGTH.mul(&reify_types::dimension::FORCE);
-        let a = Value::Vector(vec![
-            Value::Scalar {
-                si_value: 1.0,
-                dimension: DimensionVector::LENGTH,
-            },
-            Value::Scalar {
-                si_value: 0.0,
-                dimension: DimensionVector::LENGTH,
-            },
-            Value::Scalar {
-                si_value: 0.0,
-                dimension: DimensionVector::LENGTH,
-            },
-        ]);
-        let b = Value::Vector(vec![
-            Value::Scalar {
-                si_value: 0.0,
-                dimension: reify_types::dimension::FORCE,
-            },
-            Value::Scalar {
-                si_value: 1.0,
-                dimension: reify_types::dimension::FORCE,
-            },
-            Value::Scalar {
-                si_value: 0.0,
-                dimension: reify_types::dimension::FORCE,
-            },
-        ]);
+        let a = make_scalar_vec3([1.0, 0.0, 0.0], DimensionVector::LENGTH);
+        let b = make_scalar_vec3([0.0, 1.0, 0.0], reify_types::dimension::FORCE);
         let result = eval_builtin("cross", &[a, b]);
         match result {
             Value::Vector(items) => {
@@ -3607,32 +3539,7 @@ mod tests {
         // NOT Value::Tensor — verifies wrapper-preservation at line 266
         let v = Value::Vector(vec![Value::Real(3.0), Value::Real(4.0), Value::Real(0.0)]);
         let result = eval_builtin("normalize", &[v]);
-        match result {
-            Value::Vector(items) => {
-                assert_eq!(items.len(), 3, "normalize must return 3 components");
-                let vals: Vec<f64> = items.iter().map(|x| x.as_f64().unwrap()).collect();
-                assert!(
-                    (vals[0] - 0.6).abs() < 1e-12,
-                    "x: expected 0.6, got {}",
-                    vals[0]
-                );
-                assert!(
-                    (vals[1] - 0.8).abs() < 1e-12,
-                    "y: expected 0.8, got {}",
-                    vals[1]
-                );
-                assert!(
-                    (vals[2] - 0.0).abs() < 1e-12,
-                    "z: expected 0.0, got {}",
-                    vals[2]
-                );
-                assert!(
-                    items.iter().all(|x| matches!(x, Value::Real(_))),
-                    "normalize must return Real (dimensionless) components"
-                );
-            }
-            other => panic!("expected Value::Vector, got {:?}", other),
-        }
+        assert_vector3_approx!(Vector, result, [0.6, 0.8, 0.0]);
     }
 
     #[test]
@@ -3648,50 +3555,9 @@ mod tests {
     #[test]
     fn normalize_dimensioned_vector_input() {
         // normalize(Vector([3m,4m,0m])) -> Value::Vector with dimensionless Real components
-        let v = Value::Vector(vec![
-            Value::Scalar {
-                si_value: 3.0,
-                dimension: DimensionVector::LENGTH,
-            },
-            Value::Scalar {
-                si_value: 4.0,
-                dimension: DimensionVector::LENGTH,
-            },
-            Value::Scalar {
-                si_value: 0.0,
-                dimension: DimensionVector::LENGTH,
-            },
-        ]);
+        let v = make_scalar_vec3([3.0, 4.0, 0.0], DimensionVector::LENGTH);
         let result = eval_builtin("normalize", &[v]);
-        match result {
-            Value::Vector(items) => {
-                assert_eq!(items.len(), 3);
-                let vals: Vec<f64> = items.iter().map(|x| x.as_f64().unwrap()).collect();
-                assert!(
-                    (vals[0] - 0.6).abs() < 1e-12,
-                    "x: expected 0.6, got {}",
-                    vals[0]
-                );
-                assert!(
-                    (vals[1] - 0.8).abs() < 1e-12,
-                    "y: expected 0.8, got {}",
-                    vals[1]
-                );
-                assert!(
-                    (vals[2] - 0.0).abs() < 1e-12,
-                    "z: expected 0.0, got {}",
-                    vals[2]
-                );
-                assert!(
-                    items.iter().all(|x| matches!(x, Value::Real(_))),
-                    "normalize of dimensioned Vector must return Real components"
-                );
-            }
-            other => panic!(
-                "expected Value::Vector for dimensioned normalize, got {:?}",
-                other
-            ),
-        }
+        assert_vector3_approx!(Vector, result, [0.6, 0.8, 0.0]);
     }
 
     // ── magnitude() with Value::Vector inputs (step-7) ──────────────────────
@@ -4386,20 +4252,47 @@ mod tests {
     }
 
     #[test]
-    fn orient_quaternion_dimensioned_scalar_strips_dimension() {
-        // as_f64() silently strips dimension — a LENGTH Scalar with si_value=1.0
-        // is accepted as quaternion component w=1.0. Documents this behavior.
+    fn orient_quaternion_dimensioned_scalar_returns_undef() {
+        // Dimensioned Scalars (e.g. LENGTH) must be rejected — quaternion components
+        // are pure numbers and should not carry physical dimensions.
+        assert!(eval_builtin(
+            "orient_quaternion",
+            &[
+                Value::Scalar {
+                    si_value: 1.0,
+                    dimension: DimensionVector::LENGTH,
+                },
+                Value::Real(0.0),
+                Value::Real(0.0),
+                Value::Real(0.0),
+            ]
+        )
+        .is_undef());
+    }
+
+    #[test]
+    fn orient_quaternion_accepts_dimensionless_scalar() {
+        // Dimensionless Scalars should be accepted — they are pure numbers.
         assert_orientation_approx!(
             eval_builtin(
                 "orient_quaternion",
                 &[
                     Value::Scalar {
                         si_value: 1.0,
-                        dimension: DimensionVector::LENGTH,
+                        dimension: DimensionVector::DIMENSIONLESS,
                     },
-                    Value::Real(0.0),
-                    Value::Real(0.0),
-                    Value::Real(0.0),
+                    Value::Scalar {
+                        si_value: 0.0,
+                        dimension: DimensionVector::DIMENSIONLESS,
+                    },
+                    Value::Scalar {
+                        si_value: 0.0,
+                        dimension: DimensionVector::DIMENSIONLESS,
+                    },
+                    Value::Scalar {
+                        si_value: 0.0,
+                        dimension: DimensionVector::DIMENSIONLESS,
+                    },
                 ]
             ),
             1.0,
@@ -4407,6 +4300,25 @@ mod tests {
             0.0,
             0.0
         );
+    }
+
+    #[test]
+    fn orient_quaternion_rejects_angle_dimension() {
+        // ANGLE-dimensioned Scalars must also be rejected — quaternion components
+        // are dimensionless, not angles.
+        assert!(eval_builtin(
+            "orient_quaternion",
+            &[
+                Value::Scalar {
+                    si_value: 1.0,
+                    dimension: DimensionVector::ANGLE,
+                },
+                Value::Real(0.0),
+                Value::Real(0.0),
+                Value::Real(0.0),
+            ]
+        )
+        .is_undef());
     }
 
     #[test]
@@ -4742,6 +4654,58 @@ mod tests {
     #[test]
     fn conjugate_non_complex_returns_undef() {
         assert!(eval_builtin("conjugate", &[Value::Real(3.0)]).is_undef());
+    }
+
+    #[test]
+    fn conjugate_nan_re_returns_undef() {
+        let z = Value::Complex {
+            re: f64::NAN,
+            im: 1.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            eval_builtin("conjugate", &[z]).is_undef(),
+            "conjugate of Complex with NaN re must return Undef"
+        );
+    }
+
+    #[test]
+    fn conjugate_nan_im_returns_undef() {
+        let z = Value::Complex {
+            re: 1.0,
+            im: f64::NAN,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            eval_builtin("conjugate", &[z]).is_undef(),
+            "conjugate of Complex with NaN im must return Undef"
+        );
+    }
+
+    #[test]
+    fn conjugate_inf_re_returns_undef() {
+        let z = Value::Complex {
+            re: f64::INFINITY,
+            im: 1.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            eval_builtin("conjugate", &[z]).is_undef(),
+            "conjugate of Complex with Inf re must return Undef"
+        );
+    }
+
+    #[test]
+    fn conjugate_inf_im_returns_undef() {
+        let z = Value::Complex {
+            re: 1.0,
+            im: f64::NEG_INFINITY,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            eval_builtin("conjugate", &[z]).is_undef(),
+            "conjugate of Complex with -Inf im must return Undef"
+        );
     }
 
     // ── magnitude on Complex tests (step-11) ─────────────────────────────────
@@ -5912,16 +5876,7 @@ mod tests {
         // normalize(Point([3,4,0])) → Point([0.6,0.8,0.0])
         let p = Value::Point(vec![Value::Real(3.0), Value::Real(4.0), Value::Real(0.0)]);
         let result = eval_builtin("normalize", &[p]);
-        match result {
-            Value::Point(items) => {
-                assert_eq!(items.len(), 3);
-                let v: Vec<f64> = items.iter().map(|x| x.as_f64().unwrap()).collect();
-                assert!((v[0] - 0.6).abs() < 1e-12, "x: expected 0.6, got {}", v[0]);
-                assert!((v[1] - 0.8).abs() < 1e-12, "y: expected 0.8, got {}", v[1]);
-                assert!((v[2] - 0.0).abs() < 1e-12, "z: expected 0.0, got {}", v[2]);
-            }
-            other => panic!("expected Value::Point([0.6,0.8,0.0]), got {:?}", other),
-        }
+        assert_vector3_approx!(Point, result, [0.6, 0.8, 0.0]);
     }
 
     #[test]
@@ -5941,6 +5896,85 @@ mod tests {
             eval_builtin("cross", &[a, b]).is_undef(),
             "cross of two Points should return Undef"
         );
+    }
+
+    // ── mixed-type contract tests (task 379) ─────────────────────────────────
+
+    #[test]
+    fn cross_vector_tensor_returns_tensor_wrapper() {
+        // cross(Vector, Tensor) falls through to Tensor wrapper (line 366: _ => Value::Tensor)
+        let a = Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
+        let b = Value::Tensor(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
+        let result = eval_builtin("cross", &[a, b]);
+        assert_vector3_approx!(Tensor, result, [0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn cross_tensor_vector_returns_tensor_wrapper() {
+        // cross(Tensor, Vector) also falls through to Tensor wrapper
+        let a = Value::Tensor(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
+        let b = Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
+        let result = eval_builtin("cross", &[a, b]);
+        assert_vector3_approx!(Tensor, result, [0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn cross_point_vector_returns_undef() {
+        // ANY Point input to cross returns Undef (line 364)
+        let a = Value::Point(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
+        let b = Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
+        assert!(
+            eval_builtin("cross", &[a, b]).is_undef(),
+            "cross(Point, Vector) should return Undef"
+        );
+    }
+
+    #[test]
+    fn cross_vector_point_returns_undef() {
+        // Second-arg Point also returns Undef
+        let a = Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
+        let b = Value::Point(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
+        assert!(
+            eval_builtin("cross", &[a, b]).is_undef(),
+            "cross(Vector, Point) should return Undef"
+        );
+    }
+
+    #[test]
+    fn dot_point_vector_returns_scalar() {
+        // dot accepts mixed Point+Vector inputs via tensor_components_f64
+        let a = Value::Point(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
+        let b = Value::Vector(vec![Value::Real(4.0), Value::Real(5.0), Value::Real(6.0)]);
+        assert_real_approx!(eval_builtin("dot", &[a, b]), 32.0);
+    }
+
+    #[test]
+    fn dot_vector_point_returns_scalar() {
+        // Argument order symmetry for mixed dot
+        let a = Value::Vector(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
+        let b = Value::Point(vec![Value::Real(4.0), Value::Real(5.0), Value::Real(6.0)]);
+        assert_real_approx!(eval_builtin("dot", &[a, b]), 32.0);
+    }
+
+    #[test]
+    fn normalize_point_dimensioned_returns_point() {
+        // normalize(Point([3m,4m,0m])) → Point([0.6, 0.8, 0.0]) with Real components
+        let p = Value::Point(vec![
+            Value::Scalar {
+                si_value: 3.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 4.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 0.0,
+                dimension: DimensionVector::LENGTH,
+            },
+        ]);
+        let result = eval_builtin("normalize", &[p]);
+        assert_vector3_approx!(Point, result, [0.6, 0.8, 0.0]);
     }
 
     // ── construct_point_or_vector edge cases (task 398, step-11) ──────────────
@@ -6065,6 +6099,19 @@ mod tests {
     }
 
     #[test]
+    fn frame3_point4_origin_returns_undef() {
+        // Point4 (wrong component count) should be rejected
+        let origin_4d = Value::Point(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+            Value::length(4.0),
+        ]);
+        let basis = make_identity_orientation();
+        assert!(eval_builtin("frame3", &[origin_4d, basis]).is_undef());
+    }
+
+    #[test]
     fn frame3_dimensionless_point3_is_accepted() {
         // Point3 with dimensionless (Real) components is accepted
         let origin = Value::Point(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]);
@@ -6132,6 +6179,13 @@ mod tests {
     fn frame3_identity_with_any_args_returns_undef() {
         assert!(eval_builtin("frame3_identity", &[Value::Real(1.0)]).is_undef());
         assert!(eval_builtin("frame3_identity", &[Value::Real(1.0), Value::Real(2.0)]).is_undef());
+        assert!(
+            eval_builtin(
+                "frame3_identity",
+                &[Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]
+            )
+            .is_undef()
+        );
     }
 
     // ── transform3 tests (step-5) ─────────────────────────────────────────────

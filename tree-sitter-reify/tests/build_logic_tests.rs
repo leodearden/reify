@@ -46,6 +46,29 @@ fn test_content_hash_changes_on_modification() {
 /// The expected output files that tree-sitter generate produces.
 const EXPECTED_OUTPUTS: &[&str] = &["parser.c", "grammar.json", "node-types.json"];
 
+/// Creates base/src/, writes placeholder files for all EXPECTED_OUTPUTS,
+/// and returns the src_dir path. Deduplicates setup across stamp/output tests.
+fn make_populated_src_dir(base: &Path) -> std::path::PathBuf {
+    let src_dir = base.join("src");
+    std::fs::create_dir_all(&src_dir).unwrap();
+    for name in EXPECTED_OUTPUTS {
+        std::fs::write(src_dir.join(name), b"placeholder").unwrap();
+    }
+    src_dir
+}
+
+/// Duplicates stamp-write logic from build.rs for testability.
+/// Writes the grammar hash to the stamp file, warning on failure instead of panicking.
+fn stamp_write(stamp_path: &Path, grammar_hash: &str) {
+    std::fs::write(stamp_path, grammar_hash).unwrap_or_else(|e| {
+        eprintln!(
+            "cargo:warning=Failed to write stamp file {}: {}",
+            stamp_path.display(),
+            e
+        );
+    });
+}
+
 /// Duplicates needs_generate logic from build.rs for testability.
 /// Returns true if regeneration is needed based on content hash staleness.
 /// The caller passes a pre-computed grammar hash to avoid TOCTOU races.
@@ -72,11 +95,7 @@ fn test_needs_generate_true_when_no_stamp() {
     std::fs::write(&grammar, b"module.exports = grammar({});").unwrap();
     let stamp = dir.path().join("stamp.hash");
     // stamp does not exist
-    let src_dir = dir.path().join("src");
-    std::fs::create_dir_all(&src_dir).unwrap();
-    for name in EXPECTED_OUTPUTS {
-        std::fs::write(src_dir.join(name), b"placeholder").unwrap();
-    }
+    let src_dir = make_populated_src_dir(dir.path());
     let output_paths: Vec<_> = EXPECTED_OUTPUTS.iter().map(|n| src_dir.join(n)).collect();
     let output_refs: Vec<&Path> = output_paths.iter().map(|p| p.as_path()).collect();
 
@@ -97,11 +116,7 @@ fn test_needs_generate_false_when_stamp_matches() {
     let hash = content_hash(&grammar);
     std::fs::write(&stamp, &hash).unwrap();
     // Create all 3 output files
-    let src_dir = dir.path().join("src");
-    std::fs::create_dir_all(&src_dir).unwrap();
-    for name in EXPECTED_OUTPUTS {
-        std::fs::write(src_dir.join(name), b"placeholder").unwrap();
-    }
+    let src_dir = make_populated_src_dir(dir.path());
     let output_paths: Vec<_> = EXPECTED_OUTPUTS.iter().map(|n| src_dir.join(n)).collect();
     let output_refs: Vec<&Path> = output_paths.iter().map(|p| p.as_path()).collect();
 
@@ -120,11 +135,7 @@ fn test_needs_generate_true_when_stamp_stale() {
     // Write a stale (old) hash to stamp file
     std::fs::write(&stamp, "0000000000000000").unwrap();
     // Create all 3 output files
-    let src_dir = dir.path().join("src");
-    std::fs::create_dir_all(&src_dir).unwrap();
-    for name in EXPECTED_OUTPUTS {
-        std::fs::write(src_dir.join(name), b"placeholder").unwrap();
-    }
+    let src_dir = make_populated_src_dir(dir.path());
     let output_paths: Vec<_> = EXPECTED_OUTPUTS.iter().map(|n| src_dir.join(n)).collect();
     let output_refs: Vec<&Path> = output_paths.iter().map(|p| p.as_path()).collect();
 
@@ -144,12 +155,9 @@ fn test_needs_generate_true_when_output_missing() {
     // Write matching hash
     let hash = content_hash(&grammar);
     std::fs::write(&stamp, &hash).unwrap();
-    // Create only 2 of the 3 output files (grammar.json missing)
-    let src_dir = dir.path().join("src");
-    std::fs::create_dir_all(&src_dir).unwrap();
-    std::fs::write(src_dir.join("parser.c"), b"placeholder").unwrap();
-    // grammar.json intentionally missing
-    std::fs::write(src_dir.join("node-types.json"), b"placeholder").unwrap();
+    // Create all 3 output files, then remove grammar.json
+    let src_dir = make_populated_src_dir(dir.path());
+    std::fs::remove_file(src_dir.join("grammar.json")).unwrap();
 
     let output_paths: Vec<_> = EXPECTED_OUTPUTS.iter().map(|n| src_dir.join(n)).collect();
     let output_refs: Vec<&Path> = output_paths.iter().map(|p| p.as_path()).collect();
@@ -182,13 +190,7 @@ fn verify_outputs(src_dir: &Path) -> Result<(), String> {
 #[test]
 fn test_all_three_outputs_verified() {
     let dir = tempfile::tempdir().unwrap();
-    let src_dir = dir.path().join("src");
-    std::fs::create_dir_all(&src_dir).unwrap();
-
-    // With all 3 files present, verification succeeds.
-    for name in EXPECTED_OUTPUTS {
-        std::fs::write(src_dir.join(name), b"placeholder").unwrap();
-    }
+    let src_dir = make_populated_src_dir(dir.path());
     assert!(verify_outputs(&src_dir).is_ok(), "all files present should verify ok");
 
     // Remove each file in turn and verify it's detected as missing.
@@ -218,6 +220,14 @@ fn test_no_redundant_rerun_if_changed() {
          src/parser.c is a generated output managed by build.rs itself. \
          Watching it causes double execution."
     );
+}
+
+/// Find the Err(e) arm in source code and return a window of characters from that point.
+/// This avoids fragile brace-counting that can be fooled by braces inside string literals.
+fn find_err_arm_window(source: &str, window: usize) -> Option<&str> {
+    let start = source.find("Err(e) =>")?;
+    let end = (start + window).min(source.len());
+    Some(&source[start..end])
 }
 
 /// Duplicates run_with_timeout logic from build.rs for testability.
@@ -271,29 +281,93 @@ fn test_try_wait_error_path_kills_child() {
     let build_rs = std::fs::read_to_string("build.rs")
         .expect("should be able to read build.rs from tree-sitter-reify crate root");
 
-    // Extract the Err(e) arm of try_wait — it's the block after `Err(e) =>`
-    // within the run_with_timeout function.
-    let err_arm_start = build_rs
-        .find("Err(e) =>")
+    // Extract a 300-char window after `Err(e) =>` — this captures the full ~220-char arm
+    // without fragile brace-counting that can be fooled by braces inside format strings.
+    let err_arm = find_err_arm_window(&build_rs, 300)
         .expect("build.rs should contain an Err(e) arm in try_wait match");
-    let err_arm_section = &build_rs[err_arm_start..];
-    // Take enough of the section to capture the full arm (up to the next `}`)
-    let err_arm_end = err_arm_section
-        .find('}')
-        .expect("Err(e) arm should have a closing brace");
-    let err_arm = &err_arm_section[..=err_arm_end];
 
     assert!(
         err_arm.contains("child.kill()"),
         "Err(e) arm of try_wait() must contain child.kill() to prevent orphan processes. \
-         Found: {}",
+         Window: {}",
         err_arm
     );
     assert!(
         err_arm.contains("child.wait()"),
         "Err(e) arm of try_wait() must contain child.wait() to reap the child process. \
-         Found: {}",
+         Window: {}",
         err_arm
+    );
+}
+
+#[test]
+fn test_err_arm_extraction_not_fooled_by_format_braces() {
+    // Synthetic source where child.kill()/child.wait() appear AFTER a format string with '}'.
+    // This demonstrates the fragility of the naive .find('}') approach.
+    let source = r#"
+        match child.try_wait() {
+            Ok(Some(status)) => { return Ok(()); }
+            Ok(None) => { /* polling */ }
+            Err(e) => {
+                return Err(format!("Error: '{}'", e));
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+    "#;
+
+    // The naive .find('}') approach finds the '}' inside the format string,
+    // not the arm's closing brace.
+    let err_start = source.find("Err(e) =>").unwrap();
+    let err_section = &source[err_start..];
+    let naive_end = err_section.find('}').unwrap();
+    let naive_slice = &err_section[..=naive_end];
+
+    // The naive approach misses child.kill() and child.wait() because they
+    // appear after the format string's '}'.
+    assert!(
+        !naive_slice.contains("child.kill()"),
+        "naive .find('}}') should NOT capture child.kill() — it stops at format string brace"
+    );
+
+    // The window approach captures the full arm.
+    let window = find_err_arm_window(source, 300).expect("should find Err(e) arm");
+    assert!(
+        window.contains("child.kill()"),
+        "window approach should capture child.kill(). Window: {}",
+        window
+    );
+    assert!(
+        window.contains("child.wait()"),
+        "window approach should capture child.wait(). Window: {}",
+        window
+    );
+}
+
+#[test]
+fn test_out_dir_no_silent_fallback() {
+    // Source-level regression guard: build.rs must NOT silently fall back to "." when
+    // OUT_DIR is unset. Cargo always sets OUT_DIR for build scripts, so a missing value
+    // means something is fundamentally wrong — we should panic, not pollute the source tree.
+    let build_rs = std::fs::read_to_string("build.rs")
+        .expect("should be able to read build.rs from tree-sitter-reify crate root");
+
+    // Find the line that reads the OUT_DIR env var (not comments mentioning OUT_DIR).
+    let out_dir_line = build_rs
+        .lines()
+        .find(|line| line.contains("env::var(\"OUT_DIR\")") || line.contains("env::var( \"OUT_DIR\")"))
+        .expect("build.rs should contain a line reading env::var(\"OUT_DIR\")");
+
+    assert!(
+        !out_dir_line.contains("unwrap_or_else"),
+        "OUT_DIR line must NOT use unwrap_or_else (silent fallback). \
+         Cargo always sets OUT_DIR; a missing value should panic. Line: {}",
+        out_dir_line
+    );
+    assert!(
+        out_dir_line.contains("expect"),
+        "OUT_DIR line must use .expect() for a clear panic message. Line: {}",
+        out_dir_line
     );
 }
 
@@ -319,4 +393,184 @@ fn test_subprocess_timeout_kills_hung_process() {
         "should have killed hung process quickly, but took {:?}",
         elapsed
     );
+}
+
+#[test]
+#[cfg(unix)] // set_readonly(true) on a directory only prevents file creation on Unix (POSIX);
+             // on Windows the readonly attribute does NOT block creating files within the directory.
+fn test_stamp_write_failure_no_panic() {
+    // Verify that stamp_write does not panic when the destination is read-only.
+    // This mirrors build.rs behavior where write failure emits a warning instead of panicking.
+    let dir = tempfile::tempdir().unwrap();
+    let readonly_dir = dir.path().join("readonly");
+    std::fs::create_dir_all(&readonly_dir).unwrap();
+
+    // Make the directory read-only so file creation fails
+    let mut perms = std::fs::metadata(&readonly_dir).unwrap().permissions();
+    perms.set_readonly(true);
+    std::fs::set_permissions(&readonly_dir, perms).unwrap();
+
+    // Guard ensures cleanup even if assertions below panic
+    let _guard = ReadonlyGuard::new(readonly_dir.clone());
+
+    let stamp_path = readonly_dir.join("grammar_hash.stamp");
+
+    // Should not panic — just warn
+    stamp_write(&stamp_path, "somehash");
+
+    // Verify the stamp was NOT written (write should have failed)
+    assert!(
+        !stamp_path.exists(),
+        "stamp should not exist in a read-only directory"
+    );
+}
+
+#[test]
+fn test_stamp_path_is_profile_independent() {
+    // Prove that staleness detection is purely hash-driven and works identically
+    // across different OUT_DIR paths (simulating debug vs release profiles).
+    let dir = tempfile::tempdir().unwrap();
+    let grammar = dir.path().join("grammar.js");
+    std::fs::write(&grammar, b"module.exports = grammar({name: 'test'});").unwrap();
+    let src_dir = make_populated_src_dir(dir.path());
+    let output_paths: Vec<_> = EXPECTED_OUTPUTS.iter().map(|n| src_dir.join(n)).collect();
+    let output_refs: Vec<&Path> = output_paths.iter().map(|p| p.as_path()).collect();
+
+    // Simulate two different cargo profile OUT_DIR paths
+    let debug_out = dir.path().join("target/debug/build/out");
+    let release_out = dir.path().join("target/release/build/out");
+    std::fs::create_dir_all(&debug_out).unwrap();
+    std::fs::create_dir_all(&release_out).unwrap();
+
+    let hash = content_hash(&grammar);
+
+    // Write matching stamp to both profiles
+    let debug_stamp = debug_out.join("grammar_hash.stamp");
+    let release_stamp = release_out.join("grammar_hash.stamp");
+    stamp_write(&debug_stamp, &hash);
+    stamp_write(&release_stamp, &hash);
+
+    // Both profiles report no regeneration needed
+    assert!(
+        !needs_generate(&hash, &debug_stamp, &output_refs),
+        "debug profile: must NOT regenerate when stamp matches"
+    );
+    assert!(
+        !needs_generate(&hash, &release_stamp, &output_refs),
+        "release profile: must NOT regenerate when stamp matches"
+    );
+
+    // Mutate grammar content — both profiles must now detect staleness
+    std::fs::write(&grammar, b"module.exports = grammar({name: 'changed'});").unwrap();
+    let new_hash = content_hash(&grammar);
+    assert!(
+        needs_generate(&new_hash, &debug_stamp, &output_refs),
+        "debug profile: must regenerate after grammar change"
+    );
+    assert!(
+        needs_generate(&new_hash, &release_stamp, &output_refs),
+        "release profile: must regenerate after grammar change"
+    );
+}
+
+#[test]
+fn test_stamp_shared_across_simulated_profiles() {
+    // Prove that identical hash content at any stamp location yields identical
+    // staleness decisions, and that stamp presence is per-location.
+    let dir = tempfile::tempdir().unwrap();
+    let grammar = dir.path().join("grammar.js");
+    std::fs::write(&grammar, b"module.exports = grammar({name: 'shared'});").unwrap();
+    let src_dir = make_populated_src_dir(dir.path());
+    let output_paths: Vec<_> = EXPECTED_OUTPUTS.iter().map(|n| src_dir.join(n)).collect();
+    let output_refs: Vec<&Path> = output_paths.iter().map(|p| p.as_path()).collect();
+
+    let hash = content_hash(&grammar);
+
+    // Two separate OUT_DIR-like paths
+    let out_dir_1 = dir.path().join("target/debug/build/out");
+    let out_dir_2 = dir.path().join("target/release/build/out");
+    std::fs::create_dir_all(&out_dir_1).unwrap();
+    std::fs::create_dir_all(&out_dir_2).unwrap();
+
+    let stamp_1 = out_dir_1.join("grammar_hash.stamp");
+    let stamp_2 = out_dir_2.join("grammar_hash.stamp");
+
+    // Write stamp to only OUT_DIR_1
+    stamp_write(&stamp_1, &hash);
+
+    // OUT_DIR_1 has matching stamp — no regeneration needed
+    assert!(
+        !needs_generate(&hash, &stamp_1, &output_refs),
+        "OUT_DIR_1: must NOT regenerate when stamp matches"
+    );
+    // OUT_DIR_2 has no stamp — regeneration needed
+    assert!(
+        needs_generate(&hash, &stamp_2, &output_refs),
+        "OUT_DIR_2: must regenerate when stamp is absent"
+    );
+
+    // Now write the same stamp to OUT_DIR_2
+    stamp_write(&stamp_2, &hash);
+
+    // Both locations now report no regeneration needed
+    assert!(
+        !needs_generate(&hash, &stamp_1, &output_refs),
+        "OUT_DIR_1: still must NOT regenerate"
+    );
+    assert!(
+        !needs_generate(&hash, &stamp_2, &output_refs),
+        "OUT_DIR_2: must NOT regenerate after stamp written with matching hash"
+    );
+}
+
+/// RAII guard that unconditionally restores write permissions on drop.
+/// Prevents temp-directory leaks when assertions panic between
+/// set_readonly(true) and the manual permission restore.
+struct ReadonlyGuard {
+    path: std::path::PathBuf,
+}
+
+impl ReadonlyGuard {
+    fn new(path: std::path::PathBuf) -> Self {
+        Self { path }
+    }
+}
+
+impl Drop for ReadonlyGuard {
+    fn drop(&mut self) {
+        if let Ok(meta) = std::fs::metadata(&self.path) {
+            let mut perms = meta.permissions();
+            #[allow(clippy::permissions_set_readonly_false)]
+            perms.set_readonly(false);
+            let _ = std::fs::set_permissions(&self.path, perms);
+        }
+    }
+}
+
+#[test]
+#[cfg(unix)] // set_readonly(true) on a directory only prevents file creation on Unix (POSIX);
+             // on Windows the readonly attribute does NOT block creating files within the directory.
+fn test_readonly_guard_restores_on_drop() {
+    // Verify that ReadonlyGuard's Drop impl restores write permissions.
+    let dir = tempfile::tempdir().unwrap();
+    let subdir = dir.path().join("guarded");
+    std::fs::create_dir_all(&subdir).unwrap();
+
+    // Make the directory read-only
+    let mut perms = std::fs::metadata(&subdir).unwrap().permissions();
+    perms.set_readonly(true);
+    std::fs::set_permissions(&subdir, perms).unwrap();
+
+    // Guard takes ownership of the path and restores permissions on drop
+    {
+        let _guard = ReadonlyGuard::new(subdir.clone());
+        // While guard is alive, directory is still read-only
+        assert!(
+            std::fs::File::create(subdir.join("probe_while_guarded.txt")).is_err(),
+            "directory should still be read-only while guard is alive"
+        );
+    }
+    // After guard is dropped, directory should be writable again
+    std::fs::File::create(subdir.join("probe_after_drop.txt"))
+        .expect("directory should be writable after ReadonlyGuard is dropped");
 }

@@ -576,7 +576,12 @@ impl Value {
                      Use CompiledExpr::literal(value, type) directly."
                 )
             }
-            Value::Transform { .. } => Type::Transform(3),
+            Value::Transform { .. } => {
+                panic!(
+                    "infer_type() cannot infer Transform dimensionality. \
+                     Use CompiledExpr::literal(value, type) directly."
+                )
+            }
             Value::Plane { .. } => Type::Plane,
             Value::Axis { .. } => Type::Axis,
             Value::BoundingBox { .. } => Type::BoundingBox,
@@ -4238,10 +4243,11 @@ mod tests {
     fn value_frame_ord_same_origin_compare_basis() {
         // Same origin, different basis: order by basis quaternion
         let origin = make_point3_length();
-        // Orientation {w:0} < {w:1} by to_bits ordering (0.0 < 1.0)
+        // Valid 180° rotation around X-axis (unit quaternion: |q|=1).
+        // w=0.0 < w=1.0 by to_bits ordering, so basis_a < basis_b.
         let basis_a = Value::Orientation {
             w: 0.0,
-            x: 0.0,
+            x: 1.0,
             y: 0.0,
             z: 0.0,
         };
@@ -4293,6 +4299,27 @@ mod tests {
     fn value_frame_infer_type_panics() {
         let frame = make_frame(make_point3_length(), make_orientation_identity());
         let _ = frame.infer_type();
+    }
+
+    #[test]
+    fn value_frame_ne_orientation() {
+        let frame = make_frame(make_point3_length(), make_orientation_identity());
+        let orientation = make_orientation_identity();
+        assert_ne!(frame, orientation);
+    }
+
+    #[test]
+    fn value_frame_ne_point() {
+        let frame = make_frame(make_point3_length(), make_orientation_identity());
+        let point = make_point3_length();
+        assert_ne!(frame, point);
+    }
+
+    #[test]
+    #[should_panic(expected = "infer_type() cannot infer Transform")]
+    fn value_transform_infer_type_panics() {
+        let transform = make_transform(make_orientation_identity(), make_vector3_length());
+        let _ = transform.infer_type();
     }
 
     // ── Value::Transform tests (step-3) ──────────────────────────────────────

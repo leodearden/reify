@@ -626,6 +626,74 @@ mod tests {
     }
 
     #[test]
+    fn completion_after_dot_defined_struct_returns_only_members() {
+        // Foo is defined with params a and b.
+        // Bar references Foo via `sub part: Foo`, then `let x = part.` triggers dot-access.
+        // This test has both positive (a, b present) AND negative (no keywords/functions/types)
+        // assertions, addressing the vacuous_test finding in the exclusion-only test above.
+        let source = "structure Foo {\n    param a: Scalar = 1mm\n    param b: Scalar = 2mm\n}\nstructure Bar {\n    sub part: Foo\n    let x = part.\n}";
+        // Line 6, col 17 is after the dot on "    let x = part."
+        let items = compute_completions(source, &test_uri(), Position::new(6, 17));
+
+        let var_labels: Vec<&str> = items
+            .iter()
+            .filter(|i| i.kind == Some(CompletionItemKind::VARIABLE))
+            .map(|v| v.label.as_str())
+            .collect();
+
+        let keyword_labels: Vec<&str> = items
+            .iter()
+            .filter(|i| i.kind == Some(CompletionItemKind::KEYWORD))
+            .map(|k| k.label.as_str())
+            .collect();
+
+        let func_labels: Vec<&str> = items
+            .iter()
+            .filter(|i| i.kind == Some(CompletionItemKind::FUNCTION))
+            .map(|f| f.label.as_str())
+            .collect();
+
+        let type_labels: Vec<&str> = items
+            .iter()
+            .filter(|i| i.kind == Some(CompletionItemKind::CLASS))
+            .map(|t| t.label.as_str())
+            .collect();
+
+        // Positive: Foo's members should appear
+        assert!(
+            !var_labels.is_empty(),
+            "after dot with defined struct should have member completions"
+        );
+        assert!(
+            var_labels.contains(&"a"),
+            "should include Foo's 'a', got: {:?}",
+            var_labels
+        );
+        assert!(
+            var_labels.contains(&"b"),
+            "should include Foo's 'b', got: {:?}",
+            var_labels
+        );
+
+        // Negative: no keywords, functions, or types after dot
+        assert!(
+            keyword_labels.is_empty(),
+            "after dot should have no keywords, got: {:?}",
+            keyword_labels
+        );
+        assert!(
+            func_labels.is_empty(),
+            "after dot should have no builtin functions, got: {:?}",
+            func_labels
+        );
+        assert!(
+            type_labels.is_empty(),
+            "after dot should have no type names, got: {:?}",
+            type_labels
+        );
+    }
+
+    #[test]
     fn completion_after_dot_includes_known_members() {
         // Two defined structures so push_all_members returns real members.
         let source = "structure Bracket {\n    param width: Scalar = 80mm\n    param height: Scalar = 100mm\n}\nstructure Assembly {\n    sub part: Bracket\n    let x = part.\n}";

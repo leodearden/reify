@@ -11,7 +11,10 @@ data/escalations/
 node_modules/
 /package.json
 /package-lock.json
-**/pnpm-lock.yaml
+gui/package-lock.json
+gui/pnpm-lock.yaml
+gui/sidecar/package-lock.json
+tree-sitter-reify/package-lock.json
 test_bracket.reify
 .orchestrator/reconciliation/*.db*
 .orchestrator/queue/*.db*
@@ -21,3 +24,4 @@ test_bracket.reify
 tree-sitter-reify/src/parser.c
 tree-sitter-reify/src/grammar.json
 tree-sitter-reify/src/node-types.json
+tree-sitter-reify/src/.grammar_hash.stamp

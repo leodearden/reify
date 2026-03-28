@@ -18,7 +18,7 @@ TS_DIR="$(cd "$SCRIPT_DIR/../tree-sitter-reify" && pwd)"
 
 if ! command -v tree-sitter >/dev/null 2>&1; then
     echo "ERROR: tree-sitter CLI not found on PATH." >&2
-    echo "Install via: cargo install tree-sitter-cli" >&2
+    echo "Install via: npm install -g tree-sitter-cli" >&2
     exit 1
 fi
 
