@@ -279,28 +279,21 @@ fn test_try_wait_error_path_kills_child() {
     let build_rs = std::fs::read_to_string("build.rs")
         .expect("should be able to read build.rs from tree-sitter-reify crate root");
 
-    // Extract the Err(e) arm of try_wait — it's the block after `Err(e) =>`
-    // within the run_with_timeout function.
-    let err_arm_start = build_rs
-        .find("Err(e) =>")
+    // Extract a 300-char window after `Err(e) =>` — this captures the full ~220-char arm
+    // without fragile brace-counting that can be fooled by braces inside format strings.
+    let err_arm = find_err_arm_window(&build_rs, 300)
         .expect("build.rs should contain an Err(e) arm in try_wait match");
-    let err_arm_section = &build_rs[err_arm_start..];
-    // Take enough of the section to capture the full arm (up to the next `}`)
-    let err_arm_end = err_arm_section
-        .find('}')
-        .expect("Err(e) arm should have a closing brace");
-    let err_arm = &err_arm_section[..=err_arm_end];
 
     assert!(
         err_arm.contains("child.kill()"),
         "Err(e) arm of try_wait() must contain child.kill() to prevent orphan processes. \
-         Found: {}",
+         Window: {}",
         err_arm
     );
     assert!(
         err_arm.contains("child.wait()"),
         "Err(e) arm of try_wait() must contain child.wait() to reap the child process. \
-         Found: {}",
+         Window: {}",
         err_arm
     );
 }
