@@ -9,6 +9,10 @@ use reify_types::{
 /// Maximum recursion depth for user-defined function calls.
 const MAX_RECURSION_DEPTH: u32 = 256;
 
+/// Maximum nesting depth for gradient field sampling (gradient-of-gradient-of-...).
+/// Each level evaluates 6 field samples (2 per axis × 3 axes), so cost grows as 6^depth.
+const MAX_GRADIENT_DEPTH: u32 = 8;
+
 /// Evaluation context: provides values, user-defined functions, and recursion tracking.
 pub struct EvalContext<'a> {
     /// Current values of all cells.
@@ -17,6 +21,8 @@ pub struct EvalContext<'a> {
     pub functions: &'a [CompiledFunction],
     /// Current recursion depth (private — managed internally).
     recursion_depth: u32,
+    /// Current gradient nesting depth (private — managed internally).
+    gradient_depth: u32,
     /// Meta block entries per entity: entity name → (key → value).
     /// `None` means meta context was not provided — MetaAccess evaluation will panic.
     pub meta: Option<&'a HashMap<String, HashMap<String, String>>>,
@@ -33,6 +39,7 @@ impl<'a> EvalContext<'a> {
             values,
             functions,
             recursion_depth: 0,
+            gradient_depth: 0,
             meta: None,
             determinacy: None,
         }
@@ -44,6 +51,7 @@ impl<'a> EvalContext<'a> {
             values,
             functions: &[],
             recursion_depth: 0,
+            gradient_depth: 0,
             meta: None,
             determinacy: None,
         }
@@ -56,6 +64,7 @@ impl<'a> EvalContext<'a> {
             values,
             functions: &[],
             recursion_depth: depth,
+            gradient_depth: 0,
             meta: None,
             determinacy: None,
         }
@@ -85,6 +94,7 @@ impl<'a> EvalContext<'a> {
             values,
             functions: self.functions,
             recursion_depth: self.recursion_depth + 1,
+            gradient_depth: self.gradient_depth,
             meta: self.meta,
             determinacy: self.determinacy,
         }
@@ -127,9 +137,19 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                     } = &evaluated_args[0]
                     {
                         if *source == FieldSourceKind::Gradient {
-                            if let Some(inner) = inner_field {
+                            if ctx.gradient_depth >= MAX_GRADIENT_DEPTH {
+                                Value::Undef
+                            } else if let Some(inner) = inner_field {
                                 if let Value::Field { .. } = inner.as_ref() {
-                                    sample_gradient_field(inner, &evaluated_args[1], ctx)
+                                    let grad_ctx = EvalContext {
+                                        values: ctx.values,
+                                        functions: ctx.functions,
+                                        recursion_depth: ctx.recursion_depth,
+                                        gradient_depth: ctx.gradient_depth + 1,
+                                        meta: ctx.meta,
+                                        determinacy: ctx.determinacy,
+                                    };
+                                    sample_gradient_field(inner, &evaluated_args[1], &grad_ctx)
                                 } else {
                                     Value::Undef
                                 }
