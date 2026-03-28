@@ -345,6 +345,33 @@ fn test_err_arm_extraction_not_fooled_by_format_braces() {
 }
 
 #[test]
+fn test_out_dir_no_silent_fallback() {
+    // Source-level regression guard: build.rs must NOT silently fall back to "." when
+    // OUT_DIR is unset. Cargo always sets OUT_DIR for build scripts, so a missing value
+    // means something is fundamentally wrong — we should panic, not pollute the source tree.
+    let build_rs = std::fs::read_to_string("build.rs")
+        .expect("should be able to read build.rs from tree-sitter-reify crate root");
+
+    // Find the line that reads the OUT_DIR env var (not comments mentioning OUT_DIR).
+    let out_dir_line = build_rs
+        .lines()
+        .find(|line| line.contains("env::var(\"OUT_DIR\")") || line.contains("env::var( \"OUT_DIR\")"))
+        .expect("build.rs should contain a line reading env::var(\"OUT_DIR\")");
+
+    assert!(
+        !out_dir_line.contains("unwrap_or_else"),
+        "OUT_DIR line must NOT use unwrap_or_else (silent fallback). \
+         Cargo always sets OUT_DIR; a missing value should panic. Line: {}",
+        out_dir_line
+    );
+    assert!(
+        out_dir_line.contains("expect"),
+        "OUT_DIR line must use .expect() for a clear panic message. Line: {}",
+        out_dir_line
+    );
+}
+
+#[test]
 fn test_subprocess_timeout_kills_hung_process() {
     use std::time::Instant;
 

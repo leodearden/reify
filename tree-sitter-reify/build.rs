@@ -152,7 +152,7 @@ fn main() {
         .collect();
     let output_refs: Vec<&std::path::Path> = output_paths.iter().map(|p| p.as_path()).collect();
     // Stamp file stored in OUT_DIR (cargo build directory).
-    let out_dir = std::env::var("OUT_DIR").unwrap_or_else(|_| ".".to_string());
+    let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR must be set by cargo");
     let stamp_path = std::path::Path::new(&out_dir).join("grammar_hash.stamp");
 
     // Capture the grammar hash once, before generation, and reuse it for both
