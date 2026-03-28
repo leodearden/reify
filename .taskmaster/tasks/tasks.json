@@ -13508,6 +13508,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 680,
+        "title": "Add CompiledExpr::function_call named constructor",
+        "description": "CompiledExpr has named constructors for every node kind (literal, binop, value_ref, lambda, method_call, etc.) except FunctionCall. Tests build FunctionCall nodes manually with incorrect content_hash computation (hashes only the name, ignoring args).\n\nFix: Add `CompiledExpr::function_call(function: ResolvedFunction, args: Vec<CompiledExpr>, result_type: Type) -> Self` to reify-types that computes content_hash by hashing the name then combining each arg's hash. Update lambda_eval_tests.rs make_function_call helper to use it, and remove the manual construction.\n\nmemory_hints: search \"CompiledExpr constructors\" in reify-types, search \"make_function_call\" in tests",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -13520,7 +13531,7 @@
       ],
       "created": "2026-03-28T04:59:44.348Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-28T04:59:56.209Z"
+      "updated": "2026-03-28T05:00:01.463Z"
     }
   }
 }
