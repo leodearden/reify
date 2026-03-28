@@ -1942,7 +1942,7 @@ async fn wait_ready_notified_race_on_multithread() {
             .unwrap();
         let reader = BufReader::new(data_reader);
         let (stdin_writer, _stdin_reader) = tokio::io::duplex(1024);
-        let handle = SidecarHandle::from_parts(stdin_writer, reader, state);
+        let mut handle = SidecarHandle::from_parts(stdin_writer, reader, state);
 
         // Hold the writer alive so the reader doesn't see EOF.
         let _data_writer = data_writer;
@@ -1955,6 +1955,10 @@ async fn wait_ready_notified_race_on_multithread() {
             i,
             result
         );
+
+        // Abort the reader task immediately instead of leaving it detached
+        // until the writer drops at end-of-iteration.
+        handle.kill().await;
     }
 }
 
