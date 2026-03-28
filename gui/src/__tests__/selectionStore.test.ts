@@ -378,5 +378,24 @@ describe('selectionStore', () => {
         hoveredEntity: null,
       });
     });
+
+    it('clearIfRemoved dispatches when hoveredEntity matches', () => {
+      hoverEntity('Bracket.width');
+      // Flush the hover debounce so it doesn't interfere
+      vi.advanceTimersByTime(100);
+      mockInvoke.mockClear();
+
+      clearIfRemoved('Bracket.width');
+
+      // Hover-only change → debounced, not immediate
+      expect(mockInvoke).not.toHaveBeenCalled();
+
+      vi.advanceTimersByTime(100);
+      expect(mockInvoke).toHaveBeenCalledTimes(1);
+      expect(mockInvoke).toHaveBeenCalledWith('update_selection', {
+        selectedEntity: null,
+        hoveredEntity: null,
+      });
+    });
   });
 });
