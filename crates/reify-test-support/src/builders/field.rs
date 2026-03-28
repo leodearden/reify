@@ -123,4 +123,58 @@ mod tests {
         assert!(matches!(field.source, CompiledFieldSource::Imported));
         assert_ne!(field.content_hash, ContentHash(0));
     }
+
+    #[test]
+    fn compiled_field_hash_differs_by_domain_type() {
+        let f1 = CompiledFieldBuilder::new("temp", Type::Geometry, Type::Real)
+            .imported()
+            .build();
+        let f2 = CompiledFieldBuilder::new("temp", Type::Real, Type::Real)
+            .imported()
+            .build();
+        assert_ne!(
+            f1.content_hash, f2.content_hash,
+            "fields with same name but different domain_type must produce different content_hash"
+        );
+    }
+
+    #[test]
+    fn compiled_field_hash_differs_by_codomain_type() {
+        let f1 = CompiledFieldBuilder::new("temp", Type::Geometry, Type::Real)
+            .imported()
+            .build();
+        let f2 = CompiledFieldBuilder::new("temp", Type::Geometry, Type::Int)
+            .imported()
+            .build();
+        assert_ne!(
+            f1.content_hash, f2.content_hash,
+            "fields with same name but different codomain_type must produce different content_hash"
+        );
+    }
+
+    #[test]
+    fn compiled_field_hash_differs_by_source() {
+        let body = literal(Value::Real(1.0));
+        let f_analytical = CompiledFieldBuilder::new("temp", Type::Geometry, Type::Real)
+            .analytical(body.clone())
+            .build();
+        let f_composed = CompiledFieldBuilder::new("temp", Type::Geometry, Type::Real)
+            .composed(body)
+            .build();
+        let f_imported = CompiledFieldBuilder::new("temp", Type::Geometry, Type::Real)
+            .imported()
+            .build();
+        assert_ne!(
+            f_analytical.content_hash, f_composed.content_hash,
+            "analytical vs composed source must produce different content_hash"
+        );
+        assert_ne!(
+            f_analytical.content_hash, f_imported.content_hash,
+            "analytical vs imported source must produce different content_hash"
+        );
+        assert_ne!(
+            f_composed.content_hash, f_imported.content_hash,
+            "composed vs imported source must produce different content_hash"
+        );
+    }
 }
