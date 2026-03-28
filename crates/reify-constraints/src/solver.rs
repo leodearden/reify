@@ -604,6 +604,8 @@ impl ConstraintSolver for DimensionalSolver {
         let best_param: Vec<f64> = match result.state().get_best_param() {
             Some(p) => p.clone(),
             None => {
+                let n_params = problem.auto_params.len();
+                tracing::warn!(n_params, "solver returned no best parameter");
                 return SolveResult::NoProgress {
                     reason: "solver returned no solution".to_string(),
                 };
