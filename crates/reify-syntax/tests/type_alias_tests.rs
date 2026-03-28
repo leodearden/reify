@@ -436,3 +436,36 @@ fn parse_type_alias_nested_parameterized_types() {
         other => panic!("expected Declaration::TypeAlias, got {:?}", other),
     }
 }
+
+// ── Mixed operator precedence ────────────────────────────────────
+
+#[test]
+fn parse_type_alias_mixed_operator_precedence() {
+    // Mass / Time * Scalar — left-associative with equal precedence.
+    // Expected parse: (Mass / Time) * Scalar — outer node is '*'.
+    // This tests '/' followed by '*' (the existing chained test uses '* / /').
+    let source = "type X = Mass / Time * Scalar";
+    let (decls, errors) = parse_decls(source);
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+    assert_eq!(decls.len(), 1);
+
+    match &decls[0] {
+        Declaration::TypeAlias(ta) => {
+            assert_eq!(ta.name, "X");
+            // Outer: (Mass / Time) * Scalar
+            assert_eq!(ta.type_expr.name, "*");
+            assert_eq!(ta.type_expr.type_args.len(), 2);
+
+            // Right operand of outer *: Scalar
+            assert_eq!(ta.type_expr.type_args[1].name, "Scalar");
+
+            // Left operand of outer *: Mass / Time
+            let div = &ta.type_expr.type_args[0];
+            assert_eq!(div.name, "/");
+            assert_eq!(div.type_args.len(), 2);
+            assert_eq!(div.type_args[0].name, "Mass");
+            assert_eq!(div.type_args[1].name, "Time");
+        }
+        other => panic!("expected Declaration::TypeAlias, got {:?}", other),
+    }
+}
