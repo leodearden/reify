@@ -115,40 +115,13 @@ impl TraitDefBuilder {
     }
 
     pub fn build(self) -> CompiledTrait {
-        let content_hash = {
-            let name_hash = ContentHash::of_str(&self.name);
-            let req_hashes = self.required_members.iter().map(|r| {
-                let kind_str = match &r.kind {
-                    RequirementKind::Param(ty) => format!("Param:{}", ty),
-                    RequirementKind::Let(ty) => format!("Let:{}", ty),
-                    RequirementKind::Sub(s) => format!("Sub:{}", s),
-                };
-                ContentHash::of_str(&format!("{}:{}", r.name, kind_str))
-            });
-            let ref_hashes = self.refinements.iter().map(|r| ContentHash::of_str(r));
-            let type_param_hashes = self
-                .type_params
-                .iter()
-                .map(|p| ContentHash::of_str(&p.name));
-            let default_hashes = self.defaults.iter().map(|d| {
-                let kind_tag = match &d.kind {
-                    DefaultKind::Param { .. } => "Param",
-                    DefaultKind::Let(_) => "Let",
-                    DefaultKind::Constraint(_) => "Constraint",
-                };
-                ContentHash::of_str(&format!(
-                    "{}:{}",
-                    d.name.as_deref().unwrap_or(""),
-                    kind_tag
-                ))
-            });
-            let all_hashes = std::iter::once(name_hash)
-                .chain(req_hashes)
-                .chain(ref_hashes)
-                .chain(type_param_hashes)
-                .chain(default_hashes);
-            ContentHash::combine_all(all_hashes)
-        };
+        let content_hash = compute_trait_content_hash(
+            &self.name,
+            &self.required_members,
+            &self.refinements,
+            &self.type_params,
+            &self.defaults,
+        );
 
         CompiledTrait {
             name: self.name,
