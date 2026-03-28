@@ -5251,17 +5251,23 @@
           "223",
           "224"
         ],
-        "status": "in-progress",
+        "status": "pending",
         "metadata": {
           "modules": [
             "crates/reify-stdlib",
             "crates/reify-expr"
           ],
           "milestone": "M11",
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Field gradient: implementation"
+            ]
+          }
         },
         "subtasks": [],
-        "updatedAt": "2026-03-27T23:31:53.416Z"
+        "updatedAt": "2026-03-28T10:32:28.663Z"
       },
       {
         "id": "282",
@@ -12822,7 +12828,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T10:23:25.395Z",
+      "lastModified": "2026-03-28T10:32:28.663Z",
       "taskCount": 636,
       "completedCount": 300,
       "tags": [
