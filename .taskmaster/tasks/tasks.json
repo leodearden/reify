@@ -14237,7 +14237,7 @@
         "description": "Three related improvements to crates/reify-cli/tests/cli_check.rs:\n\n1. Add a new fixture `bracket_violated_indeterminate.ri` with one violated concrete constraint and one indeterminate auto constraint, plus a test asserting exit non-zero, stdout contains both VIOLATED and INDETERMINATE, and stdout contains 'Some constraints violated'. This covers the critical edge case that INDETERMINATE must not mask VIOLATED.\n\n2. In the existing `check_indeterminate_constraint_exits_success` test, add `assert!(stdout.contains(\"OK\"))` to verify the satisfied thickness constraint emits its status line.\n\n3. In the same test, add `assert!(!stdout.contains(\"Some constraints violated\"))` as an explicit negative assertion documenting that the error summary must not appear when no constraints are violated.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -14250,7 +14250,8 @@
             "crates/reify-cli/tests",
             "data/fixtures"
           ]
-        }
+        },
+        "updatedAt": "2026-03-28T09:04:29.699Z"
       },
       {
         "id": "693",
@@ -14621,7 +14622,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T09:04:29.378Z",
+      "lastModified": "2026-03-28T09:04:29.699Z",
       "taskCount": 710,
       "completedCount": 329,
       "tags": [
