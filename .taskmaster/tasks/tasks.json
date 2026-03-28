@@ -13840,6 +13840,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 708,
+        "title": "Complete mm() helper migration in constraint solver tests",
+        "description": "Replace all remaining inline Value::Scalar { si_value: X * 0.001, dimension: DimensionVector::LENGTH } constructions with mm(X) in: (1) solver.rs unit tests (~80 sites, add use reify_test_support::mm to module imports). (2) solver_integration.rs lines 132-206, 253, 271, 322 (mm() already available via wildcard import). Mechanical find-and-replace with no semantic changes.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -13852,7 +13863,7 @@
       ],
       "created": "2026-03-28T06:55:24.369Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-28T06:55:31.873Z"
+      "updated": "2026-03-28T06:55:34.170Z"
     }
   }
 }
