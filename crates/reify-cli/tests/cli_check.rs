@@ -125,6 +125,10 @@ fn check_indeterminate_constraint_exits_success() {
         "stdout should contain 'INDETERMINATE', got: {stdout}"
     );
     assert!(
+        stdout.contains("OK"),
+        "stdout should contain 'OK' for the satisfied thickness constraint, got: {stdout}"
+    );
+    assert!(
         !stdout.contains("VIOLATED"),
         "stdout should NOT contain 'VIOLATED', got: {stdout}"
     );
