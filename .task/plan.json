@@ -1,0 +1,122 @@
+{
+  "task_id": "356",
+  "title": "Stdlib math builtins polish (clamp/lerp/remap)",
+  "files": [
+    "crates/reify-stdlib/src/lib.rs"
+  ],
+  "modules": [
+    "crates/reify-stdlib/src"
+  ],
+  "analysis": "Thorough analysis of crates/reify-stdlib/src/lib.rs reveals that ALL items described in the task have already been implemented and merged to main in a prior task execution cycle. The commit history shows a complete TDD sequence (steps 1-22) covering every sub-item. Current state: 335 tests pass, working tree clean, task/356 branch at same commit as main (no divergence). Specific verification:\n\n1. **remap dimension stripping** (item 1): DONE \u2014 Lines 234-266 implement a dimension-aware Scalar path activated by `any_scalar`. Validates from-range dimension consistency (x/from_lo/from_hi) and to-range consistency (to_lo/to_hi) independently, allowing cross-dimension remapping (e.g., LENGTH\u2192TIME). Returns Scalar with to_dim. Tests at lines 2855-2993 cover same-dimension, cross-dimension, x-from mismatch, and to-range mismatch.\n\n2. **NaN guard completeness** (item 2): DONE \u2014 clamp has explicit `xv.is_nan()` in Real arm (line 107), Scalar arm (line 130), and fallback arm (line 155). lerp has `tv.is_nan()` after extraction (line 173). lerp a/b NaN relies on sanitize_value (correct: computation propagates NaN \u2192 sanitize catches it). Tests exist for all cases.\n\n3. **Extract helpers** (item 3): ALL DONE \u2014 (a) `quinary_f64` at line 1376, (b) `valid_f64_range` at line 1266, (c) `lerp_f64` at line 1271, (d) `assert_real_approx!` macro at line 1398 + `assert_scalar_approx!` at line 1414.\n\n4. **Additional test coverage** (item 4): ALL PRESENT \u2014 clamp Int below-lo (2266), above-hi (2275); lerp NaN a (2580), NaN b (2604); lerp Int inputs (2630); remap Scalar (2855-2993).\n\n5. **Minor cleanup** (item 5): ALL DONE \u2014 `mod` is in 'Two-arg numeric functions' section (line 86); lerp Int fast path exists (line 199); remap early-exit for from_lo==from_hi (lines 258, 270); clamp fallback guards non-DIMENSIONLESS with Undef (lines 139-150), which is the correct approach per feedback_silent_defaults_pattern (noisy on logic errors rather than silent dimension dropping).\n\nSince all implementation work is complete on main, this plan contains only verification steps to confirm the existing implementation satisfies all requirements. No new code changes are needed.",
+  "prerequisites": [],
+  "steps": [
+    {
+      "id": "step-1",
+      "type": "test",
+      "description": "Verify clamp NaN guards: run existing tests clamp_nan_x_returns_undef, clamp_nan_lo_returns_undef, clamp_nan_hi_returns_undef, clamp_scalar_nan_x_returns_undef to confirm x.is_nan() guards in Real/Scalar/fallback arms",
+      "status": "done",
+      "commit": "4c09ac23"
+    },
+    {
+      "id": "step-2",
+      "type": "test",
+      "description": "Verify clamp Int below/above: run clamp_int_below_lo and clamp_int_above_hi tests confirming Int clamping at boundaries",
+      "status": "done",
+      "commit": "4c09ac23"
+    },
+    {
+      "id": "step-3",
+      "type": "test",
+      "description": "Verify clamp Scalar dimension preservation and fallback: run clamp_scalar_preserves_dimension, clamp_dimension_mismatch_returns_undef, clamp_fallback_dimension_mismatch_returns_undef, clamp_fallback_all_dimensionless_returns_real",
+      "status": "done",
+      "commit": "4c09ac23"
+    },
+    {
+      "id": "step-4",
+      "type": "test",
+      "description": "Verify lerp NaN handling: run lerp_nan_t_returns_undef, lerp_nan_a_returns_undef, lerp_nan_b_returns_undef confirming explicit t guard and sanitize_value backstop for a/b",
+      "status": "done",
+      "commit": "4c09ac23"
+    },
+    {
+      "id": "step-5",
+      "type": "test",
+      "description": "Verify lerp Int fast path and fallback: run lerp_int_inputs_coerce_to_real, lerp_fallback_scalar_a_real_b_returns_undef, lerp_fallback_real_a_scalar_b_returns_undef, lerp_fallback_all_dimensionless_returns_real",
+      "status": "done",
+      "commit": "4c09ac23"
+    },
+    {
+      "id": "step-6",
+      "type": "test",
+      "description": "Verify remap dimension-aware Scalar path: run remap_scalar_preserves_dimension, remap_scalar_cross_dimension, remap_scalar_dimension_mismatch_x_from_returns_undef, remap_scalar_to_range_mismatch_returns_undef",
+      "status": "done",
+      "commit": "4c09ac23"
+    },
+    {
+      "id": "step-7",
+      "type": "test",
+      "description": "Verify remap edge cases: run remap_division_by_zero_returns_undef, remap_nan_returns_undef, remap_wrong_arg_count_returns_undef confirming early-exit and quinary_f64 helper usage",
+      "status": "done",
+      "commit": "4c09ac23"
+    },
+    {
+      "id": "step-8",
+      "type": "test",
+      "description": "Run full test suite (cargo test -p reify-stdlib) to confirm all 335 tests pass \u2014 covers all helpers (valid_f64_range, lerp_f64, quinary_f64, assert_real_approx!, assert_scalar_approx!) and all test coverage items",
+      "status": "done",
+      "commit": "4c09ac23"
+    }
+  ],
+  "design_decisions": [
+    {
+      "decision": "All task items already implemented in prior TDD cycle (steps 1-22 on main)",
+      "rationale": "Git history shows commits b078d3a8..92dce195 implementing the complete clamp/lerp/remap polish in TDD order. The task/356 branch has zero divergence from main. Plan contains verification-only steps."
+    },
+    {
+      "decision": "Clamp/lerp fallback returns Undef for non-DIMENSIONLESS instead of reconstructing Scalar",
+      "rationale": "Per feedback_silent_defaults_pattern, logic errors (dimension mismatch in mixed-type fallback) should be noisy. Returning Undef is safer than silently coercing dimensions. The explicit Scalar arm handles the matching-dimension case."
+    },
+    {
+      "decision": "lerp a/b NaN handled by sanitize_value rather than explicit pre-computation guard",
+      "rationale": "NaN in a or b propagates through lerp_f64 arithmetic to produce NaN result, which sanitize_value converts to Undef. This is correct, tested (lerp_nan_a_returns_undef, lerp_nan_b_returns_undef), and avoids redundant checks in the hot path."
+    },
+    {
+      "decision": "remap uses dual-path (any_scalar gate + quinary_f64 fallback) rather than a unified approach",
+      "rationale": "The Scalar path needs dimension validation logic (from-range consistency, to-range consistency, output dimension selection) that doesn't apply to the dimensionless Real/Int path. Separating keeps both paths readable."
+    }
+  ],
+  "reuse": [
+    {
+      "what": "valid_f64_range(lo, hi) helper",
+      "where": "crates/reify-stdlib/src/lib.rs:1266",
+      "how": "Extracted from repeated NaN+inverted-range guard pattern in clamp arms. Used in clamp Real, Scalar, and fallback arms."
+    },
+    {
+      "what": "lerp_f64(a, b, t) helper",
+      "where": "crates/reify-stdlib/src/lib.rs:1271",
+      "how": "Extracted from repeated a + t * (b - a) formula. Used in lerp Real, Scalar, Int, and fallback arms."
+    },
+    {
+      "what": "quinary_f64 arity helper",
+      "where": "crates/reify-stdlib/src/lib.rs:1376",
+      "how": "Mirrors unary_f64/binary_f64 pattern for 5-arg functions. Used by remap non-Scalar path."
+    },
+    {
+      "what": "assert_real_approx! macro",
+      "where": "crates/reify-stdlib/src/lib.rs:1398",
+      "how": "Replaces ~20 repeated match-on-Real assertions in tests. Takes expression and expected f64 value."
+    },
+    {
+      "what": "assert_scalar_approx! macro",
+      "where": "crates/reify-stdlib/src/lib.rs:1414",
+      "how": "Companion to assert_real_approx! for Scalar values. Takes expression, expected si_value, and expected dimension."
+    },
+    {
+      "what": "sanitize_value defense-in-depth pattern",
+      "where": "crates/reify-stdlib/src/lib.rs:1189",
+      "how": "Applied at return points of all computation paths. Converts NaN/Inf Real, Scalar, and Complex values to Undef."
+    }
+  ],
+  "_session_id": "356-8f382e9f",
+  "_created_at": "2026-03-28T01:16:02.197022+00:00"
+}
