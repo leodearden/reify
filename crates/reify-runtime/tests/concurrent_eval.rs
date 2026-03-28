@@ -2155,6 +2155,21 @@ mod poison_recovery_extended {
 #[cfg(feature = "test-utils")]
 mod poison_evaluate {
     use super::*;
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
+    /// Evaluates a node with explicit `catch_unwind` verification that no panic
+    /// occurs. Uses `block_in_place` + `Handle::current().block_on()` to bridge
+    /// the sync `catch_unwind` boundary with the async `evaluate()` method.
+    fn evaluate_with_recovery(
+        adapter: &ConcurrentEvalAdapter,
+        node: NodeId,
+    ) -> Result<EvalOutcome, Box<dyn std::any::Any + Send>> {
+        catch_unwind(AssertUnwindSafe(|| {
+            tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(adapter.evaluate(node))
+            })
+        }))
+    }
 
     /// evaluate() recovers from poisoned values RwLock (both read and write paths).
     /// The write lock is the same RwLock as the read lock — this test verifies the
@@ -2162,7 +2177,7 @@ mod poison_evaluate {
     ///
     /// If evaluate() panics on poison instead of recovering, this test will fail
     /// with the panic rather than completing.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn evaluate_recovers_poisoned_values_write() {
         let setup = simple_setup();
         let adapter = ConcurrentEvalAdapter::from_setup(&setup);
@@ -2171,7 +2186,11 @@ mod poison_evaluate {
         // Poison the values lock — both read and write acquisitions must recover
         adapter.poison_values();
 
-        let _outcome = adapter.evaluate(node).await;
+        let result = evaluate_with_recovery(&adapter, node);
+        assert!(
+            result.is_ok(),
+            "evaluate() should recover from poisoned values lock, not panic"
+        );
 
         // Verify the value was written despite poisoning
         let values = adapter.values();
@@ -2185,7 +2204,7 @@ mod poison_evaluate {
     ///
     /// If evaluate() panics on poison instead of recovering, this test will fail
     /// with the panic rather than completing.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn evaluate_recovers_poisoned_snapshot_values() {
         let setup = simple_setup();
         let adapter = ConcurrentEvalAdapter::from_setup(&setup);
@@ -2194,7 +2213,8 @@ mod poison_evaluate {
         // Poison only snapshot_values
         adapter.poison_snapshot_values();
 
-        let outcome = adapter.evaluate(node).await;
+        let outcome = evaluate_with_recovery(&adapter, node)
+            .expect("evaluate() should recover from poisoned snapshot_values lock");
         assert_eq!(outcome, EvalOutcome::Changed);
 
         // Verify snapshot_values were actually written despite poisoning
@@ -2214,7 +2234,7 @@ mod poison_evaluate {
     ///
     /// If evaluate() panics on poison instead of recovering, this test will fail
     /// with the panic rather than completing.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn evaluate_recovers_poisoned_results() {
         let setup = simple_setup();
         let adapter = ConcurrentEvalAdapter::from_setup(&setup);
@@ -2223,7 +2243,8 @@ mod poison_evaluate {
         // Poison only results
         adapter.poison_results();
 
-        let outcome = adapter.evaluate(node).await;
+        let outcome = evaluate_with_recovery(&adapter, node)
+            .expect("evaluate() should recover from poisoned results lock");
         assert_eq!(outcome, EvalOutcome::Changed);
 
         // Verify results were actually pushed despite poisoning
@@ -2244,7 +2265,7 @@ mod poison_evaluate {
     /// Verify that tracing::warn! is emitted when evaluate() recovers from poisoned locks.
     /// evaluate() touches read_values, write_values, write_snapshot_values, and lock_results,
     /// so poisoning values should produce multiple WARN events.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn tracing_warn_emitted_on_poison_evaluate() {
         let setup = simple_setup();
         let adapter = ConcurrentEvalAdapter::from_setup(&setup);
@@ -2255,7 +2276,7 @@ mod poison_evaluate {
 
         let (subscriber, warn_count) = warn_counting_subscriber();
         let _guard = tracing::subscriber::set_default(subscriber);
-        let _outcome = adapter.evaluate(node).await;
+        let _outcome = evaluate_with_recovery(&adapter, node);
         drop(_guard);
 
         let count = warn_count.load(std::sync::atomic::Ordering::Relaxed);
