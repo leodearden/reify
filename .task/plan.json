@@ -9,7 +9,7 @@
     "gui/src/stores",
     "gui/src/__tests__"
   ],
-  "analysis": "The selectionStore.ts createEffect has a comment claiming 'selection (click) updates are sent immediately since they are infrequent' and 'send immediately if only selection changed', but ALL state changes unconditionally go through a 100ms setTimeout. There is no fast path for selection-only changes.\n\nThe fix (option a) is to track the previous selectedEntity and detect when only selection changed (not hover). When only selection changes, call invoke('update_selection', ...) synchronously. When hover changes (with or without selection), debounce at 100ms as before.\n\nImplementation approach:\n- Track `prevSelected` and `prevHovered` variables outside the effect\n- Inside the effect, compare current vs previous values\n- If selectedEntity changed but hoveredEntity did not \u2192 invoke immediately (no setTimeout)\n- If hoveredEntity changed (regardless of selectedEntity) \u2192 debounce at 100ms as before\n- Clear any pending debounce timer before dispatching immediate selection updates to avoid duplicates\n\nThe existing test file tests only state mutations (selectEntity, hoverEntity, etc.) and does not test the invoke/backend-sync behavior at all. New tests need to:\n1. Mock @tauri-apps/api/core invoke\n2. Use vi.useFakeTimers() to control setTimeout\n3. Verify immediate dispatch on selection-only changes\n4. Verify debounced dispatch on hover changes\n5. Verify combined changes (both selection+hover) use debounce\n6. Verify rapid selection changes don't double-fire",
+  "analysis": "The selectionStore.ts createEffect has a comment claiming 'selection (click) updates are sent immediately since they are infrequent' and 'send immediately if only selection changed', but ALL state changes unconditionally go through a 100ms setTimeout. There is no fast path for selection-only changes.\n\nThe fix (option a) is to track the previous selectedEntity and detect when only selection changed (not hover). When only selection changes, call invoke('update_selection', ...) synchronously. When hover changes (with or without selection), debounce at 100ms as before.\n\nImplementation approach:\n- Track `prevSelected` and `prevHovered` variables outside the effect\n- Inside the effect, compare current vs previous values\n- If selectedEntity changed but hoveredEntity did not \u2192 invoke immediately (no setTimeout)\n- If hoveredEntity changed (regardless of selectedEntity) \u2192 debounce at 100ms as before\n- Clear any pending debounce timer before dispatching immediate selection updates to avoid duplicates\n\nThe existing test file tests only state mutations (selectEntity, hoverEntity, etc.) and does not test the invoke/backend-sync behavior at all. New tests need to:\n1. Mock @tauri-apps/api/core invoke\n2. Use vi.useFakeTimers() to control setTimeout\n3. Verify immediate dispatch on selection-only changes\n4. Verify debounced dispatch on hover changes\n5. Verify combined changes (both selection+hover) use debounce\n6. Verify rapid selection changes don't double-fire\n\nREVIEW FEEDBACK (step-3 fix): The 'combined selection+hover change is debounced at 100ms' test (lines 227-247) does NOT test truly combined changes. selectEntity('Bracket') fires the effect immediately (selection-only \u2192 immediate path), then hoverEntity('Bracket.width') fires a second effect (hover \u2192 debounce path). mockInvoke.mockClear() hides the first immediate call. The test must use SolidJS batch() to make both changes in a single effect run, and a separate test should document the sequential behavior accurately.",
   "prerequisites": [],
   "steps": [
     {
@@ -67,6 +67,20 @@
       "description": "Write test: invoke rejection is silently caught (no unhandled promise). Create store, mockInvoke.mockRejectedValue(new Error('not in Tauri')), selectEntity('Bracket'). Assert no error thrown.",
       "status": "done",
       "commit": "7be9a7f3"
+    },
+    {
+      "id": "step-9",
+      "type": "test",
+      "description": "Fix the 'combined selection+hover change is debounced at 100ms' test (step-3 review fix). The current test calls selectEntity then hoverEntity sequentially, which fires two separate effects \u2014 the first (selection-only) dispatches immediately and is silently hidden by mockInvoke.mockClear(). Replace with SolidJS batch(): import batch from 'solid-js', wrap both calls in batch(() => { selectEntity('Bracket'); hoverEntity('Bracket.width'); }) so the effect runs once with both selectionChanged=true and hoverChanged=true, hitting the debounce path. Remove the mockInvoke.mockClear() call. Verify: (1) invoke NOT called synchronously after the batch, (2) invoke NOT called after 50ms, (3) invoke called exactly once after 100ms with { selectedEntity: 'Bracket', hoveredEntity: 'Bracket.width' }. Update the inline comment to explain why batch() is needed (single effect run with both changes).",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-10",
+      "type": "test",
+      "description": "Add new test 'sequential selectEntity then hoverEntity fires immediate then debounced invoke' to document the sequential (non-batched) behavior accurately. Call selectEntity('Bracket') then hoverEntity('Bracket.width') without batch. Verify: (1) immediately after selectEntity, invoke called once with { selectedEntity: 'Bracket', hoveredEntity: null } (immediate selection path), (2) immediately after hoverEntity, invoke still called only once (hover debounce pending), (3) after advancing 100ms, invoke called twice total \u2014 second call with { selectedEntity: 'Bracket', hoveredEntity: 'Bracket.width' } (debounced hover path). This documents the real two-invoke behavior that the original test was hiding.",
+      "status": "pending",
+      "commit": null
     }
   ],
   "design_decisions": [
@@ -85,6 +99,10 @@
     {
       "decision": "Tests use vi.useFakeTimers + vi.mock('@tauri-apps/api/core') pattern from existing codebase",
       "rationale": "This is the established pattern in Editor.test.tsx, completions.test.ts, etc. Consistent with project conventions."
+    },
+    {
+      "decision": "Use SolidJS batch() for combined-change test instead of sequential calls",
+      "rationale": "Sequential selectEntity + hoverEntity calls trigger two separate SolidJS effects. The first (selection-only) dispatches immediately \u2014 hiding it with mockClear makes the test misleading. Using batch() causes a single effect run where both selectionChanged and hoverChanged are true, genuinely testing the combined debounce path. The sequential scenario is covered by a separate, accurately-documented test."
     }
   ],
   "reuse": [
@@ -107,8 +125,13 @@
       "what": "Existing selectionStore test structure",
       "where": "gui/src/__tests__/selectionStore.test.ts",
       "how": "Add new describe block for backend sync tests alongside existing state-mutation tests"
+    },
+    {
+      "what": "SolidJS batch() for atomic multi-signal updates",
+      "where": "solid-js core API",
+      "how": "import { batch } from 'solid-js'; batch(() => { ...multiple setState calls... }) \u2014 defers effect execution until all state changes are applied, so the effect runs once seeing all changes simultaneously"
     }
   ],
   "_session_id": "592-ad49c338",
-  "_created_at": "2026-03-27T23:34:05.729883+00:00"
+  "_created_at": "2026-03-27T23:54:10.765302+00:00"
 }
