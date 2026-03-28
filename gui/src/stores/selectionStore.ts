@@ -1,4 +1,4 @@
-import { createEffect, onCleanup } from 'solid-js';
+import { batch, createEffect, onCleanup } from 'solid-js';
 import { createStore } from 'solid-js/store';
 import { invoke } from '@tauri-apps/api/core';
 
@@ -86,12 +86,14 @@ export function createSelectionStore() {
   }
 
   function clearIfRemoved(entityPath: string) {
-    if (state.selectedEntity === entityPath) {
-      selectEntity(null);
-    }
-    if (state.hoveredEntity === entityPath) {
-      hoverEntity(null);
-    }
+    batch(() => {
+      if (state.selectedEntity === entityPath) {
+        selectEntity(null);
+      }
+      if (state.hoveredEntity === entityPath) {
+        hoverEntity(null);
+      }
+    });
   }
 
   return { state, selectEntity, hoverEntity, setHighlightedParams, clearHighlights, clearIfRemoved };
