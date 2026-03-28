@@ -365,7 +365,7 @@ pub fn vec3(x: f64, y: f64, z: f64) -> Value {
 /// Create a `Value::Vector` with three dimensionless `Real` components.
 ///
 /// Useful for unit normals, directions, and other dimensionless vectors in geometry tests.
-pub fn vec3_unit(x: f64, y: f64, z: f64) -> Value {
+pub fn vec3_dimensionless(x: f64, y: f64, z: f64) -> Value {
     Value::Vector(vec![Value::Real(x), Value::Real(y), Value::Real(z)])
 }
 
@@ -914,7 +914,7 @@ mod tests {
         assert_eq!(map.get("Velocity"), Some(&velocity_type));
     }
 
-    // step-1: failing tests for point3/vec3/vec3_unit/matrix3x3 constructors
+    // step-1: failing tests for point3/vec3/vec3_dimensionless/matrix3x3 constructors
     #[test]
     fn point3_creates_value_point_with_length_components() {
         let p = point3(1.0, 2.0, 3.0);
