@@ -1,0 +1,80 @@
+{
+  "task_id": "624",
+  "title": "Revert build_trial_values to direct-insert loop (hot path allocation regression)",
+  "files": [
+    "crates/reify-constraints/src/solver.rs"
+  ],
+  "modules": [
+    "crates/reify-constraints"
+  ],
+  "analysis": "Task-589 refactored build_trial_values (solver.rs:75) to call params_to_value_map, which allocates an intermediate HashMap<ValueCellId, Value> that is immediately iterated over to insert into the PersistentMap, then dropped. This is called inside ConstraintCostFunction::cost() on every Nelder-Mead iteration (up to 5000 per solve). The fix is surgical: inline the param\u2192Value::Scalar mapping directly into build_trial_values' insert loop, eliminating the intermediate HashMap allocation. params_to_value_map remains for the three cold-path call sites (early-exit at line 517, fallback at line 625, solution construction at line 657). The existing test build_trial_values_inserts_auto_params (line 684) covers single-param behavior. We add a multi-param regression test and an empty-params edge-case test before making the change, then refactor.",
+  "prerequisites": [],
+  "steps": [
+    {
+      "id": "step-1",
+      "type": "test",
+      "description": "Write a multi-param regression test for build_trial_values that exercises multiple params of different types (length + angle) and verifies each is inserted with the correct si_value and dimension, while preserving non-auto base values. This locks in behavior before the refactor.",
+      "status": "done",
+      "commit": "cfa2fe19"
+    },
+    {
+      "id": "step-2",
+      "type": "test",
+      "description": "Write an edge-case test for build_trial_values with empty params slice, verifying the base ValueMap is returned unchanged (no insertions, no panics).",
+      "status": "done",
+      "commit": "42e80d46"
+    },
+    {
+      "id": "step-3",
+      "type": "impl",
+      "description": "Refactor build_trial_values to use a direct-insert loop: replace the `for (id, value) in params_to_value_map(params, x)` with `for (param, &val) in params.iter().zip(x.iter())` that directly constructs Value::Scalar { si_value: val, dimension: dimension_of(&param.param_type) } and inserts param.id.clone() into the ValueMap. This eliminates the intermediate HashMap allocation on the hot path.",
+      "status": "done",
+      "commit": "2f3feed5"
+    },
+    {
+      "id": "step-4",
+      "type": "test",
+      "description": "Update the doc-comment on build_trial_values to reflect it no longer calls params_to_value_map, and verify all existing tests pass (build_trial_values_inserts_auto_params, params_to_value_map_builds_correct_hashmap, plus the two new tests from steps 1-2, plus full solver integration tests).",
+      "status": "done",
+      "commit": "95d5de13"
+    }
+  ],
+  "design_decisions": [
+    {
+      "decision": "Inline the param-to-Value::Scalar mapping rather than extracting a shared iterator helper",
+      "rationale": "The two usages have different collection targets (PersistentMap vs HashMap), so a shared iterator adapter would add abstraction without simplifying either call site. Direct code in each function is clearer and avoids lifetime/type complexity."
+    },
+    {
+      "decision": "Keep params_to_value_map unchanged for cold-path call sites",
+      "rationale": "The three cold-path call sites (lines 517, 625, 657) need a HashMap<ValueCellId, Value> for SolveResult::Solved { values }. params_to_value_map serves them correctly and the allocation is immaterial since each runs at most once per solve."
+    },
+    {
+      "decision": "Use dimension_of(&param.param_type) inline instead of duplicating the match",
+      "rationale": "dimension_of is already a small helper that handles the Type \u2192 DimensionVector mapping. Calling it from both build_trial_values and params_to_value_map avoids any logic duplication."
+    }
+  ],
+  "reuse": [
+    {
+      "what": "dimension_of() helper (line 44)",
+      "where": "solver.rs:44-48",
+      "how": "Called in the new direct-insert loop to get the DimensionVector for each param, same as params_to_value_map does internally"
+    },
+    {
+      "what": "Existing test build_trial_values_inserts_auto_params (line 684)",
+      "where": "solver.rs:684-734",
+      "how": "Serves as primary regression test for single-param behavior \u2014 must continue to pass after refactor"
+    },
+    {
+      "what": "Existing test params_to_value_map_builds_correct_hashmap (line 2025)",
+      "where": "solver.rs:2025-2090",
+      "how": "Verifies params_to_value_map is unmodified \u2014 must continue to pass since cold-path call sites still use it"
+    },
+    {
+      "what": "PersistentMap O(1) clone + O(log n) insert",
+      "where": "ValueMap type from reify_types",
+      "how": "build_trial_values leverages structural sharing \u2014 base.clone() is O(1), each insert is O(log n), total O(k log n) for k auto params"
+    }
+  ],
+  "_session_id": "624-d80a012a",
+  "_created_at": "2026-03-28T00:23:19.716713+00:00"
+}
