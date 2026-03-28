@@ -324,6 +324,8 @@ describe('selectionStore', () => {
 
       // Dispose the root — onCleanup should clear the timer
       dispose();
+      // Prevent afterEach from double-disposing
+      dispose = () => {};
 
       // Advance timers well past the debounce window
       vi.advanceTimersByTime(200);
