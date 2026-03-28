@@ -15328,10 +15328,11 @@
         "description": "In tree-sitter-reify/build.rs: (1) Replace eprintln with cargo:warning= on stamp write failure so it surfaces in normal cargo output. (2) Use atomic write (write to temp file + rename) to prevent concurrent cargo profiles from reading a partial stamp. (3) Fall back to OUT_DIR stamp if src/ is not writable, preserving correctness in Nix/read-only-CI environments.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-03-28T19:18:48.451Z"
       },
       {
         "id": "742",
@@ -15380,7 +15381,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T19:15:30.336Z",
+      "lastModified": "2026-03-28T19:18:48.451Z",
       "taskCount": 745,
       "completedCount": 368,
       "tags": [
