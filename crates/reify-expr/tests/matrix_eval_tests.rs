@@ -118,3 +118,69 @@ fn rank2_detection_checks_all_rows() {
     let expr = add(a, b);
     assert_eq!(eval(&expr), Value::Undef);
 }
+
+// ── Jagged matrix validation ────────────────────────────────────────────────
+
+/// Jagged A: rows of different lengths in the first operand → Undef.
+/// Tensor([Tensor([1,2,3]), Tensor([4,5])]) + Tensor([Tensor([6,7,8]), Tensor([9,10,11])]) → Undef.
+#[test]
+fn jagged_a_matrix_add_returns_undef() {
+    let a = lit(
+        Value::Tensor(vec![
+            Value::Tensor(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
+            Value::Tensor(vec![Value::Int(4), Value::Int(5)]),
+        ]),
+        tensor_ty(),
+    );
+    let b = lit(
+        Value::Tensor(vec![
+            Value::Tensor(vec![Value::Int(6), Value::Int(7), Value::Int(8)]),
+            Value::Tensor(vec![Value::Int(9), Value::Int(10), Value::Int(11)]),
+        ]),
+        tensor_ty(),
+    );
+    let expr = add(a, b);
+    assert_eq!(eval(&expr), Value::Undef);
+}
+
+/// Jagged B: A is regular but B has rows of different lengths → Undef.
+#[test]
+fn jagged_b_matrix_add_returns_undef() {
+    let a = lit(
+        Value::Tensor(vec![
+            Value::Tensor(vec![Value::Int(1), Value::Int(2)]),
+            Value::Tensor(vec![Value::Int(3), Value::Int(4)]),
+        ]),
+        tensor_ty(),
+    );
+    let b = lit(
+        Value::Tensor(vec![
+            Value::Tensor(vec![Value::Int(5), Value::Int(6)]),
+            Value::Tensor(vec![Value::Int(7)]),
+        ]),
+        tensor_ty(),
+    );
+    let expr = add(a, b);
+    assert_eq!(eval(&expr), Value::Undef);
+}
+
+/// Jagged B in subtraction: same behavior as addition → Undef.
+#[test]
+fn jagged_b_matrix_sub_returns_undef() {
+    let a = lit(
+        Value::Tensor(vec![
+            Value::Tensor(vec![Value::Int(10), Value::Int(20)]),
+            Value::Tensor(vec![Value::Int(30), Value::Int(40)]),
+        ]),
+        tensor_ty(),
+    );
+    let b = lit(
+        Value::Tensor(vec![
+            Value::Tensor(vec![Value::Int(1), Value::Int(2)]),
+            Value::Tensor(vec![Value::Int(3)]),
+        ]),
+        tensor_ty(),
+    );
+    let expr = sub(a, b);
+    assert_eq!(eval(&expr), Value::Undef);
+}
