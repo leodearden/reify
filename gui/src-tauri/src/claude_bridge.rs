@@ -607,7 +607,7 @@ where
     // concurrently during slow OS process creation.
     let mut handle = spawn_fn().await?;
     let notify_arc = Arc::clone(handle.ready_notify());
-    let state = Arc::clone(handle.state());
+    let spawned_state = Arc::clone(handle.state());
 
     // Subscribe to the ready notification BEFORE re-locking.  On a multi-thread
     // executor the reader task can call `notify_waiters()` immediately after
@@ -658,7 +658,7 @@ where
     // (e.g., during spawn_fn's internal await points).  Without this check,
     // a lost notification would cause a spurious timeout.  This mirrors the
     // re-check in wait_ready (line 329).
-    if matches!(*state.lock().await, SidecarState::Ready) {
+    if matches!(*spawned_state.lock().await, SidecarState::Ready) {
         return Ok(());
     }
 
@@ -690,7 +690,7 @@ where
 
     // Phase 5: check state after notification — the notify may have been
     // triggered by a crash rather than the Ready message.
-    let state_val = state.lock().await.clone();
+    let state_val = spawned_state.lock().await.clone();
     match state_val {
         SidecarState::Ready => Ok(()),
         SidecarState::Crashed(msg) => {
