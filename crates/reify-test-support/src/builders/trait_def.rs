@@ -9,7 +9,7 @@ fn default_kind_str(kind: &DefaultKind) -> String {
     match kind {
         DefaultKind::Param { cell_type, .. } => format!("Param:{}", cell_type),
         DefaultKind::Let(decl) => format!("Let:{}", decl.content_hash),
-        DefaultKind::Constraint(_) => "Constraint".to_string(),
+        DefaultKind::Constraint(decl) => format!("Constraint:{}", decl.content_hash),
     }
 }
 
@@ -283,6 +283,7 @@ mod tests {
         }));
         assert_eq!(let_str, format!("Let:{}", let_hash));
 
+        let constraint_hash = ContentHash::of_str("c");
         let constraint_str = default_kind_str(&DefaultKind::Constraint(reify_syntax::ConstraintDecl {
             label: Some("c".to_string()),
             expr: reify_syntax::Expr {
@@ -291,9 +292,9 @@ mod tests {
             },
             where_clause: None,
             span: SourceSpan::new(0, 0),
-            content_hash: ContentHash::of_str("c"),
+            content_hash: constraint_hash,
         }));
-        assert_eq!(constraint_str, "Constraint");
+        assert_eq!(constraint_str, format!("Constraint:{}", constraint_hash));
     }
 
     #[test]
