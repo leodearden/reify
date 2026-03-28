@@ -9265,13 +9265,14 @@
         "subtasks": [],
         "updatedAt": "2026-03-26T12:05:54.002Z",
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "prd": "none",
           "files": [
             "crates/reify-expr/tests/complex_eval_tests.rs"
           ],
           "modules": [
             "crates/reify-expr/tests"
-          ]
+          ],
+          "milestone": "M11-language-completeness"
         }
       },
       {
