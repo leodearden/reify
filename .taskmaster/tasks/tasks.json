@@ -15299,10 +15299,11 @@
         "description": "Review follow-ups from task 485 (cross-file goto-definition), grouped by server.rs changes:\n\n**S1: Hardcoded stdlib path** — `server.rs:283` hardcodes `root.join(\"crates/reify-compiler/stdlib\")` as dev-mode only. Accept optional stdlib path via `InitializeParams::initialization_options` (e.g. `{ \"stdlibPath\": \"...\" }`), falling back to dev-mode heuristic. ModuleResolver already takes an explicit stdlib_root.\n\n**S3: Unnecessary disk I/O for open documents** — `server.rs:286-290` always calls `std::fs::read_to_string` even for files already in DocumentStore. Snapshot open document contents into a HashMap before entering spawn_blocking, check store first, fall back to disk only for unopened files. Also gives correct results for unsaved editor changes.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-03-28T19:09:49.769Z"
       },
       {
         "id": "740",
@@ -15373,7 +15374,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T19:09:49.671Z",
+      "lastModified": "2026-03-28T19:09:49.774Z",
       "taskCount": 745,
       "completedCount": 366,
       "tags": [
