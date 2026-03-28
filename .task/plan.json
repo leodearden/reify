@@ -1,0 +1,138 @@
+{
+  "task_id": "452",
+  "title": "Clean up claude_bridge test/comment quality (task 407 suggestions)",
+  "files": [
+    "gui/src-tauri/src/claude_bridge.rs",
+    "gui/src-tauri/src/tests/claude_bridge_tests.rs"
+  ],
+  "modules": [
+    "gui/src-tauri/src"
+  ],
+  "analysis": "This task addresses reviewer suggestions deferred from task 407, spanning comment accuracy in claude_bridge.rs and test documentation/hygiene/performance in claude_bridge_tests.rs.\n\n**Comment issues (claude_bridge.rs):**\n1. The re-check comment (lines 656-660) says 'before our notified()/enable() subscription was set up' but doesn't distinguish the two race windows: (a) pre-creation \u2014 Ready set during spawn_fn's await points before notified() is even created at line 625 (handled by re-check at line 661), (b) post-creation \u2014 Ready set after notified() created but before enable() registers the waiter (handled by enable() at line 626). The comment should clarify that enable() handles (b) and re-check handles (a).\n2. Variable `state` at line 610 (`let state = Arc::clone(handle.state())`) is ambiguous \u2014 it shadows the concept of 'sidecar state' and is easily confused with `existing_state_arc` in Phase 3. Should be renamed to `spawned_state`.\n\n**Test doc issues (claude_bridge_tests.rs):**\n3. ensure_sidecar_ready_enable_prevents_missed_notification_race doc (lines 2078-2098) claims stale handle triggers h.kill() in Phase 3. Actually, the stale handle is killed in Phase 1 (line 600, `h.kill().await`) before spawn_fn runs. Phase 3 re-lock (line 630) finds the slot empty because Phase 1 cleared it. The stale handle widens the pre-creation window (more async work in Phase 1 before notified() creation in Phase 2), not the post-creation window as the doc implies.\n4. wait_ready_enable_prevents_missed_notification_race doc (lines 2020-2032) doesn't acknowledge that the test can pass via the re-check path (state.lock().await sees Ready at line 353) rather than exclusively via enable(). The test exercises the race probabilistically \u2014 some iterations may succeed via enable() and others via re-check. Both paths are correct defense-in-depth behavior.\n5. Post-spawn re-check (line 661) has no deterministic test. Need a test where Ready is set during spawn_fn's await points (before notified() is created), ensuring the notification is irretrievably lost, and the re-check is the only path to success.\n\n**Test hygiene (claude_bridge_tests.rs):**\n6. SidecarHandle::from_parts setup (state + duplex + BufReader + from_parts) is repeated across 6+ tests. Sibling test files use `make_*()` helpers (make_engine, make_tauri_context in mcp_dispatch_tests.rs). Should extract make_starting_handle() helper.\n7. spawn_fn closure in ensure_sidecar_ready_enable (lines 2110-2128) is duplicated verbatim from ensure_sidecar_ready_notified_race (lines 1985-2003). Should extract make_ready_spawn_fn() helper.\n8. Arc<Mutex<Option<DuplexStream>>> held_writer pattern is used for single-write semantics. Reviewer suggested OnceLock but DuplexStream: !Sync prevents use of OnceLock or tokio::sync::OnceCell (both require T: Sync for Arc sharing). Alternative: replace with tokio::sync::oneshot::channel which is Send-safe and communicates single-write intent at the type level.\n\n**Performance (claude_bridge_tests.rs):**\n9. wait_ready_enable_prevents_missed_notification_race (lines 2040-2073) runs 50 iterations creating SidecarHandle via from_parts but never calls handle.kill(). Each iteration detaches a reader task that runs until the data_writer drops at end-of-scope. 50 reader tasks accumulate and overlap. Compare with wait_ready_notified_race_on_multithread (line 1961) which correctly calls handle.kill() at end of each iteration. Same issue in ensure_sidecar_ready loop tests where the handle stored in the sidecar slot is not explicitly killed between iterations.",
+  "prerequisites": [],
+  "steps": [
+    {
+      "id": "step-1",
+      "type": "test",
+      "description": "Write deterministic test `ensure_sidecar_ready_returns_ok_via_recheck_when_ready_during_spawn` that verifies the post-spawn re-check path (line 661). Use single-threaded current_thread runtime. In spawn_fn: create the handle via from_parts, then yield enough for the reader task to process the ready message and call notify_waiters, then verify state is Ready before returning the handle. This guarantees the notification fires BEFORE notified() is created on line 625, so enable() captures nothing. Phase 3 finds no concurrent caller. Success can only come from the re-check at line 661. Use a shared state Arc to verify Ready was set before spawn_fn returned.",
+      "status": "done",
+      "commit": "c1a8202e"
+    },
+    {
+      "id": "step-2",
+      "type": "impl",
+      "description": "Verify step-1 test passes with no production code changes (re-check already exists at line 661). If it fails, investigate \u2014 likely the spawn_fn needs more yields for the reader task to process the ready message on the single-threaded runtime before returning.",
+      "status": "done",
+      "commit": "c1a8202e"
+    },
+    {
+      "id": "step-3",
+      "type": "impl",
+      "description": "Extract `make_starting_handle() -> (SidecarHandle, DuplexStream)` helper at the top of the test file. Creates a SidecarHandle in Starting state with a live duplex data stream (preventing EOF/crash), returns the data_writer that must be held alive. Uses the pattern: state=Starting, live duplex for data reader, separate duplex for stdin writer. Also extract variant `make_ready_handle() -> (SidecarHandle, DuplexStream)` with state=Ready and empty data reader (for tests that don't need reader task interaction). Refactor applicable tests: wait_ready_enable race loop, ensure_sidecar_ready stale-handle setup blocks. Verify all existing tests still pass.",
+      "status": "done",
+      "commit": "e95bceae"
+    },
+    {
+      "id": "step-4",
+      "type": "test",
+      "description": "Update step-1's recheck test to use make_starting_handle or a variant for setup if applicable. Verify all tests pass, confirming the helper works correctly in the new test context.",
+      "status": "done",
+      "commit": "e95bceae"
+    },
+    {
+      "id": "step-5",
+      "type": "impl",
+      "description": "Extract `make_ready_spawn_fn` helper that creates the standard ready-signaling spawn_fn closure: creates Starting handle, writes ready message, holds data_writer alive via the provided mechanism. Use tokio::sync::oneshot::Sender<DuplexStream> to transfer the data_writer out of the async closure (single-write, Send-safe). Refactor ensure_sidecar_ready_spawns_and_waits_when_none, ensure_sidecar_ready_rejects_crashed_existing_handle, ensure_sidecar_ready_respawns_starting_stale_handle, ensure_sidecar_ready_kills_evicted_stale_handle to use it. Verify all tests pass.",
+      "status": "done",
+      "commit": "bbb33ae2"
+    },
+    {
+      "id": "step-6",
+      "type": "impl",
+      "description": "Replace remaining Arc<Mutex<Option<DuplexStream>>> held_writer patterns in loop-based race tests (ensure_sidecar_ready_notified_race_on_multithread, ensure_sidecar_ready_enable_prevents_missed_notification_race) with tokio::sync::oneshot::channel<DuplexStream>. In spawn_fn: `let _ = writer_tx.send(data_writer);`. After ensure_sidecar_ready: `let _held = writer_rx.await.ok();`. This communicates single-write intent at the type level and avoids Mutex overhead. Verify all tests pass.",
+      "status": "done",
+      "commit": "a0f561cf"
+    },
+    {
+      "id": "step-7",
+      "type": "impl",
+      "description": "Add explicit handle cleanup between loop iterations in race tests. For wait_ready_enable_prevents_missed_notification_race: add `handle.kill().await` at end of each iteration (requires `mut handle`). For ensure_sidecar_ready loop tests: after each iteration, take the handle from the sidecar slot and kill it (`if let Some(mut h) = sidecar.lock().await.take() { h.kill().await; }`). This prevents reader task accumulation. Mirrors the existing pattern at line 1961 in wait_ready_notified_race_on_multithread. Verify all tests pass.",
+      "status": "done",
+      "commit": "bb8d9589"
+    },
+    {
+      "id": "step-8",
+      "type": "impl",
+      "description": "Rename `state` to `spawned_state` on line 610 of claude_bridge.rs (`let spawned_state = Arc::clone(handle.state());`) and update all references in ensure_sidecar_ready: re-check (line 661), post-notification state check (line 693), and the match arms. Verify all tests pass.",
+      "status": "done",
+      "commit": "d23e38ac"
+    },
+    {
+      "id": "step-9",
+      "type": "impl",
+      "description": "Rewrite the re-check comment (lines 656-660) to clearly distinguish the two race windows: (a) Pre-creation window: Ready set during spawn_fn's internal await points, BEFORE `notified()` is created on line 625. The notification from `notify_waiters()` is irretrievably lost because no Notified future exists. This re-check handles that case. (b) Post-creation window: Ready set AFTER `notified()` created but BEFORE `enable()` registers the waiter. The `enable()` call on line 626 handles that case by eagerly registering the waiter. Reference the mirror pattern in wait_ready (lines 349-350).",
+      "status": "done",
+      "commit": "6245779c"
+    },
+    {
+      "id": "step-10",
+      "type": "impl",
+      "description": "Fix ensure_sidecar_ready_enable_prevents_missed_notification_race doc comment (lines 2076-2098). Correct: the stale handle is killed in Phase 1 (line 600), not Phase 3. Remove incorrect claim about 'h.kill().await at line 606' and the three Phase 3 await points (sidecar.lock, state_arc.lock, h.kill). Replace with accurate description: pre-populated stale handle adds Phase 1 async work (state check + kill), widening the window before notified() creation at line 625. The enable() at line 626 ensures any notification during Phase 3 await points (re-lock, concurrent-caller check) is captured.",
+      "status": "done",
+      "commit": "6245779c"
+    },
+    {
+      "id": "step-11",
+      "type": "impl",
+      "description": "Fix wait_ready_enable_prevents_missed_notification_race doc comment (lines 2020-2032). Add note that this test can also pass via the re-check path at line 353 (state.lock().await sees Ready before the timeout poll) rather than exclusively via enable(). The test exercises the race probabilistically \u2014 some iterations may succeed via enable() capturing the notification, others via the re-check seeing Ready state. Both paths are correct defense-in-depth behavior; the test validates that at least one of them succeeds on every iteration.",
+      "status": "done",
+      "commit": "6245779c"
+    }
+  ],
+  "design_decisions": [
+    {
+      "decision": "Use tokio::sync::oneshot instead of OnceLock for single-write held_writer pattern",
+      "rationale": "The reviewer suggested Arc<OnceLock<DuplexStream>> for single-write semantics. However, DuplexStream: !Sync, which prevents OnceLock<DuplexStream> from being Sync, which prevents Arc<OnceLock<DuplexStream>> from being Send \u2014 making it unusable across async task boundaries. The same applies to tokio::sync::OnceCell (requires T: Sync for shared access). oneshot::channel<DuplexStream> is Send-safe (Sender<T>: Send when T: Send), communicates single-write semantics at the type level, and eliminates the Mutex overhead."
+    },
+    {
+      "decision": "Extract two helper variants: make_starting_handle and make_ready_handle",
+      "rationale": "Tests fall into two patterns: (a) tests that interact with the reader task (race tests, state transition tests) need a live duplex data stream to prevent EOF, (b) tests that only verify stdin writes (abort, send_message) need a Ready state with an empty reader. Two helpers cover both patterns. Functions (not macros) match the convention in sibling test files (mcp_dispatch_tests.rs, mcp_context_tests.rs)."
+    },
+    {
+      "decision": "Kill handles explicitly in loop iterations rather than relying on drop ordering",
+      "rationale": "When SidecarHandle is dropped without kill(), JoinHandle::drop detaches the reader task rather than aborting it. The reader task then runs until the duplex writer drops (causing EOF). Even though data_writer is scoped per iteration and drops at end-of-scope, the tokio::spawn'd reader task may not notice the EOF and exit before the next iteration's reader task starts. Explicit kill() aborts the reader task immediately, matching the pattern already used in wait_ready_notified_race_on_multithread (line 1961)."
+    },
+    {
+      "decision": "Do not add a deterministic test that isolates enable() from re-check",
+      "rationale": "The task notes wait_ready_enable test 'can pass via re-check path, not exclusively via enable()'. Writing a test that deterministically proves enable() was the success path (not re-check) would require instrumenting production code with counters or hooks, which is inappropriate for a cleanup task. Instead, we document the dual-path nature in the test's doc comment. The enable() + re-check combination is defense-in-depth; both are correct."
+    },
+    {
+      "decision": "Use single-threaded current_thread runtime for the re-check deterministic test",
+      "rationale": "On current_thread, task scheduling is deterministic: tokio::spawn'd tasks only run when the current task yields. By yielding in spawn_fn after writing the ready message, we guarantee the reader task processes it and calls notify_waiters() before spawn_fn returns. This makes the notification fire before notified() is created, deterministically exercising the re-check path."
+    }
+  ],
+  "reuse": [
+    {
+      "what": "make_*() helper naming convention",
+      "where": "gui/src-tauri/src/tests/mcp_dispatch_tests.rs (make_engine, make_tauri_context), gui/src-tauri/src/tests/mcp_context_tests.rs (make_loaded_session, make_tauri_context), gui/src-tauri/src/tests/commands_tests.rs (make_loaded_session)",
+      "how": "Follow the same make_ prefix convention for new helpers: make_starting_handle(), make_ready_handle(), make_ready_spawn_fn()"
+    },
+    {
+      "what": "handle.kill().await cleanup pattern in loop iterations",
+      "where": "gui/src-tauri/src/tests/claude_bridge_tests.rs line 1961 (wait_ready_notified_race_on_multithread)",
+      "how": "Apply the same kill-at-end-of-iteration pattern to wait_ready_enable and ensure_sidecar_ready loop tests"
+    },
+    {
+      "what": "SidecarHandle::from_parts constructor boilerplate",
+      "where": "gui/src-tauri/src/claude_bridge.rs lines 175-185",
+      "how": "Wrap in make_starting_handle() / make_ready_handle() helpers that handle the boilerplate of creating state + duplex + BufReader"
+    },
+    {
+      "what": "Pin + enable() subscribe-before-check pattern",
+      "where": "gui/src-tauri/src/claude_bridge.rs lines 349-350 (wait_ready) and lines 625-626 (ensure_sidecar_ready)",
+      "how": "Reference both locations in updated comments to show the pattern is used consistently across the module"
+    }
+  ],
+  "_session_id": "452-3cd99df6",
+  "_created_at": "2026-03-28T04:05:11.768929+00:00"
+}
