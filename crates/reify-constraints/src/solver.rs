@@ -565,6 +565,8 @@ impl ConstraintSolver for DimensionalSolver {
         let result = match executor.run() {
             Ok(res) => res,
             Err(e) => {
+                let n_params = problem.auto_params.len();
+                tracing::warn!(error = %e, n_params, "solver executor failed");
                 return SolveResult::NoProgress {
                     reason: format!("solver error: {}", e),
                 };
