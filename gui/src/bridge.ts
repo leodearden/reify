@@ -143,13 +143,22 @@ export const MESSAGE_CONTEXT_FIELD_MAP = {
   attachedContexts: 'attached_contexts',
 } as const satisfies Record<keyof Required<MessageContext>, string>;
 
+/**
+ * Snake_case wire representation of MessageContext, derived from
+ * MESSAGE_CONTEXT_FIELD_MAP via key remapping. Adding a field to MessageContext
+ * and the map automatically extends this type.
+ */
+export type WireMessageContext = {
+  [K in keyof Required<MessageContext> as (typeof MESSAGE_CONTEXT_FIELD_MAP)[K]]: MessageContext[K];
+};
+
 /** Convert a camelCase MessageContext to its snake_case wire representation using MESSAGE_CONTEXT_FIELD_MAP. */
-export function mapContextToWire(ctx: MessageContext): Record<string, unknown> {
+export function mapContextToWire(ctx: MessageContext): WireMessageContext {
   const wire: Record<string, unknown> = {};
   for (const [camel, snake] of Object.entries(MESSAGE_CONTEXT_FIELD_MAP)) {
     wire[snake] = ctx[camel as keyof MessageContext];
   }
-  return wire;
+  return wire as WireMessageContext;
 }
 
 /** Send a message to the Claude sidecar. Maps camelCase context to snake_case for Rust. */

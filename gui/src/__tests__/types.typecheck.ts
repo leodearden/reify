@@ -124,12 +124,14 @@ type _NoSessionStatus = import('../types').SessionStatus;
 
 // --- MESSAGE_CONTEXT_FIELD_MAP exhaustiveness guard ---
 //
-// bridge.ts exports MESSAGE_CONTEXT_FIELD_MAP typed as
-// Record<keyof Required<MessageContext>, string>. If a field is added to
+// bridge.ts exports MESSAGE_CONTEXT_FIELD_MAP via `as const satisfies
+// Record<keyof Required<MessageContext>, string>`, narrowing values to
+// literal types while preserving the exhaustiveness guard. WireMessageContext
+// is derived from the map via key remapping. If a field is added to
 // MessageContext but not to the map, tsc will fail in bridge.ts.
 // This import ensures the map is reachable from the type-check file.
-// See: claudeBridge.test.ts for the compile-time Equals assertion and
-// runtime Object.keys test.
+// See: claudeBridge.test.ts for compile-time Equals assertions and
+// runtime Object.keys/values tests.
 import { MESSAGE_CONTEXT_FIELD_MAP } from '../bridge';
 void MESSAGE_CONTEXT_FIELD_MAP;
 
