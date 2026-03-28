@@ -15347,6 +15347,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 745,
+        "title": "Pipeline test script: fix side-effects, harden assertions, add staleness test",
+        "description": "Address 10 suggestion-level review findings from task 564 reviews, all in tests/infra/test_tree_sitter_pipeline.sh.\n\n**Side-effects and cleanup:**\n1. **grammar.js mtime not restored** (architect, robustness, test analyst): `test_auto_generation_rebuilds_parser` does `touch grammar.js` but never reverts the mtime. Save original mtime before touch and restore in cleanup: `orig_mtime=$(stat -c %y \"$grammar\")` then `touch -d \"$orig_mtime\" \"$grammar\"`.\n\n2. **Empty array expansion idiom** (robustness, test analyst): `cleanup()` uses `\"${CLEANUP_ACTIONS[@]:-}\"` which expands to a single empty string when the array is empty, causing a spurious `eval \"\"`. Use `\"${CLEANUP_ACTIONS[@]+\"${CLEANUP_ACTIONS[@]}\"}\"` (the `+` form) or guard with `[[ ${#CLEANUP_ACTIONS[@]} -eq 0 ]] && return`.\n\n3. **Temp file accumulation** (performance): Assert helpers append cleanup actions for temp files but don't clean up immediately. Add `rm -f \"$tmpfile\"` at the end of each branch in the helper to scope temp file lifetime to the assertion call.\n\n**Assertion quality:**\n4. **Misleading error message** (test analyst): `test_build_rs_no_stdout_inheritance` says \"must use .stdout(Stdio::piped()) or .stdout(Stdio::null())\" but the sibling deadlock test bans `Stdio::piped()`. Update message to say \"must use .stdout(Stdio::null())\".\n\n5. **Fragile grep patterns** (test analyst): Both source-grep tests use single-line patterns that break if rustfmt wraps `.stdout(` onto a separate line. Use `grep -Pz` for multiline matching or add a comment in build.rs that the `.stdout(` call must stay on one line.\n\n6. **Incomplete negative test** (test analyst): `test_generate_script_fails_without_grammar` only checks exit code, not error message content. Add `grep -q 'grammar.js' \"$tmpfile\"` to verify the error mentions grammar.js.\n\n7. **Weak positive test** (test analyst): `test_generate_script_succeeds_normally` uses `assert_file_exists` but not `assert_file_nonempty` for grammar.json and node-types.json. Add `assert_file_nonempty` for all three output files.\n\n8. **Redundant assertion** (reuse): `assert_file_exists` immediately before `assert_file_nonempty` on the same path is redundant (`-s` catches missing files). Remove the redundant `assert_file_exists` in `test_auto_generation_rebuilds_parser`.\n\n**Missing coverage:**\n9. **Untested staleness path** (test analyst): The stamp-hash-mismatch branch of `needs_generate()` is never exercised. Add a test: ensure parser.c and stamp exist, corrupt the stamp content, run cargo check, assert parser.c is regenerated and stamp updated.\n\n**DRY:**\n10. **Duplicated grep-test boilerplate** (reuse): `test_build_rs_no_piped_stdout_deadlock` and `test_build_rs_no_stdout_inheritance` share ~12 lines of identical structure. Extract helpers like `assert_build_rs_grep_present <pattern> <message>` and `assert_build_rs_grep_absent <pattern> <message>`.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -15359,7 +15370,7 @@
       ],
       "created": "2026-03-28T17:27:52.006Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-28T17:29:06.706Z"
+      "updated": "2026-03-28T17:29:24.949Z"
     }
   }
 }
