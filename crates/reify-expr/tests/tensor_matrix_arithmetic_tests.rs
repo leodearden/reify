@@ -17,7 +17,7 @@ use reify_types::{BinOp, CompiledExpr, Type, Value, ValueMap};
 fn mat(rows: Vec<Vec<Value>>) -> Value {
     Value::Tensor(
         rows.into_iter()
-            .map(|r| Value::Tensor(r))
+            .map(Value::Tensor)
             .collect(),
     )
 }
