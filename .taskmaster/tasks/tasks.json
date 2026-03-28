@@ -13294,7 +13294,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-eval/tests/recursive_unfold.rs"
+          ],
+          "modules": [
+            "crates/reify-eval/tests"
+          ]
+        }
       },
       {
         "id": 645,
@@ -13305,7 +13313,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-eval/tests/recursive_unfold.rs"
+          ],
+          "modules": [
+            "crates/reify-eval/tests"
+          ]
+        }
       },
       {
         "id": 646,
@@ -13333,7 +13349,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-stdlib/src/lib.rs"
+          ],
+          "modules": [
+            "crates/reify-stdlib/src"
+          ]
+        }
       },
       {
         "id": 648,
