@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vitest';
 import type { OutboundMessage } from '../../sidecar/src/types';
 
 // Polyfill rAF for test environment (claudeStore uses it for delta batching)
@@ -11,6 +11,12 @@ globalThis.requestAnimationFrame = (cb: FrameRequestCallback) => {
   return id;
 };
 globalThis.cancelAnimationFrame = () => {};
+
+/** Drain and invoke all pending rAF callbacks (exercises the batching path). */
+function flushRaf() {
+  const batch = rafCallbacks.splice(0);
+  batch.forEach((cb) => cb());
+}
 
 // Mock Tauri API modules (must be before imports that use them)
 vi.mock('@tauri-apps/api/core', () => ({
@@ -40,6 +46,12 @@ beforeEach(() => {
 
 afterEach(() => {
   rafCallbacks = [];
+});
+
+afterAll(() => {
+  // Restore the original globals that were overwritten at module load time
+  if (origRAF) globalThis.requestAnimationFrame = origRAF;
+  if (origCancelRAF) globalThis.cancelAnimationFrame = origCancelRAF;
 });
 
 describe('claude bridge integration', () => {
