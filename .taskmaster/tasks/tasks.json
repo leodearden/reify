@@ -12502,11 +12502,11 @@
         "description": "Three related test quality issues in reify-constraints:\n1. `warm_start_budget_exhaustion_stays_feasible` (solver_integration.rs:914) does not actually exhaust the iteration budget — reduce the budget or increase problem complexity to trigger MaxItersReached.\n2. `termination_reason_extracted_without_panic` (solver.rs:1983) accepts Infeasible for a trivially solvable problem — assert Solved and verify solution satisfies 5mm < x < 50mm.\n3. Use `mm()` helper for `current_values` in `warm_start_feasible_no_objective_early_exit` (solver_integration.rs:1019-1021) instead of inline `Value::Scalar`.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-28T00:12:38.850Z",
+        "updatedAt": "2026-03-28T00:17:29.333Z",
         "metadata": {
           "modules": [
             "crates/reify-constraints"
@@ -12672,7 +12672,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T00:17:28.783Z",
+      "lastModified": "2026-03-28T00:17:29.333Z",
       "taskCount": 626,
       "completedCount": 285,
       "tags": [
