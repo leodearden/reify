@@ -13,7 +13,7 @@ pub fn compute_hover(source: &str, uri: &Url, position: Position) -> Option<Hove
     let ctx = AnalysisContext::new(source, uri);
 
     // Try member lookup first
-    if let Some(info) = ctx.find_member_decl(word) {
+    if let Some(info) = ctx.find_member_decl(word, None) {
         let kind_str = match info.kind {
             reify_compiler::ValueCellKind::Param => "param",
             reify_compiler::ValueCellKind::Let => "let",
