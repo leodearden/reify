@@ -949,6 +949,9 @@ fn componentwise_binop(
     op: fn(&Value, &Value) -> Value,
     wrap: fn(Vec<Value>) -> Value,
 ) -> Value {
+    if a.is_empty() {
+        return Value::Undef;
+    }
     if a.len() != b.len() {
         return Value::Undef;
     }
@@ -969,6 +972,9 @@ fn scale_components(
     op: fn(&Value, &Value) -> Value,
     wrap: fn(Vec<Value>) -> Value,
 ) -> Value {
+    if components.is_empty() {
+        return Value::Undef;
+    }
     let results: Vec<Value> = components.iter().map(|c| op(c, scalar)).collect();
     if results.iter().any(|v| v.is_undef()) {
         Value::Undef
