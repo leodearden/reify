@@ -537,7 +537,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // Fails until position-sensitive completions are implemented (task 2)
     fn completion_expression_excludes_declaration_keywords() {
         // Cursor is in an expression position (after `= `)
         let source = "structure Foo {\n    let x = \n}";
@@ -720,7 +719,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // Fails until position-sensitive completions are implemented (task 2)
     fn completion_constraint_expr_excludes_declaration_keywords() {
         let source = reify_test_support::bracket_source();
         // Line 9: "    constraint thickness > 2mm" — col 27 is inside the expression
