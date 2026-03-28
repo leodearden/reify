@@ -5441,6 +5441,20 @@ mod tests {
         );
     }
 
+    #[test]
+    fn complex_magnitude_overflow_dimensioned_returns_undef() {
+        // Same overflow but through the Scalar branch (non-dimensionless).
+        let z = Value::Complex {
+            re: f64::MAX,
+            im: f64::MAX,
+            dimension: DimensionVector::LENGTH,
+        };
+        assert!(
+            eval_builtin("complex_magnitude", &[z]).is_undef(),
+            "complex_magnitude with f64::MAX components and LENGTH dimension must return Undef"
+        );
+    }
+
     // --- non-numeric args → Undef ---
 
     #[test]
