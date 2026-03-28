@@ -29,7 +29,46 @@ pub struct TauriToolContext {
     selection: Arc<RwLock<SelectionInfo>>,
 }
 
+/// Builder for [`TauriToolContext`].
+///
+/// Use [`TauriToolContext::builder`] to create a builder, then chain
+/// `.with_selection(...)` and/or `.with_event_emitter(...)` before calling `.build()`.
+pub struct TauriToolContextBuilder {
+    engine: Arc<Mutex<EngineSession>>,
+    event_emitter: Option<EventEmitter>,
+    selection: Option<Arc<RwLock<SelectionInfo>>>,
+}
+
+impl TauriToolContextBuilder {
+    /// Finalize the builder and create a [`TauriToolContext`].
+    ///
+    /// If no selection was provided, creates a fresh unshared `Arc<RwLock<SelectionInfo>>`
+    /// with empty fields (not connected to the frontend).
+    pub fn build(self) -> TauriToolContext {
+        let selection = self.selection.unwrap_or_else(|| {
+            Arc::new(RwLock::new(SelectionInfo {
+                selected_entity: None,
+                hovered_entity: None,
+            }))
+        });
+        TauriToolContext {
+            engine: self.engine,
+            event_emitter: self.event_emitter,
+            selection,
+        }
+    }
+}
+
 impl TauriToolContext {
+    /// Create a [`TauriToolContextBuilder`] with the given engine.
+    pub fn builder(engine: Arc<Mutex<EngineSession>>) -> TauriToolContextBuilder {
+        TauriToolContextBuilder {
+            engine,
+            event_emitter: None,
+            selection: None,
+        }
+    }
+
     /// Create a new TauriToolContext with no event emitter and empty selection.
     pub fn new(engine: Arc<Mutex<EngineSession>>) -> Self {
         Self {
