@@ -7981,11 +7981,11 @@
         "description": "Extract a `negate_value(v: Value) -> Value` helper in reify-expr to replace the current pattern in eval_unop where nested Tensor elements are wrapped in `CompiledExpr::literal(c, Type::Real)` to recurse. This has multiple issues:\n\n1. **Wrong type annotation**: Type::Real is passed for a Value::Tensor, violating CompiledExpr's type contract\n2. **Unnecessary allocation**: One CompiledExpr heap allocation per matrix row\n3. **Silent Undef for unexpected elements**: The `_ => Value::Undef` catch-all silently converts Value::Matrix elements to Undef instead of canonicalizing them first\n4. **Confusing code path**: Re-enters eval_expr → eval_unop when direct Value manipulation suffices\n\nFix: Create `fn negate_value(v: Value) -> Value` that directly handles Int/Real/Scalar/Tensor/Matrix recursion without CompiledExpr wrapping. Add explicit Value::Matrix arm that canonicalizes before recursing.\n\nLocation: crates/reify-expr/src/lib.rs lines 1118-1141\nmemory_hints: search \"eval_unop CompiledExpr literal Type::Real tensor negation\" entity \"eval_unop\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-28T09:04:26.695Z",
+        "updatedAt": "2026-03-28T16:42:40.307Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -15282,7 +15282,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T16:42:40.229Z",
+      "lastModified": "2026-03-28T16:42:40.307Z",
       "taskCount": 738,
       "completedCount": 358,
       "tags": [
