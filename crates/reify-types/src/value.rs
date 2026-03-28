@@ -218,35 +218,9 @@ impl Value {
         }
     }
 
-    /// Negate this value. Returns `Value::Undef` for unsupported types or on
-    /// overflow (e.g. `Int(i64::MIN)`).
-    pub fn neg(self) -> Value {
-        match self {
-            Value::Int(i) => i.checked_neg().map(Value::Int).unwrap_or(Value::Undef),
-            Value::Real(r) => Value::Real(-r),
-            Value::Scalar {
-                si_value,
-                dimension,
-            } => Value::Scalar {
-                si_value: -si_value,
-                dimension,
-            },
-            Value::Complex { re, im, dimension } => Value::Complex {
-                re: -re,
-                im: -im,
-                dimension,
-            },
-            Value::Tensor(components) => Self::neg_components(components, Value::Tensor),
-            Value::Vector(components) => Self::neg_components(components, Value::Vector),
-            // Affine geometry: point negation is undefined (spec 3.3.1)
-            Value::Point(_) => Value::Undef,
-            _ => Value::Undef,
-        }
-    }
-
     /// Negate each component, returning Undef if any component negation fails.
     fn neg_components(components: Vec<Value>, wrap: fn(Vec<Value>) -> Value) -> Value {
-        let results: Vec<Value> = components.into_iter().map(|c| c.neg()).collect();
+        let results: Vec<Value> = components.into_iter().map(|c| -c).collect();
         if results.iter().any(|v| v.is_undef()) {
             Value::Undef
         } else {
@@ -1580,6 +1554,36 @@ impl std::fmt::Display for Value {
                 write!(f, "]")
             }
             Value::Undef => write!(f, "undef"),
+        }
+    }
+}
+
+impl std::ops::Neg for Value {
+    type Output = Value;
+
+    /// Negate this value. Returns `Value::Undef` for unsupported types or on
+    /// overflow (e.g. `Int(i64::MIN)`).
+    fn neg(self) -> Value {
+        match self {
+            Value::Int(i) => i.checked_neg().map(Value::Int).unwrap_or(Value::Undef),
+            Value::Real(r) => Value::Real(-r),
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => Value::Scalar {
+                si_value: -si_value,
+                dimension,
+            },
+            Value::Complex { re, im, dimension } => Value::Complex {
+                re: -re,
+                im: -im,
+                dimension,
+            },
+            Value::Tensor(components) => Self::neg_components(components, Value::Tensor),
+            Value::Vector(components) => Self::neg_components(components, Value::Vector),
+            // Affine geometry: point negation is undefined (spec 3.3.1)
+            Value::Point(_) => Value::Undef,
+            _ => Value::Undef,
         }
     }
 }
@@ -4796,22 +4800,21 @@ mod tests {
 
     #[test]
     fn neg_int_positive() {
-        assert_eq!(Value::Int(5).neg(), Value::Int(-5));
+        assert_eq!(-Value::Int(5), Value::Int(-5));
     }
 
     #[test]
     fn neg_real() {
-        assert_eq!(Value::Real(3.14).neg(), Value::Real(-3.14));
+        assert_eq!(-Value::Real(2.5), Value::Real(-2.5));
     }
 
     #[test]
     fn neg_scalar_length() {
         assert_eq!(
-            Value::Scalar {
+            -Value::Scalar {
                 si_value: 1.0,
                 dimension: DimensionVector::LENGTH,
-            }
-            .neg(),
+            },
             Value::Scalar {
                 si_value: -1.0,
                 dimension: DimensionVector::LENGTH,
@@ -4822,12 +4825,11 @@ mod tests {
     #[test]
     fn neg_complex() {
         assert_eq!(
-            Value::Complex {
+            -Value::Complex {
                 re: 1.0,
                 im: 2.0,
                 dimension: DimensionVector::DIMENSIONLESS,
-            }
-            .neg(),
+            },
             Value::Complex {
                 re: -1.0,
                 im: -2.0,
@@ -4838,17 +4840,17 @@ mod tests {
 
     #[test]
     fn neg_int_min_overflow_returns_undef() {
-        assert_eq!(Value::Int(i64::MIN).neg(), Value::Undef);
+        assert_eq!(-Value::Int(i64::MIN), Value::Undef);
     }
 
     #[test]
     fn neg_bool_returns_undef() {
-        assert_eq!(Value::Bool(true).neg(), Value::Undef);
+        assert_eq!(-Value::Bool(true), Value::Undef);
     }
 
     #[test]
     fn neg_undef_returns_undef() {
-        assert_eq!(Value::Undef.neg(), Value::Undef);
+        assert_eq!(-Value::Undef, Value::Undef);
     }
 
     // ── Value::neg() composite tests ────────────────────────────────────────
@@ -4856,7 +4858,7 @@ mod tests {
     #[test]
     fn neg_tensor_int_elements() {
         assert_eq!(
-            Value::Tensor(vec![Value::Int(1), Value::Int(2)]).neg(),
+            -Value::Tensor(vec![Value::Int(1), Value::Int(2)]),
             Value::Tensor(vec![Value::Int(-1), Value::Int(-2)])
         );
     }
@@ -4865,7 +4867,7 @@ mod tests {
     fn neg_tensor_with_overflow_returns_undef() {
         // One element overflows → entire result is Undef
         assert_eq!(
-            Value::Tensor(vec![Value::Int(i64::MIN), Value::Int(1)]).neg(),
+            -Value::Tensor(vec![Value::Int(i64::MIN), Value::Int(1)]),
             Value::Undef
         );
     }
@@ -4873,7 +4875,7 @@ mod tests {
     #[test]
     fn neg_vector_length_components() {
         assert_eq!(
-            Value::Vector(vec![Value::length(1.0), Value::length(2.0)]).neg(),
+            -Value::Vector(vec![Value::length(1.0), Value::length(2.0)]),
             Value::Vector(vec![Value::length(-1.0), Value::length(-2.0)])
         );
     }
@@ -4882,7 +4884,7 @@ mod tests {
     fn neg_point_returns_undef() {
         // Affine geometry: point negation is undefined (spec 3.3.1)
         assert_eq!(
-            Value::Point(vec![Value::length(1.0), Value::length(2.0)]).neg(),
+            -Value::Point(vec![Value::length(1.0), Value::length(2.0)]),
             Value::Undef
         );
     }

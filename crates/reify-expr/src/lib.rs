@@ -982,7 +982,7 @@ fn scale_components(
 fn is_rank2(slice: &[Value]) -> bool {
     slice
         .first()
-        .map_or(false, |v| matches!(v, Value::Tensor(_)))
+        .is_some_and(|v| matches!(v, Value::Tensor(_)))
 }
 
 /// Validate rank-2 tensor operands for addition/subtraction.
@@ -1775,7 +1775,7 @@ fn eval_unop(op: UnOp, operand: &CompiledExpr, ctx: &EvalContext) -> Value {
         return Value::Undef;
     }
     match op {
-        UnOp::Neg => v.neg(),
+        UnOp::Neg => -v,
         UnOp::Not => match v {
             Value::Bool(b) => Value::Bool(!b),
             _ => Value::Undef,
