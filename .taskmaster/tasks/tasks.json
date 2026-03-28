@@ -7452,13 +7452,13 @@
         "description": "Reduce test boilerplate and fill coverage gaps in reify-stdlib linalg tests.\n\n## Test helpers\n1. Add `assert_vector3_approx!(expr, [x, y, z])` macro — replaces 4+ copy-pasted match+collect+assert blocks for Vector results (see cross_vector_returns_vector_wrapper, normalize_vector_returns_vector_wrapper, etc.)\n2. Add `make_scalar_vec3(vals: [f64; 3], dim: DimensionVector) -> Value` test helper — replaces 3+ inline constructions of dimensioned 3-element Value::Vector\n\n## Design decision: Point input semantics\n3. Decide and test the contract for Value::Point inputs to linalg builtins:\n   - `cross` rejects Point → Undef (already implemented)\n   - `normalize` accepts Point and preserves wrapper (currently implemented but untested)\n   - `dot` silently accepts Point (currently implemented but semantically questionable)\n   - Add tests pinning the decided behavior for dot(Point, _) and normalize(Point)\n\n## Mixed-type wrapper tests\n4. Add test for `cross(Vector, Tensor)` and `cross(Tensor, Vector)` — currently falls through to Value::Tensor wrapper. Pin this contract with an explicit test.\n\n## Memory hints\n- search: \"assert_vector3 test macro stdlib\"\n- search: \"Value::Point dot cross normalize contract\"\n- entities: eval_builtin, cross, dot, normalize, Value::Vector, Value::Point",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [
           "301"
         ],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-03-28T05:03:10.767Z",
+        "updatedAt": "2026-03-28T09:04:26.662Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -7981,11 +7981,11 @@
         "description": "Extract a `negate_value(v: Value) -> Value` helper in reify-expr to replace the current pattern in eval_unop where nested Tensor elements are wrapped in `CompiledExpr::literal(c, Type::Real)` to recurse. This has multiple issues:\n\n1. **Wrong type annotation**: Type::Real is passed for a Value::Tensor, violating CompiledExpr's type contract\n2. **Unnecessary allocation**: One CompiledExpr heap allocation per matrix row\n3. **Silent Undef for unexpected elements**: The `_ => Value::Undef` catch-all silently converts Value::Matrix elements to Undef instead of canonicalizing them first\n4. **Confusing code path**: Re-enters eval_expr → eval_unop when direct Value manipulation suffices\n\nFix: Create `fn negate_value(v: Value) -> Value` that directly handles Int/Real/Scalar/Tensor/Matrix recursion without CompiledExpr wrapping. Add explicit Value::Matrix arm that canonicalizes before recursing.\n\nLocation: crates/reify-expr/src/lib.rs lines 1118-1141\nmemory_hints: search \"eval_unop CompiledExpr literal Type::Real tensor negation\" entity \"eval_unop\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-28T05:38:26.853Z",
+        "updatedAt": "2026-03-28T09:04:26.695Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -14621,7 +14621,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T09:04:26.630Z",
+      "lastModified": "2026-03-28T09:04:26.695Z",
       "taskCount": 710,
       "completedCount": 329,
       "tags": [
