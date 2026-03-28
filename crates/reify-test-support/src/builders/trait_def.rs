@@ -4,6 +4,15 @@ use reify_compiler::{
     CompiledTrait, DefaultKind, RequirementKind, TraitDefault, TraitRequirement,
 };
 
+/// Returns a hash-friendly string representation for a `RequirementKind`.
+fn requirement_kind_str(kind: &RequirementKind) -> String {
+    match kind {
+        RequirementKind::Param(ty) => format!("Param:{}", ty),
+        RequirementKind::Let(ty) => format!("Let:{}", ty),
+        RequirementKind::Sub(s) => format!("Sub:{}", s),
+    }
+}
+
 /// Builder for `CompiledTrait`.
 ///
 /// Follows the same fluent pattern as `TopologyTemplateBuilder`.
