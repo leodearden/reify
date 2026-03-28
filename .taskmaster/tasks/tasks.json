@@ -14524,7 +14524,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "gui/src/__tests__/PropertyEditor.test.tsx"
+          ],
+          "modules": [
+            "gui/src/__tests__"
+          ]
+        }
       },
       {
         "id": 707,
