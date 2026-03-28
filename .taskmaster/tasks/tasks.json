@@ -10892,7 +10892,7 @@
         "description": "The six inline payload cast shapes in `subscribeToClaudeEvents` (gui/src/bridge.ts:159-182) re-declare field lists already defined by the exported interfaces in `gui/sidecar/src/types.ts`. For example, `{ id: string; content: string }` duplicates `Omit<TextDelta, 'type'>`. If a field is added or renamed in a constituent interface, the inline casts silently fall out of sync.\n\n**Fix**: Expand the import on line 20 to also bring in `TextDelta`, `ThinkingDelta`, `ToolCall`, `ToolResult`, `Done`, `ErrorMessage`. Then replace each inline anonymous shape with `Omit<Interface, 'type'>`, e.g.:\n```typescript\nconst p = event.payload as Omit<TextDelta, 'type'>;\n```\n\nAlso rename `p` to `payload` for readability (per codebase convention).\n\nMemory hints:\n- Search: \"OutboundMessage bridge.ts payload cast types\"\n- Entities: bridge.ts, OutboundMessage, subscribeToClaudeEvents",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -10904,7 +10904,8 @@
           "modules": [
             "gui/src"
           ]
-        }
+        },
+        "updatedAt": "2026-03-28T01:30:51.035Z"
       },
       {
         "id": "540",
@@ -13041,7 +13042,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T01:30:49.884Z",
+      "lastModified": "2026-03-28T01:30:51.035Z",
       "taskCount": 650,
       "completedCount": 303,
       "tags": [
