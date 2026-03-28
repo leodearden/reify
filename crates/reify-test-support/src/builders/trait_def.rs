@@ -45,6 +45,9 @@ fn compute_trait_content_hash(
         for b in &p.bounds {
             s.push_str(&format!(":bound:{}", b.trait_ref.name));
         }
+        if let Some(ref ty) = p.default {
+            s.push_str(&format!(":default:{}", ty));
+        }
         ContentHash::of_str(&s)
     });
     let default_hashes = defaults.iter().map(|d| {
