@@ -650,6 +650,18 @@ describe('subscribeToClaudeEvents', () => {
         });
       });
     });
+
+    describe('tool_result passthrough contract', () => {
+      it('passes result=null through to handler (unvalidated-passthrough contract)', async () => {
+        const { setup } = captureListener('claude-tool-result');
+        const handler = vi.fn();
+        const listener = await setup(handler);
+        listener({ payload: { id: 'tr-null', tool_name: 'read_file', result: null } });
+        expect(handler).toHaveBeenCalledWith({
+          type: 'tool_result', id: 'tr-null', tool_name: 'read_file', result: null,
+        });
+      });
+    });
   });
 });
 
