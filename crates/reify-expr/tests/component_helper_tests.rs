@@ -199,3 +199,13 @@ fn negate_empty_tensor_returns_undef() {
     let expr = CompiledExpr::unop(UnOp::Neg, lit(t, Type::Real), Type::Real);
     assert_eq!(eval(&expr), Value::Undef);
 }
+
+/// Negating a Vector containing i64::MIN as a component should return Undef.
+/// Exercises negate_components → negate_value → neg_scalar → checked_neg path
+/// for the "newly reachable for Vector components" overflow scenario.
+#[test]
+fn negate_vector_with_int_min_component_returns_undef() {
+    let v = Value::Vector(vec![Value::Int(i64::MIN), Value::Int(1)]);
+    let expr = CompiledExpr::unop(UnOp::Neg, lit(v, Type::Real), Type::Real);
+    assert_eq!(eval(&expr), Value::Undef);
+}
