@@ -304,6 +304,60 @@ mod tests {
     }
 
     #[test]
+    fn trait_def_content_hash_differs_by_requirement_inner_type() {
+        let ct1 = TraitDefBuilder::new("Rigid")
+            .requirement("val", RequirementKind::Param(Type::Real))
+            .build();
+        let ct2 = TraitDefBuilder::new("Rigid")
+            .requirement("val", RequirementKind::Param(Type::Int))
+            .build();
+        assert_ne!(
+            ct1.content_hash, ct2.content_hash,
+            "same Param variant but different inner types (Real vs Int) must produce different content_hash"
+        );
+    }
+
+    #[test]
+    fn trait_def_content_hash_differs_by_default_kind() {
+        let ct1 = TraitDefBuilder::new("Rigid")
+            .add_default(
+                Some("d"),
+                DefaultKind::Param {
+                    cell_type: Type::Real,
+                    default_decl: reify_syntax::ParamDecl {
+                        name: "d".to_string(),
+                        doc: None,
+                        type_expr: None,
+                        default: None,
+                        where_clause: None,
+                        span: SourceSpan::new(0, 0),
+                        content_hash: ContentHash::of_str("d"),
+                    },
+                },
+            )
+            .build();
+        let ct2 = TraitDefBuilder::new("Rigid")
+            .add_default(
+                Some("d"),
+                DefaultKind::Constraint(reify_syntax::ConstraintDecl {
+                    label: Some("d".to_string()),
+                    expr: reify_syntax::Expr {
+                        kind: reify_syntax::ExprKind::BoolLiteral(true),
+                        span: SourceSpan::new(0, 0),
+                    },
+                    where_clause: None,
+                    span: SourceSpan::new(0, 0),
+                    content_hash: ContentHash::of_str("d"),
+                }),
+            )
+            .build();
+        assert_ne!(
+            ct1.content_hash, ct2.content_hash,
+            "same default name but different DefaultKind variant must produce different content_hash"
+        );
+    }
+
+    #[test]
     fn trait_def_content_hash_differs_by_default() {
         let ct1 = TraitDefBuilder::new("Rigid").build();
         let ct2 = TraitDefBuilder::new("Rigid")
