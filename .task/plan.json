@@ -1,0 +1,107 @@
+{
+  "task_id": "439",
+  "title": "Expand type alias parser test coverage: error cases, edge cases, precedence",
+  "files": [
+    "crates/reify-syntax/tests/type_alias_tests.rs"
+  ],
+  "modules": [
+    "crates/reify-syntax/tests"
+  ],
+  "analysis": "The existing type_alias_tests.rs has 14 tests covering: simple/pub aliases, parameterized RHS, type params (plain, bounded, default), dimensional ops (div, mul, chained), multi-alias files, and 3 malformed-input no-panic tests for missing operands in dimensional expressions.\n\nThe task requests 4 categories of missing coverage:\n\n1. **Error cases** \u2014 The existing malformed tests only cover dimensional-operator operand issues (missing left/right/both). Missing are: (a) no name after 'type' keyword, (b) no '=' separator, (c) empty RHS after '='. The tree-sitter grammar for type_alias_declaration is `optional('pub') 'type' identifier optional(type_parameters) '=' dimensional_type_expr`, so all three malformed cases will hit tree-sitter error recovery. The `lower_type_alias` function uses `?` (Option early-return) on `child_by_field_name(\"name\")` and `child_by_field_name(\"type\")`, so it may silently return None for some cases. Tests should assert no panic and either no TypeAlias or errors present \u2014 matching the established pattern from the existing no_panic tests.\n\n2. **Type params + dimensional RHS** \u2014 `type Velocity<T> = T / Time` combines generic type parameters on the LHS with a dimensional binary-op expression on the RHS. The parser handles these independently (type_params via lower_type_parameters, RHS via lower_dimensional_type_expr), so this should work. No existing test covers this combination.\n\n3. **Nested parameterized types** \u2014 `type Registry = Map<String, List<Int>>` tests that the type_arg_list correctly recurses into parameterized_type children. The grammar's type_arg_list uses type_expr which includes parameterized_type, and lower_type_args_from_node handles both type_expr and parameterized_type children. No existing test covers depth > 1.\n\n4. **Mixed operator precedence** \u2014 `type X = Mass / Time * Scalar` should parse as `(Mass / Time) * Scalar` per left-associativity (prec.left(1) for both * and /). The existing chained test uses `Mass * Length / Time / Time` which is all-left-associative but doesn't mix * after /. A test with `A / B * C` explicitly confirms the outer op is * (not that / binds tighter).\n\nAll changes are test-only in a single file. The parser implementation should already handle all cases correctly.",
+  "prerequisites": [],
+  "steps": [
+    {
+      "id": "step-1",
+      "type": "test",
+      "description": "Write 3 error-case tests for malformed type alias inputs: (a) parse_malformed_missing_name \u2014 input 'type = Force', asserts no panic and either no TypeAlias or errors present; (b) parse_malformed_missing_equals \u2014 input 'type Foo Force', same assertion pattern; (c) parse_malformed_empty_rhs \u2014 input 'type Foo =', same assertion pattern. Follow the existing no_panic test style (lines 278-322).",
+      "status": "done",
+      "commit": "f5fcb5e5"
+    },
+    {
+      "id": "step-2",
+      "type": "impl",
+      "description": "Run the 3 new error-case tests. If any fail (panic or incorrect assertion), fix the parser error handling in ts_parser.rs to ensure graceful recovery. Most likely no impl changes needed since lower_type_alias uses Option early-return for missing fields.",
+      "status": "done",
+      "commit": "37a7fd5d"
+    },
+    {
+      "id": "step-3",
+      "type": "test",
+      "description": "Write test parse_type_alias_type_params_with_dimensional_rhs: input 'type Velocity<T> = T / Time'. Assert: name='Velocity', type_params has 1 entry with name='T', type_expr.name='/', type_expr.type_args[0].name='T', type_expr.type_args[1].name='Time'. This validates that generic type parameters and dimensional RHS work together.",
+      "status": "done",
+      "commit": "10b2de98"
+    },
+    {
+      "id": "step-4",
+      "type": "impl",
+      "description": "Run the type-params-with-dimensional test. Verify it passes against existing parser. If it fails, investigate whether lower_type_parameters and lower_dimensional_type_expr interfere with each other and fix.",
+      "status": "done",
+      "commit": "10b2de98"
+    },
+    {
+      "id": "step-5",
+      "type": "test",
+      "description": "Write test parse_type_alias_nested_parameterized_rhs: input 'type Registry = Map<String, List<Int>>'. Assert: name='Registry', type_expr.name='Map', type_expr.type_args.len()==2, type_args[0].name='String' with no args, type_args[1].name='List' with 1 arg where type_args[1].type_args[0].name='Int'. This validates recursive type argument parsing.",
+      "status": "done",
+      "commit": "10b2de98"
+    },
+    {
+      "id": "step-6",
+      "type": "impl",
+      "description": "Run the nested-parameterized test. Verify it passes. If it fails, investigate lower_type_args_from_node and lower_type_expr_node recursive handling and fix.",
+      "status": "done",
+      "commit": "10b2de98"
+    },
+    {
+      "id": "step-7",
+      "type": "test",
+      "description": "Write test parse_type_alias_mixed_precedence_left_associative: input 'type X = Mass / Time * Scalar'. Assert: outer type_expr.name='*' (confirming left-associativity makes * the outermost op), type_expr.type_args[1].name='Scalar', type_expr.type_args[0].name='/' with its type_args being ['Mass', 'Time']. This confirms that `A / B * C` parses as `(A / B) * C`, not `A / (B * C)`.",
+      "status": "done",
+      "commit": "10b2de98"
+    },
+    {
+      "id": "step-8",
+      "type": "impl",
+      "description": "Run the mixed-precedence test. Verify it passes. The grammar uses prec.left(1) for both * and /, giving equal precedence with left-associativity, so (A / B) * C is expected. If it fails, it would indicate a grammar bug.",
+      "status": "done",
+      "commit": "10b2de98"
+    }
+  ],
+  "design_decisions": [
+    {
+      "decision": "Follow the existing no_panic assertion pattern for error cases rather than asserting specific error messages",
+      "rationale": "The existing tests (lines 278-322) assert `!has_type_alias || !errors.is_empty()` \u2014 this is resilient to changes in tree-sitter error recovery behavior and error message wording. The important invariant is: malformed input must not panic, and must not produce a well-formed alias without errors."
+    },
+    {
+      "decision": "Group error-case tests in one step rather than one-per-step",
+      "rationale": "All 3 error cases follow the identical pattern, touch the same code paths (tree-sitter error recovery \u2192 lower_type_alias early-return), and if one fails they'll all fail for the same reason. Grouping keeps the plan concise."
+    },
+    {
+      "decision": "Use `Mass / Time * Scalar` for the mixed-precedence test rather than `Mass * Time / Scalar`",
+      "rationale": "The existing chained test already uses `Mass * Length / Time / Time` which starts with * then /. Using / before * in the new test is a genuinely new combination \u2014 if * had higher precedence than /, this would parse differently, making it a more discriminating test."
+    },
+    {
+      "decision": "Test file only \u2014 no parser implementation changes expected",
+      "rationale": "The parser already handles all these cases: lower_type_alias uses Option for missing fields, type_arg_list supports nested parameterized_type, and prec.left(1) gives equal-precedence left-associativity. The impl steps exist as safety nets in case any test reveals a latent bug."
+    }
+  ],
+  "reuse": [
+    {
+      "what": "parse_decls() helper function",
+      "where": "crates/reify-syntax/tests/type_alias_tests.rs lines 8-12",
+      "how": "All new tests call parse_decls(source) and destructure into (decls, errors), matching the pattern used by all 14 existing tests."
+    },
+    {
+      "what": "No-panic assertion pattern for malformed inputs",
+      "where": "crates/reify-syntax/tests/type_alias_tests.rs lines 278-322",
+      "how": "New error-case tests use the identical `!has_type_alias || !errors.is_empty()` assertion with the same descriptive error message format."
+    },
+    {
+      "what": "Declaration::TypeAlias match + field assertion pattern",
+      "where": "crates/reify-syntax/tests/type_alias_tests.rs throughout (e.g., lines 23-32, 104-114)",
+      "how": "New success-case tests use `match &decls[0] { Declaration::TypeAlias(ta) => { ... } other => panic!(...) }` with field assertions on ta.name, ta.type_params, ta.type_expr."
+    }
+  ],
+  "_session_id": "439-119a6b5d",
+  "_created_at": "2026-03-28T05:32:23.435589+00:00"
+}
