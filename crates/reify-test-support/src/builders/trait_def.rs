@@ -645,6 +645,28 @@ mod tests {
     }
 
     #[test]
+    fn trait_def_content_hash_differs_by_type_param_default() {
+        let ct1 = TraitDefBuilder::new("Container")
+            .type_param(TypeParam {
+                name: "T".to_string(),
+                bounds: vec![],
+                default: Some(Type::Real),
+            })
+            .build();
+        let ct2 = TraitDefBuilder::new("Container")
+            .type_param(TypeParam {
+                name: "T".to_string(),
+                bounds: vec![],
+                default: Some(Type::Int),
+            })
+            .build();
+        assert_ne!(
+            ct1.content_hash, ct2.content_hash,
+            "same TypeParam name with no bounds but different defaults (Real vs Int) must produce different content_hash"
+        );
+    }
+
+    #[test]
     fn trait_def_content_hash_differs_by_default() {
         let ct1 = TraitDefBuilder::new("Rigid").build();
         let ct2 = TraitDefBuilder::new("Rigid")
