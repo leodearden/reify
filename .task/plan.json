@@ -1,0 +1,125 @@
+{
+  "task_id": "415",
+  "title": "Fix gradient correctness: dimensionless type mismatch, unbounded recursion, silent failure",
+  "files": [
+    "crates/reify-expr/src/lib.rs",
+    "crates/reify-expr/tests/point_vector_eval_tests.rs",
+    "crates/reify-expr/tests/lambda_eval_tests.rs"
+  ],
+  "modules": [
+    "crates/reify-expr/src",
+    "crates/reify-expr/tests"
+  ],
+  "analysis": "Three correctness issues in the expression evaluator (crates/reify-expr/src/lib.rs):\n\n1. **Dimensionless type mismatch in eval_div** (line 1449-1450): When Scalar/Scalar division produces a dimensionless result, eval_div returns Value::Real instead of Value::Scalar{dimensionless}. This violates the type contract \u2014 the type system declares Scalar[dimensionless] as the codomain for such operations (e.g., gradient of a length field would yield Scalar[dimensionless]), but the runtime produces Value::Real. Note: eval_mul for Scalar*Scalar (line 1181-1184) always returns Value::Scalar regardless of dimensionlessness, making eval_div inconsistent. The make_components_3 helper (line 1127) and complex magnitude/re/im methods also do this conversion, but those are separate issues outside this task's scope.\n\n2. **No depth limit in apply_lambda** (line 450-470): apply_lambda calls ctx.with_scope() which increments recursion_depth, but unlike eval_user_function_call (line 403), it never checks the depth before proceeding. The recursion path sample\u2192apply_lambda\u2192eval_expr\u2192sample\u2192apply_lambda creates unbounded recursion that bypasses eval_user_function_call's depth check entirely. When numerical gradient is implemented, the path compute_numerical_gradient\u2192apply_lambda\u2192eval_expr\u2192compute_numerical_gradient would also be unprotected.\n\n3. **Silent Undef from field operations** (line 116-119): gradient/divergence/curl with non-Field arguments, and sample with a Field whose lambda slot is not a Lambda, both silently return Value::Undef with no diagnostic. This violates the project convention against silent wrong results (feedback_silent_defaults_pattern). The existing pattern for noisy failures is #[cfg(debug_assertions)] eprintln! (see line 141-146 for match on non-enum).\n\nFor testing apply_lambda's depth limit: since EvalContext.recursion_depth is private, we need a test-accessible constructor. We'll add a #[doc(hidden)] pub method to set depth for testing, following the pragmatic approach since integration tests can't use pub(crate).",
+  "prerequisites": [],
+  "steps": [
+    {
+      "id": "step-1",
+      "type": "test",
+      "description": "Write failing test: scalar_div_scalar_dimensionless_returns_scalar (in point_vector_eval_tests.rs). Divide Scalar<Length> by Scalar<Length> and assert the result is Value::Scalar { si_value: 2.0, dimension: DimensionVector::DIMENSIONLESS }, not Value::Real(2.0). This verifies the type contract that Scalar/Scalar \u2192 Scalar[dimensionless].",
+      "status": "done",
+      "commit": "baa9ba4a"
+    },
+    {
+      "id": "step-2",
+      "type": "impl",
+      "description": "Fix eval_div Scalar/Scalar branch (line 1449-1450): replace `Value::Real(a / b)` with `Value::Scalar { si_value: a / b, dimension: result_dim }` when result_dim.is_dimensionless(). This makes eval_div consistent with eval_mul which always returns Scalar. Remove the is_dimensionless() special case entirely \u2014 just always return Value::Scalar with the computed result_dim.",
+      "status": "done",
+      "commit": "46273fb3"
+    },
+    {
+      "id": "step-3",
+      "type": "test",
+      "description": "Write failing test: apply_lambda_returns_undef_at_max_depth (in lambda_eval_tests.rs). Add a #[doc(hidden)] pub fn _test_simple_at_depth(values, depth) constructor to EvalContext. Create a simple lambda |x| x+1, then call apply_lambda with ctx at MAX_RECURSION_DEPTH. Assert it returns Undef instead of evaluating. Also test that depth MAX_RECURSION_DEPTH-1 still works.",
+      "status": "done",
+      "commit": "7b8d545e"
+    },
+    {
+      "id": "step-4",
+      "type": "impl",
+      "description": "Add recursion depth check to apply_lambda: insert `if ctx.recursion_depth >= MAX_RECURSION_DEPTH { return Value::Undef; }` at the start of the Lambda match arm (before line 457). Also add the _test_simple_at_depth constructor to EvalContext.",
+      "status": "done",
+      "commit": "7d90772f"
+    },
+    {
+      "id": "step-5",
+      "type": "test",
+      "description": "Write failing test: sample_non_field_emits_debug_diagnostic (in lambda_eval_tests.rs). Call sample(Real(1.0), Real(0.0)) via FunctionCall and assert Undef is returned (existing behavior, make it explicit). Write test: sample_field_with_undef_lambda_returns_undef \u2014 create a Field with lambda=Undef, call sample, assert Undef. Write test: gradient_non_field_returns_undef \u2014 call gradient(Real(1.0)), assert Undef. These tests document the expected behavior; the debug eprintln output is verified by inspection rather than assertion.",
+      "status": "done",
+      "commit": "0b0bc71e"
+    },
+    {
+      "id": "step-6",
+      "type": "impl",
+      "description": "Add debug diagnostics for field operations: (a) In the sample handler (line 109-114), add #[cfg(debug_assertions)] eprintln! when first arg is not a Field, and when the Field's lambda is not a Lambda. (b) In the gradient/divergence/curl handler (line 116-119), add #[cfg(debug_assertions)] eprintln! when the arg is not a Field, and when the Field's lambda is not a Lambda. Follow the existing pattern at line 141-146.",
+      "status": "done",
+      "commit": "2aab02d5"
+    }
+  ],
+  "design_decisions": [
+    {
+      "decision": "Remove the is_dimensionless() special case in eval_div entirely, always returning Scalar with computed dimension",
+      "rationale": "eval_mul for Scalar*Scalar (line 1181) always returns Scalar regardless of dimensionlessness. Making eval_div consistent prevents type contract violations where the type system expects Scalar[dimensionless] but gets Real. The Scalar variant with DimensionVector::DIMENSIONLESS correctly represents a dimensionless quantity."
+    },
+    {
+      "decision": "Do NOT change make_components_3, complex magnitude, or re/im methods which also collapse dimensionless\u2192Real",
+      "rationale": "Limiting scope to eval_div as specified in the task. Those other sites are separate correctness issues that should be addressed by their own tasks to avoid scope creep."
+    },
+    {
+      "decision": "Add #[doc(hidden)] pub fn _test_simple_at_depth() to EvalContext rather than making recursion_depth pub",
+      "rationale": "recursion_depth is intentionally private to prevent misuse. Integration tests (in tests/) cannot use pub(crate). A doc-hidden test constructor with underscore prefix is the pragmatic Rust approach for test-only access without exposing internal state."
+    },
+    {
+      "decision": "Use #[cfg(debug_assertions)] eprintln! for noisy diagnostics rather than changing eval_expr's return type",
+      "rationale": "The evaluator is a pure fn \u2192 Value interface used throughout the codebase. Adding Result or a diagnostics accumulator would be a major refactor. The debug_assertions eprintln pattern is already used in the same file (line 141-146) for similar diagnostic cases."
+    },
+    {
+      "decision": "Place depth check at start of Lambda match arm in apply_lambda, before captures.clone()",
+      "rationale": "Checking depth before cloning the capture map avoids unnecessary allocation when the depth limit is exceeded. This is consistent with eval_user_function_call which checks depth before any work."
+    }
+  ],
+  "reuse": [
+    {
+      "what": "EvalContext::simple() and ValueMap::new()",
+      "where": "All test files",
+      "how": "Use existing context constructors for test setup; extend with new _test_simple_at_depth for depth tests"
+    },
+    {
+      "what": "MAX_RECURSION_DEPTH constant (line 10)",
+      "where": "apply_lambda depth check",
+      "how": "Reuse the same depth limit constant already used by eval_user_function_call"
+    },
+    {
+      "what": "#[cfg(debug_assertions)] eprintln! pattern (line 141-146)",
+      "where": "Field operation diagnostic messages",
+      "how": "Follow exact same pattern: cfg guard + formatted message with [reify-expr] prefix"
+    },
+    {
+      "what": "Value::length(meters) helper",
+      "where": "Scalar division test",
+      "how": "Construct Scalar<Length> test values using the existing convenience constructor"
+    },
+    {
+      "what": "CompiledExpr::literal(), ::binop(), ::value_ref() constructors",
+      "where": "Test expression building",
+      "how": "Use existing expression constructors to build test ASTs"
+    },
+    {
+      "what": "DimensionVector::DIMENSIONLESS, ::LENGTH constants",
+      "where": "Test assertions and value construction",
+      "how": "Use existing dimension constants for expected value comparisons"
+    },
+    {
+      "what": "FieldSourceKind::Analytical from reify_types",
+      "where": "Field operation tests",
+      "how": "Construct test Field values with the standard analytical source kind"
+    },
+    {
+      "what": "make_value_lambda() helper in lambda_eval_tests.rs",
+      "where": "Lambda depth limit and field operation tests",
+      "how": "Reuse existing test helper to construct Lambda values"
+    }
+  ],
+  "_session_id": "415-4a496910",
+  "_created_at": "2026-03-28T04:37:02.652519+00:00"
+}
