@@ -14409,7 +14409,7 @@
         "description": "Two issues in crates/reify-cli/src/main.rs: 1) report_constraint_results doc comment says 'builds' but should say 'evaluations' since called from both cmd_build and cmd_check. 2) cmd_check prints 'All constraints satisfied.' even when constraints are INDETERMINATE — should distinguish between all-satisfied and no-violations-but-some-indeterminate. Update cli_check.rs test assertion to match new message.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -14422,7 +14422,8 @@
             "crates/reify-cli/src",
             "crates/reify-cli/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-03-28T09:28:14.537Z"
       },
       {
         "id": "701",
@@ -14741,7 +14742,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T09:28:14.068Z",
+      "lastModified": "2026-03-28T09:28:14.539Z",
       "taskCount": 719,
       "completedCount": 332,
       "tags": [
