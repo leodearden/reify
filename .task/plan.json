@@ -1,0 +1,125 @@
+{
+  "task_id": "405",
+  "title": "Refactor eval_unop Tensor negation to avoid CompiledExpr::literal abuse",
+  "files": [
+    "crates/reify-expr/src/lib.rs",
+    "crates/reify-expr/tests/point_vector_eval_tests.rs"
+  ],
+  "modules": [
+    "crates/reify-expr/src",
+    "crates/reify-expr/tests"
+  ],
+  "analysis": "The current negation implementation has two layers: (1) `eval_unop` (line 1718) handles UnOp::Neg by matching top-level Value variants (Int, Real, Scalar, Complex, then delegates Tensor/Vector to `negate_components`), and (2) `negate_components` (line 982) iterates over component elements but only handles Int/Real/Scalar \u2014 anything else (Complex, nested Tensor, etc.) falls through to `_ => Value::Undef`. This means: (a) a rank-2 tensor (Tensor of Tensors) silently becomes Undef on negation since inner Tensor elements hit the catch-all, (b) Tensor<Complex> also silently becomes Undef, (c) Value::Matrix is not handled at all in eval_unop (falls to `_ => Value::Undef` at line 1745). The fix is to extract a single recursive `negate_value(v: Value) -> Value` function that handles all negatable variants (Int, Real, Scalar, Complex, Tensor, Vector, Matrix) with proper recursion for nested containers. Then `eval_unop` calls `negate_value(v)` for UnOp::Neg (keeping Point\u2192Undef explicitly), and `negate_components` is removed entirely. The tests in point_vector_eval_tests.rs are the appropriate location for new negation tests following existing convention (Tensor negation section at line 726, negation section at line 1105).",
+  "prerequisites": [],
+  "steps": [
+    {
+      "id": "step-1",
+      "type": "test",
+      "description": "Write failing test: negating a rank-2 tensor (Tensor of Tensors with Real elements). Build a 2x2 nested Tensor literal, negate via UnOp::Neg, assert result is Tensor with all elements negated. Currently fails because negate_components returns Undef for inner Tensor elements.",
+      "status": "done",
+      "commit": "050802b5"
+    },
+    {
+      "id": "step-2",
+      "type": "test",
+      "description": "Write failing test: negating a Tensor containing Complex elements. Build a Tensor of two Complex values, negate via UnOp::Neg, assert both re and im are negated. Currently fails because negate_components returns Undef for Complex elements.",
+      "status": "done",
+      "commit": "0ac6998d"
+    },
+    {
+      "id": "step-3",
+      "type": "test",
+      "description": "Write failing test: negating a Value::Matrix directly. Build a 2x2 Matrix literal, negate via UnOp::Neg, assert result is a rank-2 Tensor with negated elements (canonicalized from Matrix). Currently fails because eval_unop has no Value::Matrix arm.",
+      "status": "done",
+      "commit": "13700673"
+    },
+    {
+      "id": "step-4",
+      "type": "impl",
+      "description": "Create `fn negate_value(v: Value) -> Value` in lib.rs that recursively handles: Int (checked_neg), Real (-r), Scalar (-si_value), Complex (-re, -im), Tensor (recursive map via negate_value), Vector (recursive map via negate_value), Matrix (canonicalize_matrix then negate_value on the resulting Tensor), Point \u2192 Undef, _ \u2192 Undef. Refactor eval_unop to call negate_value(v) for UnOp::Neg. Remove the now-unused negate_components function. All 3 new tests and all existing negation tests must pass.",
+      "status": "done",
+      "commit": "fa5ba9fd"
+    },
+    {
+      "id": "step-5",
+      "type": "test",
+      "description": "Write test: negating a Tensor with mixed Int and Real elements (e.g., [Int(1), Real(2.5)]) returns Tensor with [Int(-1), Real(-2.5)]. Verifies the recursive negate_value handles mixed numeric types inside containers. Should pass immediately after step-4.",
+      "status": "done",
+      "commit": "0eff40a4"
+    },
+    {
+      "id": "step-6",
+      "type": "test",
+      "description": "Write test: negating a Value::Matrix containing Scalar elements with dimensions. Build a 2x2 Matrix of Length scalars, negate, verify the result is a rank-2 Tensor with negated Scalar values preserving dimensions. Confirms Matrix\u2192Tensor canonicalization plus Scalar negation in one operation.",
+      "status": "done",
+      "commit": "0eff40a4"
+    },
+    {
+      "id": "step-7",
+      "type": "impl",
+      "description": "Fix use-after-move compile error in negate_value's Value::Matrix arm (lib.rs:1015). The current code `Value::Matrix(_) => negate_value(v.canonicalize_matrix())` references `v` after it was consumed by `match v { ... }`. Fix by binding inner rows in the pattern: `Value::Matrix(rows) => negate_value(Value::Matrix(rows).canonicalize_matrix())`. This reconstructs an owned Matrix from the bound rows and passes it to canonicalize_matrix. Verify with `cargo check -p reify-expr` and `cargo test -p reify-expr` (all tests including matrix negation tests from steps 3 and 6 must pass).",
+      "status": "done",
+      "commit": "24e8dec2"
+    }
+  ],
+  "design_decisions": [
+    {
+      "decision": "Create a standalone `negate_value(v: Value) -> Value` function rather than a method on Value",
+      "rationale": "Follows the existing pattern in reify-expr where arithmetic operations (eval_add, eval_sub, eval_mul) are free functions in lib.rs, not methods on Value. Value lives in reify-types and should stay data-only."
+    },
+    {
+      "decision": "Matrix negation canonicalizes to nested Tensor via `v.canonicalize_matrix()` then recurses, rather than iterating rows directly",
+      "rationale": "Reuses the existing canonicalize_matrix() method on Value (line 182 of value.rs) which is documented as the standard path for matrix arithmetic. Avoids duplicating matrix\u2192tensor conversion logic."
+    },
+    {
+      "decision": "Keep Point \u2192 Undef as an explicit arm in negate_value (not just catch-all)",
+      "rationale": "Point negation is explicitly undefined per spec 3.3.1 (comment at line 1743). Making it explicit documents the intentional design choice rather than hiding it in a catch-all."
+    },
+    {
+      "decision": "Remove negate_components entirely rather than keeping it as a thin wrapper",
+      "rationale": "negate_components is only used in two places (Tensor and Vector negation), both of which will be replaced by negate_value. The wrap parameter is no longer needed since negate_value handles the wrapping internally per variant."
+    },
+    {
+      "decision": "Negation of Matrix produces Tensor (not Matrix) output",
+      "rationale": "Consistent with the evaluator convention that all matrix arithmetic operates on the nested-Tensor representation (documented in Value::Matrix doc-comment at value.rs line 108-113 and canonicalize_matrix doc-comment)."
+    },
+    {
+      "decision": "Put new tests in point_vector_eval_tests.rs under the existing 'Tensor negation' section",
+      "rationale": "This file already has a 'Tensor negation' section (line 726) and Point/Vector negation tests (line 1105). Adding new negation tests here keeps them co-located."
+    },
+    {
+      "decision": "Fix use-after-move by binding inner rows in pattern, not with @ binding",
+      "rationale": "Using `Value::Matrix(rows) => negate_value(Value::Matrix(rows).canonicalize_matrix())` is clearer than `v @ Value::Matrix(_) => negate_value(v.canonicalize_matrix())` because the @ binding approach still moves `v` into the match and the @ only works if the match doesn't take ownership of the inner data. Since match on an owned value consumes it, binding the destructured parts and reconstructing is the idiomatic Rust approach."
+    }
+  ],
+  "reuse": [
+    {
+      "what": "Value::canonicalize_matrix()",
+      "where": "crates/reify-types/src/value.rs:182",
+      "how": "Call Value::Matrix(rows).canonicalize_matrix() in negate_value's Matrix arm to convert Matrix\u2192nested Tensor before recursing"
+    },
+    {
+      "what": "Existing test patterns (CompiledExpr::literal + eval_expr + assert_eq)",
+      "where": "crates/reify-expr/tests/point_vector_eval_tests.rs",
+      "how": "Follow the same pattern for all new tests: build literal, wrap in UnOp::Neg, eval, compare"
+    },
+    {
+      "what": "eval_unop structure for Complex negation",
+      "where": "crates/reify-expr/src/lib.rs:1734-1738",
+      "how": "Move Complex negation logic into negate_value, same pattern (negate re and im, preserve dimension)"
+    },
+    {
+      "what": "checked_neg pattern from negate_components",
+      "where": "crates/reify-expr/src/lib.rs:986",
+      "how": "Reuse i.checked_neg().map(Value::Int).unwrap_or(Value::Undef) for Int overflow safety in negate_value"
+    },
+    {
+      "what": "Type::tensor() and Type::matrix() constructors",
+      "where": "crates/reify-types/src/ty.rs:137,186",
+      "how": "Use in test expressions for proper type annotations on tensor/matrix literals"
+    }
+  ],
+  "_session_id": "405-60b0f94f",
+  "_created_at": "2026-03-28T16:53:36.872247+00:00",
+  "_schema_version": 1
+}
