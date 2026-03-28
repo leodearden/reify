@@ -676,6 +676,9 @@ describe('PropertyEditor quantity literal acceptance', () => {
   it.each([
     ['10xyz'],
     ['mm80'],
+    // Leading '+' rejected: QUANTITY_RE uses ^-? (minus-only), so '+10mm' fails even
+    // though the exponent group [eE][+-]? does accept '+' (e.g., '1e+3mm' is valid).
+    // This matches the .ri grammar which only defines unary minus for number literals.
     ['+10mm'],
     ['mm'],
     ['deg'],
