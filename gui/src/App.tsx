@@ -62,11 +62,7 @@ const App: Component = () => {
   });
   const claudeStore = createClaudeStore({
     onSend: (_id, text, context) => {
-      claudeSendMessage(text, {
-        selectedEntity: context.selectedEntity,
-        diagnostics: context.diagnostics,
-        constraints: context.constraints,
-      }).catch((err) => {
+      claudeSendMessage(text, context).catch((err) => {
         const msg = err instanceof Error ? err.message : String(err);
         claudeStore.addSystemMessage('ipc_error', `Failed to send message: ${msg}`);
       });

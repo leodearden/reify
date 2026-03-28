@@ -411,3 +411,14 @@ describe('subscribeToClaudeEvents', () => {
     });
   });
 });
+
+// ── Compile-time type assertion ────────────────────────────────────
+// ClaudeMessageContext (bridge.ts) must be exactly MessageContext (claudeStore.ts).
+// This catches any divergence at compile time — tsc will fail if they differ.
+import type { ClaudeMessageContext } from '../bridge';
+import type { MessageContext } from '../stores/claudeStore';
+
+type Equals<A, B> =
+  (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;
+type AssertTrue<T extends true> = T;
+type _AssertClaudeContextIsMessageContext = AssertTrue<Equals<ClaudeMessageContext, MessageContext>>;
