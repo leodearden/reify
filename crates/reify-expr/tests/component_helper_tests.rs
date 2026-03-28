@@ -209,3 +209,14 @@ fn negate_vector_with_int_min_component_returns_undef() {
     let expr = CompiledExpr::unop(UnOp::Neg, lit(v, Type::Real), Type::Real);
     assert_eq!(eval(&expr), Value::Undef);
 }
+
+/// Negating a Tensor containing i64::MIN as a component should return Undef.
+/// Covers the Tensor branch of negate_components with the same checked_neg
+/// overflow guard that protects bare Int negation.
+#[test]
+fn negate_tensor_with_int_min_component_returns_undef() {
+    let t = Value::Tensor(vec![Value::Int(i64::MIN), Value::Int(2), Value::Int(3)]);
+    let ty = Type::tensor(1, 3, Type::Real);
+    let expr = CompiledExpr::unop(UnOp::Neg, lit(t, ty.clone()), ty);
+    assert_eq!(eval(&expr), Value::Undef);
+}
