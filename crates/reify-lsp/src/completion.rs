@@ -579,11 +579,30 @@ mod tests {
 
     #[test]
     fn completion_after_dot_returns_only_members() {
-        // Cursor is after a dot — should only return member completions
-        // Note: Bar is undefined, but the exclusion assertions are what matter
-        let source = "structure Foo {\n    param a: Scalar = 1mm\n    param b: Scalar = 2mm\n    sub part: Bar\n    let x = part.\n}";
-        // Line 4, col 17 is after the dot on "    let x = part."
-        let items = compute_completions(source, &test_uri(), Position::new(4, 17));
+        // Cursor is after a dot — should only return member completions.
+        // Uses a defined sub-structure (Bracket) so push_all_members returns
+        // real members, making both positive and negative assertions meaningful.
+        let source = "structure Bracket {\n    param width: Scalar = 80mm\n    param height: Scalar = 100mm\n}\nstructure Assembly {\n    sub part: Bracket\n    let x = part.\n}";
+        // Line 6, col 17 is after the dot on "    let x = part."
+        let items = compute_completions(source, &test_uri(), Position::new(6, 17));
+
+        // Positive assertion: completion list must not be empty
+        assert!(
+            !items.is_empty(),
+            "after dot with defined structure should return completions"
+        );
+
+        // Positive assertion: at least one member variable should be returned
+        let var_labels: Vec<&str> = items
+            .iter()
+            .filter(|i| i.kind == Some(CompletionItemKind::VARIABLE))
+            .map(|v| v.label.as_str())
+            .collect();
+        assert!(
+            var_labels.contains(&"width"),
+            "should include Bracket's 'width' member, got: {:?}",
+            var_labels
+        );
 
         let keyword_labels: Vec<&str> = items
             .iter()
@@ -621,8 +640,6 @@ mod tests {
             "after dot should have no type names, got: {:?}",
             type_labels
         );
-        // Ideally this would also assert that Bar's members are returned,
-        // but Bar is undefined so we can only check exclusions here.
     }
 
     #[test]
