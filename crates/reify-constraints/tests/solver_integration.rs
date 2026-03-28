@@ -600,12 +600,12 @@ fn maximize_with_feasible_initial_point() {
             // Maximize should push x toward 50mm (auto param upper bound),
             // well above the 10mm initial point
             assert!(
-                si > 0.030,
-                "maximized x should be pushed well above initial 10mm, got {} m",
+                si > 0.048,
+                "maximized x should be near 50mm upper bound, got {} m",
                 si
             );
             assert!(
-                si <= 0.0505,
+                si <= 0.0502,
                 "maximized x should not exceed param bounds (50mm), got {} m",
                 si
             );
@@ -639,13 +639,7 @@ fn warm_start_falls_back_to_initial_when_optimizer_drifts_infeasible() {
 
     // Current value = 5.5mm — right in the feasible window
     let mut current = ValueMap::new();
-    current.insert(
-        x_id.clone(),
-        Value::Scalar {
-            si_value: 0.0055,
-            dimension: DimensionVector::LENGTH,
-        },
-    );
+    current.insert(x_id.clone(), mm(5.5));
 
     let problem = ResolutionProblem {
         auto_params: vec![AutoParam {
@@ -749,13 +743,7 @@ fn warm_start_optimizes_when_possible() {
 
     // Start at 25mm — feasible, but far from optimal
     let mut current = ValueMap::new();
-    current.insert(
-        x_id.clone(),
-        Value::Scalar {
-            si_value: 0.025,
-            dimension: DimensionVector::LENGTH,
-        },
-    );
+    current.insert(x_id.clone(), mm(25.0));
 
     let problem = ResolutionProblem {
         auto_params: vec![AutoParam {
@@ -822,13 +810,7 @@ fn warm_start_scales_iterations_with_dimension() {
     // All params start at 15mm (feasible, centered in constraint window)
     let mut current = ValueMap::new();
     for pid in &param_ids {
-        current.insert(
-            pid.clone(),
-            Value::Scalar {
-                si_value: 0.015,
-                dimension: DimensionVector::LENGTH,
-            },
-        );
+        current.insert(pid.clone(), mm(15.0));
     }
 
     let auto_params: Vec<_> = param_ids
@@ -899,20 +881,8 @@ fn warm_start_budget_exhaustion_stays_feasible() {
 
     // Both params start at 11mm — feasible, centered in constraint window
     let mut current = ValueMap::new();
-    current.insert(
-        p0_id.clone(),
-        Value::Scalar {
-            si_value: 0.011,
-            dimension: DimensionVector::LENGTH,
-        },
-    );
-    current.insert(
-        p1_id.clone(),
-        Value::Scalar {
-            si_value: 0.011,
-            dimension: DimensionVector::LENGTH,
-        },
-    );
+    current.insert(p0_id.clone(), mm(11.0));
+    current.insert(p1_id.clone(), mm(11.0));
 
     let problem = ResolutionProblem {
         auto_params: vec![
@@ -982,27 +952,9 @@ fn warm_start_feasible_no_objective_early_exit() {
 
     // All params start centered at 15mm — solidly feasible
     let mut current = ValueMap::new();
-    current.insert(
-        x_id.clone(),
-        Value::Scalar {
-            si_value: 0.015,
-            dimension: DimensionVector::LENGTH,
-        },
-    );
-    current.insert(
-        y_id.clone(),
-        Value::Scalar {
-            si_value: 0.015,
-            dimension: DimensionVector::LENGTH,
-        },
-    );
-    current.insert(
-        z_id.clone(),
-        Value::Scalar {
-            si_value: 0.015,
-            dimension: DimensionVector::LENGTH,
-        },
-    );
+    current.insert(x_id.clone(), mm(15.0));
+    current.insert(y_id.clone(), mm(15.0));
+    current.insert(z_id.clone(), mm(15.0));
 
     let problem = ResolutionProblem {
         auto_params: vec![
@@ -1069,13 +1021,7 @@ fn infeasible_initial_not_rescued_by_fallback() {
 
     // Current value = 5mm — NOT feasible (violates x > 15mm)
     let mut current = ValueMap::new();
-    current.insert(
-        x_id.clone(),
-        Value::Scalar {
-            si_value: 0.005,
-            dimension: DimensionVector::LENGTH,
-        },
-    );
+    current.insert(x_id.clone(), mm(5.0));
 
     let problem = ResolutionProblem {
         auto_params: vec![AutoParam {
@@ -1145,13 +1091,7 @@ fn multi_param_warm_start_with_objective() {
     // All params start at 30mm — feasible, well within constraint windows
     let mut current = ValueMap::new();
     for pid in [&p0_id, &p1_id, &p2_id] {
-        current.insert(
-            pid.clone(),
-            Value::Scalar {
-                si_value: 0.030, // 30mm
-                dimension: DimensionVector::LENGTH,
-            },
-        );
+        current.insert(pid.clone(), mm(30.0));
     }
 
     let problem = ResolutionProblem {
@@ -1244,21 +1184,9 @@ fn partial_feasibility_infeasible_when_unreachable() {
 
     let mut current = ValueMap::new();
     // p0 = 30mm — satisfies both p0 constraints (5mm < 30mm < 50mm)
-    current.insert(
-        p0_id.clone(),
-        Value::Scalar {
-            si_value: 0.030,
-            dimension: DimensionVector::LENGTH,
-        },
-    );
+    current.insert(p0_id.clone(), mm(30.0));
     // p1 = 10mm — violates p1 > 20mm (the single infeasible constraint)
-    current.insert(
-        p1_id.clone(),
-        Value::Scalar {
-            si_value: 0.010,
-            dimension: DimensionVector::LENGTH,
-        },
-    );
+    current.insert(p1_id.clone(), mm(10.0));
 
     let problem = ResolutionProblem {
         auto_params: vec![
@@ -1335,21 +1263,9 @@ fn partial_feasibility_solved_when_close_to_boundary() {
 
     let mut current = ValueMap::new();
     // p0 = 30mm — satisfies both p0 constraints (5mm < 30mm < 50mm)
-    current.insert(
-        p0_id.clone(),
-        Value::Scalar {
-            si_value: 0.030,
-            dimension: DimensionVector::LENGTH,
-        },
-    );
+    current.insert(p0_id.clone(), mm(30.0));
     // p1 = 19.5mm — just 0.5mm below the 20mm constraint boundary
-    current.insert(
-        p1_id.clone(),
-        Value::Scalar {
-            si_value: 0.0195,
-            dimension: DimensionVector::LENGTH,
-        },
-    );
+    current.insert(p1_id.clone(), mm(19.5));
 
     let problem = ResolutionProblem {
         auto_params: vec![
