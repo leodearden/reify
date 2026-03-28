@@ -1,0 +1,169 @@
+{
+  "task_id": "628",
+  "title": "Fix remaining shallow hash fields in test builder content_hash",
+  "files": [
+    "crates/reify-test-support/src/builders/trait_def.rs",
+    "crates/reify-test-support/src/builders/field.rs"
+  ],
+  "modules": [
+    "crates/reify-test-support/src/builders"
+  ],
+  "analysis": "The test builders in trait_def.rs and field.rs compute content_hash values synthetically (no source text). The content_hash must be internally consistent: semantically different values MUST produce different hashes. Task 602 fixed major gaps, but four shallow-hash bugs remain:\n\n1. DefaultKind::Param hashing ignores cell_type \u2014 the helper `default_kind_tag()` returns a static \"Param\" string regardless of cell_type. Fix: include `format!(\"Param:{}\", cell_type)` in the hash.\n\n2. DefaultKind::Let/Constraint hashing ignores inner declaration content \u2014 only the variant tag is hashed. The inner LetDecl/ConstraintDecl already carry a content_hash field from the parser. Fix: include `format!(\"Let:{}\", decl.content_hash)` and `format!(\"Constraint:{}\", decl.content_hash)`.\n\n3. TypeParam hashing ignores bounds and default \u2014 only `p.name` is hashed. Two TypeParams with same name but different trait bounds or different default types would produce identical hashes. Fix: build a richer hash string including bound trait_ref names and default type.\n\n4. Missing Sampled cross-test in field.rs \u2014 Analytical/Composed/Imported are cross-tested but Sampled is not covered. The current hash computation for Sampled uses a different code path (config key-value iteration vs expr.content_hash), so hashes should already differ, but test coverage is missing.\n\n5. [POST-REVIEW] DefaultKind::Param hashing ignores default_decl.content_hash \u2014 the `..` wildcard in the Param arm drops `default_decl`, so two Param defaults with the same cell_type but different default expressions (e.g., `param x: Real = 1.0` vs `param x: Real = 2.0`) produce identical hash strings. This is directly inconsistent with how Let and Constraint were fixed (both include decl.content_hash). Fix: `format!(\"Param:{}:{}\", cell_type, default_decl.content_hash)`.\n\nAll fixes are in the shared `compute_trait_content_hash` function and `default_kind_str` helper (trait_def.rs), plus a new test in field.rs. The `default_kind_tag` function must change from returning `&'static str` to returning `String`, which also requires updating the existing `default_kind_tag_covers_all_variants` test. The cross_builder_hash_equivalence test will continue to pass since both builders call the same shared function.",
+  "prerequisites": [],
+  "steps": [
+    {
+      "id": "step-1",
+      "type": "test",
+      "description": "Write failing test `trait_def_content_hash_differs_by_param_cell_type`: two TraitDefBuilder traits with same name, same default name 'd', both DefaultKind::Param but one with cell_type=Real and the other cell_type=Int. Assert content_hashes differ. Currently fails because default_kind_tag returns 'Param' for both.",
+      "status": "done",
+      "commit": "504de6d3"
+    },
+    {
+      "id": "step-2",
+      "type": "impl",
+      "description": "Replace `default_kind_tag` (returns `&'static str`) with `default_kind_str` (returns `String`). For Param variant: `format!(\"Param:{}\", cell_type)`. Keep Let/Constraint as static tags for now: `\"Let\".to_string()`, `\"Constraint\".to_string()`. Update `compute_trait_content_hash` call site and rename the existing `default_kind_tag_covers_all_variants` test to `default_kind_str_covers_all_variants`, updating assertions to check the new format strings.",
+      "status": "done",
+      "commit": "b2db5e9e"
+    },
+    {
+      "id": "step-3",
+      "type": "test",
+      "description": "Write failing test `trait_def_content_hash_differs_by_let_expr`: two traits with same name, both with a DefaultKind::Let default named 'x', but with different LetDecl content_hash values (use ContentHash::of_str(\"a\") vs ContentHash::of_str(\"b\")). Assert content_hashes differ. Currently fails because Let tag ignores inner decl.",
+      "status": "done",
+      "commit": "2b94b93f"
+    },
+    {
+      "id": "step-4",
+      "type": "impl",
+      "description": "Update `default_kind_str` Let arm: `DefaultKind::Let(decl) => format!(\"Let:{}\", decl.content_hash)`. This makes the step-3 test pass.",
+      "status": "done",
+      "commit": "67eaee18"
+    },
+    {
+      "id": "step-5",
+      "type": "test",
+      "description": "Write failing test `trait_def_content_hash_differs_by_constraint_expr`: two traits with same name, both with a DefaultKind::Constraint default named 'c', but with different ConstraintDecl content_hash values. Assert content_hashes differ.",
+      "status": "done",
+      "commit": "1f3aa629"
+    },
+    {
+      "id": "step-6",
+      "type": "impl",
+      "description": "Update `default_kind_str` Constraint arm: `DefaultKind::Constraint(decl) => format!(\"Constraint:{}\", decl.content_hash)`. This makes the step-5 test pass.",
+      "status": "done",
+      "commit": "2a253f50"
+    },
+    {
+      "id": "step-7",
+      "type": "test",
+      "description": "Write failing test `trait_def_content_hash_differs_by_type_param_bounds`: two traits with same name, each with a TypeParam named 'T', but one has bounds=[TraitBound{trait_ref: 'Rigid'}] and the other has bounds=[TraitBound{trait_ref: 'Flexible'}]. Assert content_hashes differ. Currently fails because only p.name is hashed.",
+      "status": "done",
+      "commit": "de0c460c"
+    },
+    {
+      "id": "step-8",
+      "type": "impl",
+      "description": "Update the `type_param_hashes` mapping in `compute_trait_content_hash` to include bounds: build a string like `\"T:bound:Rigid\"` by appending `:bound:{trait_ref.name}` for each bound. This makes step-7 pass.",
+      "status": "done",
+      "commit": "b6f0cb46"
+    },
+    {
+      "id": "step-9",
+      "type": "test",
+      "description": "Write failing test `trait_def_content_hash_differs_by_type_param_default`: two traits with same name, each with a TypeParam named 'T' with no bounds, but one has default=Some(Type::Real) and the other has default=Some(Type::Int). Assert content_hashes differ.",
+      "status": "done",
+      "commit": "05809474"
+    },
+    {
+      "id": "step-10",
+      "type": "impl",
+      "description": "Update the `type_param_hashes` mapping to also include the default: append `:default:{type}` when `p.default.is_some()`. This makes step-9 pass.",
+      "status": "done",
+      "commit": "81ded388"
+    },
+    {
+      "id": "step-11",
+      "type": "test",
+      "description": "Write test `compiled_field_hash_differs_sampled_vs_analytical_and_imported` in field.rs: build a Sampled field (with a config entry), an Analytical field (with a literal expr), and an Imported field, all with same name+domain+codomain types. Assert all three pairwise hashes differ. This test should pass with the existing implementation (Sampled uses a different code path), providing the missing coverage.",
+      "status": "done",
+      "commit": "3777ee78"
+    },
+    {
+      "id": "step-12",
+      "type": "test",
+      "description": "Update `cross_builder_hash_equivalence` test to add a case with a TypeParam that has bounds and default, ensuring both builders still produce identical hashes after the type_param_hashes fix.",
+      "status": "done",
+      "commit": "abb6850d"
+    },
+    {
+      "id": "step-13",
+      "type": "test",
+      "description": "Write failing test `trait_def_content_hash_differs_by_param_default_expr`: two TraitDefBuilder traits with same name, same default name 'd', both DefaultKind::Param with the same cell_type=Real, but with different default_decl.content_hash values (ContentHash::of_str(\"expr_a\") vs ContentHash::of_str(\"expr_b\"), simulating `param x: Real = 1.0` vs `param x: Real = 2.0`). Assert content_hashes differ. Currently fails because `default_kind_str` Param arm uses `format!(\"Param:{}\", cell_type)` with `..` ignoring `default_decl.content_hash`.",
+      "status": "done",
+      "commit": "f7a1c435"
+    },
+    {
+      "id": "step-14",
+      "type": "impl",
+      "description": "Fix `default_kind_str` Param arm to include `default_decl.content_hash`: change `DefaultKind::Param { cell_type, .. } => format!(\"Param:{}\", cell_type)` to `DefaultKind::Param { cell_type, default_decl } => format!(\"Param:{}:{}\", cell_type, default_decl.content_hash)`. Also update the `default_kind_str_covers_all_variants` test assertion from `\"Param:Real\"` to `format!(\"Param:Real:{}\", hash)` to match the new format. This makes step-13 pass and brings Param into consistency with Let and Constraint.",
+      "status": "done",
+      "commit": "71dc50f9"
+    }
+  ],
+  "design_decisions": [
+    {
+      "decision": "Rename default_kind_tag to default_kind_str and change return type from &'static str to String",
+      "rationale": "The function now needs to include dynamic content (cell_type, decl.content_hash) in its output, which requires owned String. The name change signals the richer semantics."
+    },
+    {
+      "decision": "Use decl.content_hash (the parser-computed hash on LetDecl/ConstraintDecl) rather than recursively hashing inner fields",
+      "rationale": "LetDecl and ConstraintDecl already carry a content_hash field computed by the tree-sitter parser from source text. Using it directly is simple, correct, and consistent with how the real compiler chains hashes."
+    },
+    {
+      "decision": "Build type_param hash string with inline markers (:bound:, :default:) rather than separate combine() calls",
+      "rationale": "Matches the existing pattern in requirement_kind_str and default_kind_str where a single formatted string is hashed. Simpler, fewer allocations, and maintains the convention of one ContentHash::of_str per element."
+    },
+    {
+      "decision": "Sampled cross-test is test-only (no impl fix needed)",
+      "rationale": "The Sampled hash computation already uses a distinct code path (config key-value iteration via combine_all) that produces different hashes from Analytical (expr.content_hash) and Imported (ContentHash::of(&[0u8])). The gap is missing test coverage, not missing implementation."
+    },
+    {
+      "decision": "Include default_decl.content_hash in Param arm of default_kind_str, consistent with Let and Constraint",
+      "rationale": "ParamDecl carries a content_hash field (reify_syntax::ParamDecl.content_hash) just like LetDecl and ConstraintDecl. The original Param fix (step-2) only added cell_type discrimination but missed the expression content. Two params with same type but different default expressions (e.g., `= 1.0` vs `= 2.0`) would produce identical hash strings, causing stale cache hits in the incremental evaluation engine. The format becomes `Param:{cell_type}:{content_hash}` matching the `Let:{content_hash}` and `Constraint:{content_hash}` patterns."
+    }
+  ],
+  "reuse": [
+    {
+      "what": "compute_trait_content_hash shared function",
+      "where": "crates/reify-test-support/src/builders/trait_def.rs:30-58",
+      "how": "Both TraitDefBuilder and CompiledTraitBuilder use this. All fixes go here, both builders benefit."
+    },
+    {
+      "what": "requirement_kind_str pattern (format!(\"{variant}:{inner}\"))",
+      "where": "crates/reify-test-support/src/builders/trait_def.rs:17-23",
+      "how": "Template for the new default_kind_str function \u2014 same style of variant:content formatting."
+    },
+    {
+      "what": "Existing test patterns (TraitDefBuilder::new + add_default + build + assert_ne hashes)",
+      "where": "crates/reify-test-support/src/builders/trait_def.rs:443-479",
+      "how": "Clone and adapt these patterns for the new tests. Same DefaultKind construction, same assertion structure."
+    },
+    {
+      "what": "literal() helper for building CompiledExpr in tests",
+      "where": "crates/reify-test-support/src/builders/expr.rs (via `crate::builders::literal`)",
+      "how": "Used in field.rs tests to create CompiledExpr values for field sources."
+    },
+    {
+      "what": "ContentHash::of_str for synthetic decl content_hash in test data",
+      "where": "crates/reify-types/src/hash.rs",
+      "how": "Used to create distinct content_hash values for LetDecl/ConstraintDecl/ParamDecl in test builders, as done in existing test code (e.g., line 265, 281)."
+    },
+    {
+      "what": "Existing ParamDecl construction pattern in default_kind_str_covers_all_variants test",
+      "where": "crates/reify-test-support/src/builders/trait_def.rs:265-276",
+      "how": "Direct template for building ParamDecl with distinct content_hash in step-13 test. Same field structure, just vary the content_hash value."
+    }
+  ],
+  "_session_id": "628-8d9a2506",
+  "_created_at": "2026-03-28T09:46:15.619487+00:00"
+}
