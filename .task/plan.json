@@ -1,0 +1,217 @@
+{
+  "task_id": "482",
+  "title": "LSP: implement position-aware completion narrowing",
+  "files": [
+    "crates/reify-lsp/src/completion.rs",
+    "crates/reify-lsp/src/analysis.rs"
+  ],
+  "modules": [
+    "crates/reify-lsp/src"
+  ],
+  "analysis": "The current `compute_completions` ignores the `position` parameter (named `_position`) and returns a flat merged list of all keywords + builtins + types + member names + structure names regardless of cursor location. Task #481 added 6 `#[ignore]`-d tests that assert context-sensitive narrowing. This task implements a `CursorContext` enum and `determine_context` function to detect the cursor's syntactic context, then refactors `compute_completions` to dispatch on that context.\n\nKey existing infrastructure:\n- `position_to_offset(source, position)` in convert.rs converts LSP Position to byte offset\n- `find_word_at_offset(source, offset)` in convert.rs extracts identifier at offset\n- `AnalysisContext::enclosing_structure_name_at(offset)` in analysis.rs detects if offset is inside a structure/occurrence span\n- `AnalysisContext::member_names()` returns ALL members across ALL templates\n- `AnalysisContext::structure_names()` returns structure/occurrence metadata\n- `StructureDef.span` and `OccurrenceDef.span` have byte-offset start/end for containment checks\n\nConflict identified: Pre-existing test `completions_include_keywords` at Position(1,0) inside the bracket body asserts `structure` keyword is present. The task-481 test `completion_inside_body_excludes_top_level_keywords` asserts `structure` is NOT present inside a body. Resolution: update the pre-existing test to remove the `structure` assertion at a body position (it's testing keyword presence, not position awareness).\n\nKeyword partitioning adds new keywords (fn, trait, enum, occurrence, purpose, minimize, maximize, port, connect, where) that weren't in the original KEYWORDS array. StructureBody context gets BODY_KEYWORDS + EXPR_KEYWORDS = 18 keywords, easily exceeding the >= 12 threshold in the pre-existing test.",
+  "prerequisites": [
+    {
+      "id": "pre-1",
+      "description": "Add `member_names_for_structure(name: &str)` method to AnalysisContext that returns only members from a specific structure/occurrence template, with unit test. This is needed for scoped member completions in StructureBody and Expression contexts.",
+      "status": "done",
+      "commit": "c0859c44",
+      "tests": [
+        "analysis::tests::member_names_for_structure_returns_scoped_members"
+      ]
+    },
+    {
+      "id": "pre-2",
+      "description": "Update pre-existing `completions_include_keywords` test: remove the `assert!(keyword_labels.contains(&\"structure\"))` assertion since Position(1,0) is inside the body where `structure` keyword should not appear. Keep the >= 12 count assertion and the param/let/constraint assertions. Add a comment explaining the position is inside the body.",
+      "status": "done",
+      "commit": "67f6cfa6",
+      "tests": []
+    }
+  ],
+  "steps": [
+    {
+      "id": "step-1",
+      "type": "test",
+      "description": "Write unit tests for `determine_context` covering TopLevel (cursor outside all structure spans) and StructureBody (cursor inside a structure span on a blank/indent-only line). Tests use bracket source with known line positions.",
+      "status": "done",
+      "commit": "62ee67c5"
+    },
+    {
+      "id": "step-2",
+      "type": "impl",
+      "description": "Implement `CursorContext` enum (TopLevel, StructureBody, Expression, DotAccess, TypePosition) and `determine_context` function with TopLevel and StructureBody detection. Add keyword constant arrays: TOP_LEVEL_KEYWORDS, BODY_KEYWORDS, EXPR_KEYWORDS. Use `position_to_offset` and `enclosing_structure_name_at` for span containment. Default to StructureBody if inside a structure and no more specific context matches.",
+      "status": "done",
+      "commit": "b7be2c7e"
+    },
+    {
+      "id": "step-3",
+      "type": "test",
+      "description": "Write unit tests for `determine_context` detecting Expression context: cursor after `=` on a let line, cursor inside a constraint expression (after the keyword and first identifier), cursor after `=` on a param default.",
+      "status": "done",
+      "commit": "02ddc084"
+    },
+    {
+      "id": "step-4",
+      "type": "impl",
+      "description": "Add Expression detection to `determine_context`: scan the current line prefix for `=` character \u2014 if found and cursor is past it, return Expression. Also detect constraint lines: if line (trimmed) starts with `constraint` and cursor is past the keyword, return Expression.",
+      "status": "done",
+      "commit": "b7be2c7e"
+    },
+    {
+      "id": "step-5",
+      "type": "test",
+      "description": "Write unit tests for `determine_context` detecting DotAccess: cursor immediately after a `.` character, and cursor with whitespace after a `.` character.",
+      "status": "done",
+      "commit": "5e8aefa2"
+    },
+    {
+      "id": "step-6",
+      "type": "impl",
+      "description": "Add DotAccess detection to `determine_context`: check if the byte immediately before the cursor offset (or after stripping trailing whitespace) is `.`. Scan backward from the dot to extract the object word using `find_word_at_offset`.",
+      "status": "done",
+      "commit": "b7be2c7e"
+    },
+    {
+      "id": "step-7",
+      "type": "test",
+      "description": "Write unit tests for `determine_context` detecting TypePosition: cursor after `: ` in a param declaration, cursor after `: ` in a let declaration with type annotation.",
+      "status": "done",
+      "commit": "b8f2221a"
+    },
+    {
+      "id": "step-8",
+      "type": "impl",
+      "description": "Add TypePosition detection to `determine_context`: scan current line prefix backward from cursor. If a `:` is found (with optional whitespace) and there is no `=` between the `:` and cursor, and the line starts with a declaration keyword (param, let, sub), return TypePosition. This check must run before the Expression check since `: ` could be mistaken for body context.",
+      "status": "done",
+      "commit": "b7be2c7e"
+    },
+    {
+      "id": "step-9",
+      "type": "test",
+      "description": "Un-ignore `completion_top_level_excludes_body_keywords` and `completion_inside_body_excludes_top_level_keywords` tests (remove `#[ignore]` attributes). These should now fail because compute_completions still returns everything.",
+      "status": "done",
+      "commit": "b217764a"
+    },
+    {
+      "id": "step-10",
+      "type": "impl",
+      "description": "Refactor `compute_completions` to call `determine_context`, then match on the result. For TopLevel: push TOP_LEVEL_KEYWORDS, type names, structure names, and builtin functions (for backward compat with empty-source test). For StructureBody: push BODY_KEYWORDS + EXPR_KEYWORDS, member names (scoped via member_names_for_structure), structure names, builtin functions, and type names. Rename `_position` to `position`.",
+      "status": "done",
+      "commit": "7e8a9b04"
+    },
+    {
+      "id": "step-11",
+      "type": "test",
+      "description": "Un-ignore `completion_expression_excludes_declaration_keywords` and `completion_constraint_expr_excludes_declaration_keywords` tests.",
+      "status": "done",
+      "commit": "c5046612"
+    },
+    {
+      "id": "step-12",
+      "type": "impl",
+      "description": "Add Expression context branch to compute_completions: push EXPR_KEYWORDS, member names (scoped if structure_idx available, otherwise all), builtin functions, structure names, and type names. No declaration keywords (param, let, constraint, sub) or top-level keywords.",
+      "status": "done",
+      "commit": "7e8a9b04"
+    },
+    {
+      "id": "step-13",
+      "type": "test",
+      "description": "Un-ignore `completion_after_dot_returns_only_members` test.",
+      "status": "done",
+      "commit": "c451d63c"
+    },
+    {
+      "id": "step-14",
+      "type": "impl",
+      "description": "Add DotAccess context branch to compute_completions: push ONLY member names (all members as a first pass \u2014 ideally filtered to the referenced structure's members, but all members is acceptable per task description). No keywords, no builtins, no types, no structure names.",
+      "status": "done",
+      "commit": "7e8a9b04"
+    },
+    {
+      "id": "step-15",
+      "type": "test",
+      "description": "Un-ignore `completion_type_position_returns_types_and_structs` test.",
+      "status": "done",
+      "commit": "db97518e"
+    },
+    {
+      "id": "step-16",
+      "type": "impl",
+      "description": "Add TypePosition context branch to compute_completions: push type names (CLASS kind) and structure names (STRUCT kind). No keywords, no builtins, no member variables.",
+      "status": "done",
+      "commit": "7e8a9b04"
+    }
+  ],
+  "design_decisions": [
+    {
+      "decision": "Include builtin functions in TopLevel context",
+      "rationale": "Pre-existing test `completions_on_empty_source_still_include_keywords_and_builtins` asserts builtins are non-empty for empty source (which is TopLevel context). Including builtins at TopLevel maintains backward compatibility without harm \u2014 clients filter anyway."
+    },
+    {
+      "decision": "Include type names in StructureBody context",
+      "rationale": "Pre-existing test `completions_include_type_names` at Position(1,0) inside body expects type names. Type annotations (after `:`) occur inside structure bodies, so showing types at the StructureBody level is reasonable \u2014 TypePosition provides more precise filtering when the cursor is actually after a colon."
+    },
+    {
+      "decision": "Include EXPR_KEYWORDS in StructureBody context",
+      "rationale": "Expression keywords (if, then, else, and, or, not, true, false) are used inside body declarations. Including them in StructureBody keeps the pre-existing keyword count >= 12 and provides useful completions when the user hasn't yet typed enough for the heuristic to detect Expression context."
+    },
+    {
+      "decision": "Update pre-existing completions_include_keywords test to remove structure assertion",
+      "rationale": "This test is at Position(1,0) inside the bracket body. The task-481 test explicitly asserts `structure` should NOT appear inside a body. The pre-existing test's `structure` assertion was written for the flat (non-position-aware) implementation. Removing just that one assertion preserves the test's intent (verify body keywords are present) while being compatible with position-aware narrowing."
+    },
+    {
+      "decision": "DotAccess detection checks byte immediately before cursor and handles trailing whitespace",
+      "rationale": "Users may type `obj. ` (dot + space) before triggering completion. Scanning backward through whitespace to find the dot prevents losing the DotAccess context in that common editing pattern."
+    },
+    {
+      "decision": "TypePosition detection looks for `:` without intervening `=` on the current line",
+      "rationale": "A colon followed by optional whitespace without a subsequent `=` indicates a type annotation position (e.g., `param x: `). If `=` appears after the `:`, the cursor is in the default value expression, not the type annotation. This heuristic is cheap and handles the common `param name: Type = default` pattern."
+    },
+    {
+      "decision": "Constraint lines detected by trimmed line prefix starting with 'constraint' keyword",
+      "rationale": "Constraints don't have `=` to signal expression position. Instead, everything after `constraint ` on the line is an expression. Detecting the keyword prefix is simple and reliable for the current grammar."
+    },
+    {
+      "decision": "DotAccess returns all member names rather than filtering to the referenced structure",
+      "rationale": "Resolving the type of the object before the dot (e.g., determining that `part` is of type `Bar`) requires type inference which is beyond the current AnalysisContext capabilities. Returning all members is an acceptable first pass per the task description: 'even just all members is an improvement over everything'."
+    }
+  ],
+  "reuse": [
+    {
+      "what": "position_to_offset(source, position)",
+      "where": "crates/reify-lsp/src/convert.rs",
+      "how": "Convert LSP Position to byte offset for span containment checks and line prefix analysis in determine_context"
+    },
+    {
+      "what": "find_word_at_offset(source, offset)",
+      "where": "crates/reify-lsp/src/convert.rs",
+      "how": "Extract the object word before a dot in DotAccess context detection"
+    },
+    {
+      "what": "AnalysisContext::enclosing_structure_name_at(offset)",
+      "where": "crates/reify-lsp/src/analysis.rs",
+      "how": "Determine if cursor is inside a structure/occurrence span and get the name for scoped member lookup"
+    },
+    {
+      "what": "AnalysisContext::member_names()",
+      "where": "crates/reify-lsp/src/analysis.rs",
+      "how": "Fallback for member completions when structure scope is unknown (e.g., DotAccess without type resolution)"
+    },
+    {
+      "what": "AnalysisContext::structure_names()",
+      "where": "crates/reify-lsp/src/analysis.rs",
+      "how": "Provide structure name completions in TopLevel, StructureBody, Expression, and TypePosition contexts"
+    },
+    {
+      "what": "StructureDef.span / OccurrenceDef.span (SourceSpan with start/end byte offsets)",
+      "where": "crates/reify-syntax/src/lib.rs",
+      "how": "Already used by enclosing_structure_name_at; provides structure boundary detection for context determination"
+    },
+    {
+      "what": "reify_test_support::bracket_source()",
+      "where": "crates/reify-test-support/src/fixtures.rs",
+      "how": "Used by existing tests and will be used in new determine_context unit tests for known line positions"
+    }
+  ],
+  "_session_id": "482-38e24006",
+  "_created_at": "2026-03-28T04:05:59.043823+00:00"
+}
