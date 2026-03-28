@@ -64,7 +64,7 @@
       "id": "step-7",
       "type": "test",
       "description": "Write orient_axis_angle_non_unit_axis_normalizes: axis=[2,0,0] with angle=\u03c0/2 should produce the same quaternion as axis=[1,0,0] (cos(\u03c0/4), sin(\u03c0/4), 0, 0). Verifies axis normalization works for non-unit vectors.",
-      "status": "pending",
+      "status": "done",
       "commit": null
     },
     {

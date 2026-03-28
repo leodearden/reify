@@ -3960,6 +3960,24 @@ mod tests {
     }
 
     #[test]
+    fn orient_axis_angle_non_unit_axis_normalizes() {
+        // axis=[2,0,0] with angle=π/2 should produce the same quaternion as axis=[1,0,0].
+        // Verifies that orient_axis_angle normalizes the axis internally.
+        // Expected: (cos(π/4), sin(π/4), 0, 0)
+        let axis = Value::Tensor(vec![Value::Real(2.0), Value::Real(0.0), Value::Real(0.0)]);
+        let angle = Value::Real(std::f64::consts::FRAC_PI_2);
+        let cos_pi_4 = std::f64::consts::FRAC_PI_4.cos();
+        let sin_pi_4 = std::f64::consts::FRAC_PI_4.sin();
+        assert_orientation_approx!(
+            eval_builtin("orient_axis_angle", &[axis, angle]),
+            cos_pi_4,
+            sin_pi_4,
+            0.0,
+            0.0
+        );
+    }
+
+    #[test]
     fn orient_axis_angle_nan_angle_returns_undef() {
         // NaN angle should produce Undef (currently caught by normalize_quaternion).
         let axis = Value::Tensor(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
