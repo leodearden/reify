@@ -10970,8 +10970,8 @@
             "crates/reify-runtime/tests/concurrent_eval.rs"
           ],
           "modules": [
-            "crates/reify-runtime/src",
-            "crates/reify-runtime/tests"
+            "crates/reify-eval",
+            "crates/reify-runtime"
           ]
         },
         "updatedAt": "2026-03-28T09:50:31.388Z"
