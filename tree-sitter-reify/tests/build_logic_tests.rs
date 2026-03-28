@@ -446,3 +446,53 @@ fn test_stamp_path_is_profile_independent() {
         "release profile: must regenerate after grammar change"
     );
 }
+
+#[test]
+fn test_stamp_shared_across_simulated_profiles() {
+    // Prove that identical hash content at any stamp location yields identical
+    // staleness decisions, and that stamp presence is per-location.
+    let dir = tempfile::tempdir().unwrap();
+    let grammar = dir.path().join("grammar.js");
+    std::fs::write(&grammar, b"module.exports = grammar({name: 'shared'});").unwrap();
+    let src_dir = make_populated_src_dir(dir.path());
+    let output_paths: Vec<_> = EXPECTED_OUTPUTS.iter().map(|n| src_dir.join(n)).collect();
+    let output_refs: Vec<&Path> = output_paths.iter().map(|p| p.as_path()).collect();
+
+    let hash = content_hash(&grammar);
+
+    // Two separate OUT_DIR-like paths
+    let out_dir_1 = dir.path().join("target/debug/build/out");
+    let out_dir_2 = dir.path().join("target/release/build/out");
+    std::fs::create_dir_all(&out_dir_1).unwrap();
+    std::fs::create_dir_all(&out_dir_2).unwrap();
+
+    let stamp_1 = out_dir_1.join("grammar_hash.stamp");
+    let stamp_2 = out_dir_2.join("grammar_hash.stamp");
+
+    // Write stamp to only OUT_DIR_1
+    stamp_write(&stamp_1, &hash);
+
+    // OUT_DIR_1 has matching stamp — no regeneration needed
+    assert!(
+        !needs_generate(&hash, &stamp_1, &output_refs),
+        "OUT_DIR_1: must NOT regenerate when stamp matches"
+    );
+    // OUT_DIR_2 has no stamp — regeneration needed
+    assert!(
+        needs_generate(&hash, &stamp_2, &output_refs),
+        "OUT_DIR_2: must regenerate when stamp is absent"
+    );
+
+    // Now write the same stamp to OUT_DIR_2
+    stamp_write(&stamp_2, &hash);
+
+    // Both locations now report no regeneration needed
+    assert!(
+        !needs_generate(&hash, &stamp_1, &output_refs),
+        "OUT_DIR_1: still must NOT regenerate"
+    );
+    assert!(
+        !needs_generate(&hash, &stamp_2, &output_refs),
+        "OUT_DIR_2: must NOT regenerate after stamp written with matching hash"
+    );
+}
