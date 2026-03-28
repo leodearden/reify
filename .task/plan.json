@@ -11,7 +11,7 @@
     "gui/src",
     "scripts"
   ],
-  "analysis": "The 6 payload-bearing handlers in subscribeToClaudeEvents (lines 170-193 of bridge.ts) cast event.payload with compile-time-only `as` assertions. If the Rust sidecar emits null, undefined, or a structurally wrong payload, undefined values propagate silently into the handler callback. The fix adds: (1) a shared isRecord() helper to reject null/undefined/non-object/array payloads, (2) per-handler typeof checks on required string fields (id, content, tool_name, message), and (3) tool_input normalization in the tool_call handler to coerce null/array to {}. Existing happy-path tests in claudeBridge.test.ts already verify correct mapping; new tests cover the malformed-payload edge cases. The meshManager.ts validateMeshData pattern (console.warn + early return) is the project convention for runtime data guards.\n\nPost-review update (round 2): Two new blocking issues \u2014 (1) main advanced again past the branch, requiring another rebase, and (2) the mkdir-based lock fallback in tree-sitter-generate.sh has a stat-failure bypass: when both `stat -c %Y` and `stat -f %m` fail (e.g. NFS, BusyBox), `|| echo 0` produces epoch-0, making `_lock_age` always >> 120, which unconditionally removes active locks. Fix: use empty sentinel for failed stat, skip stale-removal when mtime is unknown.\n\nPost-review update (round 3): Two blocking issues \u2014 (1) main advanced again, requiring yet another rebase, and (2) scripts/test_tree_sitter_generate.sh calls `sha256sum` directly on lines 51 and 111, which fails on macOS where only `shasum -a 256` is available. The generate script already has a portable `compute_sha256()` helper but the test script bypasses it. With `set -euo pipefail` active, the test script aborts immediately on macOS. Fix: define a portable `compute_hash()` helper in the test script mirroring the generate script's `compute_sha256()` logic, and replace both bare `sha256sum` calls.",
+  "analysis": "The 6 payload-bearing handlers in subscribeToClaudeEvents (lines 170-193 of bridge.ts) cast event.payload with compile-time-only `as` assertions. If the Rust sidecar emits null, undefined, or a structurally wrong payload, undefined values propagate silently into the handler callback. The fix adds: (1) a shared isRecord() helper to reject null/undefined/non-object/array payloads, (2) per-handler typeof checks on required string fields (id, content, tool_name, message), and (3) tool_input normalization in the tool_call handler to coerce null/array to {}. Existing happy-path tests in claudeBridge.test.ts already verify correct mapping; new tests cover the malformed-payload edge cases. The meshManager.ts validateMeshData pattern (console.warn + early return) is the project convention for runtime data guards.\n\nPost-review update (round 2): Two new blocking issues \u2014 (1) main advanced again past the branch, requiring another rebase, and (2) the mkdir-based lock fallback in tree-sitter-generate.sh has a stat-failure bypass: when both `stat -c %Y` and `stat -f %m` fail (e.g. NFS, BusyBox), `|| echo 0` produces epoch-0, making `_lock_age` always >> 120, which unconditionally removes active locks. Fix: use empty sentinel for failed stat, skip stale-removal when mtime is unknown.\n\nPost-review update (round 3): Two blocking issues \u2014 (1) main advanced again, requiring yet another rebase, and (2) scripts/test_tree_sitter_generate.sh calls `sha256sum` directly on lines 51 and 111, which fails on macOS where only `shasum -a 256` is available. The generate script already has a portable `compute_sha256()` helper but the test script bypasses it. With `set -euo pipefail` active, the test script aborts immediately on macOS. Fix: define a portable `compute_hash()` helper in the test script mirroring the generate script's `compute_sha256()` logic, and replace both bare `sha256sum` calls.\n\nPost-review update (round 4): merge_ff_failed again \u2014 main advanced during the merge attempt. Branch is already rebased on latest origin/main (verified: origin/main is ancestor of HEAD). This is a timing race during the merge window, not a code issue. Adding rebase-retry step.",
   "prerequisites": [],
   "steps": [
     {
@@ -104,6 +104,13 @@
       "description": "[review-fix: merge_ff_failed] Rebase worktree branch onto latest origin/main (main advanced again since last rebase in step-11). Fetch origin, rebase task/569 onto origin/main, resolve any conflicts. The task's changes span gui/src/bridge.ts, gui/src/__tests__/claudeBridge.test.ts, scripts/tree-sitter-generate.sh, and scripts/test_tree_sitter_generate.sh. Verify tests still pass after rebase.",
       "status": "done",
       "commit": "30581f5f"
+    },
+    {
+      "id": "step-14",
+      "type": "impl",
+      "description": "[review-fix: merge_ff_failed] Rebase worktree branch onto latest origin/main (main advanced again during the merge window since step-13). Fetch origin, rebase task/569 onto origin/main, resolve any conflicts. The branch is already verified as rebased on origin/main (origin/main is ancestor of HEAD) so this may be a no-op rebase \u2014 but re-verify after fetch in case main advanced further. The task's changes span gui/src/bridge.ts, gui/src/__tests__/claudeBridge.test.ts, scripts/tree-sitter-generate.sh, and scripts/test_tree_sitter_generate.sh. Verify tests still pass after rebase.",
+      "status": "done",
+      "commit": "d6b1fcb0"
     }
   ],
   "design_decisions": [
@@ -176,6 +183,6 @@
     }
   ],
   "_session_id": "569-f3331dee",
-  "_created_at": "2026-03-28T16:38:11.699107+00:00",
+  "_created_at": "2026-03-28T16:50:14.955484+00:00",
   "_schema_version": 1
 }

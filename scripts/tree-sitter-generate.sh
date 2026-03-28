@@ -77,7 +77,10 @@ LOCK_DIR="src/.generate.lock.d"
 
 if command -v flock >/dev/null 2>&1; then
     exec 9>"$LOCK_FILE"
-    flock -x 9
+    if ! flock -x -w 120 9; then
+        echo "ERROR: could not acquire flock within 120s" >&2
+        exit 1
+    fi
 else
     # Portable mkdir-based advisory lock (atomic on POSIX).
     # Retry with backoff; stale locks are cleaned up after 120s.
