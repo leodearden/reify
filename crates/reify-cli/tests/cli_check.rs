@@ -104,6 +104,37 @@ fn check_compile_error_exits_failure() {
 }
 
 #[test]
+fn check_indeterminate_constraint_exits_success() {
+    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
+        .args(["check", &fixture_path("bracket_indeterminate.ri")])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .expect("failed to execute reify binary");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        output.status.success(),
+        "reify check should exit 0 when constraints are indeterminate (not violated).\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("INDETERMINATE"),
+        "stdout should contain 'INDETERMINATE', got: {stdout}"
+    );
+    assert!(
+        !stdout.contains("VIOLATED"),
+        "stdout should NOT contain 'VIOLATED', got: {stdout}"
+    );
+    assert!(
+        stdout.contains("All constraints satisfied"),
+        "stdout should contain 'All constraints satisfied', got: {stdout}"
+    );
+}
+
+#[test]
 fn check_nonexistent_file_exits_failure() {
     let output = Command::new(env!("CARGO_BIN_EXE_reify"))
         .args(["check", "nonexistent_file_that_does_not_exist.ri"])
