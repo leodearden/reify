@@ -4,6 +4,15 @@ use reify_compiler::{
     CompiledTrait, DefaultKind, RequirementKind, TraitDefault, TraitRequirement,
 };
 
+/// Returns a static tag string for a `DefaultKind` variant.
+fn default_kind_tag(kind: &DefaultKind) -> &'static str {
+    match kind {
+        DefaultKind::Param { .. } => "Param",
+        DefaultKind::Let(_) => "Let",
+        DefaultKind::Constraint(_) => "Constraint",
+    }
+}
+
 /// Returns a hash-friendly string representation for a `RequirementKind`.
 fn requirement_kind_str(kind: &RequirementKind) -> String {
     match kind {
