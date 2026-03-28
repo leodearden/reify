@@ -228,6 +228,7 @@ impl Value {
                 .first()
                 .map(|v| v.dimension())
                 .unwrap_or(DimensionVector::DIMENSIONLESS),
+            Value::Frame { .. } => DimensionVector::DIMENSIONLESS,
             _ => DimensionVector::DIMENSIONLESS,
         }
     }
