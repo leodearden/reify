@@ -13195,7 +13195,17 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-runtime/src/concurrent.rs",
+            "crates/reify-runtime/Cargo.toml"
+          ],
+          "modules": [
+            "crates/reify-runtime/src",
+            "crates/reify-runtime"
+          ]
+        }
       },
       {
         "id": 640,
@@ -13206,7 +13216,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-cli/tests/cli_build.rs"
+          ],
+          "modules": [
+            "crates/reify-cli/tests"
+          ]
+        }
       },
       {
         "id": 641,
