@@ -13552,6 +13552,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 684,
+        "title": "Expand field operation test coverage: divergence, curl, and non-Lambda variants",
+        "description": "The gradient/divergence/curl match arm covers all three operations but only gradient has a non-Field test. Missing tests:\n\n1. Add divergence_non_field_returns_undef and curl_non_field_returns_undef mirroring the gradient test\n2. Add sample_field_with_non_lambda_slot_returns_undef using Value::Int(42) as the lambda slot (current test only uses Value::Undef)\n\nThese ensure the match arm and else branch handle all non-Lambda/non-Field values, not just the specific cases currently tested.\n\nmemory_hints: search \"gradient divergence curl field tests\" in lambda_eval_tests.rs",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -13564,7 +13575,7 @@
       ],
       "created": "2026-03-28T04:59:44.348Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-28T05:00:10.317Z"
+      "updated": "2026-03-28T05:00:12.651Z"
     }
   }
 }
