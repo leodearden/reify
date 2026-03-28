@@ -368,6 +368,50 @@ describe('subscribeToClaudeEvents', () => {
     });
   });
 
+  it('extra unknown fields in tool_call with complex tool_input are not forwarded', async () => {
+    let capturedHandler: ((event: { payload: unknown }) => void) | undefined;
+    mockListen.mockImplementation(async (eventName, handler) => {
+      if (eventName === 'claude-tool-call') {
+        capturedHandler = handler as (event: { payload: unknown }) => void;
+      }
+      return vi.fn();
+    });
+
+    const handler = vi.fn();
+    await subscribeToClaudeEvents(handler);
+
+    const complexInput = {
+      path: '/main.ri',
+      operations: [{ type: 'insert', line: 5 }],
+      options: { backup: true, tags: ['draft'] },
+    };
+
+    // Simulate tool_call with deeply nested tool_input AND extra top-level fields
+    capturedHandler!({
+      payload: {
+        id: 'tc-complex',
+        tool_name: 'edit_file',
+        tool_input: complexInput,
+        _trace_id: 'abc-123',
+        _timestamp: 1711640000,
+      },
+    });
+
+    expect(handler).toHaveBeenCalledWith({
+      type: 'tool_call',
+      id: 'tc-complex',
+      tool_name: 'edit_file',
+      tool_input: complexInput,
+    });
+    // Verify the complex nested tool_input is preserved intact
+    const received = handler.mock.calls[0][0];
+    expect(received.tool_input.operations).toEqual([{ type: 'insert', line: 5 }]);
+    expect(received.tool_input.options).toEqual({ backup: true, tags: ['draft'] });
+    // Verify extra top-level fields are excluded
+    expect(received).not.toHaveProperty('_trace_id');
+    expect(received).not.toHaveProperty('_timestamp');
+  });
+
   it('payload type field does not override mapped event type', async () => {
     let capturedHandler: ((event: { payload: unknown }) => void) | undefined;
     mockListen.mockImplementation(async (eventName, handler) => {
