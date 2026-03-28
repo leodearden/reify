@@ -529,13 +529,7 @@ fn optimize_with_feasible_initial_point() {
 
     // Set current value to 25mm — already feasible (between 2mm and 50mm)
     let mut current = ValueMap::new();
-    current.insert(
-        thickness_id.clone(),
-        Value::Scalar {
-            si_value: 0.025,
-            dimension: DimensionVector::LENGTH,
-        },
-    );
+    current.insert(thickness_id.clone(), mm(25.0));
 
     let problem = ResolutionProblem {
         auto_params: vec![AutoParam {
@@ -585,13 +579,7 @@ fn maximize_with_feasible_initial_point() {
 
     // Set current value to 10mm — already feasible
     let mut current = ValueMap::new();
-    current.insert(
-        x_id.clone(),
-        Value::Scalar {
-            si_value: 0.010,
-            dimension: DimensionVector::LENGTH,
-        },
-    );
+    current.insert(x_id.clone(), mm(10.0));
 
     let problem = ResolutionProblem {
         auto_params: vec![AutoParam {
