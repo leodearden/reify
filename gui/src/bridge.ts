@@ -142,19 +142,20 @@ export const MESSAGE_CONTEXT_FIELD_MAP: Record<keyof Required<MessageContext>, s
   attachedContexts: 'attached_contexts',
 };
 
+/** Convert a camelCase MessageContext to its snake_case wire representation using MESSAGE_CONTEXT_FIELD_MAP. */
+export function mapContextToWire(ctx: MessageContext): Record<string, unknown> {
+  const wire: Record<string, unknown> = {};
+  for (const [camel, snake] of Object.entries(MESSAGE_CONTEXT_FIELD_MAP)) {
+    wire[snake] = ctx[camel as keyof MessageContext];
+  }
+  return wire;
+}
+
 /** Send a message to the Claude sidecar. Maps camelCase context to snake_case for Rust. */
 export async function claudeSendMessage(text: string, context?: MessageContext): Promise<void> {
   return invoke('claude_send_message', {
     text,
-    context: context
-      ? {
-          selected_entity: context.selectedEntity,
-          diagnostics: context.diagnostics,
-          constraints: context.constraints,
-          current_file: context.currentFile,
-          attached_contexts: context.attachedContexts,
-        }
-      : undefined,
+    context: context ? mapContextToWire(context) : undefined,
   });
 }
 
