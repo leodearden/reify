@@ -215,10 +215,6 @@ describe('selectionStore', () => {
         clearHighlights = store.clearHighlights;
       });
 
-      // No initial dispatch occurs (effect early-returns when nothing changed).
-      // advanceTimersByTime is a harmless no-op here; mockClear resets mock state.
-      vi.advanceTimersByTime(100);
-      mockInvoke.mockClear();
     });
 
     afterEach(() => {
