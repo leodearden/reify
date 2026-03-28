@@ -404,7 +404,6 @@ mod tests {
     // task 2 will implement position-sensitive filtering to make them pass.
 
     #[test]
-    #[ignore] // Fails until position-sensitive completions are implemented (task 2)
     fn completion_top_level_excludes_body_keywords() {
         // Source: one structure, then a blank line. Cursor is outside any structure.
         let source = "structure Foo {\n    param x: Scalar = 1mm\n}\n";
@@ -447,7 +446,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // Fails until position-sensitive completions are implemented (task 2)
     fn completion_inside_body_excludes_top_level_keywords() {
         let source = reify_test_support::bracket_source();
         // Line 6 is the blank line between params and let, inside body
