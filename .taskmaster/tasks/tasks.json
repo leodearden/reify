@@ -12655,12 +12655,13 @@
         "description": "build_trial_values (solver.rs:75) is called inside ConstraintCostFunction::cost() on every Nelder-Mead iteration. The task-589 refactor made it call params_to_value_map, which allocates an intermediate HashMap that is immediately iterated and dropped. Revert build_trial_values to the original direct-insert loop (no intermediate HashMap). Keep params_to_value_map for the three cold-path call sites only (early-exit, fallback, solution construction). This also resolves the naming confusion since build_trial_values no longer calls params_to_value_map.\n\nMemory hints: search \"params_to_value_map build_trial_values\", entity DimensionalSolver",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "589"
         ],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-03-28T00:20:45.295Z"
       },
       {
         "id": "625",
@@ -12691,7 +12692,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T00:20:44.839Z",
+      "lastModified": "2026-03-28T00:20:45.295Z",
       "taskCount": 626,
       "completedCount": 285,
       "tags": [
