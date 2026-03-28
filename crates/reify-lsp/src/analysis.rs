@@ -678,6 +678,36 @@ mod tests {
         assert_eq!(info.decl_name, "Foo");
     }
 
+    // --- enclosing_structure_name_at tests ---
+
+    #[test]
+    fn enclosing_structure_name_at_inside_second() {
+        let source =
+            "structure A {\n    param x: Scalar = 5mm\n}\nstructure B {\n    param y: Bool = true\n}";
+        let ctx = AnalysisContext::new(source, &test_uri());
+        // Offset inside B: 'y' in "param y: Bool = true"
+        let b_y_offset = source.find("param y").unwrap() + 6;
+        assert_eq!(
+            ctx.enclosing_structure_name_at(b_y_offset),
+            Some("B"),
+            "offset inside B should return Some(\"B\")"
+        );
+        // Offset inside A: 'x' in "param x: Scalar = 5mm"
+        let a_x_offset = source.find("param x").unwrap() + 6;
+        assert_eq!(
+            ctx.enclosing_structure_name_at(a_x_offset),
+            Some("A"),
+            "offset inside A should return Some(\"A\")"
+        );
+        // Offset outside any structure (between A and B)
+        let between_offset = source.find("\nstructure B").unwrap();
+        assert_eq!(
+            ctx.enclosing_structure_name_at(between_offset),
+            None,
+            "offset between structures should return None"
+        );
+    }
+
     #[test]
     fn find_member_decl_scoped_to_second_structure() {
         let source =
