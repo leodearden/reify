@@ -2007,6 +2007,12 @@ async fn ensure_sidecar_ready_notified_race_on_multithread() {
 ///
 /// The fix adds `tokio::pin!(notified)` + `notified.as_mut().enable()` so the waiter
 /// is eagerly registered before the intervening await point.
+///
+/// NOTE: This test exercises the race probabilistically — some iterations may succeed
+/// via `enable()` capturing the notification, others via the re-check at line 353
+/// (`state.lock().await` sees Ready before the timeout poll). Both paths are correct
+/// defense-in-depth behavior; the test validates that at least one succeeds on every
+/// iteration.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn wait_ready_enable_prevents_missed_notification_race() {
     use std::sync::Arc;
@@ -2049,23 +2055,28 @@ async fn wait_ready_enable_prevents_missed_notification_race() {
 
 // --- ensure_sidecar_ready enable() race test (task-407/step-4) ---
 
-/// Reproduce the race condition in `ensure_sidecar_ready` where
-/// `notify_arc.notified()` (line 582) creates a Notified future whose waiter
+/// Reproduce the post-creation race window in `ensure_sidecar_ready` where
+/// `notify_arc.notified()` (line 625) creates a Notified future whose waiter
 /// is NOT registered until first polled. Between creation and the first poll at
-/// `tokio::time::timeout(ready_timeout, notified)` (line 613), there are three
-/// await points forming a race window:
-///   - `sidecar.lock().await` (line 586)
-///   - `state_arc.lock().await` (line 592)
-///   - `h.kill().await` (line 606)
+/// `tokio::time::timeout(ready_timeout, notified)` (line 666), the Phase 3
+/// await points form a race window:
+///   - `sidecar.lock().await` (line 630)
+///   - `state_arc.lock().await` (line 636)
+///   - `h.kill().await` (line 650) — evicting a concurrent non-ready handle
 ///
-/// Pre-populating the sidecar slot with a non-ready handle triggers the
-/// `h.kill().await` at line 606, adding a third await point and widening the
-/// race window.  On a multi-thread runtime the reader task can fire
-/// `notify_waiters()` during any of these, producing a lost wakeup and a
-/// spurious timeout.
+/// Pre-populating the sidecar slot with a non-ready (Starting) handle adds
+/// Phase 1 async work: the state check at line 593 and `h.kill().await` at
+/// line 600 execute before spawn_fn, widening the pre-creation window
+/// (more time before `notified()` is even created at line 625).  On a
+/// multi-thread runtime the reader task can fire `notify_waiters()` during
+/// either window, producing a lost wakeup and a spurious timeout.
 ///
-/// The fix adds `tokio::pin!(notified)` + `notified.as_mut().enable()` so the
-/// waiter is eagerly registered before any Phase 3 await points.
+/// The fix adds `std::pin::pin!(notified)` + `notified.as_mut().enable()` so
+/// the waiter is eagerly registered before any Phase 3 await points (handling
+/// the post-creation window). The re-check at line 661 handles the
+/// pre-creation window. Together they provide defense-in-depth; this test
+/// exercises the race probabilistically — some iterations may succeed via
+/// `enable()` and others via the re-check.
 ///
 /// This is distinct from `ensure_sidecar_ready_notified_race_on_multithread`
 /// which was written for the earlier fix (moving `notified()` before the lock)
