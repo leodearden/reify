@@ -8299,24 +8299,39 @@
       {
         "id": "423",
         "title": "Consolidate elaborate_child_instance to delegate to params_only + lets_only helpers",
-        "description": "From task 205 architect review (DRY divergence risk): elaborate_child_instance and elaborate_child_params_only/elaborate_child_lets_only are parallel code paths. Refactor elaborate_child_instance to delegate to the helpers. Also: add doc comment on BFS projection invariant, fix ContentHash in sub_component_with_guard (crates/reify-test-support/src/builders.rs). Modules: crates/reify-eval, crates/reify-test-support",
-        "details": "<info added on 2026-03-28T10:11:41.688Z>\nNOTE: builders.rs was split into per-domain submodules under crates/reify-test-support/src/builders/ (task 533 completed). The reference to sub_component_with_guard in builders.rs is stale — locate the function in the appropriate submodule before implementing. Memory hints: search \"builders.rs split per-domain modules\" to find the new structure.\n</info added on 2026-03-28T10:11:41.688Z>",
-        "testStrategy": "All existing recursive_unfold and collection_sub_eval tests must pass unchanged.",
+        "description": "From task 205 architect review (DRY divergence risk): elaborate_child_instance and elaborate_child_params_only/elaborate_child_lets_only are parallel code paths. Refactor elaborate_child_instance to delegate to the helpers. Also: add doc comment on BFS projection invariant, fix ContentHash in sub_component_with_guard (now located in a submodule under crates/reify-test-support/src/builders/). Modules: crates/reify-eval, crates/reify-test-support",
         "status": "pending",
         "dependencies": [
           "205"
         ],
         "priority": "low",
+        "details": "<info added on 2026-03-28T10:11:41.688Z>\nNOTE: builders.rs was split into per-domain submodules under crates/reify-test-support/src/builders/ (task 533 completed). The reference to sub_component_with_guard in builders.rs is stale — locate the function in the appropriate submodule before implementing. Memory hints: search \"builders.rs split per-domain modules\" to find the new structure.\n</info added on 2026-03-28T10:11:41.688Z>\n<info added on 2026-03-28T10:11:41.688Z>\nMemory hints for execution context: Ensure the execution context is correctly set up to handle the delegation to params_only and lets_only helpers.\n</info added on 2026-03-28T10:11:41.688Z>",
+        "testStrategy": "All existing recursive_unfold and collection_sub_eval tests must pass unchanged.",
+        "subtasks": [],
         "metadata": {
           "modules": [
             "crates/reify-eval",
             "crates/reify-test-support"
           ],
           "milestone": "M9",
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
-        },
-        "subtasks": [],
-        "updatedAt": "2026-03-25T21:10:21.264980+00:00"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-eval/src/elaborate.rs",
+            "crates/reify-test-support/src/builders/mod.rs",
+            "crates/reify-test-support/src/builders/"
+          ],
+          "memory_hints": {
+            "entities": [
+              "builders.rs split",
+              "elaborate_child_instance"
+            ],
+            "queries": [
+              "builders.rs split per-domain modules submodule paths",
+              "elaborate_child_instance refactor DRY divergence"
+            ]
+          },
+          "_causation_id": "4c340134-d080-4e41-9be7-725995b68b45"
+        }
       },
       {
         "id": "424",
@@ -10041,7 +10056,7 @@
         "description": "Several test robustness issues in crates/reify-cli/tests/cli_build.rs:\n\n1. **Hardcoded /tmp paths** (lines 37, 76, 15, 116): All tests use fixed paths like /tmp/reify_test_*.step. Concurrent CI runs or `cargo test` from multiple terminals can race on these paths. Use `tempfile::NamedTempFile` or unique suffixes (e.g., PID-based) instead.\n\n2. **Missing pre-cleanup** in build_valid_bracket_exits_success (line 76): Unlike build_violating_bracket_exits_failure, this test doesn't remove stale files before running. Add `let _ = std::fs::remove_file(output_path);` before the Command invocation.\n\n3. **Missing file existence assertion** in build_valid_bracket_exits_success: Only checks stdout for \"Wrote\" but never asserts the file actually exists. Add `assert!(std::path::Path::new(output_path).exists())`.\n\n4. **Missing summary assertion** in build_violating_bracket_exits_failure (line 61-64): Checks for \"VIOLATED\" in stderr but doesn't assert \"Some constraints violated.\" summary message. The analogous cmd_check test does assert this.\n\n**Memory hints:** search for \"CLI test isolation\", entity names: cli_build",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -10053,7 +10068,8 @@
           "modules": [
             "crates/reify-cli/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-03-28T10:23:25.395Z"
       },
       {
         "id": "503",
@@ -12806,9 +12822,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T10:19:59.703Z",
+      "lastModified": "2026-03-28T10:23:25.395Z",
       "taskCount": 636,
-      "completedCount": 299,
+      "completedCount": 300,
       "tags": [
         "master"
       ]
