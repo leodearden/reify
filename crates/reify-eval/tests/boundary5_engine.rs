@@ -630,6 +630,67 @@ fn eval_param_no_default_undef_undetermined() {
     );
 }
 
+/// Param with no default: after edit_param, value updates to Determined.
+#[test]
+fn eval_param_no_default_edit_param_sets_value() {
+    use reify_types::{DeterminacyState, ModulePath, Type, ValueCellId};
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param("S", "x", Type::Int, None)
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+
+    // Initial eval: x should be Undef + Undetermined
+    let result = engine.eval(&module);
+    let x_id = ValueCellId::new("S", "x");
+    let x_val = result.values.get(&x_id).expect("x should be in values");
+    assert!(
+        x_val.is_undef(),
+        "param x with no default should be Undef initially"
+    );
+
+    let snapshot = engine.snapshot().expect("snapshot should exist");
+    let (_, x_det) = snapshot.values.get(&x_id).expect("x in snapshot");
+    assert_eq!(
+        *x_det,
+        DeterminacyState::Undetermined,
+        "initial determinacy should be Undetermined"
+    );
+
+    // edit_param to set x = 42
+    let result2 = engine
+        .edit_param(x_id.clone(), reify_types::Value::Int(42))
+        .expect("edit_param should succeed");
+
+    // After edit, x should be Int(42)
+    let x_val2 = result2.values.get(&x_id).expect("x should be in values after edit");
+    assert_eq!(
+        *x_val2,
+        reify_types::Value::Int(42),
+        "x should be Int(42) after edit_param"
+    );
+
+    // Snapshot should reflect Determined
+    let snapshot2 = engine.snapshot().expect("snapshot should exist after edit");
+    let (x_snap_val2, x_det2) = snapshot2.values.get(&x_id).expect("x in snapshot after edit");
+    assert_eq!(
+        *x_snap_val2,
+        reify_types::Value::Int(42),
+        "snapshot x should be Int(42)"
+    );
+    assert_eq!(
+        *x_det2,
+        DeterminacyState::Determined,
+        "snapshot x determinacy should be Determined after edit"
+    );
+}
+
 /// Param with no default propagates Undef to dependent let bindings.
 #[test]
 fn eval_param_no_default_with_dependent_let() {
