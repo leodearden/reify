@@ -26,6 +26,27 @@ cd "$TS_DIR"
 # Compute grammar hash once before generation (avoids TOCTOU race between
 # staleness check and stamp write — same pattern as build.rs).
 GRAMMAR_HASH=$(sha256sum grammar.js | awk '{print $1}')
+STAMP_FILE="src/.grammar_hash.stamp"
+
+# Staleness check: skip generation if stamp matches and all outputs exist.
+STALE=false
+if [ ! -f "$STAMP_FILE" ]; then
+    STALE=true
+elif [ "$(cat "$STAMP_FILE" 2>/dev/null)" != "$GRAMMAR_HASH" ]; then
+    STALE=true
+else
+    for f in src/parser.c src/grammar.json src/node-types.json; do
+        if [ ! -f "$f" ]; then
+            STALE=true
+            break
+        fi
+    done
+fi
+
+if [ "$STALE" = false ]; then
+    echo "tree-sitter: up to date (grammar.js unchanged)"
+    exit 0
+fi
 
 tree-sitter generate
 
@@ -38,6 +59,6 @@ for f in src/parser.c src/grammar.json src/node-types.json; do
 done
 
 # Write stamp file with the pre-computed hash.
-echo -n "$GRAMMAR_HASH" > src/.grammar_hash.stamp
+echo -n "$GRAMMAR_HASH" > "$STAMP_FILE"
 
 echo "tree-sitter: generated parser files in $TS_DIR/src/"
