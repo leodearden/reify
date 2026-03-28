@@ -2951,4 +2951,16 @@ mod tests {
             "matching on non-enum value should return Undef"
         );
     }
+
+    #[test]
+    fn neg_int_min_returns_undef() {
+        let operand = lit(Value::Int(i64::MIN), Type::Int);
+        let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::Int);
+        let values = ValueMap::new();
+        assert_eq!(
+            eval_expr(&expr, &EvalContext::simple(&values)),
+            Value::Undef,
+            "negating i64::MIN should return Undef, not panic"
+        );
+    }
 }
