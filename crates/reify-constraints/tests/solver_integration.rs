@@ -550,7 +550,7 @@ fn optimize_with_feasible_initial_point() {
             // Minimize should push thickness toward 5mm (auto param lower bound),
             // which is safely above the 2mm constraint.
             assert!(
-                si >= 0.005 - 1e-9 && si < 0.008,
+                (0.005 - 1e-9..0.008).contains(&si),
                 "minimized thickness should be near 5mm, got {} m",
                 si
             );
@@ -877,14 +877,14 @@ fn warm_start_budget_exhaustion_stays_feasible() {
 
     // Tight constraints: each param in [10mm, 12mm] — only 2mm feasible window
     let mut constraints = Vec::new();
-    for i in 0..n_params {
+    for (i, r) in refs.iter().enumerate() {
         constraints.push((
             cnid("Part", (i * 2) as u32),
-            gt(refs[i].clone(), literal(mm(10.0))),
+            gt(r.clone(), literal(mm(10.0))),
         ));
         constraints.push((
             cnid("Part", (i * 2 + 1) as u32),
-            lt(refs[i].clone(), literal(mm(12.0))),
+            lt(r.clone(), literal(mm(12.0))),
         ));
     }
 
