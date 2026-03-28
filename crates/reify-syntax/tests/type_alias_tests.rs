@@ -354,3 +354,20 @@ fn parse_type_alias_missing_equals_no_panic() {
         errors,
     );
 }
+
+// ── Error case: empty RHS ────────────────────────────────────────
+
+#[test]
+fn parse_type_alias_empty_rhs_no_panic() {
+    // `type Foo =` — RHS is empty (no type expression after '=').
+    // Should NOT panic. Should produce parse error(s), no valid TypeAlias emitted.
+    let source = "type Foo =";
+    let (decls, errors) = parse_decls(source);
+    let has_type_alias = decls.iter().any(|d| matches!(d, Declaration::TypeAlias(_)));
+    assert!(
+        !has_type_alias || !errors.is_empty(),
+        "expected either no TypeAlias or at least one error for malformed input, got decls={:?}, errors={:?}",
+        decls,
+        errors,
+    );
+}
