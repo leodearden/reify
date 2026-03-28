@@ -14327,7 +14327,7 @@
         "description": "Two fixes in gui/src/stores/selectionStore.ts: 1) Add `if (!selectionChanged && !hoverChanged) return;` guard after updating prevSelected/prevHovered to prevent spurious debounced sendSelection(null, null) on store creation. 2) Wrap clearHighlights body in `batch(() => { ... })` for atomic state updates (import batch from solid-js).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -14339,7 +14339,7 @@
             "gui/src/stores"
           ]
         },
-        "updatedAt": "2026-03-28T09:07:46.067Z"
+        "updatedAt": "2026-03-28T09:26:11.393Z"
       },
       {
         "id": "697",
@@ -14706,7 +14706,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T09:25:07.419Z",
+      "lastModified": "2026-03-28T09:26:11.393Z",
       "taskCount": 716,
       "completedCount": 331,
       "tags": [
