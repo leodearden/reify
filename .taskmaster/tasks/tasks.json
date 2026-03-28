@@ -13785,6 +13785,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 703,
+        "title": "Tighten solver test assertions to match clamping contract",
+        "description": "In crates/reify-constraints/tests/solver_integration.rs, update optimize/maximize test assertions to verify the solver's final-solution clamping contract (solver.rs:598-604): (1) Change `si <= 0.0505` to `si <= 0.050 + 1e-9` to verify clamping to upper param bound. (2) Change `si >= 0.005` to `si >= 0.005 - 1e-9` to add floating-point epsilon tolerance while still verifying lower-bound clamping.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -13797,7 +13808,7 @@
       ],
       "created": "2026-03-28T06:53:49.176Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-28T06:54:46.920Z"
+      "updated": "2026-03-28T06:55:17.877Z"
     }
   }
 }
