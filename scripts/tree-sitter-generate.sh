@@ -98,7 +98,13 @@ else
                     _lock_age=$(( $(date +%s) - _lock_mtime ))
                     if [ "$_lock_age" -gt 120 ]; then
                         echo "WARNING: removing stale lock dir (age=${_lock_age}s)" >&2
-                        rmdir "$LOCK_DIR" 2>/dev/null || true
+                        if rmdir "$LOCK_DIR" 2>/dev/null; then
+                            _lock_attempts=0
+                            continue
+                        fi
+                        # rmdir failed (e.g. NFS/uid-mismatch) — sleep to
+                        # avoid tight busy-loop, then retry
+                        sleep 1
                         continue
                     fi
                 fi
