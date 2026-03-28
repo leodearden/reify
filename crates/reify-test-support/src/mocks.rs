@@ -169,6 +169,15 @@ enum QueryKey {
     },
 }
 
+/// Normalize a distance pair to canonical (min, max) order so that
+/// Distance(A, B) and Distance(B, A) map to the same key.
+fn normalize_distance_pair(
+    a: GeometryHandleId,
+    b: GeometryHandleId,
+) -> (GeometryHandleId, GeometryHandleId) {
+    if a <= b { (a, b) } else { (b, a) }
+}
+
 impl QueryKey {
     fn from_query(query: &GeometryQuery) -> Self {
         match query {
