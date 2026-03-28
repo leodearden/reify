@@ -12708,7 +12708,22 @@
         ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-28T00:44:00.677Z"
+        "updatedAt": "2026-03-28T00:44:00.677Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [
+              "DimensionalSolver",
+              "build_trial_values",
+              "params_to_value_map",
+              "ConstraintCostFunction"
+            ],
+            "queries": [
+              "params_to_value_map build_trial_values hot path allocation",
+              "solver fallback path task 589 refactor",
+              "task 624 status churn done reverted pending"
+            ]
+          }
+        }
       },
       {
         "id": 625,
