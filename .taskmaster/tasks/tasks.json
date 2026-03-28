@@ -4570,7 +4570,7 @@
         "updatedAt": "2026-03-26T04:43:51.852Z"
       },
       {
-        "id": "249",
+        "id": 249,
         "title": "Ad-hoc port selectors: compiler",
         "description": "Compile ad-hoc selectors to CompiledAdHocPort { base_entity, selector_kind, args, memory_hints }. Selector kinds: Face, Point, Edge, Region, Body. Generate a synthetic port with a frame derived from the geometry query result. The synthetic port is created in the parent scope. Incorporate memory_hints to optimize knowledge context during execution.",
         "status": "pending",
@@ -4669,23 +4669,35 @@
         "updatedAt": "2026-03-24T06:01:46.000Z"
       },
       {
-        "id": 253,
+        "id": "253",
         "title": "Guarded reference safety: guard tracking",
-        "description": "During compilation, track the guard expression for each declaration. Build a guard context map: for each ValueCellId, store the composed guard expression (None for unguarded, Some(expr) for guarded). Nested where blocks compose guards conjunctively (a AND b).",
-        "details": "",
-        "testStrategy": "Compiler tests: guard tracking for simple guard, nested guard, unguarded.",
-        "priority": "high",
-        "dependencies": [],
+        "description": "During compilation, track the guard expression for each declaration. Build a guard context map: for each ValueCellId, store the composed guard expression (None for unguarded, Some(expr) for guarded). Nested where blocks compose guards conjunctively (a AND b). Additionally, integrate memory_hints to enhance the knowledge context during execution, ensuring that guard tracking is optimized for runtime efficiency.",
         "status": "pending",
+        "dependencies": [],
+        "priority": "high",
+        "details": "Integrate memory_hints to optimize guard tracking and execution efficiency. This involves updating the guard context map to include memory usage patterns and hints that can be utilized during execution.",
+        "testStrategy": "Compiler tests: guard tracking for simple guard, nested guard, unguarded. Include tests for memory_hints integration to ensure execution efficiency.",
+        "subtasks": [],
         "metadata": {
           "modules": [
             "crates/reify-compiler"
           ],
           "milestone": "M10",
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
-        },
-        "subtasks": [],
-        "updatedAt": "2026-03-24T06:01:46.000Z"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "memory_hints": {
+            "entities": [
+              "ValueCellId",
+              "guard expression",
+              "where block",
+              "reify-compiler"
+            ],
+            "queries": [
+              "guarded reference safety guard tracking compiler",
+              "where block nested guard composition",
+              "constraint compilation guard context"
+            ]
+          }
+        }
       },
       {
         "id": 254,
