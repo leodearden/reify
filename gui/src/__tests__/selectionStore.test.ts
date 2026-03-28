@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { createRoot } from 'solid-js';
+import { batch, createRoot } from 'solid-js';
 
 // Mock Tauri API modules
 vi.mock('@tauri-apps/api/core', () => ({
@@ -225,19 +225,24 @@ describe('selectionStore', () => {
     });
 
     it('combined selection+hover change is debounced at 100ms', () => {
-      selectEntity('Bracket');
-      hoverEntity('Bracket.width');
+      // Use batch() so both state changes are applied before the effect runs.
+      // Without batch(), selectEntity fires one effect (selection-only → immediate)
+      // and hoverEntity fires a second effect (hover → debounce), hiding the
+      // intermediate immediate call. batch() causes a single effect run where
+      // both selectionChanged and hoverChanged are true, hitting the debounce path.
+      batch(() => {
+        selectEntity('Bracket');
+        hoverEntity('Bracket.width');
+      });
 
-      // With hover change in the mix, everything should be debounced
-      // (selectEntity fires effect, then hoverEntity fires another effect that replaces the timer)
-      // After both, the latest state is not yet sent
-      mockInvoke.mockClear();
+      // invoke should NOT have been called — both changed, so debounce path
+      expect(mockInvoke).not.toHaveBeenCalled();
 
-      // Nothing sent yet (debounce pending)
+      // Still nothing at 50ms
       vi.advanceTimersByTime(50);
       expect(mockInvoke).not.toHaveBeenCalled();
 
-      // After 100ms total, the combined state is sent
+      // After 100ms, the combined state is sent
       vi.advanceTimersByTime(50);
       expect(mockInvoke).toHaveBeenCalledTimes(1);
       expect(mockInvoke).toHaveBeenCalledWith('update_selection', {
@@ -266,6 +271,29 @@ describe('selectionStore', () => {
       // After 100ms, no additional stale invoke should fire
       vi.advanceTimersByTime(100);
       expect(mockInvoke).not.toHaveBeenCalled();
+    });
+
+    it('sequential selectEntity then hoverEntity fires immediate then debounced invoke', () => {
+      // Without batch(), each call triggers a separate effect run.
+      // selectEntity('Bracket') → selection-only change → immediate invoke
+      selectEntity('Bracket');
+      expect(mockInvoke).toHaveBeenCalledTimes(1);
+      expect(mockInvoke).toHaveBeenCalledWith('update_selection', {
+        selectedEntity: 'Bracket',
+        hoveredEntity: null,
+      });
+
+      // hoverEntity('Bracket.width') → hover change → debounce pending
+      hoverEntity('Bracket.width');
+      expect(mockInvoke).toHaveBeenCalledTimes(1); // still just the one immediate call
+
+      // After 100ms, the debounced hover invoke fires with full current state
+      vi.advanceTimersByTime(100);
+      expect(mockInvoke).toHaveBeenCalledTimes(2);
+      expect(mockInvoke).toHaveBeenLastCalledWith('update_selection', {
+        selectedEntity: 'Bracket',
+        hoveredEntity: 'Bracket.width',
+      });
     });
 
     it('rapid hover changes collapse into single invoke at 100ms', () => {
