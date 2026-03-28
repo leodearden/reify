@@ -441,6 +441,21 @@ impl SidecarHandle {
     }
 }
 
+impl Drop for SidecarHandle {
+    fn drop(&mut self) {
+        // Abort the reader task so it doesn't continue running detached.
+        // JoinHandle::abort() is sync and marks the task for cancellation
+        // at its next .await point.
+        self.reader_handle.abort();
+        // Kill the OS child process if one was attached via set_child().
+        // start_kill() is sync and sends SIGKILL without waiting for exit —
+        // best-effort OS cleanup in a Drop context where async is unavailable.
+        if let Some(ref mut child) = self.child {
+            let _ = child.start_kill();
+        }
+    }
+}
+
 // --- High-level command implementations ---
 
 /// Send a message to the sidecar. Returns the generated message ID.
