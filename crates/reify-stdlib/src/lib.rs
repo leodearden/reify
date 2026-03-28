@@ -1441,6 +1441,51 @@ mod tests {
         };
     }
 
+    /// Assert that an expression evaluates to a 3-component wrapper variant
+    /// (`Value::Tensor`, `Value::Vector`, or `Value::Point`) where each component
+    /// is approximately equal to the expected `[x, y, z]` values within 1e-12.
+    macro_rules! assert_vector3_approx {
+        ($variant:ident, $expr:expr, [$ex:expr, $ey:expr, $ez:expr]) => {
+            match $expr {
+                Value::$variant(items) => {
+                    assert_eq!(
+                        items.len(),
+                        3,
+                        "expected 3-component {}",
+                        stringify!($variant)
+                    );
+                    let vals: Vec<f64> = items.iter().map(|x| x.as_f64().unwrap()).collect();
+                    assert!(
+                        (vals[0] - $ex).abs() < 1e-12,
+                        "x: expected {}, got {}",
+                        $ex,
+                        vals[0]
+                    );
+                    assert!(
+                        (vals[1] - $ey).abs() < 1e-12,
+                        "y: expected {}, got {}",
+                        $ey,
+                        vals[1]
+                    );
+                    assert!(
+                        (vals[2] - $ez).abs() < 1e-12,
+                        "z: expected {}, got {}",
+                        $ez,
+                        vals[2]
+                    );
+                }
+                other => panic!(
+                    "expected {}([{}, {}, {}]), got {:?}",
+                    stringify!($variant),
+                    $ex,
+                    $ey,
+                    $ez,
+                    other
+                ),
+            }
+        };
+    }
+
     #[test]
     fn abs_real_negative() {
         let result = eval_builtin("abs", &[Value::Real(-5.0)]);
