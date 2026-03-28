@@ -16,6 +16,7 @@ import {
   claudeAbort,
   claudeClearSession,
   subscribeToClaudeEvents,
+  MESSAGE_CONTEXT_FIELD_MAP,
 } from '../bridge';
 
 const mockInvoke = vi.mocked(invoke);
@@ -130,6 +131,20 @@ describe('claude invoke wrappers', () => {
     mockInvoke.mockRejectedValue(new Error('IPC failed'));
 
     await expect(claudeClearSession()).rejects.toThrow('IPC failed');
+  });
+
+  it('MESSAGE_CONTEXT_FIELD_MAP covers every key of MessageContext', () => {
+    // Build a fully-populated MessageContext to extract its keys at runtime
+    const fullContext: Required<MessageContext> = {
+      selectedEntity: 'x',
+      diagnostics: ['d'],
+      constraints: ['c'],
+      currentFile: 'f',
+      attachedContexts: ['a'],
+    };
+    const expectedKeys = Object.keys(fullContext).sort();
+    const mapKeys = Object.keys(MESSAGE_CONTEXT_FIELD_MAP).sort();
+    expect(mapKeys).toEqual(expectedKeys);
   });
 });
 
