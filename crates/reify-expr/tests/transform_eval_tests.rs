@@ -511,6 +511,83 @@ fn transform_compose_mixed_dimension_translation_returns_undef() {
     );
 }
 
+// ── NaN/Infinity in vector component tests ──────────────────────────────────
+
+/// Transform * Vector with NaN in a component should return Undef.
+#[test]
+fn transform_mul_vector_nan_component_returns_undef() {
+    let nan_vec = Value::Vector(vec![
+        Value::length(1.0),
+        Value::Scalar {
+            si_value: f64::NAN,
+            dimension: DimensionVector::LENGTH,
+        },
+        Value::length(3.0),
+    ]);
+    let result = eval_mul_expr(
+        identity_transform(),
+        Type::Transform(3),
+        nan_vec,
+        Type::vec3(Type::length()),
+        Type::vec3(Type::length()),
+    );
+    assert!(
+        result.is_undef(),
+        "NaN vector component should return Undef, got {:?}",
+        result
+    );
+}
+
+/// Transform * Vector with Infinity in a component should return Undef.
+#[test]
+fn transform_mul_vector_infinity_component_returns_undef() {
+    let inf_vec = Value::Vector(vec![
+        Value::Scalar {
+            si_value: f64::INFINITY,
+            dimension: DimensionVector::LENGTH,
+        },
+        Value::length(2.0),
+        Value::length(3.0),
+    ]);
+    let result = eval_mul_expr(
+        identity_transform(),
+        Type::Transform(3),
+        inf_vec,
+        Type::vec3(Type::length()),
+        Type::vec3(Type::length()),
+    );
+    assert!(
+        result.is_undef(),
+        "Infinity vector component should return Undef, got {:?}",
+        result
+    );
+}
+
+/// Transform * Point with NaN in a component should return Undef.
+#[test]
+fn transform_mul_point_nan_component_returns_undef() {
+    let nan_point = Value::Point(vec![
+        Value::length(1.0),
+        Value::length(2.0),
+        Value::Scalar {
+            si_value: f64::NAN,
+            dimension: DimensionVector::LENGTH,
+        },
+    ]);
+    let result = eval_mul_expr(
+        identity_transform(),
+        Type::Transform(3),
+        nan_point,
+        Type::point3(Type::length()),
+        Type::point3(Type::length()),
+    );
+    assert!(
+        result.is_undef(),
+        "NaN point component should return Undef, got {:?}",
+        result
+    );
+}
+
 // ── step-11: Transform * Transform NaN quaternion tests ──────────────────────
 
 /// Transform with NaN in one rotation component * identity should return Undef,
