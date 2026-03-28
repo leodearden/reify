@@ -3467,34 +3467,8 @@ mod tests {
     fn dot_vector_dimensioned() {
         // dot(Vector([1m,0,0]), Vector([1N,0,0])) -> Scalar{1.0, Length*Force}
         let length_force = DimensionVector::LENGTH.mul(&reify_types::dimension::FORCE);
-        let a = Value::Vector(vec![
-            Value::Scalar {
-                si_value: 1.0,
-                dimension: DimensionVector::LENGTH,
-            },
-            Value::Scalar {
-                si_value: 0.0,
-                dimension: DimensionVector::LENGTH,
-            },
-            Value::Scalar {
-                si_value: 0.0,
-                dimension: DimensionVector::LENGTH,
-            },
-        ]);
-        let b = Value::Vector(vec![
-            Value::Scalar {
-                si_value: 1.0,
-                dimension: reify_types::dimension::FORCE,
-            },
-            Value::Scalar {
-                si_value: 0.0,
-                dimension: reify_types::dimension::FORCE,
-            },
-            Value::Scalar {
-                si_value: 0.0,
-                dimension: reify_types::dimension::FORCE,
-            },
-        ]);
+        let a = make_scalar_vec3([1.0, 0.0, 0.0], DimensionVector::LENGTH);
+        let b = make_scalar_vec3([1.0, 0.0, 0.0], reify_types::dimension::FORCE);
         assert_scalar_approx!(eval_builtin("dot", &[a, b]), 1.0, length_force);
     }
 
@@ -3514,34 +3488,8 @@ mod tests {
     fn cross_vector_dimensioned_preserves_dimension() {
         // cross(Vector([1m,0,0]), Vector([0,1N,0])) each component has Length*Force dimension
         let length_force = DimensionVector::LENGTH.mul(&reify_types::dimension::FORCE);
-        let a = Value::Vector(vec![
-            Value::Scalar {
-                si_value: 1.0,
-                dimension: DimensionVector::LENGTH,
-            },
-            Value::Scalar {
-                si_value: 0.0,
-                dimension: DimensionVector::LENGTH,
-            },
-            Value::Scalar {
-                si_value: 0.0,
-                dimension: DimensionVector::LENGTH,
-            },
-        ]);
-        let b = Value::Vector(vec![
-            Value::Scalar {
-                si_value: 0.0,
-                dimension: reify_types::dimension::FORCE,
-            },
-            Value::Scalar {
-                si_value: 1.0,
-                dimension: reify_types::dimension::FORCE,
-            },
-            Value::Scalar {
-                si_value: 0.0,
-                dimension: reify_types::dimension::FORCE,
-            },
-        ]);
+        let a = make_scalar_vec3([1.0, 0.0, 0.0], DimensionVector::LENGTH);
+        let b = make_scalar_vec3([0.0, 1.0, 0.0], reify_types::dimension::FORCE);
         let result = eval_builtin("cross", &[a, b]);
         match result {
             Value::Vector(items) => {
@@ -3607,20 +3555,7 @@ mod tests {
     #[test]
     fn normalize_dimensioned_vector_input() {
         // normalize(Vector([3m,4m,0m])) -> Value::Vector with dimensionless Real components
-        let v = Value::Vector(vec![
-            Value::Scalar {
-                si_value: 3.0,
-                dimension: DimensionVector::LENGTH,
-            },
-            Value::Scalar {
-                si_value: 4.0,
-                dimension: DimensionVector::LENGTH,
-            },
-            Value::Scalar {
-                si_value: 0.0,
-                dimension: DimensionVector::LENGTH,
-            },
-        ]);
+        let v = make_scalar_vec3([3.0, 4.0, 0.0], DimensionVector::LENGTH);
         let result = eval_builtin("normalize", &[v]);
         assert_vector3_approx!(Vector, result, [0.6, 0.8, 0.0]);
     }
