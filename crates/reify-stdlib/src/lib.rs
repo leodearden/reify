@@ -947,9 +947,9 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
             };
             // Verify approximate orthonormality
             let tol = 1e-6;
-            let mag_x = (xc[0] * xc[0] + xc[1] * xc[1] + xc[2] * xc[2]).sqrt();
-            let mag_y = (yc[0] * yc[0] + yc[1] * yc[1] + yc[2] * yc[2]).sqrt();
-            let mag_z = (zc[0] * zc[0] + zc[1] * zc[1] + zc[2] * zc[2]).sqrt();
+            let mag_x = vec3_norm(xc[0], xc[1], xc[2]);
+            let mag_y = vec3_norm(yc[0], yc[1], yc[2]);
+            let mag_z = vec3_norm(zc[0], zc[1], zc[2]);
             if !mag_x.is_finite()
                 || !mag_y.is_finite()
                 || !mag_z.is_finite()
@@ -1021,7 +1021,7 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
             let ax = comps[0];
             let ay = comps[1];
             let az = comps[2];
-            let axis_norm = (ax * ax + ay * ay + az * az).sqrt();
+            let axis_norm = vec3_norm(ax, ay, az);
             if axis_norm == 0.0 || !axis_norm.is_finite() {
                 return Value::Undef;
             }
@@ -1167,6 +1167,12 @@ fn quat_rotate(q: (f64, f64, f64, f64), vx: f64, vy: f64, vz: f64) -> (f64, f64,
     let tmp = quat_mul(q, v_quat);
     let result = quat_mul(tmp, quat_conj(q));
     (result.1, result.2, result.3)
+}
+
+/// Euclidean norm (length) of a 3D vector.
+#[inline(always)]
+fn vec3_norm(x: f64, y: f64, z: f64) -> f64 {
+    (x * x + y * y + z * z).sqrt()
 }
 
 /// Convert non-finite f64 values (NaN, inf) to Undef.

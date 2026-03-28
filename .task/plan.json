@@ -85,7 +85,7 @@
       "id": "step-10",
       "type": "impl",
       "description": "Extract vec3_norm helper: add `fn vec3_norm(x: f64, y: f64, z: f64) -> f64 { (x * x + y * y + z * z).sqrt() }` near the other quaternion helpers (after quat_rotate, ~line 1165). Replace 4 inline computations: orient_basis lines 950-952 (3\u00d7) and orient_axis_angle line 1018 (1\u00d7).",
-      "status": "pending",
+      "status": "done",
       "commit": null
     }
   ],
