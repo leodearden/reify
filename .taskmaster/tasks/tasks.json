@@ -11994,7 +11994,7 @@
         "description": "Address code quality suggestions from task 495 reviews in solver.rs and solver_integration.rs:\n\n1. Simplify redundant `problem.objective.is_some()` guard at solver.rs:~436 — after the early-return for `initially_feasible && objective.is_none()`, the `objective.is_some()` check is always true. Simplify to `if initially_feasible`.\n2. Inline or annotate `trial_values` binding at solver.rs:~408 — used only for feasibility check, could be inlined into `max_constraint_residual()` call.\n3. Tighten assertion bounds in `optimize_with_feasible_initial_point` — lower bound should be 5mm (param bound) not 2mm (constraint floor).\n4. Tighten assertion bounds in `maximize_with_feasible_initial_point` — upper bound tolerance too loose (1mm slack vs ~0.2mm expected).\n5. Add objective-value assertion to `feasibility_check_runs_with_objective` unit test — currently only checks Solved, should verify optimizer moved toward minimum.\n6. Replace raw `Value::Scalar` literals with `mm()` helper in new integration tests.\n7. Extract `build_solved_values` helper to deduplicate the zip-insert loop in early-exit and final-return paths.\n\nFiles: crates/reify-constraints/src/solver.rs, crates/reify-constraints/tests/solver_integration.rs\n\nMemory hints: search \"Nelder-Mead solver\", entity NelderMeadSolver",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -12009,7 +12009,7 @@
             "crates/reify-constraints/tests"
           ]
         },
-        "updatedAt": "2026-03-28T09:04:27.160Z"
+        "updatedAt": "2026-03-28T19:38:00.396Z"
       },
       {
         "id": "583",
@@ -15402,7 +15402,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T19:37:58.339Z",
+      "lastModified": "2026-03-28T19:38:00.406Z",
       "taskCount": 747,
       "completedCount": 370,
       "tags": [
