@@ -1,7 +1,10 @@
 //! Lambda evaluation tests.
 
 use reify_expr::{EvalContext, eval_expr};
-use reify_types::{BinOp, CompiledExpr, Type, Value, ValueCellId, ValueMap};
+use reify_types::{
+    BinOp, CompiledExpr, CompiledExprKind, ContentHash, FieldSourceKind, ResolvedFunction, Type,
+    Value, ValueCellId, ValueMap,
+};
 
 /// Helper to build a Value::Lambda with (name, id) param pairs.
 fn make_value_lambda(
@@ -704,5 +707,88 @@ fn apply_lambda_returns_undef_at_max_depth() {
         result,
         Value::Int(6),
         "apply_lambda below MAX_RECURSION_DEPTH must evaluate"
+    );
+}
+
+// ── Field operation diagnostic tests ─────────────────────────────────────
+
+/// Helper to build a FunctionCall expression for stdlib functions.
+fn make_function_call(name: &str, args: Vec<CompiledExpr>, result_type: Type) -> CompiledExpr {
+    let hash = ContentHash::of(name.as_bytes());
+    CompiledExpr {
+        kind: CompiledExprKind::FunctionCall {
+            function: ResolvedFunction {
+                name: name.to_string(),
+                qualified_name: format!("std::{}", name),
+            },
+            args,
+        },
+        result_type,
+        content_hash: hash,
+    }
+}
+
+/// sample(Real, Real) returns Undef when the first arg is not a Field.
+#[test]
+fn sample_non_field_returns_undef() {
+    let expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(Value::Real(1.0), Type::Real),
+            CompiledExpr::literal(Value::Real(0.0), Type::Real),
+        ],
+        Type::Real,
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::Undef, "sample of non-Field must return Undef");
+}
+
+/// sample(Field { lambda: Undef }, point) returns Undef when the lambda is not callable.
+#[test]
+fn sample_field_with_undef_lambda_returns_undef() {
+    let field = Value::Field {
+        domain_type: Type::Real,
+        codomain_type: Type::Real,
+        source: FieldSourceKind::Sampled,
+        lambda: Box::new(Value::Undef),
+    };
+    let expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(
+                field,
+                Type::Field {
+                    domain: Box::new(Type::Real),
+                    codomain: Box::new(Type::Real),
+                },
+            ),
+            CompiledExpr::literal(Value::Real(0.5), Type::Real),
+        ],
+        Type::Real,
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Undef,
+        "sample of Field with Undef lambda must return Undef"
+    );
+}
+
+/// gradient(Real) returns Undef when the argument is not a Field.
+#[test]
+fn gradient_non_field_returns_undef() {
+    let expr = make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(Value::Real(1.0), Type::Real)],
+        Type::Real,
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Undef,
+        "gradient of non-Field must return Undef"
     );
 }
