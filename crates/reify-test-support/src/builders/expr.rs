@@ -525,6 +525,29 @@ mod tests {
     }
 
     #[test]
+    fn literal_frame_helper_produces_frame3_type() {
+        let frame_value = Value::Frame {
+            origin: Box::new(Value::Point(vec![
+                Value::Real(0.0),
+                Value::Real(0.0),
+                Value::Real(0.0),
+            ])),
+            basis: Box::new(Value::Orientation {
+                w: 1.0,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            }),
+        };
+        let expr = literal_frame(frame_value, 3);
+        assert_eq!(expr.result_type, Type::Frame(3));
+        assert!(matches!(
+            expr.kind,
+            CompiledExprKind::Literal(Value::Frame { .. })
+        ));
+    }
+
+    #[test]
     #[should_panic(expected = "infer_type() cannot infer Frame")]
     fn literal_frame_value_panics() {
         let frame_value = Value::Frame {
