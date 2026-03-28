@@ -13796,11 +13796,11 @@
         "description": "The `conjugate` builtin in eval_builtin (lib.rs:489) constructs a new `Value::Complex { re: *re, im: -im, dimension: *dimension }` without wrapping in `sanitize_value`. If the input Complex has NaN or Inf in either field, the poisoned value propagates silently. Every other complex-producing builtin (`phase`, `complex_magnitude`, `complex_add`, `complex_mul`, and now `re`/`im` via task 358) calls `sanitize_value` on output. `conjugate` is the only exception.\n\nFix: Change the conjugate arm to wrap the result in `sanitize_value(...)`. Add tests for conjugate with NaN/Inf inputs returning Undef.\n\nMemory hints: search \"sanitize_value eval_builtin conjugate\", entities: eval_builtin, sanitize_value, conjugate",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-28T09:04:27.572Z",
+        "updatedAt": "2026-03-28T16:57:41.270Z",
         "metadata": {
           "modules": [
             "crates/reify-stdlib"
@@ -15284,7 +15284,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T16:57:31.423Z",
+      "lastModified": "2026-03-28T16:57:41.270Z",
       "taskCount": 738,
       "completedCount": 361,
       "tags": [
