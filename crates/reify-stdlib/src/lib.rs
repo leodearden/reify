@@ -873,6 +873,14 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
             if args.len() != 4 {
                 return Value::Undef;
             }
+            // Quaternion components are pure numbers — reject dimensioned Scalars.
+            if args[0].dimension() != DimensionVector::DIMENSIONLESS
+                || args[1].dimension() != DimensionVector::DIMENSIONLESS
+                || args[2].dimension() != DimensionVector::DIMENSIONLESS
+                || args[3].dimension() != DimensionVector::DIMENSIONLESS
+            {
+                return Value::Undef;
+            }
             match (
                 args[0].as_f64(),
                 args[1].as_f64(),
