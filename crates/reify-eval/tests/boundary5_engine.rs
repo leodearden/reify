@@ -630,6 +630,60 @@ fn eval_param_no_default_undef_undetermined() {
     );
 }
 
+/// Param with no default propagates Undef to dependent let bindings.
+#[test]
+fn eval_param_no_default_with_dependent_let() {
+    use reify_types::{BinOp, CompiledExpr, DeterminacyState, ModulePath, Type, ValueCellId};
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param("S", "n", Type::Real, None)
+        .let_binding(
+            "S",
+            "y",
+            Type::Real,
+            binop(
+                BinOp::Mul,
+                value_ref("S", "n"),
+                CompiledExpr::literal(reify_types::Value::Real(2.0), Type::Real),
+            ),
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let result = engine.eval(&module);
+
+    // n should be Undef + Undetermined in snapshot
+    let n_id = ValueCellId::new("S", "n");
+    let snapshot = engine.snapshot().expect("snapshot should exist after eval");
+    let (n_snap_val, n_det) = snapshot.values.get(&n_id).expect("n in snapshot");
+    assert!(n_snap_val.is_undef(), "snapshot n should be Undef");
+    assert_eq!(
+        *n_det,
+        DeterminacyState::Undetermined,
+        "snapshot n determinacy should be Undetermined"
+    );
+
+    // y should evaluate to Undef (since its input n is Undef)
+    let y_id = ValueCellId::new("S", "y");
+    let y_val = result.values.get(&y_id).expect("y should be in values");
+    assert!(
+        y_val.is_undef(),
+        "y (dependent on Undef param) should be Undef, got {:?}",
+        y_val
+    );
+
+    // y should also be in snapshot
+    assert!(
+        snapshot.values.get(&y_id).is_some(),
+        "y should be present in snapshot"
+    );
+}
+
 /// Engine-level verification: stdlib functions evaluate correctly in let-bindings.
 #[test]
 fn engine_eval_stdlib_function_in_let() {
