@@ -126,6 +126,22 @@ export async function lspRequest(method: string, params: unknown): Promise<unkno
 import type { MessageContext } from './stores/claudeStore';
 export type { MessageContext as ClaudeMessageContext } from './stores/claudeStore';
 
+/**
+ * Exhaustive camelCase→snake_case mapping for MessageContext fields.
+ * Typed as Record<keyof Required<MessageContext>, string> so that adding a new
+ * field to MessageContext without updating this table causes a tsc error.
+ *
+ * SYNC: When adding a field to MessageContext, update this table AND
+ * ChatPanel.tsx buildMessageContext(). See gui/src/__tests__/types.typecheck.ts.
+ */
+export const MESSAGE_CONTEXT_FIELD_MAP: Record<keyof Required<MessageContext>, string> = {
+  selectedEntity: 'selected_entity',
+  diagnostics: 'diagnostics',
+  constraints: 'constraints',
+  currentFile: 'current_file',
+  attachedContexts: 'attached_contexts',
+};
+
 /** Send a message to the Claude sidecar. Maps camelCase context to snake_case for Rust. */
 export async function claudeSendMessage(text: string, context?: MessageContext): Promise<void> {
   return invoke('claude_send_message', {
