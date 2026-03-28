@@ -16,6 +16,8 @@ import {
   claudeAbort,
   claudeClearSession,
   subscribeToClaudeEvents,
+  MESSAGE_CONTEXT_FIELD_MAP,
+  mapContextToWire,
 } from '../bridge';
 
 const mockInvoke = vi.mocked(invoke);
@@ -130,6 +132,61 @@ describe('claude invoke wrappers', () => {
     mockInvoke.mockRejectedValue(new Error('IPC failed'));
 
     await expect(claudeClearSession()).rejects.toThrow('IPC failed');
+  });
+
+  it('MESSAGE_CONTEXT_FIELD_MAP covers every key of MessageContext', () => {
+    // Build a fully-populated MessageContext to extract its keys at runtime
+    const fullContext: Required<MessageContext> = {
+      selectedEntity: 'x',
+      diagnostics: ['d'],
+      constraints: ['c'],
+      currentFile: 'f',
+      attachedContexts: ['a'],
+    };
+    const expectedKeys = Object.keys(fullContext).sort();
+    const mapKeys = Object.keys(MESSAGE_CONTEXT_FIELD_MAP).sort();
+    expect(mapKeys).toEqual(expectedKeys);
+  });
+
+  it('mapContextToWire maps all fields to snake_case', () => {
+    const input: MessageContext = {
+      selectedEntity: 'Box.body',
+      diagnostics: ['error: type mismatch'],
+      constraints: ['x > 0'],
+      currentFile: 'bracket.ri',
+      attachedContexts: ['design-spec.md'],
+    };
+
+    const wire = mapContextToWire(input);
+
+    expect(wire).toEqual({
+      selected_entity: 'Box.body',
+      diagnostics: ['error: type mismatch'],
+      constraints: ['x > 0'],
+      current_file: 'bracket.ri',
+      attached_contexts: ['design-spec.md'],
+    });
+
+    // Verify no extra keys beyond those in the mapping table
+    const wireKeys = Object.keys(wire).sort();
+    const expectedWireKeys = Object.values(MESSAGE_CONTEXT_FIELD_MAP).sort();
+    expect(wireKeys).toEqual(expectedWireKeys);
+  });
+
+  it('mapContextToWire passes undefined fields through', () => {
+    const input: MessageContext = {
+      selectedEntity: 'Bracket.w',
+    };
+
+    const wire = mapContextToWire(input);
+
+    expect(wire).toEqual({
+      selected_entity: 'Bracket.w',
+      diagnostics: undefined,
+      constraints: undefined,
+      current_file: undefined,
+      attached_contexts: undefined,
+    });
   });
 });
 
@@ -733,6 +790,10 @@ type Equals<A, B> =
   (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;
 type AssertTrue<T extends true> = T;
 type _AssertClaudeContextIsMessageContext = AssertTrue<Equals<ClaudeMessageContext, MessageContext>>;
+
+// MESSAGE_CONTEXT_FIELD_MAP must cover every key of MessageContext (compile-time guard).
+// If a field is added to MessageContext but not to the map, tsc will fail here.
+type _AssertFieldMapExhaustive = AssertTrue<Equals<keyof typeof MESSAGE_CONTEXT_FIELD_MAP, keyof Required<MessageContext>>>;
 
 // Each Omit<Interface, 'type'> must match the payload shape used in subscribeToClaudeEvents.
 // If a field is added/removed/renamed in types.ts, tsc will fail here.
