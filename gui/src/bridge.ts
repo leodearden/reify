@@ -174,33 +174,57 @@ export async function subscribeToClaudeEvents(
   const entries: EventEntry[] = [
     ['claude-text-delta', (event) => {
       if (!isRecord(event.payload)) return;
-      const payload = event.payload as Omit<TextDelta, 'type'>;
-      handler({ type: 'text_delta', id: payload.id, content: payload.content });
+      const p = event.payload;
+      if (typeof p.id !== 'string' || typeof p.content !== 'string') {
+        console.warn('claude-text-delta: invalid payload, expected {id: string, content: string}', p);
+        return;
+      }
+      handler({ type: 'text_delta', id: p.id, content: p.content });
     }],
     ['claude-thinking-delta', (event) => {
       if (!isRecord(event.payload)) return;
-      const payload = event.payload as Omit<ThinkingDelta, 'type'>;
-      handler({ type: 'thinking_delta', id: payload.id, content: payload.content });
+      const p = event.payload;
+      if (typeof p.id !== 'string' || typeof p.content !== 'string') {
+        console.warn('claude-thinking-delta: invalid payload, expected {id: string, content: string}', p);
+        return;
+      }
+      handler({ type: 'thinking_delta', id: p.id, content: p.content });
     }],
     ['claude-tool-call', (event) => {
       if (!isRecord(event.payload)) return;
-      const payload = event.payload as Omit<ToolCall, 'type'>;
-      handler({ type: 'tool_call', id: payload.id, tool_name: payload.tool_name, tool_input: payload.tool_input });
+      const p = event.payload;
+      if (typeof p.id !== 'string' || typeof p.tool_name !== 'string') {
+        console.warn('claude-tool-call: invalid payload, expected {id: string, tool_name: string}', p);
+        return;
+      }
+      handler({ type: 'tool_call', id: p.id, tool_name: p.tool_name, tool_input: p.tool_input as Record<string, unknown> });
     }],
     ['claude-tool-result', (event) => {
       if (!isRecord(event.payload)) return;
-      const payload = event.payload as Omit<ToolResult, 'type'>;
-      handler({ type: 'tool_result', id: payload.id, tool_name: payload.tool_name, result: payload.result });
+      const p = event.payload;
+      if (typeof p.id !== 'string' || typeof p.tool_name !== 'string') {
+        console.warn('claude-tool-result: invalid payload, expected {id: string, tool_name: string}', p);
+        return;
+      }
+      handler({ type: 'tool_result', id: p.id, tool_name: p.tool_name, result: p.result });
     }],
     ['claude-done', (event) => {
       if (!isRecord(event.payload)) return;
-      const payload = event.payload as Omit<Done, 'type'>;
-      handler({ type: 'done', id: payload.id });
+      const p = event.payload;
+      if (typeof p.id !== 'string') {
+        console.warn('claude-done: invalid payload, expected {id: string}', p);
+        return;
+      }
+      handler({ type: 'done', id: p.id });
     }],
     ['claude-error', (event) => {
       if (!isRecord(event.payload)) return;
-      const payload = event.payload as Omit<ErrorMessage, 'type'>;
-      handler({ type: 'error', id: payload.id, message: payload.message });
+      const p = event.payload;
+      if (typeof p.id !== 'string' || typeof p.message !== 'string') {
+        console.warn('claude-error: invalid payload, expected {id: string, message: string}', p);
+        return;
+      }
+      handler({ type: 'error', id: p.id, message: p.message });
     }],
     ['claude-ready', () => handler({ type: 'ready' })],
   ];
