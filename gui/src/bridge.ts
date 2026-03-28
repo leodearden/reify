@@ -128,19 +128,20 @@ export type { MessageContext as ClaudeMessageContext } from './stores/claudeStor
 
 /**
  * Exhaustive camelCase→snake_case mapping for MessageContext fields.
- * Typed as Record<keyof Required<MessageContext>, string> so that adding a new
- * field to MessageContext without updating this table causes a tsc error.
+ * Uses `as const satisfies` so that:
+ *  - Values are narrowed to their literal string types (e.g. 'selected_entity', not string)
+ *  - Adding a new field to MessageContext without updating this table still causes a tsc error
  *
  * SYNC: When adding a field to MessageContext, update this table AND
  * ChatPanel.tsx buildMessageContext(). See gui/src/__tests__/types.typecheck.ts.
  */
-export const MESSAGE_CONTEXT_FIELD_MAP: Record<keyof Required<MessageContext>, string> = {
+export const MESSAGE_CONTEXT_FIELD_MAP = {
   selectedEntity: 'selected_entity',
   diagnostics: 'diagnostics',
   constraints: 'constraints',
   currentFile: 'current_file',
   attachedContexts: 'attached_contexts',
-};
+} as const satisfies Record<keyof Required<MessageContext>, string>;
 
 /** Convert a camelCase MessageContext to its snake_case wire representation using MESSAGE_CONTEXT_FIELD_MAP. */
 export function mapContextToWire(ctx: MessageContext): Record<string, unknown> {
