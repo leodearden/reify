@@ -1,0 +1,1 @@
+{"iteration":1,"started":"2026-03-28T01:00:00Z","steps_completed":["step-1","step-2","step-3","step-4"],"status":"all_done","notes":"All 4 steps completed. Extracted report_constraint_results helper from duplicated loops in cmd_check and cmd_build. 5 unit tests + 9 integration tests (cli_check + cli_build) all pass. No regressions."}

@@ -35,8 +35,8 @@
       "id": "step-4",
       "type": "test",
       "description": "Run existing integration tests (cli_check.rs, cli_build.rs) and the new unit tests to verify no regressions. All tests in crates/reify-cli must pass: cargo test -p reify-cli.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "988df9ce"
     }
   ],
   "design_decisions": [
