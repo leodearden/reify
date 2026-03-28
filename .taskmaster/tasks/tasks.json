@@ -13150,11 +13150,11 @@
         "description": "Number('0x10') → 16 and Number('+5') → 5 both pass Number.isFinite(), so the frontend accepts hex/octal/binary literals and leading-plus forms that the backend parse_value_string will reject or misinterpret.",
         "details": "## Problem\n\nIn `isValidValue` (PropertyEditor.tsx:98-103), the check `Number.isFinite(Number(trimmed))` accepts:\n- Hex: `'0x10'` → 16\n- Octal: `'0o10'` → 8  \n- Binary: `'0b10'` → 2\n- Leading plus: `'+5'` → 5\n\nThese pass frontend validation and are submitted to the backend, which may reject or silently mishandle them.\n\n## Fix\n\nAdd a decimal-only regex guard before or instead of the `Number.isFinite` check:\n```typescript\nconst NUM_RE = /^-?(\\d+\\.?\\d*|\\.\\d+)([eE][+-]?\\d+)?$/;\n// ...\nif (NUM_RE.test(trimmed) && Number.isFinite(Number(trimmed))) return true;\n```\n\nThis is the same regex as QUANTITY_RE but without the unit suffix group.\n\n## Files\n- `gui/src/panels/PropertyEditor.tsx` — tighten `isValidValue`\n- `gui/src/__tests__/PropertyEditor.test.tsx` — add test cases for '0x10', '0o10', '0b10', '+5'\n\n## Notes\nTask 125 (S1) previously covered this exact issue and is marked done, but the fix does not appear in the current code. This is a follow-up to complete that fix.\n\n### memory_hints\n- `search(query=\"PropertyEditor hex octal binary validation Number.isFinite\", project_id=\"reify\")`\n- `search(query=\"isValidValue numeric check decimal-only\", project_id=\"reify\")`",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-28T04:15:45.631Z"
+        "updatedAt": "2026-03-28T04:28:43.075Z"
       },
       {
         "id": "653",
@@ -13299,9 +13299,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T04:28:37.679Z",
+      "lastModified": "2026-03-28T04:28:43.076Z",
       "taskCount": 664,
-      "completedCount": 312,
+      "completedCount": 313,
       "tags": [
         "master"
       ]
