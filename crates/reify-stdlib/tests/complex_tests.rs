@@ -182,3 +182,25 @@ fn construct_complex_non_numeric_returns_undef() {
         result
     );
 }
+
+// ── Arithmetic tests (step-5) ────────────────────────────────────────────────
+
+#[test]
+fn complex_add_same_dimension_sums_components() {
+    // complex_add((1+2i)[LENGTH], (3+4i)[LENGTH]) = (4+6i)[LENGTH]
+    let a = complex_val(1.0, 2.0, DimensionVector::LENGTH);
+    let b = complex_val(3.0, 4.0, DimensionVector::LENGTH);
+    let result = eval_builtin("complex_add", &[a, b]);
+    assert_complex_eq(&result, 4.0, 6.0, DimensionVector::LENGTH);
+}
+
+#[test]
+fn complex_mul_cross_dimension_combines() {
+    // complex_mul((1+2i)[LENGTH], (3+4i)[TIME]) = (-5+10i)[LENGTH*TIME]
+    // (1+2i)(3+4i) = (1*3 - 2*4) + (1*4 + 2*3)i = -5 + 10i
+    let a = complex_val(1.0, 2.0, DimensionVector::LENGTH);
+    let b = complex_val(3.0, 4.0, DimensionVector::TIME);
+    let result = eval_builtin("complex_mul", &[a, b]);
+    let expected_dim = DimensionVector::LENGTH.mul(&DimensionVector::TIME);
+    assert_complex_eq(&result, -5.0, 10.0, expected_dim);
+}
