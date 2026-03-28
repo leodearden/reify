@@ -157,6 +157,25 @@ impl AnalysisContext {
         None
     }
 
+    /// Return value cell members for a specific structure/occurrence: (name, kind, type).
+    pub fn member_names_for_structure(&self, name: &str) -> Vec<(&str, ValueCellKind, &Type)> {
+        let mut result = Vec::new();
+        for template in &self.compiled.templates {
+            if template.name != name {
+                continue;
+            }
+            for vc in &template.value_cells {
+                result.push((vc.id.member.as_str(), vc.kind, &vc.cell_type));
+            }
+            for group in &template.guarded_groups {
+                for vc in group.members.iter().chain(group.else_members.iter()) {
+                    result.push((vc.id.member.as_str(), vc.kind, &vc.cell_type));
+                }
+            }
+        }
+        result
+    }
+
     /// Return all value cell members: (name, kind, type).
     pub fn member_names(&self) -> Vec<(&str, ValueCellKind, &Type)> {
         let mut result = Vec::new();
@@ -786,6 +805,26 @@ mod tests {
             Type::Bool,
             "type should not leak from second declaration B"
         );
+    }
+
+    // --- member_names_for_structure tests ---
+
+    #[test]
+    fn member_names_for_structure_returns_scoped_members() {
+        let source =
+            "structure A {\n    param x: Scalar = 5mm\n}\nstructure B {\n    param y: Bool = true\n}";
+        let ctx = AnalysisContext::new(source, &test_uri());
+        let a_members = ctx.member_names_for_structure("A");
+        let a_names: Vec<&str> = a_members.iter().map(|(n, _, _)| *n).collect();
+        assert_eq!(a_names, vec!["x"], "A should only have 'x'");
+
+        let b_members = ctx.member_names_for_structure("B");
+        let b_names: Vec<&str> = b_members.iter().map(|(n, _, _)| *n).collect();
+        assert_eq!(b_names, vec!["y"], "B should only have 'y'");
+
+        // Non-existent structure returns empty
+        let empty = ctx.member_names_for_structure("C");
+        assert!(empty.is_empty(), "non-existent structure should return empty");
     }
 
     // --- format_value tests ---
