@@ -4275,6 +4275,24 @@ mod tests {
     // ── orient NaN/Inf/edge-case tests (task-359) ─────────────────────────
 
     #[test]
+    fn orient_euler_uppercase_convention_returns_undef() {
+        // Convention matching is case-sensitive: 'XYZ' is not recognized, only 'xyz'.
+        assert!(
+            eval_builtin(
+                "orient_euler",
+                &[
+                    Value::String("XYZ".into()),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                ]
+            )
+            .is_undef(),
+            "uppercase convention 'XYZ' should be rejected"
+        );
+    }
+
+    #[test]
     fn orient_basis_nan_component_returns_undef() {
         // NaN in a basis vector must be rejected — NaN bypasses IEEE 754 comparisons.
         let x = Value::Tensor(vec![Value::Real(f64::NAN), Value::Real(0.0), Value::Real(0.0)]);
