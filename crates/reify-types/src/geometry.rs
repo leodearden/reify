@@ -4,7 +4,7 @@ use crate::hash::ContentHash;
 use crate::value::Value;
 
 /// Unique identifier for a geometry handle within a kernel session.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct GeometryHandleId(pub u64);
 
 impl GeometryHandleId {
@@ -372,5 +372,13 @@ mod tests {
             }
             _ => panic!("expected Sweep variant"),
         }
+    }
+
+    #[test]
+    fn geometry_handle_id_is_ordered() {
+        assert!(GeometryHandleId(1) < GeometryHandleId(2));
+        assert!(GeometryHandleId(5) > GeometryHandleId(3));
+        assert!(GeometryHandleId(7) <= GeometryHandleId(7));
+        assert!(GeometryHandleId(7) >= GeometryHandleId(7));
     }
 }

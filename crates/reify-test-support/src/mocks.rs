@@ -169,6 +169,15 @@ enum QueryKey {
     },
 }
 
+/// Normalize a distance pair to canonical (min, max) order so that
+/// Distance(A, B) and Distance(B, A) map to the same key.
+fn normalize_distance_pair(
+    a: GeometryHandleId,
+    b: GeometryHandleId,
+) -> (GeometryHandleId, GeometryHandleId) {
+    if a <= b { (a, b) } else { (b, a) }
+}
+
 impl QueryKey {
     fn from_query(query: &GeometryQuery) -> Self {
         match query {
@@ -177,12 +186,7 @@ impl QueryKey {
             GeometryQuery::Centroid(id) => QueryKey::Centroid(*id),
             GeometryQuery::BoundingBox(id) => QueryKey::BoundingBox(*id),
             GeometryQuery::Distance { from, to } => {
-                // Normalize to (min, max) so Distance(A,B) == Distance(B,A)
-                let (lo, hi) = if from.0 <= to.0 {
-                    (*from, *to)
-                } else {
-                    (*to, *from)
-                };
+                let (lo, hi) = normalize_distance_pair(*from, *to);
                 QueryKey::Distance { from: lo, to: hi }
             }
             GeometryQuery::MomentOfInertia { handle, axis } => {
@@ -263,12 +267,7 @@ impl MockGeometryKernel {
         to: GeometryHandleId,
         value: Value,
     ) -> Self {
-        // Normalize to (min, max) so Distance(A,B) == Distance(B,A)
-        let (lo, hi) = if from.0 <= to.0 {
-            (from, to)
-        } else {
-            (to, from)
-        };
+        let (lo, hi) = normalize_distance_pair(from, to);
         self.typed_queries
             .insert(QueryKey::Distance { from: lo, to: hi }, value);
         self
@@ -1700,5 +1699,18 @@ mod tests {
                 other
             ),
         }
+    }
+
+    #[test]
+    fn normalize_distance_pair_canonical_order() {
+        let lo = GeometryHandleId(1);
+        let hi = GeometryHandleId(5);
+
+        // (high, low) → (low, high)
+        assert_eq!(normalize_distance_pair(hi, lo), (lo, hi));
+        // (low, high) → unchanged
+        assert_eq!(normalize_distance_pair(lo, hi), (lo, hi));
+        // equal IDs → (id, id)
+        assert_eq!(normalize_distance_pair(lo, lo), (lo, lo));
     }
 }
