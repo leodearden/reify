@@ -6938,11 +6938,11 @@
         "description": "Follow-up from task 300 code review. All issues are in crates/reify-stdlib/src/lib.rs.\n\n1. **remap dimension stripping**: remap always returns Real, silently dropping dimension from Scalar inputs. Add dimension-aware arms (mirroring clamp/lerp) or at minimum validate dimension consistency and return Undef on mismatch. Add test for Scalar inputs.\n2. **NaN guard completeness**: clamp guards NaN in bounds (lo/hi) but not in x — relies on sanitize_value backstop. Add x.is_nan() to guard in Real, Scalar, and fallback arms. Similarly, lerp's as_f64() passes NaN t through to sanitize_value — add explicit NaN check after extraction.\n3. **Extract helpers / reduce duplication**: (a) Add quinary or quinary_f64 helper for remap (currently inlines arg-count check), (b) Extract valid_f64_range(lo, hi) for the repeated NaN+inverted-range guard in clamp, (c) Extract lerp_f64(a, b, t) for the repeated formula, (d) Add assert_real_approx() test helper for the ~20 repeated match-on-Real assertions.\n4. **Additional test coverage**: clamp Int below-lo and above-hi, lerp NaN in a/b endpoints, lerp with Int inputs (documents Real coercion), remap with Scalar inputs.\n5. **Minor cleanup**: Move mod into two-arg section (not separate \"Integer functions\" section), add lerp Int fast path, add remap early-exit for from_lo==from_hi, reconstruct Scalar in clamp fallback when dimension is non-DIMENSIONLESS.\n\nmemory_hints: search \"stdlib builtin helper pattern\" and \"dimension preservation convention\"; get_entity \"eval_builtin\", \"sanitize_value\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-27T06:25:13.458Z",
+        "updatedAt": "2026-03-28T01:10:17.026Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -7017,14 +7017,16 @@
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-03-27T06:11:37.599Z",
+        "updatedAt": "2026-03-28T01:09:56.974Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
             "crates/reify-stdlib/src/lib.rs"
           ],
           "modules": [
-            "crates/reify-stdlib/src"
+            "crates/reify-expr",
+            "crates/reify-lsp",
+            "crates/reify-stdlib"
           ]
         }
       },
@@ -8627,11 +8629,11 @@
         "description": "Make find_parsed_member_span in analysis.rs recurse into GuardedGroupDecl.members and else_members so params/lets inside where-guarded blocks are visible to hover and goto-def. Also affects goto_def.rs which has the same flat traversal. (Review followup from task 216)",
         "details": "<info added on 2026-03-27T14:46:16.277Z>\nRECONCILIATION NOTE (2026-03-27): Memory records this task was unblocked and merged to main, with the member_names() fix folded into the merge commit. However, status was reverted from done→in-progress→pending via buffered events around 12:01-12:07 UTC. Current status (pending) may be stale if the code is actually merged. Human should verify: (1) check git log for the merge commit, (2) if merged, set status to done; if not, leave as pending.\n</info added on 2026-03-27T14:46:16.277Z>",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-27T12:07:02.406Z",
+        "updatedAt": "2026-03-28T01:09:48.939Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -8716,11 +8718,11 @@
         "description": "Two cleanup items in claude_bridge_tests.rs for the wait_ready_notified_race_on_multithread test (lines 1755-1792):\n\n1. **Simplify Arc<Mutex<Option<DuplexStream>>>**: The held_writer/held_clone pattern is copied from ensure_sidecar_ready_notified_race_on_multithread where the Arc is needed because the writer crosses a spawn_fn closure boundary. In the wait_ready test, everything runs sequentially — a plain `let _data_writer = data_writer;` after write_all keeps the writer alive equally well with zero heap allocation. This matches the pattern already used in wait_ready_returns_err_on_timeout and wait_ready_returns_err_on_crash_during_wait.\n\n2. **Add handle.kill() per iteration**: Each of the 20 iterations drops SidecarHandle without kill(). SidecarHandle has no Drop impl, so the internal reader JoinHandle is detached, not aborted. The reader task continues until it sees EOF from the held_writer dropping at loop-iteration end. This means up to ~20 reader tasks accumulate on the 2-thread pool, risking flaky timeouts under load. Add `handle.kill().await` after asserting the result.\n\nMemory hints: search \"wait_ready race test duplex\", search \"SidecarHandle kill cleanup\", entities: SidecarHandle, wait_ready_notified_race_on_multithread",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-03-28T00:56:40.359Z",
+        "updatedAt": "2026-03-28T01:13:33.985Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -9035,11 +9037,11 @@
         "description": "Test quality suggestions from task 396 review (all in crates/reify-syntax, test code only):\n\n1. **Strengthen assertion** (test_analyst, robustness): `lower_connect_body_extras_not_flagged` uses `!errors.iter().any(|e| e.message.contains(\"unexpected\"))` — should be `assert!(errors.is_empty())` since source is syntactically valid. Location: ts_parser.rs ~line 3008.\n\n2. **Assert error count** (test_analyst): `lower_connect_body_catch_all_emits_for_unexpected_named_children` should assert `errors.len() >= 3` (one per named non-extra child). Location: ts_parser.rs ~line 3045.\n\n3. **Add has_error guard** (robustness): catch-all test should verify `!root.has_error()` before proceeding, for self-diagnosis on grammar changes. Location: ts_parser.rs ~line 3032.\n\n4. **Use let-else** (test_analyst): Replace `.expect()` with let-else for better test failure output. Location: ts_parser.rs ~line 3032.\n\n5. **Add anonymous token test** (test_analyst): New test `lower_connect_body_anonymous_tokens_not_flagged` — parse empty connect body `{}`, assert `errors.is_empty()`.\n\n6. **Split comment integration test** (test_analyst): `connect_body_with_comment_no_spurious_errors` tests two scenarios in one function — split into block/line comment tests. Location: connect_chain_tests.rs ~line 540.\n\n7. **Extract test helper** (reuse_auditor): Generalize `lower_body_directly` to `lower_node_directly(source, kind)` accepting target node kind as parameter. Location: ts_parser.rs ~line 2937.\n\n8. **Document test design** (architect_reviewer): Add comment explaining why catch-all test deliberately passes wrong node type. Location: ts_parser.rs ~line 3027.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-03-28T00:48:43.574Z",
+        "updatedAt": "2026-03-28T01:10:14.805Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -10067,7 +10069,7 @@
         "description": "The constraint-reporting loop in cmd_build (lines 162-175) is a near-exact copy of cmd_check (lines 89-102). Both iterate constraint_results, match on Satisfaction, set all_satisfied=false for violations, format labels identically, and print status strings. The only difference is println vs eprintln.\n\n**Fix:** Extract a helper function like:\n```rust\nfn report_constraint_results(results: &[ConstraintEntry], use_stderr: bool) -> bool\n```\nOr separate concerns: a pure `fn all_constraints_satisfied(results: &[ConstraintEntry]) -> bool` for exit-code logic, with each command printing in its own style.\n\n**Location:** crates/reify-cli/src/main.rs\n\n**Memory hints:** search for \"CLI constraint reporting\", entity names: cmd_build, cmd_check, ConstraintEntry",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -10080,7 +10082,7 @@
             "crates/reify-cli/src"
           ]
         },
-        "updatedAt": "2026-03-28T00:46:34.734Z"
+        "updatedAt": "2026-03-28T01:09:46.371Z"
       },
       {
         "id": "504",
@@ -10238,7 +10240,7 @@
         "description": "Builds with Indeterminate constraints succeed silently — this design choice has no test or documentation.",
         "details": "In crates/reify-cli/src/main.rs, the Indeterminate arm in the constraint-status match does not set all_satisfied=false, meaning builds with indeterminate constraints succeed. Add a test in cli_build.rs with a fixture that produces Indeterminate satisfaction, and add a doc-comment in main.rs explaining the rationale (indeterminate != violated).\n\nFiles: crates/reify-cli/src/main.rs, crates/reify-cli/tests/cli_build.rs\n\nmemory_hints: search \"Indeterminate Satisfaction constraint\" | entities: cmd_build, Satisfaction",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -10253,7 +10255,8 @@
             "crates/reify-cli/src",
             "crates/reify-cli/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-03-28T01:09:50.087Z"
       },
       {
         "id": "512",
@@ -10404,7 +10407,7 @@
         "description": "In `gui/src/bridge.ts`, `ClaudeMessageContext` duplicates 3 of 5 fields from `MessageContext` (in `claudeStore.ts`), silently dropping `currentFile` and `attachedContexts` at the bridge boundary. `App.tsx` `onSend` receives the full `MessageContext` but only forwards 3 fields to `claudeSendMessage`.\n\n**Fix**: Either:\n1. Import `MessageContext` from `./stores/claudeStore` and use `Pick<MessageContext, 'selectedEntity' | 'diagnostics' | 'constraints'>` with a comment explaining why `currentFile` and `attachedContexts` are intentionally excluded, OR\n2. Extend `ClaudeMessageContext` to include all 5 fields and handle the snake_case mapping for `current_file` and `attached_contexts`.\n\nOption depends on whether the Rust sidecar accepts those extra fields.\n\nMemory hints:\n- Search: \"ClaudeMessageContext MessageContext bridge context fields\"\n- Entities: ClaudeMessageContext, MessageContext, bridge.ts, claudeSendMessage",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -10418,7 +10421,7 @@
             "gui/src"
           ]
         },
-        "updatedAt": "2026-03-28T00:51:33.015Z"
+        "updatedAt": "2026-03-28T01:14:27.900Z"
       },
       {
         "id": "519",
@@ -10447,7 +10450,7 @@
         "description": "The bridge unit tests (`gui/src/__tests__/claudeBridge.test.ts`) only cover the happy path for invoke wrappers. There are no tests verifying that `claudeSendMessage`, `claudeAbort`, or `claudeClearSession` propagate rejections from `invoke`. In `App.tsx`, callers use `.catch` on the returned promise; if the wrappers accidentally swallow errors, those `.catch` handlers silently never fire.\n\n**Fix**: Add a test for each invoke wrapper that mocks `invoke` to reject and asserts the wrapper's returned promise also rejects:\n```typescript\nmockInvoke.mockRejectedValue(new Error('IPC failed'));\nawait expect(claudeAbort()).rejects.toThrow('IPC failed');\n```\n\nMemory hints:\n- Search: \"claudeBridge.test invoke reject propagation\"\n- Entities: claudeSendMessage, claudeAbort, claudeClearSession, bridge.ts",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -10460,7 +10463,7 @@
             "gui/src/__tests__"
           ]
         },
-        "updatedAt": "2026-03-28T00:52:11.902Z"
+        "updatedAt": "2026-03-28T01:09:40.829Z"
       },
       {
         "id": "521",
@@ -10468,7 +10471,7 @@
         "description": "In `gui/src/__tests__/claudeIntegration.test.ts`, the rAF polyfill populates `rafCallbacks` but those callbacks are never executed. Tests pass only because `claude-done` calls `cancelAndFlush()` synchronously. The rAF batching code path (`scheduleFlush → requestAnimationFrame → flushBuffers`) is never exercised.\n\n**Fix**:\n1. Add a `flushRaf()` helper that drains pending RAF callbacks:\n```typescript\nfunction flushRaf() {\n  const pending = rafCallbacks.splice(0);\n  pending.forEach(cb => cb());\n}\n```\n2. Add a test that fires `text-delta` events WITHOUT a `done`, calls `flushRaf()`, and asserts `responseText` has been updated — validating the rAF path independently.\n3. Also add `afterAll` to restore original globals: `globalThis.requestAnimationFrame = origRAF; globalThis.cancelAnimationFrame = origCancelRAF;`\n4. Make the existing done-event test call `flushRaf()` explicitly before asserting, to document the rAF dependency.\n\nMemory hints:\n- Search: \"claudeIntegration rAF requestAnimationFrame flushBuffers\"\n- Entities: claudeIntegration.test.ts, claudeStore, flushBuffers, cancelAndFlush",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -10481,7 +10484,7 @@
             "gui/src/__tests__"
           ]
         },
-        "updatedAt": "2026-03-28T00:55:43.372Z"
+        "updatedAt": "2026-03-28T01:09:48.787Z"
       },
       {
         "id": "522",
@@ -10637,7 +10640,7 @@
         "description": "Several new solver integration tests have loose or misaligned assertion bounds and miss the existing mm() helper.\n\nFixes:\n1. `optimize_with_feasible_initial_point` (solver_integration.rs:579-580): Change `si > 0.002` to `si >= 0.005` — the meaningful floor is the auto param bound (5mm), not the constraint floor (2mm). Tighten upper to `si < 0.008` to match the \"near 5mm\" comment.\n2. `maximize_with_feasible_initial_point` (solver_integration.rs:643-644): Tighten `si <= 0.051` to `si <= 0.0505` — 1mm slack is 20× larger than reasonable float tolerance.\n3. Replace raw `Value::Scalar { si_value: 0.025, dimension: DimensionVector::LENGTH }` with `mm(25.0)` and similarly for `mm(10.0)` in the new integration tests (lines ~546-551, ~607-612) — `reify_test_support::mm()` is already imported.\n\nMemory hints: search for \"solver test helpers\", entity names: DimensionalSolver, mm helper",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "495"
         ],
@@ -10651,7 +10654,8 @@
           "modules": [
             "crates/reify-constraints/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-03-28T01:09:57.374Z"
       },
       {
         "id": "529",
@@ -10842,7 +10846,7 @@
         "description": "Add missing test coverage for PropertyEditor's quantity-literal validation identified during task 486 code review.",
         "details": "## Gaps identified\n\n1. **Blur path**: The `handleBlur` path also calls `isValidValue` but no quantity-literal tests exercise it. Add blur tests for accepted (`80mm`) and rejected (`mm80`) literals — blur reverts rather than sets `data-invalid`.\n\n2. **Scientific notation + unit**: `QUANTITY_RE` accepts `1e3mm`, `1.5e-2deg` via the `([eE][+-]?\\d+)?` group, but no tests cover this. Add to accepted `it.each`.\n\n3. **No leading digit**: `QUANTITY_RE` accepts `.5mm`, `.25deg` via the `\\.\\d+` branch. Untested. Add to accepted `it.each`.\n\n4. **Rejection near-misses**: Missing rejection cases for `+10mm` (no leading `+` in regex), `mm` (standalone unit, no number), `deg` (standalone unit). Add to rejected `it.each`.\n\n### Files\n- `gui/src/__tests__/PropertyEditor.test.tsx`\n\n### memory_hints\n- `search(query=\"PropertyEditor quantity literal QUANTITY_RE\", project_id=\"reify\")`",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -10856,7 +10860,8 @@
             "gui/src/__tests__",
             "gui/src/panels"
           ]
-        }
+        },
+        "updatedAt": "2026-03-28T01:12:27.553Z"
       },
       {
         "id": "538",
@@ -10864,7 +10869,7 @@
         "description": "The frontend `QUANTITY_RE` rejects `'5 mm'` (whitespace between number and unit), but the backend `parse_value_string` accepts it because it does `strip_suffix(unit)` then `num_str.trim()`. The original task spec listed `'5 mm'` as accepted, but the implementation chose to reject it. Need a deliberate design decision.",
         "details": "## Context\n\n- Frontend regex: `/^-?(\\d+\\.?\\d*|\\.\\d+)([eE][+-]?\\d+)?(mm|cm|deg|rad|m)$/` — no whitespace allowed\n- Backend `parse_value_string` (engine.rs:416-417): `s.strip_suffix(unit)` → `num_str.trim()` — whitespace accepted\n- Tree-sitter grammar uses `token.immediate` (no whitespace), but that applies to `.ri` source parsing, not the IPC `parse_value_string` path\n\n## Options\n\n1. **Accept whitespace** — relax regex to allow `\\s*` before unit, matching backend behavior. More forgiving UX.\n2. **Reject whitespace** (current) — stricter, consistent with `.ri` grammar. Document the intentional frontend-is-stricter policy.\n\n### Files\n- `gui/src/panels/PropertyEditor.tsx` (QUANTITY_RE)\n- `gui/src/__tests__/PropertyEditor.test.tsx` (whitespace test cases)\n\n### memory_hints\n- `search(query=\"PropertyEditor whitespace quantity literal design decision\", project_id=\"reify\")`\n- `search(query=\"parse_value_string unit whitespace\", project_id=\"reify\")`",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -10878,7 +10883,8 @@
             "gui/src/panels",
             "gui/src/__tests__"
           ]
-        }
+        },
+        "updatedAt": "2026-03-28T01:13:39.537Z"
       },
       {
         "id": "539",
@@ -11846,9 +11852,18 @@
             "crates/reify-constraints/tests"
           ],
           "memory_hints": {
-            "entities": [],
+            "entities": [
+              "NelderMeadSolver",
+              "SolveResult",
+              "FEASIBLE_OPT_ITERS",
+              "FEASIBILITY_THRESHOLD",
+              "warm-start optimization"
+            ],
             "queries": [
-              "resolution for: Solver: warm-start convergence robustness improvements"
+              "Nelder-Mead solver constraint architecture warm-start",
+              "solver convergence reporting suboptimality detection",
+              "feasible region drift fallback warm-start solver",
+              "task 495 review suggestions solver robustness"
             ]
           }
         },
@@ -12167,7 +12182,7 @@
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-03-28T00:35:20.364Z",
+        "updatedAt": "2026-03-28T01:09:43.117Z",
         "metadata": {
           "modules": [
             "crates/reify-lsp"
@@ -12903,13 +12918,13 @@
         "description": "The error-case tests in type_alias_tests.rs (parse_type_alias_missing_name_no_panic, parse_type_alias_missing_equals_no_panic, parse_type_alias_empty_rhs_no_panic) use weak disjunctive assertions (`!has_type_alias || !errors.is_empty()`) that pass silently when the parser produces neither output nor errors. This means a parser that silently swallows malformed input without emitting any diagnostic would pass the tests.\n\nFix:\n1. In `missing_name` and `missing_equals` tests: add `assert!(!errors.is_empty(), \"expected parse errors for malformed input\");` to verify error emission, not just no-panic.\n2. In `empty_rhs` test: add fallback assertion outside the `if let` block ensuring either a TypeAlias or errors are present. Update the comment to match the actual invariant (may produce TypeAlias via tree-sitter recovery, not \"no valid TypeAlias emitted\").\n3. Review the 3 pre-existing malformed dimensional tests (lines 278-321) for the same weak-assertion pattern and strengthen if needed.\n\nMemory hints: search \"type alias parser tests\", get_entity \"TypeAliasDecl\".",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "439"
         ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-28T00:51:00.648Z",
+        "updatedAt": "2026-03-28T01:12:27.227Z",
         "metadata": {
           "modules": [
             "crates/reify-syntax"
@@ -12971,7 +12986,13 @@
         "status": "pending",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-03-28T01:12:26.923Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-stdlib"
+          ]
+        }
       },
       {
         "id": "647",
@@ -12983,13 +13004,46 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": "648",
+        "title": "Improve cancelAnimationFrame polyfill fidelity in claudeIntegration tests",
+        "description": "In `gui/src/__tests__/claudeIntegration.test.ts`, `cancelAnimationFrame` is a no-op that doesn't remove callbacks from `rafCallbacks`. This means `cancelAndFlush()` (called by done/error handlers) silently leaves stale callbacks. A regression in cancel logic would go undetected.\n\n**Fix**: Implement `cancelAnimationFrame` to actually remove the callback by id, matching the `id = rafCallbacks.length + 1` allocation scheme. Either use index-based splice or maintain a `Map<number, () => void>` for precise lookup.\n\nMemory hints:\n- Search: \"claudeIntegration rAF cancelAnimationFrame polyfill\"\n- Entities: claudeIntegration.test.ts, claudeStore, cancelAndFlush",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
+      },
+      {
+        "id": "649",
+        "title": "Add thinking_delta rAF flush test in claudeIntegration",
+        "description": "In `gui/src/__tests__/claudeIntegration.test.ts`, the new rAF flush test only exercises `text_delta` → `textBuffer` → `responseText`. The `thinking_delta` case uses the same `scheduleFlush()` path but flushes into `thinkingText` via a different buffer. A regression in the `thinkingBuffer` branch would be undetected.\n\n**Fix**: Add a parallel test that fires `claude-thinking-delta` events, calls `flushRaf()`, and asserts `thinkingText` is populated while `responseText` remains empty.\n\nMemory hints:\n- Search: \"claudeIntegration thinking_delta thinkingBuffer flushBuffers rAF\"\n- Entities: claudeIntegration.test.ts, claudeStore, flushBuffers",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
+      },
+      {
+        "id": "650",
+        "title": "Apply symmetric test improvements to port_body and constraint_def catch-all tests",
+        "description": "Task 456 improved connect_body test quality but left port_body and constraint_def tests with weaker patterns. Apply the same improvements symmetrically:\n\n1. **Strengthen assertion in `lower_port_body_extras_not_flagged`** (ts_parser.rs ~line 3555): Change `!errors.iter().any(|e| e.message.contains(\"unexpected\"))` to `assert!(errors.is_empty(), ...)` — source is syntactically valid, matching the connect_body variant.\n\n2. **Strengthen assertion in `lower_constraint_def_extras_not_flagged`** (ts_parser.rs ~line 3609): Same weak→strong assertion change.\n\n3. **Add has_error guard + count assertion + let-else in `lower_port_body_catch_all_emits_for_unexpected_named_children`** (ts_parser.rs ~line 3519): Add `assert!(!root.has_error(), ...)` before node lookup, use let-else for find_node_by_kind, change `!lowering.errors.is_empty()` to `lowering.errors.len() >= 3`.\n\n4. **Add has_error guard + count assertion + let-else in `lower_constraint_def_catch_all_emits_for_unexpected_named_children`** (ts_parser.rs ~line 3571): Same improvements. Count should be `>= 2` (port_declaration, sub_declaration at minimum).\n\nAll changes are test-only in crates/reify-syntax/src/ts_parser.rs.\n\nmemory_hints: search for \"task 456 test quality connect body\" for original context.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T00:56:52.277Z",
-      "taskCount": 647,
-      "completedCount": 296,
+      "lastModified": "2026-03-28T01:14:27.900Z",
+      "taskCount": 650,
+      "completedCount": 301,
       "tags": [
         "master"
       ]

@@ -600,7 +600,7 @@ fn parse_connect_reverse() {
 // ── task-396: comments in connect body produce no spurious errors ──
 
 #[test]
-fn connect_body_with_comment_no_spurious_errors() {
+fn connect_body_with_block_comment_no_spurious_errors() {
     // Block comment inside connect body with params — must not produce diagnostics.
     let (_decls, errors) = parse_decls(
         "structure S { port a : out T  port b : in T  connect a -> b : BoltSet { /* inline comment */ grade = 8.8 } }",
@@ -610,7 +610,10 @@ fn connect_body_with_comment_no_spurious_errors() {
         "expected no parse errors for connect body with block comment, got: {:?}",
         errors
     );
+}
 
+#[test]
+fn connect_body_with_line_comment_no_spurious_errors() {
     // Line comment inside connect body with port mappings — must not produce diagnostics.
     let (_decls, errors) = parse_decls(
         "structure S { port a : out T  port b : in T  connect a -> b {\n// comment\nshaft -> bore\n} }",

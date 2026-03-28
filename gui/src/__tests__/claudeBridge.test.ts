@@ -113,6 +113,24 @@ describe('claude invoke wrappers', () => {
 
     expect(mockInvoke).toHaveBeenCalledWith('claude_clear_session');
   });
+
+  it('claudeSendMessage propagates invoke rejection', async () => {
+    mockInvoke.mockRejectedValue(new Error('IPC failed'));
+
+    await expect(claudeSendMessage('hello')).rejects.toThrow('IPC failed');
+  });
+
+  it('claudeAbort propagates invoke rejection', async () => {
+    mockInvoke.mockRejectedValue(new Error('IPC failed'));
+
+    await expect(claudeAbort()).rejects.toThrow('IPC failed');
+  });
+
+  it('claudeClearSession propagates invoke rejection', async () => {
+    mockInvoke.mockRejectedValue(new Error('IPC failed'));
+
+    await expect(claudeClearSession()).rejects.toThrow('IPC failed');
+  });
 });
 
 describe('subscribeToClaudeEvents', () => {

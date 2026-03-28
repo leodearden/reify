@@ -1931,9 +1931,6 @@ async fn wait_ready_notified_race_on_multithread() {
 
     // Run 20 iterations to increase probability of hitting timing-dependent races.
     for i in 0..20 {
-        let held_writer: Arc<Mutex<Option<tokio::io::DuplexStream>>> = Arc::new(Mutex::new(None));
-        let held_clone = Arc::clone(&held_writer);
-
         let state = Arc::new(Mutex::new(SidecarState::Starting));
         let (mut data_writer, data_reader) = tokio::io::duplex(1024);
 
@@ -1945,10 +1942,10 @@ async fn wait_ready_notified_race_on_multithread() {
             .unwrap();
         let reader = BufReader::new(data_reader);
         let (stdin_writer, _stdin_reader) = tokio::io::duplex(1024);
-        let handle = SidecarHandle::from_parts(stdin_writer, reader, state);
+        let mut handle = SidecarHandle::from_parts(stdin_writer, reader, state);
 
         // Hold the writer alive so the reader doesn't see EOF.
-        *held_clone.lock().await = Some(data_writer);
+        let _data_writer = data_writer;
 
         let result = handle.wait_ready(Duration::from_millis(500)).await;
         assert!(
@@ -1958,6 +1955,10 @@ async fn wait_ready_notified_race_on_multithread() {
             i,
             result
         );
+
+        // Abort the reader task immediately instead of leaving it detached
+        // until the writer drops at end-of-iteration.
+        handle.kill().await;
     }
 }
 
