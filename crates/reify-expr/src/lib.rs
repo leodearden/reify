@@ -49,6 +49,18 @@ impl<'a> EvalContext<'a> {
         }
     }
 
+    /// Create a simple context with an explicit recursion depth — **test-only**.
+    #[doc(hidden)]
+    pub fn _test_at_depth(values: &'a ValueMap, depth: u32) -> Self {
+        Self {
+            values,
+            functions: &[],
+            recursion_depth: depth,
+            meta: None,
+            determinacy: None,
+        }
+    }
+
     /// Attach meta block data for MetaAccess evaluation.
     pub fn with_meta(mut self, meta: &'a HashMap<String, HashMap<String, String>>) -> Self {
         self.meta = Some(meta);
@@ -447,6 +459,7 @@ fn eval_user_function_call(function_name: &str, args: &[CompiledExpr], ctx: &Eva
 /// Returns Undef if:
 /// - The value is not a Lambda
 /// - Argument count doesn't match param count
+/// - Recursion depth has reached MAX_RECURSION_DEPTH
 pub fn apply_lambda(lambda: &Value, args: &[Value], ctx: &EvalContext) -> Value {
     match lambda {
         Value::Lambda {
@@ -454,6 +467,11 @@ pub fn apply_lambda(lambda: &Value, args: &[Value], ctx: &EvalContext) -> Value 
             body,
             captures,
         } => {
+            // Check depth before any work (consistent with eval_user_function_call)
+            if ctx.recursion_depth >= MAX_RECURSION_DEPTH {
+                return Value::Undef;
+            }
+
             if args.len() != params.len() {
                 return Value::Undef;
             }
