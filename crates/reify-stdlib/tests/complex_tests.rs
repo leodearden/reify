@@ -252,3 +252,52 @@ fn re_im_dimensioned_returns_scalar() {
     assert_scalar_approx(&re, 3.0, DimensionVector::LENGTH);
     assert_scalar_approx(&im, 4.0, DimensionVector::LENGTH);
 }
+
+// ── Complex<Impedance> integration test (step-11) ────────────────────────────
+
+#[test]
+fn complex_impedance_workflow() {
+    // Build impedance dimension: kg·m²·s⁻³·A⁻² (ohms in SI)
+    let impedance = DimensionVector::MASS
+        .mul(&DimensionVector::LENGTH.pow(2))
+        .div(&DimensionVector::TIME.pow(3))
+        .div(&DimensionVector::CURRENT.pow(2));
+
+    // Construct complex impedance: Z = 50 - 25i (ohms)
+    let z = eval_builtin(
+        "complex",
+        &[
+            Value::Scalar {
+                si_value: 50.0,
+                dimension: impedance,
+            },
+            Value::Scalar {
+                si_value: -25.0,
+                dimension: impedance,
+            },
+        ],
+    );
+    assert_complex_eq(&z, 50.0, -25.0, impedance);
+
+    // re(Z) -> Scalar{50, impedance}
+    let re = eval_builtin("re", &[z.clone()]);
+    assert_scalar_approx(&re, 50.0, impedance);
+
+    // im(Z) -> Scalar{-25, impedance}
+    let im = eval_builtin("im", &[z.clone()]);
+    assert_scalar_approx(&im, -25.0, impedance);
+
+    // complex_magnitude(Z) = sqrt(50² + (-25)²) = sqrt(3125) ≈ 55.9017
+    let mag = eval_builtin("complex_magnitude", &[z.clone()]);
+    let expected_mag = (50.0_f64.powi(2) + 25.0_f64.powi(2)).sqrt();
+    assert_scalar_approx(&mag, expected_mag, impedance);
+
+    // phase(Z) = atan2(-25, 50) ≈ -0.4636 rad, returned as Scalar with ANGLE
+    let ph = eval_builtin("phase", &[z.clone()]);
+    let expected_phase = (-25.0_f64).atan2(50.0);
+    assert_scalar_approx(&ph, expected_phase, DimensionVector::ANGLE);
+
+    // conjugate(Z) = 50 + 25i (impedance)
+    let conj = eval_builtin("conjugate", &[z]);
+    assert_complex_eq(&conj, 50.0, 25.0, impedance);
+}
