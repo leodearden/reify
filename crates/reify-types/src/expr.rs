@@ -712,6 +712,27 @@ impl CompiledExpr {
             content_hash,
         }
     }
+
+    /// Create a determinacy predicate expression.
+    ///
+    /// Hash uses stable byte discriminators (not Debug repr) following the
+    /// QuantifierKind pattern: `[17, kind_byte]` where kind_byte is
+    /// Determined=0, Undetermined=1, Constrained=2, PartiallyDetermined=3.
+    pub fn determinacy_predicate(kind: DeterminacyPredicateKind, cell: ValueCellId) -> Self {
+        let kind_byte: u8 = match kind {
+            DeterminacyPredicateKind::Determined => 0,
+            DeterminacyPredicateKind::Undetermined => 1,
+            DeterminacyPredicateKind::Constrained => 2,
+            DeterminacyPredicateKind::PartiallyDetermined => 3,
+        };
+        let content_hash =
+            ContentHash::of(&[17, kind_byte]).combine(ContentHash::of_str(&format!("{}", cell)));
+        CompiledExpr {
+            kind: CompiledExprKind::DeterminacyPredicate { kind, cell },
+            result_type: Type::Bool,
+            content_hash,
+        }
+    }
 }
 
 #[cfg(test)]
