@@ -22,6 +22,41 @@ fn requirement_kind_str(kind: &RequirementKind) -> String {
     }
 }
 
+/// Computes the content hash for a trait definition from its components.
+///
+/// This is the shared implementation used by both `TraitDefBuilder` and
+/// `CompiledTraitBuilder` to ensure they produce identical hashes for
+/// identical inputs.
+fn compute_trait_content_hash(
+    name: &str,
+    required_members: &[TraitRequirement],
+    refinements: &[String],
+    type_params: &[TypeParam],
+    defaults: &[TraitDefault],
+) -> ContentHash {
+    let name_hash = ContentHash::of_str(name);
+    let req_hashes = required_members.iter().map(|r| {
+        let kind_str = requirement_kind_str(&r.kind);
+        ContentHash::of_str(&format!("{}:{}", r.name, kind_str))
+    });
+    let ref_hashes = refinements.iter().map(|r| ContentHash::of_str(r));
+    let type_param_hashes = type_params.iter().map(|p| ContentHash::of_str(&p.name));
+    let default_hashes = defaults.iter().map(|d| {
+        let kind_tag = default_kind_tag(&d.kind);
+        ContentHash::of_str(&format!(
+            "{}:{}",
+            d.name.as_deref().unwrap_or(""),
+            kind_tag
+        ))
+    });
+    let all_hashes = std::iter::once(name_hash)
+        .chain(req_hashes)
+        .chain(ref_hashes)
+        .chain(type_param_hashes)
+        .chain(default_hashes);
+    ContentHash::combine_all(all_hashes)
+}
+
 /// Builder for `CompiledTrait`.
 ///
 /// Follows the same fluent pattern as `TopologyTemplateBuilder`.
