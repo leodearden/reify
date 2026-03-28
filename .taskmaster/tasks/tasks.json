@@ -12172,11 +12172,11 @@
         "description": "find_member_decl in analysis.rs:63-97 gets the span from the first matching parsed declaration and the type from the first matching compiled template, but these searches are not coordinated by structure name. If two structures share a member name (e.g., both have 'width'), the span could come from structure A while the type comes from structure B. Fix by threading the structure name through both lookups.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-03-28T01:04:52.914Z",
+        "updatedAt": "2026-03-28T01:09:43.117Z",
         "metadata": {
           "modules": [
             "crates/reify-lsp"
@@ -13018,7 +13018,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T01:09:40.829Z",
+      "lastModified": "2026-03-28T01:09:43.118Z",
       "taskCount": 649,
       "completedCount": 297,
       "tags": [
