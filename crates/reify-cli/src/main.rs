@@ -173,7 +173,9 @@ fn cmd_build(args: &[String]) -> ExitCode {
             }
             println!("Wrote {} ({} bytes)", output_path, data.len());
             match outcome {
-                ConstraintOutcome::AllSatisfied | ConstraintOutcome::SomeIndeterminate(_) => {
+                ConstraintOutcome::AllSatisfied => ExitCode::SUCCESS,
+                ConstraintOutcome::SomeIndeterminate(n) => {
+                    println!("No constraints violated ({n} indeterminate).");
                     ExitCode::SUCCESS
                 }
                 ConstraintOutcome::SomeViolated => {
