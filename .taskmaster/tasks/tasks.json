@@ -14389,7 +14389,7 @@
         "description": "Two test improvements in gui/src/__tests__/claudeBridge.test.ts: 1) Replace non-null assertion `captured!` in captureListener with explicit guard that throws descriptive error if event was never registered. 2) Add test for claude-tool-result with result=null asserting handler IS called, pinning the intentional unvalidated-passthrough contract.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -14400,7 +14400,8 @@
           "modules": [
             "gui/src/__tests__"
           ]
-        }
+        },
+        "updatedAt": "2026-03-28T09:25:07.418Z"
       },
       {
         "id": "700",
@@ -14705,7 +14706,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T09:25:06.779Z",
+      "lastModified": "2026-03-28T09:25:07.419Z",
       "taskCount": 716,
       "completedCount": 331,
       "tags": [
