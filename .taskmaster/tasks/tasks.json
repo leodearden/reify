@@ -13719,6 +13719,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 697,
+        "title": "Fix selectionStore test quality issues",
+        "description": "Four fixes in gui/src/__tests__/selectionStore.test.ts: 1) In 'cleanup disposes the debounce timer' test, nullify dispose after explicit call. 2) Fix async rejection test to actually flush microtasks and verify .catch() handler. 3) Add test for selectEntity(null) clearing a previous selection via backend sync. 4) Add tests for clearIfRemoved dispatch behavior (single-field and both-fields match). Also remove the timer-flush workaround from beforeEach once the early-return guard companion task is done.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -13731,7 +13742,7 @@
       ],
       "created": "2026-03-28T06:53:49.176Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-28T06:54:28.390Z"
+      "updated": "2026-03-28T06:54:33.727Z"
     }
   }
 }
