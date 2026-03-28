@@ -11,7 +11,7 @@
     "gui/src",
     "scripts"
   ],
-  "analysis": "The 6 payload-bearing handlers in subscribeToClaudeEvents (lines 170-193 of bridge.ts) cast event.payload with compile-time-only `as` assertions. If the Rust sidecar emits null, undefined, or a structurally wrong payload, undefined values propagate silently into the handler callback. The fix adds: (1) a shared isRecord() helper to reject null/undefined/non-object/array payloads, (2) per-handler typeof checks on required string fields (id, content, tool_name, message), and (3) tool_input normalization in the tool_call handler to coerce null/array to {}. Existing happy-path tests in claudeBridge.test.ts already verify correct mapping; new tests cover the malformed-payload edge cases. The meshManager.ts validateMeshData pattern (console.warn + early return) is the project convention for runtime data guards.\n\nPost-review update (round 2): Two new blocking issues \u2014 (1) main advanced again past the branch, requiring another rebase, and (2) the mkdir-based lock fallback in tree-sitter-generate.sh has a stat-failure bypass: when both `stat -c %Y` and `stat -f %m` fail (e.g. NFS, BusyBox), `|| echo 0` produces epoch-0, making `_lock_age` always >> 120, which unconditionally removes active locks. Fix: use empty sentinel for failed stat, skip stale-removal when mtime is unknown.\n\nPost-review update (round 3): Two blocking issues \u2014 (1) main advanced again, requiring yet another rebase, and (2) scripts/test_tree_sitter_generate.sh calls `sha256sum` directly on lines 51 and 111, which fails on macOS where only `shasum -a 256` is available. The generate script already has a portable `compute_sha256()` helper but the test script bypasses it. With `set -euo pipefail` active, the test script aborts immediately on macOS. Fix: define a portable `compute_hash()` helper in the test script mirroring the generate script's `compute_sha256()` logic, and replace both bare `sha256sum` calls.\n\nPost-review update (round 4): merge_ff_failed again \u2014 main advanced during the merge attempt. Branch is already rebased on latest origin/main (verified: origin/main is ancestor of HEAD). This is a timing race during the merge window, not a code issue. Adding rebase-retry step.",
+  "analysis": "The 6 payload-bearing handlers in subscribeToClaudeEvents (lines 170-193 of bridge.ts) cast event.payload with compile-time-only `as` assertions. If the Rust sidecar emits null, undefined, or a structurally wrong payload, undefined values propagate silently into the handler callback. The fix adds: (1) a shared isRecord() helper to reject null/undefined/non-object/array payloads, (2) per-handler typeof checks on required string fields (id, content, tool_name, message), and (3) tool_input normalization in the tool_call handler to coerce null/array to {}. Existing happy-path tests in claudeBridge.test.ts already verify correct mapping; new tests cover the malformed-payload edge cases. The meshManager.ts validateMeshData pattern (console.warn + early return) is the project convention for runtime data guards.\n\nPost-review update (round 2): Two new blocking issues \u2014 (1) main advanced again past the branch, requiring another rebase, and (2) the mkdir-based lock fallback in tree-sitter-generate.sh has a stat-failure bypass: when both `stat -c %Y` and `stat -f %m` fail (e.g. NFS, BusyBox), `|| echo 0` produces epoch-0, making `_lock_age` always >> 120, which unconditionally removes active locks. Fix: use empty sentinel for failed stat, skip stale-removal when mtime is unknown.\n\nPost-review update (round 3): Two blocking issues \u2014 (1) main advanced again, requiring yet another rebase, and (2) scripts/test_tree_sitter_generate.sh calls `sha256sum` directly on lines 51 and 111, which fails on macOS where only `shasum -a 256` is available. The generate script already has a portable `compute_sha256()` helper but the test script bypasses it. With `set -euo pipefail` active, the test script aborts immediately on macOS. Fix: define a portable `compute_hash()` helper in the test script mirroring the generate script's `compute_sha256()` logic, and replace both bare `sha256sum` calls.\n\nPost-review update (round 4): merge_ff_failed again \u2014 main advanced during the merge attempt. Branch is already rebased on latest origin/main (verified: origin/main is ancestor of HEAD). This is a timing race during the merge window, not a code issue. Adding rebase-retry step.\n\nPost-review update (round 5): merge_ff_failed yet again \u2014 5th occurrence of main advancing during the merge window. Branch verified rebased on origin/main after fresh fetch. All code changes are complete; this is purely a merge timing issue with high-velocity main branch. Adding step-15 for another rebase-and-retry.\n\nPost-review update (round 6): merge_ff_failed for the 6th time \u2014 main continues to advance during the merge window. All code changes remain complete and correct. This is exclusively a merge timing race with a high-velocity main branch. Adding step-16 for another rebase-and-retry.\n\nPost-review update (round 7): merge_ff_failed for the 7th time \u2014 main advanced during the merge window yet again. All code changes remain complete and passing. This is a persistent merge timing race with a high-velocity main branch. Adding step-17 for another rebase-and-retry.\n\nPost-review update (round 8): merge_ff_failed for the 8th time \u2014 main advanced during the merge window yet again (c7a75c7a landed on main). Branch is verified already rebased on latest origin/main (origin/main is ancestor of HEAD). All code changes remain complete and passing. This is purely a persistent merge timing race. Adding step-18 for fetch + rebase-if-needed + retry.\n\nPost-review update (round 9): Two blocking issues \u2014 (1) merge_ff_failed for the 9th time, and (2) infinite_loop in tree-sitter-generate.sh:99-102 \u2014 when `rmdir \"$LOCK_DIR\"` fails on line 101 (e.g. permission-restricted NFS, container bind-mounts with uid mismatch), `|| true` silently swallows the error and `continue` re-enters the while loop. Since `_lock_attempts` stays >= 75, every subsequent failed `mkdir` immediately re-enters the stale-check block, tries `rmdir` again, fails again, and `continue`s \u2014 spinning in a tight busy-loop with no sleep and no exit condition. The `sleep 1` on line 109 is only reached when `_lock_attempts < 75`, so once past the threshold the script burns 100% CPU. Fix: replace `rmdir ... || true` + bare `continue` with `rmdir ... || { sleep 1; continue; }` so the loop always sleeps between attempts even when rmdir fails, and add `_lock_attempts=0` after successful rmdir so the retry window reopens properly.",
   "prerequisites": [],
   "steps": [
     {
@@ -111,6 +111,48 @@
       "description": "[review-fix: merge_ff_failed] Rebase worktree branch onto latest origin/main (main advanced again during the merge window since step-13). Fetch origin, rebase task/569 onto origin/main, resolve any conflicts. The branch is already verified as rebased on origin/main (origin/main is ancestor of HEAD) so this may be a no-op rebase \u2014 but re-verify after fetch in case main advanced further. The task's changes span gui/src/bridge.ts, gui/src/__tests__/claudeBridge.test.ts, scripts/tree-sitter-generate.sh, and scripts/test_tree_sitter_generate.sh. Verify tests still pass after rebase.",
       "status": "done",
       "commit": "d6b1fcb0"
+    },
+    {
+      "id": "step-15",
+      "type": "impl",
+      "description": "[review-fix: merge_ff_failed] Rebase worktree branch onto latest origin/main (5th merge-window race \u2014 main advanced again during the merge attempt after step-14). Fetch origin with depth sufficient to find merge-base, rebase task/569 onto origin/main, resolve any conflicts if present. The task's changes span gui/src/bridge.ts, gui/src/__tests__/claudeBridge.test.ts, scripts/tree-sitter-generate.sh, and scripts/test_tree_sitter_generate.sh \u2014 conflicts remain unlikely as main advances in unrelated areas. Verify origin/main is ancestor of HEAD after rebase. Run gui tests (`npx vitest run` in gui/) to confirm no regressions.",
+      "status": "done",
+      "commit": "38b197b6"
+    },
+    {
+      "id": "step-16",
+      "type": "impl",
+      "description": "[review-fix: merge_ff_failed] Rebase worktree branch onto latest origin/main (6th merge-window race \u2014 main advanced again during the merge attempt after step-15). Fetch origin, rebase task/569 onto origin/main, force-push updated branch. All code changes are complete; this is purely a merge timing issue with a high-velocity main branch. Verify origin/main is ancestor of HEAD after rebase. Run gui tests (`npx vitest run` in gui/) to confirm no regressions.",
+      "status": "done",
+      "commit": "eea1f8ec"
+    },
+    {
+      "id": "step-17",
+      "type": "impl",
+      "description": "[review-fix: merge_ff_failed] Rebase worktree branch onto latest origin/main (7th merge-window race \u2014 main advanced again during the merge attempt after step-16). Fetch origin, rebase task/569 onto origin/main, force-push updated branch. All code changes are complete and verified; this is purely a persistent merge timing race with a high-velocity main branch. Verify origin/main is ancestor of HEAD after rebase. Run gui tests (`npx vitest run` in gui/) to confirm no regressions.",
+      "status": "done",
+      "commit": "eea1f8ec"
+    },
+    {
+      "id": "step-18",
+      "type": "impl",
+      "description": "[review-fix: merge_ff_failed] 8th merge-window race \u2014 main advanced again (c7a75c7a landed) during the merge attempt after step-17. Fetch origin, check if origin/main is still ancestor of HEAD. If not, rebase task/569 onto origin/main and force-push. If already an ancestor (verified current state), the branch is ready \u2014 just needs the merge to be re-attempted without main advancing in between. All code changes are complete and verified. No conflicts expected \u2014 the new main commit (c7a75c7a refactor(gui): centralize validatePayload) touches different code paths than our bridge.ts validation guards.",
+      "status": "done",
+      "commit": "eea1f8ec"
+    },
+    {
+      "id": "step-19",
+      "type": "impl",
+      "description": "[review-fix: infinite_loop] In scripts/tree-sitter-generate.sh lines 99-103, fix the tight busy-loop when `rmdir` fails in the stale-lock removal path. Currently line 101 is `rmdir \"$LOCK_DIR\" 2>/dev/null || true` followed by bare `continue` on line 102. When rmdir fails (e.g. on NFS or container bind-mounts with uid mismatch where the process can stat but not remove the directory), `|| true` swallows the error, `continue` re-enters the while loop, and since `_lock_attempts` stays >= 75, every iteration immediately re-enters the stale-check block \u2014 spinning with no sleep and no exit. Fix: (1) Replace `rmdir \"$LOCK_DIR\" 2>/dev/null || true` + bare `continue` with: `if rmdir \"$LOCK_DIR\" 2>/dev/null; then _lock_attempts=0; continue; fi`. On successful rmdir, reset `_lock_attempts=0` so the retry window reopens (next `mkdir` attempt gets the normal sleep-1 backoff if it still fails). (2) If rmdir fails, do NOT continue \u2014 instead fall through past the stale-lock block to the existing `sleep 1` on line 109 (or add `sleep 1` explicitly before continuing). This ensures the loop always sleeps between attempts even when rmdir cannot remove the lock. (3) Verify with `bash -n scripts/tree-sitter-generate.sh` that syntax is valid after the edit.",
+      "status": "done",
+      "commit": "0edf13a4"
+    },
+    {
+      "id": "step-20",
+      "type": "impl",
+      "description": "[review-fix: merge_ff_failed] 9th merge-window race \u2014 main advanced again during the merge attempt after step-18. Fetch origin, rebase task/569 onto origin/main if needed (check if origin/main is ancestor of HEAD first). Force-push updated branch. All code changes including the new infinite_loop fix from step-19 must be included. Verify origin/main is ancestor of HEAD after rebase.",
+      "status": "done",
+      "commit": "0edf13a4"
     }
   ],
   "design_decisions": [
@@ -153,6 +195,10 @@
     {
       "decision": "Define compute_hash() in test script rather than sourcing from generate script",
       "rationale": "While the generate script's compute_sha256() could be sourced, the test script should be self-contained to avoid coupling test execution to generate script internals. A shared lib.sh would be over-engineering for two scripts. The helper is trivial (5 lines) and the duplication is acceptable for test isolation."
+    },
+    {
+      "decision": "Reset _lock_attempts on successful rmdir rather than just adding sleep",
+      "rationale": "The reviewer's minimal fix (sleep 1 before continue) prevents CPU burn but leaves _lock_attempts permanently >= 75, meaning every subsequent iteration re-enters the stale-check path. Resetting _lock_attempts=0 after successful stale-lock removal reopens the normal retry window with proper backoff, which is the correct semantic: the stale lock is gone, we should retry acquiring fresh. If rmdir fails, we fall through to sleep 1 to prevent CPU burn while still eventually hitting the hard exit at attempt 75+N."
     }
   ],
   "reuse": [
@@ -183,6 +229,6 @@
     }
   ],
   "_session_id": "569-f3331dee",
-  "_created_at": "2026-03-28T16:50:14.955484+00:00",
+  "_created_at": "2026-03-28T19:41:58.107047+00:00",
   "_schema_version": 1
 }
