@@ -12550,7 +12550,7 @@
         "description": "The test extracts the Err(e) arm from build.rs source by finding the first '}' after 'Err(e) =>', but that '}' is inside a format string literal, not the arm's closing brace. The test passes by coincidence because child.kill()/child.wait() appear before the format call. Fix the extraction to use brace-depth tracking or assert on child.kill()/child.wait() appearing within a character window after 'Err(e) =>' without structural extraction.",
         "details": "File: tree-sitter-reify/tests/build_logic_tests.rs:274-295. Flagged by 3 independent reviewers (architect, test_analyst, robustness). Memory hint: search for \"task 563 build.rs\" for original implementation context.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -12562,7 +12562,8 @@
           "modules": [
             "tree-sitter-reify"
           ]
-        }
+        },
+        "updatedAt": "2026-03-28T15:56:34.689Z"
       },
       {
         "id": "607",
@@ -15254,7 +15255,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T15:56:34.567Z",
+      "lastModified": "2026-03-28T15:56:34.689Z",
       "taskCount": 738,
       "completedCount": 353,
       "tags": [
