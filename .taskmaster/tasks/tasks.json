@@ -2723,7 +2723,20 @@
             "crates/reify-expr"
           ],
           "milestone": "M8",
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "memory_hints": {
+            "entities": [
+              "Option",
+              "Value::Option",
+              "PatternMatch",
+              "ExhaustiveCheck"
+            ],
+            "queries": [
+              "some none Option type evaluator implementation task 163",
+              "pattern matching match arms exhaustiveness compiler",
+              "Option Some None variant destructuring reify"
+            ]
+          }
         },
         "subtasks": [],
         "updatedAt": "2026-03-25T20:59:18.465Z"
