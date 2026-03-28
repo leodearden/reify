@@ -53,12 +53,12 @@ pub fn determine_context(source: &str, position: Position, ctx: &AnalysisContext
     // Must check before Expression since 'param x: ' has no '=' yet
     {
         let trimmed = line_prefix.trim_start();
-        if starts_with_decl_keyword(trimmed) {
-            if let Some(colon_pos) = line_prefix.rfind(':') {
-                let after_colon = &line_prefix[colon_pos + 1..];
-                if !after_colon.contains('=') {
-                    return CursorContext::TypePosition;
-                }
+        if starts_with_decl_keyword(trimmed)
+            && let Some(colon_pos) = line_prefix.rfind(':')
+        {
+            let after_colon = &line_prefix[colon_pos + 1..];
+            if !after_colon.contains('=') {
+                return CursorContext::TypePosition;
             }
         }
     }
