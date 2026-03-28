@@ -4970,7 +4970,7 @@
         "updatedAt": "2026-03-24T06:01:46.000Z"
       },
       {
-        "id": "267",
+        "id": 267,
         "title": "@test: compiler support",
         "description": "When @test annotation is present on a constraint def or structure def, tag the compiled entity with `is_test: true`. Test entities are excluded from the normal evaluation graph (not instantiated during regular evaluation). They are only evaluated by the test runner. Additionally, integrate memory_hints to optimize knowledge context during execution.",
         "status": "pending",
@@ -13897,6 +13897,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 710,
+        "title": "Polish matrix arithmetic: inline is_rank2, single-pass validation, neg short-circuit, test symmetry",
+        "description": "Follow-up from task 373 review (all 5 reviewers, suggestions only). Five clusters:\n\nS1: `is_rank2` naming/inlining — rename or inline into `validate_rank2_tensors` since it only checks first element. File: crates/reify-expr/src/lib.rs:938-943\n\nS2: `neg_components` eager allocation — short-circuit on first Undef instead of collecting full Vec then scanning. File: crates/reify-types/src/value.rs:218-228\n\nS3: Asymmetric test coverage — add subtraction variants for jagged-A, mixed-rank, heterogeneous tensors. Add cross-operand shape mismatch tests (2×2 + 2×3). Add Int(0), Int(-5), recursive rank-2 negation tests. File: crates/reify-expr/tests/matrix_eval_tests.rs\n\nS4: `tensor_ty()` always returns rank:1 — add `matrix_ty()` helper for rank-2 tests. File: crates/reify-expr/tests/matrix_eval_tests.rs:14-19\n\nS5: `validate_rank2_tensors` — combine 4 O(n) passes into 1, fix inverted Option semantics (Some=error), extract `is_rectangular` helper for jagged check dedup. File: crates/reify-expr/src/lib.rs:946-1004",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -13909,7 +13920,7 @@
       ],
       "created": "2026-03-28T06:55:24.369Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-28T06:55:36.849Z"
+      "updated": "2026-03-28T07:05:03.197Z"
     }
   }
 }
