@@ -11283,11 +11283,11 @@
         "description": "Three related issues in `crates/reify-eval/src/lib.rs`:\n\n1. **BFS gate on found_any (line ~3693)**: In `elaborate_child_lets_only`, the BFS only enqueues children when `found_any == true` (value_cells projected successfully). Templates with zero value_cells (purely structural intermediaries) always leave `found_any = false`, silently stopping BFS traversal even if deeper entities have needed values. Fix: always enqueue sub-children regardless of found_any, or gate on template having recursive sub declarations.\n\n2. **Warning → Error for missing template (line ~3450)**: In `unfold_recursive_sub` Phase 2, when `templates.iter().find(...)` returns None, Diagnostic::warning is emitted but this indicates a post-compilation inconsistency (entire sub-entity subtree silently dropped). Elevate to Diagnostic::error. Mirror in BFS seed/expansion sites at lines ~3656-3671 and ~3703-3707.\n\n3. **Cycle diagnostic UX (compiler)**: Include both template name and entity path in cyclic let-binding diagnostics: `'circular let-binding dependency in template S (entity S.child.child): [a, b]'` matching termination-check diagnostic style.\n\nmemory_hints: search \"elaborate_child_lets_only BFS found_any\", search \"unfold_recursive_sub missing template warning\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-03-27T09:08:29.242Z",
+        "updatedAt": "2026-03-28T15:23:51.726Z",
         "metadata": {
           "modules": [
             "crates/reify-eval"
@@ -11501,7 +11501,7 @@
         "description": "Multiple test quality issues: redundant tests, incomplete assertions, unreachable code path tested.",
         "details": "1. Merge evaluate_recovers_poisoned_values_read and _write into single test (same RwLock poisoned).\n2. Add data-verification assertions to evaluate_recovers_poisoned_snapshot_values (check snapshot_values written) and evaluate_recovers_poisoned_results (check take_results() has entry).\n3. Add node_results.is_empty() assertions to build_result_shared and into_result poison recovery tests.\n4. Fix test design flaw in evaluate_recovers_poisoned_values_write where post-evaluate values() call tests trivially-unpoisoned lock.\n\nFiles: crates/reify-runtime/tests/concurrent_eval.rs",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -11520,7 +11520,7 @@
             ]
           }
         },
-        "updatedAt": "2026-03-28T09:20:09.842Z"
+        "updatedAt": "2026-03-28T15:23:51.770Z"
       },
       {
         "id": "562",
@@ -15238,7 +15238,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T15:23:51.683Z",
+      "lastModified": "2026-03-28T15:23:51.770Z",
       "taskCount": 738,
       "completedCount": 349,
       "tags": [
