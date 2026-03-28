@@ -4,7 +4,7 @@ use crate::hash::ContentHash;
 use crate::value::Value;
 
 /// Unique identifier for a geometry handle within a kernel session.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct GeometryHandleId(pub u64);
 
 impl GeometryHandleId {
