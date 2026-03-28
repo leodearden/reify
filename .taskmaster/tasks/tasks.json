@@ -10407,7 +10407,7 @@
         "description": "In `gui/src/bridge.ts`, `ClaudeMessageContext` duplicates 3 of 5 fields from `MessageContext` (in `claudeStore.ts`), silently dropping `currentFile` and `attachedContexts` at the bridge boundary. `App.tsx` `onSend` receives the full `MessageContext` but only forwards 3 fields to `claudeSendMessage`.\n\n**Fix**: Either:\n1. Import `MessageContext` from `./stores/claudeStore` and use `Pick<MessageContext, 'selectedEntity' | 'diagnostics' | 'constraints'>` with a comment explaining why `currentFile` and `attachedContexts` are intentionally excluded, OR\n2. Extend `ClaudeMessageContext` to include all 5 fields and handle the snake_case mapping for `current_file` and `attached_contexts`.\n\nOption depends on whether the Rust sidecar accepts those extra fields.\n\nMemory hints:\n- Search: \"ClaudeMessageContext MessageContext bridge context fields\"\n- Entities: ClaudeMessageContext, MessageContext, bridge.ts, claudeSendMessage",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -10421,7 +10421,7 @@
             "gui/src"
           ]
         },
-        "updatedAt": "2026-03-28T01:19:19.375Z"
+        "updatedAt": "2026-03-28T01:23:36.864Z"
       },
       {
         "id": "519",
@@ -13041,7 +13041,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T01:23:31.848Z",
+      "lastModified": "2026-03-28T01:23:36.864Z",
       "taskCount": 650,
       "completedCount": 302,
       "tags": [
