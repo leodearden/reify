@@ -3431,11 +3431,12 @@ mod tests {
         );
     }
 
+    /// Deliberately passes a `constraint_definition` node to `lower_connect_body`
+    /// to exercise the catch-all branch. The constraint_definition has 3 named
+    /// children (identifier, param_declaration, constraint_def_predicate), none of
+    /// which match any connect_body arm — so the catch-all should fire for each.
     #[test]
     fn lower_connect_body_catch_all_emits_for_unexpected_named_children() {
-        // Pass a constraint_definition node to lower_connect_body. Its named
-        // children (identifier, param_declaration, constraint_def_predicate)
-        // don't match any connect_body arm and should hit the catch-all.
         let source = "constraint def Eq { param x: Scalar  x > 0 }";
         let mut ts_parser = tree_sitter::Parser::new();
         ts_parser
@@ -3444,14 +3445,23 @@ mod tests {
         let tree = ts_parser.parse(source, None).expect("Failed to parse");
         let root = tree.root_node();
 
-        let constraint_node = find_node_by_kind(root, "constraint_definition")
-            .expect("no constraint_definition node found in parse tree");
+        assert!(
+            !root.has_error(),
+            "source should parse without errors — grammar regression?"
+        );
+
+        let Some(constraint_node) = find_node_by_kind(root, "constraint_definition") else {
+            panic!("no constraint_definition node found in parse tree — grammar regression?");
+        };
 
         let mut lowering = Lowering::new(source);
         lowering.lower_connect_body(constraint_node);
         assert!(
-            !lowering.errors.is_empty(),
-            "expected diagnostics for unexpected named children in catch-all, got none"
+            lowering.errors.len() >= 3,
+            "expected at least 3 diagnostics (one per named child: identifier, \
+             param_declaration, constraint_def_predicate), got {}: {:?}",
+            lowering.errors.len(),
+            lowering.errors
         );
         assert!(
             lowering
