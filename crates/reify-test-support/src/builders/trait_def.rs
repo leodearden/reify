@@ -284,6 +284,29 @@ mod tests {
     use reify_types::DimensionVector;
 
     #[test]
+    fn compute_trait_content_hash_minimal() {
+        let hash = compute_trait_content_hash("X", &[], &[], &[], &[]);
+        assert_ne!(hash, ContentHash(0), "name-only hash must be non-zero");
+    }
+
+    #[test]
+    fn compute_trait_content_hash_differs_by_name() {
+        let h1 = compute_trait_content_hash("A", &[], &[], &[], &[]);
+        let h2 = compute_trait_content_hash("B", &[], &[], &[], &[]);
+        assert_ne!(h1, h2, "different names must produce different hashes");
+    }
+
+    #[test]
+    fn compute_trait_content_hash_matches_builder() {
+        let from_builder = TraitDefBuilder::new("X").build().content_hash;
+        let from_fn = compute_trait_content_hash("X", &[], &[], &[], &[]);
+        assert_eq!(
+            from_builder, from_fn,
+            "extracted function must match TraitDefBuilder output"
+        );
+    }
+
+    #[test]
     fn default_kind_tag_covers_all_variants() {
         let param_tag = default_kind_tag(&DefaultKind::Param {
             cell_type: Type::Real,
