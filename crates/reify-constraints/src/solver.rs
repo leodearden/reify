@@ -531,7 +531,9 @@ impl ConstraintSolver for DimensionalSolver {
         // Nelder-Mead needs O(N+1) evaluations per simplex sweep, so scale
         // the budget proportionally to give higher-dimensional problems enough
         // iterations to converge.
-        let max_iters = if initially_feasible && problem.objective.is_some() {
+        // After the early-return above for `initially_feasible && objective.is_none()`,
+        // reaching here with `initially_feasible=true` implies `objective.is_some()`.
+        let max_iters = if initially_feasible {
             let n_params = problem.auto_params.len() as u64;
             (FEASIBLE_OPT_ITERS_PER_DIM * (n_params + 1)).min(MAX_ITERS)
         } else {
