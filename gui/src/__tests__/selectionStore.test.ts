@@ -208,6 +208,20 @@ describe('selectionStore', () => {
       });
     });
 
+    it('selectEntity(null) dispatches cleared selection to backend immediately', () => {
+      selectEntity('Bracket');
+      mockInvoke.mockClear();
+
+      selectEntity(null);
+
+      // Selection-only change → immediate dispatch
+      expect(mockInvoke).toHaveBeenCalledTimes(1);
+      expect(mockInvoke).toHaveBeenCalledWith('update_selection', {
+        selectedEntity: null,
+        hoveredEntity: null,
+      });
+    });
+
     it('hover-only change calls invoke only after 100ms debounce', () => {
       hoverEntity('Bracket.width');
 
