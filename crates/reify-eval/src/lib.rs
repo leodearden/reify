@@ -1728,10 +1728,10 @@ impl Engine {
                         } else {
                             // Skip Auto cells — their values are managed by
                             // the solver, not by guard activation state.
-                            if let Some(node) = graph.value_cells.get(mid) {
-                                if node.kind == ValueCellKind::Auto {
-                                    continue;
-                                }
+                            if let Some(node) = graph.value_cells.get(mid)
+                                && node.kind == ValueCellKind::Auto
+                            {
+                                continue;
                             }
                             values.insert(mid.clone(), Value::Undef);
                             new_snapshot.values.insert(
@@ -1758,10 +1758,10 @@ impl Engine {
                         } else {
                             // Skip Auto cells — their values are managed by
                             // the solver, not by guard activation state.
-                            if let Some(node) = graph.value_cells.get(mid) {
-                                if node.kind == ValueCellKind::Auto {
-                                    continue;
-                                }
+                            if let Some(node) = graph.value_cells.get(mid)
+                                && node.kind == ValueCellKind::Auto
+                            {
+                                continue;
                             }
                             values.insert(mid.clone(), Value::Undef);
                             new_snapshot.values.insert(
@@ -1989,10 +1989,10 @@ impl Engine {
                         } else {
                             // Deactivate: set to Undef — but skip Auto cells,
                             // whose values are managed by the solver, not guards.
-                            if let Some(node) = new_snapshot.graph.value_cells.get(member_id) {
-                                if node.kind == ValueCellKind::Auto {
-                                    continue;
-                                }
+                            if let Some(node) = new_snapshot.graph.value_cells.get(member_id)
+                                && node.kind == ValueCellKind::Auto
+                            {
+                                continue;
                             }
                             values.insert(member_id.clone(), Value::Undef);
                             new_snapshot.values.insert(
@@ -2022,10 +2022,10 @@ impl Engine {
                         } else {
                             // Deactivate: set to Undef — but skip Auto cells,
                             // whose values are managed by the solver, not guards.
-                            if let Some(node) = new_snapshot.graph.value_cells.get(member_id) {
-                                if node.kind == ValueCellKind::Auto {
-                                    continue;
-                                }
+                            if let Some(node) = new_snapshot.graph.value_cells.get(member_id)
+                                && node.kind == ValueCellKind::Auto
+                            {
+                                continue;
                             }
                             values.insert(member_id.clone(), Value::Undef);
                             new_snapshot.values.insert(
