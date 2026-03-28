@@ -172,18 +172,7 @@ impl AnalysisContext {
                 }
                 _ => continue,
             };
-            let param_count = members
-                .iter()
-                .filter(|m| matches!(m, reify_syntax::MemberDecl::Param(_)))
-                .count();
-            let let_count = members
-                .iter()
-                .filter(|m| matches!(m, reify_syntax::MemberDecl::Let(_)))
-                .count();
-            let constraint_count = members
-                .iter()
-                .filter(|m| matches!(m, reify_syntax::MemberDecl::Constraint(_)))
-                .count();
+            let (param_count, let_count, constraint_count) = count_members_recursive(members);
             result.push((name, param_count, let_count, constraint_count, kind));
         }
         result
@@ -225,6 +214,35 @@ pub fn find_named_member_span<'a>(
         }
     }
     None
+}
+
+/// Recursively count Param, Let, and Constraint members, including those
+/// nested inside `GuardedGroup.members` and `GuardedGroup.else_members`.
+///
+/// Returns `(param_count, let_count, constraint_count)`.
+pub fn count_members_recursive(members: &[reify_syntax::MemberDecl]) -> (usize, usize, usize) {
+    let mut params = 0;
+    let mut lets = 0;
+    let mut constraints = 0;
+    for member in members {
+        match member {
+            reify_syntax::MemberDecl::Param(_) => params += 1,
+            reify_syntax::MemberDecl::Let(_) => lets += 1,
+            reify_syntax::MemberDecl::Constraint(_) => constraints += 1,
+            reify_syntax::MemberDecl::GuardedGroup(g) => {
+                let (p, l, c) = count_members_recursive(&g.members);
+                params += p;
+                lets += l;
+                constraints += c;
+                let (p, l, c) = count_members_recursive(&g.else_members);
+                params += p;
+                lets += l;
+                constraints += c;
+            }
+            _ => {}
+        }
+    }
+    (params, lets, constraints)
 }
 
 /// Format a `Value` for user-friendly display in hover tooltips.
