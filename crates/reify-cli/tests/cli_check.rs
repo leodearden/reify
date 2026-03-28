@@ -129,8 +129,12 @@ fn check_indeterminate_constraint_exits_success() {
         "stdout should NOT contain 'VIOLATED', got: {stdout}"
     );
     assert!(
-        stdout.contains("All constraints satisfied"),
-        "stdout should contain 'All constraints satisfied', got: {stdout}"
+        stdout.contains("No constraints violated"),
+        "stdout should contain 'No constraints violated', got: {stdout}"
+    );
+    assert!(
+        stdout.contains("indeterminate"),
+        "stdout should contain 'indeterminate', got: {stdout}"
     );
 }
 
