@@ -12717,7 +12717,10 @@
             "queries": [
               "resolution for: Fix stale cache entry for param nodes after edit_param"
             ]
-          }
+          },
+          "modules": [
+            "crates/reify-eval"
+          ]
         }
       },
       {
