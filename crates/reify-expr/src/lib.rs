@@ -1565,21 +1565,30 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
                         if t1_dim != t2_dim {
                             return Value::Undef;
                         }
+                        // Validate and normalize q1 for translation rotation
+                        if !w1.is_finite() || !x1.is_finite() || !y1.is_finite() || !z1.is_finite()
+                        {
+                            return Value::Undef;
+                        }
+                        let q1_norm = (w1 * w1 + x1 * x1 + y1 * y1 + z1 * z1).sqrt();
+                        if q1_norm < f64::EPSILON {
+                            return Value::Undef;
+                        }
+                        let q1_n = (w1 / q1_norm, x1 / q1_norm, y1 / q1_norm, z1 / q1_norm);
                         // Compose rotations: R = R1 * R2
-                        let q1 = (*w1, *x1, *y1, *z1);
-                        let (rw, rx, ry, rz) = quat_mul_t(q1, (*w2, *x2, *y2, *z2));
+                        let (rw, rx, ry, rz) = quat_mul_t(q1_n, (*w2, *x2, *y2, *z2));
                         // Normalize result quaternion (reject NaN/Inf/zero-length)
                         if !rw.is_finite() || !rx.is_finite() || !ry.is_finite() || !rz.is_finite()
                         {
                             return Value::Undef;
                         }
                         let norm = (rw * rw + rx * rx + ry * ry + rz * rz).sqrt();
-                        if norm == 0.0 {
+                        if norm < f64::EPSILON {
                             return Value::Undef;
                         }
                         let (rw, rx, ry, rz) = (rw / norm, rx / norm, ry / norm, rz / norm);
                         // Compose translations: t = R1 * t2 + t1
-                        let (rt2x, rt2y, rt2z) = quat_rotate(q1, t2x, t2y, t2z);
+                        let (rt2x, rt2y, rt2z) = quat_rotate(q1_n, t2x, t2y, t2z);
                         Value::Transform {
                             rotation: Box::new(Value::Orientation {
                                 w: rw,
