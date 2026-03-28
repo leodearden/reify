@@ -2030,6 +2030,9 @@ mod poison_panics {
             result.is_ok(),
             "build_result_shared() should recover from poisoned results lock, not panic"
         );
+        // Verify the recovered result has accessible (empty) node_results
+        let edit_result = result.unwrap();
+        assert!(edit_result.node_results.is_empty());
     }
 
     /// into_result() recovers from poisoned values RwLock.
