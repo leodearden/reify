@@ -48,11 +48,11 @@ fn dimension_of(ty: &Type) -> DimensionVector {
     }
 }
 
-/// Zip auto params with f64 values into a HashMap<ValueCellId, Value>.
+/// Build the solved-values HashMap from auto params and their f64 solutions.
 ///
 /// Each param is mapped to a Value::Scalar with the correct SI value
 /// and dimension. Used by early-exit, fallback, and solution construction paths.
-fn params_to_value_map(params: &[AutoParam], x: &[f64]) -> HashMap<ValueCellId, Value> {
+fn build_solved_values(params: &[AutoParam], x: &[f64]) -> HashMap<ValueCellId, Value> {
     params
         .iter()
         .zip(x.iter())
@@ -73,7 +73,7 @@ fn params_to_value_map(params: &[AutoParam], x: &[f64]) -> HashMap<ValueCellId, 
 /// Clones the base map (O(1) via PersistentMap structural sharing) and
 /// inserts each auto param as a Value::Scalar with the correct dimension.
 /// Maps params directly to avoid the intermediate HashMap allocation that
-/// `params_to_value_map` would create — this is the hot path called on
+/// `build_solved_values` would create — this is the hot path called on
 /// every Nelder-Mead iteration.
 fn build_trial_values(base: &ValueMap, params: &[AutoParam], x: &[f64]) -> ValueMap {
     let mut values = base.clone();
@@ -523,7 +523,7 @@ impl ConstraintSolver for DimensionalSolver {
                 "initial point already feasible with no objective; returning early"
             );
             return SolveResult::Solved {
-                values: params_to_value_map(&problem.auto_params, &initial),
+                values: build_solved_values(&problem.auto_params, &initial),
             };
         }
 
@@ -630,7 +630,7 @@ impl ConstraintSolver for DimensionalSolver {
                 // Construct fallback HashMap lazily — only on the error path
                 // where the optimizer drifted infeasible. The `initial` Vec<f64>
                 // is still in scope from the extraction at the top of solve().
-                let fallback = params_to_value_map(&problem.auto_params, &initial);
+                let fallback = build_solved_values(&problem.auto_params, &initial);
                 tracing::debug!(
                     n_params,
                     final_max_residual,
@@ -662,7 +662,7 @@ impl ConstraintSolver for DimensionalSolver {
         }
 
         // Build solution values
-        let values = params_to_value_map(&problem.auto_params, &clamped);
+        let values = build_solved_values(&problem.auto_params, &clamped);
 
         // NOTE: Solved indicates constraint satisfaction but does NOT guarantee objective
         // optimality. The Nelder-Mead optimizer may have hit the iteration limit without
