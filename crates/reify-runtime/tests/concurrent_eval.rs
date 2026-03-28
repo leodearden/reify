@@ -2203,6 +2203,12 @@ mod poison_evaluate {
         );
         let outcome = result.unwrap();
         assert_eq!(outcome, EvalOutcome::Changed);
+        // Verify snapshot_values were actually written despite poisoning
+        let snap = adapter.snapshot_values();
+        assert_eq!(
+            snap.get(&ValueCellId::new("T", "b")),
+            Some(&(Value::Real(20.0), DeterminacyState::Determined))
+        );
     }
 
     /// evaluate() recovers from poisoned results Mutex.
