@@ -291,30 +291,28 @@ fn parse_dimensional_type_missing_right_operand_no_panic() {
 #[test]
 fn parse_dimensional_type_missing_left_operand_no_panic() {
     // `type Foo = / Area` — operator without left operand.
-    // Should NOT panic. Should produce parse error(s).
+    // Should NOT panic. Must produce parse error(s). Tree-sitter recovery may
+    // still produce a TypeAlias with a garbled type_expr.
     let source = "type Foo = / Area";
     let (decls, errors) = parse_decls(source);
-    let has_type_alias = decls.iter().any(|d| matches!(d, Declaration::TypeAlias(_)));
     assert!(
-        !has_type_alias || !errors.is_empty(),
-        "expected either no TypeAlias or at least one error for malformed input, got decls={:?}, errors={:?}",
+        !errors.is_empty(),
+        "expected parse errors for malformed dimensional type (missing left operand), got none; decls={:?}",
         decls,
-        errors,
     );
 }
 
 #[test]
 fn parse_dimensional_type_missing_both_operands_no_panic() {
     // `type Foo = /` — only the operator, no operands at all.
-    // Should NOT panic. Should produce parse error(s).
+    // Should NOT panic. Must produce parse error(s). Tree-sitter recovery may
+    // still produce a TypeAlias with a garbled type_expr.
     let source = "type Foo = /";
     let (decls, errors) = parse_decls(source);
-    let has_type_alias = decls.iter().any(|d| matches!(d, Declaration::TypeAlias(_)));
     assert!(
-        !has_type_alias || !errors.is_empty(),
-        "expected either no TypeAlias or at least one error for malformed input, got decls={:?}, errors={:?}",
+        !errors.is_empty(),
+        "expected parse errors for malformed dimensional type (missing both operands), got none; decls={:?}",
         decls,
-        errors,
     );
 }
 
