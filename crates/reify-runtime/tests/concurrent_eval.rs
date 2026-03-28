@@ -2143,31 +2143,7 @@ mod poison_evaluate {
     use super::*;
     use std::panic::{AssertUnwindSafe, catch_unwind};
 
-    /// evaluate() recovers from poisoned values RwLock (read path at start of evaluation).
-    #[test]
-    fn evaluate_recovers_poisoned_values_read() {
-        let setup = simple_setup();
-        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
-        let node = NodeId::Value(ValueCellId::new("T", "b"));
-
-        // Poison the values lock — affects both read and write
-        adapter.poison_values();
-
-        let result = catch_unwind(AssertUnwindSafe(|| {
-            tokio::runtime::Runtime::new()
-                .unwrap()
-                .block_on(async { adapter.evaluate(node).await })
-        }));
-        assert!(
-            result.is_ok(),
-            "evaluate() should recover from poisoned values lock, not panic"
-        );
-        let outcome = result.unwrap();
-        // b = a * 2 where a=10, so b=20 which differs from old hash → Changed
-        assert_eq!(outcome, EvalOutcome::Changed);
-    }
-
-    /// evaluate() recovers from poisoned values RwLock (write path after computation).
+    /// evaluate() recovers from poisoned values RwLock (both read and write paths).
     /// The write lock is the same RwLock as the read lock — this test verifies the
     /// write acquisition (used to store computed values) also recovers.
     #[test]
