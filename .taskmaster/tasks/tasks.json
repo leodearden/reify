@@ -11506,7 +11506,17 @@
           ],
           "modules": [
             "tree-sitter-reify"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "tree-sitter-reify",
+              "build.rs"
+            ],
+            "queries": [
+              "tree-sitter grammar generation auto-generation build.rs",
+              "task 563 build.rs robustness content hash staleness timeout"
+            ]
+          }
         },
         "updatedAt": "2026-03-27T23:31:52.898Z"
       },
