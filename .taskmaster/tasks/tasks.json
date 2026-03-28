@@ -8677,7 +8677,7 @@
         "description": "Add missing test coverage for type alias parsing in crates/reify-syntax/tests/type_alias_tests.rs: (1) malformed inputs — missing name, missing =, empty RHS — assert ParseError is emitted, (2) type params combined with dimensional RHS (e.g. `type Velocity<T> = T / Time`), (3) nested parameterized types on RHS (e.g. `type Registry = Map<String, List<Int>>`), (4) mixed operator precedence confirming left-associativity (e.g. `type X = Mass / Time * Scalar` → outer is `*`). Memory hints: search \"type alias parser tests\" and get_entity \"TypeAliasDecl\".",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [
           "144"
         ],
@@ -8692,7 +8692,7 @@
             "crates/reify-syntax/tests"
           ]
         },
-        "updatedAt": "2026-03-28T00:26:44.203Z"
+        "updatedAt": "2026-03-28T00:46:33.009Z"
       },
       {
         "id": "440",
@@ -12899,9 +12899,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T00:46:26.721Z",
+      "lastModified": "2026-03-28T00:46:33.009Z",
       "taskCount": 642,
-      "completedCount": 292,
+      "completedCount": 293,
       "tags": [
         "master"
       ]
