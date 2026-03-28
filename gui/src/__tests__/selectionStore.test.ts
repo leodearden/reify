@@ -332,13 +332,21 @@ describe('selectionStore', () => {
       expect(mockInvoke).not.toHaveBeenCalled();
     });
 
-    it('invoke rejection is silently caught (no unhandled promise)', () => {
+    it('invoke rejection is silently caught (no unhandled promise)', async () => {
       mockInvoke.mockRejectedValue(new Error('not in Tauri'));
+      const errorSpy = vi.spyOn(console, 'error');
 
-      // Should not throw
-      expect(() => {
-        selectEntity('Bracket');
-      }).not.toThrow();
+      selectEntity('Bracket');
+
+      // invoke was called (proving dispatch happened)
+      expect(mockInvoke).toHaveBeenCalledTimes(1);
+
+      // Flush microtasks so the .catch() handler on the rejected promise executes
+      await vi.advanceTimersByTimeAsync(0);
+
+      // No unhandled rejection leaked to console
+      expect(errorSpy).not.toHaveBeenCalled();
+      errorSpy.mockRestore();
     });
   });
 });
