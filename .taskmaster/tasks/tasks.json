@@ -11774,7 +11774,7 @@
         "description": "The file .task/plan.json was leaked onto main by commit 14ae324a (from task-517). It is deleted from the working tree but still tracked in git. The pre-commit hook TS type error blocker that previously prevented this cleanup was fixed in commit 784e3921. Run `git rm --cached .task/plan.json` (and .task/iterations.jsonl if present) and commit to main. Also verify .task/ is in .gitignore to prevent future leaks.\n\nMemory hints: search \".task plan.json tracked on main leaked commit\", entities: .task/plan.json, pre-commit hook",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -11788,7 +11788,7 @@
             "."
           ]
         },
-        "updatedAt": "2026-03-28T00:10:19.697Z"
+        "updatedAt": "2026-03-28T00:25:02.356Z"
       },
       {
         "id": "582",
@@ -12722,9 +12722,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T00:24:36.551Z",
+      "lastModified": "2026-03-28T00:25:02.356Z",
       "taskCount": 628,
-      "completedCount": 286,
+      "completedCount": 287,
       "tags": [
         "master"
       ]
