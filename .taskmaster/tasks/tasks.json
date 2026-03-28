@@ -12552,6 +12552,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 619,
+        "title": "LSP: Scope hover value lookup to owning declaration",
+        "description": "In hover.rs:29, `compute_hover` calls `ctx.compiled.templates.first()` for value lookup regardless of which declaration `find_member_decl` matched. In multi-declaration files where the first template is not the one owning the hovered member, the hover panel shows an incorrect evaluated value (or none).\n\nFix: expose `decl_name` from `find_member_decl` (e.g. via `MemberInfo`) and pass it to `get_value` instead of using `templates.first()`.\n\nMemory hints: search \"LSP cross-declaration member lookup scoping\" and \"find_member_decl ambiguity\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -12564,7 +12575,7 @@
       ],
       "created": "2026-03-28T00:09:42.347Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-28T00:09:42.354Z"
+      "updated": "2026-03-28T00:10:00.446Z"
     }
   }
 }
