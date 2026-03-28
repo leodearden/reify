@@ -357,6 +357,41 @@ describe('PropertyEditor blur-commit', () => {
   });
 });
 
+describe('PropertyEditor blur-commit quantity literals', () => {
+  const values: Record<string, ValueData> = {
+    c1: makeValue({ cell_id: 'c1', name: 'width', value: '50', determinacy: 'determined', entity_path: 'Bracket.width' }),
+  };
+
+  it("blur with valid quantity '80mm' calls onSetParameter and does NOT set data-invalid", () => {
+    const onSetParam = vi.fn();
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: '80mm' } });
+    fireEvent.blur(input);
+    expect(onSetParam).toHaveBeenCalledWith('c1', '80mm');
+    expect(input.hasAttribute('data-invalid')).toBe(false);
+  });
+
+  it("blur with invalid quantity 'mm80' does NOT call onSetParameter, reverts to '50', no data-invalid", () => {
+    const onSetParam = vi.fn();
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: 'mm80' } });
+    fireEvent.blur(input);
+    expect(onSetParam).not.toHaveBeenCalled();
+    expect(input.value).toBe('50');
+    expect(input.hasAttribute('data-invalid')).toBe(false);
+  });
+});
+
 describe('PropertyEditor stale input', () => {
   it('when not editing, input value updates when props.values changes', () => {
     const [values, setValues] = createSignal<Record<string, ValueData>>({
