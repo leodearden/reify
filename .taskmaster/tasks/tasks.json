@@ -13730,6 +13730,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 698,
+        "title": "Fix bridge.ts type contract and add missing console.warn to payload validation",
+        "description": "Three fixes in gui/src/bridge.ts: 1) Change EventEntry payload type from `Record<string, unknown>` to `unknown` to accurately reflect unvalidated Tauri payloads. 2) Add console.warn before each !isRecord(event.payload) early return in all 6 handlers to match meshManager pattern. 3) Remove redundant `as Record<string, unknown>` cast on tool_input after isRecord narrows. Then in tests: add console.warn spy assertions to validation failure tests.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -13742,7 +13753,7 @@
       ],
       "created": "2026-03-28T06:53:49.176Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-28T06:54:33.727Z"
+      "updated": "2026-03-28T06:54:37.397Z"
     }
   }
 }
