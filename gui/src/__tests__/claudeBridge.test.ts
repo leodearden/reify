@@ -406,8 +406,6 @@ describe('subscribeToClaudeEvents', () => {
     expect(handler).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'error', id: 'x', message: 'oops' }),
     );
-    // Explicitly verify type is 'error', NOT 'WRONG'
-    expect(handler.mock.calls[0][0].type).toBe('error');
   });
 
   describe('listener rollback on partial failure', () => {
