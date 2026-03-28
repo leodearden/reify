@@ -13818,6 +13818,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 706,
+        "title": "PropertyEditor test coverage gaps: missing assertions and edge cases",
+        "description": "In gui/src/__tests__/PropertyEditor.test.tsx: (1) Add input.value assertion to valid-blur quantity test for symmetry with invalid-blur revert assertion. (2) Add test for data-invalid cleanup on blur after invalid Enter (state transition coverage). (3) Add '1e+3mm' to valid it.each list to cover explicit-plus exponent branch of QUANTITY_RE. (4) Add inline comment explaining why '+10mm' is rejected when '+10' is accepted (QUANTITY_RE only permits leading '-').",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -13830,7 +13841,7 @@
       ],
       "created": "2026-03-28T06:55:24.369Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-28T06:55:26.857Z"
+      "updated": "2026-03-28T06:55:29.529Z"
     }
   }
 }
