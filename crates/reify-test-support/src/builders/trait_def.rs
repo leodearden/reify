@@ -249,6 +249,50 @@ mod tests {
     use reify_types::DimensionVector;
 
     #[test]
+    fn default_kind_tag_covers_all_variants() {
+        let param_tag = default_kind_tag(&DefaultKind::Param {
+            cell_type: Type::Real,
+            default_decl: reify_syntax::ParamDecl {
+                name: "x".to_string(),
+                doc: None,
+                type_expr: None,
+                default: None,
+                where_clause: None,
+                span: SourceSpan::new(0, 0),
+                content_hash: ContentHash::of_str("x"),
+            },
+        });
+        assert_eq!(param_tag, "Param");
+
+        let let_tag = default_kind_tag(&DefaultKind::Let(reify_syntax::LetDecl {
+            name: "y".to_string(),
+            is_pub: false,
+            doc: None,
+            type_expr: None,
+            value: reify_syntax::Expr {
+                kind: reify_syntax::ExprKind::BoolLiteral(true),
+                span: SourceSpan::new(0, 0),
+            },
+            where_clause: None,
+            span: SourceSpan::new(0, 0),
+            content_hash: ContentHash::of_str("y"),
+        }));
+        assert_eq!(let_tag, "Let");
+
+        let constraint_tag = default_kind_tag(&DefaultKind::Constraint(reify_syntax::ConstraintDecl {
+            label: Some("c".to_string()),
+            expr: reify_syntax::Expr {
+                kind: reify_syntax::ExprKind::BoolLiteral(true),
+                span: SourceSpan::new(0, 0),
+            },
+            where_clause: None,
+            span: SourceSpan::new(0, 0),
+            content_hash: ContentHash::of_str("c"),
+        }));
+        assert_eq!(constraint_tag, "Constraint");
+    }
+
+    #[test]
     fn requirement_kind_str_covers_all_variants() {
         let param_str = requirement_kind_str(&RequirementKind::Param(Type::Real));
         assert_eq!(param_str, "Param:Real");
