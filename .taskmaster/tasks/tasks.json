@@ -12817,7 +12817,16 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-lsp/src/analysis.rs",
+            "crates/reify-lsp/src/goto_def.rs"
+          ],
+          "modules": [
+            "crates/reify-lsp/src"
+          ]
+        }
       },
       {
         "id": 621,
@@ -12828,7 +12837,16 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "gui/sidecar/src/session.ts",
+            "gui/sidecar/src/__tests__/session.test.ts"
+          ],
+          "modules": [
+            "gui/sidecar/src"
+          ]
+        }
       },
       {
         "id": 622,
