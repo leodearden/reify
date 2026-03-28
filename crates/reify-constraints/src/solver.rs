@@ -2171,8 +2171,8 @@ mod tests {
     }
 
     #[test]
-    fn params_to_value_map_builds_correct_hashmap() {
-        use super::params_to_value_map;
+    fn build_solved_values_builds_correct_hashmap() {
+        use super::build_solved_values;
         use reify_types::{AutoParam, DimensionVector, Type, Value, ValueCellId};
 
         let length_id = ValueCellId::new("Part", "length");
@@ -2193,7 +2193,7 @@ mod tests {
 
         let x = [0.025, std::f64::consts::FRAC_PI_2]; // 25mm, ~90°
 
-        let result = params_to_value_map(&params, &x);
+        let result = build_solved_values(&params, &x);
 
         assert_eq!(result.len(), 2, "should contain exactly 2 entries");
 
