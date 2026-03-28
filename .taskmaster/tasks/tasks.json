@@ -8490,11 +8490,11 @@
         "description": "In crates/reify-test-support: (1) Mark assert_value_approx_impl with #[doc(hidden)]. (2) Rename vec3_unit to vec3_dimensionless and update all call sites. (3) Add test for unconfigured handle query error. (Review followup from task 351)",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-03-26T12:05:53.531Z",
+        "updatedAt": "2026-03-28T00:25:09.229Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -12722,7 +12722,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T00:25:02.356Z",
+      "lastModified": "2026-03-28T00:25:09.234Z",
       "taskCount": 628,
       "completedCount": 287,
       "tags": [
