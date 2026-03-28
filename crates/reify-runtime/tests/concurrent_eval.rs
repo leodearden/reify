@@ -2232,6 +2232,14 @@ mod poison_evaluate {
         );
         let outcome = result.unwrap();
         assert_eq!(outcome, EvalOutcome::Changed);
+        // Verify results were actually pushed despite poisoning
+        let results = adapter.take_results();
+        assert_eq!(results.len(), 1, "evaluate() should push exactly one result");
+        assert_eq!(
+            results[0].node,
+            NodeId::Value(ValueCellId::new("T", "b"))
+        );
+        assert_eq!(results[0].outcome, EvalOutcome::Changed);
     }
 
     /// Verify that tracing::warn! is emitted when evaluate() recovers from poisoned locks.
