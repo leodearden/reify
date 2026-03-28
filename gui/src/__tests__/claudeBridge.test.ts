@@ -17,6 +17,7 @@ import {
   claudeClearSession,
   subscribeToClaudeEvents,
   MESSAGE_CONTEXT_FIELD_MAP,
+  BUILD_CONTEXT_HANDLED_FIELDS,
   mapContextToWire,
 } from '../bridge';
 
@@ -146,6 +147,12 @@ describe('claude invoke wrappers', () => {
     const expectedKeys = Object.keys(fullContext).sort();
     const mapKeys = Object.keys(MESSAGE_CONTEXT_FIELD_MAP).sort();
     expect(mapKeys).toEqual(expectedKeys);
+  });
+
+  it('BUILD_CONTEXT_HANDLED_FIELDS matches MESSAGE_CONTEXT_FIELD_MAP keys', () => {
+    const handledKeys = [...BUILD_CONTEXT_HANDLED_FIELDS].sort();
+    const mapKeys = Object.keys(MESSAGE_CONTEXT_FIELD_MAP).sort();
+    expect(handledKeys).toEqual(mapKeys);
   });
 
   it('mapContextToWire maps all fields to snake_case', () => {
