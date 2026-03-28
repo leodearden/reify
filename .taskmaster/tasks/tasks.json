@@ -14632,7 +14632,7 @@
         "description": "In crates/reify-constraints/src/solver.rs near line 540, add debug_assert!(problem.objective.is_some()) immediately before the warm-start budget path. This makes the control-flow invariant (early-return at line 519-528 guarantees objective.is_some()) machine-checked in debug builds.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -14644,7 +14644,7 @@
             "crates/reify-constraints/src"
           ]
         },
-        "updatedAt": "2026-03-28T17:08:33.006Z"
+        "updatedAt": "2026-03-28T19:10:51.316Z"
       },
       {
         "id": "708",
@@ -15374,9 +15374,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T19:09:49.774Z",
+      "lastModified": "2026-03-28T19:10:51.316Z",
       "taskCount": 745,
-      "completedCount": 366,
+      "completedCount": 367,
       "tags": [
         "master"
       ]
