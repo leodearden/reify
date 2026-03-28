@@ -13674,7 +13674,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "gui/src/panels/PropertyEditor.tsx"
+          ],
+          "modules": [
+            "gui/src/panels"
+          ]
+        }
       },
       {
         "id": 665,
@@ -13685,7 +13693,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "gui/src-tauri/src/tests/claude_bridge_tests.rs"
+          ],
+          "modules": [
+            "gui/src-tauri/src/tests"
+          ]
+        }
       },
       {
         "id": 666,
