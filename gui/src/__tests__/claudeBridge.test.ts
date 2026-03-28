@@ -338,6 +338,36 @@ describe('subscribeToClaudeEvents', () => {
     expect(handler).toHaveBeenCalledWith({ type: 'done', id: 'x' });
   });
 
+  it('extra unknown fields in tool_call payload are not forwarded to handler', async () => {
+    let capturedHandler: ((event: { payload: unknown }) => void) | undefined;
+    mockListen.mockImplementation(async (eventName, handler) => {
+      if (eventName === 'claude-tool-call') {
+        capturedHandler = handler as (event: { payload: unknown }) => void;
+      }
+      return vi.fn();
+    });
+
+    const handler = vi.fn();
+    await subscribeToClaudeEvents(handler);
+
+    // Simulate tool_call payload with extra _debug field that should NOT be forwarded
+    capturedHandler!({
+      payload: {
+        id: 'tc1',
+        tool_name: 'read',
+        tool_input: { path: '/f' },
+        _debug: true,
+      },
+    });
+
+    expect(handler).toHaveBeenCalledWith({
+      type: 'tool_call',
+      id: 'tc1',
+      tool_name: 'read',
+      tool_input: { path: '/f' },
+    });
+  });
+
   it('payload type field does not override mapped event type', async () => {
     let capturedHandler: ((event: { payload: unknown }) => void) | undefined;
     mockListen.mockImplementation(async (eventName, handler) => {
