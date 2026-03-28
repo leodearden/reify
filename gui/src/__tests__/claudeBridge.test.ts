@@ -486,7 +486,13 @@ describe('subscribeToClaudeEvents', () => {
       return {
         async setup(handler: ReturnType<typeof vi.fn>) {
           await subscribeToClaudeEvents(handler);
-          return captured!;
+          if (!captured) {
+            throw new Error(
+              `captureListener: no handler was registered for event "${eventName}". ` +
+              `Check that subscribeToClaudeEvents registers this event.`,
+            );
+          }
+          return captured;
         },
       };
     }
@@ -641,6 +647,18 @@ describe('subscribeToClaudeEvents', () => {
         listener({ payload: { id: 'tc5', tool_name: 'edit', tool_input: { path: '/f' } } });
         expect(handler).toHaveBeenCalledWith({
           type: 'tool_call', id: 'tc5', tool_name: 'edit', tool_input: { path: '/f' },
+        });
+      });
+    });
+
+    describe('tool_result passthrough contract', () => {
+      it('passes result=null through to handler (unvalidated-passthrough contract)', async () => {
+        const { setup } = captureListener('claude-tool-result');
+        const handler = vi.fn();
+        const listener = await setup(handler);
+        listener({ payload: { id: 'tr-null', tool_name: 'read_file', result: null } });
+        expect(handler).toHaveBeenCalledWith({
+          type: 'tool_result', id: 'tr-null', tool_name: 'read_file', result: null,
         });
       });
     });
