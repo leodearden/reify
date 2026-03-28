@@ -703,6 +703,12 @@ mod tests {
             .expect("deep_x inside nested where blocks should be found");
         assert_eq!(info.name, "deep_x");
         assert_eq!(info.kind, ValueCellKind::Param);
+        assert_eq!(*info.cell_type, Type::length(), "deep_x should have length type");
+        let decl_text = &source[info.span.start as usize..info.span.end as usize];
+        assert!(
+            decl_text.contains("deep_x") && decl_text.contains("1mm"),
+            "span should cover full param declaration, got: {decl_text:?}"
+        );
     }
 
     #[test]
