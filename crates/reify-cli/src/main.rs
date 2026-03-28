@@ -98,8 +98,12 @@ fn cmd_check(args: &[String]) -> ExitCode {
     }
 
     match outcome {
-        ConstraintOutcome::AllSatisfied | ConstraintOutcome::SomeIndeterminate(_) => {
+        ConstraintOutcome::AllSatisfied => {
             println!("All constraints satisfied.");
+            ExitCode::SUCCESS
+        }
+        ConstraintOutcome::SomeIndeterminate(n) => {
+            println!("No constraints violated ({n} indeterminate).");
             ExitCode::SUCCESS
         }
         ConstraintOutcome::SomeViolated => {
