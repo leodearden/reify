@@ -777,10 +777,10 @@ mod tests {
 
     #[test]
     fn determine_context_structure_body_blank_line() {
-        // Cursor inside the bracket source on a blank/indent-only line (line 6).
+        // Cursor inside bracket source on the empty line 6 (col 0 since line is empty).
         let source = reify_test_support::bracket_source();
         let ctx = AnalysisContext::new(source, &test_uri());
-        let result = determine_context(source, Position::new(6, 4), &ctx);
+        let result = determine_context(source, Position::new(6, 0), &ctx);
         assert!(
             matches!(result, CursorContext::StructureBody { .. }),
             "expected StructureBody, got {:?}",
