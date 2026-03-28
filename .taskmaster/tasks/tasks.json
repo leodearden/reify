@@ -9860,7 +9860,21 @@
           "modules": [
             "crates/reify-eval",
             "crates/reify-test-support"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "resolve_concurrent_edit",
+              "edit_param",
+              "ResolutionProblem",
+              "scope_name",
+              "ValueCellId"
+            ],
+            "queries": [
+              "auto resolution architecture two-phase eval per-template",
+              "resolve_concurrent_edit edit_param auto params grouping",
+              "Nelder-Mead solver constraint architecture"
+            ]
+          }
         }
       },
       {
@@ -11218,14 +11232,9 @@
           ],
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "memory_hints": {
-            "entities": [
-              "structural_physical_tests.rs",
-              "stdlib_loader_tests.rs",
-              "structural traits"
-            ],
+            "entities": [],
             "queries": [
-              "structural_physical_tests.rs duplicate tests task 329 branch",
-              "stdlib structural traits Physical Rigid Flexible"
+              "resolution for: Remove duplicate and subsumed tests in structural_physical_tests.rs"
             ]
           }
         }
