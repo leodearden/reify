@@ -2238,6 +2238,14 @@ mod tests {
         }
     }
 
+    #[test]
+    fn build_solved_values_empty_params_returns_empty_map() {
+        use super::build_solved_values;
+
+        let result = build_solved_values(&[], &[]);
+        assert!(result.is_empty(), "empty params should produce empty map");
+    }
+
     /// A feasible initial point with an always-undefined objective (x/0)
     /// must return NoProgress, never Solved. This validates the contract
     /// that undefined objectives are never silently promoted to Solved,
