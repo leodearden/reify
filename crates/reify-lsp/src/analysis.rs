@@ -440,6 +440,41 @@ mod tests {
         assert_eq!(c1, 1);
     }
 
+    #[test]
+    fn structure_names_counts_guarded_group_members() {
+        // Bug: structure_names() only counts top-level members, missing those
+        // inside where-blocks. This test expects the CORRECT (recursive) counts.
+        let source = r#"structure S {
+    param a : Bool = true
+    param b : Scalar = 1mm
+    where a {
+        param guarded_x : Scalar = 5mm
+        let guarded_y = 2
+    }
+    constraint b > 0mm
+}"#;
+        let ctx = AnalysisContext::new(source, &test_uri());
+        let structs = ctx.structure_names();
+        assert_eq!(structs.len(), 1);
+        let (name, param_count, let_count, constraint_count, _kind) = structs[0];
+        assert_eq!(name, "S");
+        // Should count: a + b + guarded_x = 3 params
+        assert_eq!(
+            param_count, 3,
+            "expected 3 params (a, b, guarded_x), got {param_count}"
+        );
+        // Should count: guarded_y = 1 let
+        assert_eq!(
+            let_count, 1,
+            "expected 1 let (guarded_y), got {let_count}"
+        );
+        // Should count: b > 0mm = 1 constraint
+        assert_eq!(
+            constraint_count, 1,
+            "expected 1 constraint, got {constraint_count}"
+        );
+    }
+
     // --- get_value tests ---
 
     #[test]
