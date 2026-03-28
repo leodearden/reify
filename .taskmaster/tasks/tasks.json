@@ -11123,7 +11123,7 @@
         "description": "Review finding from task 522: `err instanceof Error ? err.message : String(err)` appears 8 times across App.tsx (lines ~70, 77, 163, 175, 292, 307, 321) and Editor.tsx. gui/src/utils/ already has errorClassifier.ts, making it a natural home.\n\n1. Add `export function errorMessage(err: unknown): string { return err instanceof Error ? err.message : String(err); }` to gui/src/utils/errorClassifier.ts (or new gui/src/utils/errors.ts).\n2. Replace all 8 inline occurrences across App.tsx and Editor.tsx.\n3. Update any tests that mock or assert on the inline pattern.\n\nMemory hints: search \"errorMessage utility err instanceof Error App.tsx Editor.tsx\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "522"
         ],
@@ -11141,7 +11141,8 @@
             "gui/src/utils",
             "gui/src/editor"
           ]
-        }
+        },
+        "updatedAt": "2026-03-28T04:28:03.563Z"
       },
       {
         "id": "548",
@@ -13238,7 +13239,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T04:28:03.371Z",
+      "lastModified": "2026-03-28T04:28:03.563Z",
       "taskCount": 659,
       "completedCount": 310,
       "tags": [
