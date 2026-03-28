@@ -12811,7 +12811,7 @@
         "description": "DRY fix: The distance-pair normalization logic (`if from.0 <= to.0 { (from, to) } else { (to, from) }`) is duplicated verbatim in QueryKey::from_query() (line ~181) and MockGeometryKernel::with_distance_result() (line ~267) in crates/reify-test-support/src/mocks.rs. If the normalization rule changes, the two sites can drift silently, breaking distance lookups.\n\nFix:\n1. Add `#[derive(PartialOrd, Ord)]` to `GeometryHandleId` in crates/reify-types/src/geometry.rs (currently only has PartialEq, Eq, Hash). This removes the `.0` field access from the mock layer.\n2. Extract a private helper `fn normalize_distance_pair(a: GeometryHandleId, b: GeometryHandleId) -> (GeometryHandleId, GeometryHandleId)` (or a `QueryKey::distance()` constructor) in mocks.rs and call it from both sites.\n\nmemory_hints: search \"GeometryHandleId derive\" and \"distance normalization\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -12824,7 +12824,8 @@
             "crates/reify-types/src",
             "crates/reify-test-support/src"
           ]
-        }
+        },
+        "updatedAt": "2026-03-28T20:33:19.355Z"
       },
       {
         "id": "617",
@@ -15440,7 +15441,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T20:33:18.067Z",
+      "lastModified": "2026-03-28T20:33:19.355Z",
       "taskCount": 749,
       "completedCount": 379,
       "tags": [
