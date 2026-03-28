@@ -29,6 +29,8 @@ pub struct MemberInfo<'a> {
     pub span: SourceSpan,
     /// Doc comment text from the parsed AST, if present.
     pub doc: Option<&'a str>,
+    /// The name of the owning structure/occurrence declaration.
+    pub decl_name: &'a str,
 }
 
 /// Shared analysis context that runs the parse → compile → check pipeline once
@@ -77,6 +79,7 @@ impl AnalysisContext {
                         cell_type: &vc.cell_type,
                         span,
                         doc,
+                        decl_name,
                     });
                 }
             }
@@ -90,6 +93,7 @@ impl AnalysisContext {
                             cell_type: &vc.cell_type,
                             span,
                             doc,
+                            decl_name,
                         });
                     }
                 }
