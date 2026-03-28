@@ -929,21 +929,23 @@ fn warm_start_budget_exhaustion_stays_feasible() {
                     si
                 );
             }
-            // Suboptimality check: if the optimizer fully converged, all params would
-            // be at lower bound (10mm = 0.010 m), giving sum = 12 * 0.010 = 0.120.
-            // Budget exhaustion means the optimizer stopped early, so sum should be
-            // strictly greater than the optimal.
+            // Suboptimality check: a fully converged optimizer would push all params
+            // to the lower bound (~10mm = 0.010 m), giving sum ≈ 0.120.
+            // We use a threshold of 10.5mm per param (midpoint between lower bound
+            // 10mm and start 11mm). A converged optimizer yields sum < threshold,
+            // while a budget-exhausted optimizer (params still near 11mm) yields
+            // sum > threshold — making this a meaningful discriminator.
             let sum: f64 = ids
                 .iter()
                 .map(|id| values.get(id).unwrap().as_f64().unwrap())
                 .sum();
-            let optimal_sum = n_params as f64 * 0.010;
+            let suboptimality_threshold = n_params as f64 * 0.0105;
             assert!(
-                sum > optimal_sum,
-                "sum of params ({}) should be strictly above the optimal ({}) — \
-                 budget exhaustion should prevent full convergence",
+                sum > suboptimality_threshold,
+                "sum of params ({}) should be above suboptimality threshold ({}) — \
+                 budget exhaustion should leave params well above the optimum",
                 sum,
-                optimal_sum
+                suboptimality_threshold
             );
         }
         other => panic!(
