@@ -230,3 +230,25 @@ fn conjugate_3_4i_negates_imaginary() {
     let result = eval_builtin("conjugate", &[z]);
     assert_complex_eq(&result, 3.0, -4.0, DimensionVector::LENGTH);
 }
+
+// ── Accessor tests (step-9) ──────────────────────────────────────────────────
+
+#[test]
+fn re_im_dimensionless_returns_real() {
+    // re(Complex{3,4,DIMLESS}) -> Real(3.0), im(Complex{3,4,DIMLESS}) -> Real(4.0)
+    let z = complex_val(3.0, 4.0, DimensionVector::DIMENSIONLESS);
+    let re = eval_builtin("re", &[z.clone()]);
+    let im = eval_builtin("im", &[z]);
+    assert_real_approx(&re, 3.0);
+    assert_real_approx(&im, 4.0);
+}
+
+#[test]
+fn re_im_dimensioned_returns_scalar() {
+    // re(Complex{3,4,LENGTH}) -> Scalar{3.0, LENGTH}, im -> Scalar{4.0, LENGTH}
+    let z = complex_val(3.0, 4.0, DimensionVector::LENGTH);
+    let re = eval_builtin("re", &[z.clone()]);
+    let im = eval_builtin("im", &[z]);
+    assert_scalar_approx(&re, 3.0, DimensionVector::LENGTH);
+    assert_scalar_approx(&im, 4.0, DimensionVector::LENGTH);
+}
