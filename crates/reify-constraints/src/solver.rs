@@ -538,6 +538,7 @@ impl ConstraintSolver for DimensionalSolver {
         // After the early-return above for `initially_feasible && objective.is_none()`,
         // reaching here with `initially_feasible=true` implies `objective.is_some()`.
         let max_iters = if initially_feasible {
+            debug_assert!(problem.objective.is_some(), "warm-start budget path reached without objective — early-return invariant violated");
             let n_params = problem.auto_params.len() as u64;
             (FEASIBLE_OPT_ITERS_PER_DIM * (n_params + 1)).min(MAX_ITERS)
         } else {
