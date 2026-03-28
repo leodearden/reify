@@ -13580,7 +13580,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "gui/src/__tests__/claudeBridge.test.ts"
+          ],
+          "modules": [
+            "gui/src/__tests__"
+          ]
+        }
       },
       {
         "id": 660,
@@ -13605,7 +13613,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "gui/src/panels/PropertyEditor.tsx"
+          ],
+          "modules": [
+            "gui/src/panels"
+          ]
+        }
       },
       {
         "id": 662,
