@@ -464,19 +464,27 @@ mod tests {
 }"#;
         let ctx = AnalysisContext::new(source, &test_uri());
         let members = ctx.member_names();
-        let names: Vec<&str> = members.iter().map(|(n, _, _)| *n).collect();
-        assert!(
-            names.contains(&"cond"),
-            "should include top-level param 'cond', got: {names:?}"
-        );
-        assert!(
-            names.contains(&"when_true"),
-            "should include where-branch param 'when_true', got: {names:?}"
-        );
-        assert!(
-            names.contains(&"when_false"),
-            "should include else-branch param 'when_false', got: {names:?}"
-        );
+
+        let cond = members
+            .iter()
+            .find(|(n, _, _)| *n == "cond")
+            .expect("should include top-level param 'cond'");
+        assert_eq!(cond.1, ValueCellKind::Param, "cond should be a Param");
+        assert_eq!(*cond.2, Type::Bool, "cond should have Bool type");
+
+        let when_true = members
+            .iter()
+            .find(|(n, _, _)| *n == "when_true")
+            .expect("should include where-branch param 'when_true'");
+        assert_eq!(when_true.1, ValueCellKind::Param, "when_true should be a Param");
+        assert_eq!(*when_true.2, Type::length(), "when_true should have length type");
+
+        let when_false = members
+            .iter()
+            .find(|(n, _, _)| *n == "when_false")
+            .expect("should include else-branch param 'when_false'");
+        assert_eq!(when_false.1, ValueCellKind::Param, "when_false should be a Param");
+        assert_eq!(*when_false.2, Type::length(), "when_false should have length type");
     }
 
     // --- structure_names tests ---
