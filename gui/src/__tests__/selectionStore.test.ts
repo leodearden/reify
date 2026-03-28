@@ -191,6 +191,51 @@ describe('selectionStore', () => {
     vi.clearAllMocks();
   });
 
+  it('clearHighlights triggers only one backend sync (atomic batch update)', () => {
+    vi.useFakeTimers();
+    mockInvoke.mockResolvedValue(undefined);
+
+    let dispose!: () => void;
+    let selectEntity!: (path: string | null) => void;
+    let clearHighlights!: () => void;
+
+    createRoot((d) => {
+      dispose = d;
+      const store = createSelectionStore();
+      selectEntity = store.selectEntity;
+      clearHighlights = store.clearHighlights;
+    });
+
+    // Flush any initial effect + clear mock
+    vi.advanceTimersByTime(100);
+    mockInvoke.mockClear();
+
+    // Set up: select an entity
+    selectEntity('Bracket');
+    // This triggers an immediate invoke (selection-only change)
+    expect(mockInvoke).toHaveBeenCalledTimes(1);
+    mockInvoke.mockClear();
+
+    // Act: call clearHighlights — should batch both setState calls
+    // into a single atomic reactive update
+    clearHighlights();
+
+    // Advance past any pending debounce
+    vi.advanceTimersByTime(100);
+
+    // Assert: exactly one invoke call for the selection→null change,
+    // not two separate dispatches
+    expect(mockInvoke).toHaveBeenCalledTimes(1);
+    expect(mockInvoke).toHaveBeenCalledWith('update_selection', {
+      selectedEntity: null,
+      hoveredEntity: null,
+    });
+
+    dispose();
+    vi.useRealTimers();
+    vi.clearAllMocks();
+  });
+
   describe('backend sync', () => {
     let dispose!: () => void;
     let selectEntity!: (path: string | null) => void;
