@@ -1475,8 +1475,13 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
                 if !w.is_finite() || !x.is_finite() || !y.is_finite() || !z.is_finite() {
                     return Value::Undef;
                 }
+                let norm = (w * w + x * x + y * y + z * z).sqrt();
+                if norm < f64::EPSILON {
+                    return Value::Undef;
+                }
+                let q = (w / norm, x / norm, y / norm, z / norm);
                 if let Some((vx, vy, vz, dim)) = vec3_components(components) {
-                    let (rx, ry, rz) = quat_rotate((*w, *x, *y, *z), vx, vy, vz);
+                    let (rx, ry, rz) = quat_rotate(q, vx, vy, vz);
                     Value::Vector(make_components_3(rx, ry, rz, dim))
                 } else {
                     Value::Undef
@@ -1497,6 +1502,11 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
                 if !w.is_finite() || !x.is_finite() || !y.is_finite() || !z.is_finite() {
                     return Value::Undef;
                 }
+                let norm = (w * w + x * x + y * y + z * z).sqrt();
+                if norm < f64::EPSILON {
+                    return Value::Undef;
+                }
+                let q = (w / norm, x / norm, y / norm, z / norm);
                 if let Some((px, py, pz, p_dim)) = vec3_components(components) {
                     if let Value::Vector(t_items) = translation.as_ref() {
                         if let Some((tx, ty, tz, t_dim)) = vec3_components(t_items) {
@@ -1504,7 +1514,7 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
                             if p_dim != t_dim {
                                 return Value::Undef;
                             }
-                            let (rx, ry, rz) = quat_rotate((*w, *x, *y, *z), px, py, pz);
+                            let (rx, ry, rz) = quat_rotate(q, px, py, pz);
                             Value::Point(make_components_3(rx + tx, ry + ty, rz + tz, p_dim))
                         } else {
                             Value::Undef
