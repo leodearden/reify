@@ -9681,7 +9681,19 @@
           ],
           "modules": [
             "crates/reify-lsp/src"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "AnalysisContext",
+              "compute_completions",
+              "reify-lsp"
+            ],
+            "queries": [
+              "LSP completion implementation reify position-aware",
+              "AnalysisContext structure spans cursor context",
+              "task 481 position-sensitive completion tests"
+            ]
+          }
         },
         "updatedAt": "2026-03-27T23:31:52.689Z"
       },
