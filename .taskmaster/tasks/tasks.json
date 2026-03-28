@@ -12874,7 +12874,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "gui/sidecar/src/__tests__/session.test.ts"
+          ],
+          "modules": [
+            "gui/sidecar/src/__tests__"
+          ]
+        }
       },
       {
         "id": 624,
@@ -12902,7 +12910,13 @@
               "solver fallback path task 589 refactor",
               "task 624 status churn done reverted pending"
             ]
-          }
+          },
+          "files": [
+            "crates/reify-constraints/src/solver.rs"
+          ],
+          "modules": [
+            "crates/reify-constraints/src"
+          ]
         }
       },
       {
