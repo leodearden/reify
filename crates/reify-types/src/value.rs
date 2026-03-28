@@ -236,7 +236,21 @@ impl Value {
                 im: -im,
                 dimension,
             },
+            Value::Tensor(components) => Self::neg_components(components, Value::Tensor),
+            Value::Vector(components) => Self::neg_components(components, Value::Vector),
+            // Affine geometry: point negation is undefined (spec 3.3.1)
+            Value::Point(_) => Value::Undef,
             _ => Value::Undef,
+        }
+    }
+
+    /// Negate each component, returning Undef if any component negation fails.
+    fn neg_components(components: Vec<Value>, wrap: fn(Vec<Value>) -> Value) -> Value {
+        let results: Vec<Value> = components.into_iter().map(|c| c.neg()).collect();
+        if results.iter().any(|v| v.is_undef()) {
+            Value::Undef
+        } else {
+            wrap(results)
         }
     }
 
