@@ -56,3 +56,41 @@ fn scale_vector_by_undef_scalar_returns_undef() {
     let expr = CompiledExpr::binop(BinOp::Mul, v, s, Type::Real);
     assert_eq!(eval(&expr), Value::Undef);
 }
+
+// ── Option-collect pattern behavior tests ──────────────────────────────────
+
+/// componentwise_binop with first element producing Undef should return Undef.
+/// Adding a Length scalar to a dimensionless Real causes dimension mismatch
+/// on the first element, so the whole result is Undef.
+/// Behavior preserved before and after Option-collect refactor.
+#[test]
+fn componentwise_binop_first_element_undef_returns_undef() {
+    // Tensor([Length(1.0), Int(2)]) + Tensor([Real(1.0), Int(3)])
+    // First pair: Length(1.0) + Real(1.0) → Undef (dimension mismatch)
+    let a = lit(
+        Value::Tensor(vec![Value::length(1.0), Value::Int(2)]),
+        Type::Real,
+    );
+    let b = lit(
+        Value::Tensor(vec![Value::Real(1.0), Value::Int(3)]),
+        Type::Real,
+    );
+    let expr = CompiledExpr::binop(BinOp::Add, a, b, Type::Real);
+    assert_eq!(eval(&expr), Value::Undef);
+}
+
+/// scale_components with first component operation producing Undef.
+/// Multiplying a Tensor containing a Bool by a scalar produces Undef on first op.
+/// Behavior preserved before and after Option-collect refactor.
+#[test]
+fn scale_components_first_element_undef_returns_undef() {
+    // Tensor([Bool(true), Int(2)]) * Int(3)
+    // First: Bool(true) * Int(3) → Undef (type mismatch)
+    let t = lit(
+        Value::Tensor(vec![Value::Bool(true), Value::Int(2)]),
+        Type::Real,
+    );
+    let s = lit(Value::Int(3), Type::Real);
+    let expr = CompiledExpr::binop(BinOp::Mul, t, s, Type::Real);
+    assert_eq!(eval(&expr), Value::Undef);
+}
