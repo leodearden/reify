@@ -4,12 +4,12 @@ use reify_compiler::{
     CompiledTrait, DefaultKind, RequirementKind, TraitDefault, TraitRequirement,
 };
 
-/// Returns a static tag string for a `DefaultKind` variant.
-fn default_kind_tag(kind: &DefaultKind) -> &'static str {
+/// Returns a hash-friendly string representation for a `DefaultKind` variant.
+fn default_kind_str(kind: &DefaultKind) -> String {
     match kind {
-        DefaultKind::Param { .. } => "Param",
-        DefaultKind::Let(_) => "Let",
-        DefaultKind::Constraint(_) => "Constraint",
+        DefaultKind::Param { cell_type, .. } => format!("Param:{}", cell_type),
+        DefaultKind::Let(_) => "Let".to_string(),
+        DefaultKind::Constraint(_) => "Constraint".to_string(),
     }
 }
 
@@ -42,11 +42,11 @@ fn compute_trait_content_hash(
     let ref_hashes = refinements.iter().map(|r| ContentHash::of_str(r));
     let type_param_hashes = type_params.iter().map(|p| ContentHash::of_str(&p.name));
     let default_hashes = defaults.iter().map(|d| {
-        let kind_tag = default_kind_tag(&d.kind);
+        let kind_str = default_kind_str(&d.kind);
         ContentHash::of_str(&format!(
             "{}:{}",
             d.name.as_deref().unwrap_or(""),
-            kind_tag
+            kind_str
         ))
     });
     let all_hashes = std::iter::once(name_hash)
@@ -252,8 +252,8 @@ mod tests {
     }
 
     #[test]
-    fn default_kind_tag_covers_all_variants() {
-        let param_tag = default_kind_tag(&DefaultKind::Param {
+    fn default_kind_str_covers_all_variants() {
+        let param_str = default_kind_str(&DefaultKind::Param {
             cell_type: Type::Real,
             default_decl: reify_syntax::ParamDecl {
                 name: "x".to_string(),
@@ -265,9 +265,9 @@ mod tests {
                 content_hash: ContentHash::of_str("x"),
             },
         });
-        assert_eq!(param_tag, "Param");
+        assert_eq!(param_str, "Param:Real");
 
-        let let_tag = default_kind_tag(&DefaultKind::Let(reify_syntax::LetDecl {
+        let let_str = default_kind_str(&DefaultKind::Let(reify_syntax::LetDecl {
             name: "y".to_string(),
             is_pub: false,
             doc: None,
@@ -280,9 +280,9 @@ mod tests {
             span: SourceSpan::new(0, 0),
             content_hash: ContentHash::of_str("y"),
         }));
-        assert_eq!(let_tag, "Let");
+        assert_eq!(let_str, "Let");
 
-        let constraint_tag = default_kind_tag(&DefaultKind::Constraint(reify_syntax::ConstraintDecl {
+        let constraint_str = default_kind_str(&DefaultKind::Constraint(reify_syntax::ConstraintDecl {
             label: Some("c".to_string()),
             expr: reify_syntax::Expr {
                 kind: reify_syntax::ExprKind::BoolLiteral(true),
@@ -292,7 +292,7 @@ mod tests {
             span: SourceSpan::new(0, 0),
             content_hash: ContentHash::of_str("c"),
         }));
-        assert_eq!(constraint_tag, "Constraint");
+        assert_eq!(constraint_str, "Constraint");
     }
 
     #[test]
