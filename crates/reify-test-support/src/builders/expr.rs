@@ -7,11 +7,23 @@ use reify_types::{
 
 /// Create a literal expression from a value, inferring the type.
 ///
-/// Supports all Value variants including M5 types (Enum, List, Set, Map, Option,
+/// Supports most Value variants including M5 types (Enum, List, Set, Map, Option,
 /// Lambda, Field). For empty collections, element type defaults to Int/Bool.
+///
+/// **Panics** for Frame, Tensor, and Matrix — their types cannot be inferred from
+/// the value alone. Use [`literal_frame`] or `CompiledExpr::literal(value, type)`
+/// directly.
 pub fn literal(v: Value) -> CompiledExpr {
     let ty = v.infer_type();
     CompiledExpr::literal(v, ty)
+}
+
+/// Create a literal Frame expression with explicit dimensionality.
+///
+/// Use this instead of [`literal`] for Frame values, since Frame dimensionality
+/// cannot be inferred from the value alone.
+pub fn literal_frame(v: Value, dims: usize) -> CompiledExpr {
+    CompiledExpr::literal(v, Type::Frame(dims))
 }
 
 /// Create a value reference expression.
@@ -518,5 +530,47 @@ mod tests {
         } else {
             panic!("expected FunctionCall kind for curl_call");
         }
+    }
+
+    #[test]
+    fn literal_frame_helper_produces_frame3_type() {
+        let frame_value = Value::Frame {
+            origin: Box::new(Value::Point(vec![
+                Value::Real(0.0),
+                Value::Real(0.0),
+                Value::Real(0.0),
+            ])),
+            basis: Box::new(Value::Orientation {
+                w: 1.0,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            }),
+        };
+        let expr = literal_frame(frame_value, 3);
+        assert_eq!(expr.result_type, Type::Frame(3));
+        assert!(matches!(
+            expr.kind,
+            CompiledExprKind::Literal(Value::Frame { .. })
+        ));
+    }
+
+    #[test]
+    #[should_panic(expected = "infer_type() cannot infer Frame")]
+    fn literal_frame_value_panics() {
+        let frame_value = Value::Frame {
+            origin: Box::new(Value::Point(vec![
+                Value::Real(0.0),
+                Value::Real(0.0),
+                Value::Real(0.0),
+            ])),
+            basis: Box::new(Value::Orientation {
+                w: 1.0,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            }),
+        };
+        literal(frame_value);
     }
 }
