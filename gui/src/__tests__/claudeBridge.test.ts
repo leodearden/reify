@@ -148,6 +148,18 @@ describe('claude invoke wrappers', () => {
     expect(mapKeys).toEqual(expectedKeys);
   });
 
+  it('MESSAGE_CONTEXT_FIELD_MAP values match the expected snake_case wire names', () => {
+    const expectedWireNames = [
+      'attached_contexts',
+      'constraints',
+      'current_file',
+      'diagnostics',
+      'selected_entity',
+    ];
+    const mapValues = Object.values(MESSAGE_CONTEXT_FIELD_MAP).sort();
+    expect(mapValues).toEqual(expectedWireNames);
+  });
+
   it('mapContextToWire maps all fields to snake_case', () => {
     const input: MessageContext = {
       selectedEntity: 'Box.body',
@@ -794,6 +806,12 @@ type _AssertClaudeContextIsMessageContext = AssertTrue<Equals<ClaudeMessageConte
 // MESSAGE_CONTEXT_FIELD_MAP must cover every key of MessageContext (compile-time guard).
 // If a field is added to MessageContext but not to the map, tsc will fail here.
 type _AssertFieldMapExhaustive = AssertTrue<Equals<keyof typeof MESSAGE_CONTEXT_FIELD_MAP, keyof Required<MessageContext>>>;
+
+// MESSAGE_CONTEXT_FIELD_MAP values must be literal string types (not widened to `string`).
+// This catches typos in snake_case wire names at compile time.
+type FieldMapValues = (typeof MESSAGE_CONTEXT_FIELD_MAP)[keyof typeof MESSAGE_CONTEXT_FIELD_MAP];
+type ExpectedWireNames = 'selected_entity' | 'diagnostics' | 'constraints' | 'current_file' | 'attached_contexts';
+type _AssertFieldMapValuesLiteral = AssertTrue<Equals<FieldMapValues, ExpectedWireNames>>;
 
 // Each Omit<Interface, 'type'> must match the payload shape used in subscribeToClaudeEvents.
 // If a field is added/removed/renamed in types.ts, tsc will fail here.
