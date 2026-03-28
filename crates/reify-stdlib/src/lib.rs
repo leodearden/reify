@@ -6099,6 +6099,19 @@ mod tests {
     }
 
     #[test]
+    fn frame3_point4_origin_returns_undef() {
+        // Point4 (wrong component count) should be rejected
+        let origin_4d = Value::Point(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+            Value::length(4.0),
+        ]);
+        let basis = make_identity_orientation();
+        assert!(eval_builtin("frame3", &[origin_4d, basis]).is_undef());
+    }
+
+    #[test]
     fn frame3_dimensionless_point3_is_accepted() {
         // Point3 with dimensionless (Real) components is accepted
         let origin = Value::Point(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]);
@@ -6166,6 +6179,13 @@ mod tests {
     fn frame3_identity_with_any_args_returns_undef() {
         assert!(eval_builtin("frame3_identity", &[Value::Real(1.0)]).is_undef());
         assert!(eval_builtin("frame3_identity", &[Value::Real(1.0), Value::Real(2.0)]).is_undef());
+        assert!(
+            eval_builtin(
+                "frame3_identity",
+                &[Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]
+            )
+            .is_undef()
+        );
     }
 
     // ── transform3 tests (step-5) ─────────────────────────────────────────────
