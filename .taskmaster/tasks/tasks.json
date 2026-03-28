@@ -13398,6 +13398,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 673,
+        "title": "Add complete field assertions to poison recovery evaluate tests",
+        "description": "Two poison recovery evaluate tests have incomplete assertions on ConcurrentNodeResult fields. Add the missing checks for full coverage of the recovered data.",
+        "details": "In crates/reify-runtime/tests/concurrent_eval.rs:\n\n1. `evaluate_recovers_poisoned_results` (~line 2242-2248):\n   After the existing `results[0].node` and `results[0].outcome` assertions, add:\n   ```rust\n   assert_eq!(results[0].value, Value::Real(20.0));\n   assert_eq!(results[0].determinacy, DeterminacyState::Determined);\n   ```\n   This confirms the full ConcurrentNodeResult was faithfully recorded through the poisoned-then-recovered Mutex.\n\n2. `evaluate_recovers_poisoned_snapshot_values` (~line 2191-2218):\n   After the existing snapshot assertions, add a check that the primary `values` map was also updated:\n   ```rust\n   let values = adapter.values();\n   assert_eq!(values.get(&ValueCellId::new(\"T\", \"b\")), Some(&Value::Real(20.0)));\n   ```\n   This mirrors the pattern in `evaluate_recovers_poisoned_values_write` and confirms that `write_values()` (which runs before `write_snapshot_values()`) also succeeded.\n\nmemory_hints:\n  search: \"poison recovery test assertions ConcurrentNodeResult\"\n  entities: [\"ConcurrentEvalAdapter\", \"ConcurrentNodeResult\"]",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -13410,7 +13421,7 @@
       ],
       "created": "2026-03-28T04:47:18.481Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-28T04:47:18.490Z"
+      "updated": "2026-03-28T04:47:25.060Z"
     }
   }
 }
