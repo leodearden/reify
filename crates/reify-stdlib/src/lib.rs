@@ -4405,6 +4405,38 @@ mod tests {
     }
 
     #[test]
+    fn orient_quaternion_accepts_dimensionless_scalar() {
+        // Dimensionless Scalars should be accepted — they are pure numbers.
+        assert_orientation_approx!(
+            eval_builtin(
+                "orient_quaternion",
+                &[
+                    Value::Scalar {
+                        si_value: 1.0,
+                        dimension: DimensionVector::DIMENSIONLESS,
+                    },
+                    Value::Scalar {
+                        si_value: 0.0,
+                        dimension: DimensionVector::DIMENSIONLESS,
+                    },
+                    Value::Scalar {
+                        si_value: 0.0,
+                        dimension: DimensionVector::DIMENSIONLESS,
+                    },
+                    Value::Scalar {
+                        si_value: 0.0,
+                        dimension: DimensionVector::DIMENSIONLESS,
+                    },
+                ]
+            ),
+            1.0,
+            0.0,
+            0.0,
+            0.0
+        );
+    }
+
+    #[test]
     fn orient_quaternion_rejects_angle_dimension() {
         // ANGLE-dimensioned Scalars must also be rejected — quaternion components
         // are dimensionless, not angles.
