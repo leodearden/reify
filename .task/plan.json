@@ -57,7 +57,7 @@
       "id": "step-6",
       "type": "impl",
       "description": "Add is_finite guard in trig_input: refactor to extract the radians value first, then return `if radians.is_finite() { Some(radians) } else { None }`. This rejects NaN/Inf at the input validation layer. The Value::Int arm needs no guard (i64\u2192f64 always finite).",
-      "status": "pending",
+      "status": "done",
       "commit": null
     },
     {

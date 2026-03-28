@@ -1213,20 +1213,25 @@ fn binary(args: &[Value], f: impl FnOnce(&Value, &Value) -> Value) -> Value {
 /// Accepts: Angle Scalar (si_value is already radians) or bare Real (treated as radians).
 /// Rejects: non-ANGLE Scalar (dimension error).
 fn trig_input(v: &Value) -> Option<f64> {
-    match v {
+    let radians = match v {
         Value::Scalar {
             si_value,
             dimension,
         } => {
             if *dimension == DimensionVector::ANGLE {
-                Some(*si_value)
+                *si_value
             } else {
-                None // dimension error: sin(5mm) is meaningless
+                return None; // dimension error: sin(5mm) is meaningless
             }
         }
-        Value::Real(r) => Some(*r),
-        Value::Int(i) => Some(*i as f64),
-        _ => None,
+        Value::Real(r) => *r,
+        Value::Int(i) => *i as f64,
+        _ => return None,
+    };
+    if radians.is_finite() {
+        Some(radians)
+    } else {
+        None
     }
 }
 
