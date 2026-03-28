@@ -32,6 +32,10 @@ fn build_parse_error_exits_failure() {
         stderr.contains("Parse error"),
         "stderr should contain 'Parse error', got: {stderr}"
     );
+    assert!(
+        !output_path.exists(),
+        "no output file should be written on parse error"
+    );
 }
 
 #[test]
