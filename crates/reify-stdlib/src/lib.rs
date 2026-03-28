@@ -456,7 +456,7 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
         }
 
         // re(z) / real(z): extract real part. Returns Real if DIMENSIONLESS, Scalar otherwise.
-        "re" | "real" => unary(args, |v| match v {
+        "re" | "real" => unary(args, |v| sanitize_value(match v {
             Value::Complex { re, dimension, .. } => {
                 if *dimension == DimensionVector::DIMENSIONLESS {
                     Value::Real(*re)
@@ -468,7 +468,7 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
                 }
             }
             _ => Value::Undef,
-        }),
+        })),
 
         // im(z) / imag(z): extract imaginary part. Returns Real if DIMENSIONLESS, Scalar otherwise.
         "im" | "imag" => unary(args, |v| match v {
