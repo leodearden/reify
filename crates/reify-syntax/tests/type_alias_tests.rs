@@ -383,3 +383,29 @@ fn parse_type_alias_empty_rhs_no_panic() {
         );
     }
 }
+
+// ── Type params combined with dimensional RHS ────────────────────
+
+#[test]
+fn parse_type_alias_type_params_with_dimensional_rhs() {
+    // Combines type parameters and dimensional expressions — previously untested together.
+    let source = "type Velocity<T> = T / Time";
+    let (decls, errors) = parse_decls(source);
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+    assert_eq!(decls.len(), 1);
+
+    match &decls[0] {
+        Declaration::TypeAlias(ta) => {
+            assert_eq!(ta.name, "Velocity");
+            // Type parameter
+            assert_eq!(ta.type_params.len(), 1);
+            assert_eq!(ta.type_params[0].name, "T");
+            // Dimensional expression: T / Time
+            assert_eq!(ta.type_expr.name, "/");
+            assert_eq!(ta.type_expr.type_args.len(), 2);
+            assert_eq!(ta.type_expr.type_args[0].name, "T");
+            assert_eq!(ta.type_expr.type_args[1].name, "Time");
+        }
+        other => panic!("expected Declaration::TypeAlias, got {:?}", other),
+    }
+}
