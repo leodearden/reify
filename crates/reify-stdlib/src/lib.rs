@@ -7135,6 +7135,66 @@ mod tests {
         assert!(eval_builtin("frame_to_frame", &[f, Value::Real(1.0)]).is_undef());
     }
 
+    /// frame_to_frame with NaN in origin_from x-component should return Undef.
+    #[test]
+    fn frame_to_frame_nan_origin_from_returns_undef() {
+        let from = Value::Frame {
+            origin: Box::new(Value::Point(vec![
+                Value::Scalar {
+                    si_value: f64::NAN,
+                    dimension: DimensionVector::LENGTH,
+                },
+                Value::length(0.0),
+                Value::length(0.0),
+            ])),
+            basis: Box::new(make_identity_orientation()),
+        };
+        let to = make_frame(0.0, 0.0, 0.0, make_identity_orientation());
+        assert!(
+            eval_builtin("frame_to_frame", &[from, to]).is_undef(),
+            "NaN in origin_from should return Undef"
+        );
+    }
+
+    /// frame_to_frame with NaN in origin_to y-component should return Undef.
+    #[test]
+    fn frame_to_frame_nan_origin_to_returns_undef() {
+        let from = make_frame(1.0, 0.0, 0.0, make_identity_orientation());
+        let to = Value::Frame {
+            origin: Box::new(Value::Point(vec![
+                Value::length(0.0),
+                Value::Scalar {
+                    si_value: f64::NAN,
+                    dimension: DimensionVector::LENGTH,
+                },
+                Value::length(0.0),
+            ])),
+            basis: Box::new(make_identity_orientation()),
+        };
+        assert!(
+            eval_builtin("frame_to_frame", &[from, to]).is_undef(),
+            "NaN in origin_to should return Undef"
+        );
+    }
+
+    /// frame_to_frame with mixed-dimension origin (length, angle, length) should return Undef.
+    #[test]
+    fn frame_to_frame_mixed_dimension_origin_returns_undef() {
+        let from = Value::Frame {
+            origin: Box::new(Value::Point(vec![
+                Value::length(1.0),
+                Value::angle(0.0),  // dimension mismatch within same origin
+                Value::length(0.0),
+            ])),
+            basis: Box::new(make_identity_orientation()),
+        };
+        let to = make_frame(0.0, 0.0, 0.0, make_identity_orientation());
+        assert!(
+            eval_builtin("frame_to_frame", &[from, to]).is_undef(),
+            "mixed-dimension origin should return Undef"
+        );
+    }
+
     /// frame_to_frame with mismatched origin dimensions (LENGTH vs ANGLE) returns Undef.
     #[test]
     fn frame_to_frame_mismatched_origin_dimensions_undef() {
