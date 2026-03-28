@@ -1,137 +1,80 @@
 {
-  "task_id": "592",
-  "title": "Fix selectionStore: implement immediate selection dispatch or correct misleading comments",
+  "task_id": "624",
+  "title": "Revert build_trial_values to direct-insert loop (hot path allocation regression)",
   "files": [
-    "gui/src/stores/selectionStore.ts",
-    "gui/src/__tests__/selectionStore.test.ts"
+    "crates/reify-constraints/src/solver.rs"
   ],
   "modules": [
-    "gui/src/stores",
-    "gui/src/__tests__"
+    "crates/reify-constraints"
   ],
-  "analysis": "The selectionStore.ts createEffect has a comment claiming 'selection (click) updates are sent immediately since they are infrequent' and 'send immediately if only selection changed', but ALL state changes unconditionally go through a 100ms setTimeout. There is no fast path for selection-only changes.\n\nThe fix (option a) is to track the previous selectedEntity and detect when only selection changed (not hover). When only selection changes, call invoke('update_selection', ...) synchronously. When hover changes (with or without selection), debounce at 100ms as before.\n\nImplementation approach:\n- Track `prevSelected` and `prevHovered` variables outside the effect\n- Inside the effect, compare current vs previous values\n- If selectedEntity changed but hoveredEntity did not \u2192 invoke immediately (no setTimeout)\n- If hoveredEntity changed (regardless of selectedEntity) \u2192 debounce at 100ms as before\n- Clear any pending debounce timer before dispatching immediate selection updates to avoid duplicates\n\nThe existing test file tests only state mutations (selectEntity, hoverEntity, etc.) and does not test the invoke/backend-sync behavior at all. New tests need to:\n1. Mock @tauri-apps/api/core invoke\n2. Use vi.useFakeTimers() to control setTimeout\n3. Verify immediate dispatch on selection-only changes\n4. Verify debounced dispatch on hover changes\n5. Verify combined changes (both selection+hover) use debounce\n6. Verify rapid selection changes don't double-fire\n\nREVIEW FEEDBACK (step-3 fix): The 'combined selection+hover change is debounced at 100ms' test (lines 227-247) does NOT test truly combined changes. selectEntity('Bracket') fires the effect immediately (selection-only \u2192 immediate path), then hoverEntity('Bracket.width') fires a second effect (hover \u2192 debounce path). mockInvoke.mockClear() hides the first immediate call. The test must use SolidJS batch() to make both changes in a single effect run, and a separate test should document the sequential behavior accurately.",
+  "analysis": "Task-589 refactored build_trial_values (solver.rs:75) to call params_to_value_map, which allocates an intermediate HashMap<ValueCellId, Value> that is immediately iterated over to insert into the PersistentMap, then dropped. This is called inside ConstraintCostFunction::cost() on every Nelder-Mead iteration (up to 5000 per solve). The fix is surgical: inline the param\u2192Value::Scalar mapping directly into build_trial_values' insert loop, eliminating the intermediate HashMap allocation. params_to_value_map remains for the three cold-path call sites (early-exit at line 517, fallback at line 625, solution construction at line 657). The existing test build_trial_values_inserts_auto_params (line 684) covers single-param behavior. We add a multi-param regression test and an empty-params edge-case test before making the change, then refactor.",
   "prerequisites": [],
   "steps": [
     {
       "id": "step-1",
       "type": "test",
-      "description": "Write failing test: selection-only change calls invoke immediately (0ms), not after 100ms debounce. Mock @tauri-apps/api/core with vi.mock, use vi.useFakeTimers. In a createRoot, create the store, call selectEntity('Bracket'), then verify mockInvoke was called with 'update_selection' and { selectedEntity: 'Bracket', hoveredEntity: null } synchronously (before advancing timers).",
+      "description": "Write a multi-param regression test for build_trial_values that exercises multiple params of different types (length + angle) and verifies each is inserted with the correct si_value and dimension, while preserving non-auto base values. This locks in behavior before the refactor.",
       "status": "done",
-      "commit": "33360651"
+      "commit": "cfa2fe19"
     },
     {
       "id": "step-2",
       "type": "test",
-      "description": "Write failing test: hover-only change calls invoke only after 100ms debounce. Create store, call hoverEntity('Bracket.width'), assert mockInvoke NOT called, advance timers by 100ms, assert mockInvoke called once with { selectedEntity: null, hoveredEntity: 'Bracket.width' }.",
+      "description": "Write an edge-case test for build_trial_values with empty params slice, verifying the base ValueMap is returned unchanged (no insertions, no panics).",
       "status": "done",
-      "commit": "33360651"
+      "commit": "42e80d46"
     },
     {
       "id": "step-3",
-      "type": "test",
-      "description": "Write failing test: combined selection+hover change is debounced at 100ms. Create store, call selectEntity('Bracket') then hoverEntity('Bracket.width') in same tick, assert invoke not called until 100ms. This tests that when hover changes alongside selection, we use the debounce path.",
+      "type": "impl",
+      "description": "Refactor build_trial_values to use a direct-insert loop: replace the `for (id, value) in params_to_value_map(params, x)` with `for (param, &val) in params.iter().zip(x.iter())` that directly constructs Value::Scalar { si_value: val, dimension: dimension_of(&param.param_type) } and inserts param.id.clone() into the ValueMap. This eliminates the intermediate HashMap allocation on the hot path.",
       "status": "done",
-      "commit": "33360651"
+      "commit": "2f3feed5"
     },
     {
       "id": "step-4",
       "type": "test",
-      "description": "Write failing test: immediate selection dispatch cancels pending debounced hover. Create store, hoverEntity('X') (starts 100ms timer), then before timer fires selectEntity('Bracket') \u2014 the selection invoke fires immediately, and when 100ms passes only one additional invoke fires (not the stale hover-only one). Verify total invoke calls and argument correctness.",
-      "status": "done",
-      "commit": "33360651"
-    },
-    {
-      "id": "step-5",
-      "type": "impl",
-      "description": "Implement immediate selection dispatch in selectionStore.ts. Track prevSelected and prevHovered outside the effect. Inside the effect: (1) always clear pending timer, (2) check if only selectedEntity changed (selectedEntity !== prevSelected && hoveredEntity === prevHovered), (3) if selection-only \u2192 call invoke synchronously, (4) else \u2192 debounce at 100ms, (5) update prevSelected/prevHovered after dispatching. Fix comments to accurately describe the dual-path behavior.",
-      "status": "done",
-      "commit": "6e11d4e2"
-    },
-    {
-      "id": "step-6",
-      "type": "test",
-      "description": "Write test: rapid hover changes collapse into single invoke at 100ms (existing debounce behavior preserved). Create store, hoverEntity('A'), advance 50ms, hoverEntity('B'), advance 100ms. Assert invoke called once with hoveredEntity='B'.",
-      "status": "done",
-      "commit": "7be9a7f3"
-    },
-    {
-      "id": "step-7",
-      "type": "test",
-      "description": "Write test: cleanup disposes the debounce timer. Create store in createRoot, hoverEntity('X'), then dispose the root. Advance timers by 200ms. Assert invoke was NOT called (the onCleanup cleared the pending timer).",
-      "status": "done",
-      "commit": "7be9a7f3"
-    },
-    {
-      "id": "step-8",
-      "type": "test",
-      "description": "Write test: invoke rejection is silently caught (no unhandled promise). Create store, mockInvoke.mockRejectedValue(new Error('not in Tauri')), selectEntity('Bracket'). Assert no error thrown.",
-      "status": "done",
-      "commit": "7be9a7f3"
-    },
-    {
-      "id": "step-9",
-      "type": "test",
-      "description": "Fix the 'combined selection+hover change is debounced at 100ms' test (step-3 review fix). The current test calls selectEntity then hoverEntity sequentially, which fires two separate effects \u2014 the first (selection-only) dispatches immediately and is silently hidden by mockInvoke.mockClear(). Replace with SolidJS batch(): import batch from 'solid-js', wrap both calls in batch(() => { selectEntity('Bracket'); hoverEntity('Bracket.width'); }) so the effect runs once with both selectionChanged=true and hoverChanged=true, hitting the debounce path. Remove the mockInvoke.mockClear() call. Verify: (1) invoke NOT called synchronously after the batch, (2) invoke NOT called after 50ms, (3) invoke called exactly once after 100ms with { selectedEntity: 'Bracket', hoveredEntity: 'Bracket.width' }. Update the inline comment to explain why batch() is needed (single effect run with both changes).",
-      "status": "done",
-      "commit": "1321f2d9"
-    },
-    {
-      "id": "step-10",
-      "type": "test",
-      "description": "Add new test 'sequential selectEntity then hoverEntity fires immediate then debounced invoke' to document the sequential (non-batched) behavior accurately. Call selectEntity('Bracket') then hoverEntity('Bracket.width') without batch. Verify: (1) immediately after selectEntity, invoke called once with { selectedEntity: 'Bracket', hoveredEntity: null } (immediate selection path), (2) immediately after hoverEntity, invoke still called only once (hover debounce pending), (3) after advancing 100ms, invoke called twice total \u2014 second call with { selectedEntity: 'Bracket', hoveredEntity: 'Bracket.width' } (debounced hover path). This documents the real two-invoke behavior that the original test was hiding.",
-      "status": "done",
-      "commit": "1321f2d9"
+      "description": "Update the doc-comment on build_trial_values to reflect it no longer calls params_to_value_map, and verify all existing tests pass (build_trial_values_inserts_auto_params, params_to_value_map_builds_correct_hashmap, plus the two new tests from steps 1-2, plus full solver integration tests).",
+      "status": "pending",
+      "commit": null
     }
   ],
   "design_decisions": [
     {
-      "decision": "Track previous values via closure variables (prevSelected, prevHovered) rather than using Solid's on() with defer",
-      "rationale": "SolidJS createEffect auto-tracks reactive dependencies. Using closure vars for previous state is simpler and more explicit than on() helpers. It also makes the selection-only vs hover-change comparison straightforward."
+      "decision": "Inline the param-to-Value::Scalar mapping rather than extracting a shared iterator helper",
+      "rationale": "The two usages have different collection targets (PersistentMap vs HashMap), so a shared iterator adapter would add abstraction without simplifying either call site. Direct code in each function is clearer and avoids lifetime/type complexity."
     },
     {
-      "decision": "Selection-only changes invoke synchronously; any change involving hover uses 100ms debounce",
-      "rationale": "The original design intent was to send selection immediately since clicks are infrequent and MCP may read selection in the same interaction. Hover changes are frequent (mouse movement) and should be debounced. When both change together (e.g. clicking a new entity while hovering), debouncing is safer to avoid duplicate rapid calls."
+      "decision": "Keep params_to_value_map unchanged for cold-path call sites",
+      "rationale": "The three cold-path call sites (lines 517, 625, 657) need a HashMap<ValueCellId, Value> for SolveResult::Solved { values }. params_to_value_map serves them correctly and the allocation is immaterial since each runs at most once per solve."
     },
     {
-      "decision": "Immediate selection dispatch clears any pending debounce timer to avoid sending stale state",
-      "rationale": "If a hover debounce is pending and then selection changes immediately, the immediate dispatch sends the latest full state. The stale debounced call would be redundant or could overwrite with old hover data."
-    },
-    {
-      "decision": "Tests use vi.useFakeTimers + vi.mock('@tauri-apps/api/core') pattern from existing codebase",
-      "rationale": "This is the established pattern in Editor.test.tsx, completions.test.ts, etc. Consistent with project conventions."
-    },
-    {
-      "decision": "Use SolidJS batch() for combined-change test instead of sequential calls",
-      "rationale": "Sequential selectEntity + hoverEntity calls trigger two separate SolidJS effects. The first (selection-only) dispatches immediately \u2014 hiding it with mockClear makes the test misleading. Using batch() causes a single effect run where both selectionChanged and hoverChanged are true, genuinely testing the combined debounce path. The sequential scenario is covered by a separate, accurately-documented test."
+      "decision": "Use dimension_of(&param.param_type) inline instead of duplicating the match",
+      "rationale": "dimension_of is already a small helper that handles the Type \u2192 DimensionVector mapping. Calling it from both build_trial_values and params_to_value_map avoids any logic duplication."
     }
   ],
   "reuse": [
     {
-      "what": "vi.mock('@tauri-apps/api/core') + vi.mocked(invoke) pattern",
-      "where": "gui/src/__tests__/completions.test.ts, gui/src/__tests__/Editor.test.tsx, gui/src/__tests__/bridge.test.ts",
-      "how": "Same mock setup: vi.mock at top level, import invoke, const mockInvoke = vi.mocked(invoke)"
+      "what": "dimension_of() helper (line 44)",
+      "where": "solver.rs:44-48",
+      "how": "Called in the new direct-insert loop to get the DimensionVector for each param, same as params_to_value_map does internally"
     },
     {
-      "what": "vi.useFakeTimers / vi.advanceTimersByTime pattern for debounce testing",
-      "where": "gui/src/__tests__/useToast.test.ts, gui/src/__tests__/Editor.test.tsx",
-      "how": "beforeEach(vi.useFakeTimers), afterEach(vi.useRealTimers), vi.advanceTimersByTime(ms) to control setTimeout"
+      "what": "Existing test build_trial_values_inserts_auto_params (line 684)",
+      "where": "solver.rs:684-734",
+      "how": "Serves as primary regression test for single-param behavior \u2014 must continue to pass after refactor"
     },
     {
-      "what": "createRoot(dispose => { ... }) pattern for SolidJS reactive testing",
-      "where": "gui/src/__tests__/selectionStore.test.ts (existing tests), gui/src/__tests__/engineStore.test.ts",
-      "how": "Wrap all reactive code in createRoot, call dispose() at end to clean up"
+      "what": "Existing test params_to_value_map_builds_correct_hashmap (line 2025)",
+      "where": "solver.rs:2025-2090",
+      "how": "Verifies params_to_value_map is unmodified \u2014 must continue to pass since cold-path call sites still use it"
     },
     {
-      "what": "Existing selectionStore test structure",
-      "where": "gui/src/__tests__/selectionStore.test.ts",
-      "how": "Add new describe block for backend sync tests alongside existing state-mutation tests"
-    },
-    {
-      "what": "SolidJS batch() for atomic multi-signal updates",
-      "where": "solid-js core API",
-      "how": "import { batch } from 'solid-js'; batch(() => { ...multiple setState calls... }) \u2014 defers effect execution until all state changes are applied, so the effect runs once seeing all changes simultaneously"
+      "what": "PersistentMap O(1) clone + O(log n) insert",
+      "where": "ValueMap type from reify_types",
+      "how": "build_trial_values leverages structural sharing \u2014 base.clone() is O(1), each insert is O(log n), total O(k log n) for k auto params"
     }
   ],
-  "_session_id": "592-ad49c338",
-  "_created_at": "2026-03-27T23:54:10.765302+00:00"
+  "_session_id": "624-d80a012a",
+  "_created_at": "2026-03-28T00:23:19.716713+00:00"
 }
