@@ -15083,7 +15083,7 @@
         "description": "Two small defensive improvements in gui/src/stores/selectionStore.ts:\n\n1. **Initial dispatch guard**: The createEffect fires on first mount with selected=null, hovered=null and schedules a spurious update_selection({null, null}) 100ms after every store instantiation. Add an early-return guard: `if (selected === prevSelected && hovered === prevHovered) return;` at the top of the effect, after clearing the hover timer. This also removes the test workaround at selectionStore.test.ts lines 191-195 (the TODO comment + flush + mockClear).\n\n2. **clearHighlights batch()**: Wrap clearHighlights body in batch(() => { setState('selectedEntity', null); setState('highlightedParams', []); }) for defensive consistency. highlightedParams is not currently read by createEffect, but if it's ever added to the effect, unbatched multi-setState would silently regress to double-dispatch.\n\nMemory hints: search \"selectionStore createEffect initial dispatch\" and \"clearHighlights batch defensive\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -15097,7 +15097,7 @@
             "gui/src/__tests__"
           ]
         },
-        "updatedAt": "2026-03-28T15:27:25.437Z"
+        "updatedAt": "2026-03-28T15:56:33.087Z"
       },
       {
         "id": "733",
@@ -15253,9 +15253,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T15:56:32.246Z",
+      "lastModified": "2026-03-28T15:56:33.087Z",
       "taskCount": 738,
-      "completedCount": 352,
+      "completedCount": 353,
       "tags": [
         "master"
       ]
