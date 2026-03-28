@@ -617,7 +617,7 @@ fn maximize_with_feasible_initial_point() {
                 si
             );
             assert!(
-                si <= 0.051,
+                si <= 0.0505,
                 "maximized x should not exceed param bounds (50mm), got {} m",
                 si
             );
