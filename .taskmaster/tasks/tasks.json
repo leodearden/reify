@@ -12769,6 +12769,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 633,
+        "title": "Extract shared for_each_member_recursive traversal helper and introduce MemberCounts struct",
+        "description": "Two related refactors in crates/reify-lsp/src/analysis.rs:\n\n1. **MemberCounts struct**: Replace the `(usize, usize, usize)` return type of `count_members_recursive` with a named struct `MemberCounts { params: usize, lets: usize, constraints: usize }`. This makes destructuring self-documenting and prevents positional ordering bugs.\n\n2. **Shared traversal helper**: `count_members_recursive` and `find_named_member_span` share an identical recursive traversal skeleton (match on Param/Let/GuardedGroup, recurse into members/else_members). Extract a private `fn for_each_member_recursive(members: &[MemberDecl], f: &mut impl FnMut(&MemberDecl))` that handles the GuardedGroup recursion. Rewrite both functions to use it.\n\nAlso downgrade `count_members_recursive` (and find_named_member_span if unused externally) to `pub(crate)`.\n\nMemory hints: search \"count_members_recursive\" and \"find_named_member_span\" in analysis.rs",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -12781,7 +12792,7 @@
       ],
       "created": "2026-03-28T00:33:54.683Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-28T00:34:01.559Z"
+      "updated": "2026-03-28T00:34:07.556Z"
     }
   }
 }
