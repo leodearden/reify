@@ -124,3 +124,61 @@ fn construct_complex_scalar_length_preserves_dimension() {
     );
     assert_complex_eq(&result, 0.005, 0.003, DimensionVector::LENGTH);
 }
+
+// ── Error-case tests (step-3) ────────────────────────────────────────────────
+
+#[test]
+fn construct_complex_dimension_mismatch_returns_undef() {
+    // complex(Scalar{LENGTH}, Scalar{TIME}) -> Undef (dimension mismatch)
+    let result = eval_builtin(
+        "complex",
+        &[
+            Value::Scalar {
+                si_value: 3.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 4.0,
+                dimension: DimensionVector::TIME,
+            },
+        ],
+    );
+    assert!(
+        result.is_undef(),
+        "expected Undef for LENGTH+TIME mismatch, got {:?}",
+        result
+    );
+}
+
+#[test]
+fn construct_complex_wrong_arg_count_returns_undef() {
+    // complex() with 0 args -> Undef
+    let result_zero = eval_builtin("complex", &[]);
+    assert!(
+        result_zero.is_undef(),
+        "expected Undef for 0 args, got {:?}",
+        result_zero
+    );
+
+    // complex() with 3 args -> Undef
+    let result_three = eval_builtin(
+        "complex",
+        &[Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)],
+    );
+    assert!(
+        result_three.is_undef(),
+        "expected Undef for 3 args, got {:?}",
+        result_three
+    );
+}
+
+#[test]
+fn construct_complex_non_numeric_returns_undef() {
+    // complex(Bool, Real) -> Undef (Bool is non-numeric)
+    let result = eval_builtin("complex", &[Value::Bool(true), Value::Real(3.0)]);
+    assert!(
+        result.is_undef(),
+        "expected Undef for non-numeric arg, got {:?}",
+        result
+    );
+}
