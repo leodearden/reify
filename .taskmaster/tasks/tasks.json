@@ -13451,7 +13451,7 @@
         "description": "In `gui/src/__tests__/claudeIntegration.test.ts`, `cancelAnimationFrame` is a no-op that doesn't remove callbacks from `rafCallbacks`. This means `cancelAndFlush()` (called by done/error handlers) silently leaves stale callbacks. A regression in cancel logic would go undetected.\n\n**Fix**: Implement `cancelAnimationFrame` to actually remove the callback by id, matching the `id = rafCallbacks.length + 1` allocation scheme. Either use index-based splice or maintain a `Map<number, () => void>` for precise lookup.\n\nMemory hints:\n- Search: \"claudeIntegration rAF cancelAnimationFrame polyfill\"\n- Entities: claudeIntegration.test.ts, claudeStore, cancelAndFlush",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -13462,7 +13462,8 @@
           "modules": [
             "gui/src/__tests__"
           ]
-        }
+        },
+        "updatedAt": "2026-03-28T20:53:52.824Z"
       },
       {
         "id": "649",
@@ -15454,7 +15455,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T20:53:52.750Z",
+      "lastModified": "2026-03-28T20:53:52.824Z",
       "taskCount": 749,
       "completedCount": 383,
       "tags": [
