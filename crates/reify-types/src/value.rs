@@ -4240,6 +4240,13 @@ mod tests {
         assert_ne!(f1.content_hash(), f2.content_hash());
     }
 
+    #[test]
+    fn value_frame_dimension_explicit_arm() {
+        // Ensures dimension() has an explicit Frame arm (not just the wildcard).
+        let frame = make_frame(make_point3_length(), make_orientation_identity());
+        assert_eq!(frame.dimension(), DimensionVector::DIMENSIONLESS);
+    }
+
     // ── Value::Transform tests (step-3) ──────────────────────────────────────
 
     fn make_vector3_length() -> Value {
