@@ -45,3 +45,35 @@ fn empty_rank1_tensor_add_returns_empty_tensor() {
     let expr = add(a, b);
     assert_eq!(eval(&expr), Value::Tensor(vec![]));
 }
+
+// ── Rank-2 empty tensor guards ──────────────────────────────────────────────
+
+/// Rank-2 mismatched: one operand is non-empty rank-2, the other is empty → Undef.
+/// Tensor([Tensor([Int(1)])]) + Tensor([]) → Undef (length mismatch handled by
+/// componentwise_binop, but the rank-2 guard should also catch it).
+#[test]
+fn empty_rank2_tensor_add_mismatched_returns_undef() {
+    let a = lit(
+        Value::Tensor(vec![Value::Tensor(vec![Value::Int(1)])]),
+        tensor_ty(),
+    );
+    let b = lit(Value::Tensor(vec![]), tensor_ty());
+    let expr = add(a, b);
+    assert_eq!(eval(&expr), Value::Undef);
+}
+
+/// Rank-2 with empty inner rows: Tensor([Tensor([])]) + Tensor([Tensor([])])
+/// should return Undef because the inner rows are empty (0-column matrix).
+#[test]
+fn empty_inner_rank2_tensor_add_returns_undef() {
+    let a = lit(
+        Value::Tensor(vec![Value::Tensor(vec![])]),
+        tensor_ty(),
+    );
+    let b = lit(
+        Value::Tensor(vec![Value::Tensor(vec![])]),
+        tensor_ty(),
+    );
+    let expr = add(a, b);
+    assert_eq!(eval(&expr), Value::Undef);
+}
