@@ -15314,6 +15314,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 742,
+        "title": "LSP goto-def: goto_def.rs code quality improvements",
+        "description": "Review follow-ups from task 485 (cross-file goto-definition), grouped by goto_def.rs changes:\n\n**S2: Redundant iteration** — Phase 0 and Phase 2 iterate declarations separately. Could merge into single pass.\n\n**S4: Substring name search** — `find_name_offset_in_decl` uses `str::find(name)` with no word-boundary check. Could match inside comments or longer identifiers.\n\n**S5: Magic string \"_target\"** — `find_declaration_in_source` passes literal `\"_target\"` to `ModulePath::single()`. Should use `module_name_from_uri` helper.\n\n**S6: Fallback offset out of bounds** — `find_name_offset_in_decl` returns unclamped `decl_start` on failure. Should return `decl_start.min(source.len() as u32)`.\n\n**S7: Missing test for ImportKind::Aliased** — `import parts as P` variant has no test. Add test asserting navigation to file start.\n\n**S8: Test boilerplate** — 6+ cross-file tests repeat identical resolver setup. Extract a `parts_resolver(target_source)` helper.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -15326,7 +15337,7 @@
       ],
       "created": "2026-03-28T17:27:52.006Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-28T17:28:00.240Z"
+      "updated": "2026-03-28T17:28:01.875Z"
     }
   }
 }
