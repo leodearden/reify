@@ -791,6 +791,10 @@ type Equals<A, B> =
 type AssertTrue<T extends true> = T;
 type _AssertClaudeContextIsMessageContext = AssertTrue<Equals<ClaudeMessageContext, MessageContext>>;
 
+// MESSAGE_CONTEXT_FIELD_MAP must cover every key of MessageContext (compile-time guard).
+// If a field is added to MessageContext but not to the map, tsc will fail here.
+type _AssertFieldMapExhaustive = AssertTrue<Equals<keyof typeof MESSAGE_CONTEXT_FIELD_MAP, keyof Required<MessageContext>>>;
+
 // Each Omit<Interface, 'type'> must match the payload shape used in subscribeToClaudeEvents.
 // If a field is added/removed/renamed in types.ts, tsc will fail here.
 type _AssertTextDeltaPayload = AssertTrue<Equals<Omit<TextDelta, 'type'>, { id: string; content: string }>>;

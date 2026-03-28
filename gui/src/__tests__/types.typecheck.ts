@@ -122,6 +122,17 @@ type _NoSessionStatus = import('../types').SessionStatus;
 // guard is trivially satisfied and the Pick+Equals assertion has been removed.
 // The compile-time assertion in claudeBridge.test.ts serves as the ongoing guard.
 
+// --- MESSAGE_CONTEXT_FIELD_MAP exhaustiveness guard ---
+//
+// bridge.ts exports MESSAGE_CONTEXT_FIELD_MAP typed as
+// Record<keyof Required<MessageContext>, string>. If a field is added to
+// MessageContext but not to the map, tsc will fail in bridge.ts.
+// This import ensures the map is reachable from the type-check file.
+// See: claudeBridge.test.ts for the compile-time Equals assertion and
+// runtime Object.keys test.
+import { MESSAGE_CONTEXT_FIELD_MAP } from '../bridge';
+void MESSAGE_CONTEXT_FIELD_MAP;
+
 // Suppress unused variable warnings — this file is only for type checking
 void mesh;
 void meshNoNormals;
