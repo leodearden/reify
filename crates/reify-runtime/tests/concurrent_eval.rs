@@ -2030,6 +2030,9 @@ mod poison_panics {
             result.is_ok(),
             "build_result_shared() should recover from poisoned results lock, not panic"
         );
+        // Verify the recovered result has accessible (empty) node_results
+        let edit_result = result.unwrap();
+        assert!(edit_result.node_results.is_empty());
     }
 
     /// into_result() recovers from poisoned values RwLock.
@@ -2092,6 +2095,9 @@ mod poison_panics {
             result.is_ok(),
             "into_result() should recover from poisoned results lock, not panic"
         );
+        // Verify the recovered result has accessible (empty) node_results
+        let edit_result = result.unwrap();
+        assert!(edit_result.node_results.is_empty());
     }
 
     /// Verify that tracing::warn! is emitted when into_result() recovers from poisoned locks.
@@ -2203,6 +2209,12 @@ mod poison_evaluate {
         );
         let outcome = result.unwrap();
         assert_eq!(outcome, EvalOutcome::Changed);
+        // Verify snapshot_values were actually written despite poisoning
+        let snap = adapter.snapshot_values();
+        assert_eq!(
+            snap.get(&ValueCellId::new("T", "b")),
+            Some(&(Value::Real(20.0), DeterminacyState::Determined))
+        );
     }
 
     /// evaluate() recovers from poisoned results Mutex.
@@ -2226,6 +2238,14 @@ mod poison_evaluate {
         );
         let outcome = result.unwrap();
         assert_eq!(outcome, EvalOutcome::Changed);
+        // Verify results were actually pushed despite poisoning
+        let results = adapter.take_results();
+        assert_eq!(results.len(), 1, "evaluate() should push exactly one result");
+        assert_eq!(
+            results[0].node,
+            NodeId::Value(ValueCellId::new("T", "b"))
+        );
+        assert_eq!(results[0].outcome, EvalOutcome::Changed);
     }
 
     /// Verify that tracing::warn! is emitted when evaluate() recovers from poisoned locks.

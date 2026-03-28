@@ -456,7 +456,7 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
         }
 
         // re(z) / real(z): extract real part. Returns Real if DIMENSIONLESS, Scalar otherwise.
-        "re" | "real" => unary(args, |v| match v {
+        "re" | "real" => unary(args, |v| sanitize_value(match v {
             Value::Complex { re, dimension, .. } => {
                 if *dimension == DimensionVector::DIMENSIONLESS {
                     Value::Real(*re)
@@ -468,10 +468,10 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
                 }
             }
             _ => Value::Undef,
-        }),
+        })),
 
         // im(z) / imag(z): extract imaginary part. Returns Real if DIMENSIONLESS, Scalar otherwise.
-        "im" | "imag" => unary(args, |v| match v {
+        "im" | "imag" => unary(args, |v| sanitize_value(match v {
             Value::Complex { im, dimension, .. } => {
                 if *dimension == DimensionVector::DIMENSIONLESS {
                     Value::Real(*im)
@@ -483,7 +483,7 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
                 }
             }
             _ => Value::Undef,
-        }),
+        })),
 
         // conjugate(z): negate the imaginary part, preserve re and dimension.
         "conjugate" => unary(args, |v| match v {
@@ -5220,6 +5220,64 @@ mod tests {
         );
     }
 
+    // ── re/real sanitize_value tests (task-358 step-1) ─────────────────────────
+
+    #[test]
+    fn re_nan_re_component_returns_undef() {
+        // re(Complex{NaN, 1.0, DIMLESS}) → Undef (NaN must not propagate)
+        let z = Value::Complex {
+            re: f64::NAN,
+            im: 1.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            eval_builtin("re", &[z]).is_undef(),
+            "re() with NaN real component must return Undef"
+        );
+    }
+
+    #[test]
+    fn re_inf_re_component_returns_undef() {
+        // re(Complex{+Inf, 1.0, DIMLESS}) → Undef (Inf must not propagate)
+        let z = Value::Complex {
+            re: f64::INFINITY,
+            im: 1.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            eval_builtin("re", &[z]).is_undef(),
+            "re() with Inf real component must return Undef"
+        );
+    }
+
+    #[test]
+    fn re_nan_dimensioned_returns_undef() {
+        // re(Complex{NaN, 1.0, LENGTH}) → Undef (dimensioned Scalar path)
+        let z = Value::Complex {
+            re: f64::NAN,
+            im: 1.0,
+            dimension: DimensionVector::LENGTH,
+        };
+        assert!(
+            eval_builtin("re", &[z]).is_undef(),
+            "re() with NaN dimensioned real component must return Undef"
+        );
+    }
+
+    #[test]
+    fn real_nan_re_component_returns_undef() {
+        // real(Complex{NaN, 1.0, DIMLESS}) → Undef (alias coverage)
+        let z = Value::Complex {
+            re: f64::NAN,
+            im: 1.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            eval_builtin("real", &[z]).is_undef(),
+            "real() with NaN real component must return Undef"
+        );
+    }
+
     // ── real() alias tests (step-1) ───────────────────────────────────────────
 
     #[test]
@@ -5247,6 +5305,64 @@ mod tests {
     #[test]
     fn real_non_complex_returns_undef() {
         assert!(eval_builtin("real", &[Value::Real(3.0)]).is_undef());
+    }
+
+    // ── im/imag sanitize_value tests (task-358 step-3) ─────────────────────────
+
+    #[test]
+    fn im_nan_im_component_returns_undef() {
+        // im(Complex{1.0, NaN, DIMLESS}) → Undef (NaN must not propagate)
+        let z = Value::Complex {
+            re: 1.0,
+            im: f64::NAN,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            eval_builtin("im", &[z]).is_undef(),
+            "im() with NaN imaginary component must return Undef"
+        );
+    }
+
+    #[test]
+    fn im_inf_im_component_returns_undef() {
+        // im(Complex{1.0, +Inf, DIMLESS}) → Undef (Inf must not propagate)
+        let z = Value::Complex {
+            re: 1.0,
+            im: f64::INFINITY,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            eval_builtin("im", &[z]).is_undef(),
+            "im() with Inf imaginary component must return Undef"
+        );
+    }
+
+    #[test]
+    fn im_inf_dimensioned_returns_undef() {
+        // im(Complex{1.0, +Inf, LENGTH}) → Undef (dimensioned Scalar path)
+        let z = Value::Complex {
+            re: 1.0,
+            im: f64::INFINITY,
+            dimension: DimensionVector::LENGTH,
+        };
+        assert!(
+            eval_builtin("im", &[z]).is_undef(),
+            "im() with Inf dimensioned imaginary component must return Undef"
+        );
+    }
+
+    #[test]
+    fn imag_nan_im_component_returns_undef() {
+        // imag(Complex{1.0, NaN, DIMLESS}) → Undef (alias coverage)
+        let z = Value::Complex {
+            re: 1.0,
+            im: f64::NAN,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            eval_builtin("imag", &[z]).is_undef(),
+            "imag() with NaN imaginary component must return Undef"
+        );
     }
 
     // ── imag() alias tests (step-3) ───────────────────────────────────────────
