@@ -10732,7 +10732,7 @@
         "description": "The early-exit Solved path (solver.rs:422-430) and the final return path (solver.rs:522-530) contain an identical loop:\n```rust\nfor (param, &val) in problem.auto_params.iter().zip(SOME_VEC.iter()) {\n    values.insert(param.id.clone(), Value::Scalar {\n        si_value: val,\n        dimension: dimension_of(&param.param_type),\n    });\n}\n```\n\nExtract a private helper:\n```rust\nfn build_solved_values(params: &[AutoParam], vals: &[f64]) -> HashMap<ValueCellId, Value> { ... }\n```\nand call it from both sites.\n\nMemory hints: search for \"solver code duplication\", entity names: DimensionalSolver, build_trial_values",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "495"
         ],
@@ -10746,7 +10746,8 @@
           "modules": [
             "crates/reify-constraints/src"
           ]
-        }
+        },
+        "updatedAt": "2026-03-28T04:53:41.039Z"
       },
       {
         "id": "531",
@@ -13463,7 +13464,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T04:53:36.487Z",
+      "lastModified": "2026-03-28T04:53:41.039Z",
       "taskCount": 677,
       "completedCount": 321,
       "tags": [
