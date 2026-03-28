@@ -197,7 +197,8 @@ export async function subscribeToClaudeEvents(
         console.warn('claude-tool-call: invalid payload, expected {id: string, tool_name: string}', p);
         return;
       }
-      handler({ type: 'tool_call', id: p.id, tool_name: p.tool_name, tool_input: p.tool_input as Record<string, unknown> });
+      const tool_input = isRecord(p.tool_input) ? (p.tool_input as Record<string, unknown>) : {};
+      handler({ type: 'tool_call', id: p.id, tool_name: p.tool_name, tool_input });
     }],
     ['claude-tool-result', (event) => {
       if (!isRecord(event.payload)) return;
