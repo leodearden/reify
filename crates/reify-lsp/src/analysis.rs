@@ -199,6 +199,23 @@ impl AnalysisContext {
         let id = ValueCellId::new(entity, member);
         self.check_result.values.get(&id)
     }
+
+    /// Return the name of the structure/occurrence whose span contains `offset`,
+    /// or `None` if the offset is outside all declarations.
+    pub fn enclosing_structure_name_at(&self, offset: usize) -> Option<&str> {
+        let offset_u32 = offset as u32;
+        for decl in &self.parsed.declarations {
+            let (decl_name, decl_span) = match decl {
+                reify_syntax::Declaration::Structure(s) => (s.name.as_str(), s.span),
+                reify_syntax::Declaration::Occurrence(o) => (o.name.as_str(), o.span),
+                _ => continue,
+            };
+            if offset_u32 >= decl_span.start && offset_u32 < decl_span.end {
+                return Some(decl_name);
+            }
+        }
+        None
+    }
 }
 
 /// Recursively search a member list for a named param or let declaration.
