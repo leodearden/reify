@@ -1295,11 +1295,27 @@ fn partial_feasibility_not_treated_as_warm_start() {
                 msg
             );
         }
-        SolveResult::Solved { .. } => {
-            // If the solver somehow achieves full feasibility, that's also
-            // acceptable — it means the optimizer converged precisely enough.
-            // The key property (partial ≠ warm-start) is tested by the
-            // Infeasible branch above.
+        SolveResult::Solved { values } => {
+            // If the solver achieves full feasibility, verify the solved values
+            // actually satisfy all constraints. This catches a critical failure mode:
+            // if a bug makes `initially_feasible=true` for this partially-infeasible
+            // point, the solver gets the reduced warm-start budget (1500 iters instead
+            // of 5000) and the fallback path (solver.rs:618-640) may return Solved
+            // with the ORIGINAL infeasible values (p1=10mm). The p1 >= 0.020 check
+            // catches this because the initial p1=0.010 would fail it.
+            let p0_si = values.get(&p0_id).unwrap().as_f64().unwrap();
+            let p1_si = values.get(&p1_id).unwrap().as_f64().unwrap();
+            assert!(
+                p0_si > 0.005 && p0_si < 0.050,
+                "p0 should satisfy constraints (5mm < p0 < 50mm), got {} m",
+                p0_si
+            );
+            assert!(
+                p1_si > 0.020 && p1_si < 0.050,
+                "p1 should satisfy constraints (20mm < p1 < 50mm), got {} m — \
+                 if p1 is near 0.010, the solver used infeasible initial values",
+                p1_si
+            );
         }
         other => panic!(
             "expected Infeasible or Solved for partially-feasible initial point, got {:?}",
