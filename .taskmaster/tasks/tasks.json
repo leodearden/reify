@@ -13537,10 +13537,11 @@
         "description": "eval_div and eval_mul now correctly return Value::Scalar for dimensionless results, but make_components_3 (line ~1168) still collapses dimensionless Scalar to Value::Real, and complex magnitude/re/im do the same. This leaves the type contract inconsistent across vector reconstruction and complex extraction.\n\nFix: Update make_components_3 to always return Value::Scalar (even for dimensionless), matching eval_div/eval_mul. Apply the same fix to complex magnitude(), .re, .im handlers. Consider a shared helper `fn dimensioned_value(v: f64, dim: DimensionVector) -> Value` that always returns Scalar.\n\nmemory_hints: search \"dimensionless Scalar Real type contract\" in reify-expr, search \"make_components_3\" in lib.rs",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-03-28T05:01:39.866Z"
       },
       {
         "id": "683",
@@ -13589,7 +13590,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T05:01:39.548Z",
+      "lastModified": "2026-03-28T05:01:39.867Z",
       "taskCount": 686,
       "completedCount": 323,
       "tags": [
