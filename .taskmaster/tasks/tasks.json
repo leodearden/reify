@@ -13423,6 +13423,19 @@
         ],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 675,
+        "title": "Add partial-feasibility test with objective near constraint boundary",
+        "description": "After the task 660 split of `partial_feasibility_not_treated_as_warm_start` into two focused tests, the scenario where an objective competes with constraint satisfaction from a partially-infeasible starting point is now untested. Add a test `partial_feasibility_solved_with_objective_close_to_boundary` that includes `objective: Some(Minimize(p0+p1))` with p1 starting at 19.5mm (just below the 20mm boundary) and bounds [1mm, 100mm]. This is the real-world failure mode where objective minimization fights constraint satisfaction.\n\nMemory hints: search for \"partial feasibility\", \"solver test coverage\", entity: NelderMeadSolver",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          660
+        ],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -13435,7 +13448,7 @@
       ],
       "created": "2026-03-28T04:48:43.224Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-28T04:48:43.237Z"
+      "updated": "2026-03-28T04:48:48.607Z"
     }
   }
 }
