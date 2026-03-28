@@ -15096,7 +15096,17 @@
           "727"
         ],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-test-support/src/builders/trait_def.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/src",
+            "crates/reify-test-support/src/builders"
+          ]
+        }
       },
       {
         "id": 734,
@@ -15107,7 +15117,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "gui/src/__tests__/PropertyEditor.test.tsx"
+          ],
+          "modules": [
+            "gui/src/__tests__"
+          ]
+        }
       },
       {
         "id": 735,
