@@ -955,6 +955,7 @@ impl Engine {
                 codomain_type: field.codomain_type.clone(),
                 source: source_kind,
                 lambda: lambda_value,
+                inner_field: None,
             };
 
             let field_id = ValueCellId::new(FIELD_ENTITY_PREFIX, &field.name);

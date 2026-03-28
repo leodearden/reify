@@ -1998,6 +1998,7 @@ mod tests {
             codomain_type: reify_types::Type::length(),
             source: reify_types::FieldSourceKind::Analytical,
             lambda: Box::new(Value::Undef),
+            inner_field: None,
         };
         let result = eval_builtin("gradient", &[field]);
         assert!(
@@ -2014,6 +2015,7 @@ mod tests {
             codomain_type: reify_types::Type::StructureRef("Vector3".into()),
             source: reify_types::FieldSourceKind::Analytical,
             lambda: Box::new(Value::Undef),
+            inner_field: None,
         };
         let result = eval_builtin("divergence", &[field]);
         assert!(
@@ -2030,6 +2032,7 @@ mod tests {
             codomain_type: reify_types::Type::StructureRef("Vector3".into()),
             source: reify_types::FieldSourceKind::Analytical,
             lambda: Box::new(Value::Undef),
+            inner_field: None,
         };
         let result = eval_builtin("curl", &[field]);
         assert!(
@@ -2048,6 +2051,7 @@ mod tests {
             codomain_type: reify_types::Type::length(),
             source: reify_types::FieldSourceKind::Analytical,
             lambda: Box::new(Value::Undef),
+            inner_field: None,
         };
         let result = eval_builtin("sample", &[field, Value::Int(42)]);
         assert!(

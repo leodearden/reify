@@ -47,6 +47,7 @@ fn eval_analytical_field_at_point() {
             codomain_type,
             source,
             lambda,
+            inner_field,
         } => {
             // Domain should be Point3 (StructureRef)
             assert_eq!(format!("{}", domain_type), "Point3");
@@ -63,6 +64,12 @@ fn eval_analytical_field_at_point() {
                 matches!(**lambda, Value::Lambda { .. }),
                 "expected Lambda value in analytical field, got: {:?}",
                 lambda
+            );
+            // Non-gradient fields should have inner_field = None
+            assert!(
+                inner_field.is_none(),
+                "analytical field should have inner_field = None, got: {:?}",
+                inner_field
             );
         }
         other => panic!("expected Value::Field, got: {:?}", other),

@@ -120,12 +120,19 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             match function.name.as_str() {
                 "sample" if evaluated_args.len() == 2 => {
                     if let Value::Field {
-                        source, lambda, ..
+                        source,
+                        lambda,
+                        inner_field,
+                        ..
                     } = &evaluated_args[0]
                     {
                         if *source == FieldSourceKind::Gradient {
-                            if let Value::Field { .. } = lambda.as_ref() {
-                                sample_gradient_field(lambda, &evaluated_args[1], ctx)
+                            if let Some(inner) = inner_field {
+                                if let Value::Field { .. } = inner.as_ref() {
+                                    sample_gradient_field(inner, &evaluated_args[1], ctx)
+                                } else {
+                                    Value::Undef
+                                }
                             } else {
                                 Value::Undef
                             }
@@ -494,7 +501,8 @@ fn eval_user_function_call(function_name: &str, args: &[CompiledExpr], ctx: &Eva
 /// Construct a gradient field from a scalar field.
 ///
 /// Given a Field<Point3<Q>, Scalar<R>>, returns a Field<Point3<Q>, Vector3<Scalar<R/Q>>>
-/// with `source = FieldSourceKind::Gradient` and the original field stored in the lambda slot.
+/// with `source = FieldSourceKind::Gradient`, `lambda = Undef` (preserving the
+/// callable-or-Undef data contract), and `inner_field = Some(original_field)`.
 /// The actual gradient computation happens at sample time via central differences.
 ///
 /// Returns Undef if:
@@ -532,13 +540,16 @@ fn compute_gradient_field(input: &Value) -> Value {
     let gradient_dim = codomain_dim.div(&domain_quantity_dim);
 
     // Build result: Field<same_domain, Vector3<Scalar<gradient_dim>>>
+    // lambda is Undef (data contract: callable-or-Undef only)
+    // inner_field holds the original field for gradient computation at sample time
     Value::Field {
         domain_type: domain_type.clone(),
         codomain_type: Type::vec3(Type::Scalar {
             dimension: gradient_dim,
         }),
         source: FieldSourceKind::Gradient,
-        lambda: Box::new(original_field.clone()),
+        lambda: Box::new(Value::Undef),
+        inner_field: Some(Box::new(original_field.clone())),
     }
 }
 

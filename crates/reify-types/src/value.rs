@@ -46,8 +46,12 @@ pub enum Value {
         domain_type: crate::ty::Type,
         codomain_type: crate::ty::Type,
         source: FieldSourceKind,
-        /// The callable lambda for analytical/composed fields, or Undef for sampled/imported.
+        /// The callable lambda for analytical/composed fields, or Undef for
+        /// sampled/imported/gradient fields. Never stores a `Value::Field`.
         lambda: Box<Value>,
+        /// For gradient fields: the original field whose gradient is computed.
+        /// `None` for all other field kinds.
+        inner_field: Option<Box<Value>>,
     },
     /// Lambda closure: captures environment values and body expression.
     Lambda {
@@ -319,12 +323,16 @@ impl Value {
                 codomain_type,
                 source,
                 lambda,
+                inner_field,
             } => {
                 let mut h = ContentHash::of(&[13]);
                 h = h.combine(ContentHash::of_str(&format!("{}", domain_type)));
                 h = h.combine(ContentHash::of_str(&format!("{}", codomain_type)));
                 h = h.combine(ContentHash::of_str(&format!("{:?}", source)));
                 h = h.combine(lambda.content_hash());
+                if let Some(inner) = inner_field {
+                    h = h.combine(inner.content_hash());
+                }
                 h
             }
             Value::Lambda {
@@ -981,14 +989,16 @@ impl PartialEq for Value {
                     codomain_type: ac,
                     source: as_,
                     lambda: al,
+                    inner_field: ai,
                 },
                 Value::Field {
                     domain_type: bd,
                     codomain_type: bc,
                     source: bs,
                     lambda: bl,
+                    inner_field: bi,
                 },
-            ) => ad == bd && ac == bc && as_ == bs && al == bl,
+            ) => ad == bd && ac == bc && as_ == bs && al == bl && ai == bi,
             (
                 Value::Lambda {
                     params: ap,
@@ -1218,18 +1228,21 @@ impl Ord for Value {
                     codomain_type: ac,
                     source: as_,
                     lambda: al,
+                    inner_field: ai,
                 },
                 Value::Field {
                     domain_type: bd,
                     codomain_type: bc,
                     source: bs,
                     lambda: bl,
+                    inner_field: bi,
                 },
             ) => format!("{}", ad)
                 .cmp(&format!("{}", bd))
                 .then_with(|| format!("{}", ac).cmp(&format!("{}", bc)))
                 .then_with(|| format!("{:?}", as_).cmp(&format!("{:?}", bs)))
-                .then_with(|| al.cmp(bl)),
+                .then_with(|| al.cmp(bl))
+                .then_with(|| ai.cmp(bi)),
             (
                 Value::Lambda {
                     params: ap,
@@ -2595,6 +2608,7 @@ mod tests {
             codomain_type: Type::Real,
             source: FieldSourceKind::Analytical,
             lambda: Box::new(Value::Undef),
+            inner_field: None,
         };
         // Display
         let display = format!("{}", field_val);
@@ -2609,6 +2623,7 @@ mod tests {
             codomain_type: Type::Real,
             source: FieldSourceKind::Analytical,
             lambda: Box::new(Value::Undef),
+            inner_field: None,
         };
         assert_eq!(field_val.content_hash(), field_val2.content_hash());
         // Not equal to Undef

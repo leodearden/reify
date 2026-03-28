@@ -57,6 +57,7 @@ fn make_valid_scalar_field() -> Value {
         codomain_type: codomain,
         source: FieldSourceKind::Analytical,
         lambda: Box::new(lambda),
+        inner_field: None,
     }
 }
 
@@ -87,6 +88,7 @@ fn gradient_of_field_with_non_point3_domain_returns_undef() {
         },
         source: FieldSourceKind::Analytical,
         lambda: Box::new(make_constant_lambda(Value::Real(1.0), Type::Real)),
+        inner_field: None,
     };
     let expr = make_call(
         "gradient",
@@ -122,6 +124,7 @@ fn gradient_of_field_with_non_scalar_codomain_returns_undef() {
         codomain_type: codomain.clone(),
         source: FieldSourceKind::Analytical,
         lambda: Box::new(make_constant_lambda(Value::Real(1.0), Type::Real)),
+        inner_field: None,
     };
     let expr = make_call(
         "gradient",
@@ -396,6 +399,7 @@ fn gradient_of_linear_field_dot_123() {
         codomain_type: codomain.clone(),
         source: FieldSourceKind::Analytical,
         lambda: Box::new(lambda),
+        inner_field: None,
     };
 
     // gradient(field)
@@ -493,6 +497,7 @@ fn gradient_of_quadratic_field_dot_self() {
         codomain_type: codomain.clone(),
         source: FieldSourceKind::Analytical,
         lambda: Box::new(lambda),
+        inner_field: None,
     };
 
     let field_type = Type::Field {
@@ -588,6 +593,7 @@ fn gradient_dimension_temperature_over_length() {
         codomain_type: codomain.clone(),
         source: FieldSourceKind::Analytical,
         lambda: Box::new(lambda),
+        inner_field: None,
     };
 
     // gradient(field)
@@ -641,6 +647,7 @@ fn gradient_at_origin_stable() {
         codomain_type: codomain.clone(),
         source: FieldSourceKind::Analytical,
         lambda: Box::new(lambda),
+        inner_field: None,
     };
 
     let field_type = Type::Field {
@@ -753,7 +760,6 @@ fn gradient_field_lambda_data_contract() {
                 Value::Field {
                     source: inner_source,
                     domain_type: inner_domain,
-                    codomain_type: inner_codomain,
                     lambda: inner_lambda,
                     ..
                 } => {
