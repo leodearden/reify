@@ -1023,7 +1023,7 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
             let ax = comps[0];
             let ay = comps[1];
             let az = comps[2];
-            let axis_norm = (ax * ax + ay * ay + az * az).sqrt();
+            let axis_norm = vec3_norm(ax, ay, az);
             if axis_norm == 0.0 || !axis_norm.is_finite() {
                 return Value::Undef;
             }
