@@ -3099,33 +3099,7 @@ mod tests {
         // normalize([3,4,0]) ≈ [0.6, 0.8, 0.0]
         let v = Value::Tensor(vec![Value::Real(3.0), Value::Real(4.0), Value::Real(0.0)]);
         let result = eval_builtin("normalize", &[v]);
-        match result {
-            Value::Tensor(items) => {
-                assert_eq!(items.len(), 3, "normalize must return 3 components");
-                let vals: Vec<f64> = items.iter().map(|x| x.as_f64().unwrap()).collect();
-                assert!(
-                    (vals[0] - 0.6).abs() < 1e-12,
-                    "x: expected 0.6, got {}",
-                    vals[0]
-                );
-                assert!(
-                    (vals[1] - 0.8).abs() < 1e-12,
-                    "y: expected 0.8, got {}",
-                    vals[1]
-                );
-                assert!(
-                    (vals[2] - 0.0).abs() < 1e-12,
-                    "z: expected 0.0, got {}",
-                    vals[2]
-                );
-                // Components must be Real (dimensionless)
-                assert!(
-                    items.iter().all(|x| matches!(x, Value::Real(_))),
-                    "normalize must return Real components"
-                );
-            }
-            other => panic!("expected Tensor, got {:?}", other),
-        }
+        assert_vector3_approx!(Tensor, result, [0.6, 0.8, 0.0]);
     }
 
     #[test]
@@ -3155,32 +3129,7 @@ mod tests {
             },
         ]);
         let result = eval_builtin("normalize", &[v]);
-        match result {
-            Value::Tensor(items) => {
-                assert_eq!(items.len(), 3);
-                let vals: Vec<f64> = items.iter().map(|x| x.as_f64().unwrap()).collect();
-                assert!(
-                    (vals[0] - 0.6).abs() < 1e-12,
-                    "x: expected 0.6, got {}",
-                    vals[0]
-                );
-                assert!(
-                    (vals[1] - 0.8).abs() < 1e-12,
-                    "y: expected 0.8, got {}",
-                    vals[1]
-                );
-                assert!(
-                    (vals[2] - 0.0).abs() < 1e-12,
-                    "z: expected 0.0, got {}",
-                    vals[2]
-                );
-                assert!(
-                    items.iter().all(|x| matches!(x, Value::Real(_))),
-                    "normalize must return Real (dimensionless) components"
-                );
-            }
-            other => panic!("expected Tensor, got {:?}", other),
-        }
+        assert_vector3_approx!(Tensor, result, [0.6, 0.8, 0.0]);
     }
 
     #[test]
@@ -3325,28 +3274,7 @@ mod tests {
         let a = Value::Tensor(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
         let b = Value::Tensor(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
         let result = eval_builtin("cross", &[a, b]);
-        match result {
-            Value::Tensor(items) => {
-                assert_eq!(items.len(), 3, "cross product must have 3 components");
-                let v: Vec<f64> = items.iter().map(|x| x.as_f64().unwrap()).collect();
-                assert!(
-                    (v[0] - 0.0).abs() < 1e-12,
-                    "x component: expected 0.0, got {}",
-                    v[0]
-                );
-                assert!(
-                    (v[1] - 0.0).abs() < 1e-12,
-                    "y component: expected 0.0, got {}",
-                    v[1]
-                );
-                assert!(
-                    (v[2] - 1.0).abs() < 1e-12,
-                    "z component: expected 1.0, got {}",
-                    v[2]
-                );
-            }
-            other => panic!("expected Tensor([0,0,1]), got {:?}", other),
-        }
+        assert_vector3_approx!(Tensor, result, [0.0, 0.0, 1.0]);
     }
 
     #[test]
@@ -3579,16 +3507,7 @@ mod tests {
         let a = Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
         let b = Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
         let result = eval_builtin("cross", &[a, b]);
-        match result {
-            Value::Vector(items) => {
-                assert_eq!(items.len(), 3, "cross product must have 3 components");
-                let v: Vec<f64> = items.iter().map(|x| x.as_f64().unwrap()).collect();
-                assert!((v[0] - 0.0).abs() < 1e-12, "x: expected 0.0, got {}", v[0]);
-                assert!((v[1] - 0.0).abs() < 1e-12, "y: expected 0.0, got {}", v[1]);
-                assert!((v[2] - 1.0).abs() < 1e-12, "z: expected 1.0, got {}", v[2]);
-            }
-            other => panic!("expected Value::Vector([0,0,1]), got {:?}", other),
-        }
+        assert_vector3_approx!(Vector, result, [0.0, 0.0, 1.0]);
     }
 
     #[test]
@@ -3672,32 +3591,7 @@ mod tests {
         // NOT Value::Tensor — verifies wrapper-preservation at line 266
         let v = Value::Vector(vec![Value::Real(3.0), Value::Real(4.0), Value::Real(0.0)]);
         let result = eval_builtin("normalize", &[v]);
-        match result {
-            Value::Vector(items) => {
-                assert_eq!(items.len(), 3, "normalize must return 3 components");
-                let vals: Vec<f64> = items.iter().map(|x| x.as_f64().unwrap()).collect();
-                assert!(
-                    (vals[0] - 0.6).abs() < 1e-12,
-                    "x: expected 0.6, got {}",
-                    vals[0]
-                );
-                assert!(
-                    (vals[1] - 0.8).abs() < 1e-12,
-                    "y: expected 0.8, got {}",
-                    vals[1]
-                );
-                assert!(
-                    (vals[2] - 0.0).abs() < 1e-12,
-                    "z: expected 0.0, got {}",
-                    vals[2]
-                );
-                assert!(
-                    items.iter().all(|x| matches!(x, Value::Real(_))),
-                    "normalize must return Real (dimensionless) components"
-                );
-            }
-            other => panic!("expected Value::Vector, got {:?}", other),
-        }
+        assert_vector3_approx!(Vector, result, [0.6, 0.8, 0.0]);
     }
 
     #[test]
@@ -3728,35 +3622,7 @@ mod tests {
             },
         ]);
         let result = eval_builtin("normalize", &[v]);
-        match result {
-            Value::Vector(items) => {
-                assert_eq!(items.len(), 3);
-                let vals: Vec<f64> = items.iter().map(|x| x.as_f64().unwrap()).collect();
-                assert!(
-                    (vals[0] - 0.6).abs() < 1e-12,
-                    "x: expected 0.6, got {}",
-                    vals[0]
-                );
-                assert!(
-                    (vals[1] - 0.8).abs() < 1e-12,
-                    "y: expected 0.8, got {}",
-                    vals[1]
-                );
-                assert!(
-                    (vals[2] - 0.0).abs() < 1e-12,
-                    "z: expected 0.0, got {}",
-                    vals[2]
-                );
-                assert!(
-                    items.iter().all(|x| matches!(x, Value::Real(_))),
-                    "normalize of dimensioned Vector must return Real components"
-                );
-            }
-            other => panic!(
-                "expected Value::Vector for dimensioned normalize, got {:?}",
-                other
-            ),
-        }
+        assert_vector3_approx!(Vector, result, [0.6, 0.8, 0.0]);
     }
 
     // ── magnitude() with Value::Vector inputs (step-7) ──────────────────────
@@ -6075,16 +5941,7 @@ mod tests {
         // normalize(Point([3,4,0])) → Point([0.6,0.8,0.0])
         let p = Value::Point(vec![Value::Real(3.0), Value::Real(4.0), Value::Real(0.0)]);
         let result = eval_builtin("normalize", &[p]);
-        match result {
-            Value::Point(items) => {
-                assert_eq!(items.len(), 3);
-                let v: Vec<f64> = items.iter().map(|x| x.as_f64().unwrap()).collect();
-                assert!((v[0] - 0.6).abs() < 1e-12, "x: expected 0.6, got {}", v[0]);
-                assert!((v[1] - 0.8).abs() < 1e-12, "y: expected 0.8, got {}", v[1]);
-                assert!((v[2] - 0.0).abs() < 1e-12, "z: expected 0.0, got {}", v[2]);
-            }
-            other => panic!("expected Value::Point([0.6,0.8,0.0]), got {:?}", other),
-        }
+        assert_vector3_approx!(Point, result, [0.6, 0.8, 0.0]);
     }
 
     #[test]
