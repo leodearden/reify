@@ -13335,7 +13335,7 @@
         "description": "The type_alias_tests.rs file has significant boilerplate duplication:\n\n1. Error-case assertion pattern (5 copies, lines 285-291, 299-306, 313-319, 336-338, 354-356): computing `has_type_alias` then asserting with identical format string. Extract to `fn assert_malformed_recovers(decls: &[Declaration], errors: &[ParseError])`.\n\n2. Happy-path preamble (10+ copies): `assert!(errors.is_empty()); assert_eq!(decls.len(), 1); match &decls[0] { Declaration::TypeAlias(ta) => { … } other => panic!(…) }`. Extract to `fn unwrap_single_type_alias<'a>(decls: &'a [Declaration], errors: &[ParseError]) -> &'a TypeAlias`.\n\nBoth helpers fit naturally alongside the existing `parse_decls` helper at the top of the file.\n\nMemory hints: search \"type alias parser tests\".",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "439"
         ],
@@ -13348,7 +13348,8 @@
           "modules": [
             "crates/reify-syntax/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-03-28T20:46:57.981Z"
       },
       {
         "id": "643",
@@ -15444,7 +15445,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T20:46:56.769Z",
+      "lastModified": "2026-03-28T20:46:57.981Z",
       "taskCount": 749,
       "completedCount": 382,
       "tags": [
