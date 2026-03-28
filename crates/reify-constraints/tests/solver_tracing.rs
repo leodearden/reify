@@ -252,6 +252,40 @@ fn no_best_param_returns_no_progress_with_reason() {
     }
 }
 
+/// Verify that the EventCounter subscriber does NOT count debug/warn events
+/// from foreign (non-reify_constraints) targets. This guards against flaky
+/// count assertions when argmin or other transitive dependencies emit their
+/// own tracing events during a solve.
+///
+/// This test FAILS with the current unfiltered EventCounter because it
+/// increments counters for all events regardless of target.
+#[test]
+fn event_counter_ignores_foreign_targets() {
+    let (subscriber, debug_count, warn_count) = event_counting_subscriber();
+
+    tracing::subscriber::with_default(subscriber, || {
+        // Emit events that mimic argmin internals — these should be ignored.
+        tracing::debug!(target: "argmin::core", "foreign debug event");
+        tracing::warn!(target: "argmin::solver::neldermead", "foreign warn event");
+        // Also test a completely unrelated target
+        tracing::debug!(target: "tokio::runtime", "another foreign debug");
+    });
+
+    let debugs = debug_count.load(Ordering::Relaxed);
+    let warns = warn_count.load(Ordering::Relaxed);
+
+    assert_eq!(
+        debugs, 0,
+        "EventCounter should ignore debug events from foreign targets, got {}",
+        debugs
+    );
+    assert_eq!(
+        warns, 0,
+        "EventCounter should ignore warn events from foreign targets, got {}",
+        warns
+    );
+}
+
 /// Verify the reason string format for the executor.run() error path.
 /// Uses NaN bounds to create a degenerate simplex that causes argmin to error.
 /// If the executor error path is triggered, the reason must match "solver error: ...".
