@@ -35,8 +35,8 @@
       "id": "step-4",
       "type": "test",
       "description": "Update the doc-comment on build_trial_values to reflect it no longer calls params_to_value_map, and verify all existing tests pass (build_trial_values_inserts_auto_params, params_to_value_map_builds_correct_hashmap, plus the two new tests from steps 1-2, plus full solver integration tests).",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "95d5de13"
     }
   ],
   "design_decisions": [
