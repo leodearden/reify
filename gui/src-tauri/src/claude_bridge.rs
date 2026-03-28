@@ -133,6 +133,16 @@ pub async fn read_sidecar_output<R: AsyncBufRead + Unpin>(
     on_exit();
 }
 
+/// Named configuration for MCP tool interception in the sidecar reader task.
+///
+/// Replaces the anonymous 3-tuple `(Arc<Mutex<EngineSession>>, F, Arc<RwLock<SelectionInfo>>)`
+/// that previously required `#[allow(clippy::type_complexity)]`.
+pub struct McpConfig<F> {
+    pub engine: Arc<std::sync::Mutex<crate::engine::EngineSession>>,
+    pub event_sink: F,
+    pub selection: Arc<std::sync::RwLock<reify_mcp::SelectionInfo>>,
+}
+
 // --- Sidecar lifecycle management ---
 
 /// State of the sidecar subprocess.
@@ -205,20 +215,20 @@ impl SidecarHandle {
         F: Fn(String, Value) + Send + Sync + 'static,
     {
         let stdin: SharedStdin = Arc::new(Mutex::new(Box::new(writer)));
-        Self::new_inner(stdin, reader, state, Some((engine, event_sink, selection)))
+        let mcp_config = McpConfig {
+            engine,
+            event_sink,
+            selection,
+        };
+        Self::new_inner(stdin, reader, state, Some(mcp_config))
     }
 
     /// Internal constructor shared by `from_parts` and `from_parts_with_mcp`.
-    #[allow(clippy::type_complexity)]
     fn new_inner<R, F>(
         stdin: SharedStdin,
         reader: R,
         state: Arc<Mutex<SidecarState>>,
-        mcp_config: Option<(
-            Arc<std::sync::Mutex<crate::engine::EngineSession>>,
-            F,
-            Arc<std::sync::RwLock<reify_mcp::SelectionInfo>>,
-        )>,
+        mcp_config: Option<McpConfig<F>>,
     ) -> Self
     where
         R: AsyncBufRead + Unpin + Send + 'static,
@@ -246,9 +256,9 @@ impl SidecarHandle {
                     }
 
                     // 2. Event emission and MCP interception
-                    if let Some((ref engine, ref sink, ref selection)) = mcp_config {
+                    if let Some(ref mcp) = mcp_config {
                         let (event_name, payload) = outbound_to_event(&msg);
-                        sink(event_name, payload);
+                        (mcp.event_sink)(event_name, payload);
 
                         // 3. MCP tool interception for reify_ prefixed tool calls
                         if let OutboundMessage::ToolCall {
@@ -261,8 +271,8 @@ impl SidecarHandle {
                             let id = id.clone();
                             let tool_name = tool_name.clone();
                             let tool_input = tool_input.clone();
-                            let engine_clone = Arc::clone(engine);
-                            let selection_clone = Arc::clone(selection);
+                            let engine_clone = Arc::clone(&mcp.engine);
+                            let selection_clone = Arc::clone(&mcp.selection);
                             let stdin_clone = Arc::clone(&stdin_for_reader);
                             tokio::spawn(async move {
                                 let ctx = crate::mcp_context::TauriToolContext::new_with_selection(
