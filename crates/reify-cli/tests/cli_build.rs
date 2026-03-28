@@ -165,6 +165,10 @@ fn build_indeterminate_constraint_exits_success() {
         "reify build should exit 0 when constraints are indeterminate (not violated).\nstdout: {stdout}\nstderr: {stderr}"
     );
     assert!(
+        stdout.contains("OK"),
+        "stdout should contain 'OK' for the satisfied constraint (thickness > 2mm), got: {stdout}"
+    );
+    assert!(
         stdout.contains("INDETERMINATE"),
         "stdout should contain 'INDETERMINATE', got: {stdout}"
     );
