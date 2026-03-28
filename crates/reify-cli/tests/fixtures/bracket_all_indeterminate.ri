@@ -1,0 +1,12 @@
+structure Bracket {
+    param width: Scalar = 80mm
+    param height: Scalar = 100mm
+    param thickness: Scalar = 5mm
+    param clearance: Scalar = auto
+    param tolerance: Scalar = auto
+
+    constraint clearance > 1mm
+    constraint tolerance > 0.1mm
+
+    let body = box(width, height, thickness)
+}
