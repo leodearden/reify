@@ -485,8 +485,8 @@ mod tests {
     #[test]
     fn completion_inside_body_excludes_top_level_keywords() {
         let source = reify_test_support::bracket_source();
-        // Line 6 is the blank line between params and let, inside body
-        let items = compute_completions(source, &test_uri(), Position::new(6, 4));
+        // Line 6 is the empty line between params and lets, inside body (col 0 since line is empty)
+        let items = compute_completions(source, &test_uri(), Position::new(6, 0));
 
         let keyword_labels: Vec<&str> = items
             .iter()
