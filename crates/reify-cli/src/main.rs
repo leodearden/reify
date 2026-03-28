@@ -97,11 +97,11 @@ fn cmd_check(args: &[String]) -> ExitCode {
         eprintln!("{}: {}", diag.severity, diag.message);
     }
 
+    println!("{}", constraint_summary_message(&result.constraint_results, all_satisfied));
+
     if all_satisfied {
-        println!("All constraints satisfied.");
         ExitCode::SUCCESS
     } else {
-        println!("Some constraints violated.");
         ExitCode::FAILURE
     }
 }
@@ -251,6 +251,28 @@ fn cmd_lsp() -> ExitCode {
             eprintln!("Failed to create async runtime: {}", e);
             ExitCode::FAILURE
         }
+    }
+}
+
+/// Return the appropriate summary message for constraint results.
+///
+/// - If `no_violations` is false, returns "Some constraints violated."
+/// - If `no_violations` is true but some entries are `Indeterminate`, returns
+///   "No constraint violations (some indeterminate)."
+/// - Otherwise (all truly satisfied), returns "All constraints satisfied."
+fn constraint_summary_message(
+    results: &[reify_eval::ConstraintCheckEntry],
+    no_violations: bool,
+) -> &'static str {
+    if !no_violations {
+        "Some constraints violated."
+    } else if results
+        .iter()
+        .any(|e| e.satisfaction == Satisfaction::Indeterminate)
+    {
+        "No constraint violations (some indeterminate)."
+    } else {
+        "All constraints satisfied."
     }
 }
 
