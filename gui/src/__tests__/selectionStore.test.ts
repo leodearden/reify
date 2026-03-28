@@ -254,9 +254,8 @@ describe('selectionStore', () => {
         clearIfRemoved = store.clearIfRemoved;
       });
 
-      // TODO: Remove this workaround once selectionStore.ts adds an early-return
-      // guard to skip the initial (null, null) dispatch in createEffect.
-      // Flush the initial effect's debounced invoke (null, null)
+      // No initial dispatch occurs (effect early-returns when nothing changed).
+      // advanceTimersByTime is a harmless no-op here; mockClear resets mock state.
       vi.advanceTimersByTime(100);
       mockInvoke.mockClear();
     });
