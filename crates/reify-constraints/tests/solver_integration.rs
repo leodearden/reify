@@ -1208,3 +1208,102 @@ fn multi_param_warm_start_with_objective() {
         ),
     }
 }
+
+/// Partial-feasibility: p0 starts feasible (satisfies both its constraints) but
+/// p1 starts infeasible (violates p1 > 20mm). Since max_constraint_residual
+/// checks ALL constraints, this partially-feasible point should be treated as
+/// infeasible (initially_feasible = false), giving the solver MAX_ITERS (5000)
+/// instead of the warm-start reduced budget.
+///
+/// Asserts: Solved, both params satisfy their constraints, and p1 moved to
+/// the feasible region (>= 20mm).
+#[test]
+fn partial_feasibility_not_treated_as_warm_start() {
+    let solver = DimensionalSolver;
+
+    let p0_id = vcid("Part", "p0");
+    let p1_id = vcid("Part", "p1");
+    let p0_ref = value_ref("Part", "p0");
+    let p1_ref = value_ref("Part", "p1");
+
+    // p0 constraints: 5mm < p0 < 50mm
+    // p1 constraints: 20mm < p1 < 50mm
+    let constraints = vec![
+        (cnid("Part", 0), gt(p0_ref.clone(), literal(mm(5.0)))),
+        (cnid("Part", 1), lt(p0_ref.clone(), literal(mm(50.0)))),
+        (cnid("Part", 2), gt(p1_ref.clone(), literal(mm(20.0)))),
+        (cnid("Part", 3), lt(p1_ref.clone(), literal(mm(50.0)))),
+    ];
+
+    // Minimize(p0 + p1)
+    let sum_expr = binop(BinOp::Add, p0_ref, p1_ref);
+    let objective = OptimizationObjective::Minimize(sum_expr);
+
+    let mut current = ValueMap::new();
+    // p0 = 30mm — satisfies both p0 constraints (5mm < 30mm < 50mm)
+    current.insert(
+        p0_id.clone(),
+        Value::Scalar {
+            si_value: 0.030,
+            dimension: DimensionVector::LENGTH,
+        },
+    );
+    // p1 = 10mm — violates p1 > 20mm (the single infeasible constraint)
+    current.insert(
+        p1_id.clone(),
+        Value::Scalar {
+            si_value: 0.010,
+            dimension: DimensionVector::LENGTH,
+        },
+    );
+
+    let problem = ResolutionProblem {
+        auto_params: vec![
+            AutoParam {
+                id: p0_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.100)), // 1mm–100mm
+            },
+            AutoParam {
+                id: p1_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.100)),
+            },
+        ],
+        constraints,
+        current_values: current,
+        objective: Some(objective),
+        functions: vec![],
+    };
+
+    let result = solver.solve(&problem);
+    match result {
+        SolveResult::Solved { values } => {
+            // p0 must satisfy 5mm < p0 < 50mm
+            let p0_si = values.get(&p0_id).unwrap().as_f64().unwrap();
+            assert!(
+                p0_si > 0.005 && p0_si < 0.050,
+                "p0 should satisfy constraints (5mm < p0 < 50mm), got {} m",
+                p0_si
+            );
+
+            // p1 must have moved to feasible region: p1 >= 20mm
+            let p1_si = values.get(&p1_id).unwrap().as_f64().unwrap();
+            assert!(
+                p1_si >= 0.020,
+                "p1 should have moved to feasible region (>= 20mm), got {} m — \
+                 partial feasibility must not be treated as warm-start",
+                p1_si
+            );
+            assert!(
+                p1_si < 0.050,
+                "p1 should satisfy upper constraint (< 50mm), got {} m",
+                p1_si
+            );
+        }
+        other => panic!(
+            "expected Solved for partially-feasible initial point, got {:?}",
+            other
+        ),
+    }
+}
