@@ -652,6 +652,36 @@ describe('PropertyEditor quantity literal acceptance', () => {
   });
 });
 
+describe('Design decision: whitespace between number and unit is rejected', () => {
+  // The .ri grammar uses token.immediate to forbid whitespace between number and unit
+  // (see tree-sitter-reify/grammar.js:692-699). The frontend QUANTITY_RE enforces this
+  // stricter rule. The backend parse_value_string is more lenient (accepts '5 mm') but
+  // that is an incidental bug, not a design choice.
+
+  const values: Record<string, ValueData> = {
+    c1: makeValue({ cell_id: 'c1', name: 'width', value: '50', determinacy: 'determined', entity_path: 'Bracket.width' }),
+  };
+
+  it.each([
+    ['5 mm', 'single space'],
+    ['5  mm', 'double space'],
+    ['5\tmm', 'tab'],
+    [' 5 mm ', 'leading + trailing + internal whitespace'],
+  ])("'%s' (%s) on Enter does NOT call onSetParameter", (invalidLiteral) => {
+    const onSetParam = vi.fn();
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: invalidLiteral } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onSetParam).not.toHaveBeenCalled();
+    expect(input.hasAttribute('data-invalid')).toBe(true);
+  });
+});
+
 describe('PropertyEditor validation - Infinity rejection', () => {
   const values: Record<string, ValueData> = {
     c1: makeValue({ cell_id: 'c1', name: 'width', value: '50', determinacy: 'determined', entity_path: 'Bracket.width' }),
