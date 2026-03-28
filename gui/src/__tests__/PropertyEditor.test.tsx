@@ -576,7 +576,7 @@ describe('PropertyEditor validation - trailing non-numeric characters', () => {
     expect(input.hasAttribute('data-invalid')).toBe(false);
   });
 
-  it("' 42 ' (whitespace-padded) on Enter DOES call onSetParameter", () => {
+  it("' 42 ' (whitespace-padded) on Enter submits trimmed '42'", () => {
     const onSetParam = vi.fn();
     render(() => (
       <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
@@ -586,8 +586,35 @@ describe('PropertyEditor validation - trailing non-numeric characters', () => {
     fireEvent.focus(input);
     fireEvent.input(input, { target: { value: ' 42 ' } });
     fireEvent.keyDown(input, { key: 'Enter' });
-    expect(onSetParam).toHaveBeenCalledWith('c1', ' 42 ');
+    expect(onSetParam).toHaveBeenCalledWith('c1', '42');
     expect(input.hasAttribute('data-invalid')).toBe(false);
+  });
+
+  it("' 5mm ' (whitespace-padded quantity) on Enter submits trimmed '5mm'", () => {
+    const onSetParam = vi.fn();
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: ' 5mm ' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onSetParam).toHaveBeenCalledWith('c1', '5mm');
+    expect(input.hasAttribute('data-invalid')).toBe(false);
+  });
+
+  it("' 75 ' (whitespace-padded number) on blur submits trimmed '75'", () => {
+    const onSetParam = vi.fn();
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: ' 75 ' } });
+    fireEvent.blur(input);
+    expect(onSetParam).toHaveBeenCalledWith('c1', '75');
   });
 });
 
