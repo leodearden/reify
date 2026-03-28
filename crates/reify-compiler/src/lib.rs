@@ -701,6 +701,13 @@ fn evaluate_const_expr(
                 if let Value::Scalar { si_value, .. } = scalar_val {
                     Some(si_value)
                 } else {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "internal error: unit_to_scalar returned unexpected value variant for unit '{}'; please report this",
+                            unit
+                        ))
+                        .with_label(DiagnosticLabel::new(expr.span, "unexpected value variant")),
+                    );
                     None
                 }
             } else {
