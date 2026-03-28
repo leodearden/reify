@@ -77,3 +77,44 @@ fn empty_inner_rank2_tensor_add_returns_undef() {
     let expr = add(a, b);
     assert_eq!(eval(&expr), Value::Undef);
 }
+
+// ── Heterogeneous tensor rank-2 detection ───────────────────────────────────
+
+/// Heterogeneous tensor: first row is Tensor but second is Int.
+/// Tensor([Tensor([1,2]), Int(3)]) + Tensor([Tensor([4,5]), Int(6)]) → Undef.
+/// Validates that .all() check catches mixed-type tensors.
+#[test]
+fn heterogeneous_tensor_first_is_tensor_rest_int_add_returns_undef() {
+    let a = lit(
+        Value::Tensor(vec![
+            Value::Tensor(vec![Value::Int(1), Value::Int(2)]),
+            Value::Int(3),
+        ]),
+        tensor_ty(),
+    );
+    let b = lit(
+        Value::Tensor(vec![
+            Value::Tensor(vec![Value::Int(4), Value::Int(5)]),
+            Value::Int(6),
+        ]),
+        tensor_ty(),
+    );
+    let expr = add(a, b);
+    assert_eq!(eval(&expr), Value::Undef);
+}
+
+/// Mixed-type tensor where first is Tensor but second is not.
+/// Validates that rank-2 detection uses .all() not just .first().
+#[test]
+fn rank2_detection_checks_all_rows() {
+    let a = lit(
+        Value::Tensor(vec![Value::Tensor(vec![Value::Int(1)]), Value::Int(2)]),
+        tensor_ty(),
+    );
+    let b = lit(
+        Value::Tensor(vec![Value::Tensor(vec![Value::Int(3)]), Value::Int(4)]),
+        tensor_ty(),
+    );
+    let expr = add(a, b);
+    assert_eq!(eval(&expr), Value::Undef);
+}
