@@ -14856,7 +14856,7 @@
         "description": "In gui/src/stores/selectionStore.ts, clearIfRemoved calls selectEntity(null) then hoverEntity(null) sequentially without SolidJS batch(). When both fields match, this causes two separate reactive effect runs and two IPC dispatches — the first sends an intermediate inconsistent state {selectedEntity: null, hoveredEntity: 'X'} to the backend before the hover is cleared. Fix: import batch from 'solid-js' and wrap both conditional calls in batch() inside clearIfRemoved. Update the corresponding test in gui/src/__tests__/selectionStore.test.ts ('clearIfRemoved dispatches when both fields match') to expect a single debounced dispatch with {selectedEntity: null, hoveredEntity: null} instead of the current two-dispatch sequence. memory_hints: search for \"clearIfRemoved batch selectionStore\" and \"task 696 selectionStore\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -14870,7 +14870,7 @@
             "gui/src/__tests__"
           ]
         },
-        "updatedAt": "2026-03-28T15:23:54.581Z"
+        "updatedAt": "2026-03-28T15:30:03.764Z"
       },
       {
         "id": "722",
@@ -15240,9 +15240,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T15:29:10.415Z",
+      "lastModified": "2026-03-28T15:30:03.764Z",
       "taskCount": 738,
-      "completedCount": 349,
+      "completedCount": 350,
       "tags": [
         "master"
       ]
