@@ -633,7 +633,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // Fails until position-sensitive completions are implemented (task 2)
     fn completion_type_position_returns_types_and_structs() {
         // Cursor is in a type annotation position (after `x: `)
         let source = "structure Foo {\n    param x: \n}";
