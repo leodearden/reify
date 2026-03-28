@@ -57,6 +57,18 @@ fn make_populated_src_dir(base: &Path) -> std::path::PathBuf {
     src_dir
 }
 
+/// Duplicates stamp-write logic from build.rs for testability.
+/// Writes the grammar hash to the stamp file, warning on failure instead of panicking.
+fn stamp_write(stamp_path: &Path, grammar_hash: &str) {
+    std::fs::write(stamp_path, grammar_hash).unwrap_or_else(|e| {
+        eprintln!(
+            "cargo:warning=Failed to write stamp file {}: {}",
+            stamp_path.display(),
+            e
+        );
+    });
+}
+
 /// Duplicates needs_generate logic from build.rs for testability.
 /// Returns true if regeneration is needed based on content hash staleness.
 /// The caller passes a pre-computed grammar hash to avoid TOCTOU races.
