@@ -26,6 +26,14 @@ pub fn literal_frame(v: Value, dims: usize) -> CompiledExpr {
     CompiledExpr::literal(v, Type::Frame(dims))
 }
 
+/// Create a literal Transform expression with explicit dimensionality.
+///
+/// Use this instead of [`literal`] for Transform values, since Transform
+/// dimensionality cannot be inferred from the value alone.
+pub fn literal_transform(v: Value, dims: usize) -> CompiledExpr {
+    CompiledExpr::literal(v, Type::Transform(dims))
+}
+
 /// Create a value reference expression.
 pub fn value_ref(entity: &str, member: &str) -> CompiledExpr {
     // Default to length type; callers can use value_ref_typed for specifics
