@@ -222,6 +222,7 @@ macro_rules! assert_value_approx {
 }
 
 /// Implementation function for `assert_value_approx!`. Not intended for direct use.
+#[doc(hidden)]
 pub fn assert_value_approx_impl(left: &Value, right: &Value, tol: f64, file: &str, line: u32) {
     fn check(left: &Value, right: &Value, tol: f64, path: &str) -> Result<(), String> {
         /// Guard: fail immediately if either f64 is NaN (NaN comparisons are always false,
