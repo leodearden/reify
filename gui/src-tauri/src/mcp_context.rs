@@ -49,6 +49,17 @@ impl TauriToolContextBuilder {
         self
     }
 
+    /// Set an event emitter for navigation events (`focus_entity`, `navigate_to_source`).
+    ///
+    /// The closure is boxed into an [`EventEmitter`] during `build()`.
+    pub fn with_event_emitter(
+        mut self,
+        emitter: impl Fn(&str, serde_json::Value) + Send + Sync + 'static,
+    ) -> Self {
+        self.event_emitter = Some(Box::new(emitter));
+        self
+    }
+
     /// Finalize the builder and create a [`TauriToolContext`].
     ///
     /// If no selection was provided, creates a fresh unshared `Arc<RwLock<SelectionInfo>>`
