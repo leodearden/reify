@@ -12,8 +12,11 @@ pub fn compute_hover(source: &str, uri: &Url, position: Position) -> Option<Hove
 
     let ctx = AnalysisContext::new(source, uri);
 
+    // Determine the enclosing structure so member lookup is scoped correctly
+    let enclosing = ctx.enclosing_structure_name_at(offset);
+
     // Try member lookup first
-    if let Some(info) = ctx.find_member_decl(word, None) {
+    if let Some(info) = ctx.find_member_decl(word, enclosing) {
         let kind_str = match info.kind {
             reify_compiler::ValueCellKind::Param => "param",
             reify_compiler::ValueCellKind::Let => "let",
@@ -21,12 +24,9 @@ pub fn compute_hover(source: &str, uri: &Url, position: Position) -> Option<Hove
         };
         let type_str = info.cell_type.to_string();
 
-        // Try to get the evaluated value
+        // Try to get the evaluated value using the member's owning declaration
         let value_str = ctx
-            .compiled
-            .templates
-            .first()
-            .and_then(|t| ctx.get_value(&t.name, word))
+            .get_value(info.decl_name, word)
             .map(|v| format!(" = {}", format_value(v)));
 
         let mut md = format!(
