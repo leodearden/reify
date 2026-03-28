@@ -71,9 +71,37 @@ fi
 
 # Acquire exclusive advisory lock to prevent concurrent generation from
 # corrupting parser.c/grammar.json/node-types.json via interleaved writes.
+# Uses flock on Linux; falls back to mkdir-based lock on macOS/other POSIX.
 LOCK_FILE="src/.generate.lock"
-exec 9>"$LOCK_FILE"
-flock -x 9
+LOCK_DIR="src/.generate.lock.d"
+
+if command -v flock >/dev/null 2>&1; then
+    exec 9>"$LOCK_FILE"
+    flock -x 9
+else
+    # Portable mkdir-based advisory lock (atomic on POSIX).
+    # Retry with backoff; stale locks are cleaned up after 120s.
+    _lock_attempts=0
+    while ! mkdir "$LOCK_DIR" 2>/dev/null; do
+        _lock_attempts=$((_lock_attempts + 1))
+        if [ "$_lock_attempts" -ge 30 ]; then
+            # Stale lock detection: if lock dir is older than 120s, remove it
+            if [ -d "$LOCK_DIR" ]; then
+                _lock_age=$(( $(date +%s) - $(stat -c %Y "$LOCK_DIR" 2>/dev/null || stat -f %m "$LOCK_DIR" 2>/dev/null || echo 0) ))
+                if [ "$_lock_age" -gt 120 ]; then
+                    echo "WARNING: removing stale lock dir (age=${_lock_age}s)" >&2
+                    rmdir "$LOCK_DIR" 2>/dev/null || true
+                    continue
+                fi
+            fi
+            echo "ERROR: could not acquire generation lock after 30 attempts" >&2
+            exit 1
+        fi
+        sleep 1
+    done
+    # Ensure lock dir is removed on exit
+    trap 'rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT
+fi
 
 # Re-check staleness inside lock — another process may have regenerated
 # while we waited for the lock (double-check-locking pattern).
@@ -100,7 +128,16 @@ if [ "$FORCE" = false ]; then
 fi
 
 GEN_EXIT=0
-timeout 60 tree-sitter generate || GEN_EXIT=$?
+# Portable timeout: prefer GNU timeout, then gtimeout (Homebrew coreutils on macOS),
+# then fall back to running without a timeout.
+if command -v timeout >/dev/null 2>&1; then
+    timeout 60 tree-sitter generate || GEN_EXIT=$?
+elif command -v gtimeout >/dev/null 2>&1; then
+    gtimeout 60 tree-sitter generate || GEN_EXIT=$?
+else
+    echo "WARNING: timeout/gtimeout not found; running tree-sitter generate without timeout guard" >&2
+    tree-sitter generate || GEN_EXIT=$?
+fi
 if [ "$GEN_EXIT" -eq 124 ]; then
     echo "ERROR: tree-sitter generate timed out after 60s" >&2
     exit 1
