@@ -945,6 +945,14 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
                 Some(c) if c.0.len() == 3 => c,
                 _ => return Value::Undef,
             };
+            // Defense-in-depth: reject NaN/Inf early (NaN bypasses IEEE 754 comparisons)
+            if xc.iter()
+                .chain(yc.iter())
+                .chain(zc.iter())
+                .any(|v| !v.is_finite())
+            {
+                return Value::Undef;
+            }
             // Verify approximate orthonormality
             let tol = 1e-6;
             let mag_x = (xc[0] * xc[0] + xc[1] * xc[1] + xc[2] * xc[2]).sqrt();
