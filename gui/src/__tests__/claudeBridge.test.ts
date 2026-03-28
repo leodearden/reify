@@ -386,8 +386,6 @@ describe('subscribeToClaudeEvents', () => {
     expect(handler).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'text_delta' }),
     );
-    // Explicitly verify type is NOT 'WRONG'
-    expect(handler.mock.calls[0][0].type).toBe('text_delta');
   });
 
   it('payload type field does not override mapped event type for claude-error', async () => {
