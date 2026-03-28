@@ -12641,6 +12641,17 @@
         ],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 626,
+        "title": "Replace make_function_call with reify_test_support::fn_call in test files",
+        "description": "Two test files (tensor_matrix_arithmetic_tests.rs and lambda_eval_tests.rs) contain a duplicated `make_function_call` helper that:\n1. Computes incorrect ContentHash (uses `ContentHash::of(name.as_bytes())` instead of proper `ContentHash::of(&[5]).combine(...)`)\n2. Hard-codes `std::{}` namespace without documenting the limitation\n3. Duplicates functionality already in `reify_test_support::builders::expr::fn_call()`\n\nReplace both copies with the canonical `fn_call()` helper from reify-test-support. Also:\n- Remove the misleading \"matrix interpretation\" paragraph from the `dimension_mismatch_in_dot_product` doc comment (the test operates on rank-1 tensors, not rank-2 matrices)\n- Rename the local helper to `make_stdlib_call` if a local wrapper is still needed for ergonomics\n\nMemory hints: search \"reify_test_support fn_call make_function_call\", entities: tensor_matrix_arithmetic_tests, lambda_eval_tests",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -12653,7 +12664,7 @@
       ],
       "created": "2026-03-28T05:28:36.730Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-28T05:28:41.219Z"
+      "updated": "2026-03-28T05:28:50.647Z"
     }
   }
 }
