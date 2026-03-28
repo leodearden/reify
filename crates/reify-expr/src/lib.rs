@@ -941,8 +941,8 @@ fn eval_or(left: &CompiledExpr, right: &CompiledExpr, ctx: &EvalContext) -> Valu
 }
 
 /// Apply a binary operation component-wise to two equal-length component slices,
-/// wrapping the result with the given constructor. Returns `Value::Undef` if lengths
-/// differ or any component operation produces `Value::Undef`.
+/// wrapping the result with the given constructor. Returns `Value::Undef` if either
+/// slice is empty, lengths differ, or any component operation produces `Value::Undef`.
 fn componentwise_binop(
     a: &[Value],
     b: &[Value],
