@@ -60,7 +60,24 @@ impl CompiledFieldBuilder {
         let source = self
             .source
             .expect("CompiledFieldBuilder: source must be set before build()");
-        let content_hash = ContentHash::of_str(&self.name).combine(ContentHash::of(&[99])); // distinguish from zero
+        // Mirror the real compiler's hashing pattern (lib.rs:5448-5464)
+        let content_hash = {
+            let name_hash = ContentHash::of_str(&self.name);
+            let domain_hash = ContentHash::of_str(&format!("{}", self.domain_type));
+            let codomain_hash = ContentHash::of_str(&format!("{}", self.codomain_type));
+            let source_hash = match &source {
+                CompiledFieldSource::Analytical { expr } => expr.content_hash,
+                CompiledFieldSource::Sampled { config } => {
+                    let hashes = config
+                        .iter()
+                        .map(|(k, e)| ContentHash::of_str(k).combine(e.content_hash));
+                    ContentHash::combine_all(hashes)
+                }
+                CompiledFieldSource::Composed { expr } => expr.content_hash,
+                CompiledFieldSource::Imported => ContentHash::of(&[0u8]),
+            };
+            ContentHash::combine_all([name_hash, domain_hash, codomain_hash, source_hash])
+        };
         CompiledField {
             name: self.name,
             is_pub: self.is_pub,
@@ -154,19 +171,21 @@ mod tests {
 
     #[test]
     fn compiled_field_hash_differs_by_source() {
-        let body = literal(Value::Real(1.0));
+        // Use different expressions for analytical vs composed so source_hash differs.
+        // (Real compiler hashes Analytical/Composed identically via expr.content_hash,
+        // so same-expr would match — use distinct exprs to test source sensitivity.)
         let f_analytical = CompiledFieldBuilder::new("temp", Type::Geometry, Type::Real)
-            .analytical(body.clone())
+            .analytical(literal(Value::Real(1.0)))
             .build();
         let f_composed = CompiledFieldBuilder::new("temp", Type::Geometry, Type::Real)
-            .composed(body)
+            .composed(literal(Value::Real(2.0)))
             .build();
         let f_imported = CompiledFieldBuilder::new("temp", Type::Geometry, Type::Real)
             .imported()
             .build();
         assert_ne!(
             f_analytical.content_hash, f_composed.content_hash,
-            "analytical vs composed source must produce different content_hash"
+            "analytical vs composed (different expr) must produce different content_hash"
         );
         assert_ne!(
             f_analytical.content_hash, f_imported.content_hash,
