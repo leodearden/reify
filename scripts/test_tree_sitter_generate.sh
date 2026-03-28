@@ -112,6 +112,13 @@ real_hash=$(sha256sum "$TS_DIR/grammar.js" | awk '{print $1}')
 assert "stamp updated to match current grammar.js" \
     test "$stamp_after" = "$real_hash"
 
+# ── Test 6: timeout wrapper in source ──────────────────────────────
+echo ""
+echo "--- Test 6: timeout wrapper present ---"
+
+assert "script uses 'timeout 60 tree-sitter generate'" \
+    grep -q 'timeout 60 tree-sitter generate' "$GENERATE_SCRIPT"
+
 # ── Summary ────────────────────────────────────────────────────────
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
