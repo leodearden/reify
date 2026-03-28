@@ -13829,6 +13829,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 707,
+        "title": "Add debug_assert for warm-start objective invariant in solver",
+        "description": "In crates/reify-constraints/src/solver.rs near line 540, add debug_assert!(problem.objective.is_some()) immediately before the warm-start budget path. This makes the control-flow invariant (early-return at line 519-528 guarantees objective.is_some()) machine-checked in debug builds.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -13841,7 +13852,7 @@
       ],
       "created": "2026-03-28T06:55:24.369Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-28T06:55:29.529Z"
+      "updated": "2026-03-28T06:55:31.873Z"
     }
   }
 }
