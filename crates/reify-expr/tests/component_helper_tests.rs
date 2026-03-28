@@ -155,3 +155,47 @@ fn negate_int_min_returns_undef() {
     );
     assert_eq!(eval(&expr), Value::Undef);
 }
+
+// ── negate_components tests ────────────────────────────────────────────────
+
+/// Negate a Vector of Ints.
+#[test]
+fn negate_vector_ints() {
+    let v = Value::Vector(vec![Value::Int(1), Value::Int(2), Value::Int(3)]);
+    let expr = CompiledExpr::unop(UnOp::Neg, lit(v, Type::Real), Type::Real);
+    assert_eq!(
+        eval(&expr),
+        Value::Vector(vec![Value::Int(-1), Value::Int(-2), Value::Int(-3)])
+    );
+}
+
+/// Negate a Tensor with mixed Int/Real elements.
+#[test]
+fn negate_tensor_mixed_int_real() {
+    let t = Value::Tensor(vec![Value::Int(5), Value::Real(2.5), Value::Int(-1)]);
+    let expr = CompiledExpr::unop(
+        UnOp::Neg,
+        lit(t, Type::tensor(1, 3, Type::Real)),
+        Type::tensor(1, 3, Type::Real),
+    );
+    assert_eq!(
+        eval(&expr),
+        Value::Tensor(vec![Value::Int(-5), Value::Real(-2.5), Value::Int(1)])
+    );
+}
+
+/// Negating an empty Vector should return Undef (empty guard).
+#[test]
+fn negate_empty_vector_returns_undef() {
+    let v = Value::Vector(vec![]);
+    let expr = CompiledExpr::unop(UnOp::Neg, lit(v, Type::Real), Type::Real);
+    assert_eq!(eval(&expr), Value::Undef);
+}
+
+/// Negating an empty Tensor should return Undef (empty guard).
+#[test]
+fn negate_empty_tensor_returns_undef() {
+    let t = Value::Tensor(vec![]);
+    let expr = CompiledExpr::unop(UnOp::Neg, lit(t, Type::Real), Type::Real);
+    assert_eq!(eval(&expr), Value::Undef);
+}
