@@ -480,6 +480,48 @@ mod tests {
     }
 
     #[test]
+    fn trait_def_content_hash_differs_by_param_cell_type() {
+        let ct1 = TraitDefBuilder::new("Rigid")
+            .add_default(
+                Some("d"),
+                DefaultKind::Param {
+                    cell_type: Type::Real,
+                    default_decl: reify_syntax::ParamDecl {
+                        name: "d".to_string(),
+                        doc: None,
+                        type_expr: None,
+                        default: None,
+                        where_clause: None,
+                        span: SourceSpan::new(0, 0),
+                        content_hash: ContentHash::of_str("d"),
+                    },
+                },
+            )
+            .build();
+        let ct2 = TraitDefBuilder::new("Rigid")
+            .add_default(
+                Some("d"),
+                DefaultKind::Param {
+                    cell_type: Type::Int,
+                    default_decl: reify_syntax::ParamDecl {
+                        name: "d".to_string(),
+                        doc: None,
+                        type_expr: None,
+                        default: None,
+                        where_clause: None,
+                        span: SourceSpan::new(0, 0),
+                        content_hash: ContentHash::of_str("d"),
+                    },
+                },
+            )
+            .build();
+        assert_ne!(
+            ct1.content_hash, ct2.content_hash,
+            "same Param default but different cell_type (Real vs Int) must produce different content_hash"
+        );
+    }
+
+    #[test]
     fn trait_def_content_hash_differs_by_default() {
         let ct1 = TraitDefBuilder::new("Rigid").build();
         let ct2 = TraitDefBuilder::new("Rigid")
