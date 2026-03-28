@@ -13774,6 +13774,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 702,
+        "title": "Extract shared test helpers for CLI integration tests",
+        "description": "Reduce boilerplate: 1) Move fixture_path from cli_build.rs and cli_check.rs into shared tests/common/mod.rs. 2) Extract run_build(fixture) helper that handles tempdir, output_path, Command setup. Each of the 5 build tests reduces to calling the helper and asserting on results.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -13786,7 +13797,7 @@
       ],
       "created": "2026-03-28T06:53:49.176Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-28T06:54:45.425Z"
+      "updated": "2026-03-28T06:54:46.920Z"
     }
   }
 }
