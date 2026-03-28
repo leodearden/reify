@@ -7236,4 +7236,25 @@ mod tests {
         };
         assert!(eval_builtin("frame_to_frame", &[from, to]).is_undef());
     }
+
+    // ── normalize_quaternion near-zero tests ────────────────────────────────
+
+    /// normalize_quaternion with near-zero norm (1e-17 < f64::EPSILON) should return None.
+    /// Currently passes because norm != 0.0 is true for 1e-17.
+    #[test]
+    fn normalize_quaternion_near_zero_returns_none() {
+        assert!(
+            normalize_quaternion(1e-17, 0.0, 0.0, 0.0).is_none(),
+            "near-zero quaternion (norm=1e-17) should return None"
+        );
+    }
+
+    /// normalize_quaternion with all near-zero components should return None.
+    #[test]
+    fn normalize_quaternion_all_near_zero_returns_none() {
+        assert!(
+            normalize_quaternion(1e-18, 1e-18, 1e-18, 1e-18).is_none(),
+            "all near-zero components should return None"
+        );
+    }
 }

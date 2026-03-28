@@ -791,6 +791,75 @@ fn compose_all_nan_rotation_returns_undef() {
     );
 }
 
+// ── Near-zero quaternion tests ───────────────────────────────────────────────
+
+/// Transform*Transform with near-zero quaternion (w=1e-17, rest=0 — norm=1e-17
+/// < f64::EPSILON≈2.22e-16) should return Undef. The quaternion is too small
+/// to normalize meaningfully.
+#[test]
+fn near_zero_quat_transform_compose_returns_undef() {
+    let near_zero_t = Value::Transform {
+        rotation: Box::new(Value::Orientation {
+            w: 1e-17,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        }),
+        translation: Box::new(Value::Vector(vec![
+            Value::length(0.0),
+            Value::length(0.0),
+            Value::length(0.0),
+        ])),
+    };
+    let result = eval_mul_expr(
+        near_zero_t,
+        Type::Transform(3),
+        identity_transform(),
+        Type::Transform(3),
+        Type::Transform(3),
+    );
+    assert!(
+        result.is_undef(),
+        "near-zero quaternion should return Undef, got {:?}",
+        result
+    );
+}
+
+/// Transform*Vector with near-zero quaternion should return Undef.
+#[test]
+fn near_zero_quat_transform_mul_vector_returns_undef() {
+    let near_zero_t = Value::Transform {
+        rotation: Box::new(Value::Orientation {
+            w: 1e-17,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        }),
+        translation: Box::new(Value::Vector(vec![
+            Value::length(0.0),
+            Value::length(0.0),
+            Value::length(0.0),
+        ])),
+    };
+    let v = Value::Vector(vec![
+        Value::length(1.0),
+        Value::length(0.0),
+        Value::length(0.0),
+    ]);
+    let result = eval_mul_expr(
+        near_zero_t,
+        Type::Transform(3),
+        v,
+        Type::vec3(Type::length()),
+        Type::vec3(Type::length()),
+    );
+    assert!(
+        result.is_undef(),
+        "near-zero quaternion * vector should return Undef, got {:?}",
+        result
+    );
+}
+
 // ── step-13: Transform * Vector / Point NaN quaternion tests ─────────────────
 
 /// Transform with NaN rotation * vector should return Undef.
