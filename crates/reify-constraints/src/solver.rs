@@ -518,30 +518,6 @@ impl ConstraintSolver for DimensionalSolver {
             };
         }
 
-        // Capture initial point as fallback values before optimization.
-        // If initially_feasible and the optimizer drifts infeasible, we fall
-        // back to these values rather than returning Infeasible.
-        let initial_fallback_values: Option<HashMap<_, _>> = if initially_feasible {
-            Some(
-                problem
-                    .auto_params
-                    .iter()
-                    .zip(initial.iter())
-                    .map(|(param, &val)| {
-                        (
-                            param.id.clone(),
-                            Value::Scalar {
-                                si_value: val,
-                                dimension: dimension_of(&param.param_type),
-                            },
-                        )
-                    })
-                    .collect(),
-            )
-        } else {
-            None
-        };
-
         // Choose iteration budget: scaled by simplex size when warm-starting.
         // Nelder-Mead needs O(N+1) evaluations per simplex sweep, so scale
         // the budget proportionally to give higher-dimensional problems enough
@@ -631,7 +607,7 @@ impl ConstraintSolver for DimensionalSolver {
             // If the initial point was feasible but the optimizer drifted infeasible
             // while chasing an objective, fall back to the initial feasible values
             // rather than reporting a false Infeasible.
-            if let Some(fallback) = initial_fallback_values {
+            if initially_feasible {
                 // Validate that the objective is numeric at the initial point
                 // before promoting to Solved. The trial_values ValueMap was built
                 // from the same initial point and is still in scope.
@@ -643,6 +619,10 @@ impl ConstraintSolver for DimensionalSolver {
                             .to_string(),
                     };
                 }
+                // Construct fallback HashMap lazily — only on the error path
+                // where the optimizer drifted infeasible. The `initial` Vec<f64>
+                // is still in scope from the extraction at the top of solve().
+                let fallback = params_to_value_map(&problem.auto_params, &initial);
                 tracing::debug!(
                     n_params,
                     final_max_residual,
