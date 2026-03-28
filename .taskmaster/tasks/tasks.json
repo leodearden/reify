@@ -12755,10 +12755,11 @@
         "description": "In compute_gradient_field (crates/reify-expr/src/lib.rs), check that the source field's lambda is callable (not Undef). Sampled/Imported fields have lambda=Undef — gradient() on them should fail at construction time, not silently at sample time. In sample_gradient_field, add finiteness check on computed derivative before pushing to gradient_components. Both align with feedback_silent_defaults_pattern.md convention.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-03-28T00:44:01.181Z"
       },
       {
         "id": "632",
@@ -12851,7 +12852,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T00:44:00.678Z",
+      "lastModified": "2026-03-28T00:44:01.181Z",
       "taskCount": 639,
       "completedCount": 290,
       "tags": [
