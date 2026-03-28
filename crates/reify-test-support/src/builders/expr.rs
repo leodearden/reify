@@ -556,6 +556,29 @@ mod tests {
     }
 
     #[test]
+    fn literal_transform_helper_produces_transform3_type() {
+        let transform_value = Value::Transform {
+            rotation: Box::new(Value::Orientation {
+                w: 1.0,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            }),
+            translation: Box::new(Value::Vector(vec![
+                Value::Real(0.0),
+                Value::Real(0.0),
+                Value::Real(0.0),
+            ])),
+        };
+        let expr = literal_transform(transform_value, 3);
+        assert_eq!(expr.result_type, Type::Transform(3));
+        assert!(matches!(
+            expr.kind,
+            CompiledExprKind::Literal(Value::Transform { .. })
+        ));
+    }
+
+    #[test]
     #[should_panic(expected = "infer_type() cannot infer Frame")]
     fn literal_frame_value_panics() {
         let frame_value = Value::Frame {
