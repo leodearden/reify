@@ -985,8 +985,8 @@ mod tests {
     }
 
     #[test]
-    fn vec3_unit_creates_value_vector_with_real_components() {
-        let v = vec3_unit(1.0, 0.0, 0.0);
+    fn vec3_dimensionless_creates_value_vector_with_real_components() {
+        let v = vec3_dimensionless(1.0, 0.0, 0.0);
         match v {
             Value::Vector(items) => {
                 assert_eq!(items.len(), 3);
