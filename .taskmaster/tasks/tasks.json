@@ -12860,7 +12860,30 @@
           522
         ],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "source": "reconciliation-stage2",
+          "modules": [
+            "gui/src-tauri/src"
+          ],
+          "files": [
+            "gui/src-tauri/src/claude_bridge.rs"
+          ],
+          "memory_hints": {
+            "entities": [
+              "ClaudeContext",
+              "ClaudeMessageContext",
+              "MessageContext",
+              "bridge.ts",
+              "claude_bridge.rs"
+            ],
+            "queries": [
+              "ClaudeMessageContext MessageContext field alignment currentFile attachedContexts",
+              "task 522 ClaudeMessageContext alignment Pick MessageContext",
+              "Rust ClaudeContext struct missing fields current_file attached_contexts"
+            ]
+          }
+        }
       }
     ],
     "metadata": {
