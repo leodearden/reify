@@ -374,6 +374,8 @@ describe('PropertyEditor blur-commit quantity literals', () => {
     fireEvent.blur(input);
     expect(onSetParam).toHaveBeenCalledWith('c1', '80mm');
     expect(input.hasAttribute('data-invalid')).toBe(false);
+    // After blur-commit, editing ends and SolidJS reverts to prop value (same as invalid case)
+    expect(input.value).toBe('50');
   });
 
   it("blur with invalid quantity 'mm80' does NOT call onSetParameter, reverts to '50', no data-invalid", () => {
