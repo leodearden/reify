@@ -570,8 +570,8 @@ mod tests {
         // Cursor is after a dot — should only return member completions
         // Note: Bar is undefined, but the exclusion assertions are what matter
         let source = "structure Foo {\n    param a: Scalar = 1mm\n    param b: Scalar = 2mm\n    sub part: Bar\n    let x = part.\n}";
-        // Line 4, col 18 is after "    let x = part." — after the dot
-        let items = compute_completions(source, &test_uri(), Position::new(4, 18));
+        // Line 4, col 17 is after the dot on "    let x = part."
+        let items = compute_completions(source, &test_uri(), Position::new(4, 17));
 
         let keyword_labels: Vec<&str> = items
             .iter()
