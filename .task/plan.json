@@ -1,0 +1,199 @@
+{
+  "task_id": "373",
+  "title": "Matrix arithmetic correctness: empty-tensor scope, neg overflow, rank detection, jagged-B",
+  "files": [
+    "crates/reify-types/src/value.rs",
+    "crates/reify-expr/src/lib.rs",
+    "crates/reify-expr/tests/matrix_eval_tests.rs"
+  ],
+  "modules": [
+    "crates/reify-types/src",
+    "crates/reify-expr/src",
+    "crates/reify-expr/tests"
+  ],
+  "analysis": "Four correctness fixes plus a refactoring move. (A) The negation path in eval_unop (lib.rs:1687) uses bare `Value::Int(-i)` which panics on i64::MIN in debug builds \u2014 needs checked_neg. The negate_components helper (lib.rs:940) already uses checked_neg correctly for component-wise negation. The task consolidates ALL negation logic into a `pub fn neg(self) -> Value` method on Value in reify-types, since it has zero evaluator dependencies. eval_unop then delegates to `v.neg()` and negate_components is removed. (B) The Tensor match arms in eval_add (lib.rs:1014) and eval_sub (lib.rs:1076) dispatch directly to componentwise_binop without distinguishing rank-1 (flat vector) from rank-2 (nested matrix) tensors. Three guards are needed for rank-2: (1) an empty-matrix guard (Tensor([]) with matrix intent \u2192 Undef) scoped to rank-2 only so that rank-1 empty Tensor([]) + Tensor([]) \u2192 Tensor([]) is preserved, (2) proper rank-2 detection using `rows.iter().all(|r| matches!(r, Value::Tensor(_)))` instead of checking only the first row, and (3) upfront jagged validation for both operands (all rows must have the same column count) to prevent lazy scattered-Undef production. The rank-2 check `a.first().map_or(false, |v| matches!(v, Value::Tensor(_)))` is used to decide whether to enter the matrix validation path. The pattern in `try_into_matrix` (value.rs:196) already demonstrates the correct .all() idiom.",
+  "prerequisites": [
+    {
+      "id": "pre-1",
+      "description": "Verify baseline: `cargo test -p reify-types -p reify-expr --no-run` compiles cleanly before making changes",
+      "status": "done",
+      "commit": null,
+      "tests": []
+    }
+  ],
+  "steps": [
+    {
+      "id": "step-1",
+      "type": "test",
+      "description": "Write failing tests for Value::neg() on scalar types in the value.rs inline test module: neg(Int(5))\u2192Int(-5), neg(Real(3.14))\u2192Real(-3.14), neg(Scalar{si_value:1.0,dim:LENGTH})\u2192Scalar{si_value:-1.0,dim:LENGTH}, neg(Complex{re:1,im:2,dim:D})\u2192Complex{re:-1,im:-2,dim:D}, neg(Int(i64::MIN))\u2192Undef (overflow), neg(Bool(true))\u2192Undef, neg(Undef)\u2192Undef. Tests fail because Value::neg() does not exist yet.",
+      "status": "done",
+      "commit": "b0890622"
+    },
+    {
+      "id": "step-2",
+      "type": "impl",
+      "description": "Implement `pub fn neg(self) -> Value` in the `impl Value` block in value.rs for scalar types: Int uses i.checked_neg().map(Value::Int).unwrap_or(Value::Undef), Real uses Value::Real(-r), Scalar negates si_value, Complex negates re and im, all other variants return Undef. Step-1 tests pass.",
+      "status": "done",
+      "commit": "38eca034"
+    },
+    {
+      "id": "step-3",
+      "type": "test",
+      "description": "Write failing tests for Value::neg() on composite types in value.rs: neg(Tensor([Int(1),Int(2)]))\u2192Tensor([Int(-1),Int(-2)]), neg(Tensor([Int(i64::MIN),Int(1)]))\u2192Undef (one component overflows \u2192 whole Undef), neg(Vector([length(1.0),length(2.0)]))\u2192Vector([length(-1.0),length(-2.0)]), neg(Point([...]))\u2192Undef (spec 3.3.1). Tests fail because composite-type negation not yet handled in Value::neg().",
+      "status": "done",
+      "commit": "c5c351df"
+    },
+    {
+      "id": "step-4",
+      "type": "impl",
+      "description": "Extend Value::neg() to handle Tensor(components) and Vector(components): recursively call .neg() on each component, if any returns Undef the entire result is Undef, otherwise wrap with original constructor. Point(_) returns Undef (affine constraint). Step-3 tests pass.",
+      "status": "done",
+      "commit": "bb44df6a"
+    },
+    {
+      "id": "step-5",
+      "type": "test",
+      "description": "Write failing test in lib.rs inline tests: `neg_int_min_returns_undef` \u2014 creates CompiledExpr::unop(UnOp::Neg, lit(Value::Int(i64::MIN), Type::Int), Type::Int) and asserts eval_expr returns Undef (not panic). This test PANICS with the current eval_unop line 1687 `Value::Int(-i)` on debug builds.",
+      "status": "done",
+      "commit": "f54bca58"
+    },
+    {
+      "id": "step-6",
+      "type": "impl",
+      "description": "Refactor eval_unop's UnOp::Neg arm to delegate entirely to `v.neg()`: replace the entire match block with `UnOp::Neg => v.neg()`. Delete the now-unused `negate_components` helper function (lines 938-961). Step-5 test passes (no panic, returns Undef). All existing negation tests (negation, value_negate_vector3_returns_negated_vector, etc.) continue to pass via Value::neg().",
+      "status": "done",
+      "commit": "09dcb795"
+    },
+    {
+      "id": "step-7",
+      "type": "test",
+      "description": "Write regression test in new file matrix_eval_tests.rs: `empty_rank1_tensor_add_returns_empty_tensor` \u2014 Tensor([]) + Tensor([]) evaluated via eval_expr returns Tensor([]). This confirms rank-1 empty tensors are NOT affected by the rank-2 guard added in step-9. Test passes with current code (baseline).",
+      "status": "done",
+      "commit": "a55d02ca"
+    },
+    {
+      "id": "step-8",
+      "type": "test",
+      "description": "Write failing tests in matrix_eval_tests.rs: (a) `empty_rank2_tensor_add_returns_undef` \u2014 Tensor([Tensor([Int(1)])]) + Tensor([]) where one operand is empty rank-2 \u2192 Undef. (b) `empty_rank2_both_empty_add_returns_undef` \u2014 but this case has empty outer so first() is None, so it's treated as rank-1 \u2192 Tensor([]). The real case: Tensor([Tensor([])]) + Tensor([Tensor([])]) where inner rows exist but are empty \u2014 validates that the guard triggers for rank-2 even with 0-column matrices. Tests fail because no rank-2 specific guard exists yet.",
+      "status": "done",
+      "commit": "ad634029"
+    },
+    {
+      "id": "step-9",
+      "type": "impl",
+      "description": "Add rank-2 validation block at the top of the (Value::Tensor(a), Value::Tensor(b)) match arms in both eval_add and eval_sub. The guard: `let is_rank2_a = a.first().map_or(false, |v| matches!(v, Value::Tensor(_))); let is_rank2_b = b.first().map_or(false, |v| matches!(v, Value::Tensor(_)));` \u2014 if either is rank-2, validate both are rank-2 via `.iter().all(|r| matches!(r, Value::Tensor(_)))`, check neither is empty, then fall through to componentwise_binop. Steps 7-8 tests pass. Rank-1 empty tensor addition (step-7) still returns Tensor([]).",
+      "status": "done",
+      "commit": "3cf30cfb"
+    },
+    {
+      "id": "step-10",
+      "type": "test",
+      "description": "Write failing tests in matrix_eval_tests.rs: (a) `heterogeneous_tensor_first_is_tensor_rest_int_add_returns_undef` \u2014 Tensor([Tensor([1,2]), Int(3)]) + Tensor([Tensor([4,5]), Int(6)]) \u2192 Undef (not misclassified as rank-2 matrix). (b) `rank2_detection_checks_all_rows` \u2014 Tensor([Tensor([1]), Int(2)]) is detected as non-rank-2 and returns Undef (mixed types within a 'matrix' are invalid). Tests validate that .all() check catches the heterogeneous case.",
+      "status": "done",
+      "commit": "66320e0a"
+    },
+    {
+      "id": "step-11",
+      "type": "impl",
+      "description": "The .all() rank-2 detection was already implemented in step-9. If step-10 tests fail, adjust the guard to ensure heterogeneous tensors (where first element is Tensor but others are not) return Undef. The all() check in step-9 should already handle this, making step-10 tests pass immediately after step-9.",
+      "status": "done",
+      "commit": "66320e0a"
+    },
+    {
+      "id": "step-12",
+      "type": "test",
+      "description": "Write failing tests in matrix_eval_tests.rs: (a) `jagged_a_matrix_add_returns_undef` \u2014 Tensor([Tensor([1,2,3]), Tensor([4,5])]) + Tensor([Tensor([6,7,8]), Tensor([9,10,11])]) \u2192 Undef (A has rows of different lengths). (b) `jagged_b_matrix_add_returns_undef` \u2014 A is regular, B is jagged \u2192 Undef. (c) `jagged_b_matrix_sub_returns_undef` \u2014 same for subtraction. Tests fail because no upfront jagged validation exists; componentwise_binop would produce scattered Undef lazily.",
+      "status": "done",
+      "commit": "804a6c4b"
+    },
+    {
+      "id": "step-13",
+      "type": "impl",
+      "description": "Add upfront jagged validation inside the rank-2 block in eval_add and eval_sub: after confirming both are rank-2 and non-empty, extract column count from first row of A and B, then verify all rows match: `let a_cols = match &a[0] { Value::Tensor(r) => r.len(), _ => 0 }; if !a.iter().all(|r| matches!(r, Value::Tensor(row) if row.len() == a_cols)) { return Value::Undef; }` \u2014 mirror for B. All step-12 tests pass. Existing matrix add/sub tests still pass.",
+      "status": "done",
+      "commit": "b20bc49b"
+    },
+    {
+      "id": "step-14",
+      "type": "test",
+      "description": "Write happy-path tests in matrix_eval_tests.rs under a new '\u2500\u2500 Valid rank-2 matrix arithmetic \u2500\u2500' section: (a) `valid_rank2_matrix_add_returns_correct_result` \u2014 Tensor([Tensor([Int(1),Int(2)]),Tensor([Int(3),Int(4)])]) + Tensor([Tensor([Int(5),Int(6)]),Tensor([Int(7),Int(8)])]) \u2192 Tensor([Tensor([Int(6),Int(8)]),Tensor([Int(10),Int(12)])]). (b) `valid_rank2_matrix_sub_returns_correct_result` \u2014 Tensor([Tensor([Int(10),Int(20)]),Tensor([Int(30),Int(40)])]) - Tensor([Tensor([Int(1),Int(2)]),Tensor([Int(3),Int(4)])]) \u2192 Tensor([Tensor([Int(9),Int(18)]),Tensor([Int(27),Int(36)])]). These tests confirm that the validate_rank2_tensors guard correctly allows valid rectangular matrices through to componentwise_binop, producing correct element-wise results. Addresses reviewer finding: missing_happy_path_test.",
+      "status": "done",
+      "commit": "49bb9efb"
+    },
+    {
+      "id": "step-15",
+      "type": "impl",
+      "description": "Verify step-14 happy-path tests pass with existing implementation. The rank-2 guards (steps 9/11/13) reject invalid inputs and fall through to componentwise_binop for valid ones \u2014 so no implementation changes should be needed. If any test fails, investigate whether the guard is over-restrictive and fix accordingly. Run full test suite (`cargo test -p reify-expr`) to confirm no regressions.",
+      "status": "done",
+      "commit": "49bb9efb"
+    }
+  ],
+  "design_decisions": [
+    {
+      "decision": "Value::neg() takes self by value (not &self)",
+      "rationale": "Tensor/Vector contain Vec<Value> which must be consumed for component-wise negation without cloning. The owned-self signature matches the existing pattern of canonicalize_matrix(self) and try_into_matrix(self) on Value."
+    },
+    {
+      "decision": "Value::neg() returns Value::Undef for all unhandled variants instead of panicking",
+      "rationale": "Follows the project's noisy-failures convention (feedback_silent_defaults_pattern.md): logic errors should be noisy, but type mismatches in arithmetic produce Undef and propagate. This is consistent with how eval_add/eval_mul handle unsupported type combinations."
+    },
+    {
+      "decision": "Rank-2 detection uses first().map_or(false, ...) as entry check, then .all() for full validation",
+      "rationale": "The two-phase approach is efficient: first() is O(1) to determine if we're in rank-2 territory, then .all() validates every row. This matches the task specification exactly and mirrors the pattern in try_into_matrix (value.rs:196)."
+    },
+    {
+      "decision": "Jagged validation checks column count consistency within each operand independently",
+      "rationale": "Each matrix (A and B) must be independently rectangular. Cross-operand dimension matching (A cols == B cols for add, A cols == B rows for mul) is handled by componentwise_binop's length check. Upfront jagged validation prevents scattered-Undef production from partially-successful recursive calls."
+    },
+    {
+      "decision": "Guards added to both eval_add and eval_sub, extracted as a helper function",
+      "rationale": "The same rank-2 validation logic (empty guard, all-rows check, jagged check) applies identically to addition and subtraction. Extracting a validate_rank2_tensors helper avoids code duplication and ensures consistency."
+    },
+    {
+      "decision": "negate_components is removed after refactoring eval_unop",
+      "rationale": "Value::neg() completely subsumes negate_components. Keeping both would violate DRY and create a maintenance burden where negation logic could drift between the two implementations."
+    },
+    {
+      "decision": "New test file matrix_eval_tests.rs for matrix arithmetic tests",
+      "rationale": "Matrix correctness tests (empty-tensor, rank-2 detection, jagged validation) are a distinct concern from the existing point_vector_eval_tests.rs. A dedicated file improves discoverability and avoids bloating the existing test file."
+    },
+    {
+      "decision": "Happy-path tests use concrete 2\u00d72 integer matrices with manually computed expected results",
+      "rationale": "Addresses reviewer finding missing_happy_path_test. Guards must be tested for both rejection of invalid inputs AND pass-through of valid inputs. Using simple integer values makes expected results trivially verifiable by inspection."
+    }
+  ],
+  "reuse": [
+    {
+      "what": "try_into_matrix rank-2 detection pattern",
+      "where": "crates/reify-types/src/value.rs:196",
+      "how": "Reuse the `rows.iter().all(|r| matches!(r, Value::Tensor(_)))` idiom for rank-2 validation in eval_add/eval_sub guards"
+    },
+    {
+      "what": "negate_components checked_neg pattern",
+      "where": "crates/reify-expr/src/lib.rs:944",
+      "how": "Port the `i.checked_neg().map(Value::Int).unwrap_or(Value::Undef)` pattern into Value::neg() for the Int case"
+    },
+    {
+      "what": "componentwise_binop",
+      "where": "crates/reify-expr/src/lib.rs:904-919",
+      "how": "Continues to be used for the actual element-wise computation after rank-2 guards pass validation"
+    },
+    {
+      "what": "Test infrastructure: CompiledExpr::literal, CompiledExpr::binop, eval_expr, EvalContext::simple, ValueMap",
+      "where": "crates/reify-expr/tests/point_vector_eval_tests.rs:3-4",
+      "how": "Same imports and patterns for creating test expressions and evaluating them in matrix_eval_tests.rs"
+    },
+    {
+      "what": "Value constructors: Value::length(), Value::Int(), DimensionVector::LENGTH",
+      "where": "crates/reify-types/src/value.rs:134-148",
+      "how": "Used in test assertions for Value::neg() and matrix arithmetic tests"
+    },
+    {
+      "what": "Existing test helpers in matrix_eval_tests.rs: lit(), tensor_ty(), add(), sub(), eval()",
+      "where": "crates/reify-expr/tests/matrix_eval_tests.rs:7-34",
+      "how": "Reuse the same helpers for step-14 happy-path tests \u2014 no new infrastructure needed"
+    }
+  ],
+  "_session_id": "373-db842f64",
+  "_created_at": "2026-03-28T04:07:31.193652+00:00"
+}
