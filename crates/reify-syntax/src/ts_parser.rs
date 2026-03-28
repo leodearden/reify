@@ -3327,9 +3327,16 @@ mod tests {
         None
     }
 
-    /// Helper: parse source, find the connect_body node, call lower_connect_body
-    /// directly (bypassing check_and_lower!), and return the errors.
-    fn lower_body_directly(source: &str) -> Vec<ParseError> {
+    /// Generic helper: parse source, find the first node of `kind`, run `lower_fn`
+    /// on it via a fresh `Lowering`, and return collected errors.
+    ///
+    /// The closure pattern avoids lifetime issues: `tree_sitter::Node` borrows from
+    /// `Tree`, so both must live inside the same scope — the closure receives them
+    /// without the caller needing to hold the `Tree`.
+    fn lower_node_directly<F>(source: &str, kind: &str, lower_fn: F) -> Vec<ParseError>
+    where
+        F: FnOnce(&mut Lowering, tree_sitter::Node),
+    {
         let mut ts_parser = tree_sitter::Parser::new();
         ts_parser
             .set_language(&tree_sitter_reify::language().into())
@@ -3337,12 +3344,18 @@ mod tests {
         let tree = ts_parser.parse(source, None).expect("Failed to parse");
         let root = tree.root_node();
 
-        let body_node = find_node_by_kind(root, "connect_body")
-            .expect("no connect_body node found in parse tree");
+        let node = find_node_by_kind(root, kind)
+            .unwrap_or_else(|| panic!("no {kind} node found in parse tree"));
 
         let mut lowering = Lowering::new(source);
-        lowering.lower_connect_body(body_node);
+        lower_fn(&mut lowering, node);
         lowering.errors
+    }
+
+    /// Helper: parse source, find the connect_body node, call lower_connect_body
+    /// directly (bypassing check_and_lower!), and return the errors.
+    fn lower_body_directly(source: &str) -> Vec<ParseError> {
+        lower_node_directly(source, "connect_body", |l, n| { l.lower_connect_body(n); })
     }
 
     #[test]
