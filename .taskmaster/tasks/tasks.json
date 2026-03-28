@@ -15336,6 +15336,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 744,
+        "title": "build.rs: replace DefaultHasher with stable hash, fix error handling and ergonomics",
+        "description": "Address 6 suggestion-level review findings from task 564 reviews, all in tree-sitter-reify/build.rs.\n\n1. **DefaultHasher version instability** (architect, robustness, performance reviewers): `content_hash()` uses `std::hash::DefaultHasher` which is not stable across Rust toolchain versions. After a `rustup upgrade`, the stamp hash changes, forcing `tree-sitter generate` on every build until the stamp is rewritten. Replace with a stable FNV-1a hash (manual implementation, no crate needed): `let mut h: u64 = 0xcbf29ce484222325; for b in &bytes { h = h.wrapping_mul(0x100000001b3) ^ (*b as u64); }`.\n\n2. **content_hash panic on missing grammar.js** (architect, robustness): `needs_generate()` calls `content_hash(grammar_path)` which panics if grammar.js is unreadable, but a missing stamp file returns `true` gracefully. Make consistent: return `true` (needs regen) when grammar.js is unreadable, letting `run_tree_sitter_generate()` fail with a clear message.\n\n3. **OUT_DIR fallback to \".\"** (architect): `std::env::var(\"OUT_DIR\").unwrap_or_else(|_| \".\".to_string())` writes the stamp file to the crate root if OUT_DIR is unset. Replace with `.expect(\"OUT_DIR must be set by Cargo\")` since build.rs is only run by Cargo.\n\n4. **needs_generate signature ergonomics** (performance): Takes `&[&std::path::Path]` requiring a double-Vec allocation. Change to `&[std::path::PathBuf]` and call `.as_path()` at point of use, eliminating the intermediate `output_refs` Vec.\n\n5. **Busy poll 100ms granularity** (performance): `run_with_timeout()` polls `try_wait()` every 100ms, adding up to 100ms tail latency after process exit. Reduce to 10ms (two-character change).\n\n6. **Duplicated EXPECTED_OUTPUTS** (reuse): The list `[parser.c, grammar.json, node-types.json]` is hardcoded in both `build.rs` and `scripts/tree-sitter-generate.sh`. Consider having build.rs call the script instead of calling tree-sitter directly, or document the sync requirement.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -15348,7 +15359,7 @@
       ],
       "created": "2026-03-28T17:27:52.006Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-28T17:28:03.763Z"
+      "updated": "2026-03-28T17:29:06.706Z"
     }
   }
 }
