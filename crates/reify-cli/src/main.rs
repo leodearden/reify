@@ -278,6 +278,18 @@ fn cmd_lsp() -> ExitCode {
     }
 }
 
+/// Report constraint check results to the given writer.
+///
+/// Returns `true` if all constraints are satisfied, `false` otherwise.
+/// Each entry is printed as `  {STATUS} {label}` where label falls back to the
+/// constraint id's Display representation when `entry.label` is `None`.
+fn report_constraint_results(
+    _results: &[reify_eval::ConstraintCheckEntry],
+    _out: &mut impl std::io::Write,
+) -> bool {
+    todo!()
+}
+
 fn cmd_mcp_server(args: &[String]) -> ExitCode {
     // Parse optional file argument and --project-dir flag
     let mut file_path: Option<String> = None;
@@ -328,5 +340,106 @@ fn cmd_mcp_server(args: &[String]) -> ExitCode {
             eprintln!("Failed to create async runtime: {}", e);
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reify_eval::ConstraintCheckEntry;
+    use reify_types::{ConstraintNodeId, Satisfaction};
+
+    fn make_entry(
+        entity: &str,
+        index: u32,
+        label: Option<&str>,
+        satisfaction: Satisfaction,
+    ) -> ConstraintCheckEntry {
+        ConstraintCheckEntry {
+            id: ConstraintNodeId::new(entity, index),
+            label: label.map(|s| s.to_string()),
+            satisfaction,
+        }
+    }
+
+    #[test]
+    fn all_satisfied_returns_true_and_formats_ok() {
+        let entries = vec![
+            make_entry("Bracket", 0, Some("stress_limit"), Satisfaction::Satisfied),
+            make_entry("Bracket", 1, Some("size_bound"), Satisfaction::Satisfied),
+        ];
+        let mut buf = Vec::new();
+        let result = report_constraint_results(&entries, &mut buf);
+        let output = String::from_utf8(buf).unwrap();
+
+        assert!(result, "should return true when all satisfied");
+        assert!(output.contains("OK stress_limit"));
+        assert!(output.contains("OK size_bound"));
+        assert!(!output.contains("VIOLATED"));
+    }
+
+    #[test]
+    fn violated_returns_false_and_formats_violated() {
+        let entries = vec![
+            make_entry("Part", 0, Some("max_force"), Satisfaction::Satisfied),
+            make_entry("Part", 1, Some("clearance"), Satisfaction::Violated),
+        ];
+        let mut buf = Vec::new();
+        let result = report_constraint_results(&entries, &mut buf);
+        let output = String::from_utf8(buf).unwrap();
+
+        assert!(!result, "should return false when any violated");
+        assert!(output.contains("OK max_force"));
+        assert!(output.contains("VIOLATED clearance"));
+    }
+
+    #[test]
+    fn indeterminate_formats_correctly_and_counts_as_satisfied() {
+        let entries = vec![
+            make_entry("Beam", 0, Some("load"), Satisfaction::Indeterminate),
+        ];
+        let mut buf = Vec::new();
+        let result = report_constraint_results(&entries, &mut buf);
+        let output = String::from_utf8(buf).unwrap();
+
+        assert!(result, "indeterminate should not cause false return");
+        assert!(output.contains("INDETERMINATE load"));
+    }
+
+    #[test]
+    fn uses_id_display_as_fallback_when_label_is_none() {
+        let entries = vec![
+            make_entry("Gear", 2, None, Satisfaction::Satisfied),
+        ];
+        let mut buf = Vec::new();
+        let _result = report_constraint_results(&entries, &mut buf);
+        let output = String::from_utf8(buf).unwrap();
+
+        // ConstraintNodeId Display: "Gear#constraint[2]"
+        assert!(
+            output.contains("OK Gear#constraint[2]"),
+            "should use id Display as fallback, got: {}",
+            output
+        );
+    }
+
+    #[test]
+    fn uses_label_when_present() {
+        let entries = vec![
+            make_entry("Axle", 0, Some("torque_limit"), Satisfaction::Violated),
+        ];
+        let mut buf = Vec::new();
+        let _result = report_constraint_results(&entries, &mut buf);
+        let output = String::from_utf8(buf).unwrap();
+
+        assert!(
+            output.contains("VIOLATED torque_limit"),
+            "should use label, got: {}",
+            output
+        );
+        assert!(
+            !output.contains("Axle#constraint"),
+            "should NOT contain id fallback when label is present"
+        );
     }
 }
