@@ -585,7 +585,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // Fails until position-sensitive completions are implemented (task 2)
     fn completion_after_dot_returns_only_members() {
         // Cursor is after a dot — should only return member completions
         // Note: Bar is undefined, but the exclusion assertions are what matter
