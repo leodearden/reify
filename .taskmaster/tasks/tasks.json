@@ -7389,11 +7389,11 @@
         "description": "Missing tests in crates/reify-expr/tests/tensor_matrix_arithmetic_tests.rs:\n\n1. vector_times_matrix_returns_undef — Vector*Matrix (v*M instead of M*v) should return Undef.\n2. Multi-row undef propagation — 2x2 matrix where row 0 adds cleanly (Length+Length) but row 1 has dimension mismatch (Length+Angle), assert whole result is Undef.\n3. Dimension mismatch in dot product — A=[[1m, 1rad]], B=[[1m],[1m]], so C[0][0] = Area + rad·Length = Undef.\n4. Add comment on mat()/vec_lit() helpers documenting Type::Real as dummy annotation (actual types carried by Value variants).\n\nMemory hints: search \"tensor_matrix_arithmetic_tests mat vec_lit eval\", entities: tensor_matrix_arithmetic_tests",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-28T09:04:26.630Z",
+        "updatedAt": "2026-03-28T16:36:25.608Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "modules": [
@@ -15276,9 +15276,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T16:35:37.780Z",
+      "lastModified": "2026-03-28T16:36:25.608Z",
       "taskCount": 738,
-      "completedCount": 357,
+      "completedCount": 358,
       "tags": [
         "master"
       ]
