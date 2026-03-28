@@ -7,7 +7,7 @@ use reify_compiler::{
 /// Returns a hash-friendly string representation for a `DefaultKind` variant.
 fn default_kind_str(kind: &DefaultKind) -> String {
     match kind {
-        DefaultKind::Param { cell_type, .. } => format!("Param:{}", cell_type),
+        DefaultKind::Param { cell_type, default_decl } => format!("Param:{}:{}", cell_type, default_decl.content_hash),
         DefaultKind::Let(decl) => format!("Let:{}", decl.content_hash),
         DefaultKind::Constraint(decl) => format!("Constraint:{}", decl.content_hash),
     }
@@ -274,7 +274,7 @@ mod tests {
                 content_hash: ContentHash::of_str("x"),
             },
         });
-        assert_eq!(param_str, "Param:Real");
+        assert_eq!(param_str, format!("Param:Real:{}", ContentHash::of_str("x")));
 
         let let_hash = ContentHash::of_str("y");
         let let_str = default_kind_str(&DefaultKind::Let(reify_syntax::LetDecl {
