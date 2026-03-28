@@ -10400,7 +10400,7 @@
         "description": "Follow-up from task 493 review suggestions. Four areas to address in crates/reify-cli:\n\n1. **Output channel inconsistency** (main.rs): cmd_check prints constraint summary to stdout (println!), cmd_build prints to stderr (eprintln!). Resolve asymmetry — either both stdout or both stderr for constraint output.\n\n2. **Code duplication** (main.rs): constraint-reporting loop in cmd_build (lines ~162-175) is a near-exact copy of cmd_check (lines ~89-102). Extract a helper like `fn report_constraint_results(results: &[ConstraintEntry], use_stderr: bool) -> bool` or separate the printing from the all_satisfied check.\n\n3. **Hardcoded /tmp test paths** (tests/cli_build.rs): All tests use fixed /tmp/reify_test_*.step paths. Use tempfile crate or PID-based unique paths to avoid cross-run races. Add pre-cleanup to all tests that write files (currently inconsistent).\n\n4. **Indeterminate satisfaction behavior** (main.rs): Satisfaction::Indeterminate is treated as success in both cmd_build and cmd_check. Add a test documenting this behavior and consider whether CI should fail-open on indeterminate constraints.\n\nMemory hints: search \"CLI constraint reporting\", entity names: cmd_build, cmd_check, Satisfaction",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -10414,7 +10414,8 @@
             "crates/reify-cli/src",
             "crates/reify-cli/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-03-28T01:32:35.959Z"
       },
       {
         "id": "517",
@@ -13127,7 +13128,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T01:32:34.849Z",
+      "lastModified": "2026-03-28T01:32:35.959Z",
       "taskCount": 650,
       "completedCount": 305,
       "tags": [
