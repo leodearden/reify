@@ -2150,3 +2150,92 @@ async fn ensure_sidecar_ready_enable_prevents_missed_notification_race() {
         );
     }
 }
+
+// --- deterministic re-check path test (task-452/step-1) ---
+
+/// Deterministic test for the post-spawn re-check path (line 661) in
+/// `ensure_sidecar_ready`.
+///
+/// Uses a single-threaded `current_thread` runtime so task scheduling is
+/// deterministic: `tokio::spawn`'d tasks only run when the current task
+/// yields.  The `spawn_fn` writes `{"type":"ready"}` and yields until the
+/// reader task processes it (sets state to `Ready` and calls
+/// `notify_waiters()`), all before returning the handle.
+///
+/// This means `notify_waiters()` fires BEFORE `notified()` is created on
+/// line 625 — the notification is irretrievably lost and `enable()` captures
+/// nothing.  Phase 3 finds no concurrent caller.  The ONLY path to `Ok` is
+/// the re-check at line 661 (`state.lock().await` sees `Ready`).
+///
+/// A shared `AtomicBool` flag records that state was `Ready` before
+/// `spawn_fn` returned, proving the notification window was pre-creation
+/// (category (a) in the re-check comment), not post-creation.
+#[tokio::test(flavor = "current_thread")]
+async fn ensure_sidecar_ready_returns_ok_via_recheck_when_ready_during_spawn() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+    use tokio::io::{AsyncWriteExt, BufReader};
+    use tokio::sync::Mutex;
+
+    // Shared flag: set to true when spawn_fn confirms state is Ready
+    // BEFORE returning the handle.
+    let ready_before_return = Arc::new(AtomicBool::new(false));
+    let ready_flag_clone = Arc::clone(&ready_before_return);
+
+    let held_writer: Arc<Mutex<Option<tokio::io::DuplexStream>>> = Arc::new(Mutex::new(None));
+    let held_clone = Arc::clone(&held_writer);
+
+    let spawn_fn = move || {
+        let flag = Arc::clone(&ready_flag_clone);
+        let held = Arc::clone(&held_clone);
+        async move {
+            let state = Arc::new(Mutex::new(SidecarState::Starting));
+            let (mut data_writer, data_reader) = tokio::io::duplex(1024);
+            data_writer
+                .write_all(b"{\"type\":\"ready\"}\n")
+                .await
+                .map_err(|e| e.to_string())?;
+            let reader = BufReader::new(data_reader);
+            let (stdin_writer, _stdin_reader) = tokio::io::duplex(1024);
+            let handle = SidecarHandle::from_parts(stdin_writer, reader, state.clone());
+
+            // Yield until the reader task processes the ready message.
+            // On current_thread, spawned tasks run only when we yield.
+            // Chain: reader task reads line → spawns state-setter task →
+            // state-setter sets Ready + calls notify_waiters().
+            for _ in 0..100 {
+                tokio::task::yield_now().await;
+                if matches!(*state.lock().await, SidecarState::Ready) {
+                    break;
+                }
+            }
+
+            // Verify Ready was set — this proves notify_waiters() already
+            // fired, so the notification is lost by the time notified()
+            // is created on line 625 after spawn_fn returns.
+            assert!(
+                matches!(*state.lock().await, SidecarState::Ready),
+                "state should be Ready after yielding in spawn_fn"
+            );
+            flag.store(true, Ordering::SeqCst);
+
+            // Keep data_writer alive so the reader doesn't see EOF.
+            *held.lock().await = Some(data_writer);
+            Ok(handle)
+        }
+    };
+
+    let sidecar: Mutex<Option<SidecarHandle>> = Mutex::new(None);
+    let result = ensure_sidecar_ready(&sidecar, spawn_fn, Duration::from_millis(500)).await;
+
+    assert!(
+        ready_before_return.load(Ordering::SeqCst),
+        "spawn_fn must have confirmed state was Ready before returning"
+    );
+    assert!(
+        result.is_ok(),
+        "ensure_sidecar_ready must succeed via re-check path (line 661): {:?}",
+        result
+    );
+}
