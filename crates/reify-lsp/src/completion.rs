@@ -587,6 +587,32 @@ mod tests {
         );
     }
 
+    // --- guarded-group completion tests ---
+
+    #[test]
+    fn completions_include_guarded_group_members() {
+        let source = r#"structure S {
+    param cond : Bool = true
+    where cond {
+        param guarded_x : Scalar = 5mm
+    }
+}"#;
+        let items = compute_completions(source, &test_uri(), Position::new(1, 0));
+        let variables: Vec<_> = items
+            .iter()
+            .filter(|i| i.kind == Some(CompletionItemKind::VARIABLE))
+            .collect();
+        let var_labels: Vec<&str> = variables.iter().map(|v| v.label.as_str()).collect();
+        assert!(
+            var_labels.contains(&"cond"),
+            "should include top-level param 'cond', got: {var_labels:?}"
+        );
+        assert!(
+            var_labels.contains(&"guarded_x"),
+            "should include guarded-group param 'guarded_x', got: {var_labels:?}"
+        );
+    }
+
     // --- linalg builtin completions (step-11) ---
 
     #[test]
