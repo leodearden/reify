@@ -1,6 +1,120 @@
 use tower_lsp::lsp_types::{CompletionItem, CompletionItemKind, Position, Url};
 
 use crate::analysis::AnalysisContext;
+use crate::convert::position_to_offset;
+
+/// The syntactic context at the cursor position, used to filter completions.
+#[derive(Debug)]
+pub enum CursorContext {
+    /// Cursor is outside all structure/occurrence spans.
+    TopLevel,
+    /// Cursor is inside a structure/occurrence body on a line that doesn't
+    /// indicate a more specific context (expression, dot access, type position).
+    StructureBody {
+        /// Name of the enclosing structure/occurrence.
+        structure_name: String,
+    },
+    /// Cursor is in an expression position (after `=`, inside a constraint, etc).
+    Expression {
+        /// Name of the enclosing structure, if any.
+        structure_name: Option<String>,
+    },
+    /// Cursor is immediately after a `.` — member access.
+    DotAccess,
+    /// Cursor is in a type annotation position (after `:` in a declaration).
+    TypePosition,
+}
+
+/// Determine the syntactic context at the given cursor position.
+pub fn determine_context(source: &str, position: Position, ctx: &AnalysisContext) -> CursorContext {
+    let offset = position_to_offset(source, position);
+
+    // Check if cursor is inside a structure/occurrence span
+    let enclosing = ctx.enclosing_structure_name_at(offset);
+
+    if enclosing.is_none() {
+        return CursorContext::TopLevel;
+    }
+
+    let structure_name = enclosing.unwrap().to_string();
+
+    // Extract the current line prefix (text from start of line to cursor)
+    let line_prefix = extract_line_prefix(source, offset);
+
+    // Check for DotAccess: scan backward through whitespace for a '.'
+    {
+        let trimmed = line_prefix.trim_end();
+        if trimmed.ends_with('.') {
+            return CursorContext::DotAccess;
+        }
+    }
+
+    // Check for TypePosition: look for ':' without intervening '=' on the line prefix
+    // Must check before Expression since 'param x: ' has no '=' yet
+    {
+        let trimmed = line_prefix.trim_start();
+        if starts_with_decl_keyword(trimmed) {
+            if let Some(colon_pos) = line_prefix.rfind(':') {
+                let after_colon = &line_prefix[colon_pos + 1..];
+                if !after_colon.contains('=') {
+                    return CursorContext::TypePosition;
+                }
+            }
+        }
+    }
+
+    // Check for Expression: cursor after '=' on the line, or inside a constraint expression
+    {
+        if line_prefix.contains('=') {
+            // Cursor is after an '=' sign — expression position
+            // But only if the cursor is after the last '=' on the line
+            if let Some(eq_pos) = line_prefix.rfind('=') {
+                let cursor_in_line = line_prefix.len();
+                if cursor_in_line > eq_pos {
+                    return CursorContext::Expression {
+                        structure_name: Some(structure_name),
+                    };
+                }
+            }
+        }
+
+        // Constraint lines: everything after "constraint " is an expression
+        let trimmed = line_prefix.trim_start();
+        if trimmed.starts_with("constraint") && trimmed.len() > "constraint".len() {
+            let after_kw = &trimmed["constraint".len()..];
+            if after_kw.starts_with(|c: char| c.is_whitespace()) {
+                return CursorContext::Expression {
+                    structure_name: Some(structure_name),
+                };
+            }
+        }
+    }
+
+    // Default: inside a structure body but no more specific context
+    CursorContext::StructureBody { structure_name }
+}
+
+/// Extract the text from the start of the current line to the given byte offset.
+fn extract_line_prefix(source: &str, offset: usize) -> &str {
+    let start = source[..offset]
+        .rfind('\n')
+        .map(|pos| pos + 1)
+        .unwrap_or(0);
+    &source[start..offset]
+}
+
+/// Check if a trimmed line starts with a declaration keyword (param, let, sub).
+fn starts_with_decl_keyword(trimmed: &str) -> bool {
+    for kw in &["param", "let", "sub"] {
+        if trimmed.starts_with(kw)
+            && trimmed[kw.len()..]
+                .starts_with(|c: char| c.is_whitespace())
+        {
+            return true;
+        }
+    }
+    false
+}
 
 /// Compute completion items for the given position.
 ///
@@ -61,7 +175,7 @@ pub fn compute_completions(source: &str, uri: &Url, _position: Position) -> Vec<
     items
 }
 
-/// Reify language keywords.
+/// Reify language keywords (flat list for backward compatibility).
 const KEYWORDS: &[&str] = &[
     "structure",
     "param",
@@ -78,6 +192,36 @@ const KEYWORDS: &[&str] = &[
     "true",
     "false",
     "auto",
+];
+
+/// Keywords that are only valid at the top level (outside structure bodies).
+const TOP_LEVEL_KEYWORDS: &[&str] = &[
+    "structure",
+    "occurrence",
+    "import",
+    "fn",
+    "trait",
+    "enum",
+];
+
+/// Keywords that start declaration lines inside a structure body.
+const BODY_KEYWORDS: &[&str] = &[
+    "param",
+    "let",
+    "constraint",
+    "sub",
+    "auto",
+    "purpose",
+    "minimize",
+    "maximize",
+    "port",
+    "connect",
+    "where",
+];
+
+/// Keywords valid inside expressions (conditions, values, operators).
+const EXPR_KEYWORDS: &[&str] = &[
+    "if", "then", "else", "and", "or", "not", "true", "false",
 ];
 
 /// Built-in geometry and math functions.
