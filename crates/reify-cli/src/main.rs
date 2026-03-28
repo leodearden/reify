@@ -90,19 +90,22 @@ fn cmd_check(args: &[String]) -> ExitCode {
     let mut engine = reify_eval::Engine::new(Box::new(checker), None);
     let result = engine.check(&compiled);
 
-    let all_satisfied =
+    let outcome =
         report_constraint_results(&result.constraint_results, &mut std::io::stdout());
 
     for diag in &result.diagnostics {
         eprintln!("{}: {}", diag.severity, diag.message);
     }
 
-    if all_satisfied {
-        println!("All constraints satisfied.");
-        ExitCode::SUCCESS
-    } else {
-        println!("Some constraints violated.");
-        ExitCode::FAILURE
+    match outcome {
+        ConstraintOutcome::AllSatisfied | ConstraintOutcome::SomeIndeterminate(_) => {
+            println!("All constraints satisfied.");
+            ExitCode::SUCCESS
+        }
+        ConstraintOutcome::SomeViolated => {
+            println!("Some constraints violated.");
+            ExitCode::FAILURE
+        }
     }
 }
 
@@ -155,7 +158,7 @@ fn cmd_build(args: &[String]) -> ExitCode {
     }
 
     // Report constraint status
-    let all_satisfied =
+    let outcome =
         report_constraint_results(&result.constraint_results, &mut std::io::stdout());
 
     match result.geometry_output {
@@ -165,11 +168,14 @@ fn cmd_build(args: &[String]) -> ExitCode {
                 return ExitCode::FAILURE;
             }
             println!("Wrote {} ({} bytes)", output_path, data.len());
-            if all_satisfied {
-                ExitCode::SUCCESS
-            } else {
-                println!("Some constraints violated.");
-                ExitCode::FAILURE
+            match outcome {
+                ConstraintOutcome::AllSatisfied | ConstraintOutcome::SomeIndeterminate(_) => {
+                    ExitCode::SUCCESS
+                }
+                ConstraintOutcome::SomeViolated => {
+                    println!("Some constraints violated.");
+                    ExitCode::FAILURE
+                }
             }
         }
         None => {
@@ -254,40 +260,61 @@ fn cmd_lsp() -> ExitCode {
     }
 }
 
+/// Outcome of constraint checking.
+#[derive(Debug, PartialEq)]
+enum ConstraintOutcome {
+    /// Every constraint evaluated to `Satisfied`.
+    AllSatisfied,
+    /// No constraints violated, but some were `Indeterminate` (undef inputs).
+    SomeIndeterminate(usize),
+    /// At least one constraint evaluated to `Violated`.
+    SomeViolated,
+}
+
 /// Report constraint check results to the given writer.
 ///
-/// Returns `true` if all constraints are satisfied, `false` otherwise.
+/// Returns a [`ConstraintOutcome`] indicating the overall result.
 /// Each entry is printed as `  {STATUS} {label}` where label falls back to the
 /// constraint id's Display representation when `entry.label` is `None`.
 ///
 /// **Indeterminate constraints are intentionally treated as non-violating.**
 /// `Indeterminate` arises when a constraint's inputs are undefined — typically
 /// from `auto` parameters not yet resolved by the solver. Treating these as
-/// violations would block builds that are otherwise valid and break the
+/// violations would block evaluations that are otherwise valid and break the
 /// incremental evaluation engine. Only explicit `Violated` results cause
-/// `all_satisfied` to be `false`.
+/// a `SomeViolated` outcome.
 fn report_constraint_results(
     results: &[reify_eval::ConstraintCheckEntry],
     out: &mut impl std::io::Write,
-) -> bool {
-    let mut all_satisfied = true;
+) -> ConstraintOutcome {
+    let mut violated = false;
+    let mut indeterminate_count: usize = 0;
     for entry in results {
         let status = match entry.satisfaction {
             Satisfaction::Satisfied => "OK",
             Satisfaction::Violated => {
-                all_satisfied = false;
+                violated = true;
                 "VIOLATED"
             }
-            // Indeterminate does not set all_satisfied=false — undef inputs
+            // Indeterminate does not count as violated — undef inputs
             // (auto params, partial evaluation) are not violations.
             // Undef propagates as quiet-NaN semantics.
-            Satisfaction::Indeterminate => "INDETERMINATE",
+            Satisfaction::Indeterminate => {
+                indeterminate_count += 1;
+                "INDETERMINATE"
+            }
         };
         let id_str = format!("{}", entry.id);
         let label = entry.label.as_deref().unwrap_or(&id_str);
         let _ = writeln!(out, "  {} {}", status, label);
     }
-    all_satisfied
+    if violated {
+        ConstraintOutcome::SomeViolated
+    } else if indeterminate_count > 0 {
+        ConstraintOutcome::SomeIndeterminate(indeterminate_count)
+    } else {
+        ConstraintOutcome::AllSatisfied
+    }
 }
 
 fn cmd_mcp_server(args: &[String]) -> ExitCode {
