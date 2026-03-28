@@ -13996,7 +13996,17 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-types/src/expr.rs",
+            "crates/reify-expr/tests/lambda_eval_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-types/src",
+            "crates/reify-expr/tests"
+          ]
+        }
       },
       {
         "id": 681,
@@ -14007,7 +14017,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-stdlib/src/lib.rs"
+          ],
+          "modules": [
+            "crates/reify-stdlib/src"
+          ]
+        }
       },
       {
         "id": 682,
