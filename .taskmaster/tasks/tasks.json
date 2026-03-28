@@ -13631,6 +13631,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 690,
+        "title": "Remove duplicate builder tests and move McpConfig test to claude_bridge_tests",
+        "description": "Task 591's builder migration left duplicate and misplaced tests:\n\n1. `builder_with_event_emitter_records_events` is byte-for-byte identical to the pre-existing `focus_entity_with_emitter_records_event` — remove the duplicate\n2. `builder_with_selection_matches_new_with_selection` is functionally identical to `get_selection_returns_selected_entity_from_arc` — remove the duplicate\n3. `mcp_config_struct_stores_fields` tests `claude_bridge::McpConfig` but lives in `mcp_context_tests.rs` — move to `claude_bridge_tests.rs`\n\n## Files to modify\n- gui/src-tauri/src/tests/mcp_context_tests.rs — remove duplicates, move McpConfig test\n- gui/src-tauri/src/tests/claude_bridge_tests.rs — receive McpConfig test",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -13643,7 +13654,7 @@
       ],
       "created": "2026-03-28T05:33:47.278Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-28T05:33:47.294Z"
+      "updated": "2026-03-28T05:33:52.421Z"
     }
   }
 }
