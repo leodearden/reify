@@ -12618,7 +12618,7 @@
         "description": "build.rs line 138 uses `env::var(\"OUT_DIR\").unwrap_or_else(|_| \".\".to_string())` which silently falls back to writing grammar_hash.stamp to the source tree root when OUT_DIR is unset. Cargo always sets OUT_DIR, so the fallback is dead code that could silently pollute the source tree. Change to `.expect(\"OUT_DIR must be set by cargo\")` to make the contract explicit.",
         "details": "File: tree-sitter-reify/build.rs:138. Simple one-line fix. Also update the corresponding test duplicate in tests/build_logic_tests.rs.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -12630,7 +12630,8 @@
           "modules": [
             "tree-sitter-reify"
           ]
-        }
+        },
+        "updatedAt": "2026-03-28T19:52:28.035Z"
       },
       {
         "id": "609",
@@ -15402,7 +15403,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T19:52:25.918Z",
+      "lastModified": "2026-03-28T19:52:28.035Z",
       "taskCount": 747,
       "completedCount": 374,
       "tags": [
