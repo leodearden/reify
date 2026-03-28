@@ -481,6 +481,32 @@ mod tests {
     }
 
     #[test]
+    fn structure_names_counts_else_branch_members() {
+        let source = r#"structure S {
+    param cond : Bool = true
+    where cond {
+        param when_true : Scalar = 1mm
+    } else {
+        let fallback = 2
+    }
+}"#;
+        let ctx = AnalysisContext::new(source, &test_uri());
+        let structs = ctx.structure_names();
+        assert_eq!(structs.len(), 1);
+        let (_name, param_count, let_count, _constraint_count, _kind) = structs[0];
+        // Should count: cond + when_true = 2 params
+        assert_eq!(
+            param_count, 2,
+            "expected 2 params (cond, when_true), got {param_count}"
+        );
+        // Should count: fallback = 1 let (from else branch)
+        assert_eq!(
+            let_count, 1,
+            "expected 1 let (fallback in else branch), got {let_count}"
+        );
+    }
+
+    #[test]
     fn structure_names_counts_guarded_group_members() {
         // Bug: structure_names() only counts top-level members, missing those
         // inside where-blocks. This test expects the CORRECT (recursive) counts.
