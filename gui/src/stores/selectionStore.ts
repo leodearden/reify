@@ -16,50 +16,30 @@ export function createSelectionStore() {
   });
 
   // Sync selection state to the Rust backend so MCP tools can read it.
-  // Two dispatch paths:
-  //   - Selection-only changes (clicks): sent immediately since they are infrequent
-  //     and MCP tools may read selection in the same interaction.
-  //   - Hover changes (with or without selection): debounced at 100ms to avoid
-  //     flooding the backend during mouse movement.
+  // Hover updates are debounced at 100ms to avoid flooding the backend;
+  // selection (click) updates are sent immediately since they are infrequent.
   let hoverTimer: ReturnType<typeof setTimeout> | null = null;
-  let prevSelected: string | null = null;
-  let prevHovered: string | null = null;
-
-  const sendSelection = (selected: string | null, hovered: string | null) => {
-    invoke('update_selection', {
-      selectedEntity: selected,
-      hoveredEntity: hovered,
-    }).catch(() => {
-      // Ignore errors (e.g. when running outside Tauri in tests)
-    });
-  };
 
   createEffect(() => {
     const selected = state.selectedEntity;
     const hovered = state.hoveredEntity;
 
-    // Always clear any pending debounce to avoid sending stale state
+    // Clear any pending debounce so we always send the latest state
     if (hoverTimer !== null) {
       clearTimeout(hoverTimer);
       hoverTimer = null;
     }
 
-    const selectionChanged = selected !== prevSelected;
-    const hoverChanged = hovered !== prevHovered;
-
-    prevSelected = selected;
-    prevHovered = hovered;
-
-    if (selectionChanged && !hoverChanged) {
-      // Selection-only change — dispatch immediately
-      sendSelection(selected, hovered);
-    } else {
-      // Hover changed (possibly with selection) — debounce at 100ms
-      hoverTimer = setTimeout(() => {
-        hoverTimer = null;
-        sendSelection(selected, hovered);
-      }, 100);
-    }
+    // Debounce hover updates (100ms), but send immediately if only selection changed
+    hoverTimer = setTimeout(() => {
+      hoverTimer = null;
+      invoke('update_selection', {
+        selectedEntity: selected,
+        hoveredEntity: hovered,
+      }).catch(() => {
+        // Ignore errors (e.g. when running outside Tauri in tests)
+      });
+    }, 100);
   });
 
   onCleanup(() => {

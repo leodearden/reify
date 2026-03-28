@@ -113,14 +113,32 @@ type _NoChatMessage = import('../types').ChatMessage;
 // @ts-expect-error SessionStatus should not exist in types.ts (superseded by claudeStore.ts)
 type _NoSessionStatus = import('../types').SessionStatus;
 
-// --- ClaudeMessageContext is now a re-export of MessageContext ---
+// --- ClaudeMessageContext ↔ MessageContext structural sync guard ---
 //
-// ClaudeMessageContext (bridge.ts) was previously a standalone interface kept in
-// sync with MessageContext (claudeStore.ts) via an Equals<A,B> assertion here.
-// Since bridge.ts now re-exports MessageContext directly as ClaudeMessageContext
-// (`export type { MessageContext as ClaudeMessageContext }`), the structural sync
-// guard is trivially satisfied and the Pick+Equals assertion has been removed.
-// The compile-time assertion in claudeBridge.test.ts serves as the ongoing guard.
+// ClaudeMessageContext (in bridge.ts) is a standalone interface that must stay
+// structurally identical to Pick<MessageContext, 'selectedEntity' | 'diagnostics' | 'constraints' | 'currentFile' | 'attachedContexts'>.
+//
+// We use an Equals<A,B> type-level assertion rather than bidirectional assignability
+// because all five fields are optional — `{}` satisfies any all-optional type,
+// so assignability checks would pass even if the field names diverged entirely.
+// The Equals pattern compares exact structural identity and catches renames,
+// additions, and removals at compile time.
+import type { ClaudeMessageContext } from '../bridge';
+import type { MessageContext } from '../stores/claudeStore';
+
+type _ExpectedClaudeContext = Pick<MessageContext, 'selectedEntity' | 'diagnostics' | 'constraints' | 'currentFile' | 'attachedContexts'>;
+
+/** Exact structural equality check — evaluates to `true` only if A and B are identical types. */
+type Equals<A, B> =
+  (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;
+
+/** Constrained generic that causes a compile error when T is not `true`. */
+type AssertTrue<T extends true> = T;
+
+// Compile-time assertion: if ClaudeMessageContext diverges from _ExpectedClaudeContext,
+// Equals<> returns `false` and AssertTrue's constraint `T extends true` fails with
+// "Type 'false' does not satisfy the constraint 'true'".
+type _AssertClaudeContextSync = AssertTrue<Equals<ClaudeMessageContext, _ExpectedClaudeContext>>;
 
 // Suppress unused variable warnings — this file is only for type checking
 void mesh;

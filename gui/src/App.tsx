@@ -43,7 +43,6 @@ import {
 } from './navigation';
 import type { ExportFormat, FileData, SourceLocation, ConstraintData, ToastMessage } from './types';
 import { applyTheme } from './theme';
-import { errorMessage } from './utils/errorClassifier';
 import { loadPanelLayout, savePanelLayout } from './hooks/useLayoutPersistence';
 import styles from './App.module.css';
 
@@ -63,15 +62,19 @@ const App: Component = () => {
   });
   const claudeStore = createClaudeStore({
     onSend: (_id, text, context) => {
-      claudeSendMessage(text, context).catch((err) => {
-        const msg = errorMessage(err);
+      claudeSendMessage(text, {
+        selectedEntity: context.selectedEntity,
+        diagnostics: context.diagnostics,
+        constraints: context.constraints,
+      }).catch((err) => {
+        const msg = err instanceof Error ? err.message : String(err);
         claudeStore.addSystemMessage('ipc_error', `Failed to send message: ${msg}`);
       });
     },
     onAbort: () => {
       claudeAbort().catch((err) => {
         console.error('[claude] abort failed:', err);
-        showToast(`Abort failed: ${errorMessage(err)}`, 'error');
+        showToast(`Abort failed: ${err instanceof Error ? err.message : String(err)}`, 'error');
       });
     },
   });
@@ -157,7 +160,7 @@ const App: Component = () => {
         const guiState = await bridgeOpenFileEngine(path);
         engineStore.initFromState(guiState);
       } catch (err) {
-        const msg = errorMessage(err);
+        const msg = err instanceof Error ? err.message : String(err);
         console.error('Open file failed:', msg);
         showToast(`Open file failed: ${msg}`, 'error');
       }
@@ -169,7 +172,7 @@ const App: Component = () => {
         const file = editorStore.state.openFiles.find((f) => f.path === activeFile);
         if (file) {
           bridgeUpdateSource(file.path, file.content).catch((err) =>
-            showToast(`Re-evaluation failed: ${errorMessage(err)}`, 'error'),
+            showToast(`Re-evaluation failed: ${err instanceof Error ? err.message : String(err)}`, 'error'),
           );
         }
       }
@@ -286,7 +289,7 @@ const App: Component = () => {
 
   function handleSetParameter(cellId: string, value: string) {
     bridgeSetParameter(cellId, value).catch((err) =>
-      showToast(`Parameter update failed: ${errorMessage(err)}`, 'error'),
+      showToast(`Parameter update failed: ${err instanceof Error ? err.message : String(err)}`, 'error'),
     );
   }
 
@@ -301,7 +304,7 @@ const App: Component = () => {
     try {
       chosenPath = await pickSavePath(defaultName, format);
     } catch (err) {
-      showToast(`Could not open save dialog: ${errorMessage(err)}`, 'error');
+      showToast(`Could not open save dialog: ${err instanceof Error ? err.message : String(err)}`, 'error');
       return;
     }
 
@@ -315,7 +318,7 @@ const App: Component = () => {
       await bridgeExportGeometry(format, chosenPath);
       showToast(`Exported successfully as ${format.toUpperCase()}`, 'success');
     } catch (err) {
-      showToast(`Export failed: ${errorMessage(err)}`, 'error');
+      showToast(`Export failed: ${err instanceof Error ? err.message : String(err)}`, 'error');
     } finally {
       setExporting(false);
       setShowExportDialog(false);

@@ -32,10 +32,6 @@ const rules: ErrorRule[] = [
   },
 ];
 
-export function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
-
 export function classifyError(message: string): ClassifiedError {
   for (const rule of rules) {
     if (rule.pattern.test(message)) {

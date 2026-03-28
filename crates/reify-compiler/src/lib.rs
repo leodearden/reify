@@ -1667,7 +1667,23 @@ fn compile_expr_guarded(
 
                         let arg = &compiled_args[0];
                         if let CompiledExprKind::ValueRef(cell_id) = &arg.kind {
-                            return CompiledExpr::determinacy_predicate(kind, cell_id.clone());
+                            //   [0] Literal, [1] ValueRef, [2] BinOp, [3] UnOp,
+                            //   [4] FunctionCall, [5] Conditional, [7] Lambda,
+                            //   [8] ListLiteral, [9] SetLiteral, [10] MapLiteral,
+                            //   [11] IndexAccess, [12] Quantifier, [14] OptionSome,
+                            //   [15] OptionNone, [16] MetaAccess
+                            const HASH_TAG_DETERMINACY_PRED: u8 = 17;
+                            let content_hash = ContentHash::of(&[HASH_TAG_DETERMINACY_PRED])
+                                .combine(ContentHash::of_str(&format!("{:?}", kind)))
+                                .combine(ContentHash::of_str(&format!("{}", cell_id)));
+                            return CompiledExpr {
+                                kind: CompiledExprKind::DeterminacyPredicate {
+                                    kind,
+                                    cell: cell_id.clone(),
+                                },
+                                result_type: Type::Bool,
+                                content_hash,
+                            };
                         } else {
                             diagnostics.push(
                                 Diagnostic::error(format!(

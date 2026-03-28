@@ -222,7 +222,6 @@ macro_rules! assert_value_approx {
 }
 
 /// Implementation function for `assert_value_approx!`. Not intended for direct use.
-#[doc(hidden)]
 pub fn assert_value_approx_impl(left: &Value, right: &Value, tol: f64, file: &str, line: u32) {
     fn check(left: &Value, right: &Value, tol: f64, path: &str) -> Result<(), String> {
         /// Guard: fail immediately if either f64 is NaN (NaN comparisons are always false,
@@ -365,7 +364,7 @@ pub fn vec3(x: f64, y: f64, z: f64) -> Value {
 /// Create a `Value::Vector` with three dimensionless `Real` components.
 ///
 /// Useful for unit normals, directions, and other dimensionless vectors in geometry tests.
-pub fn vec3_dimensionless(x: f64, y: f64, z: f64) -> Value {
+pub fn vec3_unit(x: f64, y: f64, z: f64) -> Value {
     Value::Vector(vec![Value::Real(x), Value::Real(y), Value::Real(z)])
 }
 
@@ -914,7 +913,7 @@ mod tests {
         assert_eq!(map.get("Velocity"), Some(&velocity_type));
     }
 
-    // step-1: failing tests for point3/vec3/vec3_dimensionless/matrix3x3 constructors
+    // step-1: failing tests for point3/vec3/vec3_unit/matrix3x3 constructors
     #[test]
     fn point3_creates_value_point_with_length_components() {
         let p = point3(1.0, 2.0, 3.0);
@@ -985,8 +984,8 @@ mod tests {
     }
 
     #[test]
-    fn vec3_dimensionless_creates_value_vector_with_real_components() {
-        let v = vec3_dimensionless(1.0, 0.0, 0.0);
+    fn vec3_unit_creates_value_vector_with_real_components() {
+        let v = vec3_unit(1.0, 0.0, 0.0);
         match v {
             Value::Vector(items) => {
                 assert_eq!(items.len(), 3);

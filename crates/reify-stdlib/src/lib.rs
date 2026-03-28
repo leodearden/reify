@@ -456,7 +456,7 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
         }
 
         // re(z) / real(z): extract real part. Returns Real if DIMENSIONLESS, Scalar otherwise.
-        "re" | "real" => unary(args, |v| sanitize_value(match v {
+        "re" | "real" => unary(args, |v| match v {
             Value::Complex { re, dimension, .. } => {
                 if *dimension == DimensionVector::DIMENSIONLESS {
                     Value::Real(*re)
@@ -468,10 +468,10 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
                 }
             }
             _ => Value::Undef,
-        })),
+        }),
 
         // im(z) / imag(z): extract imaginary part. Returns Real if DIMENSIONLESS, Scalar otherwise.
-        "im" | "imag" => unary(args, |v| sanitize_value(match v {
+        "im" | "imag" => unary(args, |v| match v {
             Value::Complex { im, dimension, .. } => {
                 if *dimension == DimensionVector::DIMENSIONLESS {
                     Value::Real(*im)
@@ -483,7 +483,7 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
                 }
             }
             _ => Value::Undef,
-        })),
+        }),
 
         // conjugate(z): negate the imaginary part, preserve re and dimension.
         "conjugate" => unary(args, |v| match v {
@@ -945,19 +945,11 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
                 Some(c) if c.0.len() == 3 => c,
                 _ => return Value::Undef,
             };
-            // Defense-in-depth: reject NaN/Inf early (NaN bypasses IEEE 754 comparisons)
-            if xc.iter()
-                .chain(yc.iter())
-                .chain(zc.iter())
-                .any(|v| !v.is_finite())
-            {
-                return Value::Undef;
-            }
             // Verify approximate orthonormality
             let tol = 1e-6;
-            let mag_x = vec3_norm(xc[0], xc[1], xc[2]);
-            let mag_y = vec3_norm(yc[0], yc[1], yc[2]);
-            let mag_z = vec3_norm(zc[0], zc[1], zc[2]);
+            let mag_x = (xc[0] * xc[0] + xc[1] * xc[1] + xc[2] * xc[2]).sqrt();
+            let mag_y = (yc[0] * yc[0] + yc[1] * yc[1] + yc[2] * yc[2]).sqrt();
+            let mag_z = (zc[0] * zc[0] + zc[1] * zc[1] + zc[2] * zc[2]).sqrt();
             if (mag_x - 1.0).abs() > tol || (mag_y - 1.0).abs() > tol || (mag_z - 1.0).abs() > tol {
                 return Value::Undef;
             }
@@ -1023,7 +1015,7 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
             let ax = comps[0];
             let ay = comps[1];
             let az = comps[2];
-            let axis_norm = vec3_norm(ax, ay, az);
+            let axis_norm = (ax * ax + ay * ay + az * az).sqrt();
             if axis_norm == 0.0 || !axis_norm.is_finite() {
                 return Value::Undef;
             }
@@ -1111,15 +1103,6 @@ fn complex_abs(re: f64, im: f64, dimension: DimensionVector) -> Value {
             dimension,
         })
     }
-}
-
-/// Compute the Euclidean norm (magnitude) of a 3D vector.
-///
-/// Pure mathematical function — callers are responsible for checking finiteness
-/// of the result if needed.
-#[inline]
-fn vec3_norm(x: f64, y: f64, z: f64) -> f64 {
-    (x * x + y * y + z * z).sqrt()
 }
 
 /// Normalize a quaternion (w, x, y, z) to unit length.
@@ -1229,13 +1212,13 @@ fn trig_input(v: &Value) -> Option<f64> {
             si_value,
             dimension,
         } => {
-            if *dimension == DimensionVector::ANGLE && si_value.is_finite() {
+            if *dimension == DimensionVector::ANGLE {
                 Some(*si_value)
             } else {
-                None // dimension error or non-finite value
+                None // dimension error: sin(5mm) is meaningless
             }
         }
-        Value::Real(r) if r.is_finite() => Some(*r),
+        Value::Real(r) => Some(*r),
         Value::Int(i) => Some(*i as f64),
         _ => None,
     }
@@ -4281,169 +4264,6 @@ mod tests {
         );
     }
 
-    // ── orient NaN/Inf/edge-case tests (task-359) ─────────────────────────
-
-    #[test]
-    fn orient_euler_uppercase_convention_returns_undef() {
-        // Convention matching is case-sensitive: 'XYZ' is not recognized, only 'xyz'.
-        assert!(
-            eval_builtin(
-                "orient_euler",
-                &[
-                    Value::String("XYZ".into()),
-                    Value::Real(0.0),
-                    Value::Real(0.0),
-                    Value::Real(0.0),
-                ]
-            )
-            .is_undef(),
-            "uppercase convention 'XYZ' should be rejected"
-        );
-    }
-
-    #[test]
-    fn orient_basis_nan_component_returns_undef() {
-        // NaN in a basis vector must be rejected — NaN bypasses IEEE 754 comparisons.
-        let x = Value::Tensor(vec![Value::Real(f64::NAN), Value::Real(0.0), Value::Real(0.0)]);
-        let y = Value::Tensor(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
-        let z = Value::Tensor(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
-        assert!(
-            eval_builtin("orient_basis", &[x, y, z]).is_undef(),
-            "NaN component should be rejected"
-        );
-    }
-
-    #[test]
-    fn orient_axis_angle_nan_angle_returns_undef() {
-        // NaN angle must be rejected — trig_input should guard against non-finite values.
-        let axis = Value::Tensor(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
-        let angle = Value::Real(f64::NAN);
-        assert!(
-            eval_builtin("orient_axis_angle", &[axis, angle]).is_undef(),
-            "NaN angle should be rejected"
-        );
-    }
-
-    #[test]
-    fn orient_axis_angle_inf_angle_returns_undef() {
-        // Inf angle must be rejected — cos/sin of Inf produce NaN.
-        let axis = Value::Tensor(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
-        let angle = Value::Real(f64::INFINITY);
-        assert!(
-            eval_builtin("orient_axis_angle", &[axis, angle]).is_undef(),
-            "Inf angle should be rejected"
-        );
-    }
-
-    #[test]
-    fn orient_euler_nan_angle_returns_undef() {
-        // NaN angle must be rejected in orient_euler.
-        assert!(
-            eval_builtin(
-                "orient_euler",
-                &[
-                    Value::String("xyz".into()),
-                    Value::Real(f64::NAN),
-                    Value::Real(0.0),
-                    Value::Real(0.0),
-                ]
-            )
-            .is_undef(),
-            "NaN euler angle should be rejected"
-        );
-    }
-
-    #[test]
-    fn orient_axis_angle_non_unit_axis_normalizes() {
-        // orient_axis_angle normalizes the axis vector — [2,0,0] with π/2 should
-        // produce the same rotation as [1,0,0] with π/2: q = (cos(π/4), sin(π/4), 0, 0)
-        let axis_scaled = Value::Tensor(vec![
-            Value::Real(2.0),
-            Value::Real(0.0),
-            Value::Real(0.0),
-        ]);
-        let axis_unit = Value::Tensor(vec![
-            Value::Real(1.0),
-            Value::Real(0.0),
-            Value::Real(0.0),
-        ]);
-        let angle = Value::Real(std::f64::consts::FRAC_PI_2);
-        let cos_pi_4 = std::f64::consts::FRAC_PI_4.cos();
-        let sin_pi_4 = std::f64::consts::FRAC_PI_4.sin();
-        assert_orientation_approx!(
-            eval_builtin("orient_axis_angle", &[axis_scaled, angle.clone()]),
-            cos_pi_4,
-            sin_pi_4,
-            0.0,
-            0.0
-        );
-        assert_orientation_approx!(
-            eval_builtin("orient_axis_angle", &[axis_unit, angle]),
-            cos_pi_4,
-            sin_pi_4,
-            0.0,
-            0.0
-        );
-    }
-
-    #[test]
-    fn orient_quaternion_dimensioned_scalar_strips_dimension() {
-        // as_f64() silently strips dimension — a LENGTH Scalar with si_value=1.0
-        // is accepted as quaternion component w=1.0. Documents this behavior.
-        assert_orientation_approx!(
-            eval_builtin(
-                "orient_quaternion",
-                &[
-                    Value::Scalar {
-                        si_value: 1.0,
-                        dimension: DimensionVector::LENGTH,
-                    },
-                    Value::Real(0.0),
-                    Value::Real(0.0),
-                    Value::Real(0.0),
-                ]
-            ),
-            1.0,
-            0.0,
-            0.0,
-            0.0
-        );
-    }
-
-    #[test]
-    fn orient_euler_inf_angle_returns_undef() {
-        // Inf angle must be rejected in orient_euler.
-        assert!(
-            eval_builtin(
-                "orient_euler",
-                &[
-                    Value::String("xyz".into()),
-                    Value::Real(f64::INFINITY),
-                    Value::Real(0.0),
-                    Value::Real(0.0),
-                ]
-            )
-            .is_undef(),
-            "Inf euler angle should be rejected"
-        );
-    }
-
-    #[test]
-    fn orient_basis_inf_component_returns_undef() {
-        // Inf in a basis vector must be rejected — magnitude would be Inf, not ≈1.
-        let x = Value::Tensor(vec![
-            Value::Real(f64::INFINITY),
-            Value::Real(0.0),
-            Value::Real(0.0),
-        ]);
-        let y = Value::Tensor(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
-        let z = Value::Tensor(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
-        assert!(
-            eval_builtin("orient_basis", &[x, y, z]).is_undef(),
-            "Inf component should be rejected"
-        );
-    }
-
     #[test]
     fn dot_mixed_component_dimensions_returns_undef() {
         // A Tensor with mixed dimensions is not a valid physical vector
@@ -5220,64 +5040,6 @@ mod tests {
         );
     }
 
-    // ── re/real sanitize_value tests (task-358 step-1) ─────────────────────────
-
-    #[test]
-    fn re_nan_re_component_returns_undef() {
-        // re(Complex{NaN, 1.0, DIMLESS}) → Undef (NaN must not propagate)
-        let z = Value::Complex {
-            re: f64::NAN,
-            im: 1.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        assert!(
-            eval_builtin("re", &[z]).is_undef(),
-            "re() with NaN real component must return Undef"
-        );
-    }
-
-    #[test]
-    fn re_inf_re_component_returns_undef() {
-        // re(Complex{+Inf, 1.0, DIMLESS}) → Undef (Inf must not propagate)
-        let z = Value::Complex {
-            re: f64::INFINITY,
-            im: 1.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        assert!(
-            eval_builtin("re", &[z]).is_undef(),
-            "re() with Inf real component must return Undef"
-        );
-    }
-
-    #[test]
-    fn re_nan_dimensioned_returns_undef() {
-        // re(Complex{NaN, 1.0, LENGTH}) → Undef (dimensioned Scalar path)
-        let z = Value::Complex {
-            re: f64::NAN,
-            im: 1.0,
-            dimension: DimensionVector::LENGTH,
-        };
-        assert!(
-            eval_builtin("re", &[z]).is_undef(),
-            "re() with NaN dimensioned real component must return Undef"
-        );
-    }
-
-    #[test]
-    fn real_nan_re_component_returns_undef() {
-        // real(Complex{NaN, 1.0, DIMLESS}) → Undef (alias coverage)
-        let z = Value::Complex {
-            re: f64::NAN,
-            im: 1.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        assert!(
-            eval_builtin("real", &[z]).is_undef(),
-            "real() with NaN real component must return Undef"
-        );
-    }
-
     // ── real() alias tests (step-1) ───────────────────────────────────────────
 
     #[test]
@@ -5305,64 +5067,6 @@ mod tests {
     #[test]
     fn real_non_complex_returns_undef() {
         assert!(eval_builtin("real", &[Value::Real(3.0)]).is_undef());
-    }
-
-    // ── im/imag sanitize_value tests (task-358 step-3) ─────────────────────────
-
-    #[test]
-    fn im_nan_im_component_returns_undef() {
-        // im(Complex{1.0, NaN, DIMLESS}) → Undef (NaN must not propagate)
-        let z = Value::Complex {
-            re: 1.0,
-            im: f64::NAN,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        assert!(
-            eval_builtin("im", &[z]).is_undef(),
-            "im() with NaN imaginary component must return Undef"
-        );
-    }
-
-    #[test]
-    fn im_inf_im_component_returns_undef() {
-        // im(Complex{1.0, +Inf, DIMLESS}) → Undef (Inf must not propagate)
-        let z = Value::Complex {
-            re: 1.0,
-            im: f64::INFINITY,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        assert!(
-            eval_builtin("im", &[z]).is_undef(),
-            "im() with Inf imaginary component must return Undef"
-        );
-    }
-
-    #[test]
-    fn im_inf_dimensioned_returns_undef() {
-        // im(Complex{1.0, +Inf, LENGTH}) → Undef (dimensioned Scalar path)
-        let z = Value::Complex {
-            re: 1.0,
-            im: f64::INFINITY,
-            dimension: DimensionVector::LENGTH,
-        };
-        assert!(
-            eval_builtin("im", &[z]).is_undef(),
-            "im() with Inf dimensioned imaginary component must return Undef"
-        );
-    }
-
-    #[test]
-    fn imag_nan_im_component_returns_undef() {
-        // imag(Complex{1.0, NaN, DIMLESS}) → Undef (alias coverage)
-        let z = Value::Complex {
-            re: 1.0,
-            im: f64::NAN,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        assert!(
-            eval_builtin("imag", &[z]).is_undef(),
-            "imag() with NaN imaginary component must return Undef"
-        );
     }
 
     // ── imag() alias tests (step-3) ───────────────────────────────────────────

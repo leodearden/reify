@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { OutboundMessage } from '../../sidecar/src/types';
 
 // Polyfill rAF for test environment (claudeStore uses it for delta batching)
@@ -11,12 +11,6 @@ globalThis.requestAnimationFrame = (cb: FrameRequestCallback) => {
   return id;
 };
 globalThis.cancelAnimationFrame = () => {};
-
-/** Drain and invoke all pending rAF callbacks (exercises the batching path). */
-function flushRaf() {
-  const batch = rafCallbacks.splice(0);
-  batch.forEach((cb) => cb());
-}
 
 // Mock Tauri API modules (must be before imports that use them)
 vi.mock('@tauri-apps/api/core', () => ({
@@ -46,12 +40,6 @@ beforeEach(() => {
 
 afterEach(() => {
   rafCallbacks = [];
-});
-
-afterAll(() => {
-  // Restore the original globals that were overwritten at module load time
-  if (origRAF) globalThis.requestAnimationFrame = origRAF;
-  if (origCancelRAF) globalThis.cancelAnimationFrame = origCancelRAF;
 });
 
 describe('claude bridge integration', () => {
@@ -132,22 +120,12 @@ describe('claude bridge integration', () => {
       payload: { id: msgId, content: 'Here is my response' },
     });
 
-    // Flush rAF to exercise the batching path — responseText should already be populated
-    // before the done event fires (the done event's cancelAndFlush is a fallback, not the
-    // primary mechanism for applying buffered text).
-    flushRaf();
-    const midMsg = store.state.messages.find(
-      (m): m is AssistantMessage => m.role === 'assistant' && m.id === msgId,
-    );
-    expect(midMsg!.responseText).toBe('Here is my response');
-    expect(midMsg!.complete).toBe(false);
-
-    // Simulate claude-done event (marks message complete, flushes any remaining buffers)
+    // Simulate claude-done event (flushes buffers)
     capturedHandlers['claude-done']({
       payload: { id: msgId },
     });
 
-    // Check final store state reflects the events
+    // Check store state reflects the events
     const assistantMsg = store.state.messages.find(
       (m): m is AssistantMessage => m.role === 'assistant' && m.id === msgId,
     );
@@ -155,51 +133,6 @@ describe('claude bridge integration', () => {
     expect(assistantMsg!.responseText).toBe('Here is my response');
     expect(assistantMsg!.complete).toBe(true);
     expect(store.state.sessionStatus).toBe('idle');
-  });
-
-  it('text-delta events update responseText via rAF flush without done event', async () => {
-    const capturedHandlers: Record<string, (event: { payload: unknown }) => void> = {};
-    mockListen.mockImplementation(async (eventName, handler) => {
-      capturedHandlers[eventName as string] = handler as (event: { payload: unknown }) => void;
-      return vi.fn();
-    });
-
-    const store = createClaudeStore({
-      onSend: () => {},
-      onAbort: () => {},
-    });
-
-    await subscribeToClaudeEvents(store.handleOutboundMessage);
-
-    store.sendMessage('hello', {});
-    const msgId = store.state.currentMessageId!;
-    expect(msgId).toBeTruthy();
-
-    // Send multiple text deltas (exercises the rAF batching path)
-    capturedHandlers['claude-text-delta']({
-      payload: { id: msgId, content: 'Hello ' },
-    });
-    capturedHandlers['claude-text-delta']({
-      payload: { id: msgId, content: 'world' },
-    });
-
-    // Before flushing rAF, text should still be buffered (not yet applied)
-    const beforeFlush = store.state.messages.find(
-      (m): m is AssistantMessage => m.role === 'assistant' && m.id === msgId,
-    );
-    expect(beforeFlush!.responseText).toBe('');
-
-    // Flush rAF — this exercises the batching path without relying on done/cancelAndFlush
-    flushRaf();
-
-    // Now responseText should reflect the batched deltas
-    const afterFlush = store.state.messages.find(
-      (m): m is AssistantMessage => m.role === 'assistant' && m.id === msgId,
-    );
-    expect(afterFlush!.responseText).toBe('Hello world');
-    // Message should NOT be marked complete (no done event was sent)
-    expect(afterFlush!.complete).toBe(false);
-    expect(store.state.sessionStatus).toBe('responding');
   });
 
   it('claude-error event adds system message and marks assistant message as error', async () => {

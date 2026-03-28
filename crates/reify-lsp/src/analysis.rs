@@ -29,8 +29,6 @@ pub struct MemberInfo<'a> {
     pub span: SourceSpan,
     /// Doc comment text from the parsed AST, if present.
     pub doc: Option<&'a str>,
-    /// The name of the owning structure/occurrence declaration.
-    pub decl_name: &'a str,
 }
 
 /// Shared analysis context that runs the parse → compile → check pipeline once
@@ -61,13 +59,10 @@ impl AnalysisContext {
     /// Find a member declaration by name, returning combined info from
     /// parsed (span) and compiled (kind, type) modules.
     ///
-    /// When `structure` is `Some`, only the named declaration is searched.
-    /// When `None`, returns the first match across all declarations.
-    ///
     /// Returns `None` if no value cell with that name exists.
-    pub fn find_member_decl(&self, name: &str, structure: Option<&str>) -> Option<MemberInfo<'_>> {
+    pub fn find_member_decl(&self, name: &str) -> Option<MemberInfo<'_>> {
         // Get the span, doc, and owning declaration name from the parsed module
-        let (span, doc, decl_name) = self.find_parsed_member_span_and_doc(name, structure)?;
+        let (span, doc, decl_name) = self.find_parsed_member_span_and_doc(name)?;
 
         // Find type info from the compiled module, scoped to the same declaration
         for template in &self.compiled.templates {
@@ -82,7 +77,6 @@ impl AnalysisContext {
                         cell_type: &vc.cell_type,
                         span,
                         doc,
-                        decl_name,
                     });
                 }
             }
@@ -96,7 +90,6 @@ impl AnalysisContext {
                             cell_type: &vc.cell_type,
                             span,
                             doc,
-                            decl_name,
                         });
                     }
                 }
@@ -108,13 +101,9 @@ impl AnalysisContext {
 
     /// Find the source span, doc comment, and owning declaration name for a
     /// named member in the parsed module.
-    ///
-    /// When `structure` is `Some`, only the declaration with that name is
-    /// searched; otherwise all declarations are searched in order.
     fn find_parsed_member_span_and_doc(
         &self,
         name: &str,
-        structure: Option<&str>,
     ) -> Option<(SourceSpan, Option<&str>, &str)> {
         for decl in &self.parsed.declarations {
             let (members, decl_name) = match decl {
@@ -122,11 +111,6 @@ impl AnalysisContext {
                 reify_syntax::Declaration::Occurrence(o) => (&o.members, o.name.as_str()),
                 _ => continue,
             };
-            if let Some(target) = structure
-                && decl_name != target
-            {
-                continue;
-            }
             if let Some((span, doc)) = find_named_member_span(members, name) {
                 return Some((span, doc, decl_name));
             }
@@ -155,25 +139,6 @@ impl AnalysisContext {
             }
         }
         None
-    }
-
-    /// Return value cell members for a specific structure/occurrence: (name, kind, type).
-    pub fn member_names_for_structure(&self, name: &str) -> Vec<(&str, ValueCellKind, &Type)> {
-        let mut result = Vec::new();
-        for template in &self.compiled.templates {
-            if template.name != name {
-                continue;
-            }
-            for vc in &template.value_cells {
-                result.push((vc.id.member.as_str(), vc.kind, &vc.cell_type));
-            }
-            for group in &template.guarded_groups {
-                for vc in group.members.iter().chain(group.else_members.iter()) {
-                    result.push((vc.id.member.as_str(), vc.kind, &vc.cell_type));
-                }
-            }
-        }
-        result
     }
 
     /// Return all value cell members: (name, kind, type).
@@ -207,7 +172,18 @@ impl AnalysisContext {
                 }
                 _ => continue,
             };
-            let (param_count, let_count, constraint_count) = count_members_recursive(members);
+            let param_count = members
+                .iter()
+                .filter(|m| matches!(m, reify_syntax::MemberDecl::Param(_)))
+                .count();
+            let let_count = members
+                .iter()
+                .filter(|m| matches!(m, reify_syntax::MemberDecl::Let(_)))
+                .count();
+            let constraint_count = members
+                .iter()
+                .filter(|m| matches!(m, reify_syntax::MemberDecl::Constraint(_)))
+                .count();
             result.push((name, param_count, let_count, constraint_count, kind));
         }
         result
@@ -217,23 +193,6 @@ impl AnalysisContext {
     pub fn get_value(&self, entity: &str, member: &str) -> Option<&Value> {
         let id = ValueCellId::new(entity, member);
         self.check_result.values.get(&id)
-    }
-
-    /// Return the name of the structure/occurrence whose span contains `offset`,
-    /// or `None` if the offset is outside all declarations.
-    pub fn enclosing_structure_name_at(&self, offset: usize) -> Option<&str> {
-        let offset_u32 = offset as u32;
-        for decl in &self.parsed.declarations {
-            let (decl_name, decl_span) = match decl {
-                reify_syntax::Declaration::Structure(s) => (s.name.as_str(), s.span),
-                reify_syntax::Declaration::Occurrence(o) => (o.name.as_str(), o.span),
-                _ => continue,
-            };
-            if offset_u32 >= decl_span.start && offset_u32 < decl_span.end {
-                return Some(decl_name);
-            }
-        }
-        None
     }
 }
 
@@ -266,35 +225,6 @@ pub fn find_named_member_span<'a>(
         }
     }
     None
-}
-
-/// Recursively count Param, Let, and Constraint members, including those
-/// nested inside `GuardedGroup.members` and `GuardedGroup.else_members`.
-///
-/// Returns `(param_count, let_count, constraint_count)`.
-pub fn count_members_recursive(members: &[reify_syntax::MemberDecl]) -> (usize, usize, usize) {
-    let mut params = 0;
-    let mut lets = 0;
-    let mut constraints = 0;
-    for member in members {
-        match member {
-            reify_syntax::MemberDecl::Param(_) => params += 1,
-            reify_syntax::MemberDecl::Let(_) => lets += 1,
-            reify_syntax::MemberDecl::Constraint(_) => constraints += 1,
-            reify_syntax::MemberDecl::GuardedGroup(g) => {
-                let (p, l, c) = count_members_recursive(&g.members);
-                params += p;
-                lets += l;
-                constraints += c;
-                let (p, l, c) = count_members_recursive(&g.else_members);
-                params += p;
-                lets += l;
-                constraints += c;
-            }
-            _ => {}
-        }
-    }
-    (params, lets, constraints)
 }
 
 /// Format a `Value` for user-friendly display in hover tooltips.
@@ -359,7 +289,7 @@ mod tests {
     fn find_member_decl_width_is_param() {
         let source = reify_test_support::bracket_source();
         let ctx = AnalysisContext::new(source, &test_uri());
-        let info = ctx.find_member_decl("width", None).expect("width should exist");
+        let info = ctx.find_member_decl("width").expect("width should exist");
         assert_eq!(info.name, "width");
         assert_eq!(info.kind, ValueCellKind::Param);
         assert_eq!(*info.cell_type, Type::length());
@@ -377,7 +307,7 @@ mod tests {
     fn find_member_decl_volume_is_let() {
         let source = reify_test_support::bracket_source();
         let ctx = AnalysisContext::new(source, &test_uri());
-        let info = ctx.find_member_decl("volume", None).expect("volume should exist");
+        let info = ctx.find_member_decl("volume").expect("volume should exist");
         assert_eq!(info.name, "volume");
         assert_eq!(info.kind, ValueCellKind::Let);
         // Volume is width*height*thickness → Scalar with VOLUME dimension
@@ -389,7 +319,7 @@ mod tests {
         let source = "occurrence def Joint {\n    param diameter: Scalar = 10mm\n}";
         let ctx = AnalysisContext::new(source, &test_uri());
         let info = ctx
-            .find_member_decl("diameter", None)
+            .find_member_decl("diameter")
             .expect("diameter should exist in occurrence");
         assert_eq!(info.name, "diameter");
         assert_eq!(info.kind, ValueCellKind::Param);
@@ -399,7 +329,7 @@ mod tests {
     fn find_member_decl_nonexistent_returns_none() {
         let source = reify_test_support::bracket_source();
         let ctx = AnalysisContext::new(source, &test_uri());
-        assert!(ctx.find_member_decl("nonexistent", None).is_none());
+        assert!(ctx.find_member_decl("nonexistent").is_none());
     }
 
     // --- member_names tests ---
@@ -422,56 +352,6 @@ mod tests {
         assert!(names.contains(&"fillet_radius"));
         assert!(names.contains(&"hole_diameter"));
         assert!(names.contains(&"volume"));
-    }
-
-    // --- member_names guarded-group regression tests ---
-
-    #[test]
-    fn member_names_includes_guarded_group_members() {
-        let source = r#"structure S {
-    param cond : Bool = true
-    where cond {
-        param guarded_x : Scalar = 5mm
-    }
-}"#;
-        let ctx = AnalysisContext::new(source, &test_uri());
-        let members = ctx.member_names();
-        let names: Vec<&str> = members.iter().map(|(n, _, _)| *n).collect();
-        assert!(
-            names.contains(&"cond"),
-            "should include top-level param 'cond', got: {names:?}"
-        );
-        assert!(
-            names.contains(&"guarded_x"),
-            "should include guarded-group param 'guarded_x', got: {names:?}"
-        );
-    }
-
-    #[test]
-    fn member_names_includes_else_block_members() {
-        let source = r#"structure S {
-    param cond : Bool = true
-    where cond {
-        param when_true : Scalar = 1mm
-    } else {
-        param when_false : Scalar = 2mm
-    }
-}"#;
-        let ctx = AnalysisContext::new(source, &test_uri());
-        let members = ctx.member_names();
-        let names: Vec<&str> = members.iter().map(|(n, _, _)| *n).collect();
-        assert!(
-            names.contains(&"cond"),
-            "should include top-level param 'cond', got: {names:?}"
-        );
-        assert!(
-            names.contains(&"when_true"),
-            "should include where-branch param 'when_true', got: {names:?}"
-        );
-        assert!(
-            names.contains(&"when_false"),
-            "should include else-branch param 'when_false', got: {names:?}"
-        );
     }
 
     // --- structure_names tests ---
@@ -508,89 +388,6 @@ mod tests {
         assert_eq!(p1, 1);
         assert_eq!(l1, 1);
         assert_eq!(c1, 1);
-    }
-
-    #[test]
-    fn structure_names_counts_nested_where_blocks() {
-        let source = r#"structure S {
-    param a : Bool = true
-    param b : Bool = true
-    where a {
-        where b {
-            param deep : Scalar = 1mm
-        }
-    }
-}"#;
-        let ctx = AnalysisContext::new(source, &test_uri());
-        let structs = ctx.structure_names();
-        assert_eq!(structs.len(), 1);
-        let (_name, param_count, _let_count, _constraint_count, _kind) = structs[0];
-        // Should count: a + b + deep = 3 params
-        assert_eq!(
-            param_count, 3,
-            "expected 3 params (a, b, deep), got {param_count}"
-        );
-    }
-
-    #[test]
-    fn structure_names_counts_else_branch_members() {
-        let source = r#"structure S {
-    param cond : Bool = true
-    where cond {
-        param when_true : Scalar = 1mm
-    } else {
-        let fallback = 2
-    }
-}"#;
-        let ctx = AnalysisContext::new(source, &test_uri());
-        let structs = ctx.structure_names();
-        assert_eq!(structs.len(), 1);
-        let (_name, param_count, let_count, _constraint_count, _kind) = structs[0];
-        // Should count: cond + when_true = 2 params
-        assert_eq!(
-            param_count, 2,
-            "expected 2 params (cond, when_true), got {param_count}"
-        );
-        // Should count: fallback = 1 let (from else branch)
-        assert_eq!(
-            let_count, 1,
-            "expected 1 let (fallback in else branch), got {let_count}"
-        );
-    }
-
-    #[test]
-    fn structure_names_counts_guarded_group_members() {
-        // Bug: structure_names() only counts top-level members, missing those
-        // inside where-blocks. This test expects the CORRECT (recursive) counts.
-        let source = r#"structure S {
-    param a : Bool = true
-    param b : Scalar = 1mm
-    where a {
-        param guarded_x : Scalar = 5mm
-        let guarded_y = 2
-    }
-    constraint b > 0mm
-}"#;
-        let ctx = AnalysisContext::new(source, &test_uri());
-        let structs = ctx.structure_names();
-        assert_eq!(structs.len(), 1);
-        let (name, param_count, let_count, constraint_count, _kind) = structs[0];
-        assert_eq!(name, "S");
-        // Should count: a + b + guarded_x = 3 params
-        assert_eq!(
-            param_count, 3,
-            "expected 3 params (a, b, guarded_x), got {param_count}"
-        );
-        // Should count: guarded_y = 1 let
-        assert_eq!(
-            let_count, 1,
-            "expected 1 let (guarded_y), got {let_count}"
-        );
-        // Should count: b > 0mm = 1 constraint
-        assert_eq!(
-            constraint_count, 1,
-            "expected 1 constraint, got {constraint_count}"
-        );
     }
 
     // --- get_value tests ---
@@ -645,7 +442,7 @@ mod tests {
     fn member_info_includes_doc_for_documented_param() {
         let source = "structure Bracket {\n    /// The width.\n    param width: Scalar = 80mm\n}";
         let ctx = AnalysisContext::new(source, &test_uri());
-        let info = ctx.find_member_decl("width", None).expect("width should exist");
+        let info = ctx.find_member_decl("width").expect("width should exist");
         assert_eq!(info.doc, Some("The width."));
     }
 
@@ -661,7 +458,7 @@ mod tests {
 }"#;
         let ctx = AnalysisContext::new(source, &test_uri());
         let info = ctx
-            .find_member_decl("guarded_x", None)
+            .find_member_decl("guarded_x")
             .expect("guarded_x inside where block should be found");
         assert_eq!(info.name, "guarded_x");
         assert_eq!(info.kind, ValueCellKind::Param);
@@ -680,7 +477,7 @@ mod tests {
 }"#;
         let ctx = AnalysisContext::new(source, &test_uri());
         let info = ctx
-            .find_member_decl("deep_x", None)
+            .find_member_decl("deep_x")
             .expect("deep_x inside nested where blocks should be found");
         assert_eq!(info.name, "deep_x");
         assert_eq!(info.kind, ValueCellKind::Param);
@@ -698,73 +495,10 @@ mod tests {
 }"#;
         let ctx = AnalysisContext::new(source, &test_uri());
         let info = ctx
-            .find_member_decl("fallback", None)
+            .find_member_decl("fallback")
             .expect("fallback inside else block should be found");
         assert_eq!(info.name, "fallback");
         assert_eq!(info.kind, ValueCellKind::Let);
-    }
-
-    // --- decl_name field tests ---
-
-    #[test]
-    fn find_member_decl_decl_name_populated() {
-        let source = "structure Foo {\n    param x: Scalar = 1mm\n}";
-        let ctx = AnalysisContext::new(source, &test_uri());
-        let info = ctx.find_member_decl("x", None).expect("x should exist");
-        assert_eq!(info.decl_name, "Foo");
-    }
-
-    // --- enclosing_structure_name_at tests ---
-
-    #[test]
-    fn enclosing_structure_name_at_inside_second() {
-        let source =
-            "structure A {\n    param x: Scalar = 5mm\n}\nstructure B {\n    param y: Bool = true\n}";
-        let ctx = AnalysisContext::new(source, &test_uri());
-        // Offset inside B: 'y' in "param y: Bool = true"
-        let b_y_offset = source.find("param y").unwrap() + 6;
-        assert_eq!(
-            ctx.enclosing_structure_name_at(b_y_offset),
-            Some("B"),
-            "offset inside B should return Some(\"B\")"
-        );
-        // Offset inside A: 'x' in "param x: Scalar = 5mm"
-        let a_x_offset = source.find("param x").unwrap() + 6;
-        assert_eq!(
-            ctx.enclosing_structure_name_at(a_x_offset),
-            Some("A"),
-            "offset inside A should return Some(\"A\")"
-        );
-        // Offset outside any structure (between A and B)
-        let between_offset = source.find("\nstructure B").unwrap();
-        assert_eq!(
-            ctx.enclosing_structure_name_at(between_offset),
-            None,
-            "offset between structures should return None"
-        );
-    }
-
-    #[test]
-    fn find_member_decl_scoped_to_second_structure() {
-        let source =
-            "structure A {\n    param x: Scalar = 5mm\n}\nstructure B {\n    param x: Bool = true\n}";
-        let ctx = AnalysisContext::new(source, &test_uri());
-        let info = ctx
-            .find_member_decl("x", Some("B"))
-            .expect("x should exist in B");
-        assert_eq!(
-            *info.cell_type,
-            Type::Bool,
-            "expected Bool type from structure B, got {:?}",
-            info.cell_type
-        );
-        assert_eq!(info.decl_name, "B");
-        // Span should be within B's byte range
-        let b_start = source.find("structure B").unwrap() as u32;
-        assert!(
-            info.span.start >= b_start,
-            "span should be within B's range"
-        );
     }
 
     // --- ambiguous member name regression tests ---
@@ -776,7 +510,7 @@ mod tests {
         let source =
             "structure A {\n    param x: Scalar = 5mm\n}\nstructure B {\n    param x: Bool = true\n}";
         let ctx = AnalysisContext::new(source, &test_uri());
-        let info = ctx.find_member_decl("x", None).expect("x should exist");
+        let info = ctx.find_member_decl("x").expect("x should exist");
         // Should return type from A (first match) — Scalar with LENGTH dimension
         assert!(
             matches!(info.cell_type, Type::Scalar { .. }),
@@ -799,32 +533,12 @@ mod tests {
         let source =
             "structure A {\n    param x: Scalar = 5mm\n}\nstructure B {\n    param x: Bool = true\n}";
         let ctx = AnalysisContext::new(source, &test_uri());
-        let info = ctx.find_member_decl("x", None).expect("x should exist");
+        let info = ctx.find_member_decl("x").expect("x should exist");
         assert_ne!(
             *info.cell_type,
             Type::Bool,
             "type should not leak from second declaration B"
         );
-    }
-
-    // --- member_names_for_structure tests ---
-
-    #[test]
-    fn member_names_for_structure_returns_scoped_members() {
-        let source =
-            "structure A {\n    param x: Scalar = 5mm\n}\nstructure B {\n    param y: Bool = true\n}";
-        let ctx = AnalysisContext::new(source, &test_uri());
-        let a_members = ctx.member_names_for_structure("A");
-        let a_names: Vec<&str> = a_members.iter().map(|(n, _, _)| *n).collect();
-        assert_eq!(a_names, vec!["x"], "A should only have 'x'");
-
-        let b_members = ctx.member_names_for_structure("B");
-        let b_names: Vec<&str> = b_members.iter().map(|(n, _, _)| *n).collect();
-        assert_eq!(b_names, vec!["y"], "B should only have 'y'");
-
-        // Non-existent structure returns empty
-        let empty = ctx.member_names_for_structure("C");
-        assert!(empty.is_empty(), "non-existent structure should return empty");
     }
 
     // --- format_value tests ---

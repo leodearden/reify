@@ -139,15 +139,6 @@ impl ConcurrentEvalAdapter {
         self.read_values().clone()
     }
 
-    /// Get a snapshot of the current snapshot_values (for testing/inspection).
-    ///
-    /// Recovers gracefully from poisoned locks via `read_snapshot_values()` helper.
-    pub fn snapshot_values(
-        &self,
-    ) -> PersistentMap<ValueCellId, (Value, DeterminacyState)> {
-        self.read_snapshot_values().clone()
-    }
-
     /// Take the collected results (for testing/inspection).
     ///
     /// Recovers gracefully from poisoned locks via `lock_results()` helper.

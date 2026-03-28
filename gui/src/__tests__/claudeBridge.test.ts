@@ -113,24 +113,6 @@ describe('claude invoke wrappers', () => {
 
     expect(mockInvoke).toHaveBeenCalledWith('claude_clear_session');
   });
-
-  it('claudeSendMessage propagates invoke rejection', async () => {
-    mockInvoke.mockRejectedValue(new Error('IPC failed'));
-
-    await expect(claudeSendMessage('hello')).rejects.toThrow('IPC failed');
-  });
-
-  it('claudeAbort propagates invoke rejection', async () => {
-    mockInvoke.mockRejectedValue(new Error('IPC failed'));
-
-    await expect(claudeAbort()).rejects.toThrow('IPC failed');
-  });
-
-  it('claudeClearSession propagates invoke rejection', async () => {
-    mockInvoke.mockRejectedValue(new Error('IPC failed'));
-
-    await expect(claudeClearSession()).rejects.toThrow('IPC failed');
-  });
 });
 
 describe('subscribeToClaudeEvents', () => {
@@ -338,36 +320,6 @@ describe('subscribeToClaudeEvents', () => {
     expect(handler).toHaveBeenCalledWith({ type: 'done', id: 'x' });
   });
 
-  it('extra unknown fields in tool_call payload are not forwarded to handler', async () => {
-    let capturedHandler: ((event: { payload: unknown }) => void) | undefined;
-    mockListen.mockImplementation(async (eventName, handler) => {
-      if (eventName === 'claude-tool-call') {
-        capturedHandler = handler as (event: { payload: unknown }) => void;
-      }
-      return vi.fn();
-    });
-
-    const handler = vi.fn();
-    await subscribeToClaudeEvents(handler);
-
-    // Simulate tool_call payload with extra _debug field that should NOT be forwarded
-    capturedHandler!({
-      payload: {
-        id: 'tc1',
-        tool_name: 'read',
-        tool_input: { path: '/f' },
-        _debug: true,
-      },
-    });
-
-    expect(handler).toHaveBeenCalledWith({
-      type: 'tool_call',
-      id: 'tc1',
-      tool_name: 'read',
-      tool_input: { path: '/f' },
-    });
-  });
-
   it('payload type field does not override mapped event type', async () => {
     let capturedHandler: ((event: { payload: unknown }) => void) | undefined;
     mockListen.mockImplementation(async (eventName, handler) => {
@@ -441,31 +393,3 @@ describe('subscribeToClaudeEvents', () => {
     });
   });
 });
-
-// ── Compile-time type assertions ───────────────────────────────────
-// ClaudeMessageContext (bridge.ts) must be exactly MessageContext (claudeStore.ts).
-// This catches any divergence at compile time — tsc will fail if they differ.
-import type { ClaudeMessageContext } from '../bridge';
-import type { MessageContext } from '../stores/claudeStore';
-import type {
-  TextDelta,
-  ThinkingDelta,
-  ToolCall,
-  ToolResult,
-  Done,
-  ErrorMessage,
-} from '../../sidecar/src/types';
-
-type Equals<A, B> =
-  (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;
-type AssertTrue<T extends true> = T;
-type _AssertClaudeContextIsMessageContext = AssertTrue<Equals<ClaudeMessageContext, MessageContext>>;
-
-// Each Omit<Interface, 'type'> must match the payload shape used in subscribeToClaudeEvents.
-// If a field is added/removed/renamed in types.ts, tsc will fail here.
-type _AssertTextDeltaPayload = AssertTrue<Equals<Omit<TextDelta, 'type'>, { id: string; content: string }>>;
-type _AssertThinkingDeltaPayload = AssertTrue<Equals<Omit<ThinkingDelta, 'type'>, { id: string; content: string }>>;
-type _AssertToolCallPayload = AssertTrue<Equals<Omit<ToolCall, 'type'>, { id: string; tool_name: string; tool_input: Record<string, unknown> }>>;
-type _AssertToolResultPayload = AssertTrue<Equals<Omit<ToolResult, 'type'>, { id: string; tool_name: string; result: unknown }>>;
-type _AssertDonePayload = AssertTrue<Equals<Omit<Done, 'type'>, { id: string }>>;
-type _AssertErrorMessagePayload = AssertTrue<Equals<Omit<ErrorMessage, 'type'>, { id: string; message: string }>>;

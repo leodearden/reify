@@ -607,7 +607,7 @@ where
     // concurrently during slow OS process creation.
     let mut handle = spawn_fn().await?;
     let notify_arc = Arc::clone(handle.ready_notify());
-    let spawned_state = Arc::clone(handle.state());
+    let state = Arc::clone(handle.state());
 
     // Subscribe to the ready notification BEFORE re-locking.  On a multi-thread
     // executor the reader task can call `notify_waiters()` immediately after
@@ -653,18 +653,12 @@ where
         // Guard dropped here — lock released.
     }
 
-    // Re-check: handles the *pre-creation* race window — Ready set during
-    // spawn_fn's internal await points, BEFORE `notified()` is created on
-    // line 625.  In that window no `Notified` future exists, so the
-    // `notify_waiters()` call is irretrievably lost.
-    //
-    // This is distinct from the *post-creation* window (notified() created
-    // but waiter not yet registered), which is handled by `enable()` on
-    // line 626 eagerly registering the waiter.
-    //
-    // Together, enable() + re-check provide defense-in-depth against both
-    // windows.  This mirrors the same pattern in wait_ready (line 349-350).
-    if matches!(*spawned_state.lock().await, SidecarState::Ready) {
+    // Re-check: the reader task may have already set Ready and called
+    // notify_waiters() before our notified()/enable() subscription was set up
+    // (e.g., during spawn_fn's internal await points).  Without this check,
+    // a lost notification would cause a spurious timeout.  This mirrors the
+    // re-check in wait_ready (line 329).
+    if matches!(*state.lock().await, SidecarState::Ready) {
         return Ok(());
     }
 
@@ -696,7 +690,7 @@ where
 
     // Phase 5: check state after notification — the notify may have been
     // triggered by a crash rather than the Ready message.
-    let state_val = spawned_state.lock().await.clone();
+    let state_val = state.lock().await.clone();
     match state_val {
         SidecarState::Ready => Ok(()),
         SidecarState::Crashed(msg) => {
