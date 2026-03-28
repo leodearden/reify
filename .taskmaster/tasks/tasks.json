@@ -13851,6 +13851,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 709,
+        "title": "Clean up test assertions and naming in feasibility/optimization tests",
+        "description": "Three fixes: (1) solver.rs: Restructure redundant si < 0.010 assertion in feasibility_check_runs_with_objective (subsumed by si < 0.008). (2) solver.rs: Rename feasibility_check_runs_with_objective to reflect it now asserts optimization convergence quality. (3) solver_integration.rs: In maximize test, change si <= 0.0502 to si <= 0.050 or si <= 0.0505 matching param clamp semantics with comment.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -13863,7 +13874,7 @@
       ],
       "created": "2026-03-28T06:55:24.369Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-28T06:55:34.170Z"
+      "updated": "2026-03-28T06:55:36.849Z"
     }
   }
 }
