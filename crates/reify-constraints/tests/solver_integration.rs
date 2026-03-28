@@ -1341,3 +1341,84 @@ fn partial_feasibility_solved_when_close_to_boundary() {
         ),
     }
 }
+
+/// Documents the warm-start objective invariant:
+///   After the early-return for `initially_feasible && objective.is_none()`,
+///   reaching the warm-start budget branch with `initially_feasible=true`
+///   implies `objective.is_some()`.
+///
+/// This test exercises both sides:
+/// (a) feasible + objective=Some → warm-start budget path runs, solver optimizes
+/// (b) feasible + objective=None → early-return path, solver returns initial point
+#[test]
+fn warm_start_budget_requires_objective_invariant() {
+    let solver = DimensionalSolver;
+
+    let x_id = vcid("Part", "x");
+    let x_ref = value_ref("Part", "x");
+
+    // Constraints: 5mm < x < 50mm
+    let constraints = vec![
+        (cnid("Part", 0), gt(x_ref.clone(), literal(mm(5.0)))),
+        (cnid("Part", 1), lt(x_ref.clone(), literal(mm(50.0)))),
+    ];
+
+    // Start at 25mm — solidly feasible
+    let mut current = ValueMap::new();
+    current.insert(x_id.clone(), mm(25.0));
+
+    let auto_params = vec![AutoParam {
+        id: x_id.clone(),
+        param_type: Type::length(),
+        bounds: Some((0.005, 0.1)), // 5mm–100mm
+    }];
+
+    // (a) With objective: warm-start budget path runs, optimizer pushes x toward lower bound
+    let problem_with_obj = ResolutionProblem {
+        auto_params: auto_params.clone(),
+        constraints: constraints.clone(),
+        current_values: current.clone(),
+        objective: Some(OptimizationObjective::Minimize(x_ref.clone())),
+        functions: vec![],
+    };
+
+    match solver.solve(&problem_with_obj) {
+        SolveResult::Solved { values } => {
+            let si = values.get(&x_id).unwrap().as_f64().unwrap();
+            // Optimizer should push x below 25mm initial toward the lower bound
+            assert!(
+                si < 0.020,
+                "warm-start with objective should optimize x below 20mm, got {} m",
+                si
+            );
+        }
+        other => panic!(
+            "expected Solved for feasible+objective (warm-start budget path), got {:?}",
+            other
+        ),
+    }
+
+    // (b) Without objective: early-return path, values match initial point
+    let problem_no_obj = ResolutionProblem {
+        auto_params,
+        constraints,
+        current_values: current,
+        objective: None,
+        functions: vec![],
+    };
+
+    match solver.solve(&problem_no_obj) {
+        SolveResult::Solved { values } => {
+            let si = values.get(&x_id).unwrap().as_f64().unwrap();
+            assert!(
+                (si - 0.025).abs() < 1e-12,
+                "early-return should preserve initial 25mm (0.025 m), got {} m",
+                si
+            );
+        }
+        other => panic!(
+            "expected Solved for feasible+no-objective (early-return path), got {:?}",
+            other
+        ),
+    }
+}
