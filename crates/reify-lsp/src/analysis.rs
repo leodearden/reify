@@ -61,11 +61,14 @@ impl AnalysisContext {
     ///
     /// Returns `None` if no value cell with that name exists.
     pub fn find_member_decl(&self, name: &str) -> Option<MemberInfo<'_>> {
-        // Get the span and doc from the parsed module (accurate tree-sitter offsets)
-        let (span, doc) = self.find_parsed_member_span_and_doc(name)?;
+        // Get the span, doc, and owning declaration name from the parsed module
+        let (span, doc, decl_name) = self.find_parsed_member_span_and_doc(name)?;
 
-        // Find type info from the compiled module (top-level and guarded members)
+        // Find type info from the compiled module, scoped to the same declaration
         for template in &self.compiled.templates {
+            if template.name != decl_name {
+                continue;
+            }
             for vc in &template.value_cells {
                 if vc.id.member == name {
                     return Some(MemberInfo {
@@ -96,16 +99,20 @@ impl AnalysisContext {
         None
     }
 
-    /// Find the source span and doc comment for a named member in the parsed module.
-    fn find_parsed_member_span_and_doc(&self, name: &str) -> Option<(SourceSpan, Option<&str>)> {
+    /// Find the source span, doc comment, and owning declaration name for a
+    /// named member in the parsed module.
+    fn find_parsed_member_span_and_doc(
+        &self,
+        name: &str,
+    ) -> Option<(SourceSpan, Option<&str>, &str)> {
         for decl in &self.parsed.declarations {
-            let members = match decl {
-                reify_syntax::Declaration::Structure(s) => &s.members,
-                reify_syntax::Declaration::Occurrence(o) => &o.members,
+            let (members, decl_name) = match decl {
+                reify_syntax::Declaration::Structure(s) => (&s.members, s.name.as_str()),
+                reify_syntax::Declaration::Occurrence(o) => (&o.members, o.name.as_str()),
                 _ => continue,
             };
-            if let Some(result) = find_named_member_span(members, name) {
-                return Some(result);
+            if let Some((span, doc)) = find_named_member_span(members, name) {
+                return Some((span, doc, decl_name));
             }
         }
         None
@@ -492,6 +499,46 @@ mod tests {
             .expect("fallback inside else block should be found");
         assert_eq!(info.name, "fallback");
         assert_eq!(info.kind, ValueCellKind::Let);
+    }
+
+    // --- ambiguous member name regression tests ---
+
+    #[test]
+    fn find_member_decl_ambiguous_name_returns_first_decl_consistently() {
+        // Two structures with identically-named params but different types.
+        // find_member_decl must return span AND type from the same declaration.
+        let source =
+            "structure A {\n    param x: Scalar = 5mm\n}\nstructure B {\n    param x: Bool = true\n}";
+        let ctx = AnalysisContext::new(source, &test_uri());
+        let info = ctx.find_member_decl("x").expect("x should exist");
+        // Should return type from A (first match) — Scalar with LENGTH dimension
+        assert!(
+            matches!(info.cell_type, Type::Scalar { .. }),
+            "expected Scalar type from first declaration A, got {:?}",
+            info.cell_type
+        );
+        // Span should be within A's byte range (before B starts)
+        let b_start = source.find("structure B").unwrap() as u32;
+        assert!(
+            info.span.end <= b_start,
+            "span should be within structure A's byte range, span.end={} but B starts at {}",
+            info.span.end,
+            b_start
+        );
+    }
+
+    #[test]
+    fn find_member_decl_ambiguous_name_second_decl_type_not_leaked() {
+        // Verify the returned cell_type is NOT Bool (proving type didn't leak from B).
+        let source =
+            "structure A {\n    param x: Scalar = 5mm\n}\nstructure B {\n    param x: Bool = true\n}";
+        let ctx = AnalysisContext::new(source, &test_uri());
+        let info = ctx.find_member_decl("x").expect("x should exist");
+        assert_ne!(
+            *info.cell_type,
+            Type::Bool,
+            "type should not leak from second declaration B"
+        );
     }
 
     // --- format_value tests ---
