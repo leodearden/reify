@@ -204,3 +204,29 @@ fn complex_mul_cross_dimension_combines() {
     let expected_dim = DimensionVector::LENGTH.mul(&DimensionVector::TIME);
     assert_complex_eq(&result, -5.0, 10.0, expected_dim);
 }
+
+// ── Magnitude / Phase / Conjugate tests (step-7) ─────────────────────────────
+
+#[test]
+fn complex_magnitude_3_4i_returns_5() {
+    // complex_magnitude(3+4i) = sqrt(9+16) = 5.0 as Real (dimensionless)
+    let z = complex_val(3.0, 4.0, DimensionVector::DIMENSIONLESS);
+    let result = eval_builtin("complex_magnitude", &[z]);
+    assert_real_approx(&result, 5.0);
+}
+
+#[test]
+fn phase_1_1i_returns_pi_over_4() {
+    // phase(1+1i) = atan2(1,1) = pi/4, returned as Scalar with ANGLE dimension
+    let z = complex_val(1.0, 1.0, DimensionVector::DIMENSIONLESS);
+    let result = eval_builtin("phase", &[z]);
+    assert_scalar_approx(&result, std::f64::consts::FRAC_PI_4, DimensionVector::ANGLE);
+}
+
+#[test]
+fn conjugate_3_4i_negates_imaginary() {
+    // conjugate(3+4i) = 3-4i, preserving dimension
+    let z = complex_val(3.0, 4.0, DimensionVector::LENGTH);
+    let result = eval_builtin("conjugate", &[z]);
+    assert_complex_eq(&result, 3.0, -4.0, DimensionVector::LENGTH);
+}
