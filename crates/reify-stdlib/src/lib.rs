@@ -5307,6 +5307,64 @@ mod tests {
         assert!(eval_builtin("real", &[Value::Real(3.0)]).is_undef());
     }
 
+    // ── im/imag sanitize_value tests (task-358 step-3) ─────────────────────────
+
+    #[test]
+    fn im_nan_im_component_returns_undef() {
+        // im(Complex{1.0, NaN, DIMLESS}) → Undef (NaN must not propagate)
+        let z = Value::Complex {
+            re: 1.0,
+            im: f64::NAN,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            eval_builtin("im", &[z]).is_undef(),
+            "im() with NaN imaginary component must return Undef"
+        );
+    }
+
+    #[test]
+    fn im_inf_im_component_returns_undef() {
+        // im(Complex{1.0, +Inf, DIMLESS}) → Undef (Inf must not propagate)
+        let z = Value::Complex {
+            re: 1.0,
+            im: f64::INFINITY,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            eval_builtin("im", &[z]).is_undef(),
+            "im() with Inf imaginary component must return Undef"
+        );
+    }
+
+    #[test]
+    fn im_inf_dimensioned_returns_undef() {
+        // im(Complex{1.0, +Inf, LENGTH}) → Undef (dimensioned Scalar path)
+        let z = Value::Complex {
+            re: 1.0,
+            im: f64::INFINITY,
+            dimension: DimensionVector::LENGTH,
+        };
+        assert!(
+            eval_builtin("im", &[z]).is_undef(),
+            "im() with Inf dimensioned imaginary component must return Undef"
+        );
+    }
+
+    #[test]
+    fn imag_nan_im_component_returns_undef() {
+        // imag(Complex{1.0, NaN, DIMLESS}) → Undef (alias coverage)
+        let z = Value::Complex {
+            re: 1.0,
+            im: f64::NAN,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            eval_builtin("imag", &[z]).is_undef(),
+            "imag() with NaN imaginary component must return Undef"
+        );
+    }
+
     // ── imag() alias tests (step-3) ───────────────────────────────────────────
 
     #[test]
