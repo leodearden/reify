@@ -134,10 +134,8 @@ mod tests {
             keyword_labels.contains(&"constraint"),
             "should include 'constraint'"
         );
-        assert!(
-            keyword_labels.contains(&"structure"),
-            "should include 'structure'"
-        );
+        // Note: Position(1,0) is inside the structure body, so 'structure'
+        // (a top-level keyword) is not expected here after position-aware narrowing.
     }
 
     #[test]
