@@ -797,6 +797,32 @@ mod tests {
     }
 
     #[test]
+    fn determine_context_dot_access_after_dot() {
+        // "let x = part." — cursor immediately after the dot
+        let source = "structure Foo {\n    param a: Scalar = 1mm\n    sub part: Bar\n    let x = part.\n}";
+        let ctx = AnalysisContext::new(source, &test_uri());
+        let result = determine_context(source, Position::new(3, 18), &ctx);
+        assert!(
+            matches!(result, CursorContext::DotAccess),
+            "expected DotAccess after '.', got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn determine_context_dot_access_with_trailing_space() {
+        // "let x = part. " — cursor after dot + space
+        let source = "structure Foo {\n    param a: Scalar = 1mm\n    sub part: Bar\n    let x = part. \n}";
+        let ctx = AnalysisContext::new(source, &test_uri());
+        let result = determine_context(source, Position::new(3, 19), &ctx);
+        assert!(
+            matches!(result, CursorContext::DotAccess),
+            "expected DotAccess after '. ', got {:?}",
+            result
+        );
+    }
+
+    #[test]
     fn determine_context_empty_source_is_top_level() {
         let source = "";
         let ctx = AnalysisContext::new(source, &test_uri());
