@@ -580,4 +580,26 @@ mod tests {
         let result = compute_hover("", &test_uri(), Position::new(0, 0));
         assert!(result.is_none(), "empty source should return None hover");
     }
+
+    // --- cross-structure scoping tests ---
+
+    #[test]
+    fn hover_on_shared_member_in_second_structure() {
+        // Two structures with identically-named member 'width' but different types.
+        // Hover on 'width' inside B should show Bool, not Scalar.
+        let source =
+            "structure A {\n    param width: Scalar = 5mm\n}\nstructure B {\n    param width: Bool = true\n}";
+        // 'width' inside B is on line 4, col 10
+        let position = Position::new(4, 10);
+        let md = hover_markdown(source, position)
+            .expect("hover should return info for width in B");
+        assert!(
+            md.contains("Bool"),
+            "should show Bool type from structure B, got: {md}"
+        );
+        assert!(
+            !md.contains("Scalar"),
+            "should NOT show Scalar type from structure A, got: {md}"
+        );
+    }
 }
