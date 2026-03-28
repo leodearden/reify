@@ -600,12 +600,12 @@ fn maximize_with_feasible_initial_point() {
             // Maximize should push x toward 50mm (auto param upper bound),
             // well above the 10mm initial point
             assert!(
-                si > 0.030,
-                "maximized x should be pushed well above initial 10mm, got {} m",
+                si > 0.048,
+                "maximized x should be near 50mm upper bound, got {} m",
                 si
             );
             assert!(
-                si <= 0.0505,
+                si <= 0.0502,
                 "maximized x should not exceed param bounds (50mm), got {} m",
                 si
             );
