@@ -11550,7 +11550,7 @@
         "description": "Three test improvements for the tree-sitter pipeline infra tests.",
         "details": "1. Add test that deletes parser.c and runs cargo check WITHOUT calling tree-sitter-generate.sh first — validates build.rs auto-generation path (the key new feature).\n2. Fix assert helper to show command output on failure instead of redirecting to /dev/null.\n3. Add negative tests: temporarily rename grammar.js and assert tree-sitter-generate.sh exits non-zero.\n\nFiles: tests/infra/test_tree_sitter_pipeline.sh",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -11564,7 +11564,7 @@
             "tree-sitter-reify"
           ]
         },
-        "updatedAt": "2026-03-28T05:31:50.149Z"
+        "updatedAt": "2026-03-28T09:04:26.932Z"
       },
       {
         "id": "565",
@@ -11593,7 +11593,7 @@
         "description": "Address review suggestions from task 467 in crates/reify-runtime/tests/concurrent_eval.rs:\n\n1. Rename `mod poison_panics` to `mod poison_recovery_extended` (or merge into `poison_recovery`) — the module now tests recovery, not panics (architect S1)\n2. Remove stale \"legacy module, kept for backward compat\" comment from `poison_recovery` — these are active first-class tests (architect S3)\n3. Remove redundant `evaluate_recovers_poisoned_values_read` test — strict subset of `evaluate_recovers_poisoned_values_write` since both hit the same RwLock (architect S2, test analyst S12)\n4. Add assertions to `evaluate_recovers_poisoned_snapshot_values` — verify snapshot_values entry was written via `build_result_shared()` (test analyst S13)\n5. Add assertions to `evaluate_recovers_poisoned_results` — verify result was pushed via `take_results()` (test analyst S14)\n6. Add `node_results.is_empty()` assertions to `build_result_shared_recovers_from_poisoned_results_lock` and `into_result_recovers_from_poisoned_results_lock` (test analyst S15, S16)\n7. Use `#[tokio::test]` instead of manual `Runtime::new()` in `poison_evaluate` tests (performance S4)\n8. Extract shared test helper for evaluate+catch_unwind boilerplate (reuse S6)\n9. Add brief comment explaining why C4 panic-on-poison was reversed in favor of graceful recovery (robustness S11)",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -11606,7 +11606,7 @@
             "crates/reify-runtime/tests"
           ]
         },
-        "updatedAt": "2026-03-28T04:49:13.990Z"
+        "updatedAt": "2026-03-28T09:04:26.966Z"
       },
       {
         "id": "567",
@@ -14621,7 +14621,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T09:04:26.898Z",
+      "lastModified": "2026-03-28T09:04:26.966Z",
       "taskCount": 710,
       "completedCount": 329,
       "tags": [
