@@ -442,4 +442,34 @@ mod tests {
             "should NOT contain id fallback when label is present"
         );
     }
+
+    #[test]
+    fn summary_message_all_satisfied() {
+        let entries = vec![
+            make_entry("Bracket", 0, Some("stress_limit"), Satisfaction::Satisfied),
+            make_entry("Bracket", 1, Some("size_bound"), Satisfaction::Satisfied),
+        ];
+        let msg = constraint_summary_message(&entries, true);
+        assert_eq!(msg, "All constraints satisfied.");
+    }
+
+    #[test]
+    fn summary_message_indeterminate_no_violations() {
+        let entries = vec![
+            make_entry("Beam", 0, Some("load"), Satisfaction::Satisfied),
+            make_entry("Beam", 1, Some("deflection"), Satisfaction::Indeterminate),
+        ];
+        let msg = constraint_summary_message(&entries, true);
+        assert_eq!(msg, "No constraint violations (some indeterminate).");
+    }
+
+    #[test]
+    fn summary_message_violated() {
+        let entries = vec![
+            make_entry("Part", 0, Some("max_force"), Satisfaction::Violated),
+            make_entry("Part", 1, Some("clearance"), Satisfaction::Indeterminate),
+        ];
+        let msg = constraint_summary_message(&entries, false);
+        assert_eq!(msg, "Some constraints violated.");
+    }
 }
