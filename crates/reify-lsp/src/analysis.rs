@@ -122,10 +122,10 @@ impl AnalysisContext {
                 reify_syntax::Declaration::Occurrence(o) => (&o.members, o.name.as_str()),
                 _ => continue,
             };
-            if let Some(target) = structure {
-                if decl_name != target {
-                    continue;
-                }
+            if let Some(target) = structure
+                && decl_name != target
+            {
+                continue;
             }
             if let Some((span, doc)) = find_named_member_span(members, name) {
                 return Some((span, doc, decl_name));
