@@ -8948,11 +8948,11 @@
         "description": "13 reviewer suggestions deferred from task 407. All non-blocking.\n\n**Comment accuracy (claude_bridge.rs):**\n- Re-check comment (lines 622-629) doesn't distinguish pre-creation vs post-creation race windows. Should clarify that enable() handles post-creation and re-check handles pre-creation.\n- Rename `state` variable to `spawned_state` for clarity in ensure_sidecar_ready.\n\n**Test documentation (claude_bridge_tests.rs):**\n- `ensure_sidecar_ready_enable_prevents_missed_notification_race` doc incorrectly claims stale handle triggers h.kill() in Phase 3 (actually killed in Phase 1).\n- `wait_ready_enable_prevents_missed_notification_race` can pass via re-check path, not exclusively via enable().\n- Post-Phase-3 re-check (line 627) has no deterministic test.\n\n**Test code hygiene (claude_bridge_tests.rs):**\n- `held_writer` not scoped per iteration (50 DuplexStreams accumulate).\n- `spawn_fn` closure duplicated verbatim from existing ensure_sidecar_ready_notified_race_on_multithread test — extract helper.\n- SidecarHandle::from_parts setup repeated across 4 tests — extract make_starting_handle() helper.\n- Arc<Mutex<Option<DuplexStream>>> could be OnceLock (single-write pattern).\n\n**Performance (claude_bridge_tests.rs):**\n- Reader tasks not aborted between loop iterations (50 detached tasks overlap).\n\nSource: task 407 reviews (architect, performance, reuse_auditor, robustness, test_analyst).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-03-26T12:05:53.835Z",
+        "updatedAt": "2026-03-28T01:19:20.130Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -10407,7 +10407,7 @@
         "description": "In `gui/src/bridge.ts`, `ClaudeMessageContext` duplicates 3 of 5 fields from `MessageContext` (in `claudeStore.ts`), silently dropping `currentFile` and `attachedContexts` at the bridge boundary. `App.tsx` `onSend` receives the full `MessageContext` but only forwards 3 fields to `claudeSendMessage`.\n\n**Fix**: Either:\n1. Import `MessageContext` from `./stores/claudeStore` and use `Pick<MessageContext, 'selectedEntity' | 'diagnostics' | 'constraints'>` with a comment explaining why `currentFile` and `attachedContexts` are intentionally excluded, OR\n2. Extend `ClaudeMessageContext` to include all 5 fields and handle the snake_case mapping for `current_file` and `attached_contexts`.\n\nOption depends on whether the Rust sidecar accepts those extra fields.\n\nMemory hints:\n- Search: \"ClaudeMessageContext MessageContext bridge context fields\"\n- Entities: ClaudeMessageContext, MessageContext, bridge.ts, claudeSendMessage",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -10421,7 +10421,7 @@
             "gui/src"
           ]
         },
-        "updatedAt": "2026-03-28T01:14:27.900Z"
+        "updatedAt": "2026-03-28T01:19:19.375Z"
       },
       {
         "id": "519",
@@ -13041,7 +13041,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T01:14:27.900Z",
+      "lastModified": "2026-03-28T01:19:20.130Z",
       "taskCount": 650,
       "completedCount": 301,
       "tags": [
