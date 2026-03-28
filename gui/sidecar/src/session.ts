@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { createLineReader } from './ipc.js';
-import type { InboundMessage, OutboundMessage } from './types.js';
+import type { InboundMessage, OutboundMessage, SendMessage } from './types.js';
 
 export interface SessionConfig {
   model: string;
@@ -73,12 +73,15 @@ export class SidecarSession {
   private async handleSendMessage(
     id: string,
     text: string,
-    context?: { selected_entity?: string; diagnostics?: string[]; constraints?: string[] }
+    context?: SendMessage['context']
   ): Promise<void> {
     // Build the prompt with optional context
     let prompt = text;
     if (context) {
       const contextParts: string[] = [];
+      if (context.current_file) {
+        contextParts.push(`Current file: ${context.current_file}`);
+      }
       if (context.selected_entity) {
         contextParts.push(`Selected entity: ${context.selected_entity}`);
       }
@@ -87,6 +90,9 @@ export class SidecarSession {
       }
       if (context.constraints?.length) {
         contextParts.push(`Constraints:\n${context.constraints.join('\n')}`);
+      }
+      if (context.attached_contexts?.length) {
+        contextParts.push(`Attached contexts:\n${context.attached_contexts.join('\n')}`);
       }
       if (contextParts.length > 0) {
         prompt = `${text}\n\n[Context]\n${contextParts.join('\n\n')}`;

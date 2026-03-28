@@ -278,6 +278,96 @@ describe('SidecarSession', () => {
     expect((toolResults[0] as any).result).toBe('file contents');
   });
 
+  it('handleSendMessage includes current_file in constructed prompt', async () => {
+    vi.mocked(spawn).mockImplementation((() => createMockProcess([
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'OK' }] } },
+      { type: 'result', session_id: 'sess-cf' },
+    ])) as any);
+
+    await session.init();
+    outputs.length = 0;
+
+    await session.handleMessage({
+      type: 'send_message',
+      id: 'msg-cf',
+      text: 'Explain this',
+      context: { current_file: 'src/main.ri' },
+    });
+
+    // Extract the prompt (last arg after '--') from the spawn call
+    const callArgs = vi.mocked(spawn).mock.calls[0]?.[1] as string[];
+    const dashIdx = callArgs.indexOf('--');
+    const prompt = callArgs[dashIdx + 1];
+
+    expect(prompt).toContain('Current file: src/main.ri');
+    expect(prompt).toContain('[Context]');
+  });
+
+  it('handleSendMessage includes attached_contexts in constructed prompt', async () => {
+    vi.mocked(spawn).mockImplementation((() => createMockProcess([
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'OK' }] } },
+      { type: 'result', session_id: 'sess-ac' },
+    ])) as any);
+
+    await session.init();
+    outputs.length = 0;
+
+    await session.handleMessage({
+      type: 'send_message',
+      id: 'msg-ac',
+      text: 'Help me',
+      context: { attached_contexts: ['file: lib.ri\nfn add(a, b) = a + b', 'file: util.ri\nfn clamp(v) = max(0, v)'] },
+    });
+
+    const callArgs = vi.mocked(spawn).mock.calls[0]?.[1] as string[];
+    const dashIdx = callArgs.indexOf('--');
+    const prompt = callArgs[dashIdx + 1];
+
+    expect(prompt).toContain('[Context]');
+    expect(prompt).toContain('Attached contexts:');
+    expect(prompt).toContain('file: lib.ri\nfn add(a, b) = a + b');
+    expect(prompt).toContain('file: util.ri\nfn clamp(v) = max(0, v)');
+  });
+
+  it('handleSendMessage includes all five context fields in prompt', async () => {
+    vi.mocked(spawn).mockImplementation((() => createMockProcess([
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'OK' }] } },
+      { type: 'result', session_id: 'sess-all' },
+    ])) as any);
+
+    await session.init();
+    outputs.length = 0;
+
+    await session.handleMessage({
+      type: 'send_message',
+      id: 'msg-all',
+      text: 'Full context',
+      context: {
+        current_file: 'src/engine.ri',
+        selected_entity: 'Cylinder',
+        diagnostics: ['type error on line 5'],
+        constraints: ['radius > 0'],
+        attached_contexts: ['file: helper.ri\nfn helper() = 42'],
+      },
+    });
+
+    const callArgs = vi.mocked(spawn).mock.calls[0]?.[1] as string[];
+    const dashIdx = callArgs.indexOf('--');
+    const prompt = callArgs[dashIdx + 1];
+
+    expect(prompt).toContain('[Context]');
+    expect(prompt).toContain('Current file: src/engine.ri');
+    expect(prompt).toContain('Selected entity: Cylinder');
+    expect(prompt).toContain('Diagnostics:\ntype error on line 5');
+    expect(prompt).toContain('Constraints:\nradius > 0');
+    expect(prompt).toContain('Attached contexts:\nfile: helper.ri\nfn helper() = 42');
+
+    // Verify ordering: current_file appears before selected_entity
+    const cfIdx = prompt.indexOf('Current file:');
+    const seIdx = prompt.indexOf('Selected entity:');
+    expect(cfIdx).toBeLessThan(seIdx);
+  });
+
   it('multiple sequential messages use session_id for resume', async () => {
     const mockSpawn = vi.mocked(spawn);
 
