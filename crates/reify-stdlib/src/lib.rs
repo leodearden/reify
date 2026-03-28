@@ -6164,6 +6164,27 @@ mod tests {
         assert_real_approx!(eval_builtin("dot", &[a, b]), 32.0);
     }
 
+    #[test]
+    fn normalize_point_dimensioned_returns_point() {
+        // normalize(Point([3m,4m,0m])) → Point([0.6, 0.8, 0.0]) with Real components
+        let p = Value::Point(vec![
+            Value::Scalar {
+                si_value: 3.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 4.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 0.0,
+                dimension: DimensionVector::LENGTH,
+            },
+        ]);
+        let result = eval_builtin("normalize", &[p]);
+        assert_vector3_approx!(Point, result, [0.6, 0.8, 0.0]);
+    }
+
     // ── construct_point_or_vector edge cases (task 398, step-11) ──────────────
 
     #[test]
