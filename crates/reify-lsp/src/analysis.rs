@@ -666,6 +666,29 @@ mod tests {
         assert_eq!(info.decl_name, "Foo");
     }
 
+    #[test]
+    fn find_member_decl_scoped_to_second_structure() {
+        let source =
+            "structure A {\n    param x: Scalar = 5mm\n}\nstructure B {\n    param x: Bool = true\n}";
+        let ctx = AnalysisContext::new(source, &test_uri());
+        let info = ctx
+            .find_member_decl("x", Some("B"))
+            .expect("x should exist in B");
+        assert_eq!(
+            *info.cell_type,
+            Type::Bool,
+            "expected Bool type from structure B, got {:?}",
+            info.cell_type
+        );
+        assert_eq!(info.decl_name, "B");
+        // Span should be within B's byte range
+        let b_start = source.find("structure B").unwrap() as u32;
+        assert!(
+            info.span.start >= b_start,
+            "span should be within B's range"
+        );
+    }
+
     // --- ambiguous member name regression tests ---
 
     #[test]
