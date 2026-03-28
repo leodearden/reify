@@ -14172,7 +14172,18 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "gui/src-tauri/src/claude_bridge.rs",
+            "gui/src-tauri/src/tests/claude_bridge_tests.rs",
+            "gui/src-tauri/src/tests/mcp_context_tests.rs"
+          ],
+          "modules": [
+            "gui/src-tauri/src",
+            "gui/src-tauri/src/tests"
+          ]
+        }
       },
       {
         "id": 690,
@@ -14183,7 +14194,16 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "gui/src-tauri/src/tests/mcp_context_tests.rs",
+            "gui/src-tauri/src/tests/claude_bridge_tests.rs"
+          ],
+          "modules": [
+            "gui/src-tauri/src/tests"
+          ]
+        }
       },
       {
         "id": 691,
