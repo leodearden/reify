@@ -462,6 +462,56 @@ describe('subscribeToClaudeEvents', () => {
       }
     });
   });
+
+  describe('payload validation guards', () => {
+    /** Helper: capture the internal listener for a given event name */
+    function captureListener(eventName: string) {
+      let captured: ((event: { payload: unknown }) => void) | undefined;
+      mockListen.mockImplementation(async (name, handler) => {
+        if (name === eventName) {
+          captured = handler as (event: { payload: unknown }) => void;
+        }
+        return vi.fn();
+      });
+      return {
+        async setup(handler: ReturnType<typeof vi.fn>) {
+          await subscribeToClaudeEvents(handler);
+          return captured!;
+        },
+      };
+    }
+
+    const PAYLOAD_EVENTS = [
+      'claude-text-delta',
+      'claude-thinking-delta',
+      'claude-tool-call',
+      'claude-tool-result',
+      'claude-done',
+      'claude-error',
+    ] as const;
+
+    const INVALID_PAYLOADS = [
+      ['null', null],
+      ['undefined', undefined],
+      ['string', 'some-string'],
+      ['number', 42],
+      ['array', [1, 2, 3]],
+    ] as const;
+
+    for (const eventName of PAYLOAD_EVENTS) {
+      for (const [label, payload] of INVALID_PAYLOADS) {
+        it(`drops ${eventName} when payload is ${label}`, async () => {
+          const { setup } = captureListener(eventName);
+          const handler = vi.fn();
+          const listener = await setup(handler);
+
+          listener({ payload });
+
+          expect(handler).not.toHaveBeenCalled();
+        });
+      }
+    }
+  });
 });
 
 // ── Compile-time type assertions ───────────────────────────────────
