@@ -20,7 +20,7 @@ fn make_loaded_session() -> EngineSession {
 fn make_tauri_context() -> TauriToolContext {
     let session = make_loaded_session();
     let engine = Arc::new(Mutex::new(session));
-    TauriToolContext::new(engine)
+    TauriToolContext::builder(engine).build()
 }
 
 // --- Read method tests ---
@@ -232,12 +232,14 @@ fn focus_entity_with_emitter_records_event() {
     let events: Arc<Mutex<Vec<(String, serde_json::Value)>>> = Arc::new(Mutex::new(Vec::new()));
     let events_clone = events.clone();
 
-    let ctx = TauriToolContext::with_event_emitter(engine, move |name, payload| {
-        events_clone
-            .lock()
-            .unwrap()
-            .push((name.to_string(), payload));
-    });
+    let ctx = TauriToolContext::builder(engine)
+        .with_event_emitter(move |name, payload| {
+            events_clone
+                .lock()
+                .unwrap()
+                .push((name.to_string(), payload));
+        })
+        .build();
 
     let result = ctx
         .focus_entity("Bracket.width")
@@ -256,12 +258,14 @@ fn navigate_to_source_with_emitter_records_event() {
     let events: Arc<Mutex<Vec<(String, serde_json::Value)>>> = Arc::new(Mutex::new(Vec::new()));
     let events_clone = events.clone();
 
-    let ctx = TauriToolContext::with_event_emitter(engine, move |name, payload| {
-        events_clone
-            .lock()
-            .unwrap()
-            .push((name.to_string(), payload));
-    });
+    let ctx = TauriToolContext::builder(engine)
+        .with_event_emitter(move |name, payload| {
+            events_clone
+                .lock()
+                .unwrap()
+                .push((name.to_string(), payload));
+        })
+        .build();
 
     let result = ctx
         .navigate_to_source("bracket.ri", 5, 1)
@@ -304,7 +308,7 @@ fn get_selection_returns_selected_entity_from_arc() {
         selected_entity: Some("Bracket".to_string()),
         hovered_entity: None,
     }));
-    let ctx = TauriToolContext::new_with_selection(engine, selection);
+    let ctx = TauriToolContext::builder(engine).with_selection(selection).build();
     let result = ctx.get_selection().expect("get_selection should succeed");
     assert_eq!(result.selected_entity, Some("Bracket".to_string()));
     assert_eq!(result.hovered_entity, None);
@@ -318,7 +322,7 @@ fn get_selection_returns_both_selected_and_hovered() {
         selected_entity: Some("Bracket".to_string()),
         hovered_entity: Some("Bracket.width".to_string()),
     }));
-    let ctx = TauriToolContext::new_with_selection(engine, selection);
+    let ctx = TauriToolContext::builder(engine).with_selection(selection).build();
     let result = ctx.get_selection().expect("get_selection should succeed");
     assert_eq!(result.selected_entity, Some("Bracket".to_string()));
     assert_eq!(result.hovered_entity, Some("Bracket.width".to_string()));
@@ -332,7 +336,7 @@ fn get_selection_reflects_live_arc_updates() {
         selected_entity: None,
         hovered_entity: None,
     }));
-    let ctx = TauriToolContext::new_with_selection(engine, selection.clone());
+    let ctx = TauriToolContext::builder(engine).with_selection(selection.clone()).build();
 
     // Initially empty
     let result = ctx.get_selection().expect("get_selection should succeed");
