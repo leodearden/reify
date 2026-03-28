@@ -374,6 +374,23 @@ fn builder_with_no_options_matches_new() {
     assert!(result);
 }
 
+#[test]
+fn builder_with_selection_matches_new_with_selection() {
+    let session = make_loaded_session();
+    let engine = Arc::new(Mutex::new(session));
+    let selection = Arc::new(RwLock::new(SelectionInfo {
+        selected_entity: Some("Bracket".to_string()),
+        hovered_entity: None,
+    }));
+    let ctx = TauriToolContext::builder(engine)
+        .with_selection(selection)
+        .build();
+
+    let result = ctx.get_selection().expect("get_selection should succeed");
+    assert_eq!(result.selected_entity, Some("Bracket".to_string()));
+    assert_eq!(result.hovered_entity, None);
+}
+
 // --- Compile-time trait assertions ---
 
 #[test]
