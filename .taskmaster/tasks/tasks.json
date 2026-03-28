@@ -14339,7 +14339,7 @@
         "description": "Four fixes in gui/src/__tests__/selectionStore.test.ts: 1) In 'cleanup disposes the debounce timer' test, nullify dispose after explicit call. 2) Fix async rejection test to actually flush microtasks and verify .catch() handler. 3) Add test for selectEntity(null) clearing a previous selection via backend sync. 4) Add tests for clearIfRemoved dispatch behavior (single-field and both-fields match). Also remove the timer-flush workaround from beforeEach once the early-return guard companion task is done.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -14350,7 +14350,8 @@
           "modules": [
             "gui/src/__tests__"
           ]
-        }
+        },
+        "updatedAt": "2026-03-28T09:09:19.222Z"
       },
       {
         "id": "698",
@@ -14623,7 +14624,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T09:09:18.922Z",
+      "lastModified": "2026-03-28T09:09:19.225Z",
       "taskCount": 710,
       "completedCount": 329,
       "tags": [
