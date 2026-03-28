@@ -1020,6 +1020,28 @@ fn validate_rank2_tensors(a: &[Value], b: &[Value]) -> Option<Value> {
         return Some(Value::Undef);
     }
 
+    // Jagged validation: all rows in each operand must have the same column count.
+    let a_cols = match &a[0] {
+        Value::Tensor(r) => r.len(),
+        _ => 0,
+    };
+    if !a
+        .iter()
+        .all(|r| matches!(r, Value::Tensor(row) if row.len() == a_cols))
+    {
+        return Some(Value::Undef);
+    }
+    let b_cols = match &b[0] {
+        Value::Tensor(r) => r.len(),
+        _ => 0,
+    };
+    if !b
+        .iter()
+        .all(|r| matches!(r, Value::Tensor(row) if row.len() == b_cols))
+    {
+        return Some(Value::Undef);
+    }
+
     // Valid rank-2: fall through to componentwise_binop.
     None
 }
