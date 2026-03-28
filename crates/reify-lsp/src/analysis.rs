@@ -727,6 +727,12 @@ mod tests {
             .expect("fallback inside else block should be found");
         assert_eq!(info.name, "fallback");
         assert_eq!(info.kind, ValueCellKind::Let);
+        assert_eq!(*info.cell_type, Type::Int, "fallback (literal 2) should have Int type");
+        let decl_text = &source[info.span.start as usize..info.span.end as usize];
+        assert!(
+            decl_text.contains("fallback"),
+            "span should cover the let declaration, got: {decl_text:?}"
+        );
     }
 
     // --- decl_name field tests ---
