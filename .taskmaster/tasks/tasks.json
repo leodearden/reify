@@ -13497,6 +13497,17 @@
         ],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 679,
+        "title": "Export MAX_RECURSION_DEPTH and reference in integration tests",
+        "description": "MAX_RECURSION_DEPTH (256) is a private const in crates/reify-expr/src/lib.rs. Integration tests in lambda_eval_tests.rs hardcode 256/255, creating fragile coupling.\n\nFix: Make the constant public (e.g. `pub const MAX_RECURSION_DEPTH: u32 = 256;` or `#[doc(hidden)] pub const _MAX_RECURSION_DEPTH`) and update tests to reference it via `reify_expr::MAX_RECURSION_DEPTH` and `MAX_RECURSION_DEPTH - 1`.\n\nAlso make EvalContext::simple() delegate to _test_at_depth(values, 0) to eliminate the duplicate field list.\n\nmemory_hints: search \"MAX_RECURSION_DEPTH recursion depth limit\" in reify-expr",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -13508,7 +13519,8 @@
         "master"
       ],
       "created": "2026-03-28T04:59:44.348Z",
-      "description": "Tasks for master context"
+      "description": "Tasks for master context",
+      "updated": "2026-03-28T04:59:56.209Z"
     }
   }
 }
