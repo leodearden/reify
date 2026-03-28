@@ -11623,7 +11623,7 @@
         "description": "Add lightweight runtime guards to the 6 payload-bearing handlers in gui/src/bridge.ts subscribeToClaudeEvents (lines 159-182). Currently all payload casts are compile-time only — if the Rust sidecar emits a malformed event, undefined values propagate silently.\n\nFix: add null-guard before each cast (`if (!event.payload) return;`) and optionally validate required string fields (e.g. `typeof p.id !== 'string'`). Also guard tool_input against null/array values in the tool_call handler.\n\nSource: architect reviewer (S4) and robustness reviewer from task 517 review.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -11636,7 +11636,7 @@
             "gui/src"
           ]
         },
-        "updatedAt": "2026-03-28T04:47:42.270Z"
+        "updatedAt": "2026-03-28T05:03:44.707Z"
       },
       {
         "id": "570",
@@ -13603,7 +13603,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T05:03:10.767Z",
+      "lastModified": "2026-03-28T05:03:44.707Z",
       "taskCount": 687,
       "completedCount": 324,
       "tags": [
