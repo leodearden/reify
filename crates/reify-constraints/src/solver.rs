@@ -509,6 +509,10 @@ impl ConstraintSolver for DimensionalSolver {
         // pure feasibility). This enables early-exit for no-objective problems
         // and a reduced iteration budget for optimization warm-starts.
         let initial = extract_initial_point(problem);
+        // NB: `trial_values` is used in two places — (1) the feasibility check
+        // immediately below, and (2) the fallback objective validation when the
+        // optimizer drifts infeasible (see `eval_objective(&trial_values, …)`).
+        // Do not inline into the feasibility check.
         let trial_values =
             build_trial_values(&problem.current_values, &problem.auto_params, &initial);
         let initially_feasible =
