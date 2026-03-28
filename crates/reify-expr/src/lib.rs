@@ -507,6 +507,8 @@ fn eval_user_function_call(function_name: &str, args: &[CompiledExpr], ctx: &Eva
 ///
 /// Returns Undef if:
 /// - Input is not a Value::Field
+/// - Input field's lambda is not callable (not a Value::Lambda) — rejects
+///   Sampled, Imported, and Composed fields with Undef lambdas
 /// - Domain is not Point3 (Point{n:3, quantity})
 /// - Codomain is not a scalar type (Type::Scalar or Type::Real)
 fn compute_gradient_field(input: &Value) -> Value {
@@ -514,8 +516,11 @@ fn compute_gradient_field(input: &Value) -> Value {
         Value::Field {
             domain_type,
             codomain_type,
+            lambda,
             ..
-        } => (domain_type, codomain_type, input),
+        } if matches!(lambda.as_ref(), Value::Lambda { .. }) => {
+            (domain_type, codomain_type, input)
+        }
         _ => return Value::Undef,
     };
 
