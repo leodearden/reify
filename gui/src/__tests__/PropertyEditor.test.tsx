@@ -662,6 +662,9 @@ describe('PropertyEditor quantity literal acceptance', () => {
     ['5 mm'],
     ['5  mm'],
     ['5\tmm'],
+    ['+10mm'],
+    ['mm'],
+    ['deg'],
   ])("'%s' on Enter does NOT call onSetParameter", (invalidLiteral) => {
     const onSetParam = vi.fn();
     render(() => (
