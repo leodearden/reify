@@ -12706,11 +12706,11 @@
         "description": "When `edit_param` is called on a param (especially one that was initially Undef/Undetermined), the param's cache entry is never updated — it remains at `CachedResult::Value(Undef, Undetermined)` from the original eval. The param is not in `eval_set` (it's the source of change, not a dependent) and is never marked Pending either. This leaves the cache inconsistent with the snapshot.\n\n**What's wrong:**\n1. The param's cache entry retains stale `(Undef, Undetermined)` after edit_param sets it to `(new_value, Determined)`.\n2. The param is never transitioned to Pending during edit_param, so its freshness stays Final with old data.\n3. Any future code path querying the cache for `NodeId::Value(param_id)` would get stale data.\n\n**Fix:**\n1. At the start of `edit_param`, after updating `new_snapshot.values`, also call `self.cache.record_evaluation(NodeId::Value(cell.clone()), CachedResult::Value(new_value.clone(), DeterminacyState::Determined), VersionId(version_id), DependencyTrace::default())`.\n2. Optionally call `self.cache.mark_pending(&NodeId::Value(cell.clone()))` before the dependent-marking loop, then update after.\n\n**Test plan:** Add tests for (a) double edit_param on same param, (b) eval-after-edit to verify param reverts or retains correctly.\n\n**Memory hints:** search for \"edit_param cache consistency\", \"cache stale entry\", entity names: edit_param, CachedResult, mark_pending",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-28T09:59:47.240Z",
+        "updatedAt": "2026-03-28T10:04:40.271Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -12791,7 +12791,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T10:02:36.631Z",
+      "lastModified": "2026-03-28T10:04:40.271Z",
       "taskCount": 635,
       "completedCount": 296,
       "tags": [
