@@ -29,7 +29,7 @@
       "id": "step-2",
       "type": "test",
       "description": "Write orient_basis_inf_component_returns_undef: pass a basis vector containing Inf (e.g. [Inf,0,0], [0,1,0], [0,0,1]) and assert Undef. Inf IS caught by the existing magnitude check ((Inf-1.0).abs()=Inf > tol=true), but the test documents it.",
-      "status": "pending",
+      "status": "done",
       "commit": null
     },
     {

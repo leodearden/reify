@@ -4279,6 +4279,23 @@ mod tests {
     }
 
     #[test]
+    fn orient_basis_inf_component_returns_undef() {
+        // A basis vector containing Inf should produce Undef.
+        // Inf IS caught by the existing magnitude check: (Inf - 1.0).abs() = Inf > tol = true.
+        let x = Value::Tensor(vec![
+            Value::Real(f64::INFINITY),
+            Value::Real(0.0),
+            Value::Real(0.0),
+        ]);
+        let y = Value::Tensor(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
+        let z = Value::Tensor(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
+        assert!(
+            eval_builtin("orient_basis", &[x, y, z]).is_undef(),
+            "Inf in basis vector should produce Undef"
+        );
+    }
+
+    #[test]
     fn dot_mixed_component_dimensions_returns_undef() {
         // A Tensor with mixed dimensions is not a valid physical vector
         let a = Value::Tensor(vec![
