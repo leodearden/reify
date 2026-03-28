@@ -4360,6 +4360,30 @@ mod tests {
     }
 
     #[test]
+    fn orient_quaternion_dimensioned_scalar_strips_dimension() {
+        // as_f64() silently strips dimension — a LENGTH Scalar with si_value=1.0
+        // is accepted as quaternion component w=1.0. Documents this behavior.
+        assert_orientation_approx!(
+            eval_builtin(
+                "orient_quaternion",
+                &[
+                    Value::Scalar {
+                        si_value: 1.0,
+                        dimension: DimensionVector::LENGTH,
+                    },
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                ]
+            ),
+            1.0,
+            0.0,
+            0.0,
+            0.0
+        );
+    }
+
+    #[test]
     fn orient_euler_inf_angle_returns_undef() {
         // Inf angle must be rejected in orient_euler.
         assert!(
