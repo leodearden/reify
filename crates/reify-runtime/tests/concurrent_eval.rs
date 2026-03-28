@@ -1966,14 +1966,15 @@ async fn five_parent_fan_in_one_changed() {
     );
 }
 
-// --- Lock poisoning panic tests ---
+// --- Extended poison recovery tests (build_result_shared / into_result) ---
 // These tests verify that poisoned locks are recovered gracefully in
-// build_result_shared() and into_result(), preventing cascading panics.
+// build_result_shared() and into_result(), extending the basic
+// poison_recovery module's coverage of values()/take_results().
 // Gated behind feature = "test-utils" because the poison_*() helpers
 // are only available with that feature.
 
 #[cfg(feature = "test-utils")]
-mod poison_panics {
+mod poison_recovery_extended {
     use super::*;
     use std::panic::{AssertUnwindSafe, catch_unwind};
 
