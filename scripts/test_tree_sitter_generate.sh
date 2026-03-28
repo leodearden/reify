@@ -119,6 +119,19 @@ echo "--- Test 6: timeout wrapper present ---"
 assert "script uses 'timeout 60 tree-sitter generate'" \
     grep -q 'timeout 60 tree-sitter generate' "$GENERATE_SCRIPT"
 
+# ── Test 7: --force flag bypasses staleness ────────────────────────
+echo ""
+echo "--- Test 7: --force bypasses staleness check ---"
+
+# At this point stamp is fresh and outputs exist. Normal run would skip.
+output7=$("$GENERATE_SCRIPT" --force 2>&1)
+
+assert "--force generates even when up to date (prints 'generated parser files')" \
+    bash -c "echo '$output7' | grep -q 'generated parser files'"
+
+assert "--force does NOT print 'up to date'" \
+    bash -c "! echo '$output7' | grep -q 'up to date'"
+
 # ── Summary ────────────────────────────────────────────────────────
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
