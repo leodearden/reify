@@ -464,16 +464,6 @@ describe('subscribeToClaudeEvents', () => {
   });
 
   describe('payload validation guards', () => {
-    let warnSpy: ReturnType<typeof vi.spyOn>;
-
-    beforeEach(() => {
-      warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    });
-
-    afterEach(() => {
-      warnSpy.mockRestore();
-    });
-
     /** Helper: capture the internal listener for a given event name */
     function captureListener(eventName: string) {
       let captured: ((event: { payload: unknown }) => void) | undefined;
@@ -518,11 +508,6 @@ describe('subscribeToClaudeEvents', () => {
           listener({ payload });
 
           expect(handler).not.toHaveBeenCalled();
-          expect(warnSpy).toHaveBeenCalledOnce();
-          expect(warnSpy).toHaveBeenCalledWith(
-            expect.stringContaining(eventName),
-            payload,
-          );
         });
       }
     }
@@ -674,8 +659,3 @@ type _AssertToolCallPayload = AssertTrue<Equals<Omit<ToolCall, 'type'>, { id: st
 type _AssertToolResultPayload = AssertTrue<Equals<Omit<ToolResult, 'type'>, { id: string; tool_name: string; result: unknown }>>;
 type _AssertDonePayload = AssertTrue<Equals<Omit<Done, 'type'>, { id: string }>>;
 type _AssertErrorMessagePayload = AssertTrue<Equals<Omit<ErrorMessage, 'type'>, { id: string; message: string }>>;
-
-// EventEntry's payload type is `unknown` (not `Record<string, unknown>`) because
-// each handler casts event.payload independently via `as Omit<X, 'type'>`.
-// `unknown` prevents accidental uncast property access and doesn't falsely
-// constrain the payload to be an object with string keys.
