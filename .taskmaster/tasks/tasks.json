@@ -12628,6 +12628,19 @@
         ],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 625,
+        "title": "Move make_scalar_vec3 helper to reify-test-support crate",
+        "description": "The `make_scalar_vec3` helper (creates a 3-element Vec<Value> of Value::Scalar with shared DimensionVector) is defined as a private function inside the `#[cfg(test)]` block of `reify-stdlib/src/lib.rs`. The project already has a `reify-test-support` crate with reusable Value constructors. Move `make_scalar_vec3` (or a more general `scalar_vec3`) to `crates/reify-test-support/src/values.rs` so it's available to any test module.\n\nFile: crates/reify-stdlib/src/lib.rs, line ~1528\n\n## Memory hints\n- search: \"reify-test-support value constructors\"\n- search: \"make_scalar_vec3 helper\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          379
+        ],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -12640,7 +12653,7 @@
       ],
       "created": "2026-03-28T05:28:36.730Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-28T05:28:36.737Z"
+      "updated": "2026-03-28T05:28:41.219Z"
     }
   }
 }
