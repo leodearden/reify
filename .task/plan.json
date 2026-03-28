@@ -371,8 +371,8 @@
       "id": "step-49",
       "type": "impl",
       "description": "[Merge fix 4: post-ff verification] Run `cargo test -p reify-eval determinacy` to verify all 30+ determinacy predicate tests still pass at main's tip. Also run `cargo test -p reify-constraints termination_reason_extracted_without_panic` for the tightened solver test. No regressions expected since our changes were already part of main via the merge commit d4a2b95a, and subsequent main commits touched different code (LSP, runtime, GUI).",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "82a9b4bb"
     }
   ],
   "design_decisions": [
