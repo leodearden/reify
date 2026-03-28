@@ -14733,10 +14733,11 @@
         "description": "Two changes in gui/src/stores/selectionStore.ts and gui/src/__tests__/selectionStore.test.ts:\n\n1. **Code fix**: In `clearIfRemoved`, wrap the body in `batch(() => { ... })` so that when both `selectedEntity` and `hoveredEntity` match the removed path, only one createEffect run fires (and thus one backend dispatch) instead of two sequential effect runs. Currently `selectEntity(null)` triggers an immediate dispatch, then `hoverEntity(null)` triggers a debounced dispatch — two backend syncs for one logical operation.\n\n2. **Test**: Add a backend sync test for `clearIfRemoved` inside the existing `describe('backend sync')` block. Set both selectedEntity and hoveredEntity to the same path, call clearIfRemoved, and verify the number and content of invoke calls. This covers the double-dispatch scenario.\n\nMemory hints: search \"selectionStore backend sync createEffect\" for context on the dispatch paths.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-03-28T09:39:57.149Z"
       },
       {
         "id": "718",
@@ -14798,7 +14799,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T09:39:56.691Z",
+      "lastModified": "2026-03-28T09:39:57.149Z",
       "taskCount": 722,
       "completedCount": 336,
       "tags": [
