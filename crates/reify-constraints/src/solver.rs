@@ -72,10 +72,19 @@ fn params_to_value_map(params: &[AutoParam], x: &[f64]) -> HashMap<ValueCellId, 
 ///
 /// Clones the base map (O(1) via PersistentMap structural sharing) and
 /// inserts each auto param as a Value::Scalar with the correct dimension.
+/// Maps params directly to avoid the intermediate HashMap allocation that
+/// `params_to_value_map` would create — this is the hot path called on
+/// every Nelder-Mead iteration.
 fn build_trial_values(base: &ValueMap, params: &[AutoParam], x: &[f64]) -> ValueMap {
     let mut values = base.clone();
-    for (id, value) in params_to_value_map(params, x) {
-        values.insert(id, value);
+    for (param, &val) in params.iter().zip(x.iter()) {
+        values.insert(
+            param.id.clone(),
+            Value::Scalar {
+                si_value: val,
+                dimension: dimension_of(&param.param_type),
+            },
+        );
     }
     values
 }
