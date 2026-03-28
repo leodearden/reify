@@ -174,6 +174,7 @@ describe('selectionStore', () => {
     let dispose!: () => void;
     let selectEntity!: (path: string | null) => void;
     let hoverEntity!: (path: string | null) => void;
+    let clearIfRemoved!: (path: string) => void;
 
     beforeEach(() => {
       vi.useFakeTimers();
@@ -184,6 +185,7 @@ describe('selectionStore', () => {
         const store = createSelectionStore();
         selectEntity = store.selectEntity;
         hoverEntity = store.hoverEntity;
+        clearIfRemoved = store.clearIfRemoved;
       });
 
       // Flush the initial effect's debounced invoke (null, null)
@@ -361,6 +363,20 @@ describe('selectionStore', () => {
       // No unhandled rejection leaked to console
       expect(errorSpy).not.toHaveBeenCalled();
       errorSpy.mockRestore();
+    });
+
+    it('clearIfRemoved dispatches when selectedEntity matches', () => {
+      selectEntity('Bracket');
+      mockInvoke.mockClear();
+
+      clearIfRemoved('Bracket');
+
+      // Selection-only change → immediate dispatch
+      expect(mockInvoke).toHaveBeenCalledTimes(1);
+      expect(mockInvoke).toHaveBeenCalledWith('update_selection', {
+        selectedEntity: null,
+        hoveredEntity: null,
+      });
     });
   });
 });
