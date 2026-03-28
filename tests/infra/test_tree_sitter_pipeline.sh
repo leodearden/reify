@@ -113,6 +113,19 @@ assert "type_check_command includes tree-sitter generation" \
 assert "hooks/project-checks includes tree-sitter generation" \
     grep -q "tree-sitter-generate" "$ROOT/hooks/project-checks"
 
+# ── Step 8: Install guidance recommends npm, not cargo ────────────
+assert_not_contains() {
+    local file="$1"
+    local pattern="$2"
+    ! grep -qF "$pattern" "$file"
+}
+
+assert "generation script does NOT recommend 'cargo install tree-sitter-cli'" \
+    assert_not_contains "$ROOT/scripts/tree-sitter-generate.sh" "cargo install tree-sitter-cli"
+
+assert "generation script recommends 'npm install -g tree-sitter-cli'" \
+    grep -qF "npm install -g tree-sitter-cli" "$ROOT/scripts/tree-sitter-generate.sh"
+
 # ── Summary ─────────────────────────────────────────────────────────
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
