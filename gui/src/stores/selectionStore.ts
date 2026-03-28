@@ -83,8 +83,10 @@ export function createSelectionStore() {
   }
 
   function clearHighlights() {
-    setState('selectedEntity', null);
-    setState('highlightedParams', []);
+    batch(() => {
+      setState('selectedEntity', null);
+      setState('highlightedParams', []);
+    });
   }
 
   function clearIfRemoved(entityPath: string) {
