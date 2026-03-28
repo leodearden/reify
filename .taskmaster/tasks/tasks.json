@@ -12707,7 +12707,9 @@
         "details": "",
         "testStrategy": "",
         "status": "pending",
-        "dependencies": [],
+        "dependencies": [
+          "627"
+        ],
         "priority": "medium",
         "subtasks": []
       }
