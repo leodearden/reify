@@ -1113,6 +1113,15 @@ fn complex_abs(re: f64, im: f64, dimension: DimensionVector) -> Value {
     }
 }
 
+/// Compute the Euclidean norm (magnitude) of a 3D vector.
+///
+/// Pure mathematical function — callers are responsible for checking finiteness
+/// of the result if needed.
+#[inline]
+fn vec3_norm(x: f64, y: f64, z: f64) -> f64 {
+    (x * x + y * y + z * z).sqrt()
+}
+
 /// Normalize a quaternion (w, x, y, z) to unit length.
 ///
 /// Returns `None` if any component is non-finite or the quaternion has zero length.
