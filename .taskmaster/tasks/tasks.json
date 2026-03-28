@@ -14446,7 +14446,7 @@
         "description": "Three test gaps (overlaps with task #692 for check-only tests — coordinate or merge): 1) Add OK assertion to build_indeterminate_constraint_exits_success and check_indeterminate_constraint_exits_success. 2) Add fixture bracket_violated_with_indeterminate.ri plus tests in both cli_build.rs and cli_check.rs asserting exit failure with both VIOLATED and INDETERMINATE. 3) Add fixture bracket_all_indeterminate.ri plus tests asserting exit 0 and only INDETERMINATE in output.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -14461,7 +14461,8 @@
             "crates/reify-cli/tests",
             "data/fixtures"
           ]
-        }
+        },
+        "updatedAt": "2026-03-28T09:44:15.230Z"
       },
       {
         "id": "702",
@@ -14838,7 +14839,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T09:44:15.095Z",
+      "lastModified": "2026-03-28T09:44:15.230Z",
       "taskCount": 725,
       "completedCount": 338,
       "tags": [
