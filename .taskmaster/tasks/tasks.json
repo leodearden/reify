@@ -13295,7 +13295,7 @@
         "description": "In crates/reify-cli/tests/cli_build.rs, two error-path tests verify exit status and diagnostic output but don't assert that no STEP file was created:\n\n1. `build_parse_error_exits_failure` — should assert `!output_path.exists()` to verify no partial file on parse error\n2. `build_compile_error_exits_failure` — should assert `!output_path.exists()` to verify no file on compile error\n\nThis is important because `build_violating_bracket_exits_failure` explicitly asserts the file IS written on constraint violations, making the distinction between error types a meaningful contract.\n\nWhile touching these tests, also replace bare `.unwrap()` calls on `output_path.to_str()` with `.expect(\"temp path is not valid UTF-8\")` for clearer failure diagnostics (4 call sites).\n\nMemory hints: search for \"CLI test assertions\", entity names: cli_build",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -13306,7 +13306,8 @@
           "modules": [
             "crates/reify-cli/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-03-28T20:43:42.627Z"
       },
       {
         "id": "641",
@@ -15442,7 +15443,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T20:43:42.520Z",
+      "lastModified": "2026-03-28T20:43:42.627Z",
       "taskCount": 749,
       "completedCount": 380,
       "tags": [
