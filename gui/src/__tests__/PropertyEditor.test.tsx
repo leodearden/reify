@@ -822,6 +822,31 @@ describe('PropertyEditor escape clears data-invalid', () => {
   });
 });
 
+describe('PropertyEditor blur clears data-invalid after invalid Enter', () => {
+  const values: Record<string, ValueData> = {
+    c1: makeValue({ cell_id: 'c1', name: 'width', value: '50', determinacy: 'determined', entity_path: 'Bracket.width' }),
+  };
+
+  it('blur after invalid Enter clears data-invalid and reverts value', () => {
+    const onSetParam = vi.fn();
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: 'abc' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    // data-invalid should be set after invalid Enter
+    expect(input.hasAttribute('data-invalid')).toBe(true);
+    // Now blur (instead of Escape) — blur should also clear data-invalid and revert
+    fireEvent.blur(input);
+    expect(input.value).toBe('50');
+    expect(input.hasAttribute('data-invalid')).toBe(false);
+    expect(onSetParam).not.toHaveBeenCalled();
+  });
+});
+
 describe('PropertyEditor validation - hex/octal/binary/leading-plus rejection', () => {
   const values: Record<string, ValueData> = {
     c1: makeValue({ cell_id: 'c1', name: 'width', value: '50', determinacy: 'determined', entity_path: 'Bracket.width' }),
