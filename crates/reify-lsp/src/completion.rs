@@ -231,25 +231,6 @@ fn push_structure_names(items: &mut Vec<CompletionItem>, ctx: &AnalysisContext) 
     }
 }
 
-/// Reify language keywords (flat list for backward compatibility).
-const KEYWORDS: &[&str] = &[
-    "structure",
-    "param",
-    "let",
-    "constraint",
-    "sub",
-    "import",
-    "if",
-    "then",
-    "else",
-    "and",
-    "or",
-    "not",
-    "true",
-    "false",
-    "auto",
-];
-
 /// Keywords that are only valid at the top level (outside structure bodies).
 const TOP_LEVEL_KEYWORDS: &[&str] = &[
     "structure",
