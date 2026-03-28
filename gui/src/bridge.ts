@@ -142,6 +142,21 @@ export const MESSAGE_CONTEXT_FIELD_MAP: Record<keyof Required<MessageContext>, s
   attachedContexts: 'attached_contexts',
 };
 
+/**
+ * Every MessageContext key that buildMessageContext() in ChatPanel.tsx is expected
+ * to handle. The `satisfies` clause ensures each element is a valid MessageContext
+ * key, and the Equals<> assertion in types.typecheck.ts ensures this tuple covers
+ * every key (so adding a field to MessageContext without updating this list causes
+ * a compile error).
+ */
+export const BUILD_CONTEXT_HANDLED_FIELDS = [
+  'selectedEntity',
+  'diagnostics',
+  'constraints',
+  'currentFile',
+  'attachedContexts',
+] as const satisfies readonly (keyof Required<MessageContext>)[];
+
 /** Convert a camelCase MessageContext to its snake_case wire representation using MESSAGE_CONTEXT_FIELD_MAP. */
 export function mapContextToWire(ctx: MessageContext): Record<string, unknown> {
   const wire: Record<string, unknown> = {};
