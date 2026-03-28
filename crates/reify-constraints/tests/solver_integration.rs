@@ -1113,8 +1113,9 @@ fn infeasible_initial_not_rescued_by_fallback() {
 /// build_simplex with 4 vertices (3+1), build_trial_values with a 3-element
 /// param vector, and the returned values map with 3 entries.
 ///
-/// Asserts: Solved, each param satisfies constraints, and the sum decreased
-/// from the initial 90mm total (proving optimizer improved the objective).
+/// Asserts: Solved, each param satisfies constraints, and the sum is
+/// non-regression from the initial 90mm total (optimizer should not worsen
+/// the objective).
 #[test]
 fn multi_param_warm_start_with_objective() {
     let solver = DimensionalSolver;
@@ -1191,13 +1192,14 @@ fn multi_param_warm_start_with_objective() {
                 );
                 sum_si += si;
             }
-            // Optimizer should improve from initial sum of 0.090 (3 × 30mm).
-            // With the warm-start reduced budget (500*(N+1) = 2000 iters for 3
-            // params), the Nelder-Mead optimizer may only achieve modest
-            // improvement. Assert the sum didn't increase — the optimizer
-            // should at least maintain or improve the objective.
+            // Non-regression: optimizer should not worsen the objective from
+            // the initial sum of 0.090 (3 × 30mm). With the warm-start reduced
+            // budget (500*(N+1) = 2000 iters for 3 params), the Nelder-Mead
+            // optimizer may only achieve modest improvement. The 1e-9 epsilon
+            // accounts for IEEE 754 float accumulation (0.030 + 0.030 + 0.030
+            // may exceed 0.090 by a few ULPs).
             assert!(
-                sum_si <= 0.090,
+                sum_si <= 0.090 + 1e-9,
                 "optimizer should not increase sum above initial 90mm, got {} m",
                 sum_si
             );
@@ -1209,20 +1211,17 @@ fn multi_param_warm_start_with_objective() {
     }
 }
 
-/// Partial-feasibility: p0 starts feasible (satisfies both its constraints) but
-/// p1 starts infeasible (violates p1 > 20mm because p1=10mm). Since
-/// max_constraint_residual checks ALL constraints, this partially-feasible
-/// point should be treated as infeasible (initially_feasible = false).
-///
-/// Without the warm-start feasible fallback, the solver returns Infeasible
-/// even though the residual is tiny (~5e-7, well below physical tolerance).
-/// A fully-feasible starting point with the same constraints would return
-/// Solved via the fallback path — this test proves partial feasibility is
-/// NOT treated as full feasibility.
+/// Partial-feasibility with unreachable constraint: p0 starts feasible
+/// (satisfies 5mm < p0 < 50mm) but p1 starts infeasible (violates p1 > 20mm
+/// because p1=10mm). Crucially, p1 bounds are [1mm, 15mm] — the optimizer
+/// CANNOT reach p1 > 20mm. Since max_constraint_residual checks ALL
+/// constraints, this partially-feasible point is treated as infeasible
+/// (initially_feasible = false) and with no feasible region reachable, the
+/// solver must return Infeasible.
 ///
 /// Asserts: Infeasible result with a diagnostic mentioning "residual".
 #[test]
-fn partial_feasibility_not_treated_as_warm_start() {
+fn partial_feasibility_infeasible_when_unreachable() {
     let solver = DimensionalSolver;
 
     let p0_id = vcid("Part", "p0");
@@ -1271,7 +1270,7 @@ fn partial_feasibility_not_treated_as_warm_start() {
             AutoParam {
                 id: p1_id.clone(),
                 param_type: Type::length(),
-                bounds: Some((0.001, 0.100)),
+                bounds: Some((0.001, 0.015)), // 1mm–15mm: CANNOT reach p1 > 20mm
             },
         ],
         constraints,
@@ -1284,9 +1283,9 @@ fn partial_feasibility_not_treated_as_warm_start() {
     match result {
         SolveResult::Infeasible { diagnostics } => {
             // The solver correctly identified the partial-feasibility as
-            // infeasible (initially_feasible = false) and had no fallback path.
-            // Despite getting very close (residual ~5e-7), the strict 1e-12
-            // FEASIBILITY_THRESHOLD means it's reported as Infeasible.
+            // infeasible (initially_feasible = false). With p1 bounds capped
+            // at 15mm, the optimizer physically cannot reach p1 > 20mm,
+            // guaranteeing an Infeasible outcome regardless of iteration count.
             assert!(!diagnostics.is_empty(), "should have diagnostic messages");
             let msg = &diagnostics[0].message;
             assert!(
@@ -1295,14 +1294,87 @@ fn partial_feasibility_not_treated_as_warm_start() {
                 msg
             );
         }
+        other => panic!(
+            "expected Infeasible when p1 bounds [1mm,15mm] cannot reach p1>20mm constraint, got {:?}",
+            other
+        ),
+    }
+}
+
+/// Partial-feasibility with reachable constraint (no objective): p0 starts
+/// feasible (satisfies 5mm < p0 < 50mm) and p1 starts just below the
+/// constraint boundary (p1=19.5mm vs constraint p1 > 20mm). With bounds
+/// [1mm, 100mm] and no objective pulling parameters downward, the optimizer
+/// focuses entirely on constraint satisfaction and trivially moves p1 past
+/// the 20mm boundary. Since initially_feasible=false, the solver uses the
+/// full 5000-iteration budget, giving ample room to converge.
+///
+/// Asserts: Solved with all values satisfying constraints (p0 in 5-50mm,
+/// p1 in 20-50mm).
+#[test]
+fn partial_feasibility_solved_when_close_to_boundary() {
+    let solver = DimensionalSolver;
+
+    let p0_id = vcid("Part", "p0");
+    let p1_id = vcid("Part", "p1");
+    let p0_ref = value_ref("Part", "p0");
+    let p1_ref = value_ref("Part", "p1");
+
+    // p0 constraints: 5mm < p0 < 50mm
+    // p1 constraints: 20mm < p1 < 50mm
+    let constraints = vec![
+        (cnid("Part", 0), gt(p0_ref.clone(), literal(mm(5.0)))),
+        (cnid("Part", 1), lt(p0_ref.clone(), literal(mm(50.0)))),
+        (cnid("Part", 2), gt(p1_ref.clone(), literal(mm(20.0)))),
+        (cnid("Part", 3), lt(p1_ref.clone(), literal(mm(50.0)))),
+    ];
+
+    // No objective — pure constraint satisfaction. This avoids the
+    // penalty-weight trade-off where Minimize(p0+p1) pulls the optimizer
+    // toward the constraint boundary rather than past it.
+
+    let mut current = ValueMap::new();
+    // p0 = 30mm — satisfies both p0 constraints (5mm < 30mm < 50mm)
+    current.insert(
+        p0_id.clone(),
+        Value::Scalar {
+            si_value: 0.030,
+            dimension: DimensionVector::LENGTH,
+        },
+    );
+    // p1 = 19.5mm — just 0.5mm below the 20mm constraint boundary
+    current.insert(
+        p1_id.clone(),
+        Value::Scalar {
+            si_value: 0.0195,
+            dimension: DimensionVector::LENGTH,
+        },
+    );
+
+    let problem = ResolutionProblem {
+        auto_params: vec![
+            AutoParam {
+                id: p0_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.100)), // 1mm–100mm
+            },
+            AutoParam {
+                id: p1_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.100)), // 1mm–100mm: easily reaches p1 > 20mm
+            },
+        ],
+        constraints,
+        current_values: current,
+        objective: None,
+        functions: vec![],
+    };
+
+    let result = solver.solve(&problem);
+    match result {
         SolveResult::Solved { values } => {
-            // If the solver achieves full feasibility, verify the solved values
-            // actually satisfy all constraints. This catches a critical failure mode:
-            // if a bug makes `initially_feasible=true` for this partially-infeasible
-            // point, the solver gets the reduced warm-start budget (1500 iters instead
-            // of 5000) and the fallback path (solver.rs:618-640) may return Solved
-            // with the ORIGINAL infeasible values (p1=10mm). The p1 >= 0.020 check
-            // catches this because the initial p1=0.010 would fail it.
+            // The solver found feasibility for both params. Verify the solved
+            // values actually satisfy all constraints.
             let p0_si = values.get(&p0_id).unwrap().as_f64().unwrap();
             let p1_si = values.get(&p1_id).unwrap().as_f64().unwrap();
             assert!(
@@ -1312,13 +1384,12 @@ fn partial_feasibility_not_treated_as_warm_start() {
             );
             assert!(
                 p1_si > 0.020 && p1_si < 0.050,
-                "p1 should satisfy constraints (20mm < p1 < 50mm), got {} m — \
-                 if p1 is near 0.010, the solver used infeasible initial values",
+                "p1 should satisfy constraints (20mm < p1 < 50mm), got {} m",
                 p1_si
             );
         }
         other => panic!(
-            "expected Infeasible or Solved for partially-feasible initial point, got {:?}",
+            "expected Solved when p1 starts at 19.5mm (just below 20mm boundary), got {:?}",
             other
         ),
     }

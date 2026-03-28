@@ -2085,8 +2085,10 @@ mod tests {
             SolveResult::Solved { values } => {
                 let si = values.get(&x_id).unwrap().as_f64().unwrap();
                 assert!(
-                    si < 0.008,
-                    "optimizer should drive x toward 5mm lower bound, got {} m (expected < 8mm)",
+                    si > 0.004 && si < 0.008,
+                    "optimizer should drive x toward 5mm lower bound, got {} m \
+                     (expected 4mm < x < 8mm — lower bound catches zero/negative, \
+                     upper bound confirms convergence near 5mm)",
                     si
                 );
             }
