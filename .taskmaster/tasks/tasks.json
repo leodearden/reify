@@ -12689,7 +12689,7 @@
         "description": "The Equals<A,B> compile-time assertion in types.typecheck.ts catches structural drift between ClaudeMessageContext and MessageContext, but the runtime field mapping in claudeSendMessage (bridge.ts:130-134) and the mirror mapping in App.tsx (lines 65-68) manually enumerate field names. If a new field is added to both interfaces, the type assertion passes but the runtime mapping silently drops the new field.\n\nOptions:\n1. Replace explicit field enumeration with a computed mapping (iterate Object.keys + camelToSnake helper)\n2. Add an exhaustiveness helper type that asserts every key of ClaudeMessageContext appears in the mapping literal\n3. At minimum, add prominent comments in both bridge.ts and App.tsx warning that the mapping must be kept in sync\n\nAlso add a comment in App.tsx near the manual mapping (lines 65-68) pointing to types.typecheck.ts so maintainers know to update both places.\n\nMemory hints: search \"ClaudeMessageContext bridge.ts field mapping exhaustiveness\", entities: ClaudeMessageContext, bridge.ts, App.tsx",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -12704,7 +12704,8 @@
             "gui/src",
             "gui/src/__tests__"
           ]
-        }
+        },
+        "updatedAt": "2026-03-28T20:09:13.203Z"
       },
       {
         "id": "612",
@@ -15404,7 +15405,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T20:09:12.879Z",
+      "lastModified": "2026-03-28T20:09:13.203Z",
       "taskCount": 747,
       "completedCount": 375,
       "tags": [
