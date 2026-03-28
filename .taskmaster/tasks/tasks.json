@@ -11580,7 +11580,7 @@
         "description": "Three test improvements for the tree-sitter pipeline infra tests.",
         "details": "1. Add test that deletes parser.c and runs cargo check WITHOUT calling tree-sitter-generate.sh first — validates build.rs auto-generation path (the key new feature).\n2. Fix assert helper to show command output on failure instead of redirecting to /dev/null.\n3. Add negative tests: temporarily rename grammar.js and assert tree-sitter-generate.sh exits non-zero.\n\nFiles: tests/infra/test_tree_sitter_pipeline.sh",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -11592,9 +11592,15 @@
           ],
           "modules": [
             "tree-sitter-reify"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Tree-sitter pipeline test: auto-generation coverage, failure diagnostics, negative tests"
+            ]
+          }
         },
-        "updatedAt": "2026-03-28T15:51:44.892Z"
+        "updatedAt": "2026-03-28T15:54:33.206Z"
       },
       {
         "id": "565",
@@ -15247,7 +15253,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T15:51:44.892Z",
+      "lastModified": "2026-03-28T15:54:33.206Z",
       "taskCount": 738,
       "completedCount": 351,
       "tags": [
