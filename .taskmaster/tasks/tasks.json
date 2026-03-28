@@ -15136,7 +15136,18 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-cli/tests/common/mod.rs",
+            "crates/reify-cli/tests/cli_build.rs",
+            "crates/reify-cli/tests/cli_check.rs",
+            "crates/reify-cli/tests/cli_gui.rs"
+          ],
+          "modules": [
+            "crates/reify-cli/tests"
+          ]
+        }
       },
       {
         "id": 736,
@@ -15159,7 +15170,14 @@
               "plan.json tracked git cleanup task-517 commit 14ae324a",
               ".task directory contamination main branch"
             ]
-          }
+          },
+          "files": [
+            ".task/plan.json",
+            ".gitignore"
+          ],
+          "modules": [
+            ".task"
+          ]
         }
       },
       {
