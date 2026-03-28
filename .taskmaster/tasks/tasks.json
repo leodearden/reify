@@ -6376,9 +6376,17 @@
           ],
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "memory_hints": {
-            "entities": [],
+            "entities": [
+              "Physical",
+              "Rigid",
+              "Flexible",
+              "structural traits",
+              "stdlib"
+            ],
             "queries": [
-              "resolution for: Stdlib: Physical, Rigid, Flexible structural traits"
+              "stdlib structural traits Physical Rigid Flexible Sealed",
+              "structural_physical_tests.rs task/329 branch",
+              "structure def trait conformance compilation"
             ]
           }
         },
