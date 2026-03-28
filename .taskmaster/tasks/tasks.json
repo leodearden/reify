@@ -12802,6 +12802,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 636,
+        "title": "Count members inside PortDecl in LSP analysis functions",
+        "description": "PortDecl has a `members: Vec<MemberDecl>` field (reify-syntax/src/lib.rs:171) that can contain Param, Let, Constraint, and nested GuardedGroup declarations. However, both `count_members_recursive` and `find_named_member_span` in crates/reify-lsp/src/analysis.rs use `_ => {}` wildcard arms that silently skip Port members.\n\nThis means params/lets/constraints declared inside port blocks (e.g. `port mount : in MechanicalPort { param d : Length = 5mm }`) are not counted in hover tooltips and not found by go-to-definition.\n\nFix: Add explicit `MemberDecl::Port(p) => { recurse into p.members }` arms to both functions. Add tests with port-internal members.\n\nMemory hints: search \"PortDecl members\" in reify-syntax, search \"count_members_recursive Port\" in analysis.rs",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -12814,7 +12825,7 @@
       ],
       "created": "2026-03-28T00:33:54.683Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-28T00:34:17.374Z"
+      "updated": "2026-03-28T00:34:23.568Z"
     }
   }
 }
