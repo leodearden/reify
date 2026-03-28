@@ -368,26 +368,31 @@ fn parse_type_alias_missing_equals_no_panic() {
 #[test]
 fn parse_type_alias_empty_rhs_no_panic() {
     // `type Foo =` — RHS is empty (no type expression after '=').
-    // Should NOT panic. Tree-sitter error recovery produces a zero-width node
-    // that gets lowered to a TypeAlias with an empty-name type_expr.
+    // Should NOT panic. Tree-sitter error recovery may produce a TypeAlias with
+    // an empty-name type_expr (zero-width recovery node), OR errors, but not
+    // neither — the parser must not silently swallow malformed input.
     let source = "type Foo =";
     let (decls, errors) = parse_decls(source);
-    // Key invariant: no panic. The parser may produce a TypeAlias with an
-    // empty type_expr name (due to Tree-sitter's error recovery providing a
-    // zero-width node rather than None), or errors, or both.
     let ta = decls.iter().find_map(|d| match d {
         Declaration::TypeAlias(ta) => Some(ta),
         _ => None,
     });
     if let Some(ta) = ta {
-        // If a TypeAlias is produced, it should at least have the correct name
+        // If a TypeAlias is produced via recovery, it should have the correct name
         assert_eq!(ta.name, "Foo");
-        // Document that the type_expr has an empty name (zero-width recovery node)
+        // The recovered type_expr should have an empty name (zero-width node)
         assert!(
             ta.type_expr.name.is_empty() || !errors.is_empty(),
             "expected empty type_expr name or parse errors for empty RHS, got type_expr={:?}, errors={:?}",
             ta.type_expr,
             errors,
+        );
+    } else {
+        // If no TypeAlias is produced, errors must be present
+        assert!(
+            !errors.is_empty(),
+            "expected parse errors when no TypeAlias produced for empty RHS, got none; decls={:?}",
+            decls,
         );
     }
 }
