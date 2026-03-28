@@ -85,13 +85,19 @@ else
     while ! mkdir "$LOCK_DIR" 2>/dev/null; do
         _lock_attempts=$((_lock_attempts + 1))
         if [ "$_lock_attempts" -ge 30 ]; then
-            # Stale lock detection: if lock dir is older than 120s, remove it
+            # Stale lock detection: if lock dir is older than 120s, remove it.
+            # Use empty sentinel when stat fails — refuse to remove a lock
+            # we cannot verify as stale (avoids unconditional removal on
+            # platforms where neither GNU nor BSD stat is available).
             if [ -d "$LOCK_DIR" ]; then
-                _lock_age=$(( $(date +%s) - $(stat -c %Y "$LOCK_DIR" 2>/dev/null || stat -f %m "$LOCK_DIR" 2>/dev/null || echo 0) ))
-                if [ "$_lock_age" -gt 120 ]; then
-                    echo "WARNING: removing stale lock dir (age=${_lock_age}s)" >&2
-                    rmdir "$LOCK_DIR" 2>/dev/null || true
-                    continue
+                _lock_mtime=$(stat -c %Y "$LOCK_DIR" 2>/dev/null || stat -f %m "$LOCK_DIR" 2>/dev/null || echo '')
+                if [ -n "$_lock_mtime" ]; then
+                    _lock_age=$(( $(date +%s) - _lock_mtime ))
+                    if [ "$_lock_age" -gt 120 ]; then
+                        echo "WARNING: removing stale lock dir (age=${_lock_age}s)" >&2
+                        rmdir "$LOCK_DIR" 2>/dev/null || true
+                        continue
+                    fi
                 fi
             fi
             echo "ERROR: could not acquire generation lock after 30 attempts" >&2
