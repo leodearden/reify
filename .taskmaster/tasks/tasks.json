@@ -12791,6 +12791,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 635,
+        "title": "Add recursion depth limit to count_members_recursive and find_named_member_span",
+        "description": "Both `count_members_recursive` and `find_named_member_span` in crates/reify-lsp/src/analysis.rs use unbounded recursion over GuardedGroup nesting. Since the LSP server is a long-running process serving user input, pathologically nested where-blocks could cause a stack overflow crash.\n\nAdd a depth parameter (limit ~64) to both functions. When exceeded, return gracefully (current counts / None). Alternatively, convert to explicit stack-based iteration using `Vec<&[MemberDecl]>`.\n\nAlso add a test with a GuardedGroup nested inside else_members (e.g. `where a { } else { where b { param deep_else } }`) — this path is recursed but not currently tested.\n\nMemory hints: search \"count_members_recursive unbounded recursion\" in analysis.rs",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -12803,7 +12814,7 @@
       ],
       "created": "2026-03-28T00:33:54.683Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-28T00:34:11.645Z"
+      "updated": "2026-03-28T00:34:17.374Z"
     }
   }
 }
