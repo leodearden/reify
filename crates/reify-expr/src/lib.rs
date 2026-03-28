@@ -941,46 +941,66 @@ fn eval_or(left: &CompiledExpr, right: &CompiledExpr, ctx: &EvalContext) -> Valu
 }
 
 /// Apply a binary operation component-wise to two equal-length component slices,
-/// wrapping the result with the given constructor. Returns `Value::Undef` if lengths
-/// differ or any component operation produces `Value::Undef`.
+/// wrapping the result with the given constructor. Returns `Value::Undef` if either
+/// slice is empty, lengths differ, or any component operation produces `Value::Undef`.
 fn componentwise_binop(
     a: &[Value],
     b: &[Value],
     op: fn(&Value, &Value) -> Value,
     wrap: fn(Vec<Value>) -> Value,
 ) -> Value {
+    if a.is_empty() {
+        return Value::Undef;
+    }
     if a.len() != b.len() {
         return Value::Undef;
     }
-    let results: Vec<Value> = a.iter().zip(b.iter()).map(|(x, y)| op(x, y)).collect();
-    if results.iter().any(|v| v.is_undef()) {
-        Value::Undef
-    } else {
-        wrap(results)
+    match a
+        .iter()
+        .zip(b.iter())
+        .map(|(x, y)| {
+            let r = op(x, y);
+            if r.is_undef() { None } else { Some(r) }
+        })
+        .collect::<Option<Vec<Value>>>()
+    {
+        Some(results) => wrap(results),
+        None => Value::Undef,
     }
 }
 
 /// Scale each component of a component slice by a scalar value using the given
 /// binary operation, wrapping the result with the given constructor. Returns
-/// `Value::Undef` if any component operation produces `Value::Undef`.
+/// `Value::Undef` if the scalar is Undef, components are empty, or any
+/// component operation produces `Value::Undef`.
 fn scale_components(
     components: &[Value],
     scalar: &Value,
     op: fn(&Value, &Value) -> Value,
     wrap: fn(Vec<Value>) -> Value,
 ) -> Value {
-    let results: Vec<Value> = components.iter().map(|c| op(c, scalar)).collect();
-    if results.iter().any(|v| v.is_undef()) {
-        Value::Undef
-    } else {
-        wrap(results)
+    if scalar.is_undef() {
+        return Value::Undef;
+    }
+    if components.is_empty() {
+        return Value::Undef;
+    }
+    match components
+        .iter()
+        .map(|c| {
+            let r = op(c, scalar);
+            if r.is_undef() { None } else { Some(r) }
+        })
+        .collect::<Option<Vec<Value>>>()
+    {
+        Some(results) => wrap(results),
+        None => Value::Undef,
     }
 }
 
-/// Recursively negate a value.  Handles all negatable variants: Int, Real,
-/// Scalar, Complex, Tensor, Vector, and Matrix (canonicalized to nested Tensor).
-/// Point negation is explicitly undefined (spec 3.3.1).
-fn negate_value(v: Value) -> Value {
+/// Negate a scalar (leaf) value: Int, Real, Scalar, or Complex.
+/// Returns `Value::Undef` for non-negatable types or Int overflow.
+fn neg_scalar(v: Value) -> Value {
     match v {
         Value::Int(i) => i.checked_neg().map(Value::Int).unwrap_or(Value::Undef),
         Value::Real(r) => Value::Real(-r),
@@ -996,22 +1016,41 @@ fn negate_value(v: Value) -> Value {
             im: -im,
             dimension,
         },
-        Value::Tensor(components) => {
-            let results: Vec<Value> = components.into_iter().map(negate_value).collect();
-            if results.iter().any(|x| x.is_undef()) {
-                Value::Undef
-            } else {
-                Value::Tensor(results)
-            }
+        _ => Value::Undef,
+    }
+}
+
+/// Negate each component in a slice, wrapping the result with the given
+/// constructor.  Returns `Value::Undef` if components are empty or any
+/// component negation produces `Value::Undef`.  Uses the Option-collect
+/// pattern for single-pass early exit.
+fn negate_components(components: &[Value], wrap: fn(Vec<Value>) -> Value) -> Value {
+    if components.is_empty() {
+        return Value::Undef;
+    }
+    match components
+        .iter()
+        .map(|c| {
+            let r = negate_value(c.clone());
+            if r.is_undef() { None } else { Some(r) }
+        })
+        .collect::<Option<Vec<Value>>>()
+    {
+        Some(results) => wrap(results),
+        None => Value::Undef,
+    }
+}
+
+/// Recursively negate a value.  Handles all negatable variants: Int, Real,
+/// Scalar, Complex, Tensor, Vector, and Matrix (canonicalized to nested Tensor).
+/// Point negation is explicitly undefined (spec 3.3.1).
+fn negate_value(v: Value) -> Value {
+    match v {
+        Value::Int(_) | Value::Real(_) | Value::Scalar { .. } | Value::Complex { .. } => {
+            neg_scalar(v)
         }
-        Value::Vector(components) => {
-            let results: Vec<Value> = components.into_iter().map(negate_value).collect();
-            if results.iter().any(|x| x.is_undef()) {
-                Value::Undef
-            } else {
-                Value::Vector(results)
-            }
-        }
+        Value::Tensor(components) => negate_components(&components, Value::Tensor),
+        Value::Vector(components) => negate_components(&components, Value::Vector),
         Value::Matrix(rows) => negate_value(Value::Matrix(rows).canonicalize_matrix()),
         // Affine geometry: point negation is undefined (spec 3.3.1)
         Value::Point(_) => Value::Undef,

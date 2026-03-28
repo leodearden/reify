@@ -35,15 +35,15 @@ fn eval(expr: &CompiledExpr) -> Value {
 
 // ── Rank-1 empty tensor baseline ────────────────────────────────────────────
 
-/// Rank-1 empty tensors: Tensor([]) + Tensor([]) → Tensor([]).
-/// This baseline test confirms rank-1 empty tensors are NOT affected by
-/// rank-2 guards added later.
+/// Rank-1 empty tensors: Tensor([]) + Tensor([]) → Undef.
+/// Empty components are malformed data; returning Undef makes this visible
+/// rather than silently producing a zero-length composite.
 #[test]
-fn empty_rank1_tensor_add_returns_empty_tensor() {
+fn empty_rank1_tensor_add_returns_undef() {
     let a = lit(Value::Tensor(vec![]), tensor_ty());
     let b = lit(Value::Tensor(vec![]), tensor_ty());
     let expr = add(a, b);
-    assert_eq!(eval(&expr), Value::Tensor(vec![]));
+    assert_eq!(eval(&expr), Value::Undef);
 }
 
 // ── Rank-2 empty tensor guards ──────────────────────────────────────────────
