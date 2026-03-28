@@ -40,7 +40,13 @@ fn compute_trait_content_hash(
         ContentHash::of_str(&format!("{}:{}", r.name, kind_str))
     });
     let ref_hashes = refinements.iter().map(|r| ContentHash::of_str(r));
-    let type_param_hashes = type_params.iter().map(|p| ContentHash::of_str(&p.name));
+    let type_param_hashes = type_params.iter().map(|p| {
+        let mut s = p.name.clone();
+        for b in &p.bounds {
+            s.push_str(&format!(":bound:{}", b.trait_ref.name));
+        }
+        ContentHash::of_str(&s)
+    });
     let default_hashes = defaults.iter().map(|d| {
         let kind_str = default_kind_str(&d.kind);
         ContentHash::of_str(&format!(
