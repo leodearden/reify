@@ -43,3 +43,25 @@ fn eval(expr: &CompiledExpr) -> Value {
     let values = ValueMap::new();
     eval_expr(expr, &EvalContext::simple(&values))
 }
+
+// ── Tensor*Tensor multiplication rejection ─────────────────────────────────
+
+/// Multiplying a rank-1 Tensor (vector) by a rank-2 Tensor (matrix) should
+/// return Undef. The evaluator's `eval_mul` only handles Scalar*Tensor (and
+/// Tensor*Scalar); all other combinations — including Tensor*Tensor — fall
+/// through to the catch-all `_ => Value::Undef` arm.
+#[test]
+fn vector_times_matrix_returns_undef() {
+    // v = [1, 2, 3]  (rank-1 tensor)
+    let v = vec_lit(vec![Value::Int(1), Value::Int(2), Value::Int(3)]);
+
+    // M = identity 3x3 matrix (rank-2 tensor)
+    let m = mat(vec![
+        vec![Value::Int(1), Value::Int(0), Value::Int(0)],
+        vec![Value::Int(0), Value::Int(1), Value::Int(0)],
+        vec![Value::Int(0), Value::Int(0), Value::Int(1)],
+    ]);
+
+    let expr = CompiledExpr::binop(BinOp::Mul, lit(v, Type::Real), lit(m, Type::Real), Type::Real);
+    assert_eq!(eval(&expr), Value::Undef);
+}
