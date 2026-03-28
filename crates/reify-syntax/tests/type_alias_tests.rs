@@ -320,3 +320,20 @@ fn parse_dimensional_type_missing_both_operands_no_panic() {
         errors,
     );
 }
+
+// ── Error case: missing name ─────────────────────────────────────
+
+#[test]
+fn parse_type_alias_missing_name_no_panic() {
+    // `type = Force` — name is absent.
+    // Should NOT panic. Should produce parse error(s), no valid TypeAlias emitted.
+    let source = "type = Force";
+    let (decls, errors) = parse_decls(source);
+    let has_type_alias = decls.iter().any(|d| matches!(d, Declaration::TypeAlias(_)));
+    assert!(
+        !has_type_alias || !errors.is_empty(),
+        "expected either no TypeAlias or at least one error for malformed input, got decls={:?}, errors={:?}",
+        decls,
+        errors,
+    );
+}
