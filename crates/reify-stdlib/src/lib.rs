@@ -1220,13 +1220,13 @@ fn trig_input(v: &Value) -> Option<f64> {
             si_value,
             dimension,
         } => {
-            if *dimension == DimensionVector::ANGLE {
+            if *dimension == DimensionVector::ANGLE && si_value.is_finite() {
                 Some(*si_value)
             } else {
-                None // dimension error: sin(5mm) is meaningless
+                None // dimension error or non-finite value
             }
         }
-        Value::Real(r) => Some(*r),
+        Value::Real(r) if r.is_finite() => Some(*r),
         Value::Int(i) => Some(*i as f64),
         _ => None,
     }
