@@ -15309,11 +15309,11 @@
         "description": "In tree-sitter-reify/tests/build_logic_tests.rs: (1) Replace source-text assertions in test_stamp_path_is_profile_independent with behavioral tests that construct a stamp path and verify it is src-relative. (2) Fix test_stamp_shared_across_simulated_profiles to actually use separate OUT_DIR-like paths to prove the shared stamp invariant. (3) Add a test for stamp-write failure (read-only stamp path, assert no panic). (4) Extract a shared make_populated_src_dir() helper to eliminate the 5x duplicated setup block.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-28T19:14:16.626Z"
+        "updatedAt": "2026-03-28T19:41:12.166Z"
       },
       {
         "id": "741",
@@ -15402,9 +15402,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T19:38:00.406Z",
+      "lastModified": "2026-03-28T19:41:12.166Z",
       "taskCount": 747,
-      "completedCount": 370,
+      "completedCount": 371,
       "tags": [
         "master"
       ]
