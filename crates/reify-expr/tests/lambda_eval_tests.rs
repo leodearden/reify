@@ -669,3 +669,40 @@ fn nested_lambda_eval_and_apply() {
     let result = apply_lambda(&inner_val, &[Value::Int(4)], &EvalContext::simple(&empty));
     assert_eq!(result, Value::Int(7));
 }
+
+/// apply_lambda must return Undef when recursion depth is at MAX_RECURSION_DEPTH,
+/// preventing unbounded recursion through the sample→apply_lambda→eval path.
+#[test]
+fn apply_lambda_returns_undef_at_max_depth() {
+    use reify_expr::apply_lambda;
+
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    // |x| x + 1
+    let body = CompiledExpr::binop(
+        BinOp::Add,
+        CompiledExpr::value_ref(x_id.clone(), Type::Int),
+        CompiledExpr::literal(Value::Int(1), Type::Int),
+        Type::Int,
+    );
+    let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
+
+    let values = ValueMap::new();
+
+    // At MAX depth: should return Undef (depth limit reached)
+    let ctx_at_max = EvalContext::_test_at_depth(&values, 256);
+    let result = apply_lambda(&lambda, &[Value::Int(5)], &ctx_at_max);
+    assert_eq!(
+        result,
+        Value::Undef,
+        "apply_lambda at MAX_RECURSION_DEPTH must return Undef"
+    );
+
+    // At MAX-1 depth: should still evaluate normally
+    let ctx_below_max = EvalContext::_test_at_depth(&values, 255);
+    let result = apply_lambda(&lambda, &[Value::Int(5)], &ctx_below_max);
+    assert_eq!(
+        result,
+        Value::Int(6),
+        "apply_lambda below MAX_RECURSION_DEPTH must evaluate"
+    );
+}
