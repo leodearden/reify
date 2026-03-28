@@ -689,6 +689,9 @@ describe('PropertyEditor quantity literal acceptance', () => {
   it.each([
     ['10xyz'],
     ['mm80'],
+    // '+10mm' is rejected because QUANTITY_RE and NUM_RE use ^-? for the leading sign
+    // (only minus or nothing). The '+' in [eE][+-]? applies only to the exponent part,
+    // so '1e+3mm' is valid but '+10mm' is not.
     ['+10mm'],
     ['mm'],
     ['deg'],
