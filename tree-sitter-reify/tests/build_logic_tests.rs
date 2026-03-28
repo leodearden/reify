@@ -381,6 +381,9 @@ fn test_stamp_write_failure_no_panic() {
     perms.set_readonly(true);
     std::fs::set_permissions(&readonly_dir, perms).unwrap();
 
+    // Guard ensures cleanup even if assertions below panic
+    let _guard = ReadonlyGuard::new(readonly_dir.clone());
+
     let stamp_path = readonly_dir.join("grammar_hash.stamp");
 
     // Should not panic — just warn
@@ -391,12 +394,6 @@ fn test_stamp_write_failure_no_panic() {
         !stamp_path.exists(),
         "stamp should not exist in a read-only directory"
     );
-
-    // Restore permissions for cleanup
-    let mut perms = std::fs::metadata(&readonly_dir).unwrap().permissions();
-    #[allow(clippy::permissions_set_readonly_false)]
-    perms.set_readonly(false);
-    std::fs::set_permissions(&readonly_dir, perms).unwrap();
 }
 
 #[test]
