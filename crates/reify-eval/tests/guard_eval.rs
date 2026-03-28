@@ -435,3 +435,81 @@ fn eval_guarded_constraint_enforced_only_when_active() {
             .collect::<Vec<_>>()
     );
 }
+
+/// Guard deactivation must not overwrite Auto cells with (Undef, Undetermined).
+///
+/// Build: Bool param 'active' (default=true), guarded_group with an Auto cell 'x'
+/// (ValueCellKind::Auto, Type::length()). After initial eval with guard=true,
+/// 'x' should have DeterminacyState::Auto. After edit_param active=false,
+/// the Auto cell should NOT be overwritten to (Undef, Undetermined) — it should
+/// retain its Auto determinacy state.
+#[test]
+fn guard_deactivate_preserves_auto_cell_state() {
+    let active_id = ValueCellId::new("S", "active");
+    let guard_id = ValueCellId::new("S", "__guard_0");
+    let x_id = ValueCellId::new("S", "x");
+
+    let guard_expr = value_ref_typed("S", "active", Type::Bool);
+
+    // Auto cell member (no default_expr, resolved by solver)
+    let x_decl = ValueCellDecl {
+        id: x_id.clone(),
+        kind: ValueCellKind::Auto,
+        visibility: Visibility::Public,
+        cell_type: Type::length(),
+        default_expr: None,
+        span: SourceSpan::new(0, 0),
+    };
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param(
+            "S",
+            "active",
+            Type::Bool,
+            Some(CompiledExpr::literal(Value::Bool(true), Type::Bool)),
+        )
+        .guarded_group(
+            guard_expr,
+            guard_id.clone(),
+            vec![x_decl], // members (active when true)
+            vec![],       // constraints
+            vec![],       // else_members
+            vec![],       // else_constraints
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    // Initial eval with guard=true
+    let _initial_result = engine.eval(&module);
+
+    // Auto cell should have DeterminacyState::Auto after initial eval
+    let snapshot = engine.snapshot().expect("snapshot should exist after eval");
+    let (_, x_det_initial) = snapshot.values.get(&x_id).expect("x in snapshot");
+    assert_eq!(
+        *x_det_initial,
+        DeterminacyState::Auto,
+        "Auto cell should have DeterminacyState::Auto after initial eval"
+    );
+
+    // Edit 'active' from true to false (deactivate guard)
+    let _edit_result = engine
+        .edit_param(active_id.clone(), Value::Bool(false))
+        .expect("edit_param should succeed");
+
+    // After deactivation, the Auto cell should NOT have been overwritten
+    // to (Undef, Undetermined). It should retain DeterminacyState::Auto.
+    let snapshot_after = engine.snapshot().expect("snapshot should exist after edit");
+    let (_, x_det_after) = snapshot_after.values.get(&x_id).expect("x in snapshot after edit");
+    assert_eq!(
+        *x_det_after,
+        DeterminacyState::Auto,
+        "Auto cell determinacy should remain Auto after guard deactivation, \
+         not be overwritten to Undetermined"
+    );
+}
