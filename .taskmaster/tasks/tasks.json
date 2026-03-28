@@ -11722,7 +11722,7 @@
         "description": "Two test improvements in gui/src/__tests__/claudeBridge.test.ts:\n\n1. Remove redundant second assertion in 'payload type field does not override mapped event type' test (line 317) — the objectContaining check already verifies the type field\n2. Add extra-field exclusion test for claude-tool-call event — it has a structurally complex payload (tool_input: Record<string, unknown>) not covered by the existing representative tests on text_delta and done\n\nSource: test analyst reviewer (S5, S6) from task 517 review.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -11735,7 +11735,7 @@
             "gui/src/__tests__"
           ]
         },
-        "updatedAt": "2026-03-28T15:59:11.096Z"
+        "updatedAt": "2026-03-28T16:12:57.856Z"
       },
       {
         "id": "571",
@@ -15264,9 +15264,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T16:12:24.068Z",
+      "lastModified": "2026-03-28T16:12:57.856Z",
       "taskCount": 738,
-      "completedCount": 358,
+      "completedCount": 359,
       "tags": [
         "master"
       ]
