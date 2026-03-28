@@ -1,0 +1,148 @@
+{
+  "task_id": "359",
+  "title": "Orient functions: NaN validation bypass + missing tests + vec3_norm helper",
+  "files": [
+    "crates/reify-stdlib/src/lib.rs"
+  ],
+  "modules": [
+    "crates/reify-stdlib/src"
+  ],
+  "analysis": "All orient functions (orient_basis, orient_axis_angle, orient_euler, orient_quaternion) and their helpers (trig_input, normalize_quaternion, vec3_norm) live in a single file: crates/reify-stdlib/src/lib.rs. Tests are in the same file's #[cfg(test)] module.\n\n**Bug 1 \u2014 NaN bypasses orient_basis validation:** orient_basis computes magnitudes of the three basis vectors (line 950-952) then checks `(mag - 1.0).abs() > tol`. When any vector component is NaN, the magnitude is NaN, and IEEE 754 dictates `NaN > tol` is always false, so the check is silently skipped. All subsequent dot-product and determinant checks similarly pass NaN through. The NaN eventually reaches `normalize_quaternion` which catches it via `is_finite()`, so the final result IS Undef \u2014 but every validation gate was bypassed. Fix: add `!mag.is_finite()` to the magnitude guard on line 953.\n\n**Bug 2 \u2014 trig_input lacks finiteness check:** `trig_input()` (line 1209-1225) extracts radians from Angle Scalars, Reals, and Ints but never checks `is_finite()`. NaN/Inf values pass through to cos/sin which produce NaN, eventually caught by `normalize_quaternion`. Fix: add a final `is_finite()` guard before returning `Some(radians)`.\n\n**Refactor \u2014 vec3_norm deduplication:** The pattern `(x*x + y*y + z*z).sqrt()` appears 4 times: 3\u00d7 in orient_basis (lines 950-952) and 1\u00d7 in orient_axis_angle (line 1018). Extract to a `fn vec3_norm(x, y, z) -> f64` helper placed near the other quaternion helpers.\n\n**Missing tests:** (1) orient_axis_angle with non-unit axis [2,0,0] \u2014 verifies normalization works for arbitrary-length axes. (2) orient_quaternion with dimensioned Scalar \u2014 documents that `as_f64()` silently strips dimension (line 216 of value.rs). (3) NaN/Inf angles through orient_euler and orient_axis_angle. (4) Uppercase 'XYZ' convention string to orient_euler \u2014 documents case-sensitivity of the convention match (only lowercase accepted, lines 909-920).\n\nAll tests currently pass because `normalize_quaternion` serves as a catch-all for NaN. The impl changes add defense-in-depth at the correct validation layer. The test\u2192impl pairing ensures coverage before and after each fix.",
+  "prerequisites": [
+    {
+      "id": "pre-1",
+      "description": "Verify all existing orient tests pass: cargo test -p reify-stdlib -- orient",
+      "status": "done",
+      "commit": null,
+      "tests": []
+    }
+  ],
+  "steps": [
+    {
+      "id": "step-1",
+      "type": "test",
+      "description": "Write orient_basis_nan_component_returns_undef: pass a basis vector containing NaN (e.g. [NaN,0,0], [0,1,0], [0,0,1]) and assert Undef. This test documents the expected behavior (currently caught by normalize_quaternion as a side-effect).",
+      "status": "done",
+      "commit": null
+    },
+    {
+      "id": "step-2",
+      "type": "test",
+      "description": "Write orient_basis_inf_component_returns_undef: pass a basis vector containing Inf (e.g. [Inf,0,0], [0,1,0], [0,0,1]) and assert Undef. Inf IS caught by the existing magnitude check ((Inf-1.0).abs()=Inf > tol=true), but the test documents it.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-3",
+      "type": "impl",
+      "description": "Add explicit is_finite guard in orient_basis: change the magnitude check on line 953 from `(mag_x - 1.0).abs() > tol || ...` to `!mag_x.is_finite() || !mag_y.is_finite() || !mag_z.is_finite() || (mag_x - 1.0).abs() > tol || ...`. This rejects NaN at the validation layer rather than deferring to normalize_quaternion.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-4",
+      "type": "test",
+      "description": "Write orient_axis_angle_nan_angle_returns_undef: pass a valid axis [0,0,1] with NaN angle and assert Undef. Write orient_axis_angle_inf_angle_returns_undef: same with f64::INFINITY.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-5",
+      "type": "test",
+      "description": "Write orient_euler_nan_angle_returns_undef: pass 'xyz' convention with (NaN, 0, 0) angles and assert Undef. Write orient_euler_inf_angle_returns_undef: same with f64::INFINITY for one angle.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-6",
+      "type": "impl",
+      "description": "Add is_finite guard in trig_input: refactor to extract the radians value first, then return `if radians.is_finite() { Some(radians) } else { None }`. This rejects NaN/Inf at the input validation layer. The Value::Int arm needs no guard (i64\u2192f64 always finite).",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-7",
+      "type": "test",
+      "description": "Write orient_axis_angle_non_unit_axis_normalizes: axis=[2,0,0] with angle=\u03c0/2 should produce the same quaternion as axis=[1,0,0] (cos(\u03c0/4), sin(\u03c0/4), 0, 0). Verifies axis normalization works for non-unit vectors.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-8",
+      "type": "test",
+      "description": "Write orient_quaternion_dimensioned_scalar_accepted: pass Scalar{si_value:2.0, dimension:LENGTH} as w and Reals for x,y,z. as_f64() strips dimension silently, so (2,0,0,0) normalizes to (1,0,0,0). Documents current behavior where orient_quaternion doesn't validate dimensions.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-9",
+      "type": "test",
+      "description": "Write orient_euler_uppercase_convention_returns_undef: pass 'XYZ' as convention string with valid angles. The match on lines 909-920 only accepts lowercase, so 'XYZ' falls through to Undef. Documents case-sensitivity.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-10",
+      "type": "impl",
+      "description": "Extract vec3_norm helper: add `fn vec3_norm(x: f64, y: f64, z: f64) -> f64 { (x * x + y * y + z * z).sqrt() }` near the other quaternion helpers (after quat_rotate, ~line 1165). Replace 4 inline computations: orient_basis lines 950-952 (3\u00d7) and orient_axis_angle line 1018 (1\u00d7).",
+      "status": "pending",
+      "commit": null
+    }
+  ],
+  "design_decisions": [
+    {
+      "decision": "Add is_finite to existing magnitude check rather than a separate early-return block",
+      "rationale": "Keeps validation logic in one place. `!mag.is_finite() || (mag - 1.0).abs() > tol` reads naturally: 'reject if non-finite OR not unit-length'. Short-circuit evaluation ensures NaN is caught before the subtraction."
+    },
+    {
+      "decision": "Guard finiteness at the end of trig_input rather than in each match arm",
+      "rationale": "Single check point covers all arms (Scalar, Real). Int\u2192f64 is always finite so the guard is harmless there. Avoids duplicating `is_finite()` in three places."
+    },
+    {
+      "decision": "vec3_norm returns f64 (not Option<f64>) and does not check finiteness",
+      "rationale": "Keep it a pure math helper matching the original inline pattern. Finiteness is the caller's responsibility and is already handled (orient_basis checks is_finite on the result, orient_axis_angle checks !axis_norm.is_finite())."
+    },
+    {
+      "decision": "Tests for NaN/Inf are written before the defense-in-depth fix even though they already pass",
+      "rationale": "The tests document the expected contract (NaN\u2192Undef). They pass pre-fix via normalize_quaternion and post-fix via the new early guard. This is the 'refactor' phase of TDD: green tests stay green while internal validation path improves."
+    },
+    {
+      "decision": "Document (not fix) orient_quaternion dimension stripping via test",
+      "rationale": "Task description says 'as_f64 silently strips dimension' as a test to add, not a bug to fix. orient_quaternion takes raw quaternion components which are dimensionless by nature \u2014 whether to reject dimensioned inputs is a design question beyond this task's scope."
+    }
+  ],
+  "reuse": [
+    {
+      "what": "normalize_quaternion(w, x, y, z) \u2192 Option<Value>",
+      "where": "lib.rs line 1111",
+      "how": "Already validates is_finite and normalizes to unit quaternion. All orient functions use it as the final step. The new checks are defense-in-depth BEFORE this catch-all."
+    },
+    {
+      "what": "tensor_components_f64(v) \u2192 Option<(Vec<f64>, DimensionVector)>",
+      "where": "lib.rs line 1334",
+      "how": "Used by orient_basis and orient_axis_angle to extract 3D vector components from Tensor/Point/Vector values."
+    },
+    {
+      "what": "assert_orientation_approx! macro",
+      "where": "lib.rs line 3717",
+      "how": "Existing test macro that checks Orientation quaternion components within 1e-12 tolerance. Used by all new tests that expect a valid Orientation result."
+    },
+    {
+      "what": "DimensionVector::ANGLE and DimensionVector::LENGTH constants",
+      "where": "reify-types",
+      "how": "Used in test fixtures for Scalar values \u2014 ANGLE for valid trig inputs, LENGTH for the dimension-stripping test."
+    },
+    {
+      "what": "Value::is_undef() method",
+      "where": "reify-types value.rs",
+      "how": "Used in test assertions for cases expecting Undef results (NaN, Inf, uppercase convention, etc.)."
+    },
+    {
+      "what": "Existing test naming convention: {function}_{scenario}_returns_undef / {function}_{scenario}",
+      "where": "lib.rs test module",
+      "how": "Follow the established pattern: orient_basis_nan_component_returns_undef, orient_euler_uppercase_convention_returns_undef, etc."
+    }
+  ],
+  "_session_id": "359-96e169c8",
+  "_created_at": "2026-03-28T05:34:43.031068+00:00"
+}

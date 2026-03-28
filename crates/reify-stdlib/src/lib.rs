@@ -4265,6 +4265,20 @@ mod tests {
     }
 
     #[test]
+    fn orient_basis_nan_component_returns_undef() {
+        // A basis vector containing NaN should produce Undef.
+        // NaN magnitude bypasses IEEE 754 comparisons (NaN > tol is always false),
+        // but normalize_quaternion catches the propagated NaN.
+        let x = Value::Tensor(vec![Value::Real(f64::NAN), Value::Real(0.0), Value::Real(0.0)]);
+        let y = Value::Tensor(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
+        let z = Value::Tensor(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
+        assert!(
+            eval_builtin("orient_basis", &[x, y, z]).is_undef(),
+            "NaN in basis vector should produce Undef"
+        );
+    }
+
+    #[test]
     fn dot_mixed_component_dimensions_returns_undef() {
         // A Tensor with mixed dimensions is not a valid physical vector
         let a = Value::Tensor(vec![
