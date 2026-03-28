@@ -2069,3 +2069,56 @@ describe('App Claude error handling', () => {
     consoleSpy.mockRestore();
   });
 });
+
+describe('App onSend context forwarding', () => {
+  it('forwards currentFile and attachedContexts to claudeSendMessage', async () => {
+    // Set up initial state with a file so activeFile is set in ChatPanel
+    const testState: GuiState = {
+      meshes: [],
+      values: [],
+      constraints: [],
+      files: [{ path: 'bracket.ri', content: 'structure Bracket {}' }],
+    };
+    vi.mocked(bridge.getInitialState).mockResolvedValue(testState);
+
+    render(() => <App />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('app-layout')).toBeTruthy();
+    });
+
+    // Open context picker and attach 'file' context
+    const pickerBtn = screen.getByTestId('context-picker-btn');
+    fireEvent.click(pickerBtn);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('context-picker-dropdown')).toBeTruthy();
+    });
+
+    // Click "Current file" option (4th button in the dropdown)
+    const dropdown = screen.getByTestId('context-picker-dropdown');
+    const options = dropdown.querySelectorAll('button');
+    const fileOption = Array.from(options).find((btn) => btn.textContent === 'Current file');
+    expect(fileOption).toBeTruthy();
+    fireEvent.click(fileOption!);
+
+    // Type a message in the chat input
+    const chatInput = screen.getByTestId('chat-input');
+    fireEvent.input(chatInput, { target: { value: 'help with this file' } });
+
+    // Click send button
+    const sendBtn = screen.getByTestId('send-button');
+    fireEvent.click(sendBtn);
+
+    // Verify claudeSendMessage was called with currentFile and attachedContexts
+    await waitFor(() => {
+      expect(bridge.claudeSendMessage).toHaveBeenCalledTimes(1);
+    });
+
+    const callArgs = vi.mocked(bridge.claudeSendMessage).mock.calls[0];
+    const contextArg = callArgs[1];
+    expect(contextArg).toBeDefined();
+    expect(contextArg!.currentFile).toBe('bracket.ri');
+    expect(contextArg!.attachedContexts).toContain('file');
+  });
+});
