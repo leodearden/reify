@@ -2042,7 +2042,7 @@ mod tests {
             },
         ];
 
-        let x = [0.025, 1.5708]; // 25mm, ~90°
+        let x = [0.025, std::f64::consts::FRAC_PI_2]; // 25mm, ~90°
 
         let result = params_to_value_map(&params, &x);
 
@@ -2075,8 +2075,8 @@ mod tests {
                 dimension,
             }) => {
                 assert!(
-                    (si_value - 1.5708).abs() < 1e-15,
-                    "angle si_value should be 1.5708, got {}",
+                    (si_value - std::f64::consts::FRAC_PI_2).abs() < 1e-15,
+                    "angle si_value should be FRAC_PI_2, got {}",
                     si_value
                 );
                 assert_eq!(
