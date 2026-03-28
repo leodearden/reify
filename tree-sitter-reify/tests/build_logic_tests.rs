@@ -497,6 +497,30 @@ fn test_stamp_shared_across_simulated_profiles() {
     );
 }
 
+/// RAII guard that unconditionally restores write permissions on drop.
+/// Prevents temp-directory leaks when assertions panic between
+/// set_readonly(true) and the manual permission restore.
+struct ReadonlyGuard {
+    path: std::path::PathBuf,
+}
+
+impl ReadonlyGuard {
+    fn new(path: std::path::PathBuf) -> Self {
+        Self { path }
+    }
+}
+
+impl Drop for ReadonlyGuard {
+    fn drop(&mut self) {
+        if let Ok(meta) = std::fs::metadata(&self.path) {
+            let mut perms = meta.permissions();
+            #[allow(clippy::permissions_set_readonly_false)]
+            perms.set_readonly(false);
+            let _ = std::fs::set_permissions(&self.path, perms);
+        }
+    }
+}
+
 #[test]
 fn test_readonly_guard_restores_on_drop() {
     // Verify that ReadonlyGuard's Drop impl restores write permissions.
