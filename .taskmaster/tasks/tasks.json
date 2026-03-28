@@ -10042,7 +10042,7 @@
         "description": "Several test robustness issues in crates/reify-cli/tests/cli_build.rs:\n\n1. **Hardcoded /tmp paths** (lines 37, 76, 15, 116): All tests use fixed paths like /tmp/reify_test_*.step. Concurrent CI runs or `cargo test` from multiple terminals can race on these paths. Use `tempfile::NamedTempFile` or unique suffixes (e.g., PID-based) instead.\n\n2. **Missing pre-cleanup** in build_valid_bracket_exits_success (line 76): Unlike build_violating_bracket_exits_failure, this test doesn't remove stale files before running. Add `let _ = std::fs::remove_file(output_path);` before the Command invocation.\n\n3. **Missing file existence assertion** in build_valid_bracket_exits_success: Only checks stdout for \"Wrote\" but never asserts the file actually exists. Add `assert!(std::path::Path::new(output_path).exists())`.\n\n4. **Missing summary assertion** in build_violating_bracket_exits_failure (line 61-64): Checks for \"VIOLATED\" in stderr but doesn't assert \"Some constraints violated.\" summary message. The analogous cmd_check test does assert this.\n\n**Memory hints:** search for \"CLI test isolation\", entity names: cli_build",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -10055,7 +10055,7 @@
             "crates/reify-cli/tests"
           ]
         },
-        "updatedAt": "2026-03-28T00:28:58.574Z"
+        "updatedAt": "2026-03-28T00:45:59.988Z"
       },
       {
         "id": "503",
@@ -12864,9 +12864,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T00:45:54.617Z",
+      "lastModified": "2026-03-28T00:45:59.988Z",
       "taskCount": 640,
-      "completedCount": 291,
+      "completedCount": 292,
       "tags": [
         "master"
       ]
