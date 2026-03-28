@@ -14483,7 +14483,18 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-runtime/src/concurrent.rs",
+            "crates/reify-runtime/Cargo.toml",
+            "crates/reify-runtime/src/concurrent_eval.rs"
+          ],
+          "modules": [
+            "crates/reify-runtime/src",
+            "crates/reify-runtime"
+          ]
+        }
       },
       {
         "id": 705,
@@ -14494,7 +14505,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "gui/src/__tests__/PropertyEditor.test.tsx"
+          ],
+          "modules": [
+            "gui/src/__tests__"
+          ]
+        }
       },
       {
         "id": 706,
