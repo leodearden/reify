@@ -13538,7 +13538,16 @@
           "482"
         ],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-lsp/src/completion.rs",
+            "crates/reify-lsp/src/analysis.rs"
+          ],
+          "modules": [
+            "crates/reify-lsp/src"
+          ]
+        }
       },
       {
         "id": 658,
@@ -13551,7 +13560,16 @@
           "482"
         ],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-lsp/src/completion.rs",
+            "crates/reify-lsp/src/analysis.rs"
+          ],
+          "modules": [
+            "crates/reify-lsp/src"
+          ]
+        }
       },
       {
         "id": 659,
