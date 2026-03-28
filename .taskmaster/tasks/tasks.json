@@ -13642,6 +13642,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 691,
+        "title": "Derive Default for SelectionInfo to reduce boilerplate",
+        "description": "`SelectionInfo { selected_entity: None, hovered_entity: None }` is repeated across 8+ sites (mcp_context.rs builder, mcp_context_tests.rs, mcp_dispatch_tests.rs, commands_tests.rs, claude_bridge_tests.rs). Adding `#[derive(Default)]` to `SelectionInfo` in `crates/reify-mcp/src/types.rs` would let all sites use `SelectionInfo::default()`.\n\n## Files to modify\n- crates/reify-mcp/src/types.rs — add Default derive\n- gui/src-tauri/src/mcp_context.rs — use SelectionInfo::default() in build()\n- gui/src-tauri/src/tests/*.rs — simplify test helpers",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -13654,7 +13665,7 @@
       ],
       "created": "2026-03-28T05:33:47.278Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-28T05:33:52.421Z"
+      "updated": "2026-03-28T05:33:56.269Z"
     }
   }
 }
