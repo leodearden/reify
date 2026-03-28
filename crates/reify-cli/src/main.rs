@@ -539,4 +539,46 @@ mod tests {
         // (c) correct outcome
         assert_eq!(outcome, ConstraintOutcome::SomeViolated);
     }
+
+    #[test]
+    fn report_eval_output_returns_correct_outcome_variants() {
+        let no_diags: Vec<reify_types::Diagnostic> = vec![];
+
+        // AllSatisfied: all constraints OK
+        {
+            let entries = vec![
+                make_entry("A", 0, Some("c1"), Satisfaction::Satisfied),
+                make_entry("A", 1, Some("c2"), Satisfaction::Satisfied),
+            ];
+            let mut out = Vec::new();
+            let mut err = Vec::new();
+            let outcome = report_eval_output(&entries, &no_diags, &mut out, &mut err);
+            assert_eq!(outcome, ConstraintOutcome::AllSatisfied);
+        }
+
+        // SomeViolated: at least one violated
+        {
+            let entries = vec![
+                make_entry("B", 0, Some("c1"), Satisfaction::Satisfied),
+                make_entry("B", 1, Some("c2"), Satisfaction::Violated),
+            ];
+            let mut out = Vec::new();
+            let mut err = Vec::new();
+            let outcome = report_eval_output(&entries, &no_diags, &mut out, &mut err);
+            assert_eq!(outcome, ConstraintOutcome::SomeViolated);
+        }
+
+        // SomeIndeterminate: indeterminate but no violated
+        {
+            let entries = vec![
+                make_entry("C", 0, Some("c1"), Satisfaction::Satisfied),
+                make_entry("C", 1, Some("c2"), Satisfaction::Indeterminate),
+                make_entry("C", 2, Some("c3"), Satisfaction::Indeterminate),
+            ];
+            let mut out = Vec::new();
+            let mut err = Vec::new();
+            let outcome = report_eval_output(&entries, &no_diags, &mut out, &mut err);
+            assert_eq!(outcome, ConstraintOutcome::SomeIndeterminate(2));
+        }
+    }
 }
