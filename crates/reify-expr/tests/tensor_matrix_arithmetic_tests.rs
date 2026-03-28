@@ -90,3 +90,23 @@ fn multi_row_undef_propagation() {
     let expr = CompiledExpr::binop(BinOp::Add, lit(a, Type::Real), lit(b, Type::Real), Type::Real);
     assert_eq!(eval(&expr), Value::Undef);
 }
+
+// ── Mixed-dimension dot product rejection ──────────────────────────────────
+
+/// Simulates the dot product step of a matrix multiply where A has mixed
+/// dimensions: A=[[1m, 1rad]] × B=[[1m],[1m]]. The dot product of A's row
+/// [1m, 1rad] with B's column [1m, 1m] would produce 1m×1m + 1rad×1m =
+/// Area + Angle·Length — but `tensor_components_f64` correctly rejects the
+/// mixed-dimension input vector `a` before computation begins, because
+/// `a[0].dimension() != a[1].dimension()` (LENGTH ≠ ANGLE).
+#[test]
+fn dot_dimension_mismatch_in_matrix_context() {
+    // a = [1m, 1rad] — mixed dimensions (Length, Angle)
+    let a = vec_lit(vec![Value::length(1.0), Value::angle(1.0)]);
+
+    // b = [1m, 1m] — uniform dimension (Length)
+    let b = vec_lit(vec![Value::length(1.0), Value::length(1.0)]);
+
+    let result = eval_builtin("dot", &[a, b]);
+    assert_eq!(result, Value::Undef);
+}
