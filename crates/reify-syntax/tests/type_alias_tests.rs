@@ -376,11 +376,11 @@ fn parse_type_alias_empty_rhs_no_panic() {
     // `type Foo =` — RHS is empty (no type expression after '=').
     // Should NOT panic. Tree-sitter error recovery produces a zero-width node
     // that gets lowered to a TypeAlias with an empty-name type_expr.
+    // Confirmed behavior: 1 TypeAlias (with empty type_expr.name) + 0 errors.
     let source = "type Foo =";
     let (decls, errors) = parse_decls(source);
-    // Key invariant: no panic. The parser may produce a TypeAlias with an
-    // empty type_expr name (due to Tree-sitter's error recovery providing a
-    // zero-width node rather than None), or errors, or both.
+    // Key invariant: no panic. Currently the parser produces a TypeAlias via
+    // error recovery with an empty type_expr name and no errors.
     let ta = decls.iter().find_map(|d| match d {
         Declaration::TypeAlias(ta) => Some(ta),
         _ => None,
@@ -396,6 +396,15 @@ fn parse_type_alias_empty_rhs_no_panic() {
             errors,
         );
     }
+    // Guard against parser regression: ensure we get EITHER a TypeAlias
+    // (via error recovery) or parse errors. A regression that silently
+    // swallows input (0 decls, 0 errors) must be caught.
+    assert!(
+        ta.is_some() || !errors.is_empty(),
+        "expected either a TypeAlias (via error recovery) or parse errors for empty RHS, got decls={:?}, errors={:?}",
+        decls,
+        errors,
+    );
 }
 
 // ── Type params combined with dimensional RHS ────────────────────
