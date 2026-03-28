@@ -15415,12 +15415,13 @@
         "description": "Two type-safety improvements to bridge.ts MESSAGE_CONTEXT_FIELD_MAP:\n\n1. **Typed return for mapContextToWire**: Currently returns Record<string, unknown>, erasing all type info about the wire shape. Define a mapped type:\n   ```ts\n   type WireMessageContext = { [K in keyof Required<MessageContext> as typeof MESSAGE_CONTEXT_FIELD_MAP[K]]: MessageContext[K] }\n   ```\n   Use it as the return type so callers can statically verify snake_case keys.\n\n2. **Literal union for map values**: MESSAGE_CONTEXT_FIELD_MAP values are plain `string`, so typos in snake_case values (e.g. `selected-entity` instead of `selected_entity`) are not caught by tsc. Narrow the value type to a union of known snake_case literals:\n   ```ts\n   Record<keyof Required<MessageContext>, \"selected_entity\" | \"diagnostics\" | \"constraints\" | \"current_file\" | \"attached_contexts\">\n   ```\n\nBoth changes make the Rust wire contract explicit in the type system.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "611"
         ],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-03-28T20:26:11.899Z"
       },
       {
         "id": "749",
@@ -15438,7 +15439,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T20:26:11.815Z",
+      "lastModified": "2026-03-28T20:26:11.899Z",
       "taskCount": 749,
       "completedCount": 378,
       "tags": [
