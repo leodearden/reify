@@ -557,3 +557,126 @@ structure S {
             .collect::<Vec<_>>()
     );
 }
+
+/// Determinacy predicates (determined/undetermined/constrained/partially_determined)
+/// in constraint expressions should produce a warning diagnostic. The solver evaluates
+/// them as Undef (residual 10.0 -> Infeasible) when constraints reach the DimensionalSolver.
+/// SimpleConstraintChecker handles them correctly, so this is a warning (not error) to
+/// alert users about potential solver incompatibility.
+#[test]
+fn determinacy_predicate_in_constraint_warns() {
+    let source = r#"
+structure S {
+    param x : Length = 10mm
+    constraint determined(x)
+}
+"#;
+
+    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let compiled = reify_compiler::compile(&parsed);
+
+    let det_warnings: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Warning
+                && d.message.to_lowercase().contains("determinacy")
+                && d.message.to_lowercase().contains("constraint")
+        })
+        .collect();
+
+    assert!(
+        !det_warnings.is_empty(),
+        "expected warning diagnostic about determinacy predicate in constraint, got: {:?}",
+        compiled
+            .diagnostics
+            .iter()
+            .map(|d| format!("{:?}: {}", d.severity, d.message))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// Same warning should also fire inside a where-block constraint.
+#[test]
+fn determinacy_predicate_in_guarded_constraint_warns() {
+    let source = r#"
+structure S {
+    param active : Bool = true
+    param x : Length = 10mm
+    where active {
+        constraint undetermined(x)
+    }
+}
+"#;
+
+    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let compiled = reify_compiler::compile(&parsed);
+
+    let det_warnings: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Warning
+                && d.message.to_lowercase().contains("determinacy")
+                && d.message.to_lowercase().contains("constraint")
+        })
+        .collect();
+
+    assert!(
+        !det_warnings.is_empty(),
+        "expected warning diagnostic about determinacy predicate in guarded constraint, got: {:?}",
+        compiled
+            .diagnostics
+            .iter()
+            .map(|d| format!("{:?}: {}", d.severity, d.message))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// Determinacy predicates in let-expressions (non-constraint position)
+/// should NOT produce constraint-related warnings.
+#[test]
+fn determinacy_predicate_in_let_no_warning() {
+    let source = r#"
+structure S {
+    param x : Length = 10mm
+    let r = determined(x)
+}
+"#;
+
+    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let compiled = reify_compiler::compile(&parsed);
+
+    let det_warnings: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.message.to_lowercase().contains("determinacy")
+                && d.message.to_lowercase().contains("constraint")
+        })
+        .collect();
+
+    assert!(
+        det_warnings.is_empty(),
+        "determinacy predicates in let-expression should NOT produce constraint warnings, got: {:?}",
+        det_warnings
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
