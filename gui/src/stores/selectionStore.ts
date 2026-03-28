@@ -50,6 +50,8 @@ export function createSelectionStore() {
     prevSelected = selected;
     prevHovered = hovered;
 
+    if (!selectionChanged && !hoverChanged) return;
+
     if (selectionChanged && !hoverChanged) {
       // Selection-only change — dispatch immediately
       sendSelection(selected, hovered);
