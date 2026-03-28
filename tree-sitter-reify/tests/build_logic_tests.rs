@@ -369,6 +369,8 @@ fn test_subprocess_timeout_kills_hung_process() {
 }
 
 #[test]
+#[cfg(unix)] // set_readonly(true) on a directory only prevents file creation on Unix (POSIX);
+             // on Windows the readonly attribute does NOT block creating files within the directory.
 fn test_stamp_write_failure_no_panic() {
     // Verify that stamp_write does not panic when the destination is read-only.
     // This mirrors build.rs behavior where write failure emits a warning instead of panicking.
@@ -519,6 +521,8 @@ impl Drop for ReadonlyGuard {
 }
 
 #[test]
+#[cfg(unix)] // set_readonly(true) on a directory only prevents file creation on Unix (POSIX);
+             // on Windows the readonly attribute does NOT block creating files within the directory.
 fn test_readonly_guard_restores_on_drop() {
     // Verify that ReadonlyGuard's Drop impl restores write permissions.
     let dir = tempfile::tempdir().unwrap();
