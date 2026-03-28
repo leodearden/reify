@@ -15419,6 +15419,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 749,
+        "title": "Add compile-time exhaustiveness guard for ChatPanel buildMessageContext and fix toStrictEqual",
+        "description": "Two issues from task 611 review:\n\n1. **buildMessageContext() enforcement gap** (ChatPanel.tsx:68): MESSAGE_CONTEXT_FIELD_MAP in bridge.ts is compile-time enforced, but buildMessageContext() in ChatPanel.tsx is only guarded by a comment. Adding a new MessageContext field triggers a tsc error in bridge.ts but gives no signal that buildMessageContext() needs updating. Add a compile-time assertion in types.typecheck.ts that verifies buildMessageContext() return type satisfies Required<MessageContext>, or add a runtime CI test asserting its camelCase keys match Object.keys(MESSAGE_CONTEXT_FIELD_MAP).\n\n2. **toEqual vs toStrictEqual** (claudeBridge.test.ts:183-189): The test \"mapContextToWire passes undefined fields through\" uses toEqual, but Vitest toEqual ignores undefined-valued properties ({a: undefined} equals {}). Switch to toStrictEqual so the test actually verifies that all snake_case keys are present in the output even when input fields are absent.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -15431,7 +15442,7 @@
       ],
       "created": "2026-03-28T20:22:58.982Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-28T20:25:26.947Z"
+      "updated": "2026-03-28T20:25:36.385Z"
     }
   }
 }
