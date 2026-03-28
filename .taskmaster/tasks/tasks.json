@@ -12951,7 +12951,15 @@
           "589"
         ],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-constraints/src/solver.rs"
+          ],
+          "modules": [
+            "crates/reify-constraints/src"
+          ]
+        }
       },
       {
         "id": 627,
@@ -12981,7 +12989,16 @@
           "627"
         ],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-test-support/src/builders/trait_def.rs",
+            "crates/reify-test-support/src/builders/field.rs"
+          ],
+          "modules": [
+            "crates/reify-test-support/src/builders"
+          ]
+        }
       },
       {
         "id": 629,
