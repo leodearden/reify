@@ -174,6 +174,7 @@ describe('selectionStore', () => {
     let dispose!: () => void;
     let selectEntity!: (path: string | null) => void;
     let hoverEntity!: (path: string | null) => void;
+    let clearIfRemoved!: (path: string) => void;
 
     beforeEach(() => {
       vi.useFakeTimers();
@@ -184,8 +185,11 @@ describe('selectionStore', () => {
         const store = createSelectionStore();
         selectEntity = store.selectEntity;
         hoverEntity = store.hoverEntity;
+        clearIfRemoved = store.clearIfRemoved;
       });
 
+      // TODO: Remove this workaround once selectionStore.ts adds an early-return
+      // guard to skip the initial (null, null) dispatch in createEffect.
       // Flush the initial effect's debounced invoke (null, null)
       vi.advanceTimersByTime(100);
       mockInvoke.mockClear();
@@ -204,6 +208,20 @@ describe('selectionStore', () => {
       expect(mockInvoke).toHaveBeenCalledTimes(1);
       expect(mockInvoke).toHaveBeenCalledWith('update_selection', {
         selectedEntity: 'Bracket',
+        hoveredEntity: null,
+      });
+    });
+
+    it('selectEntity(null) dispatches cleared selection to backend immediately', () => {
+      selectEntity('Bracket');
+      mockInvoke.mockClear();
+
+      selectEntity(null);
+
+      // Selection-only change → immediate dispatch
+      expect(mockInvoke).toHaveBeenCalledTimes(1);
+      expect(mockInvoke).toHaveBeenCalledWith('update_selection', {
+        selectedEntity: null,
         hoveredEntity: null,
       });
     });
@@ -324,19 +342,94 @@ describe('selectionStore', () => {
 
       // Dispose the root — onCleanup should clear the timer
       dispose();
+      // Prevent afterEach from double-disposing
+      dispose = () => {};
 
       // Advance timers well past the debounce window
       vi.advanceTimersByTime(200);
       expect(mockInvoke).not.toHaveBeenCalled();
     });
 
-    it('invoke rejection is silently caught (no unhandled promise)', () => {
+    it('invoke rejection is silently caught (no unhandled promise)', async () => {
       mockInvoke.mockRejectedValue(new Error('not in Tauri'));
+      const errorSpy = vi.spyOn(console, 'error');
 
-      // Should not throw
-      expect(() => {
-        selectEntity('Bracket');
-      }).not.toThrow();
+      selectEntity('Bracket');
+
+      // invoke was called (proving dispatch happened)
+      expect(mockInvoke).toHaveBeenCalledTimes(1);
+
+      // Flush microtasks so the .catch() handler on the rejected promise executes
+      await vi.advanceTimersByTimeAsync(0);
+
+      // No unhandled rejection leaked to console
+      expect(errorSpy).not.toHaveBeenCalled();
+      errorSpy.mockRestore();
+    });
+
+    it('clearIfRemoved dispatches when selectedEntity matches', () => {
+      selectEntity('Bracket');
+      mockInvoke.mockClear();
+
+      clearIfRemoved('Bracket');
+
+      // Selection-only change → immediate dispatch
+      expect(mockInvoke).toHaveBeenCalledTimes(1);
+      expect(mockInvoke).toHaveBeenCalledWith('update_selection', {
+        selectedEntity: null,
+        hoveredEntity: null,
+      });
+    });
+
+    it('clearIfRemoved dispatches when hoveredEntity matches', () => {
+      hoverEntity('Bracket.width');
+      // Flush the hover debounce so it doesn't interfere
+      vi.advanceTimersByTime(100);
+      mockInvoke.mockClear();
+
+      clearIfRemoved('Bracket.width');
+
+      // Hover-only change → debounced, not immediate
+      expect(mockInvoke).not.toHaveBeenCalled();
+
+      vi.advanceTimersByTime(100);
+      expect(mockInvoke).toHaveBeenCalledTimes(1);
+      expect(mockInvoke).toHaveBeenCalledWith('update_selection', {
+        selectedEntity: null,
+        hoveredEntity: null,
+      });
+    });
+
+    it('clearIfRemoved dispatches when both fields match', () => {
+      batch(() => {
+        selectEntity('X');
+        hoverEntity('X');
+      });
+      // Flush the combined debounced dispatch
+      vi.advanceTimersByTime(100);
+      mockInvoke.mockClear();
+
+      clearIfRemoved('X');
+
+      // clearIfRemoved calls selectEntity(null) then hoverEntity(null) sequentially.
+      // selectEntity(null) is selection-only change → immediate dispatch (hover still 'X')
+      expect(mockInvoke).toHaveBeenCalledTimes(1);
+      expect(mockInvoke).toHaveBeenCalledWith('update_selection', {
+        selectedEntity: null,
+        hoveredEntity: 'X',
+      });
+
+      mockInvoke.mockClear();
+
+      // hoverEntity(null) is hover-only change → debounced
+      expect(mockInvoke).not.toHaveBeenCalled();
+
+      vi.advanceTimersByTime(100);
+      expect(mockInvoke).toHaveBeenCalledTimes(1);
+      expect(mockInvoke).toHaveBeenCalledWith('update_selection', {
+        selectedEntity: null,
+        hoveredEntity: null,
+      });
     });
   });
 });

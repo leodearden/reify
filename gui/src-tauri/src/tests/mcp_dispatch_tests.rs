@@ -209,3 +209,23 @@ fn dispatch_get_selection_returns_selected_entity() {
         "hovered_entity should be null"
     );
 }
+
+#[test]
+fn dispatch_get_selection_returns_both_fields() {
+    let engine = make_engine();
+    let selection = Arc::new(RwLock::new(SelectionInfo {
+        selected_entity: Some("Bracket".to_string()),
+        hovered_entity: Some("Bracket.width".to_string()),
+    }));
+    let ctx = TauriToolContext::builder(engine).with_selection(selection).build();
+    let result = mcp_tool_call_impl("reify_get_selection", serde_json::json!({}), &ctx)
+        .expect("dispatch should succeed");
+    assert_eq!(
+        result["selected_entity"], "Bracket",
+        "selected_entity should be Bracket"
+    );
+    assert_eq!(
+        result["hovered_entity"], "Bracket.width",
+        "hovered_entity should be Bracket.width"
+    );
+}

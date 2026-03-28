@@ -441,6 +441,21 @@ impl SidecarHandle {
     }
 }
 
+impl Drop for SidecarHandle {
+    fn drop(&mut self) {
+        // Abort the reader task so it doesn't continue running detached.
+        // JoinHandle::abort() is sync and marks the task for cancellation
+        // at its next .await point.
+        self.reader_handle.abort();
+        // Kill the OS child process if one was attached via set_child().
+        // start_kill() is sync and sends SIGKILL without waiting for exit —
+        // best-effort OS cleanup in a Drop context where async is unavailable.
+        if let Some(ref mut child) = self.child {
+            let _ = child.start_kill();
+        }
+    }
+}
+
 // --- High-level command implementations ---
 
 /// Send a message to the sidecar. Returns the generated message ID.
@@ -773,5 +788,55 @@ pub fn outbound_to_event(msg: &OutboundMessage) -> (String, Value) {
             serde_json::json!({ "id": id, "message": message }),
         ),
         OutboundMessage::Ready => ("claude-ready".to_string(), serde_json::json!({})),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::BufReader;
+    use tokio::process::Command;
+
+    /// Verify that dropping a SidecarHandle kills the OS child process and
+    /// aborts the reader task. Without a custom Drop impl, tokio's
+    /// Child::drop does NOT send any signal (kill_on_drop defaults to false),
+    /// so the spawned `sleep` process would continue running.
+    #[tokio::test]
+    async fn test_drop_kills_child_process() {
+        let mut child = Command::new("sleep")
+            .arg("100")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("failed to spawn sleep");
+
+        let pid = child.id().expect("child must have pid");
+
+        let stdin = child.stdin.take().expect("stdin");
+        let stdout = child.stdout.take().expect("stdout");
+        let reader = BufReader::new(stdout);
+
+        let state = Arc::new(Mutex::new(SidecarState::NotStarted));
+        let mut handle = SidecarHandle::from_parts(stdin, reader, state);
+        handle.set_child(child);
+
+        // Drop the handle — should kill the child process and abort reader.
+        drop(handle);
+
+        // Give the OS a moment to reap the process.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Verify the process is no longer running.
+        let probe = std::process::Command::new("kill")
+            .arg("-0")
+            .arg(pid.to_string())
+            .status()
+            .expect("kill -0 probe failed");
+
+        assert!(
+            !probe.success(),
+            "sleep process (pid {}) should have been killed by Drop but is still running",
+            pid
+        );
     }
 }

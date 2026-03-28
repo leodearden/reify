@@ -170,6 +170,31 @@ mod tests {
     }
 
     #[test]
+    fn compiled_field_hash_differs_sampled_vs_analytical_and_imported() {
+        let f_sampled = CompiledFieldBuilder::new("temp", Type::Geometry, Type::Real)
+            .sampled(vec![("resolution", literal(Value::Int(32)))])
+            .build();
+        let f_analytical = CompiledFieldBuilder::new("temp", Type::Geometry, Type::Real)
+            .analytical(literal(Value::Real(1.0)))
+            .build();
+        let f_imported = CompiledFieldBuilder::new("temp", Type::Geometry, Type::Real)
+            .imported()
+            .build();
+        assert_ne!(
+            f_sampled.content_hash, f_analytical.content_hash,
+            "sampled vs analytical source must produce different content_hash"
+        );
+        assert_ne!(
+            f_sampled.content_hash, f_imported.content_hash,
+            "sampled vs imported source must produce different content_hash"
+        );
+        assert_ne!(
+            f_analytical.content_hash, f_imported.content_hash,
+            "analytical vs imported source must produce different content_hash"
+        );
+    }
+
+    #[test]
     fn compiled_field_hash_differs_by_source() {
         // Use different expressions for analytical vs composed so source_hash differs.
         // (Real compiler hashes Analytical/Composed identically via expr.content_hash,

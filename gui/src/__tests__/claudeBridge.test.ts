@@ -464,6 +464,16 @@ describe('subscribeToClaudeEvents', () => {
   });
 
   describe('payload validation guards', () => {
+    let warnSpy: ReturnType<typeof vi.spyOn>;
+
+    beforeEach(() => {
+      warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    });
+
+    afterEach(() => {
+      warnSpy.mockRestore();
+    });
+
     /** Helper: capture the internal listener for a given event name */
     function captureListener(eventName: string) {
       let captured: ((event: { payload: unknown }) => void) | undefined;
@@ -476,7 +486,13 @@ describe('subscribeToClaudeEvents', () => {
       return {
         async setup(handler: ReturnType<typeof vi.fn>) {
           await subscribeToClaudeEvents(handler);
-          return captured!;
+          if (!captured) {
+            throw new Error(
+              `captureListener: no handler was registered for event "${eventName}". ` +
+              `Check that subscribeToClaudeEvents registers this event.`,
+            );
+          }
+          return captured;
         },
       };
     }
@@ -508,6 +524,11 @@ describe('subscribeToClaudeEvents', () => {
           listener({ payload });
 
           expect(handler).not.toHaveBeenCalled();
+          expect(warnSpy).toHaveBeenCalledOnce();
+          expect(warnSpy).toHaveBeenCalledWith(
+            expect.stringContaining(eventName),
+            payload,
+          );
         });
       }
     }
@@ -629,6 +650,28 @@ describe('subscribeToClaudeEvents', () => {
         });
       });
     });
+
+    describe('tool_result passthrough contract', () => {
+      it('passes result=null through to handler (unvalidated-passthrough contract)', async () => {
+        const { setup } = captureListener('claude-tool-result');
+        const handler = vi.fn();
+        const listener = await setup(handler);
+        listener({ payload: { id: 'tr-null', tool_name: 'read_file', result: null } });
+        expect(handler).toHaveBeenCalledWith({
+          type: 'tool_result', id: 'tr-null', tool_name: 'read_file', result: null,
+        });
+      });
+    });
+
+    describe('claude-ready bypass', () => {
+      it('claude-ready fires unconditionally even with null payload', async () => {
+        const { setup } = captureListener('claude-ready');
+        const handler = vi.fn();
+        const listener = await setup(handler);
+        listener({ payload: null as unknown as Record<string, unknown> });
+        expect(handler).toHaveBeenCalledWith({ type: 'ready' });
+      });
+    });
   });
 });
 
@@ -659,3 +702,8 @@ type _AssertToolCallPayload = AssertTrue<Equals<Omit<ToolCall, 'type'>, { id: st
 type _AssertToolResultPayload = AssertTrue<Equals<Omit<ToolResult, 'type'>, { id: string; tool_name: string; result: unknown }>>;
 type _AssertDonePayload = AssertTrue<Equals<Omit<Done, 'type'>, { id: string }>>;
 type _AssertErrorMessagePayload = AssertTrue<Equals<Omit<ErrorMessage, 'type'>, { id: string; message: string }>>;
+
+// EventEntry's payload type is `unknown` (not `Record<string, unknown>`) because
+// each handler validates event.payload via validatePayload() before accessing fields.
+// `unknown` prevents accidental uncast property access and doesn't falsely
+// constrain the payload to be an object with string keys.

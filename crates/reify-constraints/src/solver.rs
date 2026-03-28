@@ -509,6 +509,10 @@ impl ConstraintSolver for DimensionalSolver {
         // pure feasibility). This enables early-exit for no-objective problems
         // and a reduced iteration budget for optimization warm-starts.
         let initial = extract_initial_point(problem);
+        // NB: `trial_values` is used in two places — (1) the feasibility check
+        // immediately below, and (2) the fallback objective validation when the
+        // optimizer drifts infeasible (see `eval_objective(&trial_values, …)`).
+        // Do not inline into the feasibility check.
         let trial_values =
             build_trial_values(&problem.current_values, &problem.auto_params, &initial);
         let initially_feasible =
@@ -531,7 +535,9 @@ impl ConstraintSolver for DimensionalSolver {
         // Nelder-Mead needs O(N+1) evaluations per simplex sweep, so scale
         // the budget proportionally to give higher-dimensional problems enough
         // iterations to converge.
-        let max_iters = if initially_feasible && problem.objective.is_some() {
+        // After the early-return above for `initially_feasible && objective.is_none()`,
+        // reaching here with `initially_feasible=true` implies `objective.is_some()`.
+        let max_iters = if initially_feasible {
             let n_params = problem.auto_params.len() as u64;
             (FEASIBLE_OPT_ITERS_PER_DIM * (n_params + 1)).min(MAX_ITERS)
         } else {
@@ -2036,9 +2042,10 @@ mod tests {
     #[test]
     fn feasibility_check_runs_with_objective() {
         use crate::DimensionalSolver;
+        use reify_test_support::mm;
         use reify_types::{
-            AutoParam, BinOp, CompiledExpr, ConstraintNodeId, DimensionVector,
-            OptimizationObjective, Type, Value, ValueCellId,
+            AutoParam, BinOp, CompiledExpr, ConstraintNodeId, OptimizationObjective, Type,
+            ValueCellId,
         };
 
         let solver = DimensionalSolver;
@@ -2046,13 +2053,7 @@ mod tests {
 
         // x > 1mm — trivially satisfied when x starts at 10mm
         let x_ref = CompiledExpr::value_ref(x_id.clone(), Type::length());
-        let one_mm = CompiledExpr::literal(
-            Value::Scalar {
-                si_value: 0.001,
-                dimension: DimensionVector::LENGTH,
-            },
-            Type::length(),
-        );
+        let one_mm = CompiledExpr::literal(mm(1.0), Type::length());
         let gt_expr = CompiledExpr::binop(BinOp::Gt, x_ref.clone(), one_mm, Type::Bool);
 
         // Minimize x — with auto param bounds [5mm, 100mm], the minimum
@@ -2060,13 +2061,7 @@ mod tests {
         let objective = OptimizationObjective::Minimize(x_ref);
 
         let mut current = ValueMap::new();
-        current.insert(
-            x_id.clone(),
-            Value::Scalar {
-                si_value: 0.010, // 10mm — already feasible
-                dimension: DimensionVector::LENGTH,
-            },
-        );
+        current.insert(x_id.clone(), mm(10.0)); // 10mm — already feasible
 
         let problem = ResolutionProblem {
             auto_params: vec![AutoParam {
@@ -2089,6 +2084,13 @@ mod tests {
                     "optimizer should drive x toward 5mm lower bound, got {} m \
                      (expected 4mm < x < 8mm — lower bound catches zero/negative, \
                      upper bound confirms convergence near 5mm)",
+                    si
+                );
+                // Confirm optimizer actually minimized: result must be below
+                // the 10mm initial value, proving the objective drove convergence.
+                assert!(
+                    si < 0.010,
+                    "optimizer should reduce x below initial 10mm, got {} m",
                     si
                 );
             }
