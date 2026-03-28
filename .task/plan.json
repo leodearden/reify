@@ -112,6 +112,20 @@
       "description": "Add upfront jagged validation inside the rank-2 block in eval_add and eval_sub: after confirming both are rank-2 and non-empty, extract column count from first row of A and B, then verify all rows match: `let a_cols = match &a[0] { Value::Tensor(r) => r.len(), _ => 0 }; if !a.iter().all(|r| matches!(r, Value::Tensor(row) if row.len() == a_cols)) { return Value::Undef; }` \u2014 mirror for B. All step-12 tests pass. Existing matrix add/sub tests still pass.",
       "status": "done",
       "commit": "b20bc49b"
+    },
+    {
+      "id": "step-14",
+      "type": "test",
+      "description": "Write happy-path tests in matrix_eval_tests.rs under a new '\u2500\u2500 Valid rank-2 matrix arithmetic \u2500\u2500' section: (a) `valid_rank2_matrix_add_returns_correct_result` \u2014 Tensor([Tensor([Int(1),Int(2)]),Tensor([Int(3),Int(4)])]) + Tensor([Tensor([Int(5),Int(6)]),Tensor([Int(7),Int(8)])]) \u2192 Tensor([Tensor([Int(6),Int(8)]),Tensor([Int(10),Int(12)])]). (b) `valid_rank2_matrix_sub_returns_correct_result` \u2014 Tensor([Tensor([Int(10),Int(20)]),Tensor([Int(30),Int(40)])]) - Tensor([Tensor([Int(1),Int(2)]),Tensor([Int(3),Int(4)])]) \u2192 Tensor([Tensor([Int(9),Int(18)]),Tensor([Int(27),Int(36)])]). These tests confirm that the validate_rank2_tensors guard correctly allows valid rectangular matrices through to componentwise_binop, producing correct element-wise results. Addresses reviewer finding: missing_happy_path_test.",
+      "status": "done",
+      "commit": "49bb9efb"
+    },
+    {
+      "id": "step-15",
+      "type": "impl",
+      "description": "Verify step-14 happy-path tests pass with existing implementation. The rank-2 guards (steps 9/11/13) reject invalid inputs and fall through to componentwise_binop for valid ones \u2014 so no implementation changes should be needed. If any test fails, investigate whether the guard is over-restrictive and fix accordingly. Run full test suite (`cargo test -p reify-expr`) to confirm no regressions.",
+      "status": "done",
+      "commit": "49bb9efb"
     }
   ],
   "design_decisions": [
@@ -142,6 +156,10 @@
     {
       "decision": "New test file matrix_eval_tests.rs for matrix arithmetic tests",
       "rationale": "Matrix correctness tests (empty-tensor, rank-2 detection, jagged validation) are a distinct concern from the existing point_vector_eval_tests.rs. A dedicated file improves discoverability and avoids bloating the existing test file."
+    },
+    {
+      "decision": "Happy-path tests use concrete 2\u00d72 integer matrices with manually computed expected results",
+      "rationale": "Addresses reviewer finding missing_happy_path_test. Guards must be tested for both rejection of invalid inputs AND pass-through of valid inputs. Using simple integer values makes expected results trivially verifiable by inspection."
     }
   ],
   "reuse": [
@@ -169,8 +187,13 @@
       "what": "Value constructors: Value::length(), Value::Int(), DimensionVector::LENGTH",
       "where": "crates/reify-types/src/value.rs:134-148",
       "how": "Used in test assertions for Value::neg() and matrix arithmetic tests"
+    },
+    {
+      "what": "Existing test helpers in matrix_eval_tests.rs: lit(), tensor_ty(), add(), sub(), eval()",
+      "where": "crates/reify-expr/tests/matrix_eval_tests.rs:7-34",
+      "how": "Reuse the same helpers for step-14 happy-path tests \u2014 no new infrastructure needed"
     }
   ],
   "_session_id": "373-db842f64",
-  "_created_at": "2026-03-28T01:05:57.847757+00:00"
+  "_created_at": "2026-03-28T04:07:31.193652+00:00"
 }
