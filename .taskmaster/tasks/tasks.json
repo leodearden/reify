@@ -12773,11 +12773,11 @@
         "description": "All JS lockfiles (package-lock.json, pnpm-lock.yaml) are currently gitignored per task 536, meaning no reproducible dependency snapshot exists in version control. Standardize on one package manager and commit its lockfile.\n\nSteps:\n1. Decide between npm and pnpm for gui/ and gui/sidecar/ (check which is actually in use, what CI uses)\n2. Add `\"packageManager\": \"pnpm@<version>\"` (or npm equivalent) to gui/package.json to enforce via Corepack\n3. Update gui/package.json scripts: change `npm run` references to match chosen PM (e.g. `pnpm run`)\n4. Commit the chosen lockfile (e.g. pnpm-lock.yaml) and remove it from .gitignore\n5. Keep the OTHER lockfile format gitignored (e.g. keep ignoring package-lock.json if using pnpm)\n6. Handle gui/sidecar/ the same way — commit its lockfile for the chosen PM\n7. Update orchestrator.yaml merge commands to use the chosen PM (`pnpm install` vs `npm install`)\n8. Simplify .gitignore: use `**/package-lock.json` glob instead of per-directory entries for the ignored format\n9. Update tree-sitter-reify/ lockfile handling to match\n\nmemory_hints: search \"package-lock merge conflicts\", search \"gui dependencies\", search \"package manager standardization\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-28T00:26:43.857Z",
+        "updatedAt": "2026-03-28T09:04:27.397Z",
         "metadata": {
           "modules": [
             ".gitignore",
@@ -14621,7 +14621,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T09:04:27.366Z",
+      "lastModified": "2026-03-28T09:04:27.397Z",
       "taskCount": 710,
       "completedCount": 329,
       "tags": [
