@@ -90,6 +90,9 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
     setEditValue(input.value);
   }
 
+  // No whitespace allowed between number and unit — matches .ri grammar (token.immediate).
+  // The backend parse_value_string is more lenient (accepts "5 mm") but the frontend
+  // intentionally enforces the stricter grammar rule.
   const QUANTITY_RE = /^-?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?(mm|cm|deg|rad|m)$/;
 
   function isValidValue(value: string): boolean {
@@ -107,7 +110,8 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
         return;
       }
       input.removeAttribute('data-invalid');
-      props.onSetParameter(cellId, input.value);
+      const trimmed = input.value.trim();
+      props.onSetParameter(cellId, trimmed);
       setEditingCellId(null);
       escapingRef = true;
       input.blur();
@@ -136,7 +140,8 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
       input.removeAttribute('data-invalid');
     } else {
       input.removeAttribute('data-invalid');
-      props.onSetParameter(cellId, input.value);
+      const trimmed = input.value.trim();
+      props.onSetParameter(cellId, trimmed);
     }
     setEditingCellId(null);
   }
