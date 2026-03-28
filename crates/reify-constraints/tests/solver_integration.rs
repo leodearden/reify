@@ -550,7 +550,7 @@ fn optimize_with_feasible_initial_point() {
             // Minimize should push thickness toward 5mm (auto param lower bound),
             // which is safely above the 2mm constraint.
             assert!(
-                (0.005..0.008).contains(&si),
+                si >= 0.005 - 1e-9 && si < 0.008,
                 "minimized thickness should be near 5mm, got {} m",
                 si
             );
