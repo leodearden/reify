@@ -195,3 +195,46 @@ fn build_indeterminate_constraint_exits_success() {
         "geometry file should be written when constraints are only indeterminate"
     );
 }
+
+#[test]
+fn build_violated_and_indeterminate_exits_failure() {
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let output_path = dir.path().join("out.step");
+    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
+        .args([
+            "build",
+            &fixture_path("bracket_violated_indeterminate.ri"),
+            "-o",
+            output_path.to_str().unwrap(),
+        ])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .expect("failed to execute reify binary");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        !output.status.success(),
+        "reify build should exit non-zero when VIOLATED present even with INDETERMINATE.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("VIOLATED"),
+        "stdout should contain 'VIOLATED', got: {stdout}"
+    );
+    assert!(
+        stdout.contains("INDETERMINATE"),
+        "stdout should contain 'INDETERMINATE', got: {stdout}"
+    );
+    assert!(
+        stdout.contains("Some constraints violated"),
+        "stdout should contain 'Some constraints violated', got: {stdout}"
+    );
+    // Geometry file should still be written even when constraints are violated
+    assert!(
+        output_path.exists(),
+        "geometry file should still be written even with constraint violations"
+    );
+}
