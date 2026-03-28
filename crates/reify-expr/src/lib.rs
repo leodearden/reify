@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 
 use reify_types::{
-    BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, DimensionVector, QuantifierKind, Type,
-    UnOp, Value, ValueCellId, ValueMap,
+    BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, DeterminacyPredicateKind,
+    DeterminacyState, DimensionVector, PersistentMap, QuantifierKind, Type, UnOp, Value,
+    ValueCellId, ValueMap,
 };
 
 /// Maximum recursion depth for user-defined function calls.
@@ -19,6 +20,10 @@ pub struct EvalContext<'a> {
     /// Meta block entries per entity: entity name → (key → value).
     /// `None` means meta context was not provided — MetaAccess evaluation will panic.
     pub meta: Option<&'a HashMap<String, HashMap<String, String>>>,
+    /// Snapshot determinacy states for DeterminacyPredicate evaluation.
+    /// When `Some`, DeterminacyPredicate nodes resolve to `Bool(true/false)`.
+    /// When `None`, they return `Undef` (no engine context available).
+    pub determinacy: Option<&'a PersistentMap<ValueCellId, (Value, DeterminacyState)>>,
 }
 
 impl<'a> EvalContext<'a> {
@@ -29,6 +34,7 @@ impl<'a> EvalContext<'a> {
             functions,
             recursion_depth: 0,
             meta: None,
+            determinacy: None,
         }
     }
 
@@ -39,12 +45,22 @@ impl<'a> EvalContext<'a> {
             functions: &[],
             recursion_depth: 0,
             meta: None,
+            determinacy: None,
         }
     }
 
     /// Attach meta block data for MetaAccess evaluation.
     pub fn with_meta(mut self, meta: &'a HashMap<String, HashMap<String, String>>) -> Self {
         self.meta = Some(meta);
+        self
+    }
+
+    /// Attach snapshot determinacy states for DeterminacyPredicate evaluation.
+    pub fn with_determinacy(
+        mut self,
+        determinacy: &'a PersistentMap<ValueCellId, (Value, DeterminacyState)>,
+    ) -> Self {
+        self.determinacy = Some(determinacy);
         self
     }
 
@@ -58,6 +74,7 @@ impl<'a> EvalContext<'a> {
             functions: self.functions,
             recursion_depth: self.recursion_depth + 1,
             meta: self.meta,
+            determinacy: self.determinacy,
         }
     }
 }
@@ -245,8 +262,67 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             Value::Option(Some(Box::new(val)))
         }
 
-        // DeterminacyPredicate is engine-level only; eval layer returns Undef.
-        CompiledExprKind::DeterminacyPredicate { .. } => Value::Undef,
+        // DeterminacyPredicate: resolve using snapshot determinacy states if available.
+        // When no determinacy context is provided (eval layer without engine), returns Undef.
+        CompiledExprKind::DeterminacyPredicate { kind, cell } => {
+            if let Some(det_map) = ctx.determinacy {
+                // Missing cell in the snapshot indicates a wiring bug (stale ID,
+                // evaluation ordering violation). DeterminacyPredicate may only
+                // reference cells that are guaranteed to be evaluated before the
+                // current cell (topological ordering requirement).
+                // Return Undef to make it visible rather than silently defaulting
+                // to Undetermined.
+                let Some((_, state)) = det_map.get(cell) else {
+                    debug_assert!(
+                        false,
+                        "DeterminacyPredicate references cell {:?} not in determinacy snapshot — wiring bug or eval-order violation",
+                        cell
+                    );
+                    return Value::Undef;
+                };
+                let state = *state;
+                let result = match kind {
+                    DeterminacyPredicateKind::Determined => state == DeterminacyState::Determined,
+                    DeterminacyPredicateKind::Undetermined => {
+                        state == DeterminacyState::Undetermined
+                    }
+                    // Semantic contract: constrained() checks solver-involvement
+                    // state (Auto || Provisional), NOT constraint-presence.
+                    //
+                    // Rationale: in reify's architecture, the `auto` keyword
+                    // explicitly marks a param for constraint-solver resolution,
+                    // so constrained(auto_param) correctly returns true even
+                    // without explicit constraints. A Determined param with an
+                    // explicit constraint (e.g. `param a = 10mm` + `constraint
+                    // a > 0mm`) returns false because the constraint is a
+                    // validation check on an already-resolved value, not a solver
+                    // directive — use `determined(x)` to check resolved state.
+                    DeterminacyPredicateKind::Constrained => {
+                        state == DeterminacyState::Auto || state == DeterminacyState::Provisional
+                    }
+                    // Semantic contract: partially_determined() checks for the
+                    // solver's intermediate state (Provisional only).
+                    //
+                    // Intentionally narrowed from original spec ("has constraints
+                    // AND state != Determined") to Provisional-only: Auto params
+                    // are already covered by constrained(). The Provisional state
+                    // uniquely represents a value being actively resolved by the
+                    // solver but not yet converged — "partially determined" most
+                    // precisely describes this in-flux state. This gives each
+                    // predicate a distinct, non-overlapping role:
+                    //   determined()           → resolved (Determined)
+                    //   undetermined()         → no value (Undetermined)
+                    //   constrained()          → solver variable (Auto/Provisional)
+                    //   partially_determined() → solver in progress (Provisional)
+                    DeterminacyPredicateKind::PartiallyDetermined => {
+                        state == DeterminacyState::Provisional
+                    }
+                };
+                Value::Bool(result)
+            } else {
+                Value::Undef
+            }
+        }
 
         CompiledExprKind::Quantifier {
             kind,

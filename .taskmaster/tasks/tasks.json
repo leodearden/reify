@@ -11338,7 +11338,7 @@
         "description": "Multiple test quality issues: redundant tests, incomplete assertions, unreachable code path tested.",
         "details": "1. Merge evaluate_recovers_poisoned_values_read and _write into single test (same RwLock poisoned).\n2. Add data-verification assertions to evaluate_recovers_poisoned_snapshot_values (check snapshot_values written) and evaluate_recovers_poisoned_results (check take_results() has entry).\n3. Add node_results.is_empty() assertions to build_result_shared and into_result poison recovery tests.\n4. Fix test design flaw in evaluate_recovers_poisoned_values_write where post-evaluate values() call tests trivially-unpoisoned lock.\n\nFiles: crates/reify-runtime/tests/concurrent_eval.rs",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -11351,7 +11351,7 @@
             "crates/reify-runtime/tests"
           ]
         },
-        "updatedAt": "2026-03-27T23:38:19.432Z"
+        "updatedAt": "2026-03-28T00:00:24.441Z"
       },
       {
         "id": "562",
@@ -12232,7 +12232,7 @@
         "description": "Several test builders in crates/reify-test-support/src/builders/ compute content_hash values that ignore semantically significant fields, which could cause false cache hits in tests exercising the incremental evaluation engine.\n\nAffected builders:\n1. **CompiledFieldBuilder::build()** (field.rs:63) — hash uses only `name` + constant `[99]`, ignoring `domain_type`, `codomain_type`, and `source`. Two fields with the same name but different types/sources produce identical hashes.\n2. **TraitDefBuilder::build()** (trait_def.rs:68) — requirement hashing uses `std::mem::discriminant(&r.kind)` but ignores the inner type values. Two `Param(Type::Real)` vs `Param(Type::Int)` requirements with the same name produce identical hash contributions.\n3. **CompiledTraitBuilder::build()** (trait_def.rs:162-168) — hashes only member names, ignoring requirement kinds entirely.\n\nFix each build() to incorporate all semantically significant fields into the content_hash, and add tests asserting hash distinctness (e.g., same name + different source → different hash; same requirement variant + different inner type → different hash).\n\nmemory_hints: search \"content_hash builder test support\", get_entity \"CompiledFieldBuilder\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -12245,7 +12245,8 @@
           "modules": [
             "crates/reify-test-support/src/builders"
           ]
-        }
+        },
+        "updatedAt": "2026-03-27T23:58:35.059Z"
       },
       {
         "id": "603",
@@ -12339,7 +12340,7 @@
         "description": "scripts/tree-sitter-generate.sh unconditionally runs `tree-sitter generate` with no staleness check and no timeout. build.rs has both (content-hash stamp + 60s timeout), but the shell script — called by orchestrator.yaml verification commands up to 60+ times per run — does neither. Add: (1) hash-based staleness guard matching build.rs contract, (2) `timeout 60 tree-sitter generate` to prevent hung builds.",
         "details": "Files: scripts/tree-sitter-generate.sh. The script is called from orchestrator.yaml pre-test/lint/typecheck commands. Memory hint: search for \"task 563 content hash staleness\" for the build.rs implementation pattern.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -12349,10 +12350,12 @@
             "scripts/tree-sitter-generate.sh"
           ],
           "modules": [
-            "scripts"
+            ".gitignore",
+            "scripts/test_tree_sitter_generate.sh",
+            "scripts/tree-sitter-generate.sh"
           ]
         },
-        "updatedAt": "2026-03-27T23:54:31.597Z"
+        "updatedAt": "2026-03-27T23:58:34.073Z"
       },
       {
         "id": "608",
@@ -12535,7 +12538,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-27T23:54:31.600Z",
+      "lastModified": "2026-03-28T00:00:24.450Z",
       "taskCount": 617,
       "completedCount": 281,
       "tags": [

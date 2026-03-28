@@ -6,8 +6,9 @@ use std::collections::{HashMap, HashSet};
 
 use reify_types::{
     BinOp, CompiledExpr, CompiledExprKind, ConstraintDomain, ConstraintNodeId, ContentHash,
-    Diagnostic, DiagnosticLabel, DimensionVector, FIELD_ENTITY_PREFIX, OptimizationObjective,
-    RealizationNodeId, ResolvedFunction, SourceSpan, Type, UnOp, Value, ValueCellId,
+    DeterminacyPredicateKind, Diagnostic, DiagnosticLabel, DimensionVector, FIELD_ENTITY_PREFIX,
+    OptimizationObjective, RealizationNodeId, ResolvedFunction, SourceSpan, Type, UnOp, Value,
+    ValueCellId,
 };
 
 /// A compiled import declaration.
@@ -1611,6 +1612,85 @@ fn compile_expr_guarded(
                     CompiledExpr::literal(Value::Undef, Type::Real)
                 }
                 OverloadResolution::NoUserFunctions => {
+                    // Determinacy predicate intrinsics — compiler transforms these
+                    // calls into DeterminacyPredicate nodes evaluated by the engine
+                    // using the snapshot's DeterminacyState for each ValueCellId.
+                    //
+                    // User-facing semantic contract:
+                    //   determined(x)           — true iff x is fully resolved
+                    //                             (state == Determined)
+                    //   undetermined(x)         — true iff x has no value
+                    //                             (state == Undetermined),
+                    //                             regardless of constraints
+                    //   constrained(x)          — true iff x is a solver variable
+                    //                             (state == Auto || Provisional);
+                    //                             tests solver involvement, NOT
+                    //                             constraint presence
+                    //   partially_determined(x) — true iff x is in solver
+                    //                             intermediate state
+                    //                             (state == Provisional only);
+                    //                             narrowed from original spec to
+                    //                             distinguish from Auto (which is
+                    //                             covered by constrained())
+                    let determinacy_kind = match name.as_str() {
+                        "determined" => Some(DeterminacyPredicateKind::Determined),
+                        "undetermined" => Some(DeterminacyPredicateKind::Undetermined),
+                        "constrained" => Some(DeterminacyPredicateKind::Constrained),
+                        "partially_determined" => {
+                            Some(DeterminacyPredicateKind::PartiallyDetermined)
+                        }
+                        _ => None,
+                    };
+
+                    if let Some(kind) = determinacy_kind {
+                        if compiled_args.len() != 1 {
+                            diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "{}() requires exactly 1 argument, got {}",
+                                    name,
+                                    compiled_args.len()
+                                ))
+                                .with_label(DiagnosticLabel::new(
+                                    expr.span,
+                                    "wrong number of arguments",
+                                )),
+                            );
+                            return CompiledExpr::literal(Value::Undef, Type::Bool);
+                        }
+
+                        let arg = &compiled_args[0];
+                        if let CompiledExprKind::ValueRef(cell_id) = &arg.kind {
+                            // Discriminator byte [17] — distinct from all other
+                            // CompiledExpr discriminators:
+                            //   [0] Literal, [1] ValueRef, [2] BinOp, [3] UnOp,
+                            //   [4] FunctionCall, [5] Conditional, [7] Lambda,
+                            //   [8] ListLiteral, [9] SetLiteral, [10] MapLiteral,
+                            //   [11] IndexAccess, [12] Quantifier, [14] OptionSome,
+                            //   [15] OptionNone, [16] MetaAccess
+                            const HASH_TAG_DETERMINACY_PRED: u8 = 17;
+                            let content_hash = ContentHash::of(&[HASH_TAG_DETERMINACY_PRED])
+                                .combine(ContentHash::of_str(&format!("{:?}", kind)))
+                                .combine(ContentHash::of_str(&format!("{}", cell_id)));
+                            return CompiledExpr {
+                                kind: CompiledExprKind::DeterminacyPredicate {
+                                    kind,
+                                    cell: cell_id.clone(),
+                                },
+                                result_type: Type::Bool,
+                                content_hash,
+                            };
+                        } else {
+                            diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "{}() argument must be a direct cell reference, not a computed expression",
+                                    name
+                                ))
+                                .with_label(DiagnosticLabel::new(expr.span, "expected cell reference")),
+                            );
+                            return CompiledExpr::literal(Value::Undef, Type::Bool);
+                        }
+                    }
+
                     // No user fn with this name — fall through to stdlib FunctionCall
                     let resolved = ResolvedFunction {
                         name: name.clone(),
