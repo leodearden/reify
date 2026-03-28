@@ -487,11 +487,11 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
 
         // conjugate(z): negate the imaginary part, preserve re and dimension.
         "conjugate" => unary(args, |v| match v {
-            Value::Complex { re, im, dimension } => Value::Complex {
+            Value::Complex { re, im, dimension } => sanitize_value(Value::Complex {
                 re: *re,
                 im: -im,
                 dimension: *dimension,
-            },
+            }),
             _ => Value::Undef,
         }),
 
@@ -4796,6 +4796,58 @@ mod tests {
     #[test]
     fn conjugate_non_complex_returns_undef() {
         assert!(eval_builtin("conjugate", &[Value::Real(3.0)]).is_undef());
+    }
+
+    #[test]
+    fn conjugate_nan_re_returns_undef() {
+        let z = Value::Complex {
+            re: f64::NAN,
+            im: 1.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            eval_builtin("conjugate", &[z]).is_undef(),
+            "conjugate of Complex with NaN re must return Undef"
+        );
+    }
+
+    #[test]
+    fn conjugate_nan_im_returns_undef() {
+        let z = Value::Complex {
+            re: 1.0,
+            im: f64::NAN,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            eval_builtin("conjugate", &[z]).is_undef(),
+            "conjugate of Complex with NaN im must return Undef"
+        );
+    }
+
+    #[test]
+    fn conjugate_inf_re_returns_undef() {
+        let z = Value::Complex {
+            re: f64::INFINITY,
+            im: 1.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            eval_builtin("conjugate", &[z]).is_undef(),
+            "conjugate of Complex with Inf re must return Undef"
+        );
+    }
+
+    #[test]
+    fn conjugate_inf_im_returns_undef() {
+        let z = Value::Complex {
+            re: 1.0,
+            im: f64::NEG_INFINITY,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            eval_builtin("conjugate", &[z]).is_undef(),
+            "conjugate of Complex with -Inf im must return Undef"
+        );
     }
 
     // ── magnitude on Complex tests (step-11) ─────────────────────────────────
