@@ -545,8 +545,7 @@ impl ConstraintSolver for DimensionalSolver {
             .with_sd_tolerance(1e-15)
             .expect("sd_tolerance 1e-15 is always valid");
 
-        let executor =
-            Executor::new(cost_fn, solver).configure(|state| state.max_iters(max_iters));
+        let executor = Executor::new(cost_fn, solver).configure(|state| state.max_iters(max_iters));
 
         let result = match executor.run() {
             Ok(res) => res,
@@ -1996,8 +1995,7 @@ mod tests {
             },
             Type::length(),
         );
-        let gt_expr =
-            CompiledExpr::binop(BinOp::Gt, x_ref.clone(), five_mm, Type::Bool);
+        let gt_expr = CompiledExpr::binop(BinOp::Gt, x_ref.clone(), five_mm, Type::Bool);
         let lt_expr = CompiledExpr::binop(BinOp::Lt, x_ref, fifty_mm, Type::Bool);
 
         let problem = ResolutionProblem {
@@ -2024,9 +2022,7 @@ mod tests {
         };
 
         // Verify constraint satisfaction: solved x must be within (5mm, 50mm).
-        let x_val = values
-            .get(&x_id)
-            .expect("solved values must contain x");
+        let x_val = values.get(&x_id).expect("solved values must contain x");
         if let Value::Scalar { si_value, .. } = x_val {
             assert!(
                 *si_value > 0.005 && *si_value < 0.050,

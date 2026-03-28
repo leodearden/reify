@@ -1290,10 +1290,7 @@ fn compile_expr_guarded(
 
                         let arg = &compiled_args[0];
                         if let CompiledExprKind::ValueRef(cell_id) = &arg.kind {
-                            return CompiledExpr::determinacy_predicate(
-                                kind,
-                                cell_id.clone(),
-                            );
+                            return CompiledExpr::determinacy_predicate(kind, cell_id.clone());
                         } else {
                             diagnostics.push(
                                 Diagnostic::error(format!(
