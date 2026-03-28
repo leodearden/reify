@@ -3431,6 +3431,20 @@ mod tests {
         );
     }
 
+    #[test]
+    fn lower_connect_body_anonymous_tokens_not_flagged() {
+        // An empty connect body `{ }` has only anonymous tokens (braces).
+        // The named-children iteration must skip them without producing errors.
+        let errors = lower_body_directly(
+            "structure S { port a : out T  port b : in T  connect a -> b { } }",
+        );
+        assert!(
+            errors.is_empty(),
+            "expected no errors for empty connect body (anonymous tokens only), got: {:?}",
+            errors
+        );
+    }
+
     /// Deliberately passes a `constraint_definition` node to `lower_connect_body`
     /// to exercise the catch-all branch. The constraint_definition has 3 named
     /// children (identifier, param_declaration, constraint_def_predicate), none of
