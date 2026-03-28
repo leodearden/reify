@@ -1,0 +1,73 @@
+{
+  "task_id": "539",
+  "title": "Use Omit<Interface, 'type'> for payload casts in bridge.ts subscribeToClaudeEvents",
+  "files": [
+    "gui/src/bridge.ts",
+    "gui/src/__tests__/claudeBridge.test.ts"
+  ],
+  "modules": [
+    "gui/src"
+  ],
+  "analysis": "In gui/src/bridge.ts lines 159-186, the subscribeToClaudeEvents function uses six inline anonymous type casts (e.g., `{ id: string; content: string }`) that duplicate field definitions already declared in the exported interfaces in gui/sidecar/src/types.ts (TextDelta, ThinkingDelta, ToolCall, ToolResult, Done, ErrorMessage). If a field is added or renamed in a constituent interface, these inline casts silently fall out of sync.\n\nThe fix is purely type-level: expand the import on line 20 to bring in the six interfaces, then replace each inline cast with `Omit<Interface, 'type'>`. The `p` variable is also renamed to `payload` per codebase convention.\n\nExisting tests in claudeBridge.test.ts are comprehensive \u2014 they already verify all 7 event type mappings, rollback behavior, and edge cases (extra fields, rogue type fields). Since the behavioral contract is unchanged, all existing tests must continue to pass.\n\nThe TDD approach adds compile-time type assertions (using the Equals/AssertTrue pattern already established in claudeBridge.test.ts:421-424) to verify that each Omit<Interface, 'type'> shape is structurally correct. These assertions serve as regression guards: if an interface changes in types.ts, the assertions catch any mismatch at compile time.",
+  "prerequisites": [],
+  "steps": [
+    {
+      "id": "step-1",
+      "type": "test",
+      "description": "Add compile-time type assertions to claudeBridge.test.ts verifying each Omit<Interface, 'type'> shape matches the expected payload structure. Import TextDelta, ThinkingDelta, ToolCall, ToolResult, Done, ErrorMessage from sidecar/src/types.ts. Add six AssertTrue<Equals<Omit<X, 'type'>, ExpectedShape>> assertions (e.g., Omit<TextDelta, 'type'> equals { id: string; content: string }). These pass immediately since the interfaces already match the inline shapes \u2014 they guard against future drift.",
+      "status": "done",
+      "commit": "195058d0"
+    },
+    {
+      "id": "step-2",
+      "type": "impl",
+      "description": "In bridge.ts line 20, expand the import to also bring in TextDelta, ThinkingDelta, ToolCall, ToolResult, Done, ErrorMessage from '../sidecar/src/types'. Then in the entries array (lines 162-187): (a) replace each `as { ... }` inline cast with `as Omit<Interface, 'type'>` \u2014 TextDelta for text-delta, ThinkingDelta for thinking-delta, ToolCall for tool-call, ToolResult for tool-result, Done for done, ErrorMessage for error; (b) rename `p` to `payload` in all six destructuring sites for readability per codebase convention.",
+      "status": "done",
+      "commit": "a0242d19"
+    },
+    {
+      "id": "step-3",
+      "type": "test",
+      "description": "Run the full test suite (vitest) to verify all existing behavioral tests in claudeBridge.test.ts and bridge.test.ts pass with zero regressions. Also run tsc type-check to confirm the compile-time assertions and new Omit casts are valid.",
+      "status": "pending",
+      "commit": null
+    }
+  ],
+  "design_decisions": [
+    {
+      "decision": "Use `Omit<Interface, 'type'>` rather than `Pick` or custom helper types",
+      "rationale": "Omit<X, 'type'> is the most concise and maintainable form \u2014 it automatically includes any fields added to the interface in the future, which is exactly the sync-safety benefit we want. Pick would require listing fields explicitly, defeating the purpose."
+    },
+    {
+      "decision": "Rename `p` to `payload` in all six event handler lambdas",
+      "rationale": "Task description specifies this rename for readability per codebase convention. The variable name `payload` is more descriptive and consistent with the `event.payload` access pattern used elsewhere in bridge.ts."
+    },
+    {
+      "decision": "Add compile-time type assertions rather than runtime tests for the type-level change",
+      "rationale": "The refactoring is purely at the type level \u2014 no runtime behavior changes. Compile-time assertions using the Equals/AssertTrue pattern (already established in claudeBridge.test.ts:421-424) are the appropriate TDD mechanism. They catch structural mismatches at tsc time, not runtime."
+    },
+    {
+      "decision": "Place type assertions in existing claudeBridge.test.ts rather than a new file",
+      "rationale": "The file already contains compile-time type assertions (the ClaudeMessageContext/MessageContext check at lines 415-424). Colocating related type assertions keeps them discoverable and follows the established pattern."
+    }
+  ],
+  "reuse": [
+    {
+      "what": "Equals/AssertTrue type-level assertion pattern",
+      "where": "gui/src/__tests__/claudeBridge.test.ts:421-424",
+      "how": "Reuse the existing `type Equals<A, B>` and `type AssertTrue<T extends true>` definitions already in the file to add new structural assertions for the Omit<Interface, 'type'> shapes."
+    },
+    {
+      "what": "OutboundMessage constituent interfaces",
+      "where": "gui/sidecar/src/types.ts:28-76",
+      "how": "Import TextDelta, ThinkingDelta, ToolCall, ToolResult, Done, ErrorMessage \u2014 these are the canonical source-of-truth interfaces that the inline casts were duplicating."
+    },
+    {
+      "what": "Existing comprehensive behavioral tests",
+      "where": "gui/src/__tests__/claudeBridge.test.ts:136-412",
+      "how": "All 7 event type mapping tests, rollback tests, and edge case tests already exist and serve as regression guards \u2014 no new behavioral tests needed."
+    }
+  ],
+  "_session_id": "539-7fb302e9",
+  "_created_at": "2026-03-28T04:01:51.441868+00:00"
+}
