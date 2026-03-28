@@ -511,6 +511,100 @@ fn transform_compose_mixed_dimension_translation_returns_undef() {
     );
 }
 
+// ── Unnormalized quaternion tests ────────────────────────────────────────────
+
+/// Transform*Vector with unnormalized quaternion (w=2,x=0,y=0,z=0 — norm=2)
+/// rotating vector (1,0,0). Should produce (1,0,0) since the rotation is identity,
+/// but without normalization quat_rotate scales by norm²=4 giving (4,0,0).
+#[test]
+fn unnormalized_quat_transform_mul_vector() {
+    let unnorm_transform = Value::Transform {
+        rotation: Box::new(Value::Orientation {
+            w: 2.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        }),
+        translation: Box::new(Value::Vector(vec![
+            Value::length(0.0),
+            Value::length(0.0),
+            Value::length(0.0),
+        ])),
+    };
+    let v = Value::Vector(vec![
+        Value::length(1.0),
+        Value::length(0.0),
+        Value::length(0.0),
+    ]);
+    let result = eval_mul_expr(
+        unnorm_transform,
+        Type::Transform(3),
+        v,
+        Type::vec3(Type::length()),
+        Type::vec3(Type::length()),
+    );
+    match result {
+        Value::Vector(ref items) if items.len() == 3 => {
+            let x = items[0].as_f64().unwrap();
+            let y = items[1].as_f64().unwrap();
+            let z = items[2].as_f64().unwrap();
+            assert!(
+                (x - 1.0).abs() < 1e-10,
+                "x = {x}, expected 1.0 (not 4.0 from norm² scaling)"
+            );
+            assert!(y.abs() < 1e-10, "y = {y}, expected 0");
+            assert!(z.abs() < 1e-10, "z = {z}, expected 0");
+        }
+        other => panic!("expected Vector, got {:?}", other),
+    }
+}
+
+/// Transform*Point with unnormalized quaternion should normalize before rotation.
+#[test]
+fn unnormalized_quat_transform_mul_point() {
+    let unnorm_transform = Value::Transform {
+        rotation: Box::new(Value::Orientation {
+            w: 2.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        }),
+        translation: Box::new(Value::Vector(vec![
+            Value::length(10.0),
+            Value::length(0.0),
+            Value::length(0.0),
+        ])),
+    };
+    let p = Value::Point(vec![
+        Value::length(1.0),
+        Value::length(0.0),
+        Value::length(0.0),
+    ]);
+    let result = eval_mul_expr(
+        unnorm_transform,
+        Type::Transform(3),
+        p,
+        Type::point3(Type::length()),
+        Type::point3(Type::length()),
+    );
+    // rotate(1,0,0) + (10,0,0) = (1,0,0) + (10,0,0) = (11,0,0)
+    // Without normalization: (4,0,0) + (10,0,0) = (14,0,0)
+    match result {
+        Value::Point(ref items) if items.len() == 3 => {
+            let x = items[0].as_f64().unwrap();
+            let y = items[1].as_f64().unwrap();
+            let z = items[2].as_f64().unwrap();
+            assert!(
+                (x - 11.0).abs() < 1e-10,
+                "x = {x}, expected 11.0 (not 14.0 from norm² scaling)"
+            );
+            assert!(y.abs() < 1e-10, "y = {y}, expected 0");
+            assert!(z.abs() < 1e-10, "z = {z}, expected 0");
+        }
+        other => panic!("expected Point, got {:?}", other),
+    }
+}
+
 // ── NaN/Infinity in vector component tests ──────────────────────────────────
 
 /// Transform * Vector with NaN in a component should return Undef.
