@@ -12968,6 +12968,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 647,
+        "title": "Orient function test coverage gaps: NaN axis, non-unit basis, Int angle",
+        "description": "Add missing test cases for orient functions (identified in task 359 review):\n\n1. orient_axis_angle_nan_axis_returns_undef — pass Tensor with NaN axis component [NaN, 0, 0], assert is_undef(). Exercises the vec3_norm → !axis_norm.is_finite() guard.\n2. orient_axis_angle_inf_axis_returns_undef — pass Tensor with Inf axis component [Inf, 0, 0], assert is_undef().\n3. orient_basis_non_unit_vector_returns_undef — pass x=[2,0,0], y=[0,1,0], z=[0,0,1] (orthogonal but non-unit), assert is_undef(). Isolates the magnitude check from the orthogonality check (existing test orient_basis_non_orthogonal_returns_undef fails both simultaneously).\n4. orient_axis_angle_integer_angle_accepted — pass Value::Int angle, verify correct quaternion output. Regression guard for the unchanged Int arm in trig_input after the is_finite() refactor.\n\nMemory hints: search \"orient_basis orient_axis_angle trig_input NaN validation\", entities: eval_builtin, vec3_norm, trig_input",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -12980,7 +12991,7 @@
       ],
       "created": "2026-03-28T00:56:30.255Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-28T00:56:30.278Z"
+      "updated": "2026-03-28T00:56:36.405Z"
     }
   }
 }
