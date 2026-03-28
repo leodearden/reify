@@ -13272,6 +13272,17 @@
         ],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 663,
+        "title": "PropertyEditor: expand validation test coverage (blur path, leading-plus variants, acceptance)",
+        "description": "Add missing test cases for PropertyEditor numeric validation: blur-path rejection, leading-plus decimal/scientific variants, and negative/leading-dot acceptance tests.",
+        "details": "## Problem\n\nThree gaps in PropertyEditor validation test coverage:\n\n1. **Blur path not tested for rejection cases** — `isValidValue` is called in both `handleKeyDown` (Enter) and `handleBlur`, but the new hex/octal/binary/leading-plus tests only exercise the Enter path. The blur behavior (field reverts silently) is untested for these inputs.\n\n2. **Leading-plus test cases only cover integers** — `+5` and `+0` are tested but `+5.5`, `+.5`, and `+1e3` are not. The decimal and exponent branches of the regex are unexercised for leading-plus rejection.\n\n3. **Acceptance tests missing for negative and leading-dot** — The 'valid number' describe block only tests `'42.5'`. Negative numbers (`'-3'`), leading-dot (`'.5'`), and negative decimals (`'-0.5'`) are never explicitly confirmed as accepted by NUM_RE.\n\n## Fix\n\nIn `gui/src/__tests__/PropertyEditor.test.tsx`:\n\n1. Add a `fireEvent.blur` test case (e.g., for `0x10`) asserting `onSetParam` was not called and input value reverted to `'50'`.\n\n2. Replace `['+0', 'leading plus zero']` with `['+5.5', 'leading plus decimal']` or add `['+1e3', 'leading plus scientific']`.\n\n3. Extend the 'valid number' describe with `it.each` cases for `'-3'`, `'.5'`, `'-0.5'`.\n\n## Files\n- `gui/src/__tests__/PropertyEditor.test.tsx`\n\n## Notes\nSource: review suggestions 8/9/10 from task 652 review.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -13284,7 +13295,7 @@
       ],
       "created": "2026-03-28T04:28:13.784Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-28T04:28:15.337Z"
+      "updated": "2026-03-28T04:28:24.651Z"
     }
   }
 }
