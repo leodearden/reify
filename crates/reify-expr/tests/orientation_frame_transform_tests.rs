@@ -428,3 +428,255 @@ fn composition_is_non_commutative() {
         _ => panic!("expected Point results"),
     }
 }
+
+// ── Test 10-11: Identity transform no-op ───────────────────────────────────
+
+/// Identity transform on an arbitrary point returns the exact same point.
+#[test]
+fn identity_noop_arbitrary_point() {
+    let t_id = make_transform(identity_orientation(), 0.0, 0.0, 0.0);
+    let p = Value::Point(vec![Value::length(7.0), Value::length(-3.0), Value::length(42.0)]);
+    let result = eval_mul_expr(
+        t_id, Type::Transform(3),
+        p.clone(), Type::point3(Type::length()),
+        Type::point3(Type::length()),
+    );
+    assert_point_approx(&result, 7.0, -3.0, 42.0, "identity should not change point");
+}
+
+/// Identity transform on an arbitrary vector returns the exact same vector.
+#[test]
+fn identity_noop_arbitrary_vector() {
+    let t_id = make_transform(identity_orientation(), 0.0, 0.0, 0.0);
+    let v = Value::Vector(vec![Value::length(5.0), Value::length(-2.0), Value::length(11.0)]);
+    let result = eval_mul_expr(
+        t_id, Type::Transform(3),
+        v.clone(), Type::vec3(Type::length()),
+        Type::vec3(Type::length()),
+    );
+    assert_vector_approx(&result, 5.0, -2.0, 11.0, "identity should not change vector");
+}
+
+// ── Test 12-13: Frame construction ─────────────────────────────────────────
+
+/// Frame stores origin and basis correctly; they can be recovered.
+#[test]
+fn frame_round_trip_construction() {
+    let axis_z = Value::Tensor(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
+    let orient = eval_builtin("orient_axis_angle", &[axis_z, Value::Real(std::f64::consts::FRAC_PI_4)]);
+    let origin = Value::Point(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]);
+    let frame = eval_builtin("frame3", &[origin.clone(), orient.clone()]);
+    match frame {
+        Value::Frame { origin: o, basis: b } => {
+            assert_point_approx(&o, 1.0, 2.0, 3.0, "frame origin");
+            match (&orient, &*b) {
+                (Value::Orientation { w: ew, x: ex, y: ey, z: ez },
+                 Value::Orientation { w, x, y, z }) => {
+                    assert!((w - ew).abs() < 1e-12
+                        && (x - ex).abs() < 1e-12
+                        && (y - ey).abs() < 1e-12
+                        && (z - ez).abs() < 1e-12,
+                        "frame basis should match input orientation");
+                }
+                _ => panic!("expected Orientation basis"),
+            }
+        }
+        other => panic!("expected Frame, got {:?}", other),
+    }
+}
+
+/// frame_to_frame(A,B) composed with frame_to_frame(B,A) is identity (round-trip).
+#[test]
+fn frame_to_frame_inverse_is_identity() {
+    let s = std::f64::consts::FRAC_1_SQRT_2;
+    let orient_a = Value::Orientation { w: s, x: 0.0, y: 0.0, z: s }; // 90° Z
+    let frame_a = eval_builtin("frame3", &[
+        Value::Point(vec![Value::length(5.0), Value::length(3.0), Value::length(1.0)]),
+        orient_a,
+    ]);
+    let orient_b = Value::Orientation { w: s, x: s, y: 0.0, z: 0.0 }; // 90° X
+    let frame_b = eval_builtin("frame3", &[
+        Value::Point(vec![Value::length(-2.0), Value::length(7.0), Value::length(4.0)]),
+        orient_b,
+    ]);
+
+    let t_ab = eval_builtin("frame_to_frame", &[frame_a.clone(), frame_b.clone()]);
+    let t_ba = eval_builtin("frame_to_frame", &[frame_b, frame_a]);
+
+    // Compose t_ba * t_ab → should be identity
+    let composed = eval_mul_expr(
+        t_ba, Type::Transform(3),
+        t_ab, Type::Transform(3),
+        Type::Transform(3),
+    );
+
+    // Apply to arbitrary point — should return the same point
+    let p = Value::Point(vec![Value::length(11.0), Value::length(-7.0), Value::length(3.5)]);
+    let result = eval_mul_expr(
+        composed, Type::Transform(3),
+        p.clone(), Type::point3(Type::length()),
+        Type::point3(Type::length()),
+    );
+    assert_point_approx(&result, 11.0, -7.0, 3.5, "frame_to_frame round-trip should be identity");
+}
+
+// ── Test 14-15: Point transformation correctness ───────────────────────────
+
+/// 90° about each principal axis sends basis vectors to correct locations.
+#[test]
+fn rotation_90_about_each_principal_axis() {
+    let s = std::f64::consts::FRAC_1_SQRT_2;
+
+    // 90° about X: (0,1,0) → (0,0,1)
+    let rot_x = Value::Orientation { w: s, x: s, y: 0.0, z: 0.0 };
+    let p_y = Value::Point(vec![Value::length(0.0), Value::length(1.0), Value::length(0.0)]);
+    let result_x = eval_mul_expr(
+        make_transform(rot_x, 0.0, 0.0, 0.0), Type::Transform(3),
+        p_y, Type::point3(Type::length()),
+        Type::point3(Type::length()),
+    );
+    assert_point_approx(&result_x, 0.0, 0.0, 1.0, "90° X: (0,1,0) → (0,0,1)");
+
+    // 90° about Y: (1,0,0) → (0,0,-1)
+    let rot_y = Value::Orientation { w: s, x: 0.0, y: s, z: 0.0 };
+    let p_x = Value::Point(vec![Value::length(1.0), Value::length(0.0), Value::length(0.0)]);
+    let result_y = eval_mul_expr(
+        make_transform(rot_y, 0.0, 0.0, 0.0), Type::Transform(3),
+        p_x, Type::point3(Type::length()),
+        Type::point3(Type::length()),
+    );
+    assert_point_approx(&result_y, 0.0, 0.0, -1.0, "90° Y: (1,0,0) → (0,0,-1)");
+
+    // 90° about Z: (1,0,0) → (0,1,0)
+    let rot_z = Value::Orientation { w: s, x: 0.0, y: 0.0, z: s };
+    let p_x2 = Value::Point(vec![Value::length(1.0), Value::length(0.0), Value::length(0.0)]);
+    let result_z = eval_mul_expr(
+        make_transform(rot_z, 0.0, 0.0, 0.0), Type::Transform(3),
+        p_x2, Type::point3(Type::length()),
+        Type::point3(Type::length()),
+    );
+    assert_point_approx(&result_z, 0.0, 1.0, 0.0, "90° Z: (1,0,0) → (0,1,0)");
+}
+
+/// Translation-only transform (identity rotation) shifts point by translation vector.
+#[test]
+fn translation_only_shifts_point() {
+    let t = make_transform(identity_orientation(), 5.0, 10.0, 15.0);
+    let p = Value::Point(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]);
+    let result = eval_mul_expr(
+        t, Type::Transform(3),
+        p, Type::point3(Type::length()),
+        Type::point3(Type::length()),
+    );
+    assert_point_approx(&result, 6.0, 12.0, 18.0, "translation shifts point");
+}
+
+// ── Test 16-17: Vector rotation vs translation ─────────────────────────────
+
+/// Same transform applied to Vector vs Point: translation only affects Point.
+#[test]
+fn same_transform_point_vs_vector_contrast() {
+    let s = std::f64::consts::FRAC_1_SQRT_2;
+    // 90° Z + (10, 20, 30)
+    let t = make_transform(
+        Value::Orientation { w: s, x: 0.0, y: 0.0, z: s },
+        10.0, 20.0, 30.0,
+    );
+    let coords = || (Value::length(1.0), Value::length(0.0), Value::length(0.0));
+
+    // Vector: rotation only → (1,0,0) rotated 90° Z → (0,1,0), NO translation
+    let (vx, vy, vz) = coords();
+    let v = Value::Vector(vec![vx, vy, vz]);
+    let v_result = eval_mul_expr(
+        t.clone(), Type::Transform(3),
+        v, Type::vec3(Type::length()),
+        Type::vec3(Type::length()),
+    );
+    assert_vector_approx(&v_result, 0.0, 1.0, 0.0, "vector: rotation only, no translation");
+
+    // Point: rotation + translation → (0,1,0) + (10,20,30) = (10,21,30)
+    let (px, py, pz) = coords();
+    let p = Value::Point(vec![px, py, pz]);
+    let p_result = eval_mul_expr(
+        t, Type::Transform(3),
+        p, Type::point3(Type::length()),
+        Type::point3(Type::length()),
+    );
+    assert_point_approx(&p_result, 10.0, 21.0, 30.0, "point: rotation + translation");
+}
+
+/// Rotating a vector preserves its magnitude.
+#[test]
+fn vector_rotation_preserves_magnitude() {
+    // Vector (3, 4, 0) has magnitude 5
+    let v = Value::Vector(vec![Value::length(3.0), Value::length(4.0), Value::length(0.0)]);
+    // 45° Z rotation
+    let cos_22_5 = (std::f64::consts::FRAC_PI_4 / 2.0).cos();
+    let sin_22_5 = (std::f64::consts::FRAC_PI_4 / 2.0).sin();
+    let rot = Value::Orientation { w: cos_22_5, x: 0.0, y: 0.0, z: sin_22_5 };
+    let t = make_transform(rot, 0.0, 0.0, 0.0);
+    let result = eval_mul_expr(
+        t, Type::Transform(3),
+        v, Type::vec3(Type::length()),
+        Type::vec3(Type::length()),
+    );
+    match result {
+        Value::Vector(items) if items.len() == 3 => {
+            let rx = items[0].as_f64().unwrap();
+            let ry = items[1].as_f64().unwrap();
+            let rz = items[2].as_f64().unwrap();
+            let mag = (rx * rx + ry * ry + rz * rz).sqrt();
+            assert!(
+                (mag - 5.0).abs() < 1e-10,
+                "magnitude should be preserved: got {mag}, expected 5"
+            );
+        }
+        other => panic!("expected Vector, got {:?}", other),
+    }
+}
+
+// ── Test 18-19: Numerical accuracy ─────────────────────────────────────────
+
+/// orient_quaternion with very large inputs still normalizes to unit length.
+#[test]
+fn quaternion_normalization_unit_length_after_large_input() {
+    let q = eval_builtin("orient_quaternion", &[
+        Value::Real(1e8), Value::Real(1e8), Value::Real(1e8), Value::Real(1e8),
+    ]);
+    match q {
+        Value::Orientation { w, x, y, z } => {
+            let norm = (w * w + x * x + y * y + z * z).sqrt();
+            assert!(
+                (norm - 1.0).abs() < 1e-12,
+                "expected unit quaternion after large input, got |q| = {norm}"
+            );
+        }
+        other => panic!("expected Orientation, got {:?}", other),
+    }
+}
+
+/// Composing 90° Z rotation 4 times (= 360° = identity), verify result matches original.
+#[test]
+fn accumulated_composition_error_bounded() {
+    let s = std::f64::consts::FRAC_1_SQRT_2;
+    let rot_z90 = Value::Orientation { w: s, x: 0.0, y: 0.0, z: s };
+    let t_90 = make_transform(rot_z90, 0.0, 0.0, 0.0);
+
+    // Compose 4 times: 90° * 4 = 360°
+    let t_180 = eval_mul_expr(
+        t_90.clone(), Type::Transform(3), t_90.clone(), Type::Transform(3), Type::Transform(3),
+    );
+    let t_360 = eval_mul_expr(
+        t_180.clone(), Type::Transform(3), t_180, Type::Transform(3), Type::Transform(3),
+    );
+
+    // Apply to arbitrary point
+    let p = Value::Point(vec![Value::length(3.7), Value::length(-2.1), Value::length(8.5)]);
+    let result = eval_mul_expr(
+        t_360, Type::Transform(3),
+        p.clone(), Type::point3(Type::length()),
+        Type::point3(Type::length()),
+    );
+    assert_point_approx(&result, 3.7, -2.1, 8.5,
+        "360° rotation should return original point within 1e-10");
+}
