@@ -12824,6 +12824,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 638,
+        "title": "Extract param_to_scalar helper to deduplicate Value::Scalar construction in solver",
+        "description": "The `Value::Scalar { si_value: val, dimension: dimension_of(&param.param_type) }` construction is duplicated verbatim between `build_trial_values` and `params_to_value_map` in solver.rs. Extract a private `#[inline] fn param_to_scalar(param: &AutoParam, val: f64) -> Value` helper to eliminate the duplication while keeping the collection strategies separate. Memory hints: search \"build_trial_values params_to_value_map Value::Scalar\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -12836,7 +12847,7 @@
       ],
       "created": "2026-03-28T00:39:40.972Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-28T00:39:40.986Z"
+      "updated": "2026-03-28T00:39:44.625Z"
     }
   }
 }
