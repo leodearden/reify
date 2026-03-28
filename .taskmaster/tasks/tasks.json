@@ -14533,7 +14533,7 @@
         "description": "In crates/reify-constraints/tests/solver_integration.rs, update optimize/maximize test assertions to verify the solver's final-solution clamping contract (solver.rs:598-604): (1) Change `si <= 0.0505` to `si <= 0.050 + 1e-9` to verify clamping to upper param bound. (2) Change `si >= 0.005` to `si >= 0.005 - 1e-9` to add floating-point epsilon tolerance while still verifying lower-bound clamping.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -14544,7 +14544,8 @@
           "modules": [
             "crates/reify-constraints/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-03-28T16:51:40.784Z"
       },
       {
         "id": "704",
@@ -15282,7 +15283,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T16:51:38.140Z",
+      "lastModified": "2026-03-28T16:51:40.784Z",
       "taskCount": 738,
       "completedCount": 360,
       "tags": [
