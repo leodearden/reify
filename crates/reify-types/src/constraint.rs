@@ -113,6 +113,11 @@ pub struct ResolutionProblem {
     pub objective: Option<OptimizationObjective>,
     /// User-defined functions available for evaluating expressions.
     pub functions: Vec<CompiledFunction>,
+    /// Optional iteration limit override for the solver. When `Some(n)`,
+    /// the solver uses `n` as the maximum number of optimizer iterations
+    /// instead of the default `FEASIBLE_OPT_ITERS_PER_DIM * (n_params + 1)`.
+    /// Used primarily for testing budget-exhaustion scenarios.
+    pub max_iters: Option<u64>,
 }
 
 /// Trait for constraint checking. Lives in reify-types for dependency inversion —
@@ -240,6 +245,8 @@ mod tests {
             current_values: crate::value::ValueMap::new(),
             objective: None,
             functions: vec![],
+
+            max_iters: None,
         };
         assert!(problem.auto_params.is_empty());
         assert!(problem.constraints.is_empty());
@@ -266,6 +273,8 @@ mod tests {
             current_values: values,
             objective: Some(OptimizationObjective::Minimize(make_literal_expr())),
             functions: vec![],
+
+            max_iters: None,
         };
         assert_eq!(problem.auto_params.len(), 1);
         assert_eq!(problem.constraints.len(), 1);
@@ -369,6 +378,8 @@ mod tests {
             current_values: crate::value::ValueMap::new(),
             objective: None,
             functions: vec![],
+
+            max_iters: None,
         };
         let result = solver.solve(&problem);
         match result {

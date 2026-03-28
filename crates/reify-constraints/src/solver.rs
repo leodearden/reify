@@ -531,7 +531,9 @@ impl ConstraintSolver for DimensionalSolver {
         // Nelder-Mead needs O(N+1) evaluations per simplex sweep, so scale
         // the budget proportionally to give higher-dimensional problems enough
         // iterations to converge.
-        let max_iters = if initially_feasible && problem.objective.is_some() {
+        let max_iters = if let Some(override_iters) = problem.max_iters {
+            override_iters
+        } else if initially_feasible && problem.objective.is_some() {
             let n_params = problem.auto_params.len() as u64;
             (FEASIBLE_OPT_ITERS_PER_DIM * (n_params + 1)).min(MAX_ITERS)
         } else {
@@ -1000,6 +1002,8 @@ mod tests {
             current_values: ValueMap::new(),
             objective: None,
             functions: vec![],
+
+            max_iters: None,
         };
 
         let result = solver.solve(&problem);
@@ -1059,6 +1063,8 @@ mod tests {
             current_values: ValueMap::new(),
             objective: None,
             functions: vec![],
+
+            max_iters: None,
         };
 
         let result = solver.solve(&problem);
@@ -1123,6 +1129,8 @@ mod tests {
             current_values: ValueMap::new(),
             objective: None,
             functions: vec![],
+
+            max_iters: None,
         };
 
         let result = solver.solve(&problem);
@@ -1186,6 +1194,8 @@ mod tests {
             current_values: ValueMap::new(),
             objective: Some(objective),
             functions: vec![],
+
+            max_iters: None,
         };
 
         let result = solver.solve(&problem);
@@ -1273,6 +1283,8 @@ mod tests {
             current_values: ValueMap::new(),
             objective: None,
             functions: vec![],
+
+            max_iters: None,
         };
 
         let result = solver.solve(&problem);
@@ -1333,6 +1345,8 @@ mod tests {
             current_values: ValueMap::new(),
             objective: None,
             functions: vec![],
+
+            max_iters: None,
         };
 
         let result = solver.solve(&problem);
@@ -1395,6 +1409,8 @@ mod tests {
             current_values: ValueMap::new(),
             objective: None,
             functions: vec![],
+
+            max_iters: None,
         };
 
         let result = solver.solve(&problem);
@@ -1957,6 +1973,8 @@ mod tests {
             current_values: current,
             objective: None,
             functions: vec![],
+
+            max_iters: None,
         };
 
         let result = solver.solve(&problem);
@@ -2078,6 +2096,8 @@ mod tests {
             current_values: current,
             objective: Some(objective),
             functions: vec![],
+
+            max_iters: None,
         };
 
         let result = solver.solve(&problem);
@@ -2147,6 +2167,8 @@ mod tests {
             current_values: ValueMap::new(),
             objective: None,
             functions: vec![],
+
+            max_iters: None,
         };
 
         let result = solver.solve(&problem);
@@ -2333,6 +2355,8 @@ mod tests {
             current_values: current,
             objective: Some(objective),
             functions: vec![],
+
+            max_iters: None,
         };
 
         let result = solver.solve(&problem);

@@ -145,6 +145,8 @@ impl ConstraintSolver for SolverRegistry {
                 current_values: sub_values,
                 objective: sub_objective,
                 functions: problem.functions.clone(),
+
+                max_iters: None,
             };
 
             // Select solver based on component domain

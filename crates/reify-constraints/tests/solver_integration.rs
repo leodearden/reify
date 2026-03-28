@@ -31,6 +31,8 @@ fn single_param_feasibility_via_trait_object() {
         current_values: ValueMap::new(),
         objective: None,
         functions: vec![],
+
+        max_iters: None,
     };
 
     let result = solver.solve(&problem);
@@ -73,6 +75,8 @@ fn maximize_objective() {
         current_values: ValueMap::new(),
         objective: Some(objective),
         functions: vec![],
+
+        max_iters: None,
     };
 
     let result = solver.solve(&problem);
@@ -110,6 +114,8 @@ fn send_sync_verification() {
         current_values: ValueMap::new(),
         objective: None,
         functions: vec![],
+
+        max_iters: None,
     };
     let result = solver.solve(&problem);
     assert!(matches!(result, SolveResult::Solved { .. }));
@@ -155,6 +161,8 @@ fn false_negative_small_violation() {
         current_values: current,
         objective: None,
         functions: vec![],
+
+        max_iters: None,
     };
 
     let result = solver.solve(&problem);
@@ -224,6 +232,8 @@ fn false_negative_multiple_small_violations() {
         current_values: current,
         objective: None,
         functions: vec![],
+
+        max_iters: None,
     };
 
     let result = solver.solve(&problem);
@@ -296,6 +306,8 @@ fn false_negative_mixed_scale() {
         current_values: current,
         objective: None,
         functions: vec![],
+
+        max_iters: None,
     };
 
     let result = solver.solve(&problem);
@@ -333,6 +345,8 @@ fn bounds_dont_hide_infeasibility() {
         current_values: ValueMap::new(),
         objective: None,
         functions: vec![],
+
+        max_iters: None,
     };
 
     let result = solver.solve(&problem);
@@ -376,6 +390,8 @@ fn compound_and_constraint() {
         current_values: ValueMap::new(),
         objective: None,
         functions: vec![],
+
+        max_iters: None,
     };
 
     let result = solver.solve(&problem);
@@ -420,6 +436,8 @@ fn minimize_undef_objective_returns_no_progress() {
         current_values: ValueMap::new(),
         objective: Some(objective),
         functions: vec![],
+
+        max_iters: None,
     };
 
     let result = solver.solve(&problem);
@@ -457,6 +475,8 @@ fn maximize_undef_objective_returns_no_progress() {
         current_values: ValueMap::new(),
         objective: Some(objective),
         functions: vec![],
+
+        max_iters: None,
     };
 
     let result = solver.solve(&problem);
@@ -490,6 +510,8 @@ fn nelder_mead_tolerance_config_does_not_degenerate() {
         current_values: ValueMap::new(),
         objective: None,
         functions: vec![],
+
+        max_iters: None,
     };
 
     // This should not panic — the solver should configure NelderMead correctly
@@ -541,6 +563,8 @@ fn optimize_with_feasible_initial_point() {
         current_values: current,
         objective: Some(objective),
         functions: vec![],
+
+        max_iters: None,
     };
 
     let result = solver.solve(&problem);
@@ -591,6 +615,8 @@ fn maximize_with_feasible_initial_point() {
         current_values: current,
         objective: Some(objective),
         functions: vec![],
+
+        max_iters: None,
     };
 
     let result = solver.solve(&problem);
@@ -658,6 +684,8 @@ fn warm_start_falls_back_to_initial_when_optimizer_drifts_infeasible() {
         current_values: current,
         objective: Some(objective),
         functions: vec![],
+
+        max_iters: None,
     };
 
     let result = solver.solve(&problem);
@@ -705,6 +733,8 @@ fn infeasible_with_objective_still_detected() {
         current_values: ValueMap::new(),
         objective: Some(objective),
         functions: vec![],
+
+        max_iters: None,
     };
 
     let result = solver.solve(&problem);
@@ -767,6 +797,8 @@ fn warm_start_optimizes_when_possible() {
         current_values: current,
         objective: Some(objective),
         functions: vec![],
+
+        max_iters: None,
     };
 
     let result = solver.solve(&problem);
@@ -846,6 +878,8 @@ fn warm_start_scales_iterations_with_dimension() {
         current_values: current,
         objective: Some(objective),
         functions: vec![],
+
+        max_iters: None,
     };
 
     let result = solver.solve(&problem);
@@ -874,8 +908,10 @@ fn warm_start_scales_iterations_with_dimension() {
 /// Solved with all constraints satisfied.
 ///
 /// This tests the convergence-without-full-optimality scenario — the solver
-/// returns Solved even when the optimizer hits MaxItersReached, as long as
-/// the final point satisfies all constraints.
+/// Budget exhaustion: with max_iters=2, the optimizer barely runs before
+/// hitting MaxItersReached. Since the starting point (11mm) is already
+/// feasible (within [10mm, 12mm] window), the solver should return Solved
+/// with values near the warm start.
 #[test]
 fn warm_start_budget_exhaustion_stays_feasible() {
     let solver = DimensionalSolver;
@@ -931,12 +967,14 @@ fn warm_start_budget_exhaustion_stays_feasible() {
         current_values: current,
         objective: Some(objective),
         functions: vec![],
+        max_iters: Some(2), // Force budget exhaustion after 2 iterations
     };
 
     let result = solver.solve(&problem);
     match result {
         SolveResult::Solved { values } => {
             // Both params must satisfy constraints: 10mm < p < 12mm
+            // With only 2 iterations, values should be near starting point (11mm)
             for pid in [&p0_id, &p1_id] {
                 let si = values.get(pid).unwrap().as_f64().unwrap();
                 assert!(
@@ -1026,6 +1064,8 @@ fn warm_start_feasible_no_objective_early_exit() {
         current_values: current,
         objective: None, // No objective — should trigger early-exit
         functions: vec![],
+
+        max_iters: None,
     };
 
     let result = solver.solve(&problem);
@@ -1087,6 +1127,8 @@ fn infeasible_initial_not_rescued_by_fallback() {
         current_values: current,
         objective: Some(objective),
         functions: vec![],
+
+        max_iters: None,
     };
 
     let result = solver.solve(&problem);
@@ -1176,6 +1218,8 @@ fn multi_param_warm_start_with_objective() {
         current_values: current,
         objective: Some(objective),
         functions: vec![],
+
+        max_iters: None,
     };
 
     let result = solver.solve(&problem);
@@ -1277,6 +1321,8 @@ fn partial_feasibility_infeasible_when_unreachable() {
         current_values: current,
         objective: Some(objective),
         functions: vec![],
+
+        max_iters: None,
     };
 
     let result = solver.solve(&problem);
@@ -1368,6 +1414,8 @@ fn partial_feasibility_solved_when_close_to_boundary() {
         current_values: current,
         objective: None,
         functions: vec![],
+
+        max_iters: None,
     };
 
     let result = solver.solve(&problem);

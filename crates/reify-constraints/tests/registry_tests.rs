@@ -32,6 +32,8 @@ fn registry_matches_dimensional_solver_simple_feasibility() {
         current_values: ValueMap::new(),
         objective: None,
         functions: vec![],
+
+        max_iters: None,
     };
 
     // Both should produce Solved
@@ -84,6 +86,8 @@ fn registry_solves_independent_subproblems() {
         current_values: ValueMap::new(),
         objective: None,
         functions: vec![],
+
+        max_iters: None,
     };
 
     let result = registry.solve(&problem);
@@ -123,6 +127,8 @@ fn registry_uses_fallback_for_all_domains() {
         current_values: ValueMap::new(),
         objective: None,
         functions: vec![],
+
+        max_iters: None,
     };
 
     let result = registry.solve(&problem);
@@ -171,6 +177,8 @@ fn cross_domain_shared_param_solved_via_fallback() {
         current_values: ValueMap::new(),
         objective: None,
         functions: vec![],
+
+        max_iters: None,
     };
 
     let result = registry.solve(&problem);
@@ -211,6 +219,8 @@ fn registry_backward_compat_compound_constraint() {
         current_values: ValueMap::new(),
         objective: None,
         functions: vec![],
+
+        max_iters: None,
     };
 
     let result = registry.solve(&problem);
@@ -256,6 +266,8 @@ fn registry_compat_infeasible_bounds() {
         current_values: ValueMap::new(),
         objective: None,
         functions: vec![],
+
+        max_iters: None,
     };
 
     let result = registry.solve(&problem);
@@ -301,6 +313,8 @@ fn registry_compat_false_negative_small_violation() {
         current_values: current,
         objective: None,
         functions: vec![],
+
+        max_iters: None,
     };
 
     let result = registry.solve(&problem);
@@ -332,6 +346,8 @@ fn registry_compat_maximize_objective() {
         current_values: ValueMap::new(),
         objective: Some(objective),
         functions: vec![],
+
+        max_iters: None,
     };
 
     let result = registry.solve(&problem);
@@ -364,6 +380,8 @@ fn registry_compat_empty_problem() {
         current_values: ValueMap::new(),
         objective: None,
         functions: vec![],
+
+        max_iters: None,
     };
 
     let result = registry.solve(&problem);
@@ -436,6 +454,8 @@ fn objective_spanning_independent_components_merges_them() {
         current_values: ValueMap::new(),
         objective: Some(objective),
         functions: vec![],
+
+        max_iters: None,
     };
 
     let result = registry.solve(&problem);
@@ -543,6 +563,8 @@ fn registry_dispatches_geometric_to_solvespace() {
         current_values: ValueMap::new(),
         objective: None,
         functions: vec![],
+
+        max_iters: None,
     };
 
     let result = registry.solve(&problem);
@@ -640,6 +662,8 @@ fn registry_mixed_dimensional_and_geometric() {
         current_values: ValueMap::new(),
         objective: None,
         functions: vec![],
+
+        max_iters: None,
     };
 
     let result = registry.solve(&problem);

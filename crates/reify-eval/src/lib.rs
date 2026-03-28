@@ -755,6 +755,8 @@ impl Engine {
                         current_values: result.values.clone(),
                         objective,
                         functions: setup.functions.clone(),
+
+                        max_iters: None,
                     };
 
                     match solver.solve(&problem) {
@@ -1358,6 +1360,8 @@ impl Engine {
                     current_values: values.clone(),
                     objective: template.objective.clone(),
                     functions: module.functions.clone(),
+
+                    max_iters: None,
                 };
 
                 let parent_snap_id = snapshot.id;
@@ -1792,6 +1796,8 @@ impl Engine {
                         current_values: values.clone(),
                         objective,
                         functions: functions.clone(),
+
+                        max_iters: None,
                     };
 
                     match solver.solve(&problem) {

@@ -49,6 +49,8 @@ fn boolean_sat_3_params() {
         current_values: ValueMap::new(),
         objective: None,
         functions: vec![],
+
+        max_iters: None,
     };
 
     let result = solver.solve(&problem);
@@ -90,6 +92,8 @@ fn boolean_infeasible_contradiction() {
         current_values: ValueMap::new(),
         objective: None,
         functions: vec![],
+
+        max_iters: None,
     };
 
     let result = solver.solve(&problem);
@@ -136,6 +140,8 @@ fn implication_if_a_then_b() {
         current_values: ValueMap::new(),
         objective: None,
         functions: vec![],
+
+        max_iters: None,
     };
 
     let result = solver.solve(&problem);
@@ -181,6 +187,8 @@ fn implication_forced_a_true_implies_b_true() {
         current_values: ValueMap::new(),
         objective: None,
         functions: vec![],
+
+        max_iters: None,
     };
 
     let result = solver.solve(&problem);
@@ -250,6 +258,8 @@ fn cardinality_at_most_2_of_4() {
         current_values: ValueMap::new(),
         objective: None,
         functions: vec![],
+
+        max_iters: None,
     };
 
     let result = solver.solve(&problem);
@@ -316,6 +326,8 @@ fn enum_constraint_excludes_one_variant() {
         current_values: ValueMap::new(),
         objective: None,
         functions: vec![],
+
+        max_iters: None,
     };
 
     let result = solver.solve(&problem);
@@ -388,6 +400,8 @@ fn integer_constraint_sum_equals_10() {
         current_values: ValueMap::new(),
         objective: None,
         functions: vec![],
+
+        max_iters: None,
     };
 
     let result = solver.solve(&problem);
@@ -457,6 +471,8 @@ fn all_different_3_ints() {
         current_values: ValueMap::new(),
         objective: None,
         functions: vec![],
+
+        max_iters: None,
     };
 
     let result = solver.solve(&problem);
@@ -503,6 +519,8 @@ fn empty_problem_returns_solved_empty() {
         current_values: ValueMap::new(),
         objective: None,
         functions: vec![],
+
+        max_iters: None,
     };
 
     let result = solver.solve(&problem);
@@ -534,6 +552,8 @@ fn make_int_problem_with_bounds(lo: f64, hi: f64) -> ResolutionProblem {
         current_values: ValueMap::new(),
         objective: None,
         functions: vec![],
+
+        max_iters: None,
     }
 }
 
@@ -659,6 +679,8 @@ fn registry_integration_logical_solver() {
         current_values: ValueMap::new(),
         objective: None,
         functions: vec![],
+
+        max_iters: None,
     };
 
     let result = registry.solve(&problem);

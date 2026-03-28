@@ -95,6 +95,8 @@ fn solve_simple_point_distance_constraint() {
         current_values: ValueMap::new(),
         objective: None,
         functions: vec![],
+
+        max_iters: None,
     };
 
     let result = solver.solve(&problem);
@@ -210,6 +212,8 @@ fn solve_angle_constraint() {
         current_values: current,
         objective: None,
         functions: vec![],
+
+        max_iters: None,
     };
 
     let result = solver.solve(&problem);
@@ -337,6 +341,8 @@ fn solve_parallel_constraint() {
         current_values: current,
         objective: None,
         functions: vec![],
+
+        max_iters: None,
     };
 
     let result = solver.solve(&problem);
@@ -456,6 +462,8 @@ fn solve_coincident_constraint() {
         current_values: current,
         objective: None,
         functions: vec![],
+
+        max_iters: None,
     };
 
     let result = solver.solve(&problem);
@@ -535,6 +543,8 @@ fn solve_overconstrained_returns_infeasible() {
         current_values: ValueMap::new(),
         objective: None,
         functions: vec![],
+
+        max_iters: None,
     };
 
     let result = solver.solve(&problem);
@@ -603,6 +613,8 @@ fn solve_underconstrained_solves_with_dof() {
         current_values: ValueMap::new(),
         objective: None,
         functions: vec![],
+
+        max_iters: None,
     };
 
     let result = solver.solve(&problem);
@@ -675,6 +687,8 @@ fn solve_never_panics_on_valid_input() {
             current_values: ValueMap::new(),
             objective: None,
             functions: vec![],
+
+            max_iters: None,
         };
 
         solver.solve(&problem)
@@ -729,6 +743,8 @@ fn solve_unrecognized_pattern_falls_through() {
         current_values: ValueMap::new(),
         objective: None,
         functions: vec![],
+
+        max_iters: None,
     };
 
     let result = solver.solve(&problem);
@@ -797,6 +813,8 @@ fn non_numeric_coord_returns_none() {
         current_values: ValueMap::new(),
         objective: None,
         functions: vec![],
+
+        max_iters: None,
     };
 
     // With non-numeric coord, the pattern should NOT be recognized

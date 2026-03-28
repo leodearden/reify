@@ -504,6 +504,8 @@ mod tests {
             current_values: ValueMap::new(),
             objective: None,
             functions: vec![],
+
+            max_iters: None,
         };
 
         match solver.solve(&problem) {
@@ -526,6 +528,8 @@ mod tests {
             current_values: ValueMap::new(),
             objective: None,
             functions: vec![],
+
+            max_iters: None,
         };
 
         match solver.solve(&problem) {
@@ -546,6 +550,8 @@ mod tests {
             current_values: ValueMap::new(),
             objective: None,
             functions: vec![],
+
+            max_iters: None,
         };
 
         match solver.solve(&problem) {
@@ -1591,6 +1597,8 @@ mod tests {
             current_values: ValueMap::new(),
             objective: None,
             functions: vec![],
+
+            max_iters: None,
         };
 
         // Each call returns the next result in sequence
@@ -1630,6 +1638,8 @@ mod tests {
             current_values: ValueMap::new(),
             objective: None,
             functions: vec![],
+
+            max_iters: None,
         };
 
         // Consume both results
