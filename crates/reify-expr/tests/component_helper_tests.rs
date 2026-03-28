@@ -40,3 +40,19 @@ fn scale_empty_vector_returns_undef() {
     let expr = CompiledExpr::binop(BinOp::Mul, v, s, Type::Real);
     assert_eq!(eval(&expr), Value::Undef);
 }
+
+// ── Early Undef-scalar guard tests ─────────────────────────────────────────
+
+/// Multiplying a valid Vector by Undef scalar should return Undef.
+/// After refactoring, scale_components checks scalar.is_undef() up front
+/// instead of iterating all components to discover Undef.
+#[test]
+fn scale_vector_by_undef_scalar_returns_undef() {
+    let v = lit(
+        Value::Vector(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
+        Type::Real,
+    );
+    let s = lit(Value::Undef, Type::Real);
+    let expr = CompiledExpr::binop(BinOp::Mul, v, s, Type::Real);
+    assert_eq!(eval(&expr), Value::Undef);
+}
