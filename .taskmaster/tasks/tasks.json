@@ -15303,6 +15303,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 741,
+        "title": "Stamp write robustness: atomic writes, read-only fallback, cargo:warning",
+        "description": "In tree-sitter-reify/build.rs: (1) Replace eprintln with cargo:warning= on stamp write failure so it surfaces in normal cargo output. (2) Use atomic write (write to temp file + rename) to prevent concurrent cargo profiles from reading a partial stamp. (3) Fall back to OUT_DIR stamp if src/ is not writable, preserving correctness in Nix/read-only-CI environments.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -15315,7 +15326,7 @@
       ],
       "created": "2026-03-28T17:27:52.006Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-28T17:27:55.209Z"
+      "updated": "2026-03-28T17:28:00.240Z"
     }
   }
 }
