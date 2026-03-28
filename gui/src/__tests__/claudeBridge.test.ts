@@ -486,7 +486,13 @@ describe('subscribeToClaudeEvents', () => {
       return {
         async setup(handler: ReturnType<typeof vi.fn>) {
           await subscribeToClaudeEvents(handler);
-          return captured!;
+          if (!captured) {
+            throw new Error(
+              `captureListener: no handler was registered for event "${eventName}". ` +
+              `Check that subscribeToClaudeEvents registers this event.`,
+            );
+          }
+          return captured;
         },
       };
     }
