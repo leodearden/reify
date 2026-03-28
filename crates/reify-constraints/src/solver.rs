@@ -7,7 +7,7 @@ use argmin::solver::neldermead::NelderMead;
 use reify_types::{
     AutoParam, BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, ConstraintNodeId,
     ConstraintSolver, DimensionVector, OptimizationObjective, ResolutionProblem, SolveResult, Type,
-    Value, ValueMap,
+    Value, ValueCellId, ValueMap,
 };
 
 /// Maximum iterations for Nelder-Mead.
@@ -48,20 +48,34 @@ fn dimension_of(ty: &Type) -> DimensionVector {
     }
 }
 
+/// Zip auto params with f64 values into a HashMap<ValueCellId, Value>.
+///
+/// Each param is mapped to a Value::Scalar with the correct SI value
+/// and dimension. Used by early-exit, fallback, and solution construction paths.
+fn params_to_value_map(params: &[AutoParam], x: &[f64]) -> HashMap<ValueCellId, Value> {
+    params
+        .iter()
+        .zip(x.iter())
+        .map(|(param, &val)| {
+            (
+                param.id.clone(),
+                Value::Scalar {
+                    si_value: val,
+                    dimension: dimension_of(&param.param_type),
+                },
+            )
+        })
+        .collect()
+}
+
 /// Build a ValueMap from a base map with trial auto-param values inserted.
 ///
 /// Clones the base map (O(1) via PersistentMap structural sharing) and
 /// inserts each auto param as a Value::Scalar with the correct dimension.
 fn build_trial_values(base: &ValueMap, params: &[AutoParam], x: &[f64]) -> ValueMap {
     let mut values = base.clone();
-    for (param, &val) in params.iter().zip(x.iter()) {
-        values.insert(
-            param.id.clone(),
-            Value::Scalar {
-                si_value: val,
-                dimension: dimension_of(&param.param_type),
-            },
-        );
+    for (id, value) in params_to_value_map(params, x) {
+        values.insert(id, value);
     }
     values
 }
@@ -499,42 +513,10 @@ impl ConstraintSolver for DimensionalSolver {
                 n_params,
                 "initial point already feasible with no objective; returning early"
             );
-            let mut values = HashMap::new();
-            for (param, &val) in problem.auto_params.iter().zip(initial.iter()) {
-                values.insert(
-                    param.id.clone(),
-                    Value::Scalar {
-                        si_value: val,
-                        dimension: dimension_of(&param.param_type),
-                    },
-                );
-            }
-            return SolveResult::Solved { values };
+            return SolveResult::Solved {
+                values: params_to_value_map(&problem.auto_params, &initial),
+            };
         }
-
-        // Capture initial point as fallback values before optimization.
-        // If initially_feasible and the optimizer drifts infeasible, we fall
-        // back to these values rather than returning Infeasible.
-        let initial_fallback_values: Option<HashMap<_, _>> = if initially_feasible {
-            Some(
-                problem
-                    .auto_params
-                    .iter()
-                    .zip(initial.iter())
-                    .map(|(param, &val)| {
-                        (
-                            param.id.clone(),
-                            Value::Scalar {
-                                si_value: val,
-                                dimension: dimension_of(&param.param_type),
-                            },
-                        )
-                    })
-                    .collect(),
-            )
-        } else {
-            None
-        };
 
         // Choose iteration budget: scaled by simplex size when warm-starting.
         // Nelder-Mead needs O(N+1) evaluations per simplex sweep, so scale
@@ -625,7 +607,22 @@ impl ConstraintSolver for DimensionalSolver {
             // If the initial point was feasible but the optimizer drifted infeasible
             // while chasing an objective, fall back to the initial feasible values
             // rather than reporting a false Infeasible.
-            if let Some(fallback) = initial_fallback_values {
+            if initially_feasible {
+                // Validate that the objective is numeric at the initial point
+                // before promoting to Solved. The trial_values ValueMap was built
+                // from the same initial point and is still in scope.
+                if let Some(obj) = &problem.objective
+                    && eval_objective(obj, &trial_values, &problem.functions).is_none()
+                {
+                    return SolveResult::NoProgress {
+                        reason: "objective expression evaluated to undefined at fallback point"
+                            .to_string(),
+                    };
+                }
+                // Construct fallback HashMap lazily — only on the error path
+                // where the optimizer drifted infeasible. The `initial` Vec<f64>
+                // is still in scope from the extraction at the top of solve().
+                let fallback = params_to_value_map(&problem.auto_params, &initial);
                 tracing::debug!(
                     n_params,
                     final_max_residual,
@@ -657,16 +654,7 @@ impl ConstraintSolver for DimensionalSolver {
         }
 
         // Build solution values
-        let mut values = HashMap::new();
-        for (param, &val) in problem.auto_params.iter().zip(clamped.iter()) {
-            values.insert(
-                param.id.clone(),
-                Value::Scalar {
-                    si_value: val,
-                    dimension: dimension_of(&param.param_type),
-                },
-            );
-        }
+        let values = params_to_value_map(&problem.auto_params, &clamped);
 
         // NOTE: Solved indicates constraint satisfaction but does NOT guarantee objective
         // optimality. The Nelder-Mead optimizer may have hit the iteration limit without
@@ -2029,6 +2017,135 @@ mod tests {
         assert!(
             matches!(result, SolveResult::Solved { .. } | SolveResult::Infeasible { .. }),
             "well-formed 1-param problem should return Solved or Infeasible, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn params_to_value_map_builds_correct_hashmap() {
+        use super::params_to_value_map;
+        use reify_types::{AutoParam, DimensionVector, Type, Value, ValueCellId};
+
+        let length_id = ValueCellId::new("Part", "length");
+        let angle_id = ValueCellId::new("Part", "angle");
+
+        let params = vec![
+            AutoParam {
+                id: length_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.001, 1.0)),
+            },
+            AutoParam {
+                id: angle_id.clone(),
+                param_type: Type::angle(),
+                bounds: Some((0.0, std::f64::consts::TAU)),
+            },
+        ];
+
+        let x = [0.025, 1.5708]; // 25mm, ~90°
+
+        let result = params_to_value_map(&params, &x);
+
+        assert_eq!(result.len(), 2, "should contain exactly 2 entries");
+
+        // Check length entry
+        match result.get(&length_id) {
+            Some(Value::Scalar {
+                si_value,
+                dimension,
+            }) => {
+                assert!(
+                    (si_value - 0.025).abs() < 1e-15,
+                    "length si_value should be 0.025, got {}",
+                    si_value
+                );
+                assert_eq!(
+                    *dimension,
+                    DimensionVector::LENGTH,
+                    "length dimension should be LENGTH"
+                );
+            }
+            other => panic!("expected Scalar for length, got {:?}", other),
+        }
+
+        // Check angle entry
+        match result.get(&angle_id) {
+            Some(Value::Scalar {
+                si_value,
+                dimension,
+            }) => {
+                assert!(
+                    (si_value - 1.5708).abs() < 1e-15,
+                    "angle si_value should be 1.5708, got {}",
+                    si_value
+                );
+                assert_eq!(
+                    *dimension,
+                    DimensionVector::ANGLE,
+                    "angle dimension should be ANGLE"
+                );
+            }
+            other => panic!("expected Scalar for angle, got {:?}", other),
+        }
+    }
+
+    /// A feasible initial point with an always-undefined objective (x/0)
+    /// must return NoProgress, never Solved. This validates the contract
+    /// that undefined objectives are never silently promoted to Solved,
+    /// covering both the normal path and the fallback path.
+    #[test]
+    fn undefined_objective_at_feasible_initial_returns_no_progress() {
+        use crate::DimensionalSolver;
+        use reify_types::{
+            AutoParam, BinOp, CompiledExpr, ConstraintNodeId, DimensionVector,
+            OptimizationObjective, Type, Value, ValueCellId,
+        };
+
+        let solver = DimensionalSolver;
+        let x_id = ValueCellId::new("Part", "x");
+
+        // x > 5mm — satisfied when x starts at 10mm
+        let x_ref = CompiledExpr::value_ref(x_id.clone(), Type::length());
+        let five_mm = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: 0.005,
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::length(),
+        );
+        let gt_expr = CompiledExpr::binop(BinOp::Gt, x_ref.clone(), five_mm, Type::Bool);
+
+        // Objective: minimize(x / 0) — always Undef
+        let zero_int = CompiledExpr::literal(Value::Int(0), Type::Int);
+        let div_by_zero = CompiledExpr::binop(BinOp::Div, x_ref, zero_int, Type::Real);
+        let objective = OptimizationObjective::Minimize(div_by_zero);
+
+        // Current value x = 10mm (already satisfies x > 5mm)
+        let mut current = ValueMap::new();
+        current.insert(
+            x_id.clone(),
+            Value::Scalar {
+                si_value: 0.010,
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+
+        let problem = ResolutionProblem {
+            auto_params: vec![AutoParam {
+                id: x_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.1)),
+            }],
+            constraints: vec![(ConstraintNodeId::new("Part", 0), gt_expr)],
+            current_values: current,
+            objective: Some(objective),
+            functions: vec![],
+        };
+
+        let result = solver.solve(&problem);
+        assert!(
+            matches!(result, SolveResult::NoProgress { .. }),
+            "feasible initial + undefined objective should return NoProgress, got {:?}",
             result
         );
     }
