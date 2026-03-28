@@ -575,20 +575,27 @@ impl ConstraintSolver for DimensionalSolver {
         let termination_reason = result.state().get_termination_reason().cloned();
         let has_objective = problem.objective.is_some();
         let n_params = problem.auto_params.len();
-        tracing::debug!(
-            ?termination_reason,
-            n_params,
-            max_iters,
-            has_objective,
-            initially_feasible,
-            "solver completed"
-        );
-        if termination_reason == Some(TerminationReason::MaxItersReached) && has_objective {
+        let iter_limited =
+            termination_reason == Some(TerminationReason::MaxItersReached) && has_objective;
+        if iter_limited {
             tracing::debug!(
+                ?termination_reason,
                 n_params,
                 max_iters,
-                "solver hit iteration limit while optimizing objective; \
-                 solution satisfies constraints but objective may be suboptimal"
+                has_objective,
+                initially_feasible,
+                iter_limited,
+                "solver completed; hit iteration limit — objective may be suboptimal"
+            );
+        } else {
+            tracing::debug!(
+                ?termination_reason,
+                n_params,
+                max_iters,
+                has_objective,
+                initially_feasible,
+                iter_limited,
+                "solver completed"
             );
         }
 
