@@ -998,10 +998,9 @@ fn scale_components(
     }
 }
 
-/// Recursively negate a value.  Handles all negatable variants: Int, Real,
-/// Scalar, Complex, Tensor, Vector, and Matrix (canonicalized to nested Tensor).
-/// Point negation is explicitly undefined (spec 3.3.1).
-fn negate_value(v: Value) -> Value {
+/// Negate a scalar (leaf) value: Int, Real, Scalar, or Complex.
+/// Returns `Value::Undef` for non-negatable types or Int overflow.
+fn neg_scalar(v: Value) -> Value {
     match v {
         Value::Int(i) => i.checked_neg().map(Value::Int).unwrap_or(Value::Undef),
         Value::Real(r) => Value::Real(-r),
@@ -1017,6 +1016,18 @@ fn negate_value(v: Value) -> Value {
             im: -im,
             dimension,
         },
+        _ => Value::Undef,
+    }
+}
+
+/// Recursively negate a value.  Handles all negatable variants: Int, Real,
+/// Scalar, Complex, Tensor, Vector, and Matrix (canonicalized to nested Tensor).
+/// Point negation is explicitly undefined (spec 3.3.1).
+fn negate_value(v: Value) -> Value {
+    match v {
+        Value::Int(_) | Value::Real(_) | Value::Scalar { .. } | Value::Complex { .. } => {
+            neg_scalar(v)
+        }
         Value::Tensor(components) => {
             let results: Vec<Value> = components.into_iter().map(negate_value).collect();
             if results.iter().any(|x| x.is_undef()) {
