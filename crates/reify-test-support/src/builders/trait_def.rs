@@ -567,6 +567,44 @@ mod tests {
     }
 
     #[test]
+    fn trait_def_content_hash_differs_by_constraint_expr() {
+        let ct1 = TraitDefBuilder::new("Rigid")
+            .add_default(
+                Some("c"),
+                DefaultKind::Constraint(reify_syntax::ConstraintDecl {
+                    label: Some("c".to_string()),
+                    expr: reify_syntax::Expr {
+                        kind: reify_syntax::ExprKind::BoolLiteral(true),
+                        span: SourceSpan::new(0, 0),
+                    },
+                    where_clause: None,
+                    span: SourceSpan::new(0, 0),
+                    content_hash: ContentHash::of_str("a"),
+                }),
+            )
+            .build();
+        let ct2 = TraitDefBuilder::new("Rigid")
+            .add_default(
+                Some("c"),
+                DefaultKind::Constraint(reify_syntax::ConstraintDecl {
+                    label: Some("c".to_string()),
+                    expr: reify_syntax::Expr {
+                        kind: reify_syntax::ExprKind::BoolLiteral(false),
+                        span: SourceSpan::new(0, 0),
+                    },
+                    where_clause: None,
+                    span: SourceSpan::new(0, 0),
+                    content_hash: ContentHash::of_str("b"),
+                }),
+            )
+            .build();
+        assert_ne!(
+            ct1.content_hash, ct2.content_hash,
+            "same Constraint default name but different ConstraintDecl content_hash must produce different content_hash"
+        );
+    }
+
+    #[test]
     fn trait_def_content_hash_differs_by_default() {
         let ct1 = TraitDefBuilder::new("Rigid").build();
         let ct2 = TraitDefBuilder::new("Rigid")
