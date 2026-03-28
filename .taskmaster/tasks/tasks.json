@@ -8903,11 +8903,11 @@
         "description": "In reify-expr/src/lib.rs, `Value::Int(i) => Value::Int(-i)` panics in debug (wraps in release) when i == i64::MIN. This appears in:\n1. negate_components (line ~787) — newly reachable for Vector components\n2. eval_unop UnOp::Neg arm (line ~1156) — pre-existing\n\nFix: Use `i.checked_neg().map(Value::Int).unwrap_or(Value::Undef)` in both sites, consistent with the existing mod(i64::MIN, -1) → Undef convention already established in the project.\n\nmemory_hints: search \"i64::MIN overflow mod\" for existing convention",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-28T20:17:13.124Z",
+        "updatedAt": "2026-03-28T20:33:18.067Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -15440,9 +15440,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T20:30:37.647Z",
+      "lastModified": "2026-03-28T20:33:18.067Z",
       "taskCount": 749,
-      "completedCount": 378,
+      "completedCount": 379,
       "tags": [
         "master"
       ]
