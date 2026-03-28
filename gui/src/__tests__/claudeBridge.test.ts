@@ -464,6 +464,16 @@ describe('subscribeToClaudeEvents', () => {
   });
 
   describe('payload validation guards', () => {
+    let warnSpy: ReturnType<typeof vi.spyOn>;
+
+    beforeEach(() => {
+      warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    });
+
+    afterEach(() => {
+      warnSpy.mockRestore();
+    });
+
     /** Helper: capture the internal listener for a given event name */
     function captureListener(eventName: string) {
       let captured: ((event: { payload: unknown }) => void) | undefined;
@@ -508,6 +518,11 @@ describe('subscribeToClaudeEvents', () => {
           listener({ payload });
 
           expect(handler).not.toHaveBeenCalled();
+          expect(warnSpy).toHaveBeenCalledOnce();
+          expect(warnSpy).toHaveBeenCalledWith(
+            expect.stringContaining(eventName),
+            payload,
+          );
         });
       }
     }
