@@ -11637,7 +11637,7 @@
         "description": "Three related type-hygiene improvements in gui/src/bridge.ts (subscribeToClaudeEvents):\n\n1. Rename terse `p` variable to `payload` in all 6 handlers (lines 159-182) for readability\n2. Replace inline cast shapes with `Omit<TextDelta, 'type'>` etc. using imported interfaces from sidecar/src/types.ts — eliminates duplicated field definitions\n3. Change EventEntry payload type from `Record<string, unknown>` to `unknown` since each handler re-casts independently\n\nSource: architect reviewer (S1, S2) and reuse auditor (S3) from task 517 review.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -11650,7 +11650,7 @@
             "gui/src"
           ]
         },
-        "updatedAt": "2026-03-28T05:05:56.380Z"
+        "updatedAt": "2026-03-28T07:06:17.404Z"
       },
       {
         "id": "569",
@@ -13912,9 +13912,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T07:05:21.214Z",
+      "lastModified": "2026-03-28T07:06:17.404Z",
       "taskCount": 710,
-      "completedCount": 328,
+      "completedCount": 329,
       "tags": [
         "master"
       ]
