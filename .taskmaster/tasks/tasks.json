@@ -14622,6 +14622,19 @@
             "crates/reify-expr/tests"
           ]
         }
+      },
+      {
+        "id": 711,
+        "title": "Add missing negative assertions and violated+indeterminate unit test for CLI constraint checks",
+        "description": "Six related improvements from the task 692 review:\n\n1. In `check_violated_and_indeterminate_exits_failure` (cli_check.rs), add negative assertions:\n   - `assert!(!stdout.contains(\"OK\"), ...)` — fixture has no satisfied constraints\n   - `assert!(!stdout.contains(\"All constraints satisfied\"), ...)` — mutually exclusive with \"Some constraints violated\"\n   - `assert!(stderr.is_empty() || !stderr.contains(\"panic\"), ...)` — stderr cleanliness\n\n2. Add a unit test in `report_constraint_results` tests (main.rs ~line 346-445) for the VIOLATED+INDETERMINATE combination:\n   - One `Satisfaction::Violated` entry + one `Satisfaction::Indeterminate` entry\n   - Assert return value is `false`\n   - Assert output contains \"VIOLATED\" and \"INDETERMINATE\"\n   - Assert output does NOT contain \"OK\"\n\nmemory_hints: search \"report_constraint_results unit test\" and \"cli_check.rs negative assertions\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          692
+        ],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -14633,7 +14646,8 @@
         "master"
       ],
       "created": "2026-03-28T09:10:25.243Z",
-      "description": "Tasks for master context"
+      "description": "Tasks for master context",
+      "updated": "2026-03-28T09:15:41.639Z"
     }
   }
 }
