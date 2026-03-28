@@ -577,6 +577,58 @@ describe('subscribeToClaudeEvents', () => {
         expect(handler).not.toHaveBeenCalled();
       });
     });
+
+    describe('tool_input normalization', () => {
+      it('normalizes tool_input=null to empty object', async () => {
+        const { setup } = captureListener('claude-tool-call');
+        const handler = vi.fn();
+        const listener = await setup(handler);
+        listener({ payload: { id: 'tc1', tool_name: 'edit', tool_input: null } });
+        expect(handler).toHaveBeenCalledWith({
+          type: 'tool_call', id: 'tc1', tool_name: 'edit', tool_input: {},
+        });
+      });
+
+      it('normalizes tool_input=[1,2,3] (array) to empty object', async () => {
+        const { setup } = captureListener('claude-tool-call');
+        const handler = vi.fn();
+        const listener = await setup(handler);
+        listener({ payload: { id: 'tc2', tool_name: 'read', tool_input: [1, 2, 3] } });
+        expect(handler).toHaveBeenCalledWith({
+          type: 'tool_call', id: 'tc2', tool_name: 'read', tool_input: {},
+        });
+      });
+
+      it('normalizes tool_input=undefined to empty object', async () => {
+        const { setup } = captureListener('claude-tool-call');
+        const handler = vi.fn();
+        const listener = await setup(handler);
+        listener({ payload: { id: 'tc3', tool_name: 'write', tool_input: undefined } });
+        expect(handler).toHaveBeenCalledWith({
+          type: 'tool_call', id: 'tc3', tool_name: 'write', tool_input: {},
+        });
+      });
+
+      it('normalizes tool_input="string" to empty object', async () => {
+        const { setup } = captureListener('claude-tool-call');
+        const handler = vi.fn();
+        const listener = await setup(handler);
+        listener({ payload: { id: 'tc4', tool_name: 'run', tool_input: 'bad' } });
+        expect(handler).toHaveBeenCalledWith({
+          type: 'tool_call', id: 'tc4', tool_name: 'run', tool_input: {},
+        });
+      });
+
+      it('passes through valid tool_input object unchanged', async () => {
+        const { setup } = captureListener('claude-tool-call');
+        const handler = vi.fn();
+        const listener = await setup(handler);
+        listener({ payload: { id: 'tc5', tool_name: 'edit', tool_input: { path: '/f' } } });
+        expect(handler).toHaveBeenCalledWith({
+          type: 'tool_call', id: 'tc5', tool_name: 'edit', tool_input: { path: '/f' },
+        });
+      });
+    });
   });
 });
 
