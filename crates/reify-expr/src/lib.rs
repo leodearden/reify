@@ -49,6 +49,18 @@ impl<'a> EvalContext<'a> {
         }
     }
 
+    /// Create a simple context with an explicit recursion depth — **test-only**.
+    #[doc(hidden)]
+    pub fn _test_at_depth(values: &'a ValueMap, depth: u32) -> Self {
+        Self {
+            values,
+            functions: &[],
+            recursion_depth: depth,
+            meta: None,
+            determinacy: None,
+        }
+    }
+
     /// Attach meta block data for MetaAccess evaluation.
     pub fn with_meta(mut self, meta: &'a HashMap<String, HashMap<String, String>>) -> Self {
         self.meta = Some(meta);
@@ -108,12 +120,36 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             match function.name.as_str() {
                 "sample" if evaluated_args.len() == 2 => {
                     if let Value::Field { lambda, .. } = &evaluated_args[0] {
-                        apply_lambda(lambda, &evaluated_args[1..], ctx)
+                        match lambda.as_ref() {
+                            Value::Lambda { .. } => {
+                                apply_lambda(lambda, &evaluated_args[1..], ctx)
+                            }
+                            _ => {
+                                #[cfg(debug_assertions)]
+                                eprintln!(
+                                    "[reify-expr] sample: Field lambda is not a Lambda: {:?}",
+                                    lambda
+                                );
+                                Value::Undef
+                            }
+                        }
                     } else {
+                        #[cfg(debug_assertions)]
+                        eprintln!(
+                            "[reify-expr] sample: first argument is not a Field: {:?}",
+                            evaluated_args[0]
+                        );
                         Value::Undef
                     }
                 }
                 "gradient" | "divergence" | "curl" if evaluated_args.len() == 1 => {
+                    if !matches!(&evaluated_args[0], Value::Field { .. }) {
+                        #[cfg(debug_assertions)]
+                        eprintln!(
+                            "[reify-expr] {}: argument is not a Field: {:?}",
+                            function.name, evaluated_args[0]
+                        );
+                    }
                     // Stub: these field operations are not yet implemented.
                     // They require numeric differentiation infrastructure.
                     Value::Undef
@@ -447,6 +483,7 @@ fn eval_user_function_call(function_name: &str, args: &[CompiledExpr], ctx: &Eva
 /// Returns Undef if:
 /// - The value is not a Lambda
 /// - Argument count doesn't match param count
+/// - Recursion depth has reached MAX_RECURSION_DEPTH
 pub fn apply_lambda(lambda: &Value, args: &[Value], ctx: &EvalContext) -> Value {
     match lambda {
         Value::Lambda {
@@ -454,6 +491,11 @@ pub fn apply_lambda(lambda: &Value, args: &[Value], ctx: &EvalContext) -> Value 
             body,
             captures,
         } => {
+            // Check depth before any work (consistent with eval_user_function_call)
+            if ctx.recursion_depth >= MAX_RECURSION_DEPTH {
+                return Value::Undef;
+            }
+
             if args.len() != params.len() {
                 return Value::Undef;
             }
@@ -1446,13 +1488,9 @@ fn eval_div(lv: &Value, rv: &Value) -> Value {
             },
         ) => {
             let result_dim = ad.div(bd);
-            if result_dim.is_dimensionless() {
-                Value::Real(a / b)
-            } else {
-                Value::Scalar {
-                    si_value: a / b,
-                    dimension: result_dim,
-                }
+            Value::Scalar {
+                si_value: a / b,
+                dimension: result_dim,
             }
         }
         // Scalar / dimensionless
@@ -2491,15 +2529,18 @@ mod tests {
 
     #[test]
     fn div_same_dimension_yields_dimensionless() {
-        // 80mm / 20mm = 4.0 (dimensionless Real)
+        // 80mm / 20mm = 4.0 (dimensionless Scalar, consistent with eval_mul)
         let left = lit(mm_val(80.0), Type::length());
         let right = lit(mm_val(20.0), Type::length());
-        let expr = CompiledExpr::binop(BinOp::Div, left, right, Type::Real);
+        let expr = CompiledExpr::binop(BinOp::Div, left, right, Type::dimensionless_scalar());
         let values = ValueMap::new();
         let result = eval_expr(&expr, &EvalContext::simple(&values));
         match &result {
-            Value::Real(v) => assert!((v - 4.0).abs() < 1e-12),
-            other => panic!("expected Real, got {:?}", other),
+            Value::Scalar { si_value, dimension } => {
+                assert!((si_value - 4.0).abs() < 1e-12);
+                assert!(dimension.is_dimensionless());
+            }
+            other => panic!("expected Scalar{{dimensionless}}, got {:?}", other),
         }
     }
 
