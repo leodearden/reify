@@ -18,6 +18,7 @@ import {
   subscribeToClaudeEvents,
   MESSAGE_CONTEXT_FIELD_MAP,
   mapContextToWire,
+  type WireMessageContext,
 } from '../bridge';
 
 const mockInvoke = vi.mocked(invoke);
@@ -812,6 +813,19 @@ type _AssertFieldMapExhaustive = AssertTrue<Equals<keyof typeof MESSAGE_CONTEXT_
 type FieldMapValues = (typeof MESSAGE_CONTEXT_FIELD_MAP)[keyof typeof MESSAGE_CONTEXT_FIELD_MAP];
 type ExpectedWireNames = 'selected_entity' | 'diagnostics' | 'constraints' | 'current_file' | 'attached_contexts';
 type _AssertFieldMapValuesLiteral = AssertTrue<Equals<FieldMapValues, ExpectedWireNames>>;
+
+// WireMessageContext must match the expected snake_case shape derived from MessageContext.
+type ExpectedWireShape = {
+  selected_entity: string | undefined;
+  diagnostics: string[] | undefined;
+  constraints: string[] | undefined;
+  current_file: string | undefined;
+  attached_contexts: string[] | undefined;
+};
+type _AssertWireMessageContextShape = AssertTrue<Equals<WireMessageContext, ExpectedWireShape>>;
+
+// mapContextToWire must return WireMessageContext (not Record<string, unknown>).
+type _AssertMapReturnType = AssertTrue<Equals<ReturnType<typeof mapContextToWire>, WireMessageContext>>;
 
 // Each Omit<Interface, 'type'> must match the payload shape used in subscribeToClaudeEvents.
 // If a field is added/removed/renamed in types.ts, tsc will fail here.
