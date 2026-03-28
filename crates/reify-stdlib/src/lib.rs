@@ -1100,7 +1100,6 @@ fn unary(args: &[Value], f: impl FnOnce(&Value) -> Value) -> Value {
 /// Returns `Value::Real(mag)` when `dimension` is dimensionless, or
 /// `Value::Scalar { si_value: mag, dimension }` otherwise. Non-finite
 /// results are converted to `Undef` by [`sanitize_value`].
-#[inline(always)]
 fn complex_abs(re: f64, im: f64, dimension: DimensionVector) -> Value {
     let mag = (re * re + im * im).sqrt();
     if dimension == DimensionVector::DIMENSIONLESS {
