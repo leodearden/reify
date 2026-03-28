@@ -823,6 +823,33 @@ mod tests {
     }
 
     #[test]
+    fn determine_context_type_position_after_colon_in_param() {
+        // "param x: " — cursor after ': ' in a param declaration
+        let source = "structure Foo {\n    param x: \n}";
+        let ctx = AnalysisContext::new(source, &test_uri());
+        let result = determine_context(source, Position::new(1, 13), &ctx);
+        assert!(
+            matches!(result, CursorContext::TypePosition),
+            "expected TypePosition after ':' in param, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn determine_context_type_position_after_colon_in_let() {
+        // "let x: " — cursor after ': ' in a let with type annotation
+        let source = "structure Foo {\n    let x: Int = 5\n}";
+        let ctx = AnalysisContext::new(source, &test_uri());
+        // Position right after "let x: " — col 11 = after "    let x: "
+        let result = determine_context(source, Position::new(1, 11), &ctx);
+        assert!(
+            matches!(result, CursorContext::TypePosition),
+            "expected TypePosition after ':' in let, got {:?}",
+            result
+        );
+    }
+
+    #[test]
     fn determine_context_empty_source_is_top_level() {
         let source = "";
         let ctx = AnalysisContext::new(source, &test_uri());
