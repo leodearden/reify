@@ -129,6 +129,10 @@ fn check_indeterminate_constraint_exits_success() {
         "stdout should contain 'INDETERMINATE', got: {stdout}"
     );
     assert!(
+        !stderr.contains("INDETERMINATE"),
+        "INDETERMINATE should appear on stdout, not stderr, got stderr: {stderr}"
+    );
+    assert!(
         !stdout.contains("VIOLATED"),
         "stdout should NOT contain 'VIOLATED', got: {stdout}"
     );
