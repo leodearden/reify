@@ -1983,6 +1983,12 @@ async fn ensure_sidecar_ready_notified_race_on_multithread() {
             i,
             result
         );
+
+        // Kill the handle stored in the sidecar slot to abort the reader task
+        // immediately, preventing task accumulation across iterations.
+        if let Some(mut h) = sidecar.lock().await.take() {
+            h.kill().await;
+        }
     }
 }
 
@@ -2009,7 +2015,7 @@ async fn wait_ready_enable_prevents_missed_notification_race() {
     use tokio::sync::Mutex;
 
     for i in 0..50 {
-        let (handle, _data_writer) = make_starting_handle();
+        let (mut handle, _data_writer) = make_starting_handle();
 
         let notify_arc = Arc::clone(handle.ready_notify());
         let state_clone = Arc::clone(handle.state());
@@ -2034,6 +2040,10 @@ async fn wait_ready_enable_prevents_missed_notification_race() {
             i,
             result
         );
+
+        // Abort the reader task immediately instead of leaving it detached
+        // until the writer drops at end-of-iteration.
+        handle.kill().await;
     }
 }
 
@@ -2086,6 +2096,12 @@ async fn ensure_sidecar_ready_enable_prevents_missed_notification_race() {
             i,
             result
         );
+
+        // Kill the handle stored in the sidecar slot to abort the reader task
+        // immediately, preventing task accumulation across iterations.
+        if let Some(mut h) = sidecar.lock().await.take() {
+            h.kill().await;
+        }
     }
 }
 
