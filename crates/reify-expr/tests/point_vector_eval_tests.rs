@@ -750,6 +750,46 @@ fn negate_rank2_tensor_negates_all_inner_elements() {
     );
 }
 
+/// Negating a Tensor containing Complex elements returns a Tensor with
+/// both re and im negated in each Complex element.
+/// Currently fails: negate_components returns Undef for Complex elements.
+#[test]
+fn negate_tensor_of_complex_negates_re_and_im() {
+    let operand = CompiledExpr::literal(
+        Value::Tensor(vec![
+            Value::Complex {
+                re: 1.0,
+                im: 2.0,
+                dimension: DimensionVector::DIMENSIONLESS,
+            },
+            Value::Complex {
+                re: 3.0,
+                im: -4.0,
+                dimension: DimensionVector::DIMENSIONLESS,
+            },
+        ]),
+        Type::tensor(1, 2, Type::complex(Type::Real)),
+    );
+    let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::tensor(1, 2, Type::complex(Type::Real)));
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Tensor(vec![
+            Value::Complex {
+                re: -1.0,
+                im: -2.0,
+                dimension: DimensionVector::DIMENSIONLESS,
+            },
+            Value::Complex {
+                re: -3.0,
+                im: 4.0,
+                dimension: DimensionVector::DIMENSIONLESS,
+            },
+        ])
+    );
+}
+
 // ─── step-1 (task 398): Value::Point / Value::Vector addition ───
 
 /// Value::Vector + Value::Vector → Value::Vector (component-wise).
