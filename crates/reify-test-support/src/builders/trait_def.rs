@@ -138,6 +138,11 @@ impl CompiledTraitBuilder {
         self
     }
 
+    pub fn type_param(mut self, param: TypeParam) -> Self {
+        self.type_params.push(param);
+        self
+    }
+
     pub fn refinement(mut self, name: impl Into<String>) -> Self {
         self.refinements.push(name.into());
         self
@@ -450,5 +455,67 @@ mod trait_builder_tests {
         let t: CompiledTrait = CompiledTraitBuilder::new("Bounded").build();
         assert_eq!(t.defaults.len(), 0);
         assert_eq!(t.type_params.len(), 0);
+    }
+
+    #[test]
+    fn compiled_trait_builder_hash_differs_by_requirement_kind() {
+        let t1: CompiledTrait = CompiledTraitBuilder::new("Rigid")
+            .require_param("val", Type::Real)
+            .build();
+        let t2: CompiledTrait = CompiledTraitBuilder::new("Rigid")
+            .require_let("val", Type::Real)
+            .build();
+        assert_ne!(
+            t1.content_hash, t2.content_hash,
+            "Param vs Let with same name and type must produce different content_hash"
+        );
+    }
+
+    #[test]
+    fn compiled_trait_builder_hash_differs_by_requirement_type() {
+        let t1: CompiledTrait = CompiledTraitBuilder::new("Rigid")
+            .require_param("val", Type::Real)
+            .build();
+        let t2: CompiledTrait = CompiledTraitBuilder::new("Rigid")
+            .require_param("val", Type::Int)
+            .build();
+        assert_ne!(
+            t1.content_hash, t2.content_hash,
+            "same Param variant but different types (Real vs Int) must produce different content_hash"
+        );
+    }
+
+    #[test]
+    fn compiled_trait_builder_hash_differs_by_refinement() {
+        let t1: CompiledTrait = CompiledTraitBuilder::new("Rigid").build();
+        let t2: CompiledTrait = CompiledTraitBuilder::new("Rigid")
+            .refinement("Base")
+            .build();
+        assert_ne!(
+            t1.content_hash, t2.content_hash,
+            "with vs without refinement must produce different content_hash"
+        );
+    }
+
+    #[test]
+    fn compiled_trait_builder_hash_differs_by_type_param() {
+        use reify_types::{TraitBound, TraitRef, TypeParam};
+        let t1: CompiledTrait = CompiledTraitBuilder::new("Container").build();
+        let t2: CompiledTrait = CompiledTraitBuilder::new("Container")
+            .type_param(TypeParam {
+                name: "T".to_string(),
+                bounds: vec![TraitBound {
+                    trait_ref: TraitRef {
+                        name: "Rigid".to_string(),
+                        type_args: vec![],
+                    },
+                }],
+                default: None,
+            })
+            .build();
+        assert_ne!(
+            t1.content_hash, t2.content_hash,
+            "with vs without type_param must produce different content_hash"
+        );
     }
 }
