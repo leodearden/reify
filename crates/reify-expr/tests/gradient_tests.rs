@@ -6,8 +6,8 @@
 
 use reify_expr::{EvalContext, eval_expr};
 use reify_types::{
-    CompiledExpr, CompiledExprKind, ContentHash, FieldSourceKind, ResolvedFunction, Type, Value,
-    ValueCellId, ValueMap,
+    BinOp, CompiledExpr, CompiledExprKind, ContentHash, FieldSourceKind, ResolvedFunction, Type,
+    Value, ValueCellId, ValueMap,
 };
 
 /// Helper to build a FunctionCall expression for stdlib functions.
@@ -153,4 +153,108 @@ fn gradient_wrong_size_tensor_point_returns_undef() {
         Value::Undef,
         "sample with wrong-size Tensor point must return Undef"
     );
+}
+
+/// Helper to build a Conditional (if-then-else) expression.
+fn make_conditional(
+    condition: CompiledExpr,
+    then_branch: CompiledExpr,
+    else_branch: CompiledExpr,
+    result_type: Type,
+) -> CompiledExpr {
+    let hash = ContentHash::of(&[5])
+        .combine(condition.content_hash)
+        .combine(then_branch.content_hash)
+        .combine(else_branch.content_hash);
+    CompiledExpr {
+        kind: CompiledExprKind::Conditional {
+            condition: Box::new(condition),
+            then_branch: Box::new(then_branch),
+            else_branch: Box::new(else_branch),
+        },
+        result_type,
+        content_hash: hash,
+    }
+}
+
+/// Partial Undef propagation: a lambda that returns Undef on one specific input.
+///
+/// Build a lambda that returns Undef when its input equals a specific perturbed
+/// value (simulating perturbation along one axis yielding Undef) and returns a
+/// valid Real otherwise. Create three sample(field, point) calls — one for each
+/// of three different points. Assert that sampling at the Undef-triggering value
+/// returns Undef while the other two return valid values.
+///
+/// This verifies the short-circuit behavior that gradient's numerical
+/// differentiation will rely on: if perturbation along one axis yields Undef
+/// from the field function, gradient must propagate that Undef rather than
+/// computing garbage.
+#[test]
+fn partial_undef_propagation_lambda_returns_undef_on_one_axis() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+
+    // Lambda: |x| if x == 2.0 then Undef else x * x
+    // This simulates a field function that is undefined at x=2.0
+    // (e.g., a perturbation point that falls outside the field domain).
+    let body = make_conditional(
+        // condition: x == 2.0
+        CompiledExpr::binop(
+            BinOp::Eq,
+            CompiledExpr::value_ref(x_id.clone(), Type::Real),
+            CompiledExpr::literal(Value::Real(2.0), Type::Real),
+            Type::Bool,
+        ),
+        // then: Undef (perturbation along this axis fails)
+        CompiledExpr::literal(Value::Undef, Type::Real),
+        // else: x * x (normal evaluation)
+        CompiledExpr::binop(
+            BinOp::Mul,
+            CompiledExpr::value_ref(x_id.clone(), Type::Real),
+            CompiledExpr::value_ref(x_id.clone(), Type::Real),
+            Type::Real,
+        ),
+        Type::Real,
+    );
+    let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
+
+    let domain_type = Type::Real;
+    let codomain_type = Type::Real;
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type),
+        codomain: Box::new(codomain_type),
+    };
+
+    // Sample at three points: x=1.0, x=2.0 (Undef-trigger), x=3.0
+    let points = [1.0, 2.0, 3.0];
+    let expected = [
+        Value::Real(1.0),  // 1.0 * 1.0
+        Value::Undef,      // x == 2.0 triggers Undef
+        Value::Real(9.0),  // 3.0 * 3.0
+    ];
+
+    for (point_val, expected_val) in points.iter().zip(expected.iter()) {
+        let expr = make_function_call(
+            "sample",
+            vec![
+                CompiledExpr::literal(field.clone(), field_type.clone()),
+                CompiledExpr::literal(Value::Real(*point_val), Type::Real),
+            ],
+            Type::Real,
+        );
+        let values = ValueMap::new();
+        let result = eval_expr(&expr, &EvalContext::simple(&values));
+        assert_eq!(
+            &result, expected_val,
+            "sample(field, {}) should return {:?}, got {:?}",
+            point_val, expected_val, result
+        );
+    }
 }
