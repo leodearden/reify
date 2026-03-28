@@ -965,13 +965,17 @@ fn componentwise_binop(
 
 /// Scale each component of a component slice by a scalar value using the given
 /// binary operation, wrapping the result with the given constructor. Returns
-/// `Value::Undef` if any component operation produces `Value::Undef`.
+/// `Value::Undef` if the scalar is Undef, components are empty, or any
+/// component operation produces `Value::Undef`.
 fn scale_components(
     components: &[Value],
     scalar: &Value,
     op: fn(&Value, &Value) -> Value,
     wrap: fn(Vec<Value>) -> Value,
 ) -> Value {
+    if scalar.is_undef() {
+        return Value::Undef;
+    }
     if components.is_empty() {
         return Value::Undef;
     }
