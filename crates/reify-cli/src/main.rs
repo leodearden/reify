@@ -157,13 +157,12 @@ fn cmd_build(args: &[String]) -> ExitCode {
     let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
     let result = engine.build(&compiled, format);
 
-    for diag in &result.diagnostics {
-        eprintln!("{}: {}", diag.severity, diag.message);
-    }
-
-    // Report constraint status
-    let outcome =
-        report_constraint_results(&result.constraint_results, &mut std::io::stdout());
+    let outcome = report_eval_output(
+        &result.constraint_results,
+        &result.diagnostics,
+        &mut std::io::stdout(),
+        &mut std::io::stderr(),
+    );
 
     match result.geometry_output {
         Some(data) => {
