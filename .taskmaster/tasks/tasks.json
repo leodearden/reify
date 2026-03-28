@@ -13541,6 +13541,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 683,
+        "title": "Add magnitude wrapper tests for dimensioned Complex overflow and NaN",
+        "description": "The `magnitude` builtin delegates to `complex_abs` for Complex inputs but its test coverage has two gaps:\n\n1. **Dimensioned overflow**: `magnitude_complex_overflow_returns_undef` only tests DIMENSIONLESS. Add `magnitude_complex_overflow_dimensioned_returns_undef` with `dimension: DimensionVector::LENGTH` and `re: f64::MAX, im: f64::MAX` to exercise the `Value::Scalar` return path through `sanitize_value`.\n\n2. **NaN propagation**: No `magnitude` test verifies NaN Complex inputs. Add `magnitude_complex_nan_component_returns_undef` mirroring the existing `complex_magnitude_nan_component_returns_undef` but calling `eval_builtin(\"magnitude\", ...)`.\n\nBoth `complex_magnitude` tests exist for these cases; the `magnitude` wrapper needs matching coverage since it takes a separate code path (checks `if let Value::Complex` before the Tensor fallback).\n\nLocation: crates/reify-stdlib/src/lib.rs, around line 4787 (after existing magnitude_complex_overflow test).\n\nMemory hints: search \"magnitude complex_abs overflow NaN test\", entities: eval_builtin, complex_abs",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -13553,7 +13564,7 @@
       ],
       "created": "2026-03-28T04:59:44.348Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-28T05:00:08.725Z"
+      "updated": "2026-03-28T05:00:10.317Z"
     }
   }
 }
