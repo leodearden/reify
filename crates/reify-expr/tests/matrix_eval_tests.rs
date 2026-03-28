@@ -184,3 +184,61 @@ fn jagged_b_matrix_sub_returns_undef() {
     let expr = sub(a, b);
     assert_eq!(eval(&expr), Value::Undef);
 }
+
+// ── Valid rank-2 matrix arithmetic ─────────────────────────────────────────
+
+/// Valid 2×2 matrix addition produces correct element-wise result.
+/// [[1,2],[3,4]] + [[5,6],[7,8]] → [[6,8],[10,12]]
+#[test]
+fn valid_rank2_matrix_add_returns_correct_result() {
+    let a = lit(
+        Value::Tensor(vec![
+            Value::Tensor(vec![Value::Int(1), Value::Int(2)]),
+            Value::Tensor(vec![Value::Int(3), Value::Int(4)]),
+        ]),
+        tensor_ty(),
+    );
+    let b = lit(
+        Value::Tensor(vec![
+            Value::Tensor(vec![Value::Int(5), Value::Int(6)]),
+            Value::Tensor(vec![Value::Int(7), Value::Int(8)]),
+        ]),
+        tensor_ty(),
+    );
+    let expr = add(a, b);
+    assert_eq!(
+        eval(&expr),
+        Value::Tensor(vec![
+            Value::Tensor(vec![Value::Int(6), Value::Int(8)]),
+            Value::Tensor(vec![Value::Int(10), Value::Int(12)]),
+        ])
+    );
+}
+
+/// Valid 2×2 matrix subtraction produces correct element-wise result.
+/// [[10,20],[30,40]] - [[1,2],[3,4]] → [[9,18],[27,36]]
+#[test]
+fn valid_rank2_matrix_sub_returns_correct_result() {
+    let a = lit(
+        Value::Tensor(vec![
+            Value::Tensor(vec![Value::Int(10), Value::Int(20)]),
+            Value::Tensor(vec![Value::Int(30), Value::Int(40)]),
+        ]),
+        tensor_ty(),
+    );
+    let b = lit(
+        Value::Tensor(vec![
+            Value::Tensor(vec![Value::Int(1), Value::Int(2)]),
+            Value::Tensor(vec![Value::Int(3), Value::Int(4)]),
+        ]),
+        tensor_ty(),
+    );
+    let expr = sub(a, b);
+    assert_eq!(
+        eval(&expr),
+        Value::Tensor(vec![
+            Value::Tensor(vec![Value::Int(9), Value::Int(18)]),
+            Value::Tensor(vec![Value::Int(27), Value::Int(36)]),
+        ])
+    );
+}
