@@ -7406,13 +7406,13 @@
         "description": "Two small robustness fixes for the Frame type added in task 234:\n\n1. **Explicit dimension() arm**: Add `Value::Frame { .. } => DimensionVector::DIMENSIONLESS` to the `dimension()` match in `crates/reify-types/src/value.rs:172` instead of relying on the wildcard `_ =>` arm. All other semantic properties of Frame have explicit arms; dimension() is the odd one out. This prevents breakage if the wildcard is ever tightened.\n\n2. **Noisy infer_value_type**: Change `Value::Frame { .. } => Type::Frame(3)` in `crates/reify-test-support/src/builders.rs:55` to `panic!(\"literal() cannot infer Frame dimensionality; use CompiledExpr::literal(value, type) directly.\")` — matching the established pattern for Point/Vector/Tensor/Matrix. The current code silently returns Frame(3) regardless of actual dimensionality, violating the project convention that logic errors should be noisy.\n\nmemory_hints: search \"silent defaults noisy errors convention\", entity \"Value::Frame\"",
         "details": "<info added on 2026-03-28T10:11:38.944Z>\nNOTE: The file `builders.rs` has been split into submodules under `crates/reify-test-support/src/builders/` as per task 533. The reference to `builders.rs:55` for `infer_value_type` is outdated. Locate the function in the appropriate submodule, likely `builders/value.rs` or `builders/mod.rs`, before implementing the changes. Update the metadata files list to reference the new submodule path instead of the monolithic `builders.rs`.\n</info added on 2026-03-28T10:11:38.944Z>",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [
           "234"
         ],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-03-26T02:19:24.667Z",
+        "updatedAt": "2026-03-28T10:16:21.647Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -12805,9 +12805,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T10:15:14.191Z",
+      "lastModified": "2026-03-28T10:16:21.647Z",
       "taskCount": 636,
-      "completedCount": 297,
+      "completedCount": 298,
       "tags": [
         "master"
       ]
