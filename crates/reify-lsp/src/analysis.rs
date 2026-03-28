@@ -459,6 +459,28 @@ mod tests {
     }
 
     #[test]
+    fn structure_names_counts_nested_where_blocks() {
+        let source = r#"structure S {
+    param a : Bool = true
+    param b : Bool = true
+    where a {
+        where b {
+            param deep : Scalar = 1mm
+        }
+    }
+}"#;
+        let ctx = AnalysisContext::new(source, &test_uri());
+        let structs = ctx.structure_names();
+        assert_eq!(structs.len(), 1);
+        let (_name, param_count, _let_count, _constraint_count, _kind) = structs[0];
+        // Should count: a + b + deep = 3 params
+        assert_eq!(
+            param_count, 3,
+            "expected 3 params (a, b, deep), got {param_count}"
+        );
+    }
+
+    #[test]
     fn structure_names_counts_guarded_group_members() {
         // Bug: structure_names() only counts top-level members, missing those
         // inside where-blocks. This test expects the CORRECT (recursive) counts.
