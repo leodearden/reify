@@ -94,3 +94,64 @@ fn scale_components_first_element_undef_returns_undef() {
     let expr = CompiledExpr::binop(BinOp::Mul, t, s, Type::Real);
     assert_eq!(eval(&expr), Value::Undef);
 }
+
+// ── neg_scalar regression tests ────────────────────────────────────────────
+
+/// Negate an Int value.
+#[test]
+fn negate_int() {
+    let expr = CompiledExpr::unop(UnOp::Neg, lit(Value::Int(42), Type::Real), Type::Real);
+    assert_eq!(eval(&expr), Value::Int(-42));
+}
+
+/// Negate a Real value.
+#[test]
+fn negate_real() {
+    let expr = CompiledExpr::unop(UnOp::Neg, lit(Value::Real(3.14), Type::Real), Type::Real);
+    assert_eq!(eval(&expr), Value::Real(-3.14));
+}
+
+/// Negate a Scalar with dimension (Length).
+#[test]
+fn negate_scalar_with_dimension() {
+    let expr = CompiledExpr::unop(
+        UnOp::Neg,
+        lit(Value::length(2.5), Type::length()),
+        Type::length(),
+    );
+    assert_eq!(eval(&expr), Value::length(-2.5));
+}
+
+/// Negate a Complex with dimension (Length).
+#[test]
+fn negate_complex_with_dimension() {
+    let c = Value::Complex {
+        re: 3.0,
+        im: 4.0,
+        dimension: DimensionVector::LENGTH,
+    };
+    let expr = CompiledExpr::unop(
+        UnOp::Neg,
+        lit(c, Type::complex(Type::length())),
+        Type::complex(Type::length()),
+    );
+    assert_eq!(
+        eval(&expr),
+        Value::Complex {
+            re: -3.0,
+            im: -4.0,
+            dimension: DimensionVector::LENGTH,
+        }
+    );
+}
+
+/// Negating Int::MIN (i64::MIN) overflows checked_neg → Undef.
+#[test]
+fn negate_int_min_returns_undef() {
+    let expr = CompiledExpr::unop(
+        UnOp::Neg,
+        lit(Value::Int(i64::MIN), Type::Real),
+        Type::Real,
+    );
+    assert_eq!(eval(&expr), Value::Undef);
+}
