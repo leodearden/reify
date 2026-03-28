@@ -12747,6 +12747,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 631,
+        "title": "Validate callable lambda in compute_gradient_field and check deriv finiteness",
+        "description": "In compute_gradient_field (crates/reify-expr/src/lib.rs), check that the source field's lambda is callable (not Undef). Sampled/Imported fields have lambda=Undef — gradient() on them should fail at construction time, not silently at sample time. In sample_gradient_field, add finiteness check on computed derivative before pushing to gradient_components. Both align with feedback_silent_defaults_pattern.md convention.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -12759,7 +12770,7 @@
       ],
       "created": "2026-03-28T00:33:54.683Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-28T00:33:56.958Z"
+      "updated": "2026-03-28T00:33:59.683Z"
     }
   }
 }
