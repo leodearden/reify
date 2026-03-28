@@ -12530,11 +12530,11 @@
         "description": "Three observability gaps/issues in solver.rs:\n1. executor.run() error path (line 571-574) returns NoProgress with no tracing — add warn! with the error.\n2. get_best_param()==None path (line 601-604) returns NoProgress with no tracing — add warn!.\n3. Two consecutive debug! logs (lines 582-596) for MaxItersReached have overlapping fields — merge into a single structured log event or differentiate their content.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-28T00:17:28.781Z",
+        "updatedAt": "2026-03-28T00:20:08.817Z",
         "metadata": {
           "modules": [
             "crates/reify-constraints"
@@ -12685,7 +12685,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T00:20:07.982Z",
+      "lastModified": "2026-03-28T00:20:08.818Z",
       "taskCount": 626,
       "completedCount": 285,
       "tags": [
