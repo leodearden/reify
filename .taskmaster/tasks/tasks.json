@@ -5262,7 +5262,22 @@
             "crates/reify-expr"
           ],
           "milestone": "M11",
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "memory_hints": {
+            "entities": [
+              "Field",
+              "Point3",
+              "Vector3",
+              "Scalar",
+              "numerical gradient",
+              "central differences"
+            ],
+            "queries": [
+              "field gradient numerical central differences implementation",
+              "Point Vector types M10 milestone reify",
+              "reify-stdlib field operations analytical gradient"
+            ]
+          }
         },
         "subtasks": [],
         "updatedAt": "2026-03-28T00:32:42.431Z"
@@ -9621,7 +9636,21 @@
           ],
           "modules": [
             "crates/reify-lsp/src"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "AnalysisContext",
+              "compute_completions",
+              "CursorContext",
+              "reify-lsp",
+              "position_to_offset"
+            ],
+            "queries": [
+              "LSP completion implementation reify position-aware",
+              "AnalysisContext structure spans member names",
+              "cursor context detection completion narrowing"
+            ]
+          }
         },
         "updatedAt": "2026-03-28T01:23:37.232Z"
       },
