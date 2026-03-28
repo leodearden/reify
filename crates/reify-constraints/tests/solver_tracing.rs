@@ -49,6 +49,11 @@ fn event_counting_subscriber() -> (
         ) {}
 
         fn event(&self, event: &tracing::Event<'_>) {
+            // Only count events from reify_constraints (and submodules).
+            // This filters out noise from argmin, nalgebra, and other deps.
+            if !event.metadata().target().starts_with("reify_constraints") {
+                return;
+            }
             let level = event.metadata().level();
             if level == &tracing::Level::DEBUG {
                 self.debug_count.fetch_add(1, Ordering::Relaxed);
