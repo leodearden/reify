@@ -1,0 +1,72 @@
+{
+  "task_id": "520",
+  "title": "Add reject-propagation tests for Claude invoke wrappers in bridge tests",
+  "files": [
+    "gui/src/__tests__/claudeBridge.test.ts"
+  ],
+  "modules": [
+    "gui/src/__tests__"
+  ],
+  "analysis": "The existing claudeBridge.test.ts has 6 happy-path tests for the 'claude invoke wrappers' describe block (lines 28-116). All use `mockInvoke.mockResolvedValue(undefined)` and verify call arguments. None test rejection propagation. The wrappers in bridge.ts (claudeSendMessage, claudeAbort, claudeClearSession) all use `return invoke(...)`, which naturally propagates rejections. However, a regression (e.g., wrapping invoke in try/catch or adding error swallowing) would silently break the `.catch()` handlers in App.tsx. Three new tests are needed \u2014 one per wrapper \u2014 following the exact pattern from the task description: `mockInvoke.mockRejectedValue(new Error('IPC failed'))` then `await expect(wrapper()).rejects.toThrow('IPC failed')`. These tests go inside the existing 'claude invoke wrappers' describe block, after the existing happy-path tests (after line 116, before line 117).",
+  "prerequisites": [],
+  "steps": [
+    {
+      "id": "step-1",
+      "type": "test",
+      "description": "Add test: claudeSendMessage propagates invoke rejection. Inside the 'claude invoke wrappers' describe block, add a test that calls `mockInvoke.mockRejectedValue(new Error('IPC failed'))`, invokes `claudeSendMessage('hello')`, and asserts `rejects.toThrow('IPC failed')`. Run tests to confirm it passes (this is a regression guard \u2014 the wrapper already propagates correctly via `return invoke(...)`).",
+      "status": "done",
+      "commit": "6b5b7dc1"
+    },
+    {
+      "id": "step-2",
+      "type": "test",
+      "description": "Add test: claudeAbort propagates invoke rejection. Same pattern: `mockInvoke.mockRejectedValue(new Error('IPC failed'))`, call `claudeAbort()`, assert `rejects.toThrow('IPC failed')`.",
+      "status": "done",
+      "commit": "f0451fb8"
+    },
+    {
+      "id": "step-3",
+      "type": "test",
+      "description": "Add test: claudeClearSession propagates invoke rejection. Same pattern: `mockInvoke.mockRejectedValue(new Error('IPC failed'))`, call `claudeClearSession()`, assert `rejects.toThrow('IPC failed')`.",
+      "status": "done",
+      "commit": "5def2b0e"
+    }
+  ],
+  "design_decisions": [
+    {
+      "decision": "Place all three rejection tests inside the existing 'claude invoke wrappers' describe block, after the existing happy-path tests",
+      "rationale": "The describe block already groups tests for these three wrappers. Adding rejection tests here maintains logical cohesion and follows the file's existing structure."
+    },
+    {
+      "decision": "Use 'IPC failed' as the error message in all three tests",
+      "rationale": "Matches the task description exactly. The specific message doesn't matter for the regression guard \u2014 what matters is that the same Error object propagates unchanged."
+    },
+    {
+      "decision": "Test-only steps with no separate impl steps",
+      "rationale": "The wrappers already propagate rejections correctly (they use `return invoke(...)`). These are regression-guard tests, not TDD for new behavior. No implementation change is needed."
+    },
+    {
+      "decision": "Three separate steps rather than one combined step",
+      "rationale": "Each wrapper is an independent unit under test. Separate steps allow atomic commits and make it clear which wrapper each test covers, even though the pattern is identical."
+    }
+  ],
+  "reuse": [
+    {
+      "what": "mockInvoke setup pattern",
+      "where": "gui/src/__tests__/claudeBridge.test.ts lines 21, 30",
+      "how": "Reuse the existing `const mockInvoke = vi.mocked(invoke)` reference declared at module scope. Use `mockRejectedValue` instead of `mockResolvedValue`."
+    },
+    {
+      "what": "vitest rejects assertion pattern",
+      "where": "gui/src/__tests__/claudeBridge.test.ts lines 357, 369, 387",
+      "how": "The listener rollback tests already use `await expect(...).rejects.toThrow(...)`. Reuse the exact same assertion pattern for invoke rejection tests."
+    },
+    {
+      "what": "beforeEach mock clearing",
+      "where": "gui/src/__tests__/claudeBridge.test.ts lines 24-26",
+      "how": "The existing `beforeEach(() => vi.clearAllMocks())` ensures each test starts clean. No additional setup needed."
+    }
+  ],
+  "_session_id": "520-177eb676",
+  "_created_at": "2026-03-28T00:53:38.020920+00:00"
+}
