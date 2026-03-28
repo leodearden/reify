@@ -1964,38 +1964,17 @@ async fn wait_ready_notified_race_on_multithread() {
 /// process it immediately on a second worker thread, exercising that window.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ensure_sidecar_ready_notified_race_on_multithread() {
-    use std::sync::Arc;
     use std::time::Duration;
-    use tokio::io::{AsyncWriteExt, BufReader};
     use tokio::sync::Mutex;
 
     // Run 20 iterations to increase failure probability with the buggy code.
     for i in 0..20 {
-        let held_writer: Arc<Mutex<Option<tokio::io::DuplexStream>>> = Arc::new(Mutex::new(None));
-        let held_clone = Arc::clone(&held_writer);
-
-        let spawn_fn = move || {
-            let held = Arc::clone(&held_clone);
-            async move {
-                let state = Arc::new(Mutex::new(SidecarState::Starting));
-                let (mut data_writer, data_reader) = tokio::io::duplex(1024);
-                // Write ready BEFORE creating the handle so the reader task can
-                // process it immediately when scheduled on the second thread.
-                data_writer
-                    .write_all(b"{\"type\":\"ready\"}\n")
-                    .await
-                    .map_err(|e| e.to_string())?;
-                let reader = BufReader::new(data_reader);
-                let (stdin_writer, _stdin_reader) = tokio::io::duplex(1024);
-                let handle = SidecarHandle::from_parts(stdin_writer, reader, state);
-                // Hold the writer alive so the reader doesn't see EOF.
-                *held.lock().await = Some(data_writer);
-                Ok(handle)
-            }
-        };
+        let (writer_tx, writer_rx) = tokio::sync::oneshot::channel();
+        let spawn_fn = || make_ready_spawn_fn(writer_tx);
 
         let sidecar: Mutex<Option<SidecarHandle>> = Mutex::new(None);
         let result = ensure_sidecar_ready(&sidecar, spawn_fn, Duration::from_millis(500)).await;
+        let _held = writer_rx.await.ok();
 
         assert!(
             result.is_ok(),
@@ -2083,34 +2062,12 @@ async fn wait_ready_enable_prevents_missed_notification_race() {
 /// and uses only 20 iterations without a pre-populated sidecar slot.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ensure_sidecar_ready_enable_prevents_missed_notification_race() {
-    use std::sync::Arc;
     use std::time::Duration;
-    use tokio::io::{AsyncWriteExt, BufReader};
     use tokio::sync::Mutex;
 
     for i in 0..50 {
-        let held_writer: Arc<Mutex<Option<tokio::io::DuplexStream>>> = Arc::new(Mutex::new(None));
-        let held_clone = Arc::clone(&held_writer);
-
-        let spawn_fn = move || {
-            let held = Arc::clone(&held_clone);
-            async move {
-                let state = Arc::new(Mutex::new(SidecarState::Starting));
-                let (mut data_writer, data_reader) = tokio::io::duplex(1024);
-                // Write ready BEFORE creating the handle so the reader task can
-                // process it immediately when scheduled on the second thread.
-                data_writer
-                    .write_all(b"{\"type\":\"ready\"}\n")
-                    .await
-                    .map_err(|e| e.to_string())?;
-                let reader = BufReader::new(data_reader);
-                let (stdin_writer, _stdin_reader) = tokio::io::duplex(1024);
-                let handle = SidecarHandle::from_parts(stdin_writer, reader, state);
-                // Hold the writer alive so the reader doesn't see EOF.
-                *held.lock().await = Some(data_writer);
-                Ok(handle)
-            }
-        };
+        let (writer_tx, writer_rx) = tokio::sync::oneshot::channel();
+        let spawn_fn = || make_ready_spawn_fn(writer_tx);
 
         // Pre-populate the sidecar slot with a non-ready (Starting) handle.
         // This triggers the h.kill().await in Phase 1, adding async work
@@ -2119,6 +2076,7 @@ async fn ensure_sidecar_ready_enable_prevents_missed_notification_race() {
 
         let sidecar: Mutex<Option<SidecarHandle>> = Mutex::new(Some(stale_handle));
         let result = ensure_sidecar_ready(&sidecar, spawn_fn, Duration::from_millis(500)).await;
+        let _held = writer_rx.await.ok();
 
         assert!(
             result.is_ok(),
