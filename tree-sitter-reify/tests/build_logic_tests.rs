@@ -46,6 +46,17 @@ fn test_content_hash_changes_on_modification() {
 /// The expected output files that tree-sitter generate produces.
 const EXPECTED_OUTPUTS: &[&str] = &["parser.c", "grammar.json", "node-types.json"];
 
+/// Creates base/src/, writes placeholder files for all EXPECTED_OUTPUTS,
+/// and returns the src_dir path. Deduplicates setup across stamp/output tests.
+fn make_populated_src_dir(base: &Path) -> std::path::PathBuf {
+    let src_dir = base.join("src");
+    std::fs::create_dir_all(&src_dir).unwrap();
+    for name in EXPECTED_OUTPUTS {
+        std::fs::write(src_dir.join(name), b"placeholder").unwrap();
+    }
+    src_dir
+}
+
 /// Duplicates needs_generate logic from build.rs for testability.
 /// Returns true if regeneration is needed based on content hash staleness.
 /// The caller passes a pre-computed grammar hash to avoid TOCTOU races.
@@ -72,11 +83,7 @@ fn test_needs_generate_true_when_no_stamp() {
     std::fs::write(&grammar, b"module.exports = grammar({});").unwrap();
     let stamp = dir.path().join("stamp.hash");
     // stamp does not exist
-    let src_dir = dir.path().join("src");
-    std::fs::create_dir_all(&src_dir).unwrap();
-    for name in EXPECTED_OUTPUTS {
-        std::fs::write(src_dir.join(name), b"placeholder").unwrap();
-    }
+    let src_dir = make_populated_src_dir(dir.path());
     let output_paths: Vec<_> = EXPECTED_OUTPUTS.iter().map(|n| src_dir.join(n)).collect();
     let output_refs: Vec<&Path> = output_paths.iter().map(|p| p.as_path()).collect();
 
@@ -97,11 +104,7 @@ fn test_needs_generate_false_when_stamp_matches() {
     let hash = content_hash(&grammar);
     std::fs::write(&stamp, &hash).unwrap();
     // Create all 3 output files
-    let src_dir = dir.path().join("src");
-    std::fs::create_dir_all(&src_dir).unwrap();
-    for name in EXPECTED_OUTPUTS {
-        std::fs::write(src_dir.join(name), b"placeholder").unwrap();
-    }
+    let src_dir = make_populated_src_dir(dir.path());
     let output_paths: Vec<_> = EXPECTED_OUTPUTS.iter().map(|n| src_dir.join(n)).collect();
     let output_refs: Vec<&Path> = output_paths.iter().map(|p| p.as_path()).collect();
 
@@ -120,11 +123,7 @@ fn test_needs_generate_true_when_stamp_stale() {
     // Write a stale (old) hash to stamp file
     std::fs::write(&stamp, "0000000000000000").unwrap();
     // Create all 3 output files
-    let src_dir = dir.path().join("src");
-    std::fs::create_dir_all(&src_dir).unwrap();
-    for name in EXPECTED_OUTPUTS {
-        std::fs::write(src_dir.join(name), b"placeholder").unwrap();
-    }
+    let src_dir = make_populated_src_dir(dir.path());
     let output_paths: Vec<_> = EXPECTED_OUTPUTS.iter().map(|n| src_dir.join(n)).collect();
     let output_refs: Vec<&Path> = output_paths.iter().map(|p| p.as_path()).collect();
 
@@ -144,12 +143,9 @@ fn test_needs_generate_true_when_output_missing() {
     // Write matching hash
     let hash = content_hash(&grammar);
     std::fs::write(&stamp, &hash).unwrap();
-    // Create only 2 of the 3 output files (grammar.json missing)
-    let src_dir = dir.path().join("src");
-    std::fs::create_dir_all(&src_dir).unwrap();
-    std::fs::write(src_dir.join("parser.c"), b"placeholder").unwrap();
-    // grammar.json intentionally missing
-    std::fs::write(src_dir.join("node-types.json"), b"placeholder").unwrap();
+    // Create all 3 output files, then remove grammar.json
+    let src_dir = make_populated_src_dir(dir.path());
+    std::fs::remove_file(src_dir.join("grammar.json")).unwrap();
 
     let output_paths: Vec<_> = EXPECTED_OUTPUTS.iter().map(|n| src_dir.join(n)).collect();
     let output_refs: Vec<&Path> = output_paths.iter().map(|p| p.as_path()).collect();
@@ -182,13 +178,7 @@ fn verify_outputs(src_dir: &Path) -> Result<(), String> {
 #[test]
 fn test_all_three_outputs_verified() {
     let dir = tempfile::tempdir().unwrap();
-    let src_dir = dir.path().join("src");
-    std::fs::create_dir_all(&src_dir).unwrap();
-
-    // With all 3 files present, verification succeeds.
-    for name in EXPECTED_OUTPUTS {
-        std::fs::write(src_dir.join(name), b"placeholder").unwrap();
-    }
+    let src_dir = make_populated_src_dir(dir.path());
     assert!(verify_outputs(&src_dir).is_ok(), "all files present should verify ok");
 
     // Remove each file in turn and verify it's detected as missing.
