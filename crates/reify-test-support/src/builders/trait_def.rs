@@ -524,6 +524,66 @@ mod trait_builder_tests {
         );
     }
 
+    /// Both builders must produce identical content_hash for identical inputs.
+    /// This is the core invariant the refactoring must preserve.
+    #[test]
+    fn cross_builder_hash_equivalence() {
+        // Minimal case: name only
+        let from_def = TraitDefBuilder::new("Rigid").build();
+        let from_compiled = CompiledTraitBuilder::new("Rigid").build();
+        assert_eq!(
+            from_def.content_hash, from_compiled.content_hash,
+            "name-only: both builders must produce same hash"
+        );
+
+        // With a Param requirement
+        let from_def = TraitDefBuilder::new("Rigid")
+            .requirement("val", RequirementKind::Param(Type::Real))
+            .build();
+        let from_compiled = CompiledTraitBuilder::new("Rigid")
+            .require_param("val", Type::Real)
+            .build();
+        assert_eq!(
+            from_def.content_hash, from_compiled.content_hash,
+            "with Param requirement: both builders must produce same hash"
+        );
+
+        // With a refinement
+        let from_def = TraitDefBuilder::new("Rigid")
+            .refinement("Base")
+            .build();
+        let from_compiled = CompiledTraitBuilder::new("Rigid")
+            .refinement("Base")
+            .build();
+        assert_eq!(
+            from_def.content_hash, from_compiled.content_hash,
+            "with refinement: both builders must produce same hash"
+        );
+
+        // With a type param
+        use reify_types::{TraitBound, TraitRef};
+        let param = || TypeParam {
+            name: "T".to_string(),
+            bounds: vec![TraitBound {
+                trait_ref: TraitRef {
+                    name: "Rigid".to_string(),
+                    type_args: vec![],
+                },
+            }],
+            default: None,
+        };
+        let from_def = TraitDefBuilder::new("Container")
+            .type_param(param())
+            .build();
+        let from_compiled = CompiledTraitBuilder::new("Container")
+            .type_param(param())
+            .build();
+        assert_eq!(
+            from_def.content_hash, from_compiled.content_hash,
+            "with type_param: both builders must produce same hash"
+        );
+    }
+
     #[test]
     fn compiled_trait_builder_hash_differs_by_type_param() {
         use reify_types::{TraitBound, TraitRef, TypeParam};
