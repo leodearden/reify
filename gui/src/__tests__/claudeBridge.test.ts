@@ -412,13 +412,30 @@ describe('subscribeToClaudeEvents', () => {
   });
 });
 
-// ── Compile-time type assertion ────────────────────────────────────
+// ── Compile-time type assertions ───────────────────────────────────
 // ClaudeMessageContext (bridge.ts) must be exactly MessageContext (claudeStore.ts).
 // This catches any divergence at compile time — tsc will fail if they differ.
 import type { ClaudeMessageContext } from '../bridge';
 import type { MessageContext } from '../stores/claudeStore';
+import type {
+  TextDelta,
+  ThinkingDelta,
+  ToolCall,
+  ToolResult,
+  Done,
+  ErrorMessage,
+} from '../../sidecar/src/types';
 
 type Equals<A, B> =
   (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;
 type AssertTrue<T extends true> = T;
 type _AssertClaudeContextIsMessageContext = AssertTrue<Equals<ClaudeMessageContext, MessageContext>>;
+
+// Each Omit<Interface, 'type'> must match the payload shape used in subscribeToClaudeEvents.
+// If a field is added/removed/renamed in types.ts, tsc will fail here.
+type _AssertTextDeltaPayload = AssertTrue<Equals<Omit<TextDelta, 'type'>, { id: string; content: string }>>;
+type _AssertThinkingDeltaPayload = AssertTrue<Equals<Omit<ThinkingDelta, 'type'>, { id: string; content: string }>>;
+type _AssertToolCallPayload = AssertTrue<Equals<Omit<ToolCall, 'type'>, { id: string; tool_name: string; tool_input: Record<string, unknown> }>>;
+type _AssertToolResultPayload = AssertTrue<Equals<Omit<ToolResult, 'type'>, { id: string; tool_name: string; result: unknown }>>;
+type _AssertDonePayload = AssertTrue<Equals<Omit<Done, 'type'>, { id: string }>>;
+type _AssertErrorMessagePayload = AssertTrue<Equals<Omit<ErrorMessage, 'type'>, { id: string; message: string }>>;
