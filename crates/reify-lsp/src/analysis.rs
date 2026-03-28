@@ -652,6 +652,16 @@ mod tests {
         assert_eq!(info.kind, ValueCellKind::Let);
     }
 
+    // --- decl_name field tests ---
+
+    #[test]
+    fn find_member_decl_decl_name_populated() {
+        let source = "structure Foo {\n    param x: Scalar = 1mm\n}";
+        let ctx = AnalysisContext::new(source, &test_uri());
+        let info = ctx.find_member_decl("x").expect("x should exist");
+        assert_eq!(info.decl_name, "Foo");
+    }
+
     // --- ambiguous member name regression tests ---
 
     #[test]
