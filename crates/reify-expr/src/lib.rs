@@ -1446,13 +1446,9 @@ fn eval_div(lv: &Value, rv: &Value) -> Value {
             },
         ) => {
             let result_dim = ad.div(bd);
-            if result_dim.is_dimensionless() {
-                Value::Real(a / b)
-            } else {
-                Value::Scalar {
-                    si_value: a / b,
-                    dimension: result_dim,
-                }
+            Value::Scalar {
+                si_value: a / b,
+                dimension: result_dim,
             }
         }
         // Scalar / dimensionless
@@ -2491,15 +2487,18 @@ mod tests {
 
     #[test]
     fn div_same_dimension_yields_dimensionless() {
-        // 80mm / 20mm = 4.0 (dimensionless Real)
+        // 80mm / 20mm = 4.0 (dimensionless Scalar, consistent with eval_mul)
         let left = lit(mm_val(80.0), Type::length());
         let right = lit(mm_val(20.0), Type::length());
-        let expr = CompiledExpr::binop(BinOp::Div, left, right, Type::Real);
+        let expr = CompiledExpr::binop(BinOp::Div, left, right, Type::dimensionless_scalar());
         let values = ValueMap::new();
         let result = eval_expr(&expr, &EvalContext::simple(&values));
         match &result {
-            Value::Real(v) => assert!((v - 4.0).abs() < 1e-12),
-            other => panic!("expected Real, got {:?}", other),
+            Value::Scalar { si_value, dimension } => {
+                assert!((si_value - 4.0).abs() < 1e-12);
+                assert!(dimension.is_dimensionless());
+            }
+            other => panic!("expected Scalar{{dimensionless}}, got {:?}", other),
         }
     }
 
