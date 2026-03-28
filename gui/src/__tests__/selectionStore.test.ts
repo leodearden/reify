@@ -411,19 +411,10 @@ describe('selectionStore', () => {
 
       clearIfRemoved('X');
 
-      // clearIfRemoved calls selectEntity(null) then hoverEntity(null) sequentially.
-      // selectEntity(null) is selection-only change → immediate dispatch (hover still 'X')
-      expect(mockInvoke).toHaveBeenCalledTimes(1);
-      expect(mockInvoke).toHaveBeenCalledWith('update_selection', {
-        selectedEntity: null,
-        hoveredEntity: 'X',
-      });
-
-      mockInvoke.mockClear();
-
-      // hoverEntity(null) is hover-only change → debounced
+      // Both fields cleared atomically via batch() — no intermediate dispatch
       expect(mockInvoke).not.toHaveBeenCalled();
 
+      // Single debounced dispatch with both fields null
       vi.advanceTimersByTime(100);
       expect(mockInvoke).toHaveBeenCalledTimes(1);
       expect(mockInvoke).toHaveBeenCalledWith('update_selection', {
