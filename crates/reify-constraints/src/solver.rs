@@ -815,6 +815,40 @@ mod tests {
     }
 
     #[test]
+    fn build_trial_values_empty_params() {
+        use super::build_trial_values;
+        use reify_types::{DimensionVector, Value, ValueCellId};
+
+        let width_id = ValueCellId::new("Bracket", "width");
+
+        // Base map has one pre-existing value
+        let mut base = ValueMap::new();
+        base.insert(
+            width_id.clone(),
+            Value::Scalar {
+                si_value: 0.080,
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+
+        // Empty params slice — should return base unchanged
+        let trial = build_trial_values(&base, &[], &[]);
+
+        // Base value preserved
+        let width = trial.get(&width_id).expect("width should be preserved");
+        match width {
+            &Value::Scalar { si_value, .. } => {
+                assert!(
+                    (si_value - 0.080).abs() < 1e-15,
+                    "width should remain 0.080, got {}",
+                    si_value
+                );
+            }
+            other => panic!("expected Scalar for width, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn compute_violation_satisfied_constraint() {
         use super::compute_total_violation;
         use reify_types::{
