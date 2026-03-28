@@ -1,3 +1,4 @@
+use std::io::Write;
 use std::process::ExitCode;
 use std::sync::Arc;
 
@@ -284,10 +285,24 @@ fn cmd_lsp() -> ExitCode {
 /// Each entry is printed as `  {STATUS} {label}` where label falls back to the
 /// constraint id's Display representation when `entry.label` is `None`.
 fn report_constraint_results(
-    _results: &[reify_eval::ConstraintCheckEntry],
-    _out: &mut impl std::io::Write,
+    results: &[reify_eval::ConstraintCheckEntry],
+    out: &mut impl std::io::Write,
 ) -> bool {
-    todo!()
+    let mut all_satisfied = true;
+    for entry in results {
+        let status = match entry.satisfaction {
+            Satisfaction::Satisfied => "OK",
+            Satisfaction::Violated => {
+                all_satisfied = false;
+                "VIOLATED"
+            }
+            Satisfaction::Indeterminate => "INDETERMINATE",
+        };
+        let id_str = format!("{}", entry.id);
+        let label = entry.label.as_deref().unwrap_or(&id_str);
+        let _ = writeln!(out, "  {} {}", status, label);
+    }
+    all_satisfied
 }
 
 fn cmd_mcp_server(args: &[String]) -> ExitCode {
