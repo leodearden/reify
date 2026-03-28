@@ -679,11 +679,20 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
                 Value::Orientation { w, x, y, z } => (*w, *x, *y, *z),
                 _ => return Value::Undef,
             };
-            // Extract origin points as f64 triples
+            // Extract origin points as f64 triples with finiteness and dimension validation
             let (fx, fy, fz, f_dim) = match origin_from {
                 Value::Point(comps) if comps.len() == 3 => {
                     match (comps[0].as_f64(), comps[1].as_f64(), comps[2].as_f64()) {
-                        (Some(x), Some(y), Some(z)) => (x, y, z, comps[0].dimension()),
+                        (Some(x), Some(y), Some(z)) => {
+                            if !x.is_finite() || !y.is_finite() || !z.is_finite() {
+                                return Value::Undef;
+                            }
+                            let dim = comps[0].dimension();
+                            if comps[1].dimension() != dim || comps[2].dimension() != dim {
+                                return Value::Undef;
+                            }
+                            (x, y, z, dim)
+                        }
                         _ => return Value::Undef,
                     }
                 }
@@ -692,7 +701,16 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
             let (tx, ty, tz, t_dim) = match origin_to {
                 Value::Point(comps) if comps.len() == 3 => {
                     match (comps[0].as_f64(), comps[1].as_f64(), comps[2].as_f64()) {
-                        (Some(x), Some(y), Some(z)) => (x, y, z, comps[0].dimension()),
+                        (Some(x), Some(y), Some(z)) => {
+                            if !x.is_finite() || !y.is_finite() || !z.is_finite() {
+                                return Value::Undef;
+                            }
+                            let dim = comps[0].dimension();
+                            if comps[1].dimension() != dim || comps[2].dimension() != dim {
+                                return Value::Undef;
+                            }
+                            (x, y, z, dim)
+                        }
                         _ => return Value::Undef,
                     }
                 }
