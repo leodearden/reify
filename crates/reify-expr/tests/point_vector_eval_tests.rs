@@ -725,6 +725,31 @@ fn tensor_with_undef_component_in_add_propagates() {
 
 // --- Tensor negation ---
 
+/// Negating a rank-2 tensor (Tensor of Tensors with Real elements) returns
+/// a Tensor with all elements negated recursively.
+/// Currently fails: negate_components returns Undef for inner Tensor elements.
+#[test]
+fn negate_rank2_tensor_negates_all_inner_elements() {
+    // Build a 2×2 nested Tensor: [[1.0, 2.0], [3.0, 4.0]]
+    let operand = CompiledExpr::literal(
+        Value::Tensor(vec![
+            Value::Tensor(vec![Value::Real(1.0), Value::Real(2.0)]),
+            Value::Tensor(vec![Value::Real(3.0), Value::Real(4.0)]),
+        ]),
+        Type::tensor(2, 2, Type::Real),
+    );
+    let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::tensor(2, 2, Type::Real));
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Tensor(vec![
+            Value::Tensor(vec![Value::Real(-1.0), Value::Real(-2.0)]),
+            Value::Tensor(vec![Value::Real(-3.0), Value::Real(-4.0)]),
+        ])
+    );
+}
+
 // ─── step-1 (task 398): Value::Point / Value::Vector addition ───
 
 /// Value::Vector + Value::Vector → Value::Vector (component-wise).
