@@ -33,7 +33,7 @@
       "id": "step-2",
       "type": "test",
       "description": "Fix timing issue (Issue 2): In 'logs error to console when subscribeToClaudeEvents fails', wrap the consoleSpy.toHaveBeenCalledWith assertion (currently at line 2044) inside a waitFor block. The catch block in App.tsx initApp() executes asynchronously \u2014 waiting for app-layout to render doesn't guarantee the catch has completed. Pattern: `await waitFor(() => { expect(consoleSpy).toHaveBeenCalledWith('[claude] subscribeToClaudeEvents failed:', subscribeError); });`",
-      "status": "pending",
+      "status": "done",
       "commit": null
     },
     {

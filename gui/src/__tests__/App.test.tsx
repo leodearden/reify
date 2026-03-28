@@ -2048,10 +2048,12 @@ describe('App Claude error handling', () => {
       expect(screen.getByTestId('app-layout')).toBeTruthy();
     });
 
-    expect(consoleSpy).toHaveBeenCalledWith(
-      '[claude] subscribeToClaudeEvents failed:',
-      subscribeError,
-    );
+    await waitFor(() => {
+      expect(consoleSpy).toHaveBeenCalledWith(
+        '[claude] subscribeToClaudeEvents failed:',
+        subscribeError,
+      );
+    });
   });
 
   it('shows toast when claudeAbort fails', async () => {
