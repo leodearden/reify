@@ -4302,6 +4302,20 @@ mod tests {
     }
 
     #[test]
+    fn value_frame_ne_orientation() {
+        let frame = make_frame(make_point3_length(), make_orientation_identity());
+        let orientation = make_orientation_identity();
+        assert_ne!(frame, orientation);
+    }
+
+    #[test]
+    fn value_frame_ne_point() {
+        let frame = make_frame(make_point3_length(), make_orientation_identity());
+        let point = make_point3_length();
+        assert_ne!(frame, point);
+    }
+
+    #[test]
     #[should_panic(expected = "infer_type() cannot infer Transform")]
     fn value_transform_infer_type_panics() {
         let transform = make_transform(make_orientation_identity(), make_vector3_length());
