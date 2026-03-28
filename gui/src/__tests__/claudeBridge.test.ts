@@ -368,6 +368,44 @@ describe('subscribeToClaudeEvents', () => {
     });
   });
 
+  it('extra unknown fields in tool_call are excluded with complex nested tool_input', async () => {
+    let capturedHandler: ((event: { payload: unknown }) => void) | undefined;
+    mockListen.mockImplementation(async (eventName, handler) => {
+      if (eventName === 'claude-tool-call') {
+        capturedHandler = handler as (event: { payload: unknown }) => void;
+      }
+      return vi.fn();
+    });
+
+    const handler = vi.fn();
+    await subscribeToClaudeEvents(handler);
+
+    const complexInput = {
+      file: '/src/main.rs',
+      edits: [{ line: 10, text: 'new code' }],
+      options: { format: true, backup: false },
+    };
+
+    // Simulate tool_call with complex nested tool_input AND multiple extra top-level fields
+    capturedHandler!({
+      payload: {
+        id: 'tc-complex',
+        tool_name: 'edit_file',
+        tool_input: complexInput,
+        _debug: true,
+        _trace_id: 'abc',
+        timestamp: 99999,
+      },
+    });
+
+    expect(handler).toHaveBeenCalledWith({
+      type: 'tool_call',
+      id: 'tc-complex',
+      tool_name: 'edit_file',
+      tool_input: complexInput,
+    });
+  });
+
   it('payload type field does not override mapped event type', async () => {
     let capturedHandler: ((event: { payload: unknown }) => void) | undefined;
     mockListen.mockImplementation(async (eventName, handler) => {
