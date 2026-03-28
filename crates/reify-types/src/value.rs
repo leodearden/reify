@@ -218,6 +218,28 @@ impl Value {
         }
     }
 
+    /// Negate this value. Returns `Value::Undef` for unsupported types or on
+    /// overflow (e.g. `Int(i64::MIN)`).
+    pub fn neg(self) -> Value {
+        match self {
+            Value::Int(i) => i.checked_neg().map(Value::Int).unwrap_or(Value::Undef),
+            Value::Real(r) => Value::Real(-r),
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => Value::Scalar {
+                si_value: -si_value,
+                dimension,
+            },
+            Value::Complex { re, im, dimension } => Value::Complex {
+                re: -re,
+                im: -im,
+                dimension,
+            },
+            _ => Value::Undef,
+        }
+    }
+
     /// Get the dimension of this value (DIMENSIONLESS for non-scalar types).
     pub fn dimension(&self) -> DimensionVector {
         match self {
