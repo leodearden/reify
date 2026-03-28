@@ -89,57 +89,6 @@ impl TauriToolContext {
         }
     }
 
-    /// Create a new TauriToolContext with no event emitter and empty selection.
-    pub fn new(engine: Arc<Mutex<EngineSession>>) -> Self {
-        Self {
-            engine,
-            event_emitter: None,
-            selection: Arc::new(RwLock::new(SelectionInfo {
-                selected_entity: None,
-                hovered_entity: None,
-            })),
-        }
-    }
-
-    /// Create a new TauriToolContext with a shared selection state.
-    pub fn new_with_selection(
-        engine: Arc<Mutex<EngineSession>>,
-        selection: Arc<RwLock<SelectionInfo>>,
-    ) -> Self {
-        Self {
-            engine,
-            event_emitter: None,
-            selection,
-        }
-    }
-
-    /// Create a new TauriToolContext with an event emitter for navigation events.
-    pub fn with_event_emitter(
-        engine: Arc<Mutex<EngineSession>>,
-        emitter: impl Fn(&str, serde_json::Value) + Send + Sync + 'static,
-    ) -> Self {
-        Self {
-            engine,
-            event_emitter: Some(Box::new(emitter)),
-            selection: Arc::new(RwLock::new(SelectionInfo {
-                selected_entity: None,
-                hovered_entity: None,
-            })),
-        }
-    }
-
-    /// Create a new TauriToolContext with both an event emitter and shared selection state.
-    pub fn with_event_emitter_and_selection(
-        engine: Arc<Mutex<EngineSession>>,
-        emitter: impl Fn(&str, serde_json::Value) + Send + Sync + 'static,
-        selection: Arc<RwLock<SelectionInfo>>,
-    ) -> Self {
-        Self {
-            engine,
-            event_emitter: Some(Box::new(emitter)),
-            selection,
-        }
-    }
 }
 
 impl ReifyToolContext for TauriToolContext {
