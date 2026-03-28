@@ -172,18 +172,7 @@ impl AnalysisContext {
                 }
                 _ => continue,
             };
-            let param_count = members
-                .iter()
-                .filter(|m| matches!(m, reify_syntax::MemberDecl::Param(_)))
-                .count();
-            let let_count = members
-                .iter()
-                .filter(|m| matches!(m, reify_syntax::MemberDecl::Let(_)))
-                .count();
-            let constraint_count = members
-                .iter()
-                .filter(|m| matches!(m, reify_syntax::MemberDecl::Constraint(_)))
-                .count();
+            let (param_count, let_count, constraint_count) = count_members_recursive(members);
             result.push((name, param_count, let_count, constraint_count, kind));
         }
         result
@@ -225,6 +214,35 @@ pub fn find_named_member_span<'a>(
         }
     }
     None
+}
+
+/// Recursively count Param, Let, and Constraint members, including those
+/// nested inside `GuardedGroup.members` and `GuardedGroup.else_members`.
+///
+/// Returns `(param_count, let_count, constraint_count)`.
+pub fn count_members_recursive(members: &[reify_syntax::MemberDecl]) -> (usize, usize, usize) {
+    let mut params = 0;
+    let mut lets = 0;
+    let mut constraints = 0;
+    for member in members {
+        match member {
+            reify_syntax::MemberDecl::Param(_) => params += 1,
+            reify_syntax::MemberDecl::Let(_) => lets += 1,
+            reify_syntax::MemberDecl::Constraint(_) => constraints += 1,
+            reify_syntax::MemberDecl::GuardedGroup(g) => {
+                let (p, l, c) = count_members_recursive(&g.members);
+                params += p;
+                lets += l;
+                constraints += c;
+                let (p, l, c) = count_members_recursive(&g.else_members);
+                params += p;
+                lets += l;
+                constraints += c;
+            }
+            _ => {}
+        }
+    }
+    (params, lets, constraints)
 }
 
 /// Format a `Value` for user-friendly display in hover tooltips.
@@ -354,6 +372,56 @@ mod tests {
         assert!(names.contains(&"volume"));
     }
 
+    // --- member_names guarded-group regression tests ---
+
+    #[test]
+    fn member_names_includes_guarded_group_members() {
+        let source = r#"structure S {
+    param cond : Bool = true
+    where cond {
+        param guarded_x : Scalar = 5mm
+    }
+}"#;
+        let ctx = AnalysisContext::new(source, &test_uri());
+        let members = ctx.member_names();
+        let names: Vec<&str> = members.iter().map(|(n, _, _)| *n).collect();
+        assert!(
+            names.contains(&"cond"),
+            "should include top-level param 'cond', got: {names:?}"
+        );
+        assert!(
+            names.contains(&"guarded_x"),
+            "should include guarded-group param 'guarded_x', got: {names:?}"
+        );
+    }
+
+    #[test]
+    fn member_names_includes_else_block_members() {
+        let source = r#"structure S {
+    param cond : Bool = true
+    where cond {
+        param when_true : Scalar = 1mm
+    } else {
+        param when_false : Scalar = 2mm
+    }
+}"#;
+        let ctx = AnalysisContext::new(source, &test_uri());
+        let members = ctx.member_names();
+        let names: Vec<&str> = members.iter().map(|(n, _, _)| *n).collect();
+        assert!(
+            names.contains(&"cond"),
+            "should include top-level param 'cond', got: {names:?}"
+        );
+        assert!(
+            names.contains(&"when_true"),
+            "should include where-branch param 'when_true', got: {names:?}"
+        );
+        assert!(
+            names.contains(&"when_false"),
+            "should include else-branch param 'when_false', got: {names:?}"
+        );
+    }
+
     // --- structure_names tests ---
 
     #[test]
@@ -388,6 +456,89 @@ mod tests {
         assert_eq!(p1, 1);
         assert_eq!(l1, 1);
         assert_eq!(c1, 1);
+    }
+
+    #[test]
+    fn structure_names_counts_nested_where_blocks() {
+        let source = r#"structure S {
+    param a : Bool = true
+    param b : Bool = true
+    where a {
+        where b {
+            param deep : Scalar = 1mm
+        }
+    }
+}"#;
+        let ctx = AnalysisContext::new(source, &test_uri());
+        let structs = ctx.structure_names();
+        assert_eq!(structs.len(), 1);
+        let (_name, param_count, _let_count, _constraint_count, _kind) = structs[0];
+        // Should count: a + b + deep = 3 params
+        assert_eq!(
+            param_count, 3,
+            "expected 3 params (a, b, deep), got {param_count}"
+        );
+    }
+
+    #[test]
+    fn structure_names_counts_else_branch_members() {
+        let source = r#"structure S {
+    param cond : Bool = true
+    where cond {
+        param when_true : Scalar = 1mm
+    } else {
+        let fallback = 2
+    }
+}"#;
+        let ctx = AnalysisContext::new(source, &test_uri());
+        let structs = ctx.structure_names();
+        assert_eq!(structs.len(), 1);
+        let (_name, param_count, let_count, _constraint_count, _kind) = structs[0];
+        // Should count: cond + when_true = 2 params
+        assert_eq!(
+            param_count, 2,
+            "expected 2 params (cond, when_true), got {param_count}"
+        );
+        // Should count: fallback = 1 let (from else branch)
+        assert_eq!(
+            let_count, 1,
+            "expected 1 let (fallback in else branch), got {let_count}"
+        );
+    }
+
+    #[test]
+    fn structure_names_counts_guarded_group_members() {
+        // Bug: structure_names() only counts top-level members, missing those
+        // inside where-blocks. This test expects the CORRECT (recursive) counts.
+        let source = r#"structure S {
+    param a : Bool = true
+    param b : Scalar = 1mm
+    where a {
+        param guarded_x : Scalar = 5mm
+        let guarded_y = 2
+    }
+    constraint b > 0mm
+}"#;
+        let ctx = AnalysisContext::new(source, &test_uri());
+        let structs = ctx.structure_names();
+        assert_eq!(structs.len(), 1);
+        let (name, param_count, let_count, constraint_count, _kind) = structs[0];
+        assert_eq!(name, "S");
+        // Should count: a + b + guarded_x = 3 params
+        assert_eq!(
+            param_count, 3,
+            "expected 3 params (a, b, guarded_x), got {param_count}"
+        );
+        // Should count: guarded_y = 1 let
+        assert_eq!(
+            let_count, 1,
+            "expected 1 let (guarded_y), got {let_count}"
+        );
+        // Should count: b > 0mm = 1 constraint
+        assert_eq!(
+            constraint_count, 1,
+            "expected 1 constraint, got {constraint_count}"
+        );
     }
 
     // --- get_value tests ---

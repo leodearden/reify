@@ -7,12 +7,14 @@ fn fixture_path(name: &str) -> String {
 
 #[test]
 fn build_parse_error_exits_failure() {
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let output_path = dir.path().join("out.step");
     let output = Command::new(env!("CARGO_BIN_EXE_reify"))
         .args([
             "build",
             &fixture_path("bracket_parse_error.ri"),
             "-o",
-            "/tmp/reify_test_parse_error_out.step",
+            output_path.to_str().unwrap(),
         ])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
@@ -34,16 +36,14 @@ fn build_parse_error_exits_failure() {
 
 #[test]
 fn build_violating_bracket_exits_failure() {
-    let output_path = "/tmp/reify_test_violating_build_out.step";
-    // Pre-cleanup: remove any stale file from a prior panicked run to avoid
-    // a false positive on the exists() assertion below.
-    let _ = std::fs::remove_file(output_path);
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let output_path = dir.path().join("out.step");
     let output = Command::new(env!("CARGO_BIN_EXE_reify"))
         .args([
             "build",
             &fixture_path("bracket_violating.ri"),
             "-o",
-            output_path,
+            output_path.to_str().unwrap(),
         ])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
@@ -68,19 +68,22 @@ fn build_violating_bracket_exits_failure() {
     );
     // Geometry file should still be written even when constraints are violated
     assert!(
-        std::path::Path::new(output_path).exists(),
+        output_path.exists(),
         "geometry file should still be written even with constraint violations"
     );
-    // Clean up
-    let _ = std::fs::remove_file(output_path);
 }
 
 #[test]
 fn build_valid_bracket_exits_success() {
-    let output_path = "/tmp/reify_test_valid_build_out.step";
-    let _ = std::fs::remove_file(output_path);
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let output_path = dir.path().join("out.step");
     let output = Command::new(env!("CARGO_BIN_EXE_reify"))
-        .args(["build", &fixture_path("bracket.ri"), "-o", output_path])
+        .args([
+            "build",
+            &fixture_path("bracket.ri"),
+            "-o",
+            output_path.to_str().unwrap(),
+        ])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -103,21 +106,21 @@ fn build_valid_bracket_exits_success() {
         "stdout should NOT contain 'VIOLATED' for valid bracket, got: {stdout}"
     );
     assert!(
-        std::path::Path::new(output_path).exists(),
+        output_path.exists(),
         "geometry file should be written on success"
     );
-    // Clean up
-    let _ = std::fs::remove_file(output_path);
 }
 
 #[test]
 fn build_compile_error_exits_failure() {
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let output_path = dir.path().join("out.step");
     let output = Command::new(env!("CARGO_BIN_EXE_reify"))
         .args([
             "build",
             &fixture_path("bracket_compile_error.ri"),
             "-o",
-            "/tmp/reify_test_compile_error_out.step",
+            output_path.to_str().unwrap(),
         ])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())

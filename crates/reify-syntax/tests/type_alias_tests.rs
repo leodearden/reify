@@ -320,3 +320,152 @@ fn parse_dimensional_type_missing_both_operands_no_panic() {
         errors,
     );
 }
+
+// ── Error case: missing name ─────────────────────────────────────
+
+#[test]
+fn parse_type_alias_missing_name_no_panic() {
+    // `type = Force` — name is absent.
+    // Should NOT panic. Should produce parse error(s), no valid TypeAlias emitted.
+    let source = "type = Force";
+    let (decls, errors) = parse_decls(source);
+    let has_type_alias = decls.iter().any(|d| matches!(d, Declaration::TypeAlias(_)));
+    assert!(
+        !has_type_alias || !errors.is_empty(),
+        "expected either no TypeAlias or at least one error for malformed input, got decls={:?}, errors={:?}",
+        decls,
+        errors,
+    );
+}
+
+// ── Error case: missing '=' ──────────────────────────────────────
+
+#[test]
+fn parse_type_alias_missing_equals_no_panic() {
+    // `type Foo Force` — missing '=' between name and RHS.
+    // Should NOT panic. Should produce parse error(s), no valid TypeAlias emitted.
+    let source = "type Foo Force";
+    let (decls, errors) = parse_decls(source);
+    let has_type_alias = decls.iter().any(|d| matches!(d, Declaration::TypeAlias(_)));
+    assert!(
+        !has_type_alias || !errors.is_empty(),
+        "expected either no TypeAlias or at least one error for malformed input, got decls={:?}, errors={:?}",
+        decls,
+        errors,
+    );
+}
+
+// ── Error case: empty RHS ────────────────────────────────────────
+
+#[test]
+fn parse_type_alias_empty_rhs_no_panic() {
+    // `type Foo =` — RHS is empty (no type expression after '=').
+    // Should NOT panic. Tree-sitter error recovery produces a zero-width node
+    // that gets lowered to a TypeAlias with an empty-name type_expr.
+    let source = "type Foo =";
+    let (decls, errors) = parse_decls(source);
+    // Key invariant: no panic. The parser may produce a TypeAlias with an
+    // empty type_expr name (due to Tree-sitter's error recovery providing a
+    // zero-width node rather than None), or errors, or both.
+    let ta = decls.iter().find_map(|d| match d {
+        Declaration::TypeAlias(ta) => Some(ta),
+        _ => None,
+    });
+    if let Some(ta) = ta {
+        // If a TypeAlias is produced, it should at least have the correct name
+        assert_eq!(ta.name, "Foo");
+        // Document that the type_expr has an empty name (zero-width recovery node)
+        assert!(
+            ta.type_expr.name.is_empty() || !errors.is_empty(),
+            "expected empty type_expr name or parse errors for empty RHS, got type_expr={:?}, errors={:?}",
+            ta.type_expr,
+            errors,
+        );
+    }
+}
+
+// ── Type params combined with dimensional RHS ────────────────────
+
+#[test]
+fn parse_type_alias_type_params_with_dimensional_rhs() {
+    // Combines type parameters and dimensional expressions — previously untested together.
+    let source = "type Velocity<T> = T / Time";
+    let (decls, errors) = parse_decls(source);
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+    assert_eq!(decls.len(), 1);
+
+    match &decls[0] {
+        Declaration::TypeAlias(ta) => {
+            assert_eq!(ta.name, "Velocity");
+            // Type parameter
+            assert_eq!(ta.type_params.len(), 1);
+            assert_eq!(ta.type_params[0].name, "T");
+            // Dimensional expression: T / Time
+            assert_eq!(ta.type_expr.name, "/");
+            assert_eq!(ta.type_expr.type_args.len(), 2);
+            assert_eq!(ta.type_expr.type_args[0].name, "T");
+            assert_eq!(ta.type_expr.type_args[1].name, "Time");
+        }
+        other => panic!("expected Declaration::TypeAlias, got {:?}", other),
+    }
+}
+
+// ── Nested parameterized types ───────────────────────────────────
+
+#[test]
+fn parse_type_alias_nested_parameterized_types() {
+    // Nested type arguments: Map<String, List<Int>> — previously only single-level tested.
+    let source = "type Registry = Map<String, List<Int>>";
+    let (decls, errors) = parse_decls(source);
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+    assert_eq!(decls.len(), 1);
+
+    match &decls[0] {
+        Declaration::TypeAlias(ta) => {
+            assert_eq!(ta.name, "Registry");
+            assert_eq!(ta.type_expr.name, "Map");
+            assert_eq!(ta.type_expr.type_args.len(), 2);
+            // First type arg: String (simple)
+            assert_eq!(ta.type_expr.type_args[0].name, "String");
+            assert!(ta.type_expr.type_args[0].type_args.is_empty());
+            // Second type arg: List<Int> (nested parameterized)
+            assert_eq!(ta.type_expr.type_args[1].name, "List");
+            assert_eq!(ta.type_expr.type_args[1].type_args.len(), 1);
+            assert_eq!(ta.type_expr.type_args[1].type_args[0].name, "Int");
+        }
+        other => panic!("expected Declaration::TypeAlias, got {:?}", other),
+    }
+}
+
+// ── Mixed operator precedence ────────────────────────────────────
+
+#[test]
+fn parse_type_alias_mixed_operator_precedence() {
+    // Mass / Time * Scalar — left-associative with equal precedence.
+    // Expected parse: (Mass / Time) * Scalar — outer node is '*'.
+    // This tests '/' followed by '*' (the existing chained test uses '* / /').
+    let source = "type X = Mass / Time * Scalar";
+    let (decls, errors) = parse_decls(source);
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+    assert_eq!(decls.len(), 1);
+
+    match &decls[0] {
+        Declaration::TypeAlias(ta) => {
+            assert_eq!(ta.name, "X");
+            // Outer: (Mass / Time) * Scalar
+            assert_eq!(ta.type_expr.name, "*");
+            assert_eq!(ta.type_expr.type_args.len(), 2);
+
+            // Right operand of outer *: Scalar
+            assert_eq!(ta.type_expr.type_args[1].name, "Scalar");
+
+            // Left operand of outer *: Mass / Time
+            let div = &ta.type_expr.type_args[0];
+            assert_eq!(div.name, "/");
+            assert_eq!(div.type_args.len(), 2);
+            assert_eq!(div.type_args[0].name, "Mass");
+            assert_eq!(div.type_args[1].name, "Time");
+        }
+        other => panic!("expected Declaration::TypeAlias, got {:?}", other),
+    }
+}

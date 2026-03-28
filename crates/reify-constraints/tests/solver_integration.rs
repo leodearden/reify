@@ -543,10 +543,7 @@ fn optimize_with_feasible_initial_point() {
             param_type: Type::length(),
             bounds: Some((0.005, 0.1)), // 5mm–100mm, floor above constraint
         }],
-        constraints: vec![
-            (cnid("Bracket", 0), gt_expr),
-            (cnid("Bracket", 1), lt_expr),
-        ],
+        constraints: vec![(cnid("Bracket", 0), gt_expr), (cnid("Bracket", 1), lt_expr)],
         current_values: current,
         objective: Some(objective),
         functions: vec![],
@@ -555,11 +552,7 @@ fn optimize_with_feasible_initial_point() {
     let result = solver.solve(&problem);
     match result {
         SolveResult::Solved { values } => {
-            let si = values
-                .get(&thickness_id)
-                .unwrap()
-                .as_f64()
-                .unwrap();
+            let si = values.get(&thickness_id).unwrap().as_f64().unwrap();
             // Minimize should push thickness toward 5mm (auto param lower bound),
             // which is safely above the 2mm constraint.
             assert!(
@@ -606,10 +599,7 @@ fn maximize_with_feasible_initial_point() {
             param_type: Type::length(),
             bounds: Some((0.001, 0.050)), // upper bound 50mm < constraint 80mm
         }],
-        constraints: vec![
-            (cnid("Part", 0), gt_expr),
-            (cnid("Part", 1), lt_expr),
-        ],
+        constraints: vec![(cnid("Part", 0), gt_expr), (cnid("Part", 1), lt_expr)],
         current_values: current,
         objective: Some(objective),
         functions: vec![],
@@ -676,10 +666,7 @@ fn warm_start_falls_back_to_initial_when_optimizer_drifts_infeasible() {
             // Wide bounds [0, 100mm] — optimizer CAN explore below 5mm
             bounds: Some((0.0, 0.1)),
         }],
-        constraints: vec![
-            (cnid("Part", 0), gt_expr),
-            (cnid("Part", 1), lt_expr),
-        ],
+        constraints: vec![(cnid("Part", 0), gt_expr), (cnid("Part", 1), lt_expr)],
         current_values: current,
         objective: Some(objective),
         functions: vec![],
@@ -735,10 +722,7 @@ fn infeasible_with_objective_still_detected() {
     let result = solver.solve(&problem);
     match result {
         SolveResult::Infeasible { diagnostics } => {
-            assert!(
-                !diagnostics.is_empty(),
-                "should have diagnostic messages"
-            );
+            assert!(!diagnostics.is_empty(), "should have diagnostic messages");
             let msg = &diagnostics[0].message;
             assert!(
                 msg.contains("residual"),
@@ -791,10 +775,7 @@ fn warm_start_optimizes_when_possible() {
             param_type: Type::length(),
             bounds: Some((0.005, 0.1)), // 5mm–100mm, lower bound above constraint floor
         }],
-        constraints: vec![
-            (cnid("Part", 0), gt_expr),
-            (cnid("Part", 1), lt_expr),
-        ],
+        constraints: vec![(cnid("Part", 0), gt_expr), (cnid("Part", 1), lt_expr)],
         current_values: current,
         objective: Some(objective),
         functions: vec![],
@@ -893,10 +874,7 @@ fn warm_start_scales_iterations_with_dimension() {
                 );
             }
         }
-        other => panic!(
-            "expected Solved for 8-param warm-start, got {:?}",
-            other
-        ),
+        other => panic!("expected Solved for 8-param warm-start, got {:?}", other),
     }
 }
 
@@ -1016,15 +994,45 @@ fn warm_start_feasible_no_objective_early_exit() {
 
     // All params start centered at 15mm — solidly feasible
     let mut current = ValueMap::new();
-    current.insert(x_id.clone(), Value::Scalar { si_value: 0.015, dimension: DimensionVector::LENGTH });
-    current.insert(y_id.clone(), Value::Scalar { si_value: 0.015, dimension: DimensionVector::LENGTH });
-    current.insert(z_id.clone(), Value::Scalar { si_value: 0.015, dimension: DimensionVector::LENGTH });
+    current.insert(
+        x_id.clone(),
+        Value::Scalar {
+            si_value: 0.015,
+            dimension: DimensionVector::LENGTH,
+        },
+    );
+    current.insert(
+        y_id.clone(),
+        Value::Scalar {
+            si_value: 0.015,
+            dimension: DimensionVector::LENGTH,
+        },
+    );
+    current.insert(
+        z_id.clone(),
+        Value::Scalar {
+            si_value: 0.015,
+            dimension: DimensionVector::LENGTH,
+        },
+    );
 
     let problem = ResolutionProblem {
         auto_params: vec![
-            AutoParam { id: x_id.clone(), param_type: Type::length(), bounds: Some((0.001, 0.1)) },
-            AutoParam { id: y_id.clone(), param_type: Type::length(), bounds: Some((0.001, 0.1)) },
-            AutoParam { id: z_id.clone(), param_type: Type::length(), bounds: Some((0.001, 0.1)) },
+            AutoParam {
+                id: x_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.1)),
+            },
+            AutoParam {
+                id: y_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.1)),
+            },
+            AutoParam {
+                id: z_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.1)),
+            },
         ],
         constraints,
         current_values: current,
@@ -1096,10 +1104,7 @@ fn infeasible_initial_not_rescued_by_fallback() {
     let result = solver.solve(&problem);
     match result {
         SolveResult::Infeasible { diagnostics } => {
-            assert!(
-                !diagnostics.is_empty(),
-                "should have diagnostic messages"
-            );
+            assert!(!diagnostics.is_empty(), "should have diagnostic messages");
             let msg = &diagnostics[0].message;
             assert!(
                 msg.contains("residual"),
