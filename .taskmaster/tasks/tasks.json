@@ -11048,7 +11048,7 @@
         "description": "Several poison recovery tests only assert is_ok() without verifying that writes actually succeeded. Add deeper assertions to catch silent no-op writes on poison recovery.",
         "details": "In crates/reify-runtime/tests/concurrent_eval.rs:\n\n1. poison_evaluate::evaluate_recovers_poisoned_snapshot_values (line ~1855):\n   After evaluate(), read back snapshot_values and assert the entry was written.\n\n2. poison_evaluate::evaluate_recovers_poisoned_results (line ~1875):\n   After evaluate(), call adapter.take_results() and assert len==1 with correct node.\n\n3. poison_panics::build_result_shared_recovers_from_poisoned_results_lock (line ~1737):\n   Add: let edit_result = result.unwrap(); assert!(edit_result.node_results.is_empty());\n\n4. poison_panics::into_result_recovers_from_poisoned_results_lock (line ~1786):\n   Add: let edit_result = result.unwrap(); assert!(edit_result.node_results.is_empty());\n\nThese 4 tests currently only verify the call doesn't panic, but don't confirm the data was actually accessible/correct after recovery. This matches the project convention that logic errors should be noisy (feedback_silent_defaults_pattern).\n\nmemory_hints:\n  search: \"poison recovery test assertions\"\n  entities: [\"ConcurrentEvalAdapter\"]",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -11060,7 +11060,8 @@
           "modules": [
             "crates/reify-runtime/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-03-28T04:26:45.533Z"
       },
       {
         "id": "545",
@@ -13200,7 +13201,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T04:26:45.421Z",
+      "lastModified": "2026-03-28T04:26:45.533Z",
       "taskCount": 656,
       "completedCount": 309,
       "tags": [
