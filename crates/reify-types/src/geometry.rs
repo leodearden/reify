@@ -373,4 +373,12 @@ mod tests {
             _ => panic!("expected Sweep variant"),
         }
     }
+
+    #[test]
+    fn geometry_handle_id_is_ordered() {
+        assert!(GeometryHandleId(1) < GeometryHandleId(2));
+        assert!(GeometryHandleId(5) > GeometryHandleId(3));
+        assert!(GeometryHandleId(7) <= GeometryHandleId(7));
+        assert!(GeometryHandleId(7) >= GeometryHandleId(7));
+    }
 }
