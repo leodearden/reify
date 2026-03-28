@@ -14666,6 +14666,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 714,
+        "title": "Add DeterminacyState assertions and round-trip test for Auto param guard transitions",
+        "description": "Two test coverage gaps in guard_eval.rs for the Auto-param guard fix:\n\n1. Tests only verify `edit_result.values` (working map) but never check `engine.snapshot().values` for the Auto param's DeterminacyState after guard deactivation. A stale Determined/Undetermined state could cause downstream incremental issues.\n\n2. No round-trip test (true→false→true or false→true→false). After deactivation preserves the solver value, re-activation may re-invoke the solver — verify the Auto param ends up correctly re-resolved, not stale.\n\nMemory hints: search \"guard deactivation Auto param\", \"DeterminacyState\", entity: edit_param",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -14678,7 +14689,7 @@
       ],
       "created": "2026-03-28T09:20:59.351Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-28T09:20:59.392Z"
+      "updated": "2026-03-28T09:21:05.037Z"
     }
   }
 }
