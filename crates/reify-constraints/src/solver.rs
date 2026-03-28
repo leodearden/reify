@@ -7,7 +7,7 @@ use argmin::solver::neldermead::NelderMead;
 use reify_types::{
     AutoParam, BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, ConstraintNodeId,
     ConstraintSolver, DimensionVector, OptimizationObjective, ResolutionProblem, SolveResult, Type,
-    Value, ValueMap,
+    Value, ValueCellId, ValueMap,
 };
 
 /// Maximum iterations for Nelder-Mead.
@@ -48,20 +48,34 @@ fn dimension_of(ty: &Type) -> DimensionVector {
     }
 }
 
+/// Zip auto params with f64 values into a HashMap<ValueCellId, Value>.
+///
+/// Each param is mapped to a Value::Scalar with the correct SI value
+/// and dimension. Used by early-exit, fallback, and solution construction paths.
+fn params_to_value_map(params: &[AutoParam], x: &[f64]) -> HashMap<ValueCellId, Value> {
+    params
+        .iter()
+        .zip(x.iter())
+        .map(|(param, &val)| {
+            (
+                param.id.clone(),
+                Value::Scalar {
+                    si_value: val,
+                    dimension: dimension_of(&param.param_type),
+                },
+            )
+        })
+        .collect()
+}
+
 /// Build a ValueMap from a base map with trial auto-param values inserted.
 ///
 /// Clones the base map (O(1) via PersistentMap structural sharing) and
 /// inserts each auto param as a Value::Scalar with the correct dimension.
 fn build_trial_values(base: &ValueMap, params: &[AutoParam], x: &[f64]) -> ValueMap {
     let mut values = base.clone();
-    for (param, &val) in params.iter().zip(x.iter()) {
-        values.insert(
-            param.id.clone(),
-            Value::Scalar {
-                si_value: val,
-                dimension: dimension_of(&param.param_type),
-            },
-        );
+    for (id, value) in params_to_value_map(params, x) {
+        values.insert(id, value);
     }
     values
 }
@@ -499,17 +513,9 @@ impl ConstraintSolver for DimensionalSolver {
                 n_params,
                 "initial point already feasible with no objective; returning early"
             );
-            let mut values = HashMap::new();
-            for (param, &val) in problem.auto_params.iter().zip(initial.iter()) {
-                values.insert(
-                    param.id.clone(),
-                    Value::Scalar {
-                        si_value: val,
-                        dimension: dimension_of(&param.param_type),
-                    },
-                );
-            }
-            return SolveResult::Solved { values };
+            return SolveResult::Solved {
+                values: params_to_value_map(&problem.auto_params, &initial),
+            };
         }
 
         // Capture initial point as fallback values before optimization.
@@ -657,16 +663,7 @@ impl ConstraintSolver for DimensionalSolver {
         }
 
         // Build solution values
-        let mut values = HashMap::new();
-        for (param, &val) in problem.auto_params.iter().zip(clamped.iter()) {
-            values.insert(
-                param.id.clone(),
-                Value::Scalar {
-                    si_value: val,
-                    dimension: dimension_of(&param.param_type),
-                },
-            );
-        }
+        let values = params_to_value_map(&problem.auto_params, &clamped);
 
         // NOTE: Solved indicates constraint satisfaction but does NOT guarantee objective
         // optimality. The Nelder-Mead optimizer may have hit the iteration limit without
@@ -2072,7 +2069,7 @@ mod tests {
                     si_value
                 );
                 assert_eq!(
-                    dimension,
+                    *dimension,
                     DimensionVector::LENGTH,
                     "length dimension should be LENGTH"
                 );
@@ -2092,7 +2089,7 @@ mod tests {
                     si_value
                 );
                 assert_eq!(
-                    dimension,
+                    *dimension,
                     DimensionVector::ANGLE,
                     "angle dimension should be ANGLE"
                 );
