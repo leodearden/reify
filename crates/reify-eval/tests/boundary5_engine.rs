@@ -593,6 +593,43 @@ fn sub_component_missing_structure_skipped_gracefully() {
     );
 }
 
+/// Param with no default evaluates to (Undef, DeterminacyState::Undetermined) in snapshot.
+#[test]
+fn eval_param_no_default_undef_undetermined() {
+    use reify_types::{DeterminacyState, ModulePath, Type, ValueCellId};
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param("S", "x", Type::Int, None)
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let result = engine.eval(&module);
+
+    // x should be Undef in the values map
+    let x_id = ValueCellId::new("S", "x");
+    let x_val = result.values.get(&x_id).expect("x should be in values");
+    assert!(
+        x_val.is_undef(),
+        "param x with no default should be Undef, got {:?}",
+        x_val
+    );
+
+    // Check snapshot determinacy
+    let snapshot = engine.snapshot().expect("snapshot should exist after eval");
+    let (x_snap_val, x_det) = snapshot.values.get(&x_id).expect("x in snapshot");
+    assert!(x_snap_val.is_undef(), "snapshot x should be Undef");
+    assert_eq!(
+        *x_det,
+        DeterminacyState::Undetermined,
+        "snapshot x determinacy should be Undetermined"
+    );
+}
+
 /// Engine-level verification: stdlib functions evaluate correctly in let-bindings.
 #[test]
 fn engine_eval_stdlib_function_in_let() {
