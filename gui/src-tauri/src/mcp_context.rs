@@ -29,58 +29,66 @@ pub struct TauriToolContext {
     selection: Arc<RwLock<SelectionInfo>>,
 }
 
-impl TauriToolContext {
-    /// Create a new TauriToolContext with no event emitter and empty selection.
-    pub fn new(engine: Arc<Mutex<EngineSession>>) -> Self {
-        Self {
-            engine,
-            event_emitter: None,
-            selection: Arc::new(RwLock::new(SelectionInfo {
-                selected_entity: None,
-                hovered_entity: None,
-            })),
-        }
+/// Builder for [`TauriToolContext`].
+///
+/// Use [`TauriToolContext::builder`] to create a builder, then chain
+/// `.with_selection(...)` and/or `.with_event_emitter(...)` before calling `.build()`.
+pub struct TauriToolContextBuilder {
+    engine: Arc<Mutex<EngineSession>>,
+    event_emitter: Option<EventEmitter>,
+    selection: Option<Arc<RwLock<SelectionInfo>>>,
+}
+
+impl TauriToolContextBuilder {
+    /// Set a shared selection state for the context.
+    ///
+    /// If not called, `build()` creates a fresh unshared `Arc<RwLock<SelectionInfo>>`
+    /// with empty fields.
+    pub fn with_selection(mut self, selection: Arc<RwLock<SelectionInfo>>) -> Self {
+        self.selection = Some(selection);
+        self
     }
 
-    /// Create a new TauriToolContext with a shared selection state.
-    pub fn new_with_selection(
-        engine: Arc<Mutex<EngineSession>>,
-        selection: Arc<RwLock<SelectionInfo>>,
-    ) -> Self {
-        Self {
-            engine,
-            event_emitter: None,
-            selection,
-        }
-    }
-
-    /// Create a new TauriToolContext with an event emitter for navigation events.
+    /// Set an event emitter for navigation events (`focus_entity`, `navigate_to_source`).
+    ///
+    /// The closure is boxed into an [`EventEmitter`] during `build()`.
     pub fn with_event_emitter(
-        engine: Arc<Mutex<EngineSession>>,
+        mut self,
         emitter: impl Fn(&str, serde_json::Value) + Send + Sync + 'static,
     ) -> Self {
-        Self {
-            engine,
-            event_emitter: Some(Box::new(emitter)),
-            selection: Arc::new(RwLock::new(SelectionInfo {
-                selected_entity: None,
-                hovered_entity: None,
-            })),
-        }
+        self.event_emitter = Some(Box::new(emitter));
+        self
     }
 
-    /// Create a new TauriToolContext with both an event emitter and shared selection state.
-    pub fn with_event_emitter_and_selection(
-        engine: Arc<Mutex<EngineSession>>,
-        emitter: impl Fn(&str, serde_json::Value) + Send + Sync + 'static,
-        selection: Arc<RwLock<SelectionInfo>>,
-    ) -> Self {
-        Self {
-            engine,
-            event_emitter: Some(Box::new(emitter)),
+    /// Finalize the builder and create a [`TauriToolContext`].
+    ///
+    /// If no selection was provided, creates a fresh unshared `Arc<RwLock<SelectionInfo>>`
+    /// with empty fields (not connected to the frontend).
+    pub fn build(self) -> TauriToolContext {
+        let selection = self.selection.unwrap_or_else(|| {
+            Arc::new(RwLock::new(SelectionInfo {
+                selected_entity: None,
+                hovered_entity: None,
+            }))
+        });
+        TauriToolContext {
+            engine: self.engine,
+            event_emitter: self.event_emitter,
             selection,
         }
     }
+}
+
+impl TauriToolContext {
+    /// Create a [`TauriToolContextBuilder`] with the given engine.
+    pub fn builder(engine: Arc<Mutex<EngineSession>>) -> TauriToolContextBuilder {
+        TauriToolContextBuilder {
+            engine,
+            event_emitter: None,
+            selection: None,
+        }
+    }
+
 }
 
 impl ReifyToolContext for TauriToolContext {

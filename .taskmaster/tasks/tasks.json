@@ -7440,13 +7440,13 @@
         "description": "Two small robustness fixes for the Frame type added in task 234:\n\n1. **Explicit dimension() arm**: Add `Value::Frame { .. } => DimensionVector::DIMENSIONLESS` to the `dimension()` match in `crates/reify-types/src/value.rs:172` instead of relying on the wildcard `_ =>` arm. All other semantic properties of Frame have explicit arms; dimension() is the odd one out. This prevents breakage if the wildcard is ever tightened.\n\n2. **Noisy infer_value_type**: Change `Value::Frame { .. } => Type::Frame(3)` in `crates/reify-test-support/src/builders.rs:55` to `panic!(\"literal() cannot infer Frame dimensionality; use CompiledExpr::literal(value, type) directly.\")` — matching the established pattern for Point/Vector/Tensor/Matrix. The current code silently returns Frame(3) regardless of actual dimensionality, violating the project convention that logic errors should be noisy.\n\nmemory_hints: search \"silent defaults noisy errors convention\", entity \"Value::Frame\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [
           "234"
         ],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-03-28T05:00:23.736Z",
+        "updatedAt": "2026-03-28T05:33:10.287Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -7946,11 +7946,11 @@
         "description": "Extract a `negate_value(v: Value) -> Value` helper in reify-expr to replace the current pattern in eval_unop where nested Tensor elements are wrapped in `CompiledExpr::literal(c, Type::Real)` to recurse. This has multiple issues:\n\n1. **Wrong type annotation**: Type::Real is passed for a Value::Tensor, violating CompiledExpr's type contract\n2. **Unnecessary allocation**: One CompiledExpr heap allocation per matrix row\n3. **Silent Undef for unexpected elements**: The `_ => Value::Undef` catch-all silently converts Value::Matrix elements to Undef instead of canonicalizing them first\n4. **Confusing code path**: Re-enters eval_expr → eval_unop when direct Value manipulation suffices\n\nFix: Create `fn negate_value(v: Value) -> Value` that directly handles Int/Real/Scalar/Tensor/Matrix recursion without CompiledExpr wrapping. Add explicit Value::Matrix arm that canonicalizes before recursing.\n\nLocation: crates/reify-expr/src/lib.rs lines 1118-1141\nmemory_hints: search \"eval_unop CompiledExpr literal Type::Real tensor negation\" entity \"eval_unop\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-27T07:37:18.056Z",
+        "updatedAt": "2026-03-28T05:38:26.853Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -9857,7 +9857,7 @@
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-03-27T11:39:07.505Z",
+        "updatedAt": "2026-03-28T05:38:26.715Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -11515,7 +11515,7 @@
         "description": "Three test improvements for the tree-sitter pipeline infra tests.",
         "details": "1. Add test that deletes parser.c and runs cargo check WITHOUT calling tree-sitter-generate.sh first — validates build.rs auto-generation path (the key new feature).\n2. Fix assert helper to show command output on failure instead of redirecting to /dev/null.\n3. Add negative tests: temporarily rename grammar.js and assert tree-sitter-generate.sh exits non-zero.\n\nFiles: tests/infra/test_tree_sitter_pipeline.sh",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -11529,7 +11529,7 @@
             "tree-sitter-reify"
           ]
         },
-        "updatedAt": "2026-03-27T23:31:52.898Z"
+        "updatedAt": "2026-03-28T05:31:50.149Z"
       },
       {
         "id": "565",
@@ -11558,7 +11558,7 @@
         "description": "Address review suggestions from task 467 in crates/reify-runtime/tests/concurrent_eval.rs:\n\n1. Rename `mod poison_panics` to `mod poison_recovery_extended` (or merge into `poison_recovery`) — the module now tests recovery, not panics (architect S1)\n2. Remove stale \"legacy module, kept for backward compat\" comment from `poison_recovery` — these are active first-class tests (architect S3)\n3. Remove redundant `evaluate_recovers_poisoned_values_read` test — strict subset of `evaluate_recovers_poisoned_values_write` since both hit the same RwLock (architect S2, test analyst S12)\n4. Add assertions to `evaluate_recovers_poisoned_snapshot_values` — verify snapshot_values entry was written via `build_result_shared()` (test analyst S13)\n5. Add assertions to `evaluate_recovers_poisoned_results` — verify result was pushed via `take_results()` (test analyst S14)\n6. Add `node_results.is_empty()` assertions to `build_result_shared_recovers_from_poisoned_results_lock` and `into_result_recovers_from_poisoned_results_lock` (test analyst S15, S16)\n7. Use `#[tokio::test]` instead of manual `Runtime::new()` in `poison_evaluate` tests (performance S4)\n8. Extract shared test helper for evaluate+catch_unwind boilerplate (reuse S6)\n9. Add brief comment explaining why C4 panic-on-poison was reversed in favor of graceful recovery (robustness S11)",
         "details": "",
         "testStrategy": "",
-        "status": "done",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -11571,7 +11571,7 @@
             "crates/reify-runtime/tests"
           ]
         },
-        "updatedAt": "2026-03-28T05:10:37.498Z"
+        "updatedAt": "2026-03-28T04:49:13.990Z"
       },
       {
         "id": "567",
@@ -11644,7 +11644,7 @@
         "description": "Two test improvements in gui/src/__tests__/claudeBridge.test.ts:\n\n1. Remove redundant second assertion in 'payload type field does not override mapped event type' test (line 317) — the objectContaining check already verifies the type field\n2. Add extra-field exclusion test for claude-tool-call event — it has a structurally complex payload (tool_input: Record<string, unknown>) not covered by the existing representative tests on text_delta and done\n\nSource: test analyst reviewer (S5, S6) from task 517 review.",
         "details": "",
         "testStrategy": "",
-        "status": "done",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -11657,7 +11657,7 @@
             "gui/src/__tests__"
           ]
         },
-        "updatedAt": "2026-03-28T05:17:07.736Z"
+        "updatedAt": "2026-03-28T05:05:56.773Z"
       },
       {
         "id": "571",
@@ -11665,7 +11665,7 @@
         "description": "In report_constraints (crates/reify-cli/src/main.rs), Satisfaction::Indeterminate does not set all_satisfied = false, meaning indeterminate constraints are treated as success. This was an intentional decision but is not documented in the code. Add a comment explaining the choice, and add a CLI integration test that exercises Indeterminate constraints — verifying exit code is 0 and INDETERMINATE text appears on stdout (not stderr).\n\nMemory hints: search \"Indeterminate constraint semantics intentional\", entity: report_constraints",
         "details": "Locations:\n- crates/reify-cli/src/main.rs:49 — add comment on the Indeterminate match arm\n- crates/reify-cli/tests/cli_check.rs — add test with fixture producing Indeterminate constraints\n- May need a new fixture file under crates/reify-cli/tests/fixtures/\n\nThe decision \"A build with only indeterminate constraints exits 0 and does not block the build\" is already recorded in project memory. This task is about making the code self-documenting and adding regression test coverage.",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -11680,7 +11680,7 @@
             "crates/reify-cli/tests"
           ]
         },
-        "updatedAt": "2026-03-28T05:19:34.950Z"
+        "updatedAt": "2026-03-28T05:06:47.814Z"
       },
       {
         "id": "572",
@@ -11749,7 +11749,7 @@
         "description": "In `crates/reify-runtime/tests/concurrent_eval.rs`, `test_committed_node_survives_cancellation` uses `std::thread::sleep(Duration::from_millis(50))` inside an async evaluator body within a `tokio::spawn` task. Under the `#[tokio::test]` current_thread runtime, this blocks the entire executor for 50ms, preventing other tasks from being polled. The test passes by accident due to current_thread serialization, not by design.\n\n**Fix:** Replace `std::thread::sleep(Duration::from_millis(50))` with `tokio::time::sleep(Duration::from_millis(50)).await` inside the async `evaluate` fn at line ~2132. This is a one-line change since `AsyncNodeEvaluator::evaluate` is already async.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [
           "477"
         ],
@@ -11763,8 +11763,7 @@
           "modules": [
             "crates/reify-runtime/tests"
           ]
-        },
-        "updatedAt": "2026-03-28T05:17:15.241Z"
+        }
       },
       {
         "id": "576",
@@ -11906,7 +11905,7 @@
         "description": "Address code quality suggestions from task 495 reviews in solver.rs and solver_integration.rs:\n\n1. Simplify redundant `problem.objective.is_some()` guard at solver.rs:~436 — after the early-return for `initially_feasible && objective.is_none()`, the `objective.is_some()` check is always true. Simplify to `if initially_feasible`.\n2. Inline or annotate `trial_values` binding at solver.rs:~408 — used only for feasibility check, could be inlined into `max_constraint_residual()` call.\n3. Tighten assertion bounds in `optimize_with_feasible_initial_point` — lower bound should be 5mm (param bound) not 2mm (constraint floor).\n4. Tighten assertion bounds in `maximize_with_feasible_initial_point` — upper bound tolerance too loose (1mm slack vs ~0.2mm expected).\n5. Add objective-value assertion to `feasibility_check_runs_with_objective` unit test — currently only checks Solved, should verify optimizer moved toward minimum.\n6. Replace raw `Value::Scalar` literals with `mm()` helper in new integration tests.\n7. Extract `build_solved_values` helper to deduplicate the zip-insert loop in early-exit and final-return paths.\n\nFiles: crates/reify-constraints/src/solver.rs, crates/reify-constraints/tests/solver_integration.rs\n\nMemory hints: search \"Nelder-Mead solver\", entity NelderMeadSolver",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -11921,7 +11920,7 @@
             "crates/reify-constraints/tests"
           ]
         },
-        "updatedAt": "2026-03-28T05:10:42.237Z"
+        "updatedAt": "2026-03-28T05:38:32.724Z"
       },
       {
         "id": "583",
@@ -12123,7 +12122,7 @@
         "description": "## Problem\n\nTauriToolContext has 4 constructors for 2 optional fields (event_emitter, selection), creating a 2^n combinatorial explosion pattern. The naming is inconsistent (new_with_selection vs with_event_emitter). Additionally, claude_bridge.rs uses a 3-tuple for mcp_config requiring #[allow(clippy::type_complexity)].\n\nThe `with_event_emitter()` constructor silently creates a private Arc<RwLock<SelectionInfo>> that is never shared with the frontend — a potential API footgun where selection always returns empty.\n\n## What \"done\" looks like\n\n1. TauriToolContext uses a builder pattern: `TauriToolContext::builder(engine).with_event_emitter(f).with_selection(arc).build()`\n2. A named `McpConfig<F>` struct replaces the 3-tuple in claude_bridge.rs new_inner\n3. The type_complexity suppression is removed\n4. `with_event_emitter()` is deprecated or removed (callers use builder)\n5. All existing tests pass\n\n## Files to modify\n- gui/src-tauri/src/mcp_context.rs — replace constructors with builder\n- gui/src-tauri/src/claude_bridge.rs — McpConfig struct, remove type_complexity suppression\n- gui/src-tauri/src/main.rs — update mcp_tool_call to use builder\n- gui/src-tauri/src/tests/mcp_context_tests.rs — update test helpers\n- gui/src-tauri/src/tests/mcp_dispatch_tests.rs — update test helpers\n- gui/src-tauri/src/tests/claude_bridge_tests.rs — update test helpers\n\n### memory_hints\n- search: \"TauriToolContext constructor builder\"\n- entity: \"TauriToolContext\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -12141,8 +12140,7 @@
             "gui/src-tauri/src",
             "gui/src-tauri/src/tests"
           ]
-        },
-        "updatedAt": "2026-03-28T05:08:32.930Z"
+        }
       },
       {
         "id": "592",
@@ -12201,7 +12199,7 @@
         "description": "## Problem\n\nThe selection sync path added in task 478 has several test coverage gaps:\n\n1. **Frontend:** selectionStore.test.ts has 13 tests but none cover the createEffect + invoke('update_selection') behavior. The entire debounce/cleanup path has zero coverage.\n2. **Rust constructor:** `with_event_emitter_and_selection()` is the primary production constructor (used in mcp_tool_call) but is never exercised by any test.\n3. **Claude bridge:** `from_parts_with_mcp_intercepts_reify_tool_calls` passes a selection Arc but never asserts the selection state is threaded into the TauriToolContext — the test would pass even if the parameter were silently ignored.\n4. **Dispatch:** Only tests selected_entity set + hovered_entity null. No test for both fields populated.\n\n## What \"done\" looks like\n\n1. selectionStore.test.ts: mock invoke, verify correct args after state change, verify debounce coalescing, verify cleanup cancels timer\n2. mcp_context_tests.rs: test with_event_emitter_and_selection() — verify selection reads and event emission\n3. claude_bridge_tests.rs: pre-populate selection Arc with `Some(\"Bracket\")`, assert JSON tool_result contains the selection\n4. mcp_dispatch_tests.rs: add test with both fields populated\n5. All existing tests pass\n\n## Files to modify\n- gui/src/__tests__/selectionStore.test.ts — add invoke mock tests\n- gui/src-tauri/src/tests/mcp_context_tests.rs — test with_event_emitter_and_selection\n- gui/src-tauri/src/tests/claude_bridge_tests.rs — assert selection threading\n- gui/src-tauri/src/tests/mcp_dispatch_tests.rs — both-fields test\n\n### memory_hints\n- search: \"selectionStore test invoke mock\"\n- search: \"TauriToolContext test coverage\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "blocked",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -12230,9 +12228,9 @@
               "claude bridge selection arc threading test"
             ]
           },
-          "reconciliation_note": "STAGE-2 2026-03-28 run 372f024a: Unblocked (was blocked with no deps). Task 478 done, all target files exist. Ready for implementation."
+          "reconciliation_note": "STAGE-2 2026-03-28: Task is blocked with no listed dependencies. Block reason undocumented. Check if worktree issue (like task 369) or upstream dependency. May need unblocking."
         },
-        "updatedAt": "2026-03-28T05:18:33.536Z"
+        "updatedAt": "2026-03-28T04:42:45.343Z"
       },
       {
         "id": "595",
@@ -13496,12 +13494,13 @@
         "description": "Value::Transform { .. } => Type::Transform(3) in crates/reify-types/src/value.rs:569 silently hardcodes 3D in infer_type(), the exact same problem that was fixed for Frame in task 380. Apply the same fix: replace with a panic matching the established message pattern, and add a literal_transform() builder in crates/reify-test-support/src/builders/expr.rs alongside literal_frame().\n\nmemory_hints: search \"silent defaults noisy errors convention\", entity \"Value::Transform\", get_task 380",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "380"
         ],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-03-28T05:38:12.548Z"
       },
       {
         "id": "679",
@@ -13626,8 +13625,8 @@
       },
       {
         "id": "689",
-        "title": "Fix poison_evaluate test regressions: tracing subscriber scope, assertions, docs",
-        "description": "Post-merge fixes for task 566's poison_evaluate tests in crates/reify-runtime/tests/concurrent_eval.rs:\n\n1. **Fix tracing subscriber scope (bug):** `tracing_warn_emitted_on_poison_evaluate` uses `set_default` (thread-local) inside a `multi_thread` tokio runtime. Worker threads won't see the subscriber, so WARN events may be silently missed. Replace with `tracing::subscriber::with_default(subscriber, || evaluate_with_recovery(&adapter, node))` — this matches the pattern used at lines 1639, 1696, 1717, 2137 in the same file. Remove the explicit `drop(_guard)` line.\n\n2. **Tighten warn count assertion:** Change `count > 0` to `count >= 2` with message explaining the expected count (one WARN per lock acquisition: read_values + write_values).\n\n3. **Add EvalOutcome::Changed assertion to evaluate_recovers_poisoned_values_write:** The test asserts `result.is_ok()` but doesn't verify the outcome. Add `assert_eq!(result.unwrap(), EvalOutcome::Changed)` for parity with the other poison_evaluate tests.\n\n4. **Document multi_thread requirement on evaluate_with_recovery:** Add to the existing doc comment: `/// Requires a multi-thread Tokio runtime (`block_in_place` panics on `current_thread`).` Optionally add a debug_assert checking runtime flavor.\n\nmemory_hints: search \"tracing subscriber with_default concurrent_eval pattern\"",
+        "title": "Rename McpConfig.event_sink to event_emitter and restrict field visibility",
+        "description": "McpConfig in claude_bridge.rs names its event callback field `event_sink`, while the same concept is consistently called `event_emitter` throughout mcp_context.rs (field name, type alias EventEmitter, builder method with_event_emitter). Additionally, all McpConfig fields are `pub` but only need `pub(crate)` since the struct is only constructed/consumed within the crate.\n\n## Changes\n1. Rename `McpConfig.event_sink` → `McpConfig.event_emitter` in claude_bridge.rs (lines ~142, 201, 209, 220, 261, 505, 540)\n2. Change all McpConfig field visibility from `pub` to `pub(crate)`\n3. Update all references and tests\n\n## Files to modify\n- gui/src-tauri/src/claude_bridge.rs\n- gui/src-tauri/src/tests/claude_bridge_tests.rs\n- gui/src-tauri/src/tests/mcp_context_tests.rs (McpConfig test)",
         "details": "",
         "testStrategy": "",
         "status": "pending",
@@ -13637,8 +13636,19 @@
       },
       {
         "id": "690",
-        "title": "claudeBridge test cleanup: hoist captureListener, remove redundant assertion, add defined guards",
-        "description": "Three improvements to gui/src/__tests__/claudeBridge.test.ts:\n\n1. **Hoist `captureListener` helper** (from line ~504) out of the inner `describe('payload validation guards')` block to the outer `describe('subscribeToClaudeEvents')` scope, so all tests in that block can use it instead of repeating the 6-line capture boilerplate (~10 existing call sites).\n\n2. **Remove redundant `.toBe('error')` assertion** at line 448 in the 'payload type field does not override mapped event type for claude-error' test. The `objectContaining({ type: 'error' })` check on line 444-446 already verifies this — matches the pattern already applied to the text_delta variant by task 570.\n\n3. **Add `expect(capturedHandler).toBeDefined()` guards** before `capturedHandler!()` calls across all tests that use the inline capture pattern. This converts opaque TypeErrors into clean assertion failures when a listener isn't registered. Once captureListener is hoisted, the guard can be added inside the helper's `setup()` method to cover all callers at once.\n\nSource: review suggestions S1/S3/S4/S5/S6 from task 570 review.",
+        "title": "Remove duplicate builder tests and move McpConfig test to claude_bridge_tests",
+        "description": "Task 591's builder migration left duplicate and misplaced tests:\n\n1. `builder_with_event_emitter_records_events` is byte-for-byte identical to the pre-existing `focus_entity_with_emitter_records_event` — remove the duplicate\n2. `builder_with_selection_matches_new_with_selection` is functionally identical to `get_selection_returns_selected_entity_from_arc` — remove the duplicate\n3. `mcp_config_struct_stores_fields` tests `claude_bridge::McpConfig` but lives in `mcp_context_tests.rs` — move to `claude_bridge_tests.rs`\n\n## Files to modify\n- gui/src-tauri/src/tests/mcp_context_tests.rs — remove duplicates, move McpConfig test\n- gui/src-tauri/src/tests/claude_bridge_tests.rs — receive McpConfig test",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
+      },
+      {
+        "id": "691",
+        "title": "Derive Default for SelectionInfo to reduce boilerplate",
+        "description": "`SelectionInfo { selected_entity: None, hovered_entity: None }` is repeated across 8+ sites (mcp_context.rs builder, mcp_context_tests.rs, mcp_dispatch_tests.rs, commands_tests.rs, claude_bridge_tests.rs). Adding `#[derive(Default)]` to `SelectionInfo` in `crates/reify-mcp/src/types.rs` would let all sites use `SelectionInfo::default()`.\n\n## Files to modify\n- crates/reify-mcp/src/types.rs — add Default derive\n- gui/src-tauri/src/mcp_context.rs — use SelectionInfo::default() in build()\n- gui/src-tauri/src/tests/*.rs — simplify test helpers",
         "details": "",
         "testStrategy": "",
         "status": "pending",
@@ -13649,9 +13659,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T05:19:34.950Z",
-      "taskCount": 690,
-      "completedCount": 327,
+      "lastModified": "2026-03-28T05:38:32.724Z",
+      "taskCount": 691,
+      "completedCount": 326,
       "tags": [
         "master"
       ]

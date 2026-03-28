@@ -2257,7 +2257,7 @@ mod tests {
             param_type: Type::Real,
             bounds: None,
         }];
-        let x = [3.14];
+        let x = [3.125];
 
         let result = build_solved_values(&params, &x);
         assert_eq!(result.len(), 1);
@@ -2268,8 +2268,8 @@ mod tests {
                 dimension,
             }) => {
                 assert!(
-                    (si_value - 3.14).abs() < 1e-15,
-                    "si_value should be 3.14, got {}",
+                    (si_value - 3.125).abs() < 1e-15,
+                    "si_value should be 3.125, got {}",
                     si_value
                 );
                 assert_eq!(

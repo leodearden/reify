@@ -20,7 +20,7 @@ fn make_engine() -> Arc<Mutex<EngineSession>> {
 }
 
 fn make_tauri_context() -> TauriToolContext {
-    TauriToolContext::new(make_engine())
+    TauriToolContext::builder(make_engine()).build()
 }
 
 #[test]
@@ -97,7 +97,7 @@ fn mcp_write_tool_produces_state_delta() {
     let last_state: Mutex<Option<GuiState>> = Mutex::new(Some(initial_gui_state));
 
     // 2. Perform an MCP write via mcp_tool_call_impl
-    let ctx = TauriToolContext::new(engine.clone());
+    let ctx = TauriToolContext::builder(engine.clone()).build();
     let result = mcp_tool_call_impl(
         "reify_set_parameter",
         serde_json::json!({"cell_id": "Bracket.width", "value": "100mm"}),
@@ -160,7 +160,7 @@ fn mcp_read_tool_produces_empty_delta() {
     let last_state: Mutex<Option<GuiState>> = Mutex::new(Some(initial_gui_state));
 
     // 2. Perform a read-only MCP tool call
-    let ctx = TauriToolContext::new(engine.clone());
+    let ctx = TauriToolContext::builder(engine.clone()).build();
     let result = mcp_tool_call_impl("reify_get_parameters", serde_json::json!({}), &ctx)
         .expect("get_parameters dispatch should succeed");
     assert!(result.is_array(), "should return array of parameters");
@@ -197,7 +197,7 @@ fn dispatch_get_selection_returns_selected_entity() {
         selected_entity: Some("Bracket".to_string()),
         hovered_entity: None,
     }));
-    let ctx = TauriToolContext::new_with_selection(engine, selection);
+    let ctx = TauriToolContext::builder(engine).with_selection(selection).build();
     let result = mcp_tool_call_impl("reify_get_selection", serde_json::json!({}), &ctx)
         .expect("dispatch should succeed");
     assert_eq!(

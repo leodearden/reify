@@ -357,6 +357,41 @@ describe('PropertyEditor blur-commit', () => {
   });
 });
 
+describe('PropertyEditor blur-commit quantity literals', () => {
+  const values: Record<string, ValueData> = {
+    c1: makeValue({ cell_id: 'c1', name: 'width', value: '50', determinacy: 'determined', entity_path: 'Bracket.width' }),
+  };
+
+  it("blur with valid quantity '80mm' calls onSetParameter and does NOT set data-invalid", () => {
+    const onSetParam = vi.fn();
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: '80mm' } });
+    fireEvent.blur(input);
+    expect(onSetParam).toHaveBeenCalledWith('c1', '80mm');
+    expect(input.hasAttribute('data-invalid')).toBe(false);
+  });
+
+  it("blur with invalid quantity 'mm80' does NOT call onSetParameter, reverts to '50', no data-invalid", () => {
+    const onSetParam = vi.fn();
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: 'mm80' } });
+    fireEvent.blur(input);
+    expect(onSetParam).not.toHaveBeenCalled();
+    expect(input.value).toBe('50');
+    expect(input.hasAttribute('data-invalid')).toBe(false);
+  });
+});
+
 describe('PropertyEditor stale input', () => {
   it('when not editing, input value updates when props.values changes', () => {
     const [values, setValues] = createSignal<Record<string, ValueData>>({
@@ -576,7 +611,7 @@ describe('PropertyEditor validation - trailing non-numeric characters', () => {
     expect(input.hasAttribute('data-invalid')).toBe(false);
   });
 
-  it("' 42 ' (whitespace-padded) on Enter DOES call onSetParameter", () => {
+  it("' 42 ' (whitespace-padded) on Enter submits trimmed '42'", () => {
     const onSetParam = vi.fn();
     render(() => (
       <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
@@ -586,8 +621,35 @@ describe('PropertyEditor validation - trailing non-numeric characters', () => {
     fireEvent.focus(input);
     fireEvent.input(input, { target: { value: ' 42 ' } });
     fireEvent.keyDown(input, { key: 'Enter' });
-    expect(onSetParam).toHaveBeenCalledWith('c1', ' 42 ');
+    expect(onSetParam).toHaveBeenCalledWith('c1', '42');
     expect(input.hasAttribute('data-invalid')).toBe(false);
+  });
+
+  it("' 5mm ' (whitespace-padded quantity) on Enter submits trimmed '5mm'", () => {
+    const onSetParam = vi.fn();
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: ' 5mm ' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onSetParam).toHaveBeenCalledWith('c1', '5mm');
+    expect(input.hasAttribute('data-invalid')).toBe(false);
+  });
+
+  it("' 75 ' (whitespace-padded number) on blur submits trimmed '75'", () => {
+    const onSetParam = vi.fn();
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: ' 75 ' } });
+    fireEvent.blur(input);
+    expect(onSetParam).toHaveBeenCalledWith('c1', '75');
   });
 });
 
@@ -603,6 +665,10 @@ describe('PropertyEditor quantity literal acceptance', () => {
     ['100cm'],
     ['1rad'],
     ['-10mm'],
+    ['1e3mm'],
+    ['1.5e-2deg'],
+    ['.5mm'],
+    ['.25deg'],
   ])("'%s' on Enter DOES call onSetParameter", (qtyLiteral) => {
     const onSetParam = vi.fn();
     render(() => (
@@ -620,9 +686,9 @@ describe('PropertyEditor quantity literal acceptance', () => {
   it.each([
     ['10xyz'],
     ['mm80'],
-    ['5 mm'],
-    ['5  mm'],
-    ['5\tmm'],
+    ['+10mm'],
+    ['mm'],
+    ['deg'],
   ])("'%s' on Enter does NOT call onSetParameter", (invalidLiteral) => {
     const onSetParam = vi.fn();
     render(() => (
@@ -649,6 +715,36 @@ describe('PropertyEditor quantity literal acceptance', () => {
     fireEvent.keyDown(input, { key: 'Enter' });
     expect(onSetParam).toHaveBeenCalledWith('c1', '10');
     expect(input.hasAttribute('data-invalid')).toBe(false);
+  });
+});
+
+describe('Design decision: whitespace between number and unit is rejected', () => {
+  // The .ri grammar uses token.immediate to forbid whitespace between number and unit
+  // (see tree-sitter-reify/grammar.js:692-699). The frontend QUANTITY_RE enforces this
+  // stricter rule. The backend parse_value_string is more lenient (accepts '5 mm') but
+  // that is an incidental bug, not a design choice.
+
+  const values: Record<string, ValueData> = {
+    c1: makeValue({ cell_id: 'c1', name: 'width', value: '50', determinacy: 'determined', entity_path: 'Bracket.width' }),
+  };
+
+  it.each([
+    ['5 mm', 'single space'],
+    ['5  mm', 'double space'],
+    ['5\tmm', 'tab'],
+    [' 5 mm ', 'leading + trailing + internal whitespace'],
+  ])("'%s' (%s) on Enter does NOT call onSetParameter", (invalidLiteral) => {
+    const onSetParam = vi.fn();
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: invalidLiteral } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onSetParam).not.toHaveBeenCalled();
+    expect(input.hasAttribute('data-invalid')).toBe(true);
   });
 });
 
@@ -721,6 +817,35 @@ describe('PropertyEditor escape clears data-invalid', () => {
     fireEvent.keyDown(input, { key: 'Escape' });
     expect(input.value).toBe('50');
     expect(input.hasAttribute('data-invalid')).toBe(false);
+  });
+});
+
+describe('PropertyEditor validation - hex/octal/binary/leading-plus rejection', () => {
+  const values: Record<string, ValueData> = {
+    c1: makeValue({ cell_id: 'c1', name: 'width', value: '50', determinacy: 'determined', entity_path: 'Bracket.width' }),
+  };
+
+  it.each([
+    ['0x10', 'hex lowercase'],
+    ['0X10', 'hex uppercase'],
+    ['0o10', 'octal lowercase'],
+    ['0O10', 'octal uppercase'],
+    ['0b10', 'binary lowercase'],
+    ['0B10', 'binary uppercase'],
+    ['+5', 'leading plus'],
+    ['+0', 'leading plus zero'],
+  ])("'%s' (%s) on Enter does NOT call onSetParameter and sets data-invalid", (invalidLiteral) => {
+    const onSetParam = vi.fn();
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: invalidLiteral } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onSetParam).not.toHaveBeenCalled();
+    expect(input.hasAttribute('data-invalid')).toBe(true);
   });
 });
 
