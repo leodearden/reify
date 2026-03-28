@@ -73,6 +73,20 @@
       "description": "Run full LSP crate test suite `cargo test -p reify-lsp` to confirm no regressions. All existing tests plus the strengthened assertions must pass.",
       "status": "done",
       "commit": "e2a1eb6b"
+    },
+    {
+      "id": "step-10",
+      "type": "impl",
+      "description": "Rebase task/596 onto current main (8f936e96). Main advanced with 2 commits after the previous partial merge: a task-status chore commit and `feat(stdlib): add Physical, Rigid, Flexible structural traits`. Our 2 remaining commits (e2a1eb6b goto_def range.end assertions, 5c16219c plan chore) should rebase cleanly since neither new main commit touches goto_def.rs. Run `git rebase main` and resolve any conflicts if they arise.",
+      "status": "done",
+      "commit": "0d99a715"
+    },
+    {
+      "id": "step-11",
+      "type": "impl",
+      "description": "Run `cargo test -p reify-lsp` after rebase to verify all LSP tests still pass against the rebased code. The new main commits (stdlib structural traits) should not affect LSP test behavior.",
+      "status": "done",
+      "commit": "0d99a715"
     }
   ],
   "design_decisions": [
@@ -87,6 +101,10 @@
     {
       "decision": "Add range.end assertions to goto_def tests using computed character offsets",
       "rationale": "goto_def returns an LSP Location with a Range (start + end positions). Existing guarded-group tests only assert start position. Adding end position assertions catches regressions where span_to_range produces incorrect end offsets for nested declarations. No other goto_def test currently asserts end range either, but the guarded-group tests are the highest-risk since their spans traverse GuardedGroup recursion in find_named_member_span."
+    },
+    {
+      "decision": "Rebase rather than merge to resolve main advancement",
+      "rationale": "The merge_ff_failed review blocker indicates main advanced during the merge window. Rebasing our 2 remaining commits onto current main produces a clean linear history suitable for fast-forward merge. No conflicts expected since the advancing commits (stdlib structural traits, task-status chore) don't touch goto_def.rs."
     }
   ],
   "reuse": [
@@ -107,5 +125,5 @@
     }
   ],
   "_session_id": "596-49655582",
-  "_created_at": "2026-03-28T20:04:27.296926+00:00"
+  "_created_at": "2026-03-28T20:15:30.065188+00:00"
 }
