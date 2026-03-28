@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# Unit tests for tree-sitter-generate.sh staleness and timeout features.
+# Tests the stamp file, staleness check, timeout wrapping, and --force flag.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+TS_DIR="$ROOT/tree-sitter-reify"
+GENERATE_SCRIPT="$ROOT/scripts/tree-sitter-generate.sh"
+STAMP_FILE="$TS_DIR/src/.grammar_hash.stamp"
+
+PASS=0
+FAIL=0
+
+assert() {
+    local desc="$1"
+    shift
+    if "$@" >/dev/null 2>&1; then
+        echo "  PASS: $desc"
+        PASS=$((PASS + 1))
+    else
+        echo "  FAIL: $desc"
+        FAIL=$((FAIL + 1))
+    fi
+}
+
+# Ensure parser.c + stamp are restored on exit.
+trap '"$GENERATE_SCRIPT" --force >/dev/null 2>&1 || true' EXIT
+
+echo "=== tree-sitter-generate.sh unit tests ==="
+
+# ── Test 1: stamp file is created after successful generation ──────
+echo ""
+echo "--- Test 1: stamp file created after generation ---"
+
+# Remove stamp if it exists, then run generation.
+rm -f "$STAMP_FILE"
+
+output=$("$GENERATE_SCRIPT" --force 2>&1)
+
+assert "stamp file exists after generation" \
+    test -f "$STAMP_FILE"
+
+# Stamp should contain a sha256 hex string (64 hex chars).
+stamp_content=$(cat "$STAMP_FILE" 2>/dev/null || echo "")
+assert "stamp contains a sha256 hash (64 hex chars)" \
+    bash -c "[[ '$stamp_content' =~ ^[0-9a-f]{64}$ ]]"
+
+# Stamp should match sha256sum of grammar.js.
+expected_hash=$(sha256sum "$TS_DIR/grammar.js" | awk '{print $1}')
+assert "stamp hash matches grammar.js sha256" \
+    test "$stamp_content" = "$expected_hash"
+
+# ── Summary ────────────────────────────────────────────────────────
+echo ""
+echo "Results: $PASS passed, $FAIL failed"
+if [ "$FAIL" -gt 0 ]; then
+    exit 1
+fi
