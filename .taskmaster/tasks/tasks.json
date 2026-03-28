@@ -15225,7 +15225,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "gui/src/stores/selectionStore.ts"
+          ],
+          "modules": [
+            "gui/src/stores"
+          ]
+        }
       }
     ],
     "metadata": {
