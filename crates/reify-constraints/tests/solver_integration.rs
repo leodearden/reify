@@ -877,14 +877,14 @@ fn warm_start_budget_exhaustion_stays_feasible() {
 
     // Tight constraints: each param in [10mm, 12mm] — only 2mm feasible window
     let mut constraints = Vec::new();
-    for (i, r) in refs.iter().enumerate() {
+    for i in 0..n_params {
         constraints.push((
             cnid("Part", (i * 2) as u32),
-            gt(r.clone(), literal(mm(10.0))),
+            gt(refs[i].clone(), literal(mm(10.0))),
         ));
         constraints.push((
             cnid("Part", (i * 2 + 1) as u32),
-            lt(r.clone(), literal(mm(12.0))),
+            lt(refs[i].clone(), literal(mm(12.0))),
         ));
     }
 

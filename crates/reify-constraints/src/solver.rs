@@ -565,6 +565,8 @@ impl ConstraintSolver for DimensionalSolver {
         let result = match executor.run() {
             Ok(res) => res,
             Err(e) => {
+                let n_params = problem.auto_params.len();
+                tracing::warn!(error = %e, n_params, "solver executor failed");
                 return SolveResult::NoProgress {
                     reason: format!("solver error: {}", e),
                 };
@@ -575,26 +577,35 @@ impl ConstraintSolver for DimensionalSolver {
         let termination_reason = result.state().get_termination_reason().cloned();
         let has_objective = problem.objective.is_some();
         let n_params = problem.auto_params.len();
-        tracing::debug!(
-            ?termination_reason,
-            n_params,
-            max_iters,
-            has_objective,
-            initially_feasible,
-            "solver completed"
-        );
-        if termination_reason == Some(TerminationReason::MaxItersReached) && has_objective {
+        let iter_limited =
+            termination_reason == Some(TerminationReason::MaxItersReached) && has_objective;
+        if iter_limited {
             tracing::debug!(
+                ?termination_reason,
                 n_params,
                 max_iters,
-                "solver hit iteration limit while optimizing objective; \
-                 solution satisfies constraints but objective may be suboptimal"
+                has_objective,
+                initially_feasible,
+                iter_limited,
+                "solver completed; hit iteration limit — objective may be suboptimal"
+            );
+        } else {
+            tracing::debug!(
+                ?termination_reason,
+                n_params,
+                max_iters,
+                has_objective,
+                initially_feasible,
+                iter_limited,
+                "solver completed"
             );
         }
 
         let best_param: Vec<f64> = match result.state().get_best_param() {
             Some(p) => p.clone(),
             None => {
+                let n_params = problem.auto_params.len();
+                tracing::warn!(n_params, "solver returned no best parameter");
                 return SolveResult::NoProgress {
                     reason: "solver returned no solution".to_string(),
                 };
