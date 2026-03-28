@@ -1567,10 +1567,17 @@ async fn edit_check_concurrent_preserves_constraint_labels() {
     );
 }
 
-// --- PoisonError behavior tests (legacy module, kept for backward compat) ---
-// Poison recovery tests verify that poisoned locks are recovered gracefully
-// via unwrap_or_else(|e| e.into_inner()), preventing cascading panics when
-// one evaluation task panics mid-computation.
+// --- Poison recovery tests ---
+//
+// These tests verify that poisoned locks are recovered gracefully via
+// unwrap_or_else(|e| e.into_inner()) + tracing::warn!, preventing cascading
+// panics when one evaluation task panics mid-computation.
+//
+// The original C4 design called for panic-on-poison (propagating PoisonError),
+// but this was revised in favor of graceful recovery because in concurrent
+// evaluation, one panicking task would cascade to all tasks sharing the adapter
+// via poisoned locks, taking down the entire evaluation batch instead of just
+// the faulting node.
 
 #[cfg(feature = "test-utils")]
 /// Helper: build a tracing subscriber that counts WARN-level events using an AtomicUsize.
