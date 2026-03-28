@@ -10957,7 +10957,7 @@
         "description": "The six payload cast expressions in `subscribeToClaudeEvents` (gui/src/bridge.ts:159-182) are pure compile-time casts with zero runtime protection. If the Rust/Tauri backend emits a malformed event (null payload, missing fields, wrong types), the handler will either throw a TypeError or silently forward undefined values.\n\nThree specific issues:\n1. A null payload causes TypeError at field access (e.g. `p.id`) — the old spread pattern silently tolerated null.\n2. Missing required string fields (e.g. `id`) become `undefined` at runtime, violating the `Done`/`TextDelta` interface contracts.\n3. `tool_input` on `claude-tool-call` could be null or an array at runtime while typed as `Record<string, unknown>`.\n\n**Fix**: Add a centralized null guard and per-handler field validation. Options:\n- Early return with `if (!event.payload) return;` at the dispatch level\n- Add an `assertPayload` helper that checks required keys and throws descriptively\n- Add typeof guards for nested objects like `tool_input`\n\nMemory hints:\n- Search: \"subscribeToClaudeEvents payload validation runtime\"\n- Entities: bridge.ts, subscribeToClaudeEvents, OutboundMessage",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -10969,7 +10969,8 @@
           "modules": [
             "gui/src"
           ]
-        }
+        },
+        "updatedAt": "2026-03-28T04:00:41.759Z"
       },
       {
         "id": "541",
@@ -13128,7 +13129,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T04:00:40.483Z",
+      "lastModified": "2026-03-28T04:00:41.760Z",
       "taskCount": 650,
       "completedCount": 306,
       "tags": [
