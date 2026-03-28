@@ -147,6 +147,51 @@ describe('claude bridge integration', () => {
     expect(store.state.sessionStatus).toBe('idle');
   });
 
+  it('text-delta events update responseText via rAF flush without done event', async () => {
+    const capturedHandlers: Record<string, (event: { payload: unknown }) => void> = {};
+    mockListen.mockImplementation(async (eventName, handler) => {
+      capturedHandlers[eventName as string] = handler as (event: { payload: unknown }) => void;
+      return vi.fn();
+    });
+
+    const store = createClaudeStore({
+      onSend: () => {},
+      onAbort: () => {},
+    });
+
+    await subscribeToClaudeEvents(store.handleOutboundMessage);
+
+    store.sendMessage('hello', {});
+    const msgId = store.state.currentMessageId!;
+    expect(msgId).toBeTruthy();
+
+    // Send multiple text deltas (exercises the rAF batching path)
+    capturedHandlers['claude-text-delta']({
+      payload: { id: msgId, content: 'Hello ' },
+    });
+    capturedHandlers['claude-text-delta']({
+      payload: { id: msgId, content: 'world' },
+    });
+
+    // Before flushing rAF, text should still be buffered (not yet applied)
+    const beforeFlush = store.state.messages.find(
+      (m): m is AssistantMessage => m.role === 'assistant' && m.id === msgId,
+    );
+    expect(beforeFlush!.responseText).toBe('');
+
+    // Flush rAF — this exercises the batching path without relying on done/cancelAndFlush
+    flushRaf();
+
+    // Now responseText should reflect the batched deltas
+    const afterFlush = store.state.messages.find(
+      (m): m is AssistantMessage => m.role === 'assistant' && m.id === msgId,
+    );
+    expect(afterFlush!.responseText).toBe('Hello world');
+    // Message should NOT be marked complete (no done event was sent)
+    expect(afterFlush!.complete).toBe(false);
+    expect(store.state.sessionStatus).toBe('responding');
+  });
+
   it('claude-error event adds system message and marks assistant message as error', async () => {
     const capturedHandlers: Record<string, (event: { payload: unknown }) => void> = {};
     mockListen.mockImplementation(async (eventName, handler) => {
