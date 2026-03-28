@@ -14748,7 +14748,15 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-28T09:38:49.303Z"
+        "updatedAt": "2026-03-28T09:38:49.303Z",
+        "metadata": {
+          "files": [
+            "crates/reify-eval/src/lib.rs"
+          ],
+          "modules": [
+            "crates/reify-eval/src"
+          ]
+        }
       },
       {
         "id": 716,
@@ -14761,7 +14769,15 @@
           "641"
         ],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-syntax/tests/type_alias_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-syntax/tests"
+          ]
+        }
       },
       {
         "id": 717,
@@ -14784,7 +14800,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "gui/src/__tests__/selectionStore.test.ts"
+          ],
+          "modules": [
+            "gui/src/__tests__"
+          ]
+        }
       },
       {
         "id": 719,
