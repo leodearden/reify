@@ -12835,6 +12835,19 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 638,
+        "title": "Align Rust ClaudeContext struct with TypeScript MessageContext fields",
+        "description": "Task 522 aligned the TypeScript-side ClaudeMessageContext with the store's MessageContext (using Pick<MessageContext, ...>) but the Rust-side ClaudeContext struct in gui/src-tauri/src/claude_bridge.rs still lacks the `current_file` and `attached_contexts` fields. Without this, the Tauri command handler silently drops these fields even though the TS bridge now sends them.\n\nFix:\n1. Add `current_file: Option<String>` and `attached_contexts: Option<Vec<String>>` to the ClaudeContext struct in claude_bridge.rs.\n2. Thread these fields through to the sidecar invocation.\n3. Add test coverage for the new fields.\n\nModules: gui/src-tauri/src/claude_bridge.rs\n\nMemory hints: search \"ClaudeMessageContext MessageContext field alignment currentFile attachedContexts\", entities: ClaudeContext, ClaudeMessageContext, MessageContext, bridge.ts, claude_bridge.rs",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          522
+        ],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -12847,7 +12860,7 @@
       ],
       "created": "2026-03-28T10:46:52.969Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-28T10:46:52.975Z"
+      "updated": "2026-03-28T10:46:59.292Z"
     }
   }
 }
