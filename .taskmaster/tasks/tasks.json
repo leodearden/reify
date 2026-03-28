@@ -13456,7 +13456,17 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "gui/src/bridge.ts",
+            "gui/src/__tests__/claudeBridge.test.ts"
+          ],
+          "modules": [
+            "gui/src",
+            "gui/src/__tests__"
+          ]
+        }
       },
       {
         "id": 654,
@@ -13467,7 +13477,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-cli/tests/cli_check.rs"
+          ],
+          "modules": [
+            "crates/reify-cli/tests"
+          ]
+        }
       },
       {
         "id": 655,
