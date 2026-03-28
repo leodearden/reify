@@ -47,7 +47,7 @@
       "id": "step-4",
       "type": "test",
       "description": "Add claudeHandler guard (Issue 3): In 'shows toast when claudeAbort fails', before the `claudeHandler!()` call at line 2071, add `await waitFor(() => expect(claudeHandler).toBeDefined());` to ensure the subscribeToClaudeEvents mock was actually called and captured the handler. Then use `claudeHandler!(...)` safely. This replaces the blind non-null assertion with a proper guard.",
-      "status": "pending",
+      "status": "done",
       "commit": null
     },
     {

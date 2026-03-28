@@ -2085,6 +2085,9 @@ describe('App Claude error handling', () => {
       expect(screen.getByTestId('app-layout')).toBeTruthy();
     });
 
+    // Guard: ensure subscribeToClaudeEvents was called and captured the handler
+    await waitFor(() => expect(claudeHandler).toBeDefined());
+
     // Fire a text_delta event to put claudeStore into 'responding' state
     claudeHandler!({ type: 'text_delta', id: 'msg-1', content: 'Hello' });
 
