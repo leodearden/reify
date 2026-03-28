@@ -10,9 +10,9 @@ use reify_types::{
 /// Supports most Value variants including M5 types (Enum, List, Set, Map, Option,
 /// Lambda, Field). For empty collections, element type defaults to Int/Bool.
 ///
-/// **Panics** for Frame, Tensor, and Matrix — their types cannot be inferred from
-/// the value alone. Use [`literal_frame`] or `CompiledExpr::literal(value, type)`
-/// directly.
+/// **Panics** for Frame, Transform, Tensor, and Matrix — their types cannot be
+/// inferred from the value alone. Use [`literal_frame`], [`literal_transform`],
+/// or `CompiledExpr::literal(value, type)` directly.
 pub fn literal(v: Value) -> CompiledExpr {
     let ty = v.infer_type();
     CompiledExpr::literal(v, ty)
@@ -24,6 +24,14 @@ pub fn literal(v: Value) -> CompiledExpr {
 /// cannot be inferred from the value alone.
 pub fn literal_frame(v: Value, dims: usize) -> CompiledExpr {
     CompiledExpr::literal(v, Type::Frame(dims))
+}
+
+/// Create a literal Transform expression with explicit dimensionality.
+///
+/// Use this instead of [`literal`] for Transform values, since Transform
+/// dimensionality cannot be inferred from the value alone.
+pub fn literal_transform(v: Value, dims: usize) -> CompiledExpr {
+    CompiledExpr::literal(v, Type::Transform(dims))
 }
 
 /// Create a value reference expression.
@@ -553,6 +561,48 @@ mod tests {
             expr.kind,
             CompiledExprKind::Literal(Value::Frame { .. })
         ));
+    }
+
+    #[test]
+    fn literal_transform_helper_produces_transform3_type() {
+        let transform_value = Value::Transform {
+            rotation: Box::new(Value::Orientation {
+                w: 1.0,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            }),
+            translation: Box::new(Value::Vector(vec![
+                Value::Real(0.0),
+                Value::Real(0.0),
+                Value::Real(0.0),
+            ])),
+        };
+        let expr = literal_transform(transform_value, 3);
+        assert_eq!(expr.result_type, Type::Transform(3));
+        assert!(matches!(
+            expr.kind,
+            CompiledExprKind::Literal(Value::Transform { .. })
+        ));
+    }
+
+    #[test]
+    #[should_panic(expected = "infer_type() cannot infer Transform")]
+    fn literal_transform_value_panics() {
+        let transform_value = Value::Transform {
+            rotation: Box::new(Value::Orientation {
+                w: 1.0,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            }),
+            translation: Box::new(Value::Vector(vec![
+                Value::Real(0.0),
+                Value::Real(0.0),
+                Value::Real(0.0),
+            ])),
+        };
+        literal(transform_value);
     }
 
     #[test]
