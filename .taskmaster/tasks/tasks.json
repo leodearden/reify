@@ -12736,6 +12736,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 630,
+        "title": "Extract gradient dimension helper and reduce clone in compute_gradient_field",
+        "description": "Extract a shared helper for computing gradient dimensions (domain_quantity_dim, codomain_dim, gradient_dim) used by both compute_gradient_field and sample_gradient_field in crates/reify-expr/src/lib.rs. Also refactor compute_gradient_field to avoid deep-cloning the entire source Value::Field — take ownership or use Arc for inner field storage.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -12748,7 +12759,7 @@
       ],
       "created": "2026-03-28T00:33:54.683Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-28T00:33:54.707Z"
+      "updated": "2026-03-28T00:33:56.958Z"
     }
   }
 }
