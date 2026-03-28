@@ -1,0 +1,200 @@
+{
+  "task_id": "208",
+  "title": "Fix review blocking issues: task status regressions, orphaned states, post-merge failures",
+  "files": [
+    ".taskmaster/tasks/tasks.json",
+    "crates/reify-cli/src/main.rs",
+    "crates/reify-cli/tests/cli_check.rs",
+    "crates/reify-cli/tests/fixtures/bracket_violated_indeterminate.ri",
+    "crates/reify-constraints/src/solver.rs",
+    "crates/reify-constraints/tests/solver_integration.rs",
+    "crates/reify-eval/src/lib.rs",
+    "crates/reify-eval/tests/boundary5_engine.rs",
+    "crates/reify-eval/tests/determinacy_predicates.rs",
+    "crates/reify-expr/src/lib.rs",
+    "crates/reify-expr/tests/matrix_eval_tests.rs",
+    "crates/reify-syntax/tests/type_alias_tests.rs",
+    "crates/reify-test-support/src/builders/field.rs",
+    "crates/reify-test-support/src/builders/module.rs",
+    "crates/reify-test-support/src/builders/trait_def.rs",
+    "crates/reify-types/src/value.rs",
+    "gui/src-tauri/src/claude_bridge.rs",
+    "gui/src-tauri/src/tests/claude_bridge_tests.rs",
+    "gui/src-tauri/src/tests/mcp_dispatch_tests.rs",
+    "gui/src/__tests__/PropertyEditor.test.tsx",
+    "gui/src/__tests__/claudeBridge.test.ts",
+    "gui/src/__tests__/selectionStore.test.ts",
+    "gui/src/bridge.ts"
+  ],
+  "modules": [
+    ".taskmaster/tasks",
+    "crates/reify-cli",
+    "crates/reify-constraints",
+    "crates/reify-eval",
+    "crates/reify-expr",
+    "crates/reify-syntax",
+    "crates/reify-test-support",
+    "crates/reify-types",
+    "gui/src-tauri",
+    "gui/src"
+  ],
+  "analysis": "Branch task-208-clean carries a multi-merge consolidation of task 208 (Unit declarations: registry). Task 208's scope is crates/reify-compiler only. However, repeated merges from main and aggressive 'restore from main' commits (a4e208b8, d2b8d6cf, fa1f5476, 8a69e572) created two classes of problems:\n\n1. **tasks.json status regressions**: 65 task statuses diverge from main. 8 tasks that were `done` on main were reverted to `pending` or `in-progress` (330, 340, 411, 449, 498, 563, 583, 628). 17 tasks were flipped from `pending` to `in-progress` with no agent assignment (orphaned). These came from merge conflict resolution choosing the branch's stale tasks.json over main's updated version.\n\n2. **Out-of-scope code regressions**: 18 non-compiler code files differ from main. These are artifacts from other task branches that were merged then incorrectly partially reverted. The 'restore from main' commits over-corrected by deleting legitimate main-branch files (matrix_eval_tests.rs, bracket_violated_indeterminate.ri) while under-correcting by keeping stale versions of other files (cli_check.rs, solver.rs, value.rs, bridge.ts, etc.).\n\n3. **Task 375 references non-existent file**: Task description says `tensor_matrix_arithmetic_tests.rs` but the actual file is `matrix_eval_tests.rs` (exists on main, deleted on branch).\n\nThe fix is straightforward: (A) restore tasks.json from main, (B) restore all out-of-scope code files from main, (C) verify only task-208 compiler changes remain.\n\n**Review feedback round 2 (steps 11-15):** Post step-1-through-10 verification reveals: (a) tasks.json drifted again \u2014 main was updated after our restore, creating 1 remaining diff (task 281 status in-progress vs blocked, missing memory_hints). (b) The 8 phantom-rollback tasks (300-followup, 337, 365, 439, 441, 461, 462, 483) all have their test code confirmed present on main via git grep. (c) crates/reify-test-support/src/builders/module.rs differs from main but this is a LEGITIMATE task-208 change \u2014 CompiledModule gained a `units` field, so the builder must initialize it with `units: Vec::new()`. (d) Full workspace tests pass (0 failures) and clippy is clean. The remaining fix is a final tasks.json re-sync from current main HEAD.",
+  "prerequisites": [
+    {
+      "id": "pre-1",
+      "description": "Verify task 208 scope: only crates/reify-compiler/{src,tests} and crates/reify-compiler/tests/unit_registry_tests.rs should differ from main. All other file diffs are out-of-scope merge artifacts.",
+      "status": "done",
+      "commit": null,
+      "tests": []
+    }
+  ],
+  "steps": [
+    {
+      "id": "step-1",
+      "type": "test",
+      "description": "Write verification script: assert tasks.json has no done\u2192regressed transitions (tasks 330, 340, 411, 449, 498, 563, 583, 628 must be 'done'), no orphaned in-progress tasks without agent assignment, and no done\u2192blocked without block_reason",
+      "status": "done",
+      "commit": null
+    },
+    {
+      "id": "step-2",
+      "type": "impl",
+      "description": "Restore .taskmaster/tasks/tasks.json from main via `git checkout main -- .taskmaster/tasks/tasks.json`. This eliminates all 65 status regressions: the 8 done\u2192reverted tasks are restored to done, the 17 orphaned in-progress are restored to pending, and forward-progress changes (pending\u2192done from completed work) will be re-applied by the orchestrator when those task branches are merged to main.",
+      "status": "done",
+      "commit": null
+    },
+    {
+      "id": "step-3",
+      "type": "test",
+      "description": "Write verification script: assert only files in crates/reify-compiler/ differ from main (plus .task/ metadata). All other crate, gui, and infra files should match main exactly.",
+      "status": "done",
+      "commit": null
+    },
+    {
+      "id": "step-4",
+      "type": "impl",
+      "description": "Restore all out-of-scope code files from main: `git checkout main -- crates/reify-cli/ crates/reify-constraints/ crates/reify-eval/ crates/reify-expr/ crates/reify-syntax/tests/ crates/reify-test-support/ crates/reify-types/ gui/`. This restores matrix_eval_tests.rs (244 lines of tests), bracket_violated_indeterminate.ri fixture, constraint_summary_message function, and all other files that were incorrectly modified by merge artifacts.",
+      "status": "done",
+      "commit": "3a86fa21"
+    },
+    {
+      "id": "step-5",
+      "type": "test",
+      "description": "Verify that only task-208 files (crates/reify-compiler/src/lib.rs, crates/reify-compiler/tests/determinacy_compile_tests.rs, crates/reify-compiler/tests/unit_registry_tests.rs) differ from main in the crates/ directory. Run `git diff main --name-only -- crates/` and assert the list matches exactly.",
+      "status": "done",
+      "commit": null
+    },
+    {
+      "id": "step-6",
+      "type": "test",
+      "description": "Verify matrix_eval_tests.rs exists and contains the expected tests (empty_rank1_tensor_add_returns_empty_tensor, heterogeneous_tensor_first_is_tensor_rest_int_add_returns_undef, jagged_a_matrix_add_returns_undef, etc.). This addresses the reviewer's missing_test_file issue.",
+      "status": "done",
+      "commit": null
+    },
+    {
+      "id": "step-7",
+      "type": "impl",
+      "description": "Restore remaining out-of-scope non-crate files from main: .gitignore, hooks/project-checks, orchestrator.yaml, scripts/tree-sitter-generate.sh, tests/check-pm-standardization.sh, tests/infra/test_tree_sitter_pipeline.sh, tree-sitter-reify/ files, gui/package.json, gui/pnpm-lock.yaml, gui/sidecar/package.json. Run `git checkout main -- .gitignore hooks/ orchestrator.yaml scripts/ tests/ tree-sitter-reify/ gui/package.json gui/pnpm-lock.yaml gui/sidecar/`.",
+      "status": "done",
+      "commit": "4568f0e1"
+    },
+    {
+      "id": "step-8",
+      "type": "test",
+      "description": "Run `git diff main --name-only` and verify only these files differ: crates/reify-compiler/src/lib.rs, crates/reify-compiler/tests/determinacy_compile_tests.rs, crates/reify-compiler/tests/unit_registry_tests.rs (plus .task/ metadata files). Any other diff indicates an incomplete restore.",
+      "status": "done",
+      "commit": null
+    },
+    {
+      "id": "step-9",
+      "type": "test",
+      "description": "Run `cargo test -p reify-compiler` to verify task-208's unit registry code compiles and tests pass. Run `cargo test -p reify-expr -p reify-cli -p reify-constraints -p reify-eval -p reify-types` to verify restored files don't break anything.",
+      "status": "done",
+      "commit": null
+    },
+    {
+      "id": "step-10",
+      "type": "test",
+      "description": "Run `cargo clippy --all-targets` and verify no lint errors. Run GUI tests if applicable (`cd gui && pnpm test`). This addresses the reviewer's post_merge_verify issue (tests failed, lint issues, type errors).",
+      "status": "done",
+      "commit": null
+    },
+    {
+      "id": "step-11",
+      "type": "impl",
+      "description": "Re-sync tasks.json from current main HEAD: `git checkout main -- .taskmaster/tasks/tasks.json`. Main has been updated since the previous restore (step-2), creating a 1-task drift (task 281: in-progress vs blocked, missing memory_hints). This final sync eliminates all remaining tasks.json divergence. Addresses review issue: phantom_status_rollback_causes_rework_risk.",
+      "status": "done",
+      "commit": "5ad04ccc"
+    },
+    {
+      "id": "step-12",
+      "type": "test",
+      "description": "Verify phantom-rollback tasks are safe: confirm tasks.json has 0 status diffs from main (python3 script comparing all task statuses). Specifically verify the 8 flagged tasks (300-followup, 337, 365, 439, 441, 461, 462, 483) retain their main-branch status. All 8 have been independently confirmed to have their test code present on main via git grep.",
+      "status": "done",
+      "commit": null
+    },
+    {
+      "id": "step-13",
+      "type": "test",
+      "description": "Verify module.rs diff is legitimate task-208 scope: confirm that crates/reify-test-support/src/builders/module.rs adds only `units: Vec::new()` to the CompiledModuleBuilder, which is required because task-208 adds a `units: Vec<CompiledUnit>` field to the CompiledModule struct. This is NOT a merge artifact \u2014 it is a necessary builder update.",
+      "status": "done",
+      "commit": null
+    },
+    {
+      "id": "step-14",
+      "type": "test",
+      "description": "Final file-scope verification: `git diff main --name-only` must show EXACTLY these files: (1) crates/reify-compiler/src/lib.rs, (2) crates/reify-compiler/tests/determinacy_compile_tests.rs, (3) crates/reify-compiler/tests/unit_registry_tests.rs, (4) crates/reify-test-support/src/builders/module.rs. Plus .task/ metadata. No tasks.json diff (restored from main). No other files.",
+      "status": "done",
+      "commit": "e0784d76"
+    },
+    {
+      "id": "step-15",
+      "type": "test",
+      "description": "Final post-merge verification (addresses review issue: post_merge_verify). Run: (a) `cargo test --workspace` \u2014 0 failures, (b) `cargo clippy --all-targets` \u2014 0 errors/warnings, (c) `cargo build --workspace` \u2014 clean compile. All three must pass. This proves the branch is merge-ready with no test failures, lint issues, or type errors.",
+      "status": "done",
+      "commit": "e0784d76"
+    }
+  ],
+  "design_decisions": [
+    {
+      "decision": "Restore tasks.json entirely from main rather than selectively fixing individual statuses",
+      "rationale": "tasks.json status management belongs on main via the orchestrator. Feature branches should not carry task status changes. Restoring from main eliminates all 65 discrepancies atomically. Forward-progress changes (pending\u2192done from completed tasks like 356, 359, 378, etc.) will be re-applied when those task branches merge to main through the normal orchestrator flow."
+    },
+    {
+      "decision": "Restore ALL non-compiler files from main, not just the ones flagged by the reviewer",
+      "rationale": "Task 208 scope is crates/reify-compiler only (per task metadata: modules=['crates/reify-compiler']). The 18 other crate files and GUI files that differ from main are all merge artifacts from other task branches. Restoring them all is safer than cherry-picking individual files, which is how the current broken state was created in the first place (the 4 'restore from main' commits each partially restored different sets of files)."
+    },
+    {
+      "decision": "Do not attempt to update task 375 description to fix the filename reference (tensor_matrix_arithmetic_tests.rs \u2192 matrix_eval_tests.rs)",
+      "rationale": "Task 375 status will be restored to pending (from the main restore). The task description update should happen when task 375 is actually assigned to an agent, not as part of this branch's fix. Modifying task descriptions on a feature branch recreates the same anti-pattern that caused these issues."
+    },
+    {
+      "decision": "Keep module.rs diff (units: Vec::new()) as legitimate task-208 scope",
+      "rationale": "Task 208 adds a `units: Vec<CompiledUnit>` field to the CompiledModule struct in reify-compiler/src/lib.rs. The CompiledModuleBuilder in reify-test-support must initialize this field for tests to compile. The 1-line addition `units: Vec::new()` is the minimal required change. This was incorrectly restored to main in step-4 and must have been re-added by the implementation agent."
+    },
+    {
+      "decision": "Re-sync tasks.json from main a second time (step-11) rather than manually patching the 1-task diff",
+      "rationale": "Main is a moving target \u2014 other tasks are being merged concurrently. A full re-checkout from main HEAD is idempotent and correct regardless of how many changes main has accumulated since the last sync. Manual patching is fragile and error-prone."
+    }
+  ],
+  "reuse": [
+    {
+      "what": "git checkout main -- <path> pattern",
+      "where": "Previous 'restore from main' commits (a4e208b8, d2b8d6cf, fa1f5476, 8a69e572)",
+      "how": "Same mechanism but applied more comprehensively and correctly \u2014 restore ALL non-compiler files at once instead of incremental partial restores that miss files."
+    },
+    {
+      "what": "Task status comparison script (Python)",
+      "where": "Analysis performed during plan creation",
+      "how": "Reuse the Python JSON comparison approach to verify tasks.json matches main after restore. Load both versions, compare statuses, assert no done\u2192regressed transitions."
+    },
+    {
+      "what": "git grep <pattern> main -- <path> for code verification",
+      "where": "Step-12 phantom-rollback verification",
+      "how": "Used to confirm all 8 flagged tasks have their test implementations present on main branch, proving the status rollback risk is mitigated."
+    }
+  ],
+  "_session_id": "208-6e64be75",
+  "_created_at": "2026-03-28T15:23:52.315903+00:00",
+  "_schema_version": 1
+}
