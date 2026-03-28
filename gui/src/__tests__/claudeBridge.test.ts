@@ -17,6 +17,7 @@ import {
   claudeClearSession,
   subscribeToClaudeEvents,
   MESSAGE_CONTEXT_FIELD_MAP,
+  mapContextToWire,
 } from '../bridge';
 
 const mockInvoke = vi.mocked(invoke);
@@ -145,6 +146,47 @@ describe('claude invoke wrappers', () => {
     const expectedKeys = Object.keys(fullContext).sort();
     const mapKeys = Object.keys(MESSAGE_CONTEXT_FIELD_MAP).sort();
     expect(mapKeys).toEqual(expectedKeys);
+  });
+
+  it('mapContextToWire maps all fields to snake_case', () => {
+    const input: MessageContext = {
+      selectedEntity: 'Box.body',
+      diagnostics: ['error: type mismatch'],
+      constraints: ['x > 0'],
+      currentFile: 'bracket.ri',
+      attachedContexts: ['design-spec.md'],
+    };
+
+    const wire = mapContextToWire(input);
+
+    expect(wire).toEqual({
+      selected_entity: 'Box.body',
+      diagnostics: ['error: type mismatch'],
+      constraints: ['x > 0'],
+      current_file: 'bracket.ri',
+      attached_contexts: ['design-spec.md'],
+    });
+
+    // Verify no extra keys beyond those in the mapping table
+    const wireKeys = Object.keys(wire).sort();
+    const expectedWireKeys = Object.values(MESSAGE_CONTEXT_FIELD_MAP).sort();
+    expect(wireKeys).toEqual(expectedWireKeys);
+  });
+
+  it('mapContextToWire passes undefined fields through', () => {
+    const input: MessageContext = {
+      selectedEntity: 'Bracket.w',
+    };
+
+    const wire = mapContextToWire(input);
+
+    expect(wire).toEqual({
+      selected_entity: 'Bracket.w',
+      diagnostics: undefined,
+      constraints: undefined,
+      current_file: undefined,
+      attached_contexts: undefined,
+    });
   });
 });
 
