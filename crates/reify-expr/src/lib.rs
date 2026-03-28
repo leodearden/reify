@@ -977,6 +977,53 @@ fn scale_components(
     }
 }
 
+/// Check if a tensor slice represents rank-2 data (all elements are Tensor).
+/// Returns `true` if the first element is a Tensor; callers must verify `.all()`.
+fn is_rank2(slice: &[Value]) -> bool {
+    slice
+        .first()
+        .map_or(false, |v| matches!(v, Value::Tensor(_)))
+}
+
+/// Validate rank-2 tensor operands for addition/subtraction.
+/// Returns `Some(Value::Undef)` if validation fails, `None` if tensors are valid
+/// for componentwise operation (or if they are rank-1 and should fall through).
+fn validate_rank2_tensors(a: &[Value], b: &[Value]) -> Option<Value> {
+    let a_rank2 = is_rank2(a);
+    let b_rank2 = is_rank2(b);
+
+    // If neither is rank-2, let componentwise_binop handle it (rank-1 path).
+    if !a_rank2 && !b_rank2 {
+        return None;
+    }
+
+    // Mixed rank (one rank-2, one rank-1) → Undef.
+    if a_rank2 != b_rank2 {
+        return Some(Value::Undef);
+    }
+
+    // Both claim rank-2. Verify ALL rows are Tensor (not just first).
+    if !a.iter().all(|r| matches!(r, Value::Tensor(_)))
+        || !b.iter().all(|r| matches!(r, Value::Tensor(_)))
+    {
+        return Some(Value::Undef);
+    }
+
+    // Empty inner rows (0-column matrix) → Undef.
+    let a_has_empty = a
+        .iter()
+        .any(|r| matches!(r, Value::Tensor(row) if row.is_empty()));
+    let b_has_empty = b
+        .iter()
+        .any(|r| matches!(r, Value::Tensor(row) if row.is_empty()));
+    if a_has_empty || b_has_empty {
+        return Some(Value::Undef);
+    }
+
+    // Valid rank-2: fall through to componentwise_binop.
+    None
+}
+
 fn eval_add(lv: &Value, rv: &Value) -> Value {
     match (lv, rv) {
         (Value::Int(a), Value::Int(b)) => Value::Int(a + b),
@@ -1027,8 +1074,13 @@ fn eval_add(lv: &Value, rv: &Value) -> Value {
             }
         }
         (Value::String(a), Value::String(b)) => Value::String(format!("{}{}", a, b)),
-        // Component-wise Tensor addition
-        (Value::Tensor(a), Value::Tensor(b)) => componentwise_binop(a, b, eval_add, Value::Tensor),
+        // Component-wise Tensor addition (with rank-2 validation)
+        (Value::Tensor(a), Value::Tensor(b)) => {
+            if let Some(undef) = validate_rank2_tensors(a, b) {
+                return undef;
+            }
+            componentwise_binop(a, b, eval_add, Value::Tensor)
+        }
         // Affine geometry: Vector + Vector → Vector
         (Value::Vector(a), Value::Vector(b)) => componentwise_binop(a, b, eval_add, Value::Vector),
         // Affine geometry: Point + Vector or Vector + Point → Point (displacement)
@@ -1089,8 +1141,13 @@ fn eval_sub(lv: &Value, rv: &Value) -> Value {
                 }
             }
         }
-        // Component-wise Tensor subtraction
-        (Value::Tensor(a), Value::Tensor(b)) => componentwise_binop(a, b, eval_sub, Value::Tensor),
+        // Component-wise Tensor subtraction (with rank-2 validation)
+        (Value::Tensor(a), Value::Tensor(b)) => {
+            if let Some(undef) = validate_rank2_tensors(a, b) {
+                return undef;
+            }
+            componentwise_binop(a, b, eval_sub, Value::Tensor)
+        }
         // Affine geometry: Point - Point → Vector (displacement)
         (Value::Point(a), Value::Point(b)) => componentwise_binop(a, b, eval_sub, Value::Vector),
         // Affine geometry: Point - Vector → Point (point displaced backwards)
