@@ -12699,6 +12699,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 628,
+        "title": "Fix remaining shallow hash fields in test builder content_hash",
+        "description": "Task 602 fixed the major content_hash gaps but several semantically significant fields are still ignored in the test builders (same class of bug):\n\n1. **DefaultKind::Param ignores cell_type** (trait_def.rs): `DefaultKind::Param { .. } => \"Param\"` should be `DefaultKind::Param { cell_type, .. } => format!(\"Param:{}\", cell_type)`. Two defaults with same name but different cell_type (Real vs Int) produce identical hashes.\n\n2. **DefaultKind::Let/Constraint ignore inner expression** (trait_def.rs): Only the kind tag is hashed, not the inner expression's content_hash. Two Let defaults with same name but different expressions hash identically. Fix: `DefaultKind::Let(decl) => format!(\"Let:{}\", decl.content_hash)`, `DefaultKind::Constraint(decl) => format!(\"Constraint:{}\", decl.content_hash)`.\n\n3. **TypeParam bounds/default ignored** (trait_def.rs): `type_param_hashes` maps only `p.name`, ignoring `p.bounds` and `p.default`. Fix: include bound trait_ref names and default type in the hash string.\n\n4. **Missing Sampled variant cross-test** (field.rs): No test asserts Sampled hashes differently from Analytical/Imported with same name+types.\n\nAdd tests for each fix asserting hash distinctness (same pattern as existing tests).\n\nmemory_hints: search \"content_hash builder test support\", get_entity \"DefaultKind\", get_entity \"TypeParam\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -12711,7 +12722,7 @@
       ],
       "created": "2026-03-28T00:21:26.757Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-28T00:21:26.783Z"
+      "updated": "2026-03-28T00:21:35.520Z"
     }
   }
 }
