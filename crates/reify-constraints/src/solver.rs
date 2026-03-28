@@ -733,6 +733,88 @@ mod tests {
     }
 
     #[test]
+    fn build_trial_values_multi_param_regression() {
+        use super::build_trial_values;
+        use reify_types::{AutoParam, DimensionVector, Type, Value, ValueCellId};
+
+        let thickness_id = ValueCellId::new("Bracket", "thickness");
+        let angle_id = ValueCellId::new("Bracket", "angle");
+        let width_id = ValueCellId::new("Bracket", "width");
+
+        // Base map has a pre-existing non-auto value (width=80mm)
+        let mut base = ValueMap::new();
+        base.insert(
+            width_id.clone(),
+            Value::Scalar {
+                si_value: 0.080,
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+
+        let params = vec![
+            AutoParam {
+                id: thickness_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.1)),
+            },
+            AutoParam {
+                id: angle_id.clone(),
+                param_type: Type::angle(),
+                bounds: Some((0.0, std::f64::consts::PI)),
+            },
+        ];
+
+        let trial = build_trial_values(&base, &params, &[0.005, 1.2]);
+
+        // First auto param: length with correct dimension
+        let thickness = trial.get(&thickness_id).expect("thickness should exist");
+        match thickness {
+            &Value::Scalar {
+                si_value,
+                dimension,
+            } => {
+                assert!(
+                    (si_value - 0.005).abs() < 1e-15,
+                    "thickness si_value should be 0.005, got {}",
+                    si_value
+                );
+                assert_eq!(dimension, DimensionVector::LENGTH);
+            }
+            other => panic!("expected Scalar for thickness, got {:?}", other),
+        }
+
+        // Second auto param: angle with correct dimension
+        let angle = trial.get(&angle_id).expect("angle should exist");
+        match angle {
+            &Value::Scalar {
+                si_value,
+                dimension,
+            } => {
+                assert!(
+                    (si_value - 1.2).abs() < 1e-15,
+                    "angle si_value should be 1.2, got {}",
+                    si_value
+                );
+                assert_eq!(dimension, DimensionVector::ANGLE);
+            }
+            other => panic!("expected Scalar for angle, got {:?}", other),
+        }
+
+        // Non-auto value should be preserved unchanged
+        let width = trial.get(&width_id).expect("width should be preserved");
+        match width {
+            &Value::Scalar { si_value, .. } => {
+                assert!(
+                    (si_value - 0.080).abs() < 1e-15,
+                    "width should remain 0.080, got {}",
+                    si_value
+                );
+            }
+            other => panic!("expected Scalar for width, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn compute_violation_satisfied_constraint() {
         use super::compute_total_violation;
         use reify_types::{
