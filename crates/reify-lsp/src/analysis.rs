@@ -436,15 +436,20 @@ mod tests {
 }"#;
         let ctx = AnalysisContext::new(source, &test_uri());
         let members = ctx.member_names();
-        let names: Vec<&str> = members.iter().map(|(n, _, _)| *n).collect();
-        assert!(
-            names.contains(&"cond"),
-            "should include top-level param 'cond', got: {names:?}"
-        );
-        assert!(
-            names.contains(&"guarded_x"),
-            "should include guarded-group param 'guarded_x', got: {names:?}"
-        );
+
+        let cond = members
+            .iter()
+            .find(|(n, _, _)| *n == "cond")
+            .expect("should include top-level param 'cond'");
+        assert_eq!(cond.1, ValueCellKind::Param, "cond should be a Param");
+        assert_eq!(*cond.2, Type::Bool, "cond should have Bool type");
+
+        let guarded = members
+            .iter()
+            .find(|(n, _, _)| *n == "guarded_x")
+            .expect("should include guarded-group param 'guarded_x'");
+        assert_eq!(guarded.1, ValueCellKind::Param, "guarded_x should be a Param");
+        assert_eq!(*guarded.2, Type::length(), "guarded_x should have length type");
     }
 
     #[test]
