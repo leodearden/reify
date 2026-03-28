@@ -11750,7 +11750,7 @@
         "description": "In `crates/reify-runtime/tests/concurrent_eval.rs`, `test_committed_node_survives_cancellation` uses `std::thread::sleep(Duration::from_millis(50))` inside an async evaluator body within a `tokio::spawn` task. Under the `#[tokio::test]` current_thread runtime, this blocks the entire executor for 50ms, preventing other tasks from being polled. The test passes by accident due to current_thread serialization, not by design.\n\n**Fix:** Replace `std::thread::sleep(Duration::from_millis(50))` with `tokio::time::sleep(Duration::from_millis(50)).await` inside the async `evaluate` fn at line ~2132. This is a one-line change since `AsyncNodeEvaluator::evaluate` is already async.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "blocked",
         "dependencies": [
           "477"
         ],
@@ -11764,7 +11764,8 @@
           "modules": [
             "crates/reify-runtime/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-03-28T05:45:31.991Z"
       },
       {
         "id": "576",
@@ -13666,7 +13667,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T05:41:58.992Z",
+      "lastModified": "2026-03-28T05:45:31.991Z",
       "taskCount": 691,
       "completedCount": 326,
       "tags": [
