@@ -1020,6 +1020,27 @@ fn neg_scalar(v: Value) -> Value {
     }
 }
 
+/// Negate each component in a slice, wrapping the result with the given
+/// constructor.  Returns `Value::Undef` if components are empty or any
+/// component negation produces `Value::Undef`.  Uses the Option-collect
+/// pattern for single-pass early exit.
+fn negate_components(components: &[Value], wrap: fn(Vec<Value>) -> Value) -> Value {
+    if components.is_empty() {
+        return Value::Undef;
+    }
+    match components
+        .iter()
+        .map(|c| {
+            let r = negate_value(c.clone());
+            if r.is_undef() { None } else { Some(r) }
+        })
+        .collect::<Option<Vec<Value>>>()
+    {
+        Some(results) => wrap(results),
+        None => Value::Undef,
+    }
+}
+
 /// Recursively negate a value.  Handles all negatable variants: Int, Real,
 /// Scalar, Complex, Tensor, Vector, and Matrix (canonicalized to nested Tensor).
 /// Point negation is explicitly undefined (spec 3.3.1).
@@ -1028,22 +1049,8 @@ fn negate_value(v: Value) -> Value {
         Value::Int(_) | Value::Real(_) | Value::Scalar { .. } | Value::Complex { .. } => {
             neg_scalar(v)
         }
-        Value::Tensor(components) => {
-            let results: Vec<Value> = components.into_iter().map(negate_value).collect();
-            if results.iter().any(|x| x.is_undef()) {
-                Value::Undef
-            } else {
-                Value::Tensor(results)
-            }
-        }
-        Value::Vector(components) => {
-            let results: Vec<Value> = components.into_iter().map(negate_value).collect();
-            if results.iter().any(|x| x.is_undef()) {
-                Value::Undef
-            } else {
-                Value::Vector(results)
-            }
-        }
+        Value::Tensor(components) => negate_components(&components, Value::Tensor),
+        Value::Vector(components) => negate_components(&components, Value::Vector),
         Value::Matrix(rows) => negate_value(Value::Matrix(rows).canonicalize_matrix()),
         // Affine geometry: point negation is undefined (spec 3.3.1)
         Value::Point(_) => Value::Undef,
