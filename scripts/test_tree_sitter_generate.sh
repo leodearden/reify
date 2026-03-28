@@ -13,6 +13,19 @@ STAMP_FILE="$TS_DIR/src/.grammar_hash.stamp"
 PASS=0
 FAIL=0
 
+# Portable SHA-256: prefer sha256sum (GNU coreutils), fall back to shasum (macOS).
+# Mirrors compute_sha256() from tree-sitter-generate.sh.
+compute_hash() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1"
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$1"
+    else
+        echo "ERROR: neither sha256sum nor shasum found on PATH." >&2
+        exit 1
+    fi
+}
+
 assert() {
     local desc="$1"
     shift
@@ -48,7 +61,7 @@ assert "stamp contains a sha256 hash (64 hex chars)" \
     env STAMP="$stamp_content" bash -c '[[ "$STAMP" =~ ^[0-9a-f]{64}$ ]]'
 
 # Stamp should match sha256sum of grammar.js.
-expected_hash=$(sha256sum "$TS_DIR/grammar.js" | awk '{print $1}')
+expected_hash=$(compute_hash "$TS_DIR/grammar.js" | awk '{print $1}')
 assert "stamp hash matches grammar.js sha256" \
     test "$stamp_content" = "$expected_hash"
 
@@ -108,7 +121,7 @@ assert "regenerates when hash differs (prints 'generated parser files')" \
 
 # Stamp should now contain the real hash.
 stamp_after=$(cat "$STAMP_FILE" 2>/dev/null || echo "")
-real_hash=$(sha256sum "$TS_DIR/grammar.js" | awk '{print $1}')
+real_hash=$(compute_hash "$TS_DIR/grammar.js" | awk '{print $1}')
 assert "stamp updated to match current grammar.js" \
     test "$stamp_after" = "$real_hash"
 
