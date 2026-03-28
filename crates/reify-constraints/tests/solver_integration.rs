@@ -1106,3 +1106,101 @@ fn infeasible_initial_not_rescued_by_fallback() {
         ),
     }
 }
+
+/// Multi-param warm-start with objective: 3 auto params (p0, p1, p2) with wide
+/// bounds [1mm, 100mm], constraints 5mm < pN < 50mm for each, all starting at
+/// 30mm (feasible). Objective: Minimize(p0 + p1 + p2). This exercises
+/// build_simplex with 4 vertices (3+1), build_trial_values with a 3-element
+/// param vector, and the returned values map with 3 entries.
+///
+/// Asserts: Solved, each param satisfies constraints, and the sum decreased
+/// from the initial 90mm total (proving optimizer improved the objective).
+#[test]
+fn multi_param_warm_start_with_objective() {
+    let solver = DimensionalSolver;
+
+    let p0_id = vcid("Part", "p0");
+    let p1_id = vcid("Part", "p1");
+    let p2_id = vcid("Part", "p2");
+    let p0_ref = value_ref("Part", "p0");
+    let p1_ref = value_ref("Part", "p1");
+    let p2_ref = value_ref("Part", "p2");
+
+    // Wide constraints: each param in [5mm, 50mm]
+    let constraints = vec![
+        (cnid("Part", 0), gt(p0_ref.clone(), literal(mm(5.0)))),
+        (cnid("Part", 1), lt(p0_ref.clone(), literal(mm(50.0)))),
+        (cnid("Part", 2), gt(p1_ref.clone(), literal(mm(5.0)))),
+        (cnid("Part", 3), lt(p1_ref.clone(), literal(mm(50.0)))),
+        (cnid("Part", 4), gt(p2_ref.clone(), literal(mm(5.0)))),
+        (cnid("Part", 5), lt(p2_ref.clone(), literal(mm(50.0)))),
+    ];
+
+    // Minimize(p0 + p1 + p2)
+    let sum_01 = binop(BinOp::Add, p0_ref, p1_ref);
+    let sum_012 = binop(BinOp::Add, sum_01, p2_ref);
+    let objective = OptimizationObjective::Minimize(sum_012);
+
+    // All params start at 30mm — feasible, well within constraint windows
+    let mut current = ValueMap::new();
+    for pid in [&p0_id, &p1_id, &p2_id] {
+        current.insert(
+            pid.clone(),
+            Value::Scalar {
+                si_value: 0.030, // 30mm
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+    }
+
+    let problem = ResolutionProblem {
+        auto_params: vec![
+            AutoParam {
+                id: p0_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.100)), // 1mm–100mm
+            },
+            AutoParam {
+                id: p1_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.100)),
+            },
+            AutoParam {
+                id: p2_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.100)),
+            },
+        ],
+        constraints,
+        current_values: current,
+        objective: Some(objective),
+        functions: vec![],
+    };
+
+    let result = solver.solve(&problem);
+    match result {
+        SolveResult::Solved { values } => {
+            let mut sum_si = 0.0;
+            for pid in [&p0_id, &p1_id, &p2_id] {
+                let si = values.get(pid).unwrap().as_f64().unwrap();
+                assert!(
+                    si > 0.005 && si < 0.050,
+                    "param {:?} should satisfy constraints (5mm < p < 50mm), got {} m",
+                    pid,
+                    si
+                );
+                sum_si += si;
+            }
+            // Optimizer should improve from initial sum of 0.090 (3 × 30mm)
+            assert!(
+                sum_si < 0.090,
+                "optimizer should reduce sum below initial 90mm, got {} m",
+                sum_si
+            );
+        }
+        other => panic!(
+            "expected Solved for multi-param warm-start with objective, got {:?}",
+            other
+        ),
+    }
+}
