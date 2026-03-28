@@ -462,6 +462,174 @@ describe('subscribeToClaudeEvents', () => {
       }
     });
   });
+
+  describe('payload validation guards', () => {
+    /** Helper: capture the internal listener for a given event name */
+    function captureListener(eventName: string) {
+      let captured: ((event: { payload: unknown }) => void) | undefined;
+      mockListen.mockImplementation(async (name, handler) => {
+        if (name === eventName) {
+          captured = handler as (event: { payload: unknown }) => void;
+        }
+        return vi.fn();
+      });
+      return {
+        async setup(handler: ReturnType<typeof vi.fn>) {
+          await subscribeToClaudeEvents(handler);
+          return captured!;
+        },
+      };
+    }
+
+    const PAYLOAD_EVENTS = [
+      'claude-text-delta',
+      'claude-thinking-delta',
+      'claude-tool-call',
+      'claude-tool-result',
+      'claude-done',
+      'claude-error',
+    ] as const;
+
+    const INVALID_PAYLOADS = [
+      ['null', null],
+      ['undefined', undefined],
+      ['string', 'some-string'],
+      ['number', 42],
+      ['array', [1, 2, 3]],
+    ] as const;
+
+    for (const eventName of PAYLOAD_EVENTS) {
+      for (const [label, payload] of INVALID_PAYLOADS) {
+        it(`drops ${eventName} when payload is ${label}`, async () => {
+          const { setup } = captureListener(eventName);
+          const handler = vi.fn();
+          const listener = await setup(handler);
+
+          listener({ payload });
+
+          expect(handler).not.toHaveBeenCalled();
+        });
+      }
+    }
+
+    describe('required string field validation', () => {
+      it('drops text_delta when id is a number', async () => {
+        const { setup } = captureListener('claude-text-delta');
+        const handler = vi.fn();
+        const listener = await setup(handler);
+        listener({ payload: { id: 123, content: 'hello' } });
+        expect(handler).not.toHaveBeenCalled();
+      });
+
+      it('drops text_delta when content field is missing', async () => {
+        const { setup } = captureListener('claude-text-delta');
+        const handler = vi.fn();
+        const listener = await setup(handler);
+        listener({ payload: { id: 'msg-1' } });
+        expect(handler).not.toHaveBeenCalled();
+      });
+
+      it('drops thinking_delta when content is null', async () => {
+        const { setup } = captureListener('claude-thinking-delta');
+        const handler = vi.fn();
+        const listener = await setup(handler);
+        listener({ payload: { id: 'msg-t1', content: null } });
+        expect(handler).not.toHaveBeenCalled();
+      });
+
+      it('drops tool_call when tool_name is missing', async () => {
+        const { setup } = captureListener('claude-tool-call');
+        const handler = vi.fn();
+        const listener = await setup(handler);
+        listener({ payload: { id: 'tc1', tool_input: {} } });
+        expect(handler).not.toHaveBeenCalled();
+      });
+
+      it('drops tool_result when tool_name is a number', async () => {
+        const { setup } = captureListener('claude-tool-result');
+        const handler = vi.fn();
+        const listener = await setup(handler);
+        listener({ payload: { id: 'tr1', tool_name: 42, result: 'ok' } });
+        expect(handler).not.toHaveBeenCalled();
+      });
+
+      it('drops done when id is undefined', async () => {
+        const { setup } = captureListener('claude-done');
+        const handler = vi.fn();
+        const listener = await setup(handler);
+        listener({ payload: { id: undefined } });
+        expect(handler).not.toHaveBeenCalled();
+      });
+
+      it('drops error when message is an array', async () => {
+        const { setup } = captureListener('claude-error');
+        const handler = vi.fn();
+        const listener = await setup(handler);
+        listener({ payload: { id: 'e1', message: ['bad', 'stuff'] } });
+        expect(handler).not.toHaveBeenCalled();
+      });
+
+      it('drops error when id is missing', async () => {
+        const { setup } = captureListener('claude-error');
+        const handler = vi.fn();
+        const listener = await setup(handler);
+        listener({ payload: { message: 'rate limit exceeded' } });
+        expect(handler).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('tool_input normalization', () => {
+      it('normalizes tool_input=null to empty object', async () => {
+        const { setup } = captureListener('claude-tool-call');
+        const handler = vi.fn();
+        const listener = await setup(handler);
+        listener({ payload: { id: 'tc1', tool_name: 'edit', tool_input: null } });
+        expect(handler).toHaveBeenCalledWith({
+          type: 'tool_call', id: 'tc1', tool_name: 'edit', tool_input: {},
+        });
+      });
+
+      it('normalizes tool_input=[1,2,3] (array) to empty object', async () => {
+        const { setup } = captureListener('claude-tool-call');
+        const handler = vi.fn();
+        const listener = await setup(handler);
+        listener({ payload: { id: 'tc2', tool_name: 'read', tool_input: [1, 2, 3] } });
+        expect(handler).toHaveBeenCalledWith({
+          type: 'tool_call', id: 'tc2', tool_name: 'read', tool_input: {},
+        });
+      });
+
+      it('normalizes tool_input=undefined to empty object', async () => {
+        const { setup } = captureListener('claude-tool-call');
+        const handler = vi.fn();
+        const listener = await setup(handler);
+        listener({ payload: { id: 'tc3', tool_name: 'write', tool_input: undefined } });
+        expect(handler).toHaveBeenCalledWith({
+          type: 'tool_call', id: 'tc3', tool_name: 'write', tool_input: {},
+        });
+      });
+
+      it('normalizes tool_input="string" to empty object', async () => {
+        const { setup } = captureListener('claude-tool-call');
+        const handler = vi.fn();
+        const listener = await setup(handler);
+        listener({ payload: { id: 'tc4', tool_name: 'run', tool_input: 'bad' } });
+        expect(handler).toHaveBeenCalledWith({
+          type: 'tool_call', id: 'tc4', tool_name: 'run', tool_input: {},
+        });
+      });
+
+      it('passes through valid tool_input object unchanged', async () => {
+        const { setup } = captureListener('claude-tool-call');
+        const handler = vi.fn();
+        const listener = await setup(handler);
+        listener({ payload: { id: 'tc5', tool_name: 'edit', tool_input: { path: '/f' } } });
+        expect(handler).toHaveBeenCalledWith({
+          type: 'tool_call', id: 'tc5', tool_name: 'edit', tool_input: { path: '/f' },
+        });
+      });
+    });
+  });
 });
 
 // ── Compile-time type assertions ───────────────────────────────────
