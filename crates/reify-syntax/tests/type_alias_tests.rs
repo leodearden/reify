@@ -347,15 +347,19 @@ fn parse_type_alias_missing_name_no_panic() {
 #[test]
 fn parse_type_alias_missing_equals_no_panic() {
     // `type Foo Force` — missing '=' between name and RHS.
-    // Should NOT panic. Should produce parse error(s), no valid TypeAlias emitted.
+    // Should NOT panic. Must produce parse error(s) and no valid TypeAlias.
     let source = "type Foo Force";
     let (decls, errors) = parse_decls(source);
+    assert!(
+        !errors.is_empty(),
+        "expected parse errors for malformed input (missing '='), got none; decls={:?}",
+        decls,
+    );
     let has_type_alias = decls.iter().any(|d| matches!(d, Declaration::TypeAlias(_)));
     assert!(
-        !has_type_alias || !errors.is_empty(),
-        "expected either no TypeAlias or at least one error for malformed input, got decls={:?}, errors={:?}",
+        !has_type_alias,
+        "expected no TypeAlias for malformed input (missing '='), got decls={:?}",
         decls,
-        errors,
     );
 }
 
