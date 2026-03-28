@@ -285,7 +285,7 @@ fn constraint_summary_message(
 /// **Indeterminate constraints are intentionally treated as non-violating.**
 /// `Indeterminate` arises when a constraint's inputs are undefined — typically
 /// from `auto` parameters not yet resolved by the solver. Treating these as
-/// violations would block builds that are otherwise valid and break the
+/// violations would block evaluations that are otherwise valid and break the
 /// incremental evaluation engine. Only explicit `Violated` results cause
 /// `all_satisfied` to be `false`.
 fn report_constraint_results(
