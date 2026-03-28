@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // Mock Tauri API modules (must be before imports that use them)
 vi.mock('@tauri-apps/api/core', () => ({
@@ -662,6 +662,16 @@ describe('subscribeToClaudeEvents', () => {
         });
       });
     });
+
+    describe('claude-ready bypass', () => {
+      it('claude-ready fires unconditionally even with null payload', async () => {
+        const { setup } = captureListener('claude-ready');
+        const handler = vi.fn();
+        const listener = await setup(handler);
+        listener({ payload: null as unknown as Record<string, unknown> });
+        expect(handler).toHaveBeenCalledWith({ type: 'ready' });
+      });
+    });
   });
 });
 
@@ -694,6 +704,6 @@ type _AssertDonePayload = AssertTrue<Equals<Omit<Done, 'type'>, { id: string }>>
 type _AssertErrorMessagePayload = AssertTrue<Equals<Omit<ErrorMessage, 'type'>, { id: string; message: string }>>;
 
 // EventEntry's payload type is `unknown` (not `Record<string, unknown>`) because
-// each handler casts event.payload independently via `as Omit<X, 'type'>`.
+// each handler validates event.payload via validatePayload() before accessing fields.
 // `unknown` prevents accidental uncast property access and doesn't falsely
 // constrain the payload to be an object with string keys.
