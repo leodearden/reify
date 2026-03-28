@@ -519,4 +519,23 @@ mod tests {
             panic!("expected FunctionCall kind for curl_call");
         }
     }
+
+    #[test]
+    #[should_panic(expected = "infer_type() cannot infer Frame")]
+    fn literal_frame_value_panics() {
+        let frame_value = Value::Frame {
+            origin: Box::new(Value::Point(vec![
+                Value::Real(0.0),
+                Value::Real(0.0),
+                Value::Real(0.0),
+            ])),
+            basis: Box::new(Value::Orientation {
+                w: 1.0,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            }),
+        };
+        literal(frame_value);
+    }
 }
