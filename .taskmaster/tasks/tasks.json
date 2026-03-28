@@ -13223,6 +13223,17 @@
         ],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 659,
+        "title": "Extract test helper and complete field-stripping coverage in claudeBridge.test.ts",
+        "description": "The claudeBridge.test.ts file has ~10 tests that repeat the same 12-line boilerplate pattern: capture a channel handler via mockListen.mockImplementation, create a vi.fn() handler, call subscribeToClaudeEvents, then invoke the captured handler. This should be extracted into a shared helper like `captureChannelHandler(eventName: string)` that returns `{ capturedHandler, handler }`.\n\nOnce the helper exists, add field-stripping tests for the remaining event types (text_delta, thinking_delta, tool_result, error) to complete the set alongside the existing done and tool_call tests. With the helper, each new test is 3-4 lines.\n\nMemory hints:\n- Search: \"claudeBridge subscribeToClaudeEvents field stripping test\"\n- Entities: claudeBridge.test.ts, subscribeToClaudeEvents, bridge.ts",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -13235,7 +13246,7 @@
       ],
       "created": "2026-03-28T04:27:35.038Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-28T04:27:45.610Z"
+      "updated": "2026-03-28T04:27:54.196Z"
     }
   }
 }
