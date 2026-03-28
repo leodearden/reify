@@ -186,12 +186,7 @@ impl QueryKey {
             GeometryQuery::Centroid(id) => QueryKey::Centroid(*id),
             GeometryQuery::BoundingBox(id) => QueryKey::BoundingBox(*id),
             GeometryQuery::Distance { from, to } => {
-                // Normalize to (min, max) so Distance(A,B) == Distance(B,A)
-                let (lo, hi) = if from.0 <= to.0 {
-                    (*from, *to)
-                } else {
-                    (*to, *from)
-                };
+                let (lo, hi) = normalize_distance_pair(*from, *to);
                 QueryKey::Distance { from: lo, to: hi }
             }
             GeometryQuery::MomentOfInertia { handle, axis } => {
