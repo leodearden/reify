@@ -14558,7 +14558,7 @@
         "description": "In gui/src/__tests__/PropertyEditor.test.tsx: (1) Add input.value assertion to valid-blur quantity test for symmetry with invalid-blur revert assertion. (2) Add test for data-invalid cleanup on blur after invalid Enter (state transition coverage). (3) Add '1e+3mm' to valid it.each list to cover explicit-plus exponent branch of QUANTITY_RE. (4) Add inline comment explaining why '+10mm' is rejected when '+10' is accepted (QUANTITY_RE only permits leading '-').",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -14570,7 +14570,7 @@
             "gui/src/__tests__"
           ]
         },
-        "updatedAt": "2026-03-28T15:23:53.875Z"
+        "updatedAt": "2026-03-28T15:40:17.333Z"
       },
       {
         "id": "707",
@@ -15241,7 +15241,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T15:34:02.566Z",
+      "lastModified": "2026-03-28T15:40:17.334Z",
       "taskCount": 738,
       "completedCount": 350,
       "tags": [
