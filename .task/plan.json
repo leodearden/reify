@@ -1,0 +1,87 @@
+{
+  "task_id": "696",
+  "title": "Fix selectionStore spurious initial dispatch and add batch() to clearHighlights",
+  "files": [
+    "gui/src/stores/selectionStore.ts",
+    "gui/src/__tests__/selectionStore.test.ts"
+  ],
+  "modules": [
+    "gui/src/stores"
+  ],
+  "analysis": "Two bugs in selectionStore.ts:\n\n1) SPURIOUS INITIAL DISPATCH: When createEffect runs on store creation, both selected and hovered are null, matching prevSelected/prevHovered (also null). So selectionChanged=false, hoverChanged=false. The if-else falls through to the else branch (because `selectionChanged && !hoverChanged` is false), scheduling a debounced sendSelection(null, null). This is wasted work. The existing backend-sync tests already work around this by calling `vi.advanceTimersByTime(100); mockInvoke.mockClear()` in beforeEach. Fix: add an early return when neither value changed.\n\n2) clearHighlights NON-ATOMIC: clearHighlights() calls setState twice sequentially, triggering two separate reactive effect runs. The first sets selectedEntity=null (triggering the sync effect), then the second sets highlightedParams=[]. This should be a single atomic update via batch(). Other stores (engineStore, claudeStore) already use batch() for multi-setState calls \u2014 selectionStore should follow the same pattern.\n\nBoth fixes are small and isolated. The import line needs `batch` added from 'solid-js'. The effect guard is a 1-line early return. The batch wrapping follows the established pattern in engineStore.ts (lines 63-67, 71-75) and claudeStore.ts.",
+  "prerequisites": [],
+  "steps": [
+    {
+      "id": "step-1",
+      "type": "test",
+      "description": "Write failing test: 'no invoke is dispatched on store creation (no spurious initial sync)'. Create store with fake timers, do NOT advance timers or clear mocks, and assert mockInvoke was never called. This will fail because the current code schedules a debounced sendSelection(null, null) on creation.",
+      "status": "done",
+      "commit": "c58c2531"
+    },
+    {
+      "id": "step-2",
+      "type": "impl",
+      "description": "Add early-return guard in createEffect: `if (!selectionChanged && !hoverChanged) return;` after the prevSelected/prevHovered assignments (after line 51). This prevents the else branch from scheduling a spurious debounced dispatch when nothing changed.",
+      "status": "done",
+      "commit": "79ee336b"
+    },
+    {
+      "id": "step-3",
+      "type": "test",
+      "description": "Write failing test: 'clearHighlights triggers only one backend sync (atomic batch update)'. Set selectedEntity to a value, then call clearHighlights(). Assert that exactly one invoke('update_selection') call is made (the immediate selection-changed dispatch), not two separate dispatches. Without batch(), two separate effect runs fire \u2014 one for selectedEntity\u2192null (immediate dispatch) and one for highlightedParams (no invoke but still wasteful). With batch(), only one effect run occurs.",
+      "status": "done",
+      "commit": "860073c6"
+    },
+    {
+      "id": "step-4",
+      "type": "impl",
+      "description": "Add `batch` to the import from 'solid-js' (change line 1 to `import { batch, createEffect, onCleanup } from 'solid-js';`). Wrap clearHighlights body in `batch(() => { setState('selectedEntity', null); setState('highlightedParams', []); });`.",
+      "status": "done",
+      "commit": "ccdb3b58"
+    },
+    {
+      "id": "step-5",
+      "type": "test",
+      "description": "Update the backend-sync beforeEach to remove the workaround comment and timer flush that was compensating for the spurious initial dispatch. Change the comment from 'Flush the initial effect's debounced invoke (null, null)' to document that no initial dispatch occurs. The vi.advanceTimersByTime(100) becomes a no-op (harmless) but the mockInvoke.mockClear() is still needed to reset mock state. Verify all existing tests still pass.",
+      "status": "done",
+      "commit": "c2c489d2"
+    }
+  ],
+  "design_decisions": [
+    {
+      "decision": "Place the no-change guard after prevSelected/prevHovered updates, not before",
+      "rationale": "The task description specifies this ordering. It ensures prev tracking stays in sync even when no dispatch is needed, which is the correct invariant \u2014 prevSelected/prevHovered always reflect the last values the effect saw."
+    },
+    {
+      "decision": "Keep the vi.advanceTimersByTime(100) in beforeEach rather than removing it",
+      "rationale": "After the fix, this line is a harmless no-op (no pending timer to advance). Removing it would be a cosmetic change that doesn't affect correctness. However, updating the comment to reflect the fix is worthwhile for documentation clarity."
+    },
+    {
+      "decision": "Test spurious dispatch by asserting zero invoke calls immediately after store creation",
+      "rationale": "The most direct test for the bug: create store, don't advance timers, check that invoke was never called. After the fix, the effect returns early before reaching either dispatch path."
+    },
+    {
+      "decision": "Test clearHighlights atomicity by counting invoke calls",
+      "rationale": "The observable difference between batched and unbatched is the number of effect runs (and thus invoke calls). With batch, setting selectedEntity=null and highlightedParams=[] triggers one effect; without, it triggers two (the first being an immediate dispatch for the selection change)."
+    }
+  ],
+  "reuse": [
+    {
+      "what": "batch() from solid-js",
+      "where": "gui/src/stores/engineStore.ts (lines 63-67, 71-75), gui/src/stores/claudeStore.ts (lines 158, 253, 269)",
+      "how": "Same pattern \u2014 wrap multiple setState calls in batch() for atomic reactive updates. selectionStore already imports from 'solid-js', just needs batch added to the import."
+    },
+    {
+      "what": "Existing backend-sync test infrastructure",
+      "where": "gui/src/__tests__/selectionStore.test.ts lines 173-341",
+      "how": "The backend sync describe block already has fake timers, mockInvoke, and createRoot setup. New tests for the spurious dispatch and batch atomicity fit naturally in this block."
+    },
+    {
+      "what": "vi.useFakeTimers() + vi.advanceTimersByTime() pattern",
+      "where": "gui/src/__tests__/selectionStore.test.ts beforeEach/existing tests",
+      "how": "Same fake-timer pattern used by existing debounce tests. The spurious-dispatch test uses this to prove that no timer-based dispatch occurs on creation."
+    }
+  ],
+  "_session_id": "696-c2037cef",
+  "_created_at": "2026-03-28T09:09:14.389360+00:00"
+}
