@@ -659,3 +659,8 @@ type _AssertToolCallPayload = AssertTrue<Equals<Omit<ToolCall, 'type'>, { id: st
 type _AssertToolResultPayload = AssertTrue<Equals<Omit<ToolResult, 'type'>, { id: string; tool_name: string; result: unknown }>>;
 type _AssertDonePayload = AssertTrue<Equals<Omit<Done, 'type'>, { id: string }>>;
 type _AssertErrorMessagePayload = AssertTrue<Equals<Omit<ErrorMessage, 'type'>, { id: string; message: string }>>;
+
+// EventEntry's payload type is `unknown` (not `Record<string, unknown>`) because
+// each handler casts event.payload independently via `as Omit<X, 'type'>`.
+// `unknown` prevents accidental uncast property access and doesn't falsely
+// constrain the payload to be an object with string keys.
