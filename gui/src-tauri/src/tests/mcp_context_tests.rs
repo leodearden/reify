@@ -391,6 +391,65 @@ fn builder_with_selection_matches_new_with_selection() {
     assert_eq!(result.hovered_entity, None);
 }
 
+#[test]
+fn builder_with_event_emitter_records_events() {
+    let session = make_loaded_session();
+    let engine = Arc::new(Mutex::new(session));
+    let events: Arc<Mutex<Vec<(String, serde_json::Value)>>> = Arc::new(Mutex::new(Vec::new()));
+    let events_clone = events.clone();
+
+    let ctx = TauriToolContext::builder(engine)
+        .with_event_emitter(move |name, payload| {
+            events_clone
+                .lock()
+                .unwrap()
+                .push((name.to_string(), payload));
+        })
+        .build();
+
+    let result = ctx
+        .focus_entity("Bracket.width")
+        .expect("focus_entity should succeed");
+    assert!(result);
+
+    let recorded = events.lock().unwrap();
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(recorded[0].0, "focus-entity");
+}
+
+#[test]
+fn builder_with_both_options() {
+    let session = make_loaded_session();
+    let engine = Arc::new(Mutex::new(session));
+    let events: Arc<Mutex<Vec<(String, serde_json::Value)>>> = Arc::new(Mutex::new(Vec::new()));
+    let events_clone = events.clone();
+    let selection = Arc::new(RwLock::new(SelectionInfo {
+        selected_entity: Some("Bracket.height".to_string()),
+        hovered_entity: None,
+    }));
+
+    let ctx = TauriToolContext::builder(engine)
+        .with_event_emitter(move |name, payload| {
+            events_clone
+                .lock()
+                .unwrap()
+                .push((name.to_string(), payload));
+        })
+        .with_selection(selection)
+        .build();
+
+    // Verify selection
+    let sel = ctx.get_selection().expect("get_selection should succeed");
+    assert_eq!(sel.selected_entity, Some("Bracket.height".to_string()));
+
+    // Verify event emitter
+    ctx.focus_entity("Bracket.width")
+        .expect("focus_entity should succeed");
+    let recorded = events.lock().unwrap();
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(recorded[0].0, "focus-entity");
+}
+
 // --- Compile-time trait assertions ---
 
 #[test]
