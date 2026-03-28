@@ -471,7 +471,7 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
         })),
 
         // im(z) / imag(z): extract imaginary part. Returns Real if DIMENSIONLESS, Scalar otherwise.
-        "im" | "imag" => unary(args, |v| match v {
+        "im" | "imag" => unary(args, |v| sanitize_value(match v {
             Value::Complex { im, dimension, .. } => {
                 if *dimension == DimensionVector::DIMENSIONLESS {
                     Value::Real(*im)
@@ -483,7 +483,7 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
                 }
             }
             _ => Value::Undef,
-        }),
+        })),
 
         // conjugate(z): negate the imaginary part, preserve re and dimension.
         "conjugate" => unary(args, |v| match v {
