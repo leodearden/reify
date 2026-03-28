@@ -152,6 +152,11 @@ export async function claudeClearSession(): Promise<void> {
   return invoke('claude_clear_session');
 }
 
+/** Runtime guard: true for plain objects, false for null/undefined/primitives/arrays. */
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return v != null && typeof v === 'object' && !Array.isArray(v);
+}
+
 // ── Claude event subscription ───────────────────────────────────────
 
 /**
@@ -168,26 +173,32 @@ export async function subscribeToClaudeEvents(
 
   const entries: EventEntry[] = [
     ['claude-text-delta', (event) => {
+      if (!isRecord(event.payload)) return;
       const payload = event.payload as Omit<TextDelta, 'type'>;
       handler({ type: 'text_delta', id: payload.id, content: payload.content });
     }],
     ['claude-thinking-delta', (event) => {
+      if (!isRecord(event.payload)) return;
       const payload = event.payload as Omit<ThinkingDelta, 'type'>;
       handler({ type: 'thinking_delta', id: payload.id, content: payload.content });
     }],
     ['claude-tool-call', (event) => {
+      if (!isRecord(event.payload)) return;
       const payload = event.payload as Omit<ToolCall, 'type'>;
       handler({ type: 'tool_call', id: payload.id, tool_name: payload.tool_name, tool_input: payload.tool_input });
     }],
     ['claude-tool-result', (event) => {
+      if (!isRecord(event.payload)) return;
       const payload = event.payload as Omit<ToolResult, 'type'>;
       handler({ type: 'tool_result', id: payload.id, tool_name: payload.tool_name, result: payload.result });
     }],
     ['claude-done', (event) => {
+      if (!isRecord(event.payload)) return;
       const payload = event.payload as Omit<Done, 'type'>;
       handler({ type: 'done', id: payload.id });
     }],
     ['claude-error', (event) => {
+      if (!isRecord(event.payload)) return;
       const payload = event.payload as Omit<ErrorMessage, 'type'>;
       handler({ type: 'error', id: payload.id, message: payload.message });
     }],
