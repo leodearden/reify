@@ -13373,6 +13373,19 @@
         ],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 671,
+        "title": "Enhance errorMessage to handle plain objects with .message property",
+        "description": "Review finding from task 547: `String(err)` produces unhelpful '[object Object]' for plain objects thrown as errors (e.g., `throw { code: 404, message: 'Not found' }`). Tauri IPC/bridge calls may produce structured payloads with a `message` field.\n\nAdd a defensive check in errorMessage() for `typeof (err as any).message === 'string'` before falling back to String():\n\n```ts\nexport function errorMessage(err: unknown): string {\n  if (err instanceof Error) return err.message;\n  if (err !== null && typeof err === 'object' && typeof (err as Record<string, unknown>).message === 'string') {\n    return (err as Record<string, unknown>).message as string;\n  }\n  return String(err);\n}\n```\n\nAdd tests for plain objects with and without .message.\n\nMemory hints: search \"errorMessage utility object error Tauri IPC bridge\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          547
+        ],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -13385,7 +13398,7 @@
       ],
       "created": "2026-03-28T04:42:58.909Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-28T04:43:07.656Z"
+      "updated": "2026-03-28T04:43:12.560Z"
     }
   }
 }
