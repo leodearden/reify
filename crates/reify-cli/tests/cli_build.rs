@@ -181,6 +181,14 @@ fn build_indeterminate_constraint_exits_success() {
         "stdout should NOT contain violation summary, got: {stdout}"
     );
     assert!(
+        stdout.contains("No constraints violated"),
+        "stdout should contain 'No constraints violated', got: {stdout}"
+    );
+    assert!(
+        stdout.contains("indeterminate"),
+        "stdout should contain 'indeterminate', got: {stdout}"
+    );
+    assert!(
         output_path.exists(),
         "geometry file should be written when constraints are only indeterminate"
     );
