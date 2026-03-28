@@ -1113,8 +1113,9 @@ fn infeasible_initial_not_rescued_by_fallback() {
 /// build_simplex with 4 vertices (3+1), build_trial_values with a 3-element
 /// param vector, and the returned values map with 3 entries.
 ///
-/// Asserts: Solved, each param satisfies constraints, and the sum decreased
-/// from the initial 90mm total (proving optimizer improved the objective).
+/// Asserts: Solved, each param satisfies constraints, and the sum is
+/// non-regression from the initial 90mm total (optimizer should not worsen
+/// the objective).
 #[test]
 fn multi_param_warm_start_with_objective() {
     let solver = DimensionalSolver;
@@ -1191,13 +1192,14 @@ fn multi_param_warm_start_with_objective() {
                 );
                 sum_si += si;
             }
-            // Optimizer should improve from initial sum of 0.090 (3 × 30mm).
-            // With the warm-start reduced budget (500*(N+1) = 2000 iters for 3
-            // params), the Nelder-Mead optimizer may only achieve modest
-            // improvement. Assert the sum didn't increase — the optimizer
-            // should at least maintain or improve the objective.
+            // Non-regression: optimizer should not worsen the objective from
+            // the initial sum of 0.090 (3 × 30mm). With the warm-start reduced
+            // budget (500*(N+1) = 2000 iters for 3 params), the Nelder-Mead
+            // optimizer may only achieve modest improvement. The 1e-9 epsilon
+            // accounts for IEEE 754 float accumulation (0.030 + 0.030 + 0.030
+            // may exceed 0.090 by a few ULPs).
             assert!(
-                sum_si <= 0.090,
+                sum_si <= 0.090 + 1e-9,
                 "optimizer should not increase sum above initial 90mm, got {} m",
                 sum_si
             );
