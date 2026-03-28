@@ -15325,6 +15325,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 743,
+        "title": "Use stable hash for grammar content hashing",
+        "description": "In tree-sitter-reify/build.rs: Replace std::hash::DefaultHasher (output not stable across Rust versions) with a stable hash like FNV-1a or CRC32. This prevents a redundant tree-sitter generate on every toolchain upgrade. Low priority since the consequence is one extra build.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -15337,7 +15348,7 @@
       ],
       "created": "2026-03-28T17:27:52.006Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-28T17:28:01.875Z"
+      "updated": "2026-03-28T17:28:03.763Z"
     }
   }
 }
