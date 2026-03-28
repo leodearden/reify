@@ -437,6 +437,80 @@ fn compose_dimension_mismatch_undef() {
     );
 }
 
+// ── Mixed-dimension vector components tests ─────────────────────────────────
+
+/// Transform * Vector with mixed-dimension components (length, angle, length)
+/// should return Undef. Currently vec3_components only checks items[0].dimension(),
+/// so it silently adopts the first component's dimension.
+#[test]
+fn transform_mul_mixed_dimension_vector_returns_undef() {
+    let mixed_vec = Value::Vector(vec![
+        Value::length(1.0),
+        Value::angle(2.0),
+        Value::length(3.0),
+    ]);
+    let result = eval_mul_expr(
+        identity_transform(),
+        Type::Transform(3),
+        mixed_vec,
+        Type::vec3(Type::length()),
+        Type::vec3(Type::length()),
+    );
+    assert!(
+        result.is_undef(),
+        "mixed-dimension vector should return Undef, got {:?}",
+        result
+    );
+}
+
+/// Transform * Point with mixed-dimension point components should return Undef.
+#[test]
+fn transform_mul_mixed_dimension_point_returns_undef() {
+    let mixed_point = Value::Point(vec![
+        Value::length(1.0),
+        Value::length(2.0),
+        Value::angle(3.0),
+    ]);
+    let result = eval_mul_expr(
+        identity_transform(),
+        Type::Transform(3),
+        mixed_point,
+        Type::point3(Type::length()),
+        Type::point3(Type::length()),
+    );
+    assert!(
+        result.is_undef(),
+        "mixed-dimension point should return Undef, got {:?}",
+        result
+    );
+}
+
+/// Transform * Transform with mixed-dimension translation should return Undef.
+#[test]
+fn transform_compose_mixed_dimension_translation_returns_undef() {
+    let t1 = Value::Transform {
+        rotation: Box::new(identity_orientation()),
+        translation: Box::new(Value::Vector(vec![
+            Value::length(1.0),
+            Value::angle(2.0), // dimension mismatch within same vector
+            Value::length(3.0),
+        ])),
+    };
+    let t2 = identity_transform();
+    let result = eval_mul_expr(
+        t1,
+        Type::Transform(3),
+        t2,
+        Type::Transform(3),
+        Type::Transform(3),
+    );
+    assert!(
+        result.is_undef(),
+        "mixed-dimension translation should return Undef, got {:?}",
+        result
+    );
+}
+
 // ── step-11: Transform * Transform NaN quaternion tests ──────────────────────
 
 /// Transform with NaN in one rotation component * identity should return Undef,
