@@ -110,7 +110,8 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
         return;
       }
       input.removeAttribute('data-invalid');
-      props.onSetParameter(cellId, input.value);
+      const trimmed = input.value.trim();
+      props.onSetParameter(cellId, trimmed);
       setEditingCellId(null);
       escapingRef = true;
       input.blur();
@@ -139,7 +140,8 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
       input.removeAttribute('data-invalid');
     } else {
       input.removeAttribute('data-invalid');
-      props.onSetParameter(cellId, input.value);
+      const trimmed = input.value.trim();
+      props.onSetParameter(cellId, trimmed);
     }
     setEditingCellId(null);
   }
