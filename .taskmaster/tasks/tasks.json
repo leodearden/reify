@@ -12952,7 +12952,7 @@
         "description": "The three new context-field tests in gui/sidecar/src/__tests__/session.test.ts (lines 281-369) have several quality gaps:\n\n1. **Code duplication**: The 3-line prompt-extraction snippet (`vi.mocked(spawn).mock.calls[0]?.[1]` → indexOf('--') → prompt) is copy-pasted in all three tests. Extract a `getBuiltPrompt()` helper.\n\n2. **Setup duplication**: All three tests repeat identical mock-and-reset blocks. Extract a shared `beforeEach` in a nested `describe('context prompt building', ...)` block.\n\n3. **Missing text assertion**: None of the tests assert that the original `text` value is still present in the constructed prompt. A regression that dropped `text` would go unnoticed. Add `expect(prompt).toContain('Explain this')` etc.\n\n4. **Incomplete ordering assertion**: The all-fields test only checks `current_file < selected_entity`. Assert the full chain: `cfIdx < seIdx < diagIdx < constraintsIdx < acIdx`.\n\n5. **Missing edge cases**:\n   - `context: {}` (empty context) — should produce no `[Context]` block\n   - `context: { current_file: '' }` — empty string should be silently skipped (falsy check)\n\nSource: Review suggestions #5, #6, #7, #8, #10, #11 from task 605 triage.\n\nmemory_hints: search \"session test context prompt building\", entities: session.test.ts",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -12963,7 +12963,8 @@
           "modules": [
             "gui/sidecar/src/__tests__"
           ]
-        }
+        },
+        "updatedAt": "2026-03-28T20:48:04.499Z"
       },
       {
         "id": "624",
@@ -15445,7 +15446,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T20:48:01.529Z",
+      "lastModified": "2026-03-28T20:48:04.500Z",
       "taskCount": 749,
       "completedCount": 383,
       "tags": [
