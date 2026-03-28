@@ -10,9 +10,9 @@ use reify_types::{
 /// Supports most Value variants including M5 types (Enum, List, Set, Map, Option,
 /// Lambda, Field). For empty collections, element type defaults to Int/Bool.
 ///
-/// **Panics** for Frame, Tensor, and Matrix — their types cannot be inferred from
-/// the value alone. Use [`literal_frame`] or `CompiledExpr::literal(value, type)`
-/// directly.
+/// **Panics** for Frame, Transform, Tensor, and Matrix — their types cannot be
+/// inferred from the value alone. Use [`literal_frame`], [`literal_transform`],
+/// or `CompiledExpr::literal(value, type)` directly.
 pub fn literal(v: Value) -> CompiledExpr {
     let ty = v.infer_type();
     CompiledExpr::literal(v, ty)

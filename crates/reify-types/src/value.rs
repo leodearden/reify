@@ -576,7 +576,12 @@ impl Value {
                      Use CompiledExpr::literal(value, type) directly."
                 )
             }
-            Value::Transform { .. } => Type::Transform(3),
+            Value::Transform { .. } => {
+                panic!(
+                    "infer_type() cannot infer Transform dimensionality. \
+                     Use CompiledExpr::literal(value, type) directly."
+                )
+            }
             Value::Plane { .. } => Type::Plane,
             Value::Axis { .. } => Type::Axis,
             Value::BoundingBox { .. } => Type::BoundingBox,
