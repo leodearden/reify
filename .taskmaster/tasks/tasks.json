@@ -12636,6 +12636,19 @@
         ],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 625,
+        "title": "Add test coverage for fallback-path objective validation and strengthen assertions",
+        "description": "The fallback objective validation added in task 589 (solver.rs lines ~614-621) has zero test execution — the existing test hits the normal post-solve check instead. Either: (a) add a test that deterministically triggers the fallback branch (construct a problem where optimizer drifts infeasible but initial point was feasible), or (b) update the test docstring to accurately state it only validates the post-solve path. Also strengthen the existing test assertion to check the reason string (e.g. assert reason contains \"solution point\") so it's clear which code path is exercised.\n\nMemory hints: search \"undefined_objective_at_feasible_initial\", search \"fallback objective validation\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          589
+        ],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -12648,7 +12661,7 @@
       ],
       "created": "2026-03-28T00:16:44.236Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-28T00:16:44.240Z"
+      "updated": "2026-03-28T00:16:50.493Z"
     }
   }
 }
