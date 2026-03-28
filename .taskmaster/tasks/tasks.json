@@ -10640,7 +10640,7 @@
         "description": "Several new solver integration tests have loose or misaligned assertion bounds and miss the existing mm() helper.\n\nFixes:\n1. `optimize_with_feasible_initial_point` (solver_integration.rs:579-580): Change `si > 0.002` to `si >= 0.005` — the meaningful floor is the auto param bound (5mm), not the constraint floor (2mm). Tighten upper to `si < 0.008` to match the \"near 5mm\" comment.\n2. `maximize_with_feasible_initial_point` (solver_integration.rs:643-644): Tighten `si <= 0.051` to `si <= 0.0505` — 1mm slack is 20× larger than reasonable float tolerance.\n3. Replace raw `Value::Scalar { si_value: 0.025, dimension: DimensionVector::LENGTH }` with `mm(25.0)` and similarly for `mm(10.0)` in the new integration tests (lines ~546-551, ~607-612) — `reify_test_support::mm()` is already imported.\n\nMemory hints: search for \"solver test helpers\", entity names: DimensionalSolver, mm helper",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [
           "495"
         ],
@@ -10655,7 +10655,7 @@
             "crates/reify-constraints/tests"
           ]
         },
-        "updatedAt": "2026-03-28T01:09:57.374Z"
+        "updatedAt": "2026-03-28T01:30:49.884Z"
       },
       {
         "id": "529",
@@ -13041,9 +13041,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T01:23:37.232Z",
+      "lastModified": "2026-03-28T01:30:49.884Z",
       "taskCount": 650,
-      "completedCount": 302,
+      "completedCount": 303,
       "tags": [
         "master"
       ]
