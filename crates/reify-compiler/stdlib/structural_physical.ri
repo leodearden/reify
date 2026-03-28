@@ -1,0 +1,86 @@
+// Stdlib: Structural & Physical Traits
+// Provides core trait definitions for physical and structural characterization
+// of engineering components. All dimensioned quantities use Real (dimensionless)
+// pending dedicated type system extensions in a future task.
+
+// ── Physical body trait ─────────────────────────────────────────────────────
+
+// Physical refines Material (from materials_mechanical.ri), adding volume
+// and centroid position. The computed `mass` default uses volume * density
+// where density comes from the Material refinement.
+trait Physical : Material {
+    param volume : Real
+    param centroid_x : Real
+    param centroid_y : Real
+    param centroid_z : Real
+    let mass = volume * density
+    constraint volume > 0
+}
+
+// ── Rigidity ────────────────────────────────────────────────────────────────
+
+// Rigid refines Physical — a body that does not deform under load.
+// moment_of_inertia is the second moment of area (m^4, using Real).
+trait Rigid : Physical {
+    param moment_of_inertia : Real
+    constraint moment_of_inertia > 0
+}
+
+// ── Flexibility ─────────────────────────────────────────────────────────────
+
+// A body that deforms reversibly under load.
+// stiffness (N/m, using Real), max_deflection (m, using Real).
+trait Flexible {
+    param stiffness : Real
+    param max_deflection : Real
+    constraint stiffness > 0
+    constraint max_deflection > 0
+}
+
+// ── Elastic deformation ─────────────────────────────────────────────────────
+
+// ElasticallyDeformable refines Elastic (from materials_mechanical.ri),
+// adding a max_elastic_strain limit (dimensionless fraction, using Real).
+trait ElasticallyDeformable : Elastic {
+    param max_elastic_strain : Real
+    constraint max_elastic_strain > 0
+}
+
+// ── Plasticity ──────────────────────────────────────────────────────────────
+
+// A body exhibiting permanent deformation beyond yield.
+// plastic_strain (dimensionless fraction, using Real),
+// hardening_modulus (Pa, using Real).
+trait Plastic {
+    param plastic_strain : Real
+    param hardening_modulus : Real
+}
+
+// ── Thermal conductivity ────────────────────────────────────────────────────
+
+// thermal_conductivity (W/(m·K), using Real),
+// max_service_temp (K, using Real).
+trait ThermallyConductive {
+    param thermal_conductivity : Real
+    param max_service_temp : Real
+    constraint thermal_conductivity > 0
+}
+
+// ── Electrical conductivity ─────────────────────────────────────────────────
+
+// electrical_conductivity (S/m, using Real),
+// resistivity (Ω·m, using Real).
+trait ElectricallyConductive {
+    param electrical_conductivity : Real
+    param resistivity : Real
+    constraint electrical_conductivity > 0
+}
+
+// ── Sealing ─────────────────────────────────────────────────────────────────
+
+// A sealed body that prevents fluid/gas passage.
+// seal_pressure_rating (Pa, using Real).
+trait Sealed {
+    param seal_pressure_rating : Real
+    constraint seal_pressure_rating > 0
+}
