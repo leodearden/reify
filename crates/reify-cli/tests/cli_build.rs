@@ -177,8 +177,18 @@ fn build_indeterminate_constraint_exits_success() {
         "stdout should NOT contain 'VIOLATED', got: {stdout}"
     );
     assert!(
+        stdout.contains("OK"),
+        "stdout should contain 'OK' for the satisfied thickness constraint, got: {stdout}"
+    );
+    assert!(
         !stdout.contains("Some constraints violated"),
         "stdout should NOT contain violation summary, got: {stdout}"
+    );
+    // Note: build path does not print constraint_summary_message (unlike check path),
+    // so we only verify absence of wrong summaries, not presence of correct one.
+    assert!(
+        !stdout.contains("All constraints satisfied"),
+        "stdout should NOT contain 'All constraints satisfied' when indeterminate, got: {stdout}"
     );
     assert!(
         output_path.exists(),
