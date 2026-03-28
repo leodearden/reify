@@ -2375,6 +2375,35 @@ mod tests {
         }
     }
 
+    #[test]
+    fn eq_scalar_same_value_different_dimension_is_false() {
+        // Scalar{5.0, LENGTH} == Scalar{5.0, MASS} should be false
+        // Regression guard for task 38: different dimensions must never compare equal,
+        // even when the numeric si_value is identical (5mm == 5kg was silently true).
+        let left = lit(
+            Value::Scalar {
+                si_value: 5.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::length(),
+        );
+        let right = lit(
+            Value::Scalar {
+                si_value: 5.0,
+                dimension: DimensionVector::MASS,
+            },
+            Type::Scalar {
+                dimension: DimensionVector::MASS,
+            },
+        );
+        let expr = CompiledExpr::binop(BinOp::Eq, left, right, Type::Bool);
+        let values = ValueMap::new();
+        match eval_expr(&expr, &EvalContext::simple(&values)) {
+            Value::Bool(false) => {}
+            other => panic!("expected Bool(false), got {:?}", other),
+        }
+    }
+
     // ── Enum eval tests ──────────────────────────────────
 
     fn enum_lit(type_name: &str, variant: &str) -> CompiledExpr {
