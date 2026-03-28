@@ -790,6 +790,32 @@ fn negate_tensor_of_complex_negates_re_and_im() {
     );
 }
 
+/// Negating a Value::Matrix directly produces a rank-2 Tensor with negated elements
+/// (canonicalized from Matrix to nested Tensor).
+/// Currently fails: eval_unop has no Value::Matrix arm, falls to catch-all Undef.
+#[test]
+fn negate_matrix_returns_negated_rank2_tensor() {
+    // Build a 2×2 Matrix: [[1, 2], [3, 4]]
+    let operand = CompiledExpr::literal(
+        Value::Matrix(vec![
+            vec![Value::Real(1.0), Value::Real(2.0)],
+            vec![Value::Real(3.0), Value::Real(4.0)],
+        ]),
+        Type::matrix(2, 2, Type::Real),
+    );
+    let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::tensor(2, 2, Type::Real));
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    // Matrix canonicalizes to nested Tensor, then negation applies
+    assert_eq!(
+        result,
+        Value::Tensor(vec![
+            Value::Tensor(vec![Value::Real(-1.0), Value::Real(-2.0)]),
+            Value::Tensor(vec![Value::Real(-3.0), Value::Real(-4.0)]),
+        ])
+    );
+}
+
 // ─── step-1 (task 398): Value::Point / Value::Vector addition ───
 
 /// Value::Vector + Value::Vector → Value::Vector (component-wise).
