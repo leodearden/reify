@@ -13708,6 +13708,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 696,
+        "title": "Fix selectionStore spurious initial dispatch and add batch() to clearHighlights",
+        "description": "Two fixes in gui/src/stores/selectionStore.ts: 1) Add `if (!selectionChanged && !hoverChanged) return;` guard after updating prevSelected/prevHovered to prevent spurious debounced sendSelection(null, null) on store creation. 2) Wrap clearHighlights body in `batch(() => { ... })` for atomic state updates (import batch from solid-js).",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -13720,7 +13731,7 @@
       ],
       "created": "2026-03-28T06:53:49.176Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-28T06:54:23.942Z"
+      "updated": "2026-03-28T06:54:28.390Z"
     }
   }
 }
