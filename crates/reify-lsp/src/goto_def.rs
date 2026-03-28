@@ -305,6 +305,10 @@ mod tests {
         // "        param guarded_x : Scalar = 5mm"
         assert_eq!(loc.range.start.line, 3);
         assert_eq!(loc.range.start.character, 8, "param keyword starts after 8-space indent");
+        // Assert range.end covers the full declaration:
+        // "        param guarded_x : Scalar = 5mm" → 30 chars after indent, end at (3, 8+30=38)
+        assert_eq!(loc.range.end.line, 3, "declaration should be single-line");
+        assert_eq!(loc.range.end.character, 38, "end should cover full 'param guarded_x : Scalar = 5mm'");
     }
 
     #[test]
@@ -322,6 +326,10 @@ mod tests {
         // "        let fallback = 10"
         assert_eq!(loc.range.start.line, 5);
         assert_eq!(loc.range.start.character, 8, "let keyword starts after 8-space indent");
+        // Assert range.end covers the full declaration:
+        // "        let fallback = 10" → 17 chars after indent, end at (5, 8+17=25)
+        assert_eq!(loc.range.end.line, 5, "declaration should be single-line");
+        assert_eq!(loc.range.end.character, 25, "end should cover full 'let fallback = 10'");
     }
 
     // --- enclosing-declaration scoping tests ---
