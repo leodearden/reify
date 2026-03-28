@@ -4755,4 +4755,63 @@ mod tests {
         let bbox = make_bbox(make_point3_min(), make_point3_max());
         assert_eq!(bbox.dimension(), DimensionVector::DIMENSIONLESS);
     }
+
+    // ── Value::neg() scalar tests ───────────────────────────────────────────
+
+    #[test]
+    fn neg_int_positive() {
+        assert_eq!(Value::Int(5).neg(), Value::Int(-5));
+    }
+
+    #[test]
+    fn neg_real() {
+        assert_eq!(Value::Real(3.14).neg(), Value::Real(-3.14));
+    }
+
+    #[test]
+    fn neg_scalar_length() {
+        assert_eq!(
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::LENGTH,
+            }
+            .neg(),
+            Value::Scalar {
+                si_value: -1.0,
+                dimension: DimensionVector::LENGTH,
+            }
+        );
+    }
+
+    #[test]
+    fn neg_complex() {
+        assert_eq!(
+            Value::Complex {
+                re: 1.0,
+                im: 2.0,
+                dimension: DimensionVector::DIMENSIONLESS,
+            }
+            .neg(),
+            Value::Complex {
+                re: -1.0,
+                im: -2.0,
+                dimension: DimensionVector::DIMENSIONLESS,
+            }
+        );
+    }
+
+    #[test]
+    fn neg_int_min_overflow_returns_undef() {
+        assert_eq!(Value::Int(i64::MIN).neg(), Value::Undef);
+    }
+
+    #[test]
+    fn neg_bool_returns_undef() {
+        assert_eq!(Value::Bool(true).neg(), Value::Undef);
+    }
+
+    #[test]
+    fn neg_undef_returns_undef() {
+        assert_eq!(Value::Undef.neg(), Value::Undef);
+    }
 }
