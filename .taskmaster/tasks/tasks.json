@@ -14677,6 +14677,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 715,
+        "title": "Apply Auto-param guard skip to eval() path for consistency with edit_param",
+        "description": "In eval() (lib.rs ~1122-1129), the \"guard is false — member is inactive\" block unconditionally sets ALL members to (Value::Undef, DeterminacyState::Undetermined), including Auto-kind cells. This is inconsistent with edit_param which now skips Auto params. The eval() path avoids visible bugs because the solver runs afterward, but the transient incorrect state (Undetermined instead of Auto) could cause issues if any code inspects determinacy between guard elaboration and solver resolution.\n\nFix: Apply the same is_auto guard to the eval() deactivation block, or at minimum emit DeterminacyState::Auto instead of Undetermined for Auto-kind cells.\n\nMemory hints: search \"guard deactivation\", \"eval() guard elaboration\", entity: edit_param, DeterminacyState",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -14689,7 +14700,7 @@
       ],
       "created": "2026-03-28T09:20:59.351Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-28T09:21:05.037Z"
+      "updated": "2026-03-28T09:21:11.405Z"
     }
   }
 }
