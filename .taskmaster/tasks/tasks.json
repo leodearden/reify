@@ -13368,7 +13368,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "gui/src/__tests__/claudeIntegration.test.ts"
+          ],
+          "modules": [
+            "gui/src/__tests__"
+          ]
+        }
       },
       {
         "id": 649,
@@ -13379,7 +13387,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "gui/src/__tests__/claudeIntegration.test.ts"
+          ],
+          "modules": [
+            "gui/src/__tests__"
+          ]
+        }
       },
       {
         "id": 650,
