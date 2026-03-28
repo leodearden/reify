@@ -180,7 +180,7 @@ describe('claude invoke wrappers', () => {
 
     const wire = mapContextToWire(input);
 
-    expect(wire).toEqual({
+    expect(wire).toStrictEqual({
       selected_entity: 'Bracket.w',
       diagnostics: undefined,
       constraints: undefined,
