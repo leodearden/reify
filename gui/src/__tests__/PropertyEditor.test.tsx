@@ -668,6 +668,7 @@ describe('PropertyEditor quantity literal acceptance', () => {
     ['1rad'],
     ['-10mm'],
     ['1e3mm'],
+    ['1e+3mm'],
     ['1.5e-2deg'],
     ['.5mm'],
     ['.25deg'],
