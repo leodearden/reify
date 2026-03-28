@@ -145,3 +145,77 @@ structure S {
     }
     assert_eq!(constraint_expr.result_type, Type::Bool);
 }
+
+// ---------------------------------------------------------------------------
+// Error cases: wrong argument count and non-ValueRef arguments
+// ---------------------------------------------------------------------------
+
+#[test]
+fn determined_zero_args_emits_error() {
+    let source = r#"
+structure S {
+    param x : Length = 10mm
+    constraint determined()
+}
+"#;
+    let (_, diagnostics) = compile_first_template(source);
+    let errors = errors_only(&diagnostics);
+    assert!(
+        errors.iter().any(|d| d.message.contains("requires exactly 1 argument")),
+        "expected 'requires exactly 1 argument' error, got: {:?}",
+        errors
+    );
+}
+
+#[test]
+fn determined_two_args_emits_error() {
+    let source = r#"
+structure S {
+    param x : Length = 10mm
+    param y : Length = 20mm
+    constraint determined(x, y)
+}
+"#;
+    let (_, diagnostics) = compile_first_template(source);
+    let errors = errors_only(&diagnostics);
+    assert!(
+        errors.iter().any(|d| d.message.contains("requires exactly 1 argument")),
+        "expected 'requires exactly 1 argument' error, got: {:?}",
+        errors
+    );
+}
+
+#[test]
+fn determined_quantity_literal_arg_emits_error() {
+    let source = r#"
+structure S {
+    param x : Length = 10mm
+    constraint determined(10mm)
+}
+"#;
+    let (_, diagnostics) = compile_first_template(source);
+    let errors = errors_only(&diagnostics);
+    assert!(
+        errors.iter().any(|d| d.message.contains("must be a direct cell reference")),
+        "expected 'must be a direct cell reference' error, got: {:?}",
+        errors
+    );
+}
+
+#[test]
+fn determined_binary_expr_arg_emits_error() {
+    let source = r#"
+structure S {
+    param x : Length = 10mm
+    param y : Length = 20mm
+    constraint determined(x + y)
+}
+"#;
+    let (_, diagnostics) = compile_first_template(source);
+    let errors = errors_only(&diagnostics);
+    assert!(
+        errors.iter().any(|d| d.message.contains("must be a direct cell reference")),
+        "expected 'must be a direct cell reference' error, got: {:?}",
+        errors
+    );
+}
