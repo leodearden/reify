@@ -2095,6 +2095,9 @@ mod poison_panics {
             result.is_ok(),
             "into_result() should recover from poisoned results lock, not panic"
         );
+        // Verify the recovered result has accessible (empty) node_results
+        let edit_result = result.unwrap();
+        assert!(edit_result.node_results.is_empty());
     }
 
     /// Verify that tracing::warn! is emitted when into_result() recovers from poisoned locks.
