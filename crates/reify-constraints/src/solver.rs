@@ -2097,4 +2097,65 @@ mod tests {
             other => panic!("expected Scalar for angle, got {:?}", other),
         }
     }
+
+    /// A feasible initial point with an always-undefined objective (x/0)
+    /// must return NoProgress, never Solved. This validates the contract
+    /// that undefined objectives are never silently promoted to Solved,
+    /// covering both the normal path and the fallback path.
+    #[test]
+    fn undefined_objective_at_feasible_initial_returns_no_progress() {
+        use crate::DimensionalSolver;
+        use reify_types::{
+            AutoParam, BinOp, CompiledExpr, ConstraintNodeId, DimensionVector,
+            OptimizationObjective, Type, Value, ValueCellId,
+        };
+
+        let solver = DimensionalSolver;
+        let x_id = ValueCellId::new("Part", "x");
+
+        // x > 5mm — satisfied when x starts at 10mm
+        let x_ref = CompiledExpr::value_ref(x_id.clone(), Type::length());
+        let five_mm = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: 0.005,
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::length(),
+        );
+        let gt_expr = CompiledExpr::binop(BinOp::Gt, x_ref.clone(), five_mm, Type::Bool);
+
+        // Objective: minimize(x / 0) — always Undef
+        let zero_int = CompiledExpr::literal(Value::Int(0), Type::Int);
+        let div_by_zero = CompiledExpr::binop(BinOp::Div, x_ref, zero_int, Type::Real);
+        let objective = OptimizationObjective::Minimize(div_by_zero);
+
+        // Current value x = 10mm (already satisfies x > 5mm)
+        let mut current = ValueMap::new();
+        current.insert(
+            x_id.clone(),
+            Value::Scalar {
+                si_value: 0.010,
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+
+        let problem = ResolutionProblem {
+            auto_params: vec![AutoParam {
+                id: x_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.1)),
+            }],
+            constraints: vec![(ConstraintNodeId::new("Part", 0), gt_expr)],
+            current_values: current,
+            objective: Some(objective),
+            functions: vec![],
+        };
+
+        let result = solver.solve(&problem);
+        assert!(
+            matches!(result, SolveResult::NoProgress { .. }),
+            "feasible initial + undefined objective should return NoProgress, got {:?}",
+            result
+        );
+    }
 }
