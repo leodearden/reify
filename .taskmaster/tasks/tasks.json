@@ -9243,13 +9243,14 @@
         "subtasks": [],
         "updatedAt": "2026-03-26T12:05:53.960Z",
         "metadata": {
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "prd": "none",
           "files": [
             "crates/reify-expr/src/lib.rs"
           ],
           "modules": [
             "crates/reify-expr/src"
-          ]
+          ],
+          "milestone": "M11-language-completeness"
         }
       },
       {
