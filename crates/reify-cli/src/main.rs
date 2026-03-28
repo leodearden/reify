@@ -97,11 +97,11 @@ fn cmd_check(args: &[String]) -> ExitCode {
         eprintln!("{}: {}", diag.severity, diag.message);
     }
 
-    println!("{}", constraint_summary_message(&result.constraint_results, all_satisfied));
-
     if all_satisfied {
+        println!("All constraints satisfied.");
         ExitCode::SUCCESS
     } else {
+        println!("Some constraints violated.");
         ExitCode::FAILURE
     }
 }
@@ -254,28 +254,6 @@ fn cmd_lsp() -> ExitCode {
     }
 }
 
-/// Return the appropriate summary message for constraint results.
-///
-/// - If `no_violations` is false, returns "Some constraints violated."
-/// - If `no_violations` is true but some entries are `Indeterminate`, returns
-///   "No constraint violations (some indeterminate)."
-/// - Otherwise (all truly satisfied), returns "All constraints satisfied."
-fn constraint_summary_message(
-    results: &[reify_eval::ConstraintCheckEntry],
-    no_violations: bool,
-) -> &'static str {
-    if !no_violations {
-        "Some constraints violated."
-    } else if results
-        .iter()
-        .any(|e| e.satisfaction == Satisfaction::Indeterminate)
-    {
-        "No constraint violations (some indeterminate)."
-    } else {
-        "All constraints satisfied."
-    }
-}
-
 /// Report constraint check results to the given writer.
 ///
 /// Returns `true` if all constraints are satisfied, `false` otherwise.
@@ -285,7 +263,7 @@ fn constraint_summary_message(
 /// **Indeterminate constraints are intentionally treated as non-violating.**
 /// `Indeterminate` arises when a constraint's inputs are undefined — typically
 /// from `auto` parameters not yet resolved by the solver. Treating these as
-/// violations would block evaluations that are otherwise valid and break the
+/// violations would block builds that are otherwise valid and break the
 /// incremental evaluation engine. Only explicit `Violated` results cause
 /// `all_satisfied` to be `false`.
 fn report_constraint_results(
@@ -463,35 +441,5 @@ mod tests {
             !output.contains("Axle#constraint"),
             "should NOT contain id fallback when label is present"
         );
-    }
-
-    #[test]
-    fn summary_message_all_satisfied() {
-        let entries = vec![
-            make_entry("Bracket", 0, Some("stress_limit"), Satisfaction::Satisfied),
-            make_entry("Bracket", 1, Some("size_bound"), Satisfaction::Satisfied),
-        ];
-        let msg = constraint_summary_message(&entries, true);
-        assert_eq!(msg, "All constraints satisfied.");
-    }
-
-    #[test]
-    fn summary_message_indeterminate_no_violations() {
-        let entries = vec![
-            make_entry("Beam", 0, Some("load"), Satisfaction::Satisfied),
-            make_entry("Beam", 1, Some("deflection"), Satisfaction::Indeterminate),
-        ];
-        let msg = constraint_summary_message(&entries, true);
-        assert_eq!(msg, "No constraint violations (some indeterminate).");
-    }
-
-    #[test]
-    fn summary_message_violated() {
-        let entries = vec![
-            make_entry("Part", 0, Some("max_force"), Satisfaction::Violated),
-            make_entry("Part", 1, Some("clearance"), Satisfaction::Indeterminate),
-        ];
-        let msg = constraint_summary_message(&entries, false);
-        assert_eq!(msg, "Some constraints violated.");
     }
 }
