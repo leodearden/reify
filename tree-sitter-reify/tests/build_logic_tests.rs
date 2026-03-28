@@ -398,3 +398,51 @@ fn test_stamp_write_failure_no_panic() {
     perms.set_readonly(false);
     std::fs::set_permissions(&readonly_dir, perms).unwrap();
 }
+
+#[test]
+fn test_stamp_path_is_profile_independent() {
+    // Prove that staleness detection is purely hash-driven and works identically
+    // across different OUT_DIR paths (simulating debug vs release profiles).
+    let dir = tempfile::tempdir().unwrap();
+    let grammar = dir.path().join("grammar.js");
+    std::fs::write(&grammar, b"module.exports = grammar({name: 'test'});").unwrap();
+    let src_dir = make_populated_src_dir(dir.path());
+    let output_paths: Vec<_> = EXPECTED_OUTPUTS.iter().map(|n| src_dir.join(n)).collect();
+    let output_refs: Vec<&Path> = output_paths.iter().map(|p| p.as_path()).collect();
+
+    // Simulate two different cargo profile OUT_DIR paths
+    let debug_out = dir.path().join("target/debug/build/out");
+    let release_out = dir.path().join("target/release/build/out");
+    std::fs::create_dir_all(&debug_out).unwrap();
+    std::fs::create_dir_all(&release_out).unwrap();
+
+    let hash = content_hash(&grammar);
+
+    // Write matching stamp to both profiles
+    let debug_stamp = debug_out.join("grammar_hash.stamp");
+    let release_stamp = release_out.join("grammar_hash.stamp");
+    stamp_write(&debug_stamp, &hash);
+    stamp_write(&release_stamp, &hash);
+
+    // Both profiles report no regeneration needed
+    assert!(
+        !needs_generate(&hash, &debug_stamp, &output_refs),
+        "debug profile: must NOT regenerate when stamp matches"
+    );
+    assert!(
+        !needs_generate(&hash, &release_stamp, &output_refs),
+        "release profile: must NOT regenerate when stamp matches"
+    );
+
+    // Mutate grammar content — both profiles must now detect staleness
+    std::fs::write(&grammar, b"module.exports = grammar({name: 'changed'});").unwrap();
+    let new_hash = content_hash(&grammar);
+    assert!(
+        needs_generate(&new_hash, &debug_stamp, &output_refs),
+        "debug profile: must regenerate after grammar change"
+    );
+    assert!(
+        needs_generate(&new_hash, &release_stamp, &output_refs),
+        "release profile: must regenerate after grammar change"
+    );
+}
