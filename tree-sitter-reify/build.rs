@@ -58,6 +58,14 @@ fn run_with_timeout(
     }
 }
 
+/// Check if the tree-sitter CLI is available on the system.
+fn tree_sitter_cli_available() -> bool {
+    std::process::Command::new("tree-sitter")
+        .arg("--version")
+        .output()
+        .is_ok()
+}
+
 /// Default timeout for tree-sitter generate subprocess (seconds).
 const GENERATE_TIMEOUT_SECS: u64 = 60;
 
@@ -147,14 +155,31 @@ fn main() {
     let grammar_hash = content_hash(grammar_path);
 
     if needs_generate(&grammar_hash, &stamp_path, &output_refs) {
-        run_tree_sitter_generate();
-        // Verify all 3 output files were created.
-        verify_outputs(src_dir);
-        // Write stamp using the *same* hash that was checked — guarantees the
-        // stamp reflects the grammar version that produced these outputs.
-        std::fs::write(&stamp_path, &grammar_hash).unwrap_or_else(|e| {
-            eprintln!("warning: failed to write stamp file: {}", e);
-        });
+        if tree_sitter_cli_available() {
+            run_tree_sitter_generate();
+            // Verify all 3 output files were created.
+            verify_outputs(src_dir);
+            // Write stamp using the *same* hash that was checked — guarantees the
+            // stamp reflects the grammar version that produced these outputs.
+            std::fs::write(&stamp_path, &grammar_hash).unwrap_or_else(|e| {
+                eprintln!("warning: failed to write stamp file: {}", e);
+            });
+        } else {
+            // CLI is unavailable. Check if output files already exist (stale stamp case).
+            let all_outputs_exist = output_refs.iter().all(|p| p.exists());
+            if all_outputs_exist {
+                println!(
+                    "cargo:warning=tree-sitter CLI not found; \
+                     using existing parser files (grammar.js may have changed)"
+                );
+            } else {
+                panic!(
+                    "tree-sitter CLI is required but not found.\n\
+                     Install via: cargo install tree-sitter-cli\n\
+                     Or: npm install -g tree-sitter-cli"
+                );
+            }
+        }
     }
 
     let mut c_config = cc::Build::new();
