@@ -4248,6 +4248,13 @@ mod tests {
         assert_eq!(frame.dimension(), DimensionVector::DIMENSIONLESS);
     }
 
+    #[test]
+    #[should_panic(expected = "infer_type() cannot infer Frame")]
+    fn value_frame_infer_type_panics() {
+        let frame = make_frame(make_point3_length(), make_orientation_identity());
+        let _ = frame.infer_type();
+    }
+
     // ── Value::Transform tests (step-3) ──────────────────────────────────────
 
     fn make_vector3_length() -> Value {
