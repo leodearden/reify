@@ -119,6 +119,12 @@ describe('claude invoke wrappers', () => {
 
     await expect(claudeSendMessage('hello')).rejects.toThrow('IPC failed');
   });
+
+  it('claudeAbort propagates invoke rejection', async () => {
+    mockInvoke.mockRejectedValue(new Error('IPC failed'));
+
+    await expect(claudeAbort()).rejects.toThrow('IPC failed');
+  });
 });
 
 describe('subscribeToClaudeEvents', () => {
