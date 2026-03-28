@@ -820,6 +820,35 @@ describe('PropertyEditor escape clears data-invalid', () => {
   });
 });
 
+describe('PropertyEditor validation - hex/octal/binary/leading-plus rejection', () => {
+  const values: Record<string, ValueData> = {
+    c1: makeValue({ cell_id: 'c1', name: 'width', value: '50', determinacy: 'determined', entity_path: 'Bracket.width' }),
+  };
+
+  it.each([
+    ['0x10', 'hex lowercase'],
+    ['0X10', 'hex uppercase'],
+    ['0o10', 'octal lowercase'],
+    ['0O10', 'octal uppercase'],
+    ['0b10', 'binary lowercase'],
+    ['0B10', 'binary uppercase'],
+    ['+5', 'leading plus'],
+    ['+0', 'leading plus zero'],
+  ])("'%s' (%s) on Enter does NOT call onSetParameter and sets data-invalid", (invalidLiteral) => {
+    const onSetParam = vi.fn();
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: invalidLiteral } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onSetParam).not.toHaveBeenCalled();
+    expect(input.hasAttribute('data-invalid')).toBe(true);
+  });
+});
+
 describe('PropertyEditor accessibility', () => {
   const values: Record<string, ValueData> = {
     c1: makeValue({ cell_id: 'c1', name: 'width', entity_path: 'Bracket.width' }),
