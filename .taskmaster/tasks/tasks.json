@@ -12196,7 +12196,7 @@
         "description": "## Problem\n\nTauriToolContext has 4 constructors for 2 optional fields (event_emitter, selection), creating a 2^n combinatorial explosion pattern. The naming is inconsistent (new_with_selection vs with_event_emitter). Additionally, claude_bridge.rs uses a 3-tuple for mcp_config requiring #[allow(clippy::type_complexity)].\n\nThe `with_event_emitter()` constructor silently creates a private Arc<RwLock<SelectionInfo>> that is never shared with the frontend — a potential API footgun where selection always returns empty.\n\n## What \"done\" looks like\n\n1. TauriToolContext uses a builder pattern: `TauriToolContext::builder(engine).with_event_emitter(f).with_selection(arc).build()`\n2. A named `McpConfig<F>` struct replaces the 3-tuple in claude_bridge.rs new_inner\n3. The type_complexity suppression is removed\n4. `with_event_emitter()` is deprecated or removed (callers use builder)\n5. All existing tests pass\n\n## Files to modify\n- gui/src-tauri/src/mcp_context.rs — replace constructors with builder\n- gui/src-tauri/src/claude_bridge.rs — McpConfig struct, remove type_complexity suppression\n- gui/src-tauri/src/main.rs — update mcp_tool_call to use builder\n- gui/src-tauri/src/tests/mcp_context_tests.rs — update test helpers\n- gui/src-tauri/src/tests/mcp_dispatch_tests.rs — update test helpers\n- gui/src-tauri/src/tests/claude_bridge_tests.rs — update test helpers\n\n### memory_hints\n- search: \"TauriToolContext constructor builder\"\n- entity: \"TauriToolContext\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -12214,7 +12214,8 @@
             "gui/src-tauri/src",
             "gui/src-tauri/src/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-03-28T15:59:54.177Z"
       },
       {
         "id": "592",
@@ -15255,7 +15256,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T15:59:47.236Z",
+      "lastModified": "2026-03-28T15:59:54.177Z",
       "taskCount": 738,
       "completedCount": 356,
       "tags": [
