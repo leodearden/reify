@@ -13530,6 +13530,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 682,
+        "title": "Enforce Scalar[dimensionless] uniformly in make_components_3 and complex extraction",
+        "description": "eval_div and eval_mul now correctly return Value::Scalar for dimensionless results, but make_components_3 (line ~1168) still collapses dimensionless Scalar to Value::Real, and complex magnitude/re/im do the same. This leaves the type contract inconsistent across vector reconstruction and complex extraction.\n\nFix: Update make_components_3 to always return Value::Scalar (even for dimensionless), matching eval_div/eval_mul. Apply the same fix to complex magnitude(), .re, .im handlers. Consider a shared helper `fn dimensioned_value(v: f64, dim: DimensionVector) -> Value` that always returns Scalar.\n\nmemory_hints: search \"dimensionless Scalar Real type contract\" in reify-expr, search \"make_components_3\" in lib.rs",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -13542,7 +13553,7 @@
       ],
       "created": "2026-03-28T04:59:44.348Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-28T05:00:03.864Z"
+      "updated": "2026-03-28T05:00:08.725Z"
     }
   }
 }
