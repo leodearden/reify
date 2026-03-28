@@ -496,3 +496,29 @@ fn test_stamp_shared_across_simulated_profiles() {
         "OUT_DIR_2: must NOT regenerate after stamp written with matching hash"
     );
 }
+
+#[test]
+fn test_readonly_guard_restores_on_drop() {
+    // Verify that ReadonlyGuard's Drop impl restores write permissions.
+    let dir = tempfile::tempdir().unwrap();
+    let subdir = dir.path().join("guarded");
+    std::fs::create_dir_all(&subdir).unwrap();
+
+    // Make the directory read-only
+    let mut perms = std::fs::metadata(&subdir).unwrap().permissions();
+    perms.set_readonly(true);
+    std::fs::set_permissions(&subdir, perms).unwrap();
+
+    // Guard takes ownership of the path and restores permissions on drop
+    {
+        let _guard = ReadonlyGuard::new(subdir.clone());
+        // While guard is alive, directory is still read-only
+        assert!(
+            std::fs::File::create(subdir.join("probe_while_guarded.txt")).is_err(),
+            "directory should still be read-only while guard is alive"
+        );
+    }
+    // After guard is dropped, directory should be writable again
+    std::fs::File::create(subdir.join("probe_after_drop.txt"))
+        .expect("directory should be writable after ReadonlyGuard is dropped");
+}
