@@ -142,6 +142,10 @@ fn build_compile_error_exits_failure() {
         stderr.contains("error:"),
         "stderr should contain 'error:', got: {stderr}"
     );
+    assert!(
+        !output_path.exists(),
+        "no output file should be written on compile error"
+    );
 }
 
 #[test]
