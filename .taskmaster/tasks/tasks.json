@@ -3686,7 +3686,7 @@
         "dependencies": [
           "207"
         ],
-        "status": "blocked",
+        "status": "pending",
         "metadata": {
           "modules": [
             "crates/reify-compiler"
@@ -3694,22 +3694,14 @@
           "milestone": "M9",
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "memory_hints": {
-            "entities": [
-              "UnitRegistry",
-              "unit declarations",
-              "DimensionVector",
-              "CompiledUnit",
-              "UnitEntry"
-            ],
+            "entities": [],
             "queries": [
-              "unit declarations registry compiler pre-pass conversion factor",
-              "task 208 branch task/208 unmerged blocking 416 418",
-              "UnitRegistry register lookup dimension mapping"
+              "resolution for: Unit declarations: registry"
             ]
           }
         },
         "subtasks": [],
-        "updatedAt": "2026-03-28T19:37:04.735Z"
+        "updatedAt": "2026-03-28T19:37:58.339Z"
       },
       {
         "id": "209",
@@ -15410,7 +15402,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T19:37:04.735Z",
+      "lastModified": "2026-03-28T19:37:58.339Z",
       "taskCount": 747,
       "completedCount": 370,
       "tags": [
