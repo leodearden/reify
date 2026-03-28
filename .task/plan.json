@@ -71,7 +71,7 @@
       "id": "step-8",
       "type": "test",
       "description": "Write orient_quaternion_dimensioned_scalar_accepted: pass Scalar{si_value:2.0, dimension:LENGTH} as w and Reals for x,y,z. as_f64() strips dimension silently, so (2,0,0,0) normalizes to (1,0,0,0). Documents current behavior where orient_quaternion doesn't validate dimensions.",
-      "status": "pending",
+      "status": "done",
       "commit": null
     },
     {

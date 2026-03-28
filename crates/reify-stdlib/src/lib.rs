@@ -3880,6 +3880,27 @@ mod tests {
         assert!(eval_builtin("orient_quaternion", &[]).is_undef());
     }
 
+    #[test]
+    fn orient_quaternion_dimensioned_scalar_accepted() {
+        // as_f64() silently strips dimension from Scalar, so a dimensioned w=2.0
+        // with Real x,y,z=0.0 normalizes to (1,0,0,0) — identity orientation.
+        // Documents that orient_quaternion doesn't validate dimensions.
+        let w = Value::Scalar {
+            si_value: 2.0,
+            dimension: DimensionVector::LENGTH,
+        };
+        assert_orientation_approx!(
+            eval_builtin(
+                "orient_quaternion",
+                &[w, Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]
+            ),
+            1.0,
+            0.0,
+            0.0,
+            0.0
+        );
+    }
+
     // ── orient_axis_angle tests (step-10) ─────────────────────────────────
 
     #[test]
