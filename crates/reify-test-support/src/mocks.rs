@@ -1701,4 +1701,17 @@ mod tests {
             ),
         }
     }
+
+    #[test]
+    fn normalize_distance_pair_canonical_order() {
+        let lo = GeometryHandleId(1);
+        let hi = GeometryHandleId(5);
+
+        // (high, low) → (low, high)
+        assert_eq!(normalize_distance_pair(hi, lo), (lo, hi));
+        // (low, high) → unchanged
+        assert_eq!(normalize_distance_pair(lo, hi), (lo, hi));
+        // equal IDs → (id, id)
+        assert_eq!(normalize_distance_pair(lo, lo), (lo, lo));
+    }
 }
