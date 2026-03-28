@@ -1012,7 +1012,7 @@ fn negate_value(v: Value) -> Value {
                 Value::Vector(results)
             }
         }
-        Value::Matrix(_) => negate_value(v.canonicalize_matrix()),
+        Value::Matrix(rows) => negate_value(Value::Matrix(rows).canonicalize_matrix()),
         // Affine geometry: point negation is undefined (spec 3.3.1)
         Value::Point(_) => Value::Undef,
         _ => Value::Undef,
