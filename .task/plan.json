@@ -1,0 +1,86 @@
+{
+  "task_id": "698",
+  "title": "Fix bridge.ts type contract and add missing console.warn to payload validation",
+  "files": [
+    "gui/src/bridge.ts",
+    "gui/src/__tests__/claudeBridge.test.ts"
+  ],
+  "modules": [
+    "gui/src",
+    "gui/src/__tests__"
+  ],
+  "analysis": "Three fixes requested in gui/src/bridge.ts for the subscribeToClaudeEvents function.\n\nFix 1 (EventEntry payload type): Already resolved. Line 172 already reads `type EventEntry = [string, (event: { payload: unknown }) => void]` \u2014 the type is already `unknown`, not `Record<string, unknown>`. The test file even has a comment at lines 663-666 confirming this design choice. No code change needed.\n\nFix 2 (console.warn on isRecord early return): The 6 event handlers (text-delta, thinking-delta, tool-call, tool-result, done, error) each have a bare `if (!isRecord(event.payload)) return;` on lines 176, 185, 194, 204, 213, 222. The second-level field validation already has console.warn (e.g., line 179), but the first-level isRecord guard silently drops. The meshManager pattern (gui/src/viewport/meshManager.ts lines 54, 60) always warns before returning false/early. We need to add console.warn before each of the 6 early returns. The test file at lines 501-513 has a parameterized loop testing all 6 events \u00d7 5 invalid payloads = 30 combinations, but none assert console.warn is called.\n\nFix 3 (redundant cast): Line 200 has `(p.tool_input as Record<string, unknown>)` inside the truthy branch of `isRecord(p.tool_input) ? ...`. Since isRecord's return type is `v is Record<string, unknown>`, the type guard already narrows p.tool_input. The `as` cast is redundant and should be removed. This is a pure type-level change with no runtime effect \u2014 existing tool_input normalization tests (lines 581-631) already cover the behavior.",
+  "prerequisites": [],
+  "steps": [
+    {
+      "id": "step-1",
+      "type": "test",
+      "description": "Add console.warn spy assertions to the existing 'drops ${eventName} when payload is ${label}' parameterized tests in claudeBridge.test.ts. For each of the 30 combinations (6 events \u00d7 5 invalid payloads), assert that console.warn is called once with a message containing the event name and the invalid payload value. Add a vi.spyOn(console, 'warn') in the beforeEach and restore in afterEach within the 'payload validation guards' describe block.",
+      "status": "done",
+      "commit": "19ec9a1e"
+    },
+    {
+      "id": "step-2",
+      "type": "impl",
+      "description": "Add console.warn before each of the 6 `!isRecord(event.payload)` early returns in bridge.ts subscribeToClaudeEvents. Pattern: `if (!isRecord(event.payload)) { console.warn('<event-name>: payload is not a plain object', event.payload); return; }`. Apply to claude-text-delta (line 176), claude-thinking-delta (line 185), claude-tool-call (line 194), claude-tool-result (line 204), claude-done (line 213), claude-error (line 222).",
+      "status": "done",
+      "commit": "5ed63d11"
+    },
+    {
+      "id": "step-3",
+      "type": "test",
+      "description": "Verify existing tool_input normalization tests still pass after the cast removal (no new test needed \u2014 the 5 existing tests at lines 582-631 cover all cases: null\u2192{}, array\u2192{}, undefined\u2192{}, string\u2192{}, valid object passthrough). Run the test suite to confirm green baseline before the cast removal.",
+      "status": "done",
+      "commit": "5ed63d11"
+    },
+    {
+      "id": "step-4",
+      "type": "impl",
+      "description": "Remove the redundant `as Record<string, unknown>` cast on line 200 in bridge.ts. Change `(p.tool_input as Record<string, unknown>)` to just `p.tool_input`. The isRecord type guard already narrows the type via its `v is Record<string, unknown>` return type predicate.",
+      "status": "done",
+      "commit": "6c7c4825"
+    }
+  ],
+  "design_decisions": [
+    {
+      "decision": "Skip Fix 1 (EventEntry payload type change) \u2014 already applied",
+      "rationale": "Line 172 already reads `type EventEntry = [string, (event: { payload: unknown }) => void]`. The type is already `unknown`. The test file confirms this at lines 663-666 with a comment explaining the design choice. No code change is needed."
+    },
+    {
+      "decision": "Add console.warn spy within the existing parameterized test loop rather than adding 30 separate test cases",
+      "rationale": "The existing loop at lines 501-513 already iterates over all 6 events \u00d7 5 invalid payloads. Adding the console.warn assertion inside this loop keeps tests DRY and ensures every combination is covered. A vi.spyOn(console, 'warn') setup in the describe block's beforeEach handles spy lifecycle."
+    },
+    {
+      "decision": "Use event name in the console.warn message format: '<event-name>: payload is not a plain object'",
+      "rationale": "Matches the existing pattern for field-level validation warnings (e.g., 'claude-text-delta: invalid payload, expected {id: string, content: string}'). Using the event name makes it easy to identify which handler rejected the payload in browser devtools."
+    },
+    {
+      "decision": "No new tests for the cast removal (step 4)",
+      "rationale": "Removing `as Record<string, unknown>` is a pure type-level refactor with zero runtime effect. The isRecord type predicate already narrows identically. The 5 existing tool_input normalization tests (null, array, undefined, string, valid object) fully verify the runtime behavior is unchanged."
+    }
+  ],
+  "reuse": [
+    {
+      "what": "Existing captureListener helper function in claudeBridge.test.ts",
+      "where": "gui/src/__tests__/claudeBridge.test.ts lines 468-482",
+      "how": "Reused by the existing parameterized test loop \u2014 no changes needed to this helper."
+    },
+    {
+      "what": "Existing parameterized test loop (PAYLOAD_EVENTS \u00d7 INVALID_PAYLOADS)",
+      "where": "gui/src/__tests__/claudeBridge.test.ts lines 484-513",
+      "how": "Add console.warn spy assertions directly into this existing loop rather than duplicating the test structure."
+    },
+    {
+      "what": "isRecord type guard function",
+      "where": "gui/src/bridge.ts lines 156-158",
+      "how": "Already used by all 6 handlers. Its `v is Record<string, unknown>` return type predicate makes the redundant cast on line 200 unnecessary."
+    },
+    {
+      "what": "meshManager console.warn pattern",
+      "where": "gui/src/viewport/meshManager.ts lines 54, 60",
+      "how": "Reference pattern for warn-before-early-return \u2014 our new console.warn calls follow the same approach of logging before rejecting invalid data."
+    }
+  ],
+  "_session_id": "698-ea125347",
+  "_created_at": "2026-03-28T09:20:02.019059+00:00"
+}
