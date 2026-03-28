@@ -4327,6 +4327,39 @@ mod tests {
     }
 
     #[test]
+    fn orient_axis_angle_non_unit_axis_normalizes() {
+        // orient_axis_angle normalizes the axis vector — [2,0,0] with π/2 should
+        // produce the same rotation as [1,0,0] with π/2: q = (cos(π/4), sin(π/4), 0, 0)
+        let axis_scaled = Value::Tensor(vec![
+            Value::Real(2.0),
+            Value::Real(0.0),
+            Value::Real(0.0),
+        ]);
+        let axis_unit = Value::Tensor(vec![
+            Value::Real(1.0),
+            Value::Real(0.0),
+            Value::Real(0.0),
+        ]);
+        let angle = Value::Real(std::f64::consts::FRAC_PI_2);
+        let cos_pi_4 = std::f64::consts::FRAC_PI_4.cos();
+        let sin_pi_4 = std::f64::consts::FRAC_PI_4.sin();
+        assert_orientation_approx!(
+            eval_builtin("orient_axis_angle", &[axis_scaled, angle.clone()]),
+            cos_pi_4,
+            sin_pi_4,
+            0.0,
+            0.0
+        );
+        assert_orientation_approx!(
+            eval_builtin("orient_axis_angle", &[axis_unit, angle]),
+            cos_pi_4,
+            sin_pi_4,
+            0.0,
+            0.0
+        );
+    }
+
+    #[test]
     fn orient_euler_inf_angle_returns_undef() {
         // Inf angle must be rejected in orient_euler.
         assert!(
