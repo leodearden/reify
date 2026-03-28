@@ -12696,6 +12696,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 630,
+        "title": "Strengthen param-no-default tests: y determinacy + edit propagation",
+        "description": "The tests in crates/reify-eval/tests/boundary5_engine.rs for the param-no-default feature have assertion gaps:\n\n1. `eval_param_no_default_with_dependent_let` (line ~741) only asserts `snapshot.values.get(&y_id).is_some()` — it never checks `y`'s `DeterminacyState`. Since `y` depends on an Undetermined param, `y` should itself be Undetermined. This is the most important assertion for the feature.\n\n2. No test covers `edit_param` on a param-with-dependents and verifies propagation. After setting `n = 2.0`, `y = n * 2.0` should become `Real(4.0)` with `Determined` state. This is the key downstream path.\n\n**Fix:**\n1. In `eval_param_no_default_with_dependent_let`, replace `is_some()` with: `let (y_snap_val, y_det) = snapshot.values.get(&y_id).expect(\"y in snapshot\"); assert!(y_snap_val.is_undef()); assert_eq!(*y_det, DeterminacyState::Undetermined);`\n2. Add a new test (or extend existing) that calls `engine.edit_param(n_id, Value::Real(2.0))` after initial eval and asserts `y` becomes `Real(4.0)` with `Determined` determinacy.\n\n**Memory hints:** search for \"param no default test\", \"DeterminacyState propagation test\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -12708,7 +12719,7 @@
       ],
       "created": "2026-03-28T09:49:48.587Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-28T09:50:03.983Z"
+      "updated": "2026-03-28T09:50:12.948Z"
     }
   }
 }
