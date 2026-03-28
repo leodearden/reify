@@ -355,3 +355,34 @@ fn test_subprocess_timeout_kills_hung_process() {
         elapsed
     );
 }
+
+#[test]
+fn test_stamp_write_failure_no_panic() {
+    // Verify that stamp_write does not panic when the destination is read-only.
+    // This mirrors build.rs behavior where write failure emits a warning instead of panicking.
+    let dir = tempfile::tempdir().unwrap();
+    let readonly_dir = dir.path().join("readonly");
+    std::fs::create_dir_all(&readonly_dir).unwrap();
+
+    // Make the directory read-only so file creation fails
+    let mut perms = std::fs::metadata(&readonly_dir).unwrap().permissions();
+    perms.set_readonly(true);
+    std::fs::set_permissions(&readonly_dir, perms).unwrap();
+
+    let stamp_path = readonly_dir.join("grammar_hash.stamp");
+
+    // Should not panic — just warn
+    stamp_write(&stamp_path, "somehash");
+
+    // Verify the stamp was NOT written (write should have failed)
+    assert!(
+        !stamp_path.exists(),
+        "stamp should not exist in a read-only directory"
+    );
+
+    // Restore permissions for cleanup
+    let mut perms = std::fs::metadata(&readonly_dir).unwrap().permissions();
+    #[allow(clippy::permissions_set_readonly_false)]
+    perms.set_readonly(false);
+    std::fs::set_permissions(&readonly_dir, perms).unwrap();
+}
