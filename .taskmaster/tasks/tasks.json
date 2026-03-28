@@ -13634,7 +13634,17 @@
           "529"
         ],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-constraints/tests/solver_integration.rs",
+            "crates/reify-constraints/src/solver.rs"
+          ],
+          "modules": [
+            "crates/reify-constraints/src",
+            "crates/reify-constraints/tests"
+          ]
+        }
       },
       {
         "id": 663,
@@ -13645,7 +13655,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "gui/src/__tests__/PropertyEditor.test.tsx"
+          ],
+          "modules": [
+            "gui/src/__tests__"
+          ]
+        }
       },
       {
         "id": 664,
