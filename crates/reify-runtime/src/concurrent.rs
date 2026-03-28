@@ -302,16 +302,19 @@ impl ConcurrentScheduler {
                 }
             }
 
-            // Spawn tasks for dirty nodes in this level
+            // Spawn tasks for dirty nodes in this level using JoinSet.
+            // JoinSet aborts all remaining tasks on drop (unlike Vec<JoinHandle>
+            // which detaches them), and abort_all() is called explicitly on error
+            // paths for clarity.
             // Returns (NodeId, Option<EvalOutcome>) where None = commitment-cancelled
-            let mut handles = Vec::new();
+            let mut join_set = tokio::task::JoinSet::new();
             for node in &dirty_nodes {
                 let eval = Arc::clone(&evaluator);
                 let n = node.clone();
                 let cancel_clone = cancel.clone();
                 let tracker_clone = config.commitment_tracker.clone();
                 let has_intermediate = (config.has_intermediate_inputs)(&n);
-                let handle = tokio::spawn(async move {
+                join_set.spawn(async move {
                     let start = std::time::Instant::now();
                     let outcome = eval.evaluate(n.clone()).await;
                     // Commitment check: if cancel fired and tracker is present
@@ -334,7 +337,6 @@ impl ConcurrentScheduler {
                     }
                     (n, Some(outcome))
                 });
-                handles.push(handle);
             }
 
             // Cleanup closure: remove all dirty nodes from tracker and promoter.
@@ -353,9 +355,10 @@ impl ConcurrentScheduler {
                 }
             };
 
-            // Join all tasks in this level
-            for handle in handles {
-                match handle.await {
+            // Join all tasks in this level (completion order — safe because
+            // results are collected into HashSets, so ordering is irrelevant)
+            while let Some(result) = join_set.join_next().await {
+                match result {
                     Ok((node, Some(EvalOutcome::Changed))) => {
                         // Add to changed_vcids for downstream dirty computation
                         if let NodeId::Value(ref vcid) = node {
@@ -366,10 +369,12 @@ impl ConcurrentScheduler {
                     Ok((_, Some(EvalOutcome::Unchanged))) => {} // Unchanged — skip
                     Ok((_, None)) => {} // Commitment-cancelled — drop
                     Err(e) if e.is_panic() => {
+                        join_set.abort_all();
                         cleanup_level(&dirty_nodes);
                         return Err(SchedulerError::TaskPanicked(e.into_panic()));
                     }
                     Err(_) => {
+                        join_set.abort_all();
                         cleanup_level(&dirty_nodes);
                         return Err(SchedulerError::TaskCancelled);
                     }
