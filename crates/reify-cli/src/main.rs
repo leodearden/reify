@@ -165,10 +165,10 @@ fn cmd_build(args: &[String]) -> ExitCode {
                 return ExitCode::FAILURE;
             }
             println!("Wrote {} ({} bytes)", output_path, data.len());
+            println!("{}", constraint_summary_message(&result.constraint_results, all_satisfied));
             if all_satisfied {
                 ExitCode::SUCCESS
             } else {
-                println!("Some constraints violated.");
                 ExitCode::FAILURE
             }
         }
