@@ -12338,7 +12338,7 @@
         "description": "Two sets of new tests introduced by task 437 have weak assertions:\n1. analysis.rs guarded-group tests (lines 438-489) don't assert span or cell_type.\n2. goto_def.rs guarded-group tests (lines 126-155) don't assert character offset.\nAdd span start/end, cell_type, and character offset assertions to catch regression in nested member handling.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -12351,7 +12351,8 @@
           "modules": [
             "crates/reify-lsp/src"
           ]
-        }
+        },
+        "updatedAt": "2026-03-28T16:12:24.068Z"
       },
       {
         "id": "597",
@@ -15263,7 +15264,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T16:12:21.778Z",
+      "lastModified": "2026-03-28T16:12:24.068Z",
       "taskCount": 738,
       "completedCount": 358,
       "tags": [
