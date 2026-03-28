@@ -7222,9 +7222,16 @@
             "tree-sitter-reify/src"
           ],
           "memory_hints": {
-            "entities": [],
+            "entities": [
+              "lower_pragma",
+              "PragmaValue",
+              "PragmaArg",
+              "Pragma"
+            ],
             "queries": [
-              "resolution for: Pragma: silent parse failures + error reporting + tests + PartialEq"
+              "lower_pragma ParseError pragma arg parse failure silent",
+              "pragma parse PartialEq duplicate checking ts_parser.rs",
+              "task 369 worktree corruption task-216 plan mismatch"
             ]
           }
         }
