@@ -3954,6 +3954,28 @@ mod tests {
         );
     }
 
+    #[test]
+    fn orient_axis_angle_nan_angle_returns_undef() {
+        // NaN angle should produce Undef (currently caught by normalize_quaternion).
+        let axis = Value::Tensor(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
+        let angle = Value::Real(f64::NAN);
+        assert!(
+            eval_builtin("orient_axis_angle", &[axis, angle]).is_undef(),
+            "NaN angle should produce Undef"
+        );
+    }
+
+    #[test]
+    fn orient_axis_angle_inf_angle_returns_undef() {
+        // Inf angle should produce Undef (currently caught by normalize_quaternion).
+        let axis = Value::Tensor(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
+        let angle = Value::Real(f64::INFINITY);
+        assert!(
+            eval_builtin("orient_axis_angle", &[axis, angle]).is_undef(),
+            "Inf angle should produce Undef"
+        );
+    }
+
     // ── orient_euler tests (step-12) ──────────────────────────────────────
 
     #[test]

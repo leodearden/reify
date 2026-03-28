@@ -43,7 +43,7 @@
       "id": "step-4",
       "type": "test",
       "description": "Write orient_axis_angle_nan_angle_returns_undef: pass a valid axis [0,0,1] with NaN angle and assert Undef. Write orient_axis_angle_inf_angle_returns_undef: same with f64::INFINITY.",
-      "status": "pending",
+      "status": "done",
       "commit": null
     },
     {
