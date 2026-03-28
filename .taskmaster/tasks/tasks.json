@@ -10283,7 +10283,20 @@
           "modules": [
             "crates/reify-cli/src",
             "crates/reify-cli/tests"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "cmd_build",
+              "Satisfaction",
+              "Indeterminate",
+              "constraint-status"
+            ],
+            "queries": [
+              "Indeterminate Satisfaction constraint behavior",
+              "constraint status match build succeed silently",
+              "reify-cli build constraint satisfaction rationale"
+            ]
+          }
         },
         "updatedAt": "2026-03-28T01:09:50.087Z"
       },
