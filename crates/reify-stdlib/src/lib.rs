@@ -4772,6 +4772,20 @@ mod tests {
         );
     }
 
+    #[test]
+    fn magnitude_complex_overflow_returns_undef() {
+        // magnitude delegates to complex_abs for Complex inputs; overflow → Undef.
+        let z = Value::Complex {
+            re: f64::MAX,
+            im: f64::MAX,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            eval_builtin("magnitude", &[z]).is_undef(),
+            "magnitude with f64::MAX complex components must return Undef (Inf overflow)"
+        );
+    }
+
     // ── phase() tests (step-13) ───────────────────────────────────────────────
 
     #[test]
