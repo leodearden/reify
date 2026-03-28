@@ -13771,7 +13771,16 @@
           "547"
         ],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "gui/sidecar/src/index.ts",
+            "gui/sidecar/src/utils.ts"
+          ],
+          "modules": [
+            "gui/sidecar/src"
+          ]
+        }
       },
       {
         "id": 670,
@@ -13784,7 +13793,17 @@
           "547"
         ],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "gui/src/__tests__/Editor.test.tsx",
+            "gui/src/__tests__/App.test.tsx",
+            "gui/src/__tests__/errorClassifier.test.ts"
+          ],
+          "modules": [
+            "gui/src/__tests__"
+          ]
+        }
       },
       {
         "id": 671,
