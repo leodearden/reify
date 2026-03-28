@@ -78,7 +78,7 @@
       "id": "step-9",
       "type": "test",
       "description": "Write orient_euler_uppercase_convention_returns_undef: pass 'XYZ' as convention string with valid angles. The match on lines 909-920 only accepts lowercase, so 'XYZ' falls through to Undef. Documents case-sensitivity.",
-      "status": "pending",
+      "status": "done",
       "commit": null
     },
     {

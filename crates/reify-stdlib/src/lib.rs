@@ -4157,6 +4157,26 @@ mod tests {
     }
 
     #[test]
+    fn orient_euler_uppercase_convention_returns_undef() {
+        // The convention match only accepts lowercase ('xyz', 'zyx', etc.).
+        // Uppercase 'XYZ' falls through to the catch-all returning Undef.
+        // Documents case-sensitivity of the convention parameter.
+        assert!(
+            eval_builtin(
+                "orient_euler",
+                &[
+                    Value::String("XYZ".into()),
+                    Value::Real(std::f64::consts::FRAC_PI_4),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                ]
+            )
+            .is_undef(),
+            "uppercase convention 'XYZ' should return Undef"
+        );
+    }
+
+    #[test]
     fn orient_euler_nan_angle_returns_undef() {
         // NaN angle should produce Undef (currently caught by normalize_quaternion).
         assert!(
