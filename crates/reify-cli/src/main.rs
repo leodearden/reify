@@ -90,12 +90,12 @@ fn cmd_check(args: &[String]) -> ExitCode {
     let mut engine = reify_eval::Engine::new(Box::new(checker), None);
     let result = engine.check(&compiled);
 
-    let outcome =
-        report_constraint_results(&result.constraint_results, &mut std::io::stdout());
-
-    for diag in &result.diagnostics {
-        eprintln!("{}: {}", diag.severity, diag.message);
-    }
+    let outcome = report_eval_output(
+        &result.constraint_results,
+        &result.diagnostics,
+        &mut std::io::stdout(),
+        &mut std::io::stderr(),
+    );
 
     match outcome {
         ConstraintOutcome::AllSatisfied => {
@@ -157,13 +157,12 @@ fn cmd_build(args: &[String]) -> ExitCode {
     let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
     let result = engine.build(&compiled, format);
 
-    for diag in &result.diagnostics {
-        eprintln!("{}: {}", diag.severity, diag.message);
-    }
-
-    // Report constraint status
-    let outcome =
-        report_constraint_results(&result.constraint_results, &mut std::io::stdout());
+    let outcome = report_eval_output(
+        &result.constraint_results,
+        &result.diagnostics,
+        &mut std::io::stdout(),
+        &mut std::io::stderr(),
+    );
 
     match result.geometry_output {
         Some(data) => {
@@ -323,6 +322,25 @@ fn report_constraint_results(
     }
 }
 
+/// Report constraint results and eval diagnostics in a consistent order.
+///
+/// Writes constraint status lines to `out` (via [`report_constraint_results`]),
+/// then writes each diagnostic to `err`. This ensures both `cmd_check` and
+/// `cmd_build` produce output in the same order: constraints first, diagnostics
+/// second.
+fn report_eval_output(
+    constraint_results: &[reify_eval::ConstraintCheckEntry],
+    diagnostics: &[reify_types::Diagnostic],
+    out: &mut impl std::io::Write,
+    err: &mut impl std::io::Write,
+) -> ConstraintOutcome {
+    let outcome = report_constraint_results(constraint_results, out);
+    for diag in diagnostics {
+        let _ = writeln!(err, "{}: {}", diag.severity, diag.message);
+    }
+    outcome
+}
+
 fn cmd_mcp_server(args: &[String]) -> ExitCode {
     // Parse optional file argument and --project-dir flag
     let mut file_path: Option<String> = None;
@@ -474,5 +492,92 @@ mod tests {
             !output.contains("Axle#constraint"),
             "should NOT contain id fallback when label is present"
         );
+    }
+
+    #[test]
+    fn report_eval_output_writes_constraints_to_out_and_diagnostics_to_err() {
+        let constraints = vec![
+            make_entry("Bracket", 0, Some("stress_limit"), Satisfaction::Satisfied),
+            make_entry("Bracket", 1, Some("size_bound"), Satisfaction::Violated),
+        ];
+        let diagnostics = vec![
+            reify_types::Diagnostic::warning("some msg"),
+            reify_types::Diagnostic::error("bad thing"),
+        ];
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let outcome = report_eval_output(&constraints, &diagnostics, &mut out, &mut err);
+
+        let out_str = String::from_utf8(out).unwrap();
+        let err_str = String::from_utf8(err).unwrap();
+
+        // (a) out buffer contains constraint status lines
+        assert!(
+            out_str.contains("OK stress_limit"),
+            "out should contain constraint OK line, got: {}",
+            out_str
+        );
+        assert!(
+            out_str.contains("VIOLATED size_bound"),
+            "out should contain constraint VIOLATED line, got: {}",
+            out_str
+        );
+
+        // (b) err buffer contains diagnostic lines
+        assert!(
+            err_str.contains("warning: some msg"),
+            "err should contain warning diagnostic, got: {}",
+            err_str
+        );
+        assert!(
+            err_str.contains("error: bad thing"),
+            "err should contain error diagnostic, got: {}",
+            err_str
+        );
+
+        // (c) correct outcome
+        assert_eq!(outcome, ConstraintOutcome::SomeViolated);
+    }
+
+    #[test]
+    fn report_eval_output_returns_correct_outcome_variants() {
+        let no_diags: Vec<reify_types::Diagnostic> = vec![];
+
+        // AllSatisfied: all constraints OK
+        {
+            let entries = vec![
+                make_entry("A", 0, Some("c1"), Satisfaction::Satisfied),
+                make_entry("A", 1, Some("c2"), Satisfaction::Satisfied),
+            ];
+            let mut out = Vec::new();
+            let mut err = Vec::new();
+            let outcome = report_eval_output(&entries, &no_diags, &mut out, &mut err);
+            assert_eq!(outcome, ConstraintOutcome::AllSatisfied);
+        }
+
+        // SomeViolated: at least one violated
+        {
+            let entries = vec![
+                make_entry("B", 0, Some("c1"), Satisfaction::Satisfied),
+                make_entry("B", 1, Some("c2"), Satisfaction::Violated),
+            ];
+            let mut out = Vec::new();
+            let mut err = Vec::new();
+            let outcome = report_eval_output(&entries, &no_diags, &mut out, &mut err);
+            assert_eq!(outcome, ConstraintOutcome::SomeViolated);
+        }
+
+        // SomeIndeterminate: indeterminate but no violated
+        {
+            let entries = vec![
+                make_entry("C", 0, Some("c1"), Satisfaction::Satisfied),
+                make_entry("C", 1, Some("c2"), Satisfaction::Indeterminate),
+                make_entry("C", 2, Some("c3"), Satisfaction::Indeterminate),
+            ];
+            let mut out = Vec::new();
+            let mut err = Vec::new();
+            let outcome = report_eval_output(&entries, &no_diags, &mut out, &mut err);
+            assert_eq!(outcome, ConstraintOutcome::SomeIndeterminate(2));
+        }
     }
 }
