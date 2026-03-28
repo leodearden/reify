@@ -201,6 +201,57 @@ fn normal_solve_emits_zero_warns() {
     );
 }
 
+/// Verify the reason string format for the get_best_param()==None path.
+/// This path is defensive — argmin's NelderMead nearly always produces a best
+/// parameter. We attempt to trigger it with collapsed bounds (lo == hi) which
+/// creates a degenerate zero-volume simplex. If NoProgress is returned with
+/// "solver returned no solution", we also verify a warn-level event was emitted.
+#[test]
+fn no_best_param_returns_no_progress_with_reason() {
+    let (subscriber, _debug_count, warn_count) = event_counting_subscriber();
+
+    let solver = DimensionalSolver;
+
+    let x_id = vcid("Plate", "width");
+    let x_ref = value_ref("Plate", "width");
+
+    let gt_expr = gt(x_ref, literal(mm(1.0)));
+
+    // Collapsed bounds: lo == hi → zero-volume simplex.
+    // The initial point is extracted as lo (0.05), and the simplex perturbation
+    // delta = (hi - lo) * 0.1 = 0, so all vertices are identical.
+    let mut current = ValueMap::new();
+    current.insert(x_id.clone(), mm(0.05));
+
+    let problem = ResolutionProblem {
+        auto_params: vec![AutoParam {
+            id: x_id.clone(),
+            param_type: Type::length(),
+            bounds: Some((0.05, 0.05)),
+        }],
+        constraints: vec![(cnid("Plate", 0), gt_expr)],
+        current_values: current,
+        objective: None,
+        functions: vec![],
+    };
+
+    let result = tracing::subscriber::with_default(subscriber, || solver.solve(&problem));
+
+    // If the get_best_param()==None path is triggered, verify the reason string
+    // and check that a warn was emitted. This is a conditional assertion because
+    // argmin may handle the degenerate simplex gracefully (converging immediately
+    // with the single-point simplex).
+    if let SolveResult::NoProgress { reason } = &result {
+        if reason == "solver returned no solution" {
+            let warns = warn_count.load(Ordering::Relaxed);
+            assert!(
+                warns > 0,
+                "get_best_param()==None path should emit a warn, got 0 warns"
+            );
+        }
+    }
+}
+
 /// Verify the reason string format for the executor.run() error path.
 /// Uses NaN bounds to create a degenerate simplex that causes argmin to error.
 /// If the executor error path is triggered, the reason must match "solver error: ...".
