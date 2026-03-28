@@ -323,6 +323,25 @@ fn report_constraint_results(
     }
 }
 
+/// Report constraint results and eval diagnostics in a consistent order.
+///
+/// Writes constraint status lines to `out` (via [`report_constraint_results`]),
+/// then writes each diagnostic to `err`. This ensures both `cmd_check` and
+/// `cmd_build` produce output in the same order: constraints first, diagnostics
+/// second.
+fn report_eval_output(
+    constraint_results: &[reify_eval::ConstraintCheckEntry],
+    diagnostics: &[reify_types::Diagnostic],
+    out: &mut impl std::io::Write,
+    err: &mut impl std::io::Write,
+) -> ConstraintOutcome {
+    let outcome = report_constraint_results(constraint_results, out);
+    for diag in diagnostics {
+        let _ = writeln!(err, "{}: {}", diag.severity, diag.message);
+    }
+    outcome
+}
+
 fn cmd_mcp_server(args: &[String]) -> ExitCode {
     // Parse optional file argument and --project-dir flag
     let mut file_path: Option<String> = None;
