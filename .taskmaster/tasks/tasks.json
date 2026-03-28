@@ -13697,6 +13697,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 695,
+        "title": "Document or implement hover fallback for unscoped member lookup",
+        "description": "In hover.rs, the scoped member lookup via `find_member_decl(word, enclosing)` does not fall back to `find_member_decl(word, None)` when scoped lookup returns None, unlike goto_def.rs which does. Either: (a) add a comment explaining this is intentional because hover should only show info for members of the enclosing declaration, or (b) implement the same two-pass pattern as goto_def.rs. Investigate whether cross-structure member references are possible in the language to determine which approach is correct.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -13709,7 +13720,7 @@
       ],
       "created": "2026-03-28T06:53:49.176Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-28T06:54:19.448Z"
+      "updated": "2026-03-28T06:54:23.942Z"
     }
   }
 }
