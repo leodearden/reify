@@ -950,7 +950,13 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
             let mag_x = (xc[0] * xc[0] + xc[1] * xc[1] + xc[2] * xc[2]).sqrt();
             let mag_y = (yc[0] * yc[0] + yc[1] * yc[1] + yc[2] * yc[2]).sqrt();
             let mag_z = (zc[0] * zc[0] + zc[1] * zc[1] + zc[2] * zc[2]).sqrt();
-            if (mag_x - 1.0).abs() > tol || (mag_y - 1.0).abs() > tol || (mag_z - 1.0).abs() > tol {
+            if !mag_x.is_finite()
+                || !mag_y.is_finite()
+                || !mag_z.is_finite()
+                || (mag_x - 1.0).abs() > tol
+                || (mag_y - 1.0).abs() > tol
+                || (mag_z - 1.0).abs() > tol
+            {
                 return Value::Undef;
             }
             let dot_xy = xc[0] * yc[0] + xc[1] * yc[1] + xc[2] * yc[2];

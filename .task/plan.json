@@ -36,7 +36,7 @@
       "id": "step-3",
       "type": "impl",
       "description": "Add explicit is_finite guard in orient_basis: change the magnitude check on line 953 from `(mag_x - 1.0).abs() > tol || ...` to `!mag_x.is_finite() || !mag_y.is_finite() || !mag_z.is_finite() || (mag_x - 1.0).abs() > tol || ...`. This rejects NaN at the validation layer rather than deferring to normalize_quaternion.",
-      "status": "pending",
+      "status": "done",
       "commit": null
     },
     {
