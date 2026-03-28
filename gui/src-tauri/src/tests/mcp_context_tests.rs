@@ -450,6 +450,36 @@ fn builder_with_both_options() {
     assert_eq!(recorded[0].0, "focus-entity");
 }
 
+// --- McpConfig struct tests ---
+
+#[test]
+fn mcp_config_struct_stores_fields() {
+    use crate::claude_bridge::McpConfig;
+
+    let session = make_loaded_session();
+    let engine = Arc::new(Mutex::new(session));
+    let selection = Arc::new(RwLock::new(SelectionInfo {
+        selected_entity: None,
+        hovered_entity: None,
+    }));
+    let sink_called = Arc::new(Mutex::new(false));
+    let sink_clone = sink_called.clone();
+
+    let config = McpConfig {
+        engine: engine.clone(),
+        event_sink: move |_name: String, _payload: serde_json::Value| {
+            *sink_clone.lock().unwrap() = true;
+        },
+        selection: selection.clone(),
+    };
+
+    // Assert all three fields are accessible and hold the right values
+    assert!(Arc::ptr_eq(&config.engine, &engine));
+    assert!(Arc::ptr_eq(&config.selection, &selection));
+    (config.event_sink)("test".to_string(), serde_json::json!({}));
+    assert!(*sink_called.lock().unwrap());
+}
+
 // --- Compile-time trait assertions ---
 
 #[test]
