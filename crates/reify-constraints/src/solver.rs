@@ -2246,6 +2246,42 @@ mod tests {
         assert!(result.is_empty(), "empty params should produce empty map");
     }
 
+    #[test]
+    fn build_solved_values_dimensionless_type() {
+        use super::build_solved_values;
+        use reify_types::{AutoParam, DimensionVector, Type, Value, ValueCellId};
+
+        let id = ValueCellId::new("Part", "ratio");
+        let params = vec![AutoParam {
+            id: id.clone(),
+            param_type: Type::Real,
+            bounds: None,
+        }];
+        let x = [3.14];
+
+        let result = build_solved_values(&params, &x);
+        assert_eq!(result.len(), 1);
+
+        match result.get(&id) {
+            Some(Value::Scalar {
+                si_value,
+                dimension,
+            }) => {
+                assert!(
+                    (si_value - 3.14).abs() < 1e-15,
+                    "si_value should be 3.14, got {}",
+                    si_value
+                );
+                assert_eq!(
+                    *dimension,
+                    DimensionVector::DIMENSIONLESS,
+                    "Type::Real should map to DIMENSIONLESS"
+                );
+            }
+            other => panic!("expected Scalar for ratio, got {:?}", other),
+        }
+    }
+
     /// A feasible initial point with an always-undefined objective (x/0)
     /// must return NoProgress, never Solved. This validates the contract
     /// that undefined objectives are never silently promoted to Solved,
