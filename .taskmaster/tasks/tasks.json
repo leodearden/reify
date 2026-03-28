@@ -12137,7 +12137,7 @@
         "description": "Four test quality issues in solver_integration.rs warm-start tests:\n\n1. **warm_start_falls_back_to_initial_when_optimizer_drifts_infeasible**: Only asserts result is in constraint range, doesn't verify fallback was invoked. Assert `(si - 0.0055).abs() < 1e-10` to confirm exact initial value returned. Update comment to reflect actual 1000-iteration budget (not 500).\n\n2. **warm_start_scales_iterations_with_dimension**: Passes whether scaling helped or fallback rescued. Add assertion that p0 was optimized below initial (e.g., `si_p0 < 0.013`) to verify real optimization progress.\n\n3. **warm_start_optimizes_when_possible**: Threshold `si < 0.015` is too generous — should converge near 5mm lower bound. Tighten to `si < 0.008` to guard against regressions.\n\n4. **Missing edge case**: No test verifying fallback returns EXACT initial values (not partially-optimized or corrupted state). The existing fallback test should assert exact value match.\n\nAlso: replace raw `Value::Scalar { si_value: ..., dimension: DimensionVector::LENGTH }` with existing `mm()` helper from reify-test-support in all four tests.\n\nMemory hints: search \"solver warm-start tests\", entity DimensionalSolver",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [
           "531"
         ],
@@ -12152,7 +12152,7 @@
             "crates/reify-constraints/tests"
           ]
         },
-        "updatedAt": "2026-03-28T05:45:32.571Z"
+        "updatedAt": "2026-03-28T09:04:27.233Z"
       },
       {
         "id": "591",
@@ -12315,11 +12315,11 @@
         "description": "find_member_decl in analysis.rs:63-97 gets the span from the first matching parsed declaration and the type from the first matching compiled template, but these searches are not coordinated by structure name. If two structures share a member name (e.g., both have 'width'), the span could come from structure A while the type comes from structure B. Fix by threading the structure name through both lookups.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-03-28T01:09:43.117Z",
+        "updatedAt": "2026-03-28T09:04:27.266Z",
         "metadata": {
           "modules": [
             "crates/reify-lsp"
@@ -14621,7 +14621,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T09:04:27.193Z",
+      "lastModified": "2026-03-28T09:04:27.266Z",
       "taskCount": 710,
       "completedCount": 329,
       "tags": [
