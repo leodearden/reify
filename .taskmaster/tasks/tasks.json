@@ -14443,7 +14443,17 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-cli/tests/cli_build.rs",
+            "crates/reify-cli/tests/cli_check.rs",
+            "crates/reify-cli/tests/common/mod.rs"
+          ],
+          "modules": [
+            "crates/reify-cli/tests"
+          ]
+        }
       },
       {
         "id": 703,
@@ -14454,7 +14464,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-constraints/tests/solver_integration.rs"
+          ],
+          "modules": [
+            "crates/reify-constraints/tests"
+          ]
+        }
       },
       {
         "id": 704,
