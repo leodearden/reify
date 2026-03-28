@@ -13856,7 +13856,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-runtime/src/concurrent_eval.rs"
+          ],
+          "modules": [
+            "crates/reify-runtime/src"
+          ]
+        }
       },
       {
         "id": 674,
@@ -13869,7 +13877,15 @@
           "660"
         ],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-constraints/tests/solver_integration.rs"
+          ],
+          "modules": [
+            "crates/reify-constraints/tests"
+          ]
+        }
       },
       {
         "id": 675,
