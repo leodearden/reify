@@ -614,6 +614,37 @@ mod tests {
     }
 
     #[test]
+    fn completion_after_dot_includes_known_members() {
+        // Two defined structures so push_all_members returns real members.
+        let source = "structure Bracket {\n    param width: Scalar = 80mm\n    param height: Scalar = 100mm\n}\nstructure Assembly {\n    sub part: Bracket\n    let x = part.\n}";
+        // Line 6, col 17 is after the dot on "    let x = part."
+        let items = compute_completions(source, &test_uri(), Position::new(6, 17));
+
+        let var_labels: Vec<&str> = items
+            .iter()
+            .filter(|i| i.kind == Some(CompletionItemKind::VARIABLE))
+            .map(|v| v.label.as_str())
+            .collect();
+
+        // DotAccess context calls push_all_members, which returns members from
+        // all defined structures. Bracket's params should appear.
+        assert!(
+            !var_labels.is_empty(),
+            "after dot with defined structures should have member completions"
+        );
+        assert!(
+            var_labels.contains(&"width"),
+            "should include Bracket's 'width', got: {:?}",
+            var_labels
+        );
+        assert!(
+            var_labels.contains(&"height"),
+            "should include Bracket's 'height', got: {:?}",
+            var_labels
+        );
+    }
+
+    #[test]
     fn completion_type_position_returns_types_and_structs() {
         // Cursor is in a type annotation position (after `x: `)
         let source = "structure Foo {\n    param x: \n}";
