@@ -440,6 +440,34 @@ describe('App async mount/cleanup race conditions', () => {
     // Verify the Claude event unsubscribe was called during cleanup
     expect(claudeUnsub).toHaveBeenCalled();
   });
+
+  it('does not leak Claude event listeners when unmounted before subscribeToClaudeEvents resolves', async () => {
+    // Create a deferred promise for subscribeToClaudeEvents
+    const unlistenClaude = vi.fn();
+    let resolveClaudeSub!: (unsub: () => void) => void;
+    vi.mocked(bridge.subscribeToClaudeEvents).mockReturnValue(
+      new Promise<() => void>((resolve) => { resolveClaudeSub = resolve; }),
+    );
+
+    const { unmount } = render(() => <App />);
+
+    // Wait for getInitialState to resolve and initApp to reach subscribeToClaudeEvents
+    await new Promise((r) => setTimeout(r, 0));
+
+    // Unmount while subscribeToClaudeEvents is still pending
+    unmount();
+
+    // Resolve the deferred subscribeToClaudeEvents — alive guard should fire
+    resolveClaudeSub(unlistenClaude);
+
+    // Flush microtasks so the await in initApp resolves
+    await new Promise((r) => setTimeout(r, 0));
+
+    // The alive guard (lines 260-263) calls unlistenClaude() and returns early,
+    // never assigning claudeEventUnsub. So onCleanup's claudeEventUnsub?.() is a no-op.
+    // The unlisten should be called exactly once — via the alive guard, not via onCleanup.
+    expect(unlistenClaude).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('App new component integration', () => {
