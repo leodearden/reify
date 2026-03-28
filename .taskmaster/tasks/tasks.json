@@ -7427,13 +7427,13 @@
         "description": "Two small robustness fixes for the Frame type added in task 234:\n\n1. **Explicit dimension() arm**: Add `Value::Frame { .. } => DimensionVector::DIMENSIONLESS` to the `dimension()` match in `crates/reify-types/src/value.rs:172` instead of relying on the wildcard `_ =>` arm. All other semantic properties of Frame have explicit arms; dimension() is the odd one out. This prevents breakage if the wildcard is ever tightened.\n\n2. **Noisy infer_value_type**: Change `Value::Frame { .. } => Type::Frame(3)` in `crates/reify-test-support/src/builders.rs:55` to `panic!(\"literal() cannot infer Frame dimensionality; use CompiledExpr::literal(value, type) directly.\")` — matching the established pattern for Point/Vector/Tensor/Matrix. The current code silently returns Frame(3) regardless of actual dimensionality, violating the project convention that logic errors should be noisy.\n\nmemory_hints: search \"silent defaults noisy errors convention\", entity \"Value::Frame\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [
           "234"
         ],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-03-28T04:32:22.178Z",
+        "updatedAt": "2026-03-28T04:54:34.806Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -13464,7 +13464,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T04:53:41.039Z",
+      "lastModified": "2026-03-28T04:54:34.807Z",
       "taskCount": 677,
       "completedCount": 321,
       "tags": [
