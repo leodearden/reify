@@ -4,8 +4,14 @@
 #
 # This script is idempotent — safe to run repeatedly.
 # Called by: build.rs (auto), orchestrator verification, hooks/project-checks.
+# Usage: tree-sitter-generate.sh [--force]
 
 set -euo pipefail
+
+FORCE=false
+if [ "${1:-}" = "--force" ]; then
+    FORCE=true
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TS_DIR="$(cd "$SCRIPT_DIR/../tree-sitter-reify" && pwd)"
@@ -29,23 +35,26 @@ GRAMMAR_HASH=$(sha256sum grammar.js | awk '{print $1}')
 STAMP_FILE="src/.grammar_hash.stamp"
 
 # Staleness check: skip generation if stamp matches and all outputs exist.
-STALE=false
-if [ ! -f "$STAMP_FILE" ]; then
-    STALE=true
-elif [ "$(cat "$STAMP_FILE" 2>/dev/null)" != "$GRAMMAR_HASH" ]; then
-    STALE=true
-else
-    for f in src/parser.c src/grammar.json src/node-types.json; do
-        if [ ! -f "$f" ]; then
-            STALE=true
-            break
-        fi
-    done
-fi
+# --force bypasses this check entirely.
+if [ "$FORCE" = false ]; then
+    STALE=false
+    if [ ! -f "$STAMP_FILE" ]; then
+        STALE=true
+    elif [ "$(cat "$STAMP_FILE" 2>/dev/null)" != "$GRAMMAR_HASH" ]; then
+        STALE=true
+    else
+        for f in src/parser.c src/grammar.json src/node-types.json; do
+            if [ ! -f "$f" ]; then
+                STALE=true
+                break
+            fi
+        done
+    fi
 
-if [ "$STALE" = false ]; then
-    echo "tree-sitter: up to date (grammar.js unchanged)"
-    exit 0
+    if [ "$STALE" = false ]; then
+        echo "tree-sitter: up to date (grammar.js unchanged)"
+        exit 0
+    fi
 fi
 
 GEN_EXIT=0
