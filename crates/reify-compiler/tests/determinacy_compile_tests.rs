@@ -7,9 +7,9 @@ use reify_types::{CompiledExprKind, ContentHash, DeterminacyPredicateKind, Sever
 ///   ContentHash::of(&[17, kind_byte]).combine(ContentHash::of_str(&cell_id))
 /// where kind_byte = 0 for Determined (matching the quantifier pattern).
 ///
-/// This test FAILS against the current inline hash in the compiler which uses:
-///   ContentHash::of(&[17]).combine(ContentHash::of_str("Determined")).combine(...)
-/// (single-byte discriminator + Debug string instead of [tag, kind_byte]).
+/// Written TDD-style (step-27 = red, step-28 = green) to pin the canonical hash
+/// formula: discriminator tag 17 + kind_byte (0=Determined), matching the
+/// quantifier factory method pattern in expr.rs.
 #[test]
 fn test_determinacy_hash_matches_canonical() {
     let source = r#"
