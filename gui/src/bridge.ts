@@ -169,7 +169,7 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 export async function subscribeToClaudeEvents(
   handler: (msg: OutboundMessage) => void,
 ): Promise<() => void> {
-  type EventEntry = [string, (event: { payload: Record<string, unknown> }) => void];
+  type EventEntry = [string, (event: { payload: unknown }) => void];
 
   const entries: EventEntry[] = [
     ['claude-text-delta', (event) => {
