@@ -13686,6 +13686,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 694,
+        "title": "Strengthen LSP cross-structure test coverage",
+        "description": "1) In hover.rs test `hover_on_shared_member_in_second_structure`, add assertion that markdown contains `= true` and does not contain `= 5mm`. 2) In analysis.rs, add test `enclosing_decl_name_at_inside_occurrence` with an occurrence declaration. 3) In analysis.rs, add test `find_member_decl_nonexistent_decl_returns_none` asserting `find_member_decl(\"x\", Some(\"NonExistent\"))` returns None.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -13698,7 +13709,7 @@
       ],
       "created": "2026-03-28T06:53:49.176Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-28T06:54:14.996Z"
+      "updated": "2026-03-28T06:54:19.448Z"
     }
   }
 }
