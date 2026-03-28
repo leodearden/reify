@@ -11614,7 +11614,7 @@
         "description": "Two cleanup items for task-532 branch before merge.",
         "details": "1. Remove .task/plan.json and .task/iterations.jsonl from task-532 branch (convention violation per no-task-on-main).\n2. Fix error message in scripts/tree-sitter-generate.sh that recommends cargo install tree-sitter-cli — project uses system package manager. Update to reflect actual install method.\n\nFiles: .task/plan.json, .task/iterations.jsonl, scripts/tree-sitter-generate.sh",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -11627,7 +11627,8 @@
           "modules": [
             "tree-sitter-reify"
           ]
-        }
+        },
+        "updatedAt": "2026-03-28T16:57:31.392Z"
       },
       {
         "id": "566",
@@ -15283,9 +15284,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T16:51:40.784Z",
+      "lastModified": "2026-03-28T16:57:31.423Z",
       "taskCount": 738,
-      "completedCount": 360,
+      "completedCount": 361,
       "tags": [
         "master"
       ]
