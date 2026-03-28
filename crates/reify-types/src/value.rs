@@ -4836,4 +4836,40 @@ mod tests {
     fn neg_undef_returns_undef() {
         assert_eq!(Value::Undef.neg(), Value::Undef);
     }
+
+    // ── Value::neg() composite tests ────────────────────────────────────────
+
+    #[test]
+    fn neg_tensor_int_elements() {
+        assert_eq!(
+            Value::Tensor(vec![Value::Int(1), Value::Int(2)]).neg(),
+            Value::Tensor(vec![Value::Int(-1), Value::Int(-2)])
+        );
+    }
+
+    #[test]
+    fn neg_tensor_with_overflow_returns_undef() {
+        // One element overflows → entire result is Undef
+        assert_eq!(
+            Value::Tensor(vec![Value::Int(i64::MIN), Value::Int(1)]).neg(),
+            Value::Undef
+        );
+    }
+
+    #[test]
+    fn neg_vector_length_components() {
+        assert_eq!(
+            Value::Vector(vec![Value::length(1.0), Value::length(2.0)]).neg(),
+            Value::Vector(vec![Value::length(-1.0), Value::length(-2.0)])
+        );
+    }
+
+    #[test]
+    fn neg_point_returns_undef() {
+        // Affine geometry: point negation is undefined (spec 3.3.1)
+        assert_eq!(
+            Value::Point(vec![Value::length(1.0), Value::length(2.0)]).neg(),
+            Value::Undef
+        );
+    }
 }
