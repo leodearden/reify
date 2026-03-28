@@ -560,7 +560,12 @@ impl Value {
                 }
             }
             Value::Orientation { .. } => Type::Orientation(3),
-            Value::Frame { .. } => Type::Frame(3),
+            Value::Frame { .. } => {
+                panic!(
+                    "infer_type() cannot infer Frame dimensionality. \
+                     Use CompiledExpr::literal(value, type) directly."
+                )
+            }
             Value::Transform { .. } => Type::Transform(3),
             Value::Plane { .. } => Type::Plane,
             Value::Axis { .. } => Type::Axis,
