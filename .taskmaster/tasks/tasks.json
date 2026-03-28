@@ -8629,11 +8629,11 @@
         "description": "Make find_parsed_member_span in analysis.rs recurse into GuardedGroupDecl.members and else_members so params/lets inside where-guarded blocks are visible to hover and goto-def. Also affects goto_def.rs which has the same flat traversal. (Review followup from task 216)",
         "details": "<info added on 2026-03-27T14:46:16.277Z>\nRECONCILIATION NOTE (2026-03-27): Memory records this task was unblocked and merged to main, with the member_names() fix folded into the merge commit. However, status was reverted from done→in-progress→pending via buffered events around 12:01-12:07 UTC. Current status (pending) may be stale if the code is actually merged. Human should verify: (1) check git log for the merge commit, (2) if merged, set status to done; if not, leave as pending.\n</info added on 2026-03-27T14:46:16.277Z>",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-28T01:09:48.939Z",
+        "updatedAt": "2026-03-28T01:23:31.848Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -13041,9 +13041,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T01:19:20.130Z",
+      "lastModified": "2026-03-28T01:23:31.848Z",
       "taskCount": 650,
-      "completedCount": 301,
+      "completedCount": 302,
       "tags": [
         "master"
       ]
