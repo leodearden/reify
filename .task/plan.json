@@ -1,0 +1,87 @@
+{
+  "task_id": "547",
+  "title": "Extract errorMessage utility from 8 inline copies in GUI",
+  "files": [
+    "gui/src/utils/errorClassifier.ts",
+    "gui/src/__tests__/errorClassifier.test.ts",
+    "gui/src/App.tsx",
+    "gui/src/editor/Editor.tsx"
+  ],
+  "modules": [
+    "gui/src/utils",
+    "gui/src",
+    "gui/src/editor",
+    "gui/src/__tests__"
+  ],
+  "analysis": "The pattern `err instanceof Error ? err.message : String(err)` is repeated 8 times: 7 in App.tsx (lines 66, 73, 159, 171, 288, 303, 317) and 1 in Editor.tsx (line 115). All instances safely extract a string message from an `unknown` caught error. The existing `gui/src/utils/errorClassifier.ts` already exports `classifyError(message: string)` and has a comprehensive test file at `gui/src/__tests__/errorClassifier.test.ts`. Adding `errorMessage(err: unknown): string` to the same module is the natural choice \u2014 it's a closely related error-handling utility and avoids creating a new file. The refactoring is purely mechanical: export the function, import it in both consumer files, and replace the inline ternaries with `errorMessage(err)`. No existing tests mock or assert on the inline pattern directly, so no test modifications are needed beyond adding tests for the new utility itself.",
+  "prerequisites": [],
+  "steps": [
+    {
+      "id": "step-1",
+      "type": "test",
+      "description": "Add failing tests for `errorMessage` in errorClassifier.test.ts: (1) Error instance returns .message, (2) string input returns itself via String(), (3) number/object/null/undefined coerced via String(), (4) Error subclass returns .message",
+      "status": "done",
+      "commit": "e8cd4bc9"
+    },
+    {
+      "id": "step-2",
+      "type": "impl",
+      "description": "Add `export function errorMessage(err: unknown): string { return err instanceof Error ? err.message : String(err); }` to gui/src/utils/errorClassifier.ts",
+      "status": "done",
+      "commit": "4a2f2529"
+    },
+    {
+      "id": "step-3",
+      "type": "impl",
+      "description": "Replace 7 inline `err instanceof Error ? err.message : String(err)` occurrences in App.tsx with `errorMessage(err)` and add the import from '../utils/errorClassifier'",
+      "status": "done",
+      "commit": "bb6453a8"
+    },
+    {
+      "id": "step-4",
+      "type": "impl",
+      "description": "Replace 1 inline `err instanceof Error ? err.message : String(err)` occurrence in Editor.tsx (line 115) with `errorMessage(err)` and add the import from '../utils/errorClassifier'",
+      "status": "done",
+      "commit": "c1e2ad7f"
+    },
+    {
+      "id": "step-5",
+      "type": "test",
+      "description": "Run full GUI test suite (`npx vitest run` in gui/) to verify no regressions \u2014 all existing App.test.tsx and Editor.test.tsx tests must still pass",
+      "status": "pending",
+      "commit": null
+    }
+  ],
+  "design_decisions": [
+    {
+      "decision": "Add errorMessage to existing errorClassifier.ts rather than creating a new errors.ts file",
+      "rationale": "errorClassifier.ts is already the error-utility module in gui/src/utils/ and has an established test file. Adding a closely related function here avoids file proliferation and keeps error utilities co-located. The task description itself suggests this as the primary option."
+    },
+    {
+      "decision": "Function signature: errorMessage(err: unknown): string",
+      "rationale": "Matches the existing inline pattern exactly. The `unknown` type is correct because all 8 call sites receive caught exceptions which are `unknown` in TypeScript strict mode."
+    },
+    {
+      "decision": "Keep the implementation as a simple one-liner ternary, not a multi-branch handler",
+      "rationale": "The goal is DRY extraction, not behavior change. The existing pattern is well-understood and correct. Over-engineering (e.g., handling nested causes, aggregating errors) would change semantics and risk regressions."
+    },
+    {
+      "decision": "No changes to existing App.test.tsx or Editor.test.tsx test files",
+      "rationale": "Grep confirmed no existing tests mock or assert on the inline ternary pattern. The refactoring is purely internal \u2014 external behavior (toast messages, error callbacks) is unchanged, so existing tests validate the refactoring implicitly."
+    }
+  ],
+  "reuse": [
+    {
+      "what": "errorClassifier.ts module and its test file",
+      "where": "gui/src/utils/errorClassifier.ts, gui/src/__tests__/errorClassifier.test.ts",
+      "how": "Add the new errorMessage function to the existing module and extend the existing test describe block rather than creating new files"
+    },
+    {
+      "what": "Existing test patterns from errorClassifier.test.ts",
+      "where": "gui/src/__tests__/errorClassifier.test.ts",
+      "how": "Follow the same describe/it structure and import style already established in the file"
+    }
+  ],
+  "_session_id": "547-486752de",
+  "_created_at": "2026-03-28T04:29:40.462949+00:00"
+}
