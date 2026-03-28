@@ -752,6 +752,7 @@ fn sample_field_with_undef_lambda_returns_undef() {
         codomain_type: Type::Real,
         source: FieldSourceKind::Sampled,
         lambda: Box::new(Value::Undef),
+        inner_field: None,
     };
     let expr = make_function_call(
         "sample",
