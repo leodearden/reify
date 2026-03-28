@@ -302,16 +302,19 @@ impl ConcurrentScheduler {
                 }
             }
 
-            // Spawn tasks for dirty nodes in this level
+            // Spawn tasks for dirty nodes in this level using JoinSet.
+            // JoinSet aborts all remaining tasks on drop (unlike Vec<JoinHandle>
+            // which detaches them), and abort_all() is called explicitly on error
+            // paths for clarity.
             // Returns (NodeId, Option<EvalOutcome>) where None = commitment-cancelled
-            let mut handles = Vec::new();
+            let mut join_set = tokio::task::JoinSet::new();
             for node in &dirty_nodes {
                 let eval = Arc::clone(&evaluator);
                 let n = node.clone();
                 let cancel_clone = cancel.clone();
                 let tracker_clone = config.commitment_tracker.clone();
                 let has_intermediate = (config.has_intermediate_inputs)(&n);
-                let handle = tokio::spawn(async move {
+                join_set.spawn(async move {
                     let start = std::time::Instant::now();
                     let outcome = eval.evaluate(n.clone()).await;
                     // Commitment check: if cancel fired and tracker is present
@@ -334,7 +337,6 @@ impl ConcurrentScheduler {
                     }
                     (n, Some(outcome))
                 });
-                handles.push(handle);
             }
 
             // Cleanup closure: remove all dirty nodes from tracker and promoter.
@@ -353,9 +355,10 @@ impl ConcurrentScheduler {
                 }
             };
 
-            // Join all tasks in this level
-            for handle in handles {
-                match handle.await {
+            // Join all tasks in this level (completion order — safe because
+            // results are collected into HashSets, so ordering is irrelevant)
+            while let Some(result) = join_set.join_next().await {
+                match result {
                     Ok((node, Some(EvalOutcome::Changed))) => {
                         // Add to changed_vcids for downstream dirty computation
                         if let NodeId::Value(ref vcid) = node {
@@ -366,10 +369,12 @@ impl ConcurrentScheduler {
                     Ok((_, Some(EvalOutcome::Unchanged))) => {} // Unchanged — skip
                     Ok((_, None)) => {} // Commitment-cancelled — drop
                     Err(e) if e.is_panic() => {
+                        join_set.abort_all();
                         cleanup_level(&dirty_nodes);
                         return Err(SchedulerError::TaskPanicked(e.into_panic()));
                     }
                     Err(_) => {
+                        join_set.abort_all();
                         cleanup_level(&dirty_nodes);
                         return Err(SchedulerError::TaskCancelled);
                     }
@@ -1171,5 +1176,97 @@ mod tests {
         assert_eq!(levels[1].len(), 2, "level 1: {:?}", levels[1]);
         assert!(levels[1].contains(&volume));
         assert!(levels[1].contains(&c1));
+    }
+
+    /// Proves that error paths abort in-flight tasks rather than detaching them.
+    ///
+    /// Spawns 3 same-level nodes: one panics immediately (after yield_now),
+    /// the other two sleep for 2 seconds then increment a shared AtomicUsize.
+    /// After the scheduler returns Err(TaskPanicked), we wait 3 seconds and
+    /// assert counter == 0. With Vec<JoinHandle> (drop = detach), the sleeping
+    /// tasks continue in the background and the counter reaches 2 — test fails.
+    /// With JoinSet + abort_all(), tasks are cancelled — test passes.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn error_path_aborts_in_flight_tasks() {
+        use reify_eval::cache::{EvalOutcome, NodeId};
+        use reify_eval::deps::DependencyTrace;
+        use reify_types::ValueCellId;
+        use std::collections::{HashMap, HashSet};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let e = "Abort";
+        // 3 nodes at the same level (all with empty reads → level 0)
+        let panic_node = NodeId::Value(ValueCellId::new(e, "panic"));
+        let slow_a = NodeId::Value(ValueCellId::new(e, "slow_a"));
+        let slow_b = NodeId::Value(ValueCellId::new(e, "slow_b"));
+
+        let mut traces = HashMap::new();
+        traces.insert(panic_node.clone(), DependencyTrace::default());
+        traces.insert(slow_a.clone(), DependencyTrace::default());
+        traces.insert(slow_b.clone(), DependencyTrace::default());
+
+        let counter = Arc::new(AtomicUsize::new(0));
+
+        struct AbortTestEvaluator {
+            counter: Arc<AtomicUsize>,
+            panic_node: NodeId,
+        }
+
+        impl AsyncNodeEvaluator for AbortTestEvaluator {
+            async fn evaluate(&self, node: NodeId) -> EvalOutcome {
+                if node == self.panic_node {
+                    // Yield once so the other tasks have a chance to be spawned
+                    tokio::task::yield_now().await;
+                    panic!("intentional panic for abort test");
+                }
+                // Slow tasks: yield in a loop for ~2 seconds then increment counter.
+                // Each yield_now() is a cancellation point where abort can take effect.
+                let start = std::time::Instant::now();
+                while start.elapsed() < std::time::Duration::from_secs(2) {
+                    tokio::task::yield_now().await;
+                }
+                self.counter.fetch_add(1, Ordering::SeqCst);
+                EvalOutcome::Changed
+            }
+        }
+
+        let evaluator = Arc::new(AbortTestEvaluator {
+            counter: Arc::clone(&counter),
+            panic_node: panic_node.clone(),
+        });
+
+        let eval_set = vec![panic_node.clone(), slow_a.clone(), slow_b.clone()];
+        let cancel = CancellationToken::new();
+        let changed_cells = HashSet::new();
+
+        let scheduler = ConcurrentScheduler;
+        let result = scheduler
+            .execute(eval_set, evaluator, &traces, &cancel, &changed_cells)
+            .await;
+
+        // Should get TaskPanicked error
+        assert!(result.is_err());
+        match &result.unwrap_err() {
+            SchedulerError::TaskPanicked(payload) => {
+                let msg = payload
+                    .downcast_ref::<&str>()
+                    .expect("panic payload should be &str");
+                assert_eq!(*msg, "intentional panic for abort test");
+            }
+            other => panic!("Expected TaskPanicked, got {:?}", other),
+        }
+
+        // Wait long enough for the slow tasks to complete if they were detached.
+        // Using std::thread::sleep since tokio time feature is not enabled.
+        std::thread::sleep(std::time::Duration::from_secs(3));
+
+        // If tasks were properly aborted, counter should be 0.
+        // If tasks were detached (Vec<JoinHandle> behavior), counter would be 2.
+        assert_eq!(
+            counter.load(Ordering::SeqCst),
+            0,
+            "In-flight tasks should have been aborted, not detached"
+        );
     }
 }
