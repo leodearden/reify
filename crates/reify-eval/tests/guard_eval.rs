@@ -483,10 +483,10 @@ fn edit_param_guard_false_preserves_solver_auto_param() {
         .guarded_group(
             guard_expr,
             guard_id.clone(),
-            vec![thickness_decl],  // members (active when true) — graph sees kind=Auto
-            vec![],                // constraints (already at top level)
-            vec![],                // else_members
-            vec![],                // else_constraints
+            vec![thickness_decl], // members (active when true) — graph sees kind=Auto
+            vec![],               // constraints (already at top level)
+            vec![],               // else_members
+            vec![],               // else_constraints
         )
         .build();
 
@@ -500,8 +500,7 @@ fn edit_param_guard_false_preserves_solver_auto_param() {
     let solver = MockConstraintSolver::new_solved(solved_values);
 
     let checker = MockConstraintChecker::new();
-    let mut engine =
-        Engine::new(Box::new(checker), None).with_solver(Box::new(solver));
+    let mut engine = Engine::new(Box::new(checker), None).with_solver(Box::new(solver));
 
     // Initial eval with guard=true; solver resolves thickness
     let initial_result = engine.eval(&module);
@@ -566,10 +565,10 @@ fn edit_param_guard_true_preserves_solver_auto_in_else_members() {
         .guarded_group(
             guard_expr,
             guard_id.clone(),
-            vec![],                // members
-            vec![],                // constraints
-            vec![thickness_decl],  // else_members (active when false)
-            vec![],                // else_constraints
+            vec![],               // members
+            vec![],               // constraints
+            vec![thickness_decl], // else_members (active when false)
+            vec![],               // else_constraints
         )
         .build();
 
@@ -583,8 +582,7 @@ fn edit_param_guard_true_preserves_solver_auto_in_else_members() {
     let solver = MockConstraintSolver::new_solved(solved_values);
 
     let checker = MockConstraintChecker::new();
-    let mut engine =
-        Engine::new(Box::new(checker), None).with_solver(Box::new(solver));
+    let mut engine = Engine::new(Box::new(checker), None).with_solver(Box::new(solver));
 
     // Initial eval with guard=false; solver resolves thickness
     let initial_result = engine.eval(&module);
