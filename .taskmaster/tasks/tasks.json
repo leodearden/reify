@@ -12674,6 +12674,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 628,
+        "title": "Extract eval journal/cache boilerplate helper on Engine",
+        "description": "The Started→work→Completed journal+cache pattern is repeated 13+ times in crates/reify-eval/src/lib.rs with identical boilerplate: `let start = Instant::now()`, two `self.journal.record(EvalEvent{...})` calls, `DependencyTrace::default()`, `self.cache.record_evaluation(...)`. Each call site differs only in the NodeId, the computed value/determinacy, and whether real work runs between the events.\n\n**Fix:** Extract a helper method on `Engine` such as:\n```rust\nfn record_node_eval<F>(&mut self, node_id: NodeId, version: VersionId, f: F) -> EvalOutcome\nwhere F: FnOnce(&mut Self) -> CachedResult\n```\nthat emits the Started event, runs the closure, calls `cache.record_evaluation`, and emits the Completed event. Migrate existing call sites to use it.\n\n**Memory hints:** search for \"journal record_evaluation boilerplate\", entity names: EvalEvent, EventKind, CachedResult",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -12686,7 +12697,7 @@
       ],
       "created": "2026-03-28T09:49:48.587Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-28T09:49:48.758Z"
+      "updated": "2026-03-28T09:49:54.594Z"
     }
   }
 }
