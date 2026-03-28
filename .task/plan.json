@@ -50,7 +50,7 @@
       "id": "step-5",
       "type": "test",
       "description": "Write orient_euler_nan_angle_returns_undef: pass 'xyz' convention with (NaN, 0, 0) angles and assert Undef. Write orient_euler_inf_angle_returns_undef: same with f64::INFINITY for one angle.",
-      "status": "pending",
+      "status": "done",
       "commit": null
     },
     {

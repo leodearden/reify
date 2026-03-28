@@ -4112,6 +4112,42 @@ mod tests {
         );
     }
 
+    #[test]
+    fn orient_euler_nan_angle_returns_undef() {
+        // NaN angle should produce Undef (currently caught by normalize_quaternion).
+        assert!(
+            eval_builtin(
+                "orient_euler",
+                &[
+                    Value::String("xyz".into()),
+                    Value::Real(f64::NAN),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                ]
+            )
+            .is_undef(),
+            "NaN angle through orient_euler should produce Undef"
+        );
+    }
+
+    #[test]
+    fn orient_euler_inf_angle_returns_undef() {
+        // Inf angle should produce Undef (currently caught by normalize_quaternion).
+        assert!(
+            eval_builtin(
+                "orient_euler",
+                &[
+                    Value::String("xyz".into()),
+                    Value::Real(0.0),
+                    Value::Real(f64::INFINITY),
+                    Value::Real(0.0),
+                ]
+            )
+            .is_undef(),
+            "Inf angle through orient_euler should produce Undef"
+        );
+    }
+
     // ── orient_euler compound rotation tests (step-16) ───────────────────
 
     #[test]
