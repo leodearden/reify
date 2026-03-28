@@ -377,6 +377,33 @@ mod tests {
         );
     }
 
+    #[test]
+    fn member_names_includes_else_block_members() {
+        let source = r#"structure S {
+    param cond : Bool = true
+    where cond {
+        param when_true : Scalar = 1mm
+    } else {
+        param when_false : Scalar = 2mm
+    }
+}"#;
+        let ctx = AnalysisContext::new(source, &test_uri());
+        let members = ctx.member_names();
+        let names: Vec<&str> = members.iter().map(|(n, _, _)| *n).collect();
+        assert!(
+            names.contains(&"cond"),
+            "should include top-level param 'cond', got: {names:?}"
+        );
+        assert!(
+            names.contains(&"when_true"),
+            "should include where-branch param 'when_true', got: {names:?}"
+        );
+        assert!(
+            names.contains(&"when_false"),
+            "should include else-branch param 'when_false', got: {names:?}"
+        );
+    }
+
     // --- structure_names tests ---
 
     #[test]
