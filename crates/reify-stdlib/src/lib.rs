@@ -873,6 +873,14 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
             if args.len() != 4 {
                 return Value::Undef;
             }
+            // Quaternion components are pure numbers — reject dimensioned Scalars.
+            if args[0].dimension() != DimensionVector::DIMENSIONLESS
+                || args[1].dimension() != DimensionVector::DIMENSIONLESS
+                || args[2].dimension() != DimensionVector::DIMENSIONLESS
+                || args[3].dimension() != DimensionVector::DIMENSIONLESS
+            {
+                return Value::Undef;
+            }
             match (
                 args[0].as_f64(),
                 args[1].as_f64(),
@@ -4386,20 +4394,47 @@ mod tests {
     }
 
     #[test]
-    fn orient_quaternion_dimensioned_scalar_strips_dimension() {
-        // as_f64() silently strips dimension — a LENGTH Scalar with si_value=1.0
-        // is accepted as quaternion component w=1.0. Documents this behavior.
+    fn orient_quaternion_dimensioned_scalar_returns_undef() {
+        // Dimensioned Scalars (e.g. LENGTH) must be rejected — quaternion components
+        // are pure numbers and should not carry physical dimensions.
+        assert!(eval_builtin(
+            "orient_quaternion",
+            &[
+                Value::Scalar {
+                    si_value: 1.0,
+                    dimension: DimensionVector::LENGTH,
+                },
+                Value::Real(0.0),
+                Value::Real(0.0),
+                Value::Real(0.0),
+            ]
+        )
+        .is_undef());
+    }
+
+    #[test]
+    fn orient_quaternion_accepts_dimensionless_scalar() {
+        // Dimensionless Scalars should be accepted — they are pure numbers.
         assert_orientation_approx!(
             eval_builtin(
                 "orient_quaternion",
                 &[
                     Value::Scalar {
                         si_value: 1.0,
-                        dimension: DimensionVector::LENGTH,
+                        dimension: DimensionVector::DIMENSIONLESS,
                     },
-                    Value::Real(0.0),
-                    Value::Real(0.0),
-                    Value::Real(0.0),
+                    Value::Scalar {
+                        si_value: 0.0,
+                        dimension: DimensionVector::DIMENSIONLESS,
+                    },
+                    Value::Scalar {
+                        si_value: 0.0,
+                        dimension: DimensionVector::DIMENSIONLESS,
+                    },
+                    Value::Scalar {
+                        si_value: 0.0,
+                        dimension: DimensionVector::DIMENSIONLESS,
+                    },
                 ]
             ),
             1.0,
@@ -4407,6 +4442,25 @@ mod tests {
             0.0,
             0.0
         );
+    }
+
+    #[test]
+    fn orient_quaternion_rejects_angle_dimension() {
+        // ANGLE-dimensioned Scalars must also be rejected — quaternion components
+        // are dimensionless, not angles.
+        assert!(eval_builtin(
+            "orient_quaternion",
+            &[
+                Value::Scalar {
+                    si_value: 1.0,
+                    dimension: DimensionVector::ANGLE,
+                },
+                Value::Real(0.0),
+                Value::Real(0.0),
+                Value::Real(0.0),
+            ]
+        )
+        .is_undef());
     }
 
     #[test]
