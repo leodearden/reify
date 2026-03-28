@@ -6106,6 +6106,64 @@ mod tests {
         );
     }
 
+    // ── mixed-type contract tests (task 379) ─────────────────────────────────
+
+    #[test]
+    fn cross_vector_tensor_returns_tensor_wrapper() {
+        // cross(Vector, Tensor) falls through to Tensor wrapper (line 366: _ => Value::Tensor)
+        let a = Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
+        let b = Value::Tensor(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
+        let result = eval_builtin("cross", &[a, b]);
+        assert_vector3_approx!(Tensor, result, [0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn cross_tensor_vector_returns_tensor_wrapper() {
+        // cross(Tensor, Vector) also falls through to Tensor wrapper
+        let a = Value::Tensor(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
+        let b = Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
+        let result = eval_builtin("cross", &[a, b]);
+        assert_vector3_approx!(Tensor, result, [0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn cross_point_vector_returns_undef() {
+        // ANY Point input to cross returns Undef (line 364)
+        let a = Value::Point(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
+        let b = Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
+        assert!(
+            eval_builtin("cross", &[a, b]).is_undef(),
+            "cross(Point, Vector) should return Undef"
+        );
+    }
+
+    #[test]
+    fn cross_vector_point_returns_undef() {
+        // Second-arg Point also returns Undef
+        let a = Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
+        let b = Value::Point(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
+        assert!(
+            eval_builtin("cross", &[a, b]).is_undef(),
+            "cross(Vector, Point) should return Undef"
+        );
+    }
+
+    #[test]
+    fn dot_point_vector_returns_scalar() {
+        // dot accepts mixed Point+Vector inputs via tensor_components_f64
+        let a = Value::Point(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
+        let b = Value::Vector(vec![Value::Real(4.0), Value::Real(5.0), Value::Real(6.0)]);
+        assert_real_approx!(eval_builtin("dot", &[a, b]), 32.0);
+    }
+
+    #[test]
+    fn dot_vector_point_returns_scalar() {
+        // Argument order symmetry for mixed dot
+        let a = Value::Vector(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
+        let b = Value::Point(vec![Value::Real(4.0), Value::Real(5.0), Value::Real(6.0)]);
+        assert_real_approx!(eval_builtin("dot", &[a, b]), 32.0);
+    }
+
     // ── construct_point_or_vector edge cases (task 398, step-11) ──────────────
 
     #[test]
