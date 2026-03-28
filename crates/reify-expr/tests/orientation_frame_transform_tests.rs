@@ -282,3 +282,149 @@ fn euler_different_conventions_produce_different_results() {
         _ => panic!("expected Orientation results"),
     }
 }
+
+// ── Test 7-9: Transform composition ────────────────────────────────────────
+
+/// (A*B)*p equals A*(B*p) — composition-then-apply matches sequential application.
+#[test]
+fn compose_then_apply_equals_sequential() {
+    let s = std::f64::consts::FRAC_1_SQRT_2;
+    // A: 90° Z rotation + (5, 0, 0) translation
+    let rot_z90 = Value::Orientation { w: s, x: 0.0, y: 0.0, z: s };
+    let t_a = make_transform(rot_z90, 5.0, 0.0, 0.0);
+    // B: 90° X rotation + (0, 3, 0) translation
+    let rot_x90 = Value::Orientation { w: s, x: s, y: 0.0, z: 0.0 };
+    let t_b = make_transform(rot_x90, 0.0, 3.0, 0.0);
+    let p = Value::Point(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]);
+
+    // Path 1: compose (A*B), then apply to p
+    let t_ab = eval_mul_expr(
+        t_a.clone(), Type::Transform(3),
+        t_b.clone(), Type::Transform(3),
+        Type::Transform(3),
+    );
+    let result_composed = eval_mul_expr(
+        t_ab, Type::Transform(3),
+        p.clone(), Type::point3(Type::length()),
+        Type::point3(Type::length()),
+    );
+
+    // Path 2: apply B*p, then A*(B*p)
+    let bp = eval_mul_expr(
+        t_b, Type::Transform(3),
+        p, Type::point3(Type::length()),
+        Type::point3(Type::length()),
+    );
+    let result_sequential = eval_mul_expr(
+        t_a, Type::Transform(3),
+        bp, Type::point3(Type::length()),
+        Type::point3(Type::length()),
+    );
+
+    // Both paths should give the same point
+    match (&result_composed, &result_sequential) {
+        (Value::Point(a), Value::Point(b)) if a.len() == 3 && b.len() == 3 => {
+            for i in 0..3 {
+                let va = a[i].as_f64().unwrap();
+                let vb = b[i].as_f64().unwrap();
+                assert!(
+                    (va - vb).abs() < 1e-10,
+                    "component {i}: composed={va}, sequential={vb}"
+                );
+            }
+        }
+        _ => panic!("expected Point results"),
+    }
+}
+
+/// ((C*B)*A)*p matches C*(B*(A*p)) — three-way composition is associative.
+#[test]
+fn three_way_composition_correctness() {
+    let s = std::f64::consts::FRAC_1_SQRT_2;
+    // A: 90° Z rotation + (1, 0, 0)
+    let t_a = make_transform(
+        Value::Orientation { w: s, x: 0.0, y: 0.0, z: s }, 1.0, 0.0, 0.0,
+    );
+    // B: 90° X rotation + (0, 2, 0)
+    let t_b = make_transform(
+        Value::Orientation { w: s, x: s, y: 0.0, z: 0.0 }, 0.0, 2.0, 0.0,
+    );
+    // C: 90° Y rotation + (0, 0, 3)
+    let t_c = make_transform(
+        Value::Orientation { w: s, x: 0.0, y: s, z: 0.0 }, 0.0, 0.0, 3.0,
+    );
+    let p = Value::Point(vec![Value::length(2.0), Value::length(-1.0), Value::length(4.0)]);
+
+    // Path 1: ((C*B)*A)*p
+    let cb = eval_mul_expr(t_c.clone(), Type::Transform(3), t_b.clone(), Type::Transform(3), Type::Transform(3));
+    let cba = eval_mul_expr(cb, Type::Transform(3), t_a.clone(), Type::Transform(3), Type::Transform(3));
+    let result_composed = eval_mul_expr(
+        cba, Type::Transform(3), p.clone(), Type::point3(Type::length()), Type::point3(Type::length()),
+    );
+
+    // Path 2: C*(B*(A*p))
+    let ap = eval_mul_expr(t_a, Type::Transform(3), p, Type::point3(Type::length()), Type::point3(Type::length()));
+    let bap = eval_mul_expr(t_b, Type::Transform(3), ap, Type::point3(Type::length()), Type::point3(Type::length()));
+    let result_sequential = eval_mul_expr(
+        t_c, Type::Transform(3), bap, Type::point3(Type::length()), Type::point3(Type::length()),
+    );
+
+    match (&result_composed, &result_sequential) {
+        (Value::Point(a), Value::Point(b)) if a.len() == 3 && b.len() == 3 => {
+            for i in 0..3 {
+                let va = a[i].as_f64().unwrap();
+                let vb = b[i].as_f64().unwrap();
+                assert!(
+                    (va - vb).abs() < 1e-10,
+                    "component {i}: composed={va}, sequential={vb}"
+                );
+            }
+        }
+        _ => panic!("expected Point results"),
+    }
+}
+
+/// A*B ≠ B*A — transform composition is non-commutative.
+#[test]
+fn composition_is_non_commutative() {
+    let s = std::f64::consts::FRAC_1_SQRT_2;
+    // A: 90° Z rotation + (10, 0, 0)
+    let t_a = make_transform(
+        Value::Orientation { w: s, x: 0.0, y: 0.0, z: s }, 10.0, 0.0, 0.0,
+    );
+    // B: 90° X rotation + (0, 5, 0)
+    let t_b = make_transform(
+        Value::Orientation { w: s, x: s, y: 0.0, z: 0.0 }, 0.0, 5.0, 0.0,
+    );
+
+    let ab = eval_mul_expr(
+        t_a.clone(), Type::Transform(3), t_b.clone(), Type::Transform(3), Type::Transform(3),
+    );
+    let ba = eval_mul_expr(
+        t_b, Type::Transform(3), t_a, Type::Transform(3), Type::Transform(3),
+    );
+
+    // Apply both to a test point and verify they differ
+    let p = Value::Point(vec![Value::length(1.0), Value::length(1.0), Value::length(1.0)]);
+    let result_ab = eval_mul_expr(
+        ab, Type::Transform(3), p.clone(), Type::point3(Type::length()), Type::point3(Type::length()),
+    );
+    let result_ba = eval_mul_expr(
+        ba, Type::Transform(3), p, Type::point3(Type::length()), Type::point3(Type::length()),
+    );
+
+    match (&result_ab, &result_ba) {
+        (Value::Point(a), Value::Point(b)) if a.len() == 3 && b.len() == 3 => {
+            let mut any_differ = false;
+            for i in 0..3 {
+                let va = a[i].as_f64().unwrap();
+                let vb = b[i].as_f64().unwrap();
+                if (va - vb).abs() > 1e-10 {
+                    any_differ = true;
+                }
+            }
+            assert!(any_differ, "A*B and B*A should produce different results");
+        }
+        _ => panic!("expected Point results"),
+    }
+}
