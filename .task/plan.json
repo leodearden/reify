@@ -72,15 +72,15 @@
       "id": "step-9",
       "type": "test",
       "description": "Fix the 'combined selection+hover change is debounced at 100ms' test (step-3 review fix). The current test calls selectEntity then hoverEntity sequentially, which fires two separate effects \u2014 the first (selection-only) dispatches immediately and is silently hidden by mockInvoke.mockClear(). Replace with SolidJS batch(): import batch from 'solid-js', wrap both calls in batch(() => { selectEntity('Bracket'); hoverEntity('Bracket.width'); }) so the effect runs once with both selectionChanged=true and hoverChanged=true, hitting the debounce path. Remove the mockInvoke.mockClear() call. Verify: (1) invoke NOT called synchronously after the batch, (2) invoke NOT called after 50ms, (3) invoke called exactly once after 100ms with { selectedEntity: 'Bracket', hoveredEntity: 'Bracket.width' }. Update the inline comment to explain why batch() is needed (single effect run with both changes).",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "1321f2d9"
     },
     {
       "id": "step-10",
       "type": "test",
       "description": "Add new test 'sequential selectEntity then hoverEntity fires immediate then debounced invoke' to document the sequential (non-batched) behavior accurately. Call selectEntity('Bracket') then hoverEntity('Bracket.width') without batch. Verify: (1) immediately after selectEntity, invoke called once with { selectedEntity: 'Bracket', hoveredEntity: null } (immediate selection path), (2) immediately after hoverEntity, invoke still called only once (hover debounce pending), (3) after advancing 100ms, invoke called twice total \u2014 second call with { selectedEntity: 'Bracket', hoveredEntity: 'Bracket.width' } (debounced hover path). This documents the real two-invoke behavior that the original test was hiding.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "1321f2d9"
     }
   ],
   "design_decisions": [
