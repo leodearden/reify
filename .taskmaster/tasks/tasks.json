@@ -9912,11 +9912,11 @@
         "description": "edit_param has two sequential guard re-elaboration blocks with the solver running between them. The second block can overwrite solver-resolved auto param values.\n\n**What's wrong:**\n- Block A (lib.rs:1562-1646): re-evaluates guard expressions when structure_controlling cells are dirty\n- Solver (lib.rs:1655-1797): resolves auto params and writes values\n- Block B (lib.rs:1799-1881): re-evaluates guard members when guard values changed — overwrites solver values with Undef for members whose guard is now false\n\nIf an auto param lives in a guarded group whose guard transitions to false, Block B sets it to Undef AFTER the solver resolved it. The solver's work is lost.\n\n**Fix:** Merge the two guard re-elaboration blocks into one that runs BEFORE the solver, or ensure Block B does not overwrite auto param values that were set by the solver. The simplest fix: in Block B, skip cells with kind == ValueCellKind::Auto when deactivating guarded members (they should remain at their solver-resolved value or be explicitly invalidated through the dirty cone).\n\n**Memory hints:** search for \"guard re-elaboration\", \"edit_param resolution\", entity names: edit_param, structure_controlling, guard_changed",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-03-28T09:18:13.435Z",
+        "updatedAt": "2026-03-28T09:25:06.779Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -9924,7 +9924,13 @@
           ],
           "modules": [
             "crates/reify-eval/src"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Fix edit_param guard re-elaboration ordering: solver values overwritten by second guard phase"
+            ]
+          }
         }
       },
       {
@@ -10045,11 +10051,11 @@
         "description": "The non-guarded first pass in eval() (crates/reify-eval/src/lib.rs:981-1021) skips Param cells with default_expr: None — they are not inserted into the values map or snapshot. The guarded-group path (lib.rs:1056-1072) correctly handles this case by inserting Value::Undef with DeterminacyState::Undetermined.\n\nThe language spec (docs/reify-language-spec.md, lines 820-823) says: \"Default value optional (if absent, parameter is undef). undef means not yet decided — it is the default state of every unassigned parameter without a default value.\"\n\n**What's wrong:** After eval(), a Param without a default is absent from values/snapshot. edit_param may fail to find it. Let cells referencing it get Undef from EvalContext (correct value but no audit trail in snapshot).\n\n**Fix:** Add an else branch after the `cell.kind == ValueCellKind::Param && let Some(ref expr) = cell.default_expr` block:\n```rust\n} else if cell.kind == ValueCellKind::Param && cell.default_expr.is_none() {\n    values.insert(cell.id.clone(), Value::Undef);\n    snapshot.values.insert(cell.id.clone(), (Value::Undef, DeterminacyState::Undetermined));\n}\n```\nThis matches the guarded-group path at lines 1056-1072. Also check edit_param and resolve_concurrent_edit for the same pattern.\n\n**Memory hints:** search for \"param without default\", \"Undef Undetermined\", entity names: ValueCellKind::Param, default_expr, DeterminacyState",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-03-27T06:32:56.793Z",
+        "updatedAt": "2026-03-28T09:26:21.454Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -11473,7 +11479,7 @@
         "description": "Multiple test quality issues: redundant tests, incomplete assertions, unreachable code path tested.",
         "details": "1. Merge evaluate_recovers_poisoned_values_read and _write into single test (same RwLock poisoned).\n2. Add data-verification assertions to evaluate_recovers_poisoned_snapshot_values (check snapshot_values written) and evaluate_recovers_poisoned_results (check take_results() has entry).\n3. Add node_results.is_empty() assertions to build_result_shared and into_result poison recovery tests.\n4. Fix test design flaw in evaluate_recovers_poisoned_values_write where post-evaluate values() call tests trivially-unpoisoned lock.\n\nFiles: crates/reify-runtime/tests/concurrent_eval.rs",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -11492,7 +11498,7 @@
             ]
           }
         },
-        "updatedAt": "2026-03-28T09:17:09.917Z"
+        "updatedAt": "2026-03-28T09:20:09.842Z"
       },
       {
         "id": "562",
@@ -11631,7 +11637,7 @@
             "crates/reify-runtime"
           ]
         },
-        "updatedAt": "2026-03-28T00:16:05.321Z"
+        "updatedAt": "2026-03-28T09:26:21.259Z"
       },
       {
         "id": "568",
@@ -12317,11 +12323,11 @@
         "description": "find_member_decl in analysis.rs:63-97 gets the span from the first matching parsed declaration and the type from the first matching compiled template, but these searches are not coordinated by structure name. If two structures share a member name (e.g., both have 'width'), the span could come from structure A while the type comes from structure B. Fix by threading the structure name through both lookups.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-03-28T09:04:28.292Z",
+        "updatedAt": "2026-03-28T09:27:51.539Z",
         "metadata": {
           "modules": [
             "crates/reify-lsp"
@@ -12536,7 +12542,7 @@
         "description": "scripts/tree-sitter-generate.sh unconditionally runs `tree-sitter generate` with no staleness check and no timeout. build.rs has both (content-hash stamp + 60s timeout), but the shell script — called by orchestrator.yaml verification commands up to 60+ times per run — does neither. Add: (1) hash-based staleness guard matching build.rs contract, (2) `timeout 60 tree-sitter generate` to prevent hung builds.",
         "details": "Files: scripts/tree-sitter-generate.sh. The script is called from orchestrator.yaml pre-test/lint/typecheck commands. Memory hint: search for \"task 563 content hash staleness\" for the build.rs implementation pattern.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -12551,7 +12557,7 @@
             "scripts/tree-sitter-generate.sh"
           ]
         },
-        "updatedAt": "2026-03-28T09:07:58.734Z"
+        "updatedAt": "2026-03-28T09:20:09.332Z"
       },
       {
         "id": "608",
@@ -12775,11 +12781,11 @@
         "description": "All JS lockfiles (package-lock.json, pnpm-lock.yaml) are currently gitignored per task 536, meaning no reproducible dependency snapshot exists in version control. Standardize on one package manager and commit its lockfile.\n\nSteps:\n1. Decide between npm and pnpm for gui/ and gui/sidecar/ (check which is actually in use, what CI uses)\n2. Add `\"packageManager\": \"pnpm@<version>\"` (or npm equivalent) to gui/package.json to enforce via Corepack\n3. Update gui/package.json scripts: change `npm run` references to match chosen PM (e.g. `pnpm run`)\n4. Commit the chosen lockfile (e.g. pnpm-lock.yaml) and remove it from .gitignore\n5. Keep the OTHER lockfile format gitignored (e.g. keep ignoring package-lock.json if using pnpm)\n6. Handle gui/sidecar/ the same way — commit its lockfile for the chosen PM\n7. Update orchestrator.yaml merge commands to use the chosen PM (`pnpm install` vs `npm install`)\n8. Simplify .gitignore: use `**/package-lock.json` glob instead of per-directory entries for the ignored format\n9. Update tree-sitter-reify/ lockfile handling to match\n\nmemory_hints: search \"package-lock merge conflicts\", search \"gui dependencies\", search \"package manager standardization\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-28T09:04:27.397Z",
+        "updatedAt": "2026-03-28T09:20:11.007Z",
         "metadata": {
           "modules": [
             ".gitignore",
@@ -12969,11 +12975,11 @@
         "description": "TraitDefBuilder::build() and CompiledTraitBuilder::build() in crates/reify-test-support/src/builders/trait_def.rs contain ~30 lines of identical hash computation logic (req_hashes, ref_hashes, type_param_hashes, default_hashes, combine_all chain). This is a DRY violation that creates a maintenance trap: any hash change must be applied in two places.\n\nExtract a module-private helper function:\n```rust\nfn compute_trait_content_hash(\n    name: &str,\n    required_members: &[TraitRequirement],\n    refinements: &[String],\n    type_params: &[TypeParam],\n    defaults: &[TraitDefault],\n) -> ContentHash\n```\n\nAlso extract small helpers for the match arms:\n- `fn requirement_kind_str(kind: &RequirementKind) -> String`\n- `fn default_kind_tag(kind: &DefaultKind) -> &'static str`\n\nBoth builders call the shared function. This ensures consistency and makes the subsequent hash-completeness fix (see dependent task) apply in one place.\n\nmemory_hints: search \"content_hash builder test support trait_def\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-28T09:04:28.405Z",
+        "updatedAt": "2026-03-28T09:28:22.285Z",
         "metadata": {
           "modules": [
             "crates/reify-test-support"
@@ -12986,7 +12992,7 @@
         "description": "Task 602 fixed the major content_hash gaps but several semantically significant fields are still ignored in the test builders (same class of bug):\n\n1. **DefaultKind::Param ignores cell_type** (trait_def.rs): `DefaultKind::Param { .. } => \"Param\"` should be `DefaultKind::Param { cell_type, .. } => format!(\"Param:{}\", cell_type)`. Two defaults with same name but different cell_type (Real vs Int) produce identical hashes.\n\n2. **DefaultKind::Let/Constraint ignore inner expression** (trait_def.rs): Only the kind tag is hashed, not the inner expression's content_hash. Two Let defaults with same name but different expressions hash identically. Fix: `DefaultKind::Let(decl) => format!(\"Let:{}\", decl.content_hash)`, `DefaultKind::Constraint(decl) => format!(\"Constraint:{}\", decl.content_hash)`.\n\n3. **TypeParam bounds/default ignored** (trait_def.rs): `type_param_hashes` maps only `p.name`, ignoring `p.bounds` and `p.default`. Fix: include bound trait_ref names and default type in the hash string.\n\n4. **Missing Sampled variant cross-test** (field.rs): No test asserts Sampled hashes differently from Analytical/Imported with same name+types.\n\nAdd tests for each fix asserting hash distinctness (same pattern as existing tests).\n\nmemory_hints: search \"content_hash builder test support\", get_entity \"DefaultKind\", get_entity \"TypeParam\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "627"
         ],
@@ -13000,7 +13006,8 @@
           "modules": [
             "crates/reify-test-support/src/builders"
           ]
-        }
+        },
+        "updatedAt": "2026-03-28T09:28:24.596Z"
       },
       {
         "id": "629",
@@ -13234,13 +13241,13 @@
         "description": "The error-case tests in type_alias_tests.rs (parse_type_alias_missing_name_no_panic, parse_type_alias_missing_equals_no_panic, parse_type_alias_empty_rhs_no_panic) use weak disjunctive assertions (`!has_type_alias || !errors.is_empty()`) that pass silently when the parser produces neither output nor errors. This means a parser that silently swallows malformed input without emitting any diagnostic would pass the tests.\n\nFix:\n1. In `missing_name` and `missing_equals` tests: add `assert!(!errors.is_empty(), \"expected parse errors for malformed input\");` to verify error emission, not just no-panic.\n2. In `empty_rhs` test: add fallback assertion outside the `if let` block ensuring either a TypeAlias or errors are present. Update the comment to match the actual invariant (may produce TypeAlias via tree-sitter recovery, not \"no valid TypeAlias emitted\").\n3. Review the 3 pre-existing malformed dimensional tests (lines 278-321) for the same weak-assertion pattern and strengthen if needed.\n\nMemory hints: search \"type alias parser tests\", get_entity \"TypeAliasDecl\".",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [
           "439"
         ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-28T09:04:29.374Z",
+        "updatedAt": "2026-03-28T09:25:02.477Z",
         "metadata": {
           "modules": [
             "crates/reify-syntax"
@@ -14333,7 +14340,7 @@
             "gui/src/stores"
           ]
         },
-        "updatedAt": "2026-03-28T09:07:46.067Z"
+        "updatedAt": "2026-03-28T09:28:24.382Z"
       },
       {
         "id": "697",
@@ -14383,7 +14390,7 @@
         "description": "Two test improvements in gui/src/__tests__/claudeBridge.test.ts: 1) Replace non-null assertion `captured!` in captureListener with explicit guard that throws descriptive error if event was never registered. 2) Add test for claude-tool-result with result=null asserting handler IS called, pinning the intentional unvalidated-passthrough contract.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -14394,7 +14401,8 @@
           "modules": [
             "gui/src/__tests__"
           ]
-        }
+        },
+        "updatedAt": "2026-03-28T09:25:07.418Z"
       },
       {
         "id": "700",
@@ -14402,7 +14410,7 @@
         "description": "Two issues in crates/reify-cli/src/main.rs: 1) report_constraint_results doc comment says 'builds' but should say 'evaluations' since called from both cmd_build and cmd_check. 2) cmd_check prints 'All constraints satisfied.' even when constraints are INDETERMINATE — should distinguish between all-satisfied and no-violations-but-some-indeterminate. Update cli_check.rs test assertion to match new message.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -14415,7 +14423,8 @@
             "crates/reify-cli/src",
             "crates/reify-cli/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-03-28T09:28:14.537Z"
       },
       {
         "id": "701",
@@ -14649,13 +14658,94 @@
         ],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": "713",
+        "title": "Extract is_auto_cell helper and deactivate_if_not_auto to DRY guard deactivation",
+        "description": "The `is_auto` predicate `graph.value_cells.get(id).is_some_and(|n| n.kind == ValueCellKind::Auto)` is inlined 4 times across two guard handling phases in edit_param (lib.rs ~1693, ~1724, ~1956, ~1991). Extract an `is_auto_cell(&self, id)` method on the graph type and a `deactivate_if_not_auto` helper to consolidate the guard-skip + Undef-insert pattern into one place.\n\nMemory hints: search \"guard re-elaboration\", \"Auto param deactivation\", entity: edit_param",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
+      },
+      {
+        "id": "714",
+        "title": "Add DeterminacyState assertions and round-trip test for Auto param guard transitions",
+        "description": "Two test coverage gaps in guard_eval.rs for the Auto-param guard fix:\n\n1. Tests only verify `edit_result.values` (working map) but never check `engine.snapshot().values` for the Auto param's DeterminacyState after guard deactivation. A stale Determined/Undetermined state could cause downstream incremental issues.\n\n2. No round-trip test (true→false→true or false→true→false). After deactivation preserves the solver value, re-activation may re-invoke the solver — verify the Auto param ends up correctly re-resolved, not stale.\n\nMemory hints: search \"guard deactivation Auto param\", \"DeterminacyState\", entity: edit_param",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
+      },
+      {
+        "id": "715",
+        "title": "Apply Auto-param guard skip to eval() path for consistency with edit_param",
+        "description": "In eval() (lib.rs ~1122-1129), the \"guard is false — member is inactive\" block unconditionally sets ALL members to (Value::Undef, DeterminacyState::Undetermined), including Auto-kind cells. This is inconsistent with edit_param which now skips Auto params. The eval() path avoids visible bugs because the solver runs afterward, but the transient incorrect state (Undetermined instead of Auto) could cause issues if any code inspects determinacy between guard elaboration and solver resolution.\n\nFix: Apply the same is_auto guard to the eval() deactivation block, or at minimum emit DeterminacyState::Auto instead of Undetermined for Auto-kind cells.\n\nMemory hints: search \"guard deactivation\", \"eval() guard elaboration\", entity: edit_param, DeterminacyState",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
+      },
+      {
+        "id": "716",
+        "title": "Validate recovery shape in type_alias error-case tests",
+        "description": "The error-case tests in type_alias_tests.rs (strengthened by task 641) still have assertion gaps around Tree-sitter recovery output:\n\n1. **Dimensional tests** (missing_right_operand, missing_left_operand, missing_both_operands, lines 278-317): Only assert `!errors.is_empty()` but never inspect the recovered TypeAlias when one is produced. A regression that emits a plausible-looking but wrong TypeAlias would pass. Fix: if a TypeAlias is produced, assert `ta.name == \"Foo\"` and validate that `ta.type_expr` is garbled (e.g., empty name or unexpected structure).\n\n2. **Empty RHS test** (parse_type_alias_empty_rhs_no_panic, lines 363-393): The inner assertion `ta.type_expr.name.is_empty() || !errors.is_empty()` is a disjunction that passes whenever errors are present, even if `type_expr.name` is non-empty. The documented invariant (\"zero-width recovery node produces empty name\") is not actually enforced. Additionally, the branch where `type_expr.name.is_empty() && errors.is_empty()` is permitted — meaning the parser could silently accept `type Foo =` without any error signal. Fix: assert `ta.type_expr.name.is_empty()` unconditionally inside the `if let Some(ta)` branch, and add an unconditional `!errors.is_empty()` assertion at the top level (matching the other error-case tests).\n\nMemory hints: search \"task 641 type alias test assertions\", get_entity \"TypeAliasDecl\".",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          "641"
+        ],
+        "priority": "low",
+        "subtasks": []
+      },
+      {
+        "id": "717",
+        "title": "Wrap clearIfRemoved body in batch() and add backend sync test",
+        "description": "Two changes in gui/src/stores/selectionStore.ts and gui/src/__tests__/selectionStore.test.ts:\n\n1. **Code fix**: In `clearIfRemoved`, wrap the body in `batch(() => { ... })` so that when both `selectedEntity` and `hoveredEntity` match the removed path, only one createEffect run fires (and thus one backend dispatch) instead of two sequential effect runs. Currently `selectEntity(null)` triggers an immediate dispatch, then `hoverEntity(null)` triggers a debounced dispatch — two backend syncs for one logical operation.\n\n2. **Test**: Add a backend sync test for `clearIfRemoved` inside the existing `describe('backend sync')` block. Set both selectedEntity and hoveredEntity to the same path, call clearIfRemoved, and verify the number and content of invoke calls. This covers the double-dispatch scenario.\n\nMemory hints: search \"selectionStore backend sync createEffect\" for context on the dispatch paths.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
+      },
+      {
+        "id": "718",
+        "title": "Restructure standalone selectionStore tests into describe block with proper lifecycle",
+        "description": "Improve test robustness in gui/src/__tests__/selectionStore.test.ts:\n\n1. **Timer cleanup safety**: The two standalone tests at lines 173-237 (`no invoke is dispatched on store creation` and `clearHighlights triggers only one backend sync`) manage fake timers inline. If an assertion throws before cleanup, fake timers leak into subsequent tests. Either:\n   - Move both tests into the existing `describe('backend sync')` block (they share identical infrastructure), OR\n   - Wrap them in a new `describe` block with shared `beforeEach`/`afterEach` for timer lifecycle.\n\n2. **Fix misleading test description**: The `clearHighlights triggers only one backend sync (atomic batch update)` test would pass identically without `batch()` because the createEffect only tracks `selectedEntity` and `hoveredEntity`, not `highlightedParams`. Either:\n   - Update the test description to accurately reflect what it verifies: \"clearHighlights dispatches exactly one backend sync for the selection→null change\", OR\n   - Add a comment explaining that `batch()` prevents intermediate state visible to other subscribers, even though invoke count is the same in this test.\n\n3. **Deduplicate setup/teardown**: Both standalone tests reproduce the exact setup/teardown from the `backend sync` describe block (~12 lines of boilerplate each). Moving them into that block eliminates this duplication.\n\nMemory hints: search \"selectionStore test backend sync\" for test pattern context.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
+      },
+      {
+        "id": "719",
+        "title": "Add Let/Sub cross-builder hash equivalence tests and symmetric CompiledTraitBuilder verification",
+        "description": "cross_builder_hash_equivalence in crates/reify-test-support/src/builders/trait_def.rs only exercises RequirementKind::Param but CompiledTraitBuilder also exposes require_let and require_sub. Add sub-cases that compare TraitDefBuilder vs CompiledTraitBuilder for Let and Sub requirement kinds.\n\nAlso, compute_trait_content_hash_matches_builder only asserts against TraitDefBuilder. Add an analogous assertion against CompiledTraitBuilder for symmetric verification.\n\nmemory_hints: search \"content_hash builder test support cross_builder_hash_equivalence\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          "627"
+        ],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T09:18:13.435Z",
-      "taskCount": 712,
-      "completedCount": 330,
+      "lastModified": "2026-03-28T09:28:24.596Z",
+      "taskCount": 719,
+      "completedCount": 333,
       "tags": [
         "master"
       ]
