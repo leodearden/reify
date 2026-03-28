@@ -27,11 +27,23 @@ if [ ! -f "$TS_DIR/grammar.js" ]; then
     exit 1
 fi
 
+# Portable SHA-256: prefer sha256sum (GNU coreutils), fall back to shasum (macOS).
+compute_sha256() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1"
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$1"
+    else
+        echo "ERROR: neither sha256sum nor shasum found on PATH." >&2
+        exit 1
+    fi
+}
+
 cd "$TS_DIR"
 
 # Compute grammar hash once before generation (avoids TOCTOU race between
 # staleness check and stamp write — same pattern as build.rs).
-GRAMMAR_HASH=$(sha256sum grammar.js | awk '{print $1}')
+GRAMMAR_HASH=$(compute_sha256 grammar.js | awk '{print $1}')
 STAMP_FILE="src/.grammar_hash.stamp"
 
 # Staleness check: skip generation if stamp matches and all outputs exist.
