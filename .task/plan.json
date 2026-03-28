@@ -1,0 +1,118 @@
+{
+  "task_id": "597",
+  "title": "Fix find_member_decl cross-structure name collision",
+  "files": [
+    "crates/reify-lsp/src/analysis.rs",
+    "crates/reify-lsp/src/hover.rs"
+  ],
+  "modules": [
+    "crates/reify-lsp"
+  ],
+  "analysis": "The bug: find_member_decl(name) always returns info from the FIRST matching declaration across all structures. When the cursor is inside structure B but A is parsed first, hover shows A's type info for a same-named member. The internal coordination between parsed and compiled lookups (via decl_name) is already present, but the API lacks a way for callers to scope the search to a specific structure.\n\ngoto_def.rs already implements the correct pattern: it determines the enclosing declaration by checking if the cursor offset falls within decl.span, then searches only that declaration's members. hover.rs does NOT do this \u2014 it calls find_member_decl(word) without any structure scoping.\n\nAdditionally, hover.rs line 28 always looks up the evaluated value via templates.first(), which is wrong when the member belongs to a later template.\n\nThe fix threads structure name through find_member_decl's API: (1) add a structure parameter to scope both internal lookups, (2) add decl_name to MemberInfo so callers know which structure the member belongs to, (3) add enclosing_structure_name_at helper, (4) update hover.rs to determine the enclosing structure and pass it through.",
+  "prerequisites": [],
+  "steps": [
+    {
+      "id": "step-1",
+      "type": "test",
+      "description": "Write failing test find_member_decl_decl_name_populated: verify that MemberInfo includes the owning structure name. Use source with 'structure Foo { param x: Scalar = 1mm }', call find_member_decl(\"x\"), assert info.decl_name == \"Foo\". This will fail because decl_name field doesn't exist on MemberInfo yet.",
+      "status": "done",
+      "commit": "6150483a"
+    },
+    {
+      "id": "step-2",
+      "type": "impl",
+      "description": "Add 'pub decl_name: &'a str' field to MemberInfo. Set it from the decl_name returned by find_parsed_member_span_and_doc in find_member_decl. This is a backward-compatible struct addition (no callers destructure MemberInfo).",
+      "status": "done",
+      "commit": "909bf292"
+    },
+    {
+      "id": "step-3",
+      "type": "test",
+      "description": "Write failing test find_member_decl_scoped_to_second_structure: source has two structures 'structure A { param x: Scalar = 5mm }' and 'structure B { param x: Bool = true }'. Call find_member_decl(\"x\", Some(\"B\")) and assert cell_type is Bool (not Scalar), span is within B's range, and decl_name == \"B\". This will fail because find_member_decl doesn't accept a structure parameter yet.",
+      "status": "done",
+      "commit": "72f9bc30"
+    },
+    {
+      "id": "step-4",
+      "type": "impl",
+      "description": "Add 'structure: Option<&str>' parameter to find_member_decl. Update find_parsed_member_span_and_doc to accept the same parameter and, when Some, skip declarations whose name doesn't match. Update all existing call sites (hover.rs:16 and ~10 test functions) to pass None, preserving first-match behavior.",
+      "status": "done",
+      "commit": "aea1a777"
+    },
+    {
+      "id": "step-5",
+      "type": "test",
+      "description": "Write failing test enclosing_structure_name_at_inside_second: source has two structures A and B. Compute offset of a member inside B, call ctx.enclosing_structure_name_at(offset) and assert it returns Some(\"B\"). Also test offset inside A returns Some(\"A\"), and offset outside any structure returns None. Fails because the method doesn't exist yet.",
+      "status": "done",
+      "commit": "0afbe740"
+    },
+    {
+      "id": "step-6",
+      "type": "impl",
+      "description": "Add enclosing_structure_name_at(&self, offset: usize) -> Option<&str> method to AnalysisContext. Iterate parsed.declarations, match Structure/Occurrence, check if offset falls within decl.span (same pattern as goto_def.rs lines 25-42), return the decl name.",
+      "status": "done",
+      "commit": "a4ba0e4b"
+    },
+    {
+      "id": "step-7",
+      "type": "test",
+      "description": "Write failing hover integration test hover_on_shared_member_in_second_structure: source has 'structure A { param width: Scalar = 5mm }\\nstructure B { param width: Bool = true }'. Compute hover at 'width' inside B. Assert markdown contains 'Bool' (not 'Scalar'). This fails because hover.rs still passes None (no scoping).",
+      "status": "done",
+      "commit": "4dd9af56"
+    },
+    {
+      "id": "step-8",
+      "type": "impl",
+      "description": "Update hover.rs compute_hover: (1) call ctx.enclosing_structure_name_at(offset) to get the enclosing structure name, (2) pass it to ctx.find_member_decl(word, enclosing), (3) replace templates.first() value lookup with ctx.get_value(&info.decl_name, word) using the MemberInfo's decl_name field.",
+      "status": "done",
+      "commit": "ed355d1a"
+    }
+  ],
+  "design_decisions": [
+    {
+      "decision": "Add structure parameter to existing find_member_decl rather than creating a separate find_member_decl_scoped method",
+      "rationale": "Only two call sites (hover.rs + tests). A single method with Option<&str> is cleaner than two methods. The None behavior preserves the existing first-match semantics for callers that don't have structure context."
+    },
+    {
+      "decision": "Add decl_name field to MemberInfo rather than returning a tuple",
+      "rationale": "MemberInfo is the natural place for this data \u2014 callers (hover.rs) need the owning structure name for the value lookup. Adding a field is backward compatible since no callers destructure the struct."
+    },
+    {
+      "decision": "Follow the enclosing-declaration pattern already in goto_def.rs (lines 25-42)",
+      "rationale": "goto_def.rs already solves the same problem (scoping member lookup to the enclosing structure). Extracting the pattern into a reusable method on AnalysisContext avoids duplication and establishes a single source of truth."
+    },
+    {
+      "decision": "Fix hover.rs value lookup to use info.decl_name instead of templates.first()",
+      "rationale": "The templates.first() lookup is a secondary instance of the same cross-structure bug: if the member belongs to structure B but templates[0] is A, the evaluated value comes from the wrong structure. Using decl_name from MemberInfo ensures consistency."
+    }
+  ],
+  "reuse": [
+    {
+      "what": "Enclosing-declaration offset check pattern",
+      "where": "crates/reify-lsp/src/goto_def.rs:25-42",
+      "how": "goto_def.rs already iterates parsed declarations and checks offset_u32 >= decl_span.start && offset_u32 < decl_span.end. Extract this into AnalysisContext::enclosing_structure_name_at."
+    },
+    {
+      "what": "StructureDef.span and OccurrenceDef.span fields",
+      "where": "crates/reify-syntax/src/lib.rs:39 and :61",
+      "how": "Both StructureDef and OccurrenceDef have SourceSpan fields that cover the full declaration range. Use these for offset containment checks."
+    },
+    {
+      "what": "Existing find_parsed_member_span_and_doc helper",
+      "where": "crates/reify-lsp/src/analysis.rs:104-119",
+      "how": "Add an optional structure name filter to the existing helper rather than writing a new function. When structure is Some, skip declarations whose name doesn't match."
+    },
+    {
+      "what": "Existing ambiguous-name regression tests",
+      "where": "crates/reify-lsp/src/analysis.rs:658-693",
+      "how": "These tests validate first-match behavior with None scoping. Keep them passing to ensure backward compatibility."
+    },
+    {
+      "what": "hover_markdown test helper",
+      "where": "crates/reify-lsp/src/hover.rs:164-170",
+      "how": "Reuse this helper for the new hover cross-structure integration test."
+    }
+  ],
+  "_session_id": "597-4a41549f",
+  "_created_at": "2026-03-28T00:44:21.465892+00:00"
+}
