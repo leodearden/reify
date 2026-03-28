@@ -293,6 +293,8 @@ mod tests {
 
     // --- step-9: completion tests ---
 
+    // TODO(task-2): Position(1,0) is inside a structure body. When position-sensitive
+    // filtering lands, verify these assertions still hold in StructureBody context.
     #[test]
     fn completions_include_keywords() {
         let source = reify_test_support::bracket_source();
@@ -319,6 +321,8 @@ mod tests {
         // (a top-level keyword) is not expected here after position-aware narrowing.
     }
 
+    // TODO(task-2): Position(7,17) is Expression context. When position-sensitive
+    // filtering lands, verify these assertions still hold in Expression context.
     #[test]
     fn completions_include_scope_identifiers() {
         let source = reify_test_support::bracket_source();
@@ -351,6 +355,8 @@ mod tests {
         );
     }
 
+    // TODO(task-2): Position(1,0) is inside a structure body. When position-sensitive
+    // filtering lands, verify these assertions still hold in StructureBody context.
     #[test]
     fn completions_include_structure_names() {
         let source = reify_test_support::bracket_source();
@@ -365,6 +371,8 @@ mod tests {
         );
     }
 
+    // TODO(task-2): Position(1,0) is inside a structure body. When position-sensitive
+    // filtering lands, verify these assertions still hold in StructureBody context.
     #[test]
     fn completions_include_builtin_functions() {
         let source = reify_test_support::bracket_source();
@@ -384,6 +392,8 @@ mod tests {
         assert!(func_labels.contains(&"max"), "should include 'max'");
     }
 
+    // TODO(task-2): Position(1,0) is inside a structure body. When position-sensitive
+    // filtering lands, verify these assertions still hold in StructureBody context.
     #[test]
     fn completions_include_type_names() {
         let source = reify_test_support::bracket_source();
@@ -421,6 +431,8 @@ mod tests {
         );
     }
 
+    // TODO(task-2): Position(1,0) is inside a structure body. When position-sensitive
+    // filtering lands, verify these assertions still hold in StructureBody context.
     #[test]
     fn completions_include_occurrence_names() {
         let source = "occurrence def Joint {\n    param diameter: Scalar = 10mm\n}";
@@ -925,6 +937,8 @@ mod tests {
 
     // --- guarded-group completion tests ---
 
+    // TODO(task-2): Position(1,0) is inside a structure body. When position-sensitive
+    // filtering lands, verify these assertions still hold in StructureBody context.
     #[test]
     fn completions_include_guarded_group_members() {
         let source = r#"structure S {
@@ -951,6 +965,8 @@ mod tests {
 
     // --- linalg builtin completions (step-11) ---
 
+    // TODO(task-2): Position(1,0) is inside a structure body. When position-sensitive
+    // filtering lands, verify these assertions still hold in StructureBody context.
     #[test]
     fn completions_include_linalg_functions() {
         let source = reify_test_support::bracket_source();
