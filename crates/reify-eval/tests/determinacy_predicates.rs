@@ -705,21 +705,8 @@ fn determinacy_predicate_hash_differs_from_lambda() {
     let cell_id = ValueCellId::new("S", "a");
     let kind = DeterminacyPredicateKind::Determined;
 
-    // Build a DeterminacyPredicate expr — the compiler computes its hash as:
-    //   ContentHash::of(&[17])
-    //     .combine(of_str("{:?} of kind"))   → "Determined"
-    //     .combine(of_str("{} of cell_id"))  → "S.a"
-    let det_expr = CompiledExpr {
-        kind: CompiledExprKind::DeterminacyPredicate {
-            kind,
-            cell: cell_id.clone(),
-        },
-        result_type: Type::Bool,
-        // Reproduce the compiler's hash formula (discriminator byte [17]):
-        content_hash: ContentHash::of(&[17])
-            .combine(ContentHash::of_str(&format!("{:?}", kind)))
-            .combine(ContentHash::of_str(&format!("{}", cell_id))),
-    };
+    // Use the real factory method so the hash always matches the compiler.
+    let det_expr = CompiledExpr::determinacy_predicate(kind, cell_id.clone());
 
     // Build a Lambda whose hash combine sequence matches the above when
     // using the same discriminator byte. Lambda hash formula:
