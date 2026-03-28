@@ -8414,11 +8414,11 @@
         "description": "Add a #[cfg(test)] module to gui/src-tauri/src/types.rs with unit tests for format_value covering: basic Range display, Range with None lower + inclusive=true, Range with None upper + inclusive=true. No Tauri dependency needed. (Review followup from task 364)",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-03-28T00:28:24.401Z",
+        "updatedAt": "2026-03-28T00:28:57.361Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -12728,7 +12728,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T00:28:24.401Z",
+      "lastModified": "2026-03-28T00:28:57.407Z",
       "taskCount": 628,
       "completedCount": 287,
       "tags": [
