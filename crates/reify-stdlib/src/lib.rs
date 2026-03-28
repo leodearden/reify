@@ -1486,6 +1486,18 @@ mod tests {
         };
     }
 
+    /// Build a `Value::Vector` of 3 `Value::Scalar` components from `[f64; 3]` and a dimension.
+    fn make_scalar_vec3(vals: [f64; 3], dim: DimensionVector) -> Value {
+        Value::Vector(
+            vals.iter()
+                .map(|&v| Value::Scalar {
+                    si_value: v,
+                    dimension: dim,
+                })
+                .collect(),
+        )
+    }
+
     #[test]
     fn abs_real_negative() {
         let result = eval_builtin("abs", &[Value::Real(-5.0)]);
