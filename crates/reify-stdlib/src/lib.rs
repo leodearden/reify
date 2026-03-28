@@ -4287,6 +4287,64 @@ mod tests {
     }
 
     #[test]
+    fn orient_axis_angle_nan_angle_returns_undef() {
+        // NaN angle must be rejected — trig_input should guard against non-finite values.
+        let axis = Value::Tensor(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
+        let angle = Value::Real(f64::NAN);
+        assert!(
+            eval_builtin("orient_axis_angle", &[axis, angle]).is_undef(),
+            "NaN angle should be rejected"
+        );
+    }
+
+    #[test]
+    fn orient_axis_angle_inf_angle_returns_undef() {
+        // Inf angle must be rejected — cos/sin of Inf produce NaN.
+        let axis = Value::Tensor(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
+        let angle = Value::Real(f64::INFINITY);
+        assert!(
+            eval_builtin("orient_axis_angle", &[axis, angle]).is_undef(),
+            "Inf angle should be rejected"
+        );
+    }
+
+    #[test]
+    fn orient_euler_nan_angle_returns_undef() {
+        // NaN angle must be rejected in orient_euler.
+        assert!(
+            eval_builtin(
+                "orient_euler",
+                &[
+                    Value::String("xyz".into()),
+                    Value::Real(f64::NAN),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                ]
+            )
+            .is_undef(),
+            "NaN euler angle should be rejected"
+        );
+    }
+
+    #[test]
+    fn orient_euler_inf_angle_returns_undef() {
+        // Inf angle must be rejected in orient_euler.
+        assert!(
+            eval_builtin(
+                "orient_euler",
+                &[
+                    Value::String("xyz".into()),
+                    Value::Real(f64::INFINITY),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                ]
+            )
+            .is_undef(),
+            "Inf euler angle should be rejected"
+        );
+    }
+
+    #[test]
     fn orient_basis_inf_component_returns_undef() {
         // Inf in a basis vector must be rejected — magnitude would be Inf, not ≈1.
         let x = Value::Tensor(vec![
