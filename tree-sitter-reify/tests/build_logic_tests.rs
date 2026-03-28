@@ -220,6 +220,14 @@ fn test_no_redundant_rerun_if_changed() {
     );
 }
 
+/// Find the Err(e) arm in source code and return a window of characters from that point.
+/// This avoids fragile brace-counting that can be fooled by braces inside string literals.
+fn find_err_arm_window(source: &str, window: usize) -> Option<&str> {
+    let start = source.find("Err(e) =>")?;
+    let end = (start + window).min(source.len());
+    Some(&source[start..end])
+}
+
 /// Duplicates run_with_timeout logic from build.rs for testability.
 /// Returns Ok(()) on success, Err(message) on failure or timeout.
 fn run_with_timeout(cmd: &str, args: &[&str], timeout_secs: u64) -> Result<(), String> {
