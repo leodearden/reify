@@ -12767,10 +12767,11 @@
         "description": "In crates/reify-expr/tests/field_eval_tests.rs: (1) Tighten tolerance in sample_gradient_of_constant_field_near_zero from 1e-3 to 1e-9. (2) Add test for gradient(gradient(field)) documenting it returns Undef. (3) Add test for Gradient field with manually constructed inner_field=None. (4) Add sample() call in gradient_dimension_temperature_over_length. (5) Add test for gradient of field where inner lambda returns non-numeric value.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-03-28T00:45:54.616Z"
       },
       {
         "id": "633",
@@ -12863,7 +12864,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T00:45:52.822Z",
+      "lastModified": "2026-03-28T00:45:54.617Z",
       "taskCount": 640,
       "completedCount": 291,
       "tags": [
