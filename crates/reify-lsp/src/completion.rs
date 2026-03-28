@@ -1,24 +1,185 @@
 use tower_lsp::lsp_types::{CompletionItem, CompletionItemKind, Position, Url};
 
 use crate::analysis::AnalysisContext;
+use crate::convert::position_to_offset;
+
+/// The syntactic context at the cursor position, used to filter completions.
+#[derive(Debug)]
+pub enum CursorContext {
+    /// Cursor is outside all structure/occurrence spans.
+    TopLevel,
+    /// Cursor is inside a structure/occurrence body on a line that doesn't
+    /// indicate a more specific context (expression, dot access, type position).
+    StructureBody {
+        /// Name of the enclosing structure/occurrence.
+        structure_name: String,
+    },
+    /// Cursor is in an expression position (after `=`, inside a constraint, etc).
+    Expression {
+        /// Name of the enclosing structure, if any.
+        structure_name: Option<String>,
+    },
+    /// Cursor is immediately after a `.` — member access.
+    DotAccess,
+    /// Cursor is in a type annotation position (after `:` in a declaration).
+    TypePosition,
+}
+
+/// Determine the syntactic context at the given cursor position.
+pub fn determine_context(source: &str, position: Position, ctx: &AnalysisContext) -> CursorContext {
+    let offset = position_to_offset(source, position);
+
+    // Check if cursor is inside a structure/occurrence span
+    let enclosing = ctx.enclosing_structure_name_at(offset);
+
+    if enclosing.is_none() {
+        return CursorContext::TopLevel;
+    }
+
+    let structure_name = enclosing.unwrap().to_string();
+
+    // Extract the current line prefix (text from start of line to cursor)
+    let line_prefix = extract_line_prefix(source, offset);
+
+    // Check for DotAccess: scan backward through whitespace for a '.'
+    {
+        let trimmed = line_prefix.trim_end();
+        if trimmed.ends_with('.') {
+            return CursorContext::DotAccess;
+        }
+    }
+
+    // Check for TypePosition: look for ':' without intervening '=' on the line prefix
+    // Must check before Expression since 'param x: ' has no '=' yet
+    {
+        let trimmed = line_prefix.trim_start();
+        if starts_with_decl_keyword(trimmed)
+            && let Some(colon_pos) = line_prefix.rfind(':')
+        {
+            let after_colon = &line_prefix[colon_pos + 1..];
+            if !after_colon.contains('=') {
+                return CursorContext::TypePosition;
+            }
+        }
+    }
+
+    // Check for Expression: cursor after '=' on the line, or inside a constraint expression
+    {
+        if line_prefix.contains('=') {
+            // Cursor is after an '=' sign — expression position
+            // But only if the cursor is after the last '=' on the line
+            if let Some(eq_pos) = line_prefix.rfind('=') {
+                let cursor_in_line = line_prefix.len();
+                if cursor_in_line > eq_pos {
+                    return CursorContext::Expression {
+                        structure_name: Some(structure_name),
+                    };
+                }
+            }
+        }
+
+        // Constraint lines: everything after "constraint " is an expression
+        let trimmed = line_prefix.trim_start();
+        if trimmed.starts_with("constraint") && trimmed.len() > "constraint".len() {
+            let after_kw = &trimmed["constraint".len()..];
+            if after_kw.starts_with(|c: char| c.is_whitespace()) {
+                return CursorContext::Expression {
+                    structure_name: Some(structure_name),
+                };
+            }
+        }
+    }
+
+    // Default: inside a structure body but no more specific context
+    CursorContext::StructureBody { structure_name }
+}
+
+/// Extract the text from the start of the current line to the given byte offset.
+fn extract_line_prefix(source: &str, offset: usize) -> &str {
+    let start = source[..offset]
+        .rfind('\n')
+        .map(|pos| pos + 1)
+        .unwrap_or(0);
+    &source[start..offset]
+}
+
+/// Check if a trimmed line starts with a declaration keyword (param, let, sub).
+fn starts_with_decl_keyword(trimmed: &str) -> bool {
+    for kw in &["param", "let", "sub"] {
+        if trimmed.starts_with(kw)
+            && trimmed[kw.len()..]
+                .starts_with(|c: char| c.is_whitespace())
+        {
+            return true;
+        }
+    }
+    false
+}
 
 /// Compute completion items for the given position.
 ///
-/// Returns a flat list of all available completions (keywords, identifiers,
-/// types, built-in functions, structure names). Client-side filtering applies.
-pub fn compute_completions(source: &str, uri: &Url, _position: Position) -> Vec<CompletionItem> {
+/// Returns context-sensitive completions based on the cursor position:
+/// - TopLevel: top-level keywords, type names, structure names, builtins
+/// - StructureBody: body/expr keywords, scoped members, structures, builtins, types
+/// - Expression: expr keywords, members, builtins, structures, types
+/// - DotAccess: member names only
+/// - TypePosition: type names and structure names only
+pub fn compute_completions(source: &str, uri: &Url, position: Position) -> Vec<CompletionItem> {
     let mut items = Vec::new();
+    let ctx = AnalysisContext::new(source, uri);
+    let cursor_ctx = determine_context(source, position, &ctx);
 
-    // (a) Keywords
-    for kw in KEYWORDS {
+    match cursor_ctx {
+        CursorContext::TopLevel => {
+            push_keywords(&mut items, TOP_LEVEL_KEYWORDS);
+            push_builtins(&mut items);
+            push_type_names(&mut items);
+            push_structure_names(&mut items, &ctx);
+        }
+        CursorContext::StructureBody { ref structure_name } => {
+            push_keywords(&mut items, BODY_KEYWORDS);
+            push_keywords(&mut items, EXPR_KEYWORDS);
+            push_builtins(&mut items);
+            push_type_names(&mut items);
+            push_scoped_members(&mut items, &ctx, structure_name);
+            push_structure_names(&mut items, &ctx);
+        }
+        CursorContext::Expression {
+            ref structure_name, ..
+        } => {
+            push_keywords(&mut items, EXPR_KEYWORDS);
+            push_builtins(&mut items);
+            push_type_names(&mut items);
+            if let Some(name) = structure_name {
+                push_scoped_members(&mut items, &ctx, name);
+            } else {
+                push_all_members(&mut items, &ctx);
+            }
+            push_structure_names(&mut items, &ctx);
+        }
+        CursorContext::DotAccess => {
+            push_all_members(&mut items, &ctx);
+        }
+        CursorContext::TypePosition => {
+            push_type_names(&mut items);
+            push_structure_names(&mut items, &ctx);
+        }
+    }
+
+    items
+}
+
+fn push_keywords(items: &mut Vec<CompletionItem>, keywords: &[&str]) {
+    for kw in keywords {
         items.push(CompletionItem {
             label: kw.to_string(),
             kind: Some(CompletionItemKind::KEYWORD),
             ..Default::default()
         });
     }
+}
 
-    // (b) Built-in functions
+fn push_builtins(items: &mut Vec<CompletionItem>) {
     for func in BUILTIN_FUNCTIONS {
         items.push(CompletionItem {
             label: func.to_string(),
@@ -26,8 +187,9 @@ pub fn compute_completions(source: &str, uri: &Url, _position: Position) -> Vec<
             ..Default::default()
         });
     }
+}
 
-    // (c) Type names
+fn push_type_names(items: &mut Vec<CompletionItem>) {
     for ty in TYPE_NAMES {
         items.push(CompletionItem {
             label: ty.to_string(),
@@ -35,11 +197,9 @@ pub fn compute_completions(source: &str, uri: &Url, _position: Position) -> Vec<
             ..Default::default()
         });
     }
+}
 
-    // Context-dependent items from the source
-    let ctx = AnalysisContext::new(source, uri);
-
-    // (d) Value cell members as variables with type detail
+fn push_all_members(items: &mut Vec<CompletionItem>, ctx: &AnalysisContext) {
     for (name, _kind, cell_type) in ctx.member_names() {
         items.push(CompletionItem {
             label: name.to_string(),
@@ -48,8 +208,20 @@ pub fn compute_completions(source: &str, uri: &Url, _position: Position) -> Vec<
             ..Default::default()
         });
     }
+}
 
-    // (e) Structure names
+fn push_scoped_members(items: &mut Vec<CompletionItem>, ctx: &AnalysisContext, structure_name: &str) {
+    for (name, _kind, cell_type) in ctx.member_names_for_structure(structure_name) {
+        items.push(CompletionItem {
+            label: name.to_string(),
+            kind: Some(CompletionItemKind::VARIABLE),
+            detail: Some(cell_type.to_string()),
+            ..Default::default()
+        });
+    }
+}
+
+fn push_structure_names(items: &mut Vec<CompletionItem>, ctx: &AnalysisContext) {
     for (name, _params, _lets, _constraints, _kind) in ctx.structure_names() {
         items.push(CompletionItem {
             label: name.to_string(),
@@ -57,27 +229,36 @@ pub fn compute_completions(source: &str, uri: &Url, _position: Position) -> Vec<
             ..Default::default()
         });
     }
-
-    items
 }
 
-/// Reify language keywords.
-const KEYWORDS: &[&str] = &[
+/// Keywords that are only valid at the top level (outside structure bodies).
+const TOP_LEVEL_KEYWORDS: &[&str] = &[
     "structure",
+    "occurrence",
+    "import",
+    "fn",
+    "trait",
+    "enum",
+];
+
+/// Keywords that start declaration lines inside a structure body.
+const BODY_KEYWORDS: &[&str] = &[
     "param",
     "let",
     "constraint",
     "sub",
-    "import",
-    "if",
-    "then",
-    "else",
-    "and",
-    "or",
-    "not",
-    "true",
-    "false",
     "auto",
+    "purpose",
+    "minimize",
+    "maximize",
+    "port",
+    "connect",
+    "where",
+];
+
+/// Keywords valid inside expressions (conditions, values, operators).
+const EXPR_KEYWORDS: &[&str] = &[
+    "if", "then", "else", "and", "or", "not", "true", "false",
 ];
 
 /// Built-in geometry and math functions.
@@ -134,10 +315,8 @@ mod tests {
             keyword_labels.contains(&"constraint"),
             "should include 'constraint'"
         );
-        assert!(
-            keyword_labels.contains(&"structure"),
-            "should include 'structure'"
-        );
+        // Note: Position(1,0) is inside the structure body, so 'structure'
+        // (a top-level keyword) is not expected here after position-aware narrowing.
     }
 
     #[test]
@@ -262,7 +441,6 @@ mod tests {
     // task 2 will implement position-sensitive filtering to make them pass.
 
     #[test]
-    #[ignore] // Fails until position-sensitive completions are implemented (task 2)
     fn completion_top_level_excludes_body_keywords() {
         // Source: one structure, then a blank line. Cursor is outside any structure.
         let source = "structure Foo {\n    param x: Scalar = 1mm\n}\n";
@@ -305,7 +483,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // Fails until position-sensitive completions are implemented (task 2)
     fn completion_inside_body_excludes_top_level_keywords() {
         let source = reify_test_support::bracket_source();
         // Line 6 is the blank line between params and let, inside body
@@ -341,7 +518,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // Fails until position-sensitive completions are implemented (task 2)
     fn completion_expression_excludes_declaration_keywords() {
         // Cursor is in an expression position (after `= `)
         let source = "structure Foo {\n    let x = \n}";
@@ -390,7 +566,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // Fails until position-sensitive completions are implemented (task 2)
     fn completion_after_dot_returns_only_members() {
         // Cursor is after a dot — should only return member completions
         // Note: Bar is undefined, but the exclusion assertions are what matter
@@ -439,7 +614,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // Fails until position-sensitive completions are implemented (task 2)
     fn completion_type_position_returns_types_and_structs() {
         // Cursor is in a type annotation position (after `x: `)
         let source = "structure Foo {\n    param x: \n}";
@@ -524,7 +698,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // Fails until position-sensitive completions are implemented (task 2)
     fn completion_constraint_expr_excludes_declaration_keywords() {
         let source = reify_test_support::bracket_source();
         // Line 9: "    constraint thickness > 2mm" — col 27 is inside the expression
@@ -584,6 +757,138 @@ mod tests {
         assert!(
             !keyword_labels.contains(&"structure"),
             "constraint expr should NOT include 'structure'"
+        );
+    }
+
+    // --- determine_context unit tests ---
+
+    #[test]
+    fn determine_context_top_level_outside_structure() {
+        // Cursor on line 3 (after the closing brace) is outside any structure.
+        let source = "structure Foo {\n    param x: Scalar = 1mm\n}\n";
+        let ctx = AnalysisContext::new(source, &test_uri());
+        let result = determine_context(source, Position::new(3, 0), &ctx);
+        assert!(
+            matches!(result, CursorContext::TopLevel),
+            "expected TopLevel, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn determine_context_structure_body_blank_line() {
+        // Cursor inside the bracket source on a blank/indent-only line (line 6).
+        let source = reify_test_support::bracket_source();
+        let ctx = AnalysisContext::new(source, &test_uri());
+        let result = determine_context(source, Position::new(6, 4), &ctx);
+        assert!(
+            matches!(result, CursorContext::StructureBody { .. }),
+            "expected StructureBody, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn determine_context_expression_after_equals() {
+        // "let x = " — cursor after '=' on a let line
+        let source = "structure Foo {\n    let x = \n}";
+        let ctx = AnalysisContext::new(source, &test_uri());
+        let result = determine_context(source, Position::new(1, 12), &ctx);
+        assert!(
+            matches!(result, CursorContext::Expression { .. }),
+            "expected Expression after '=', got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn determine_context_expression_in_constraint() {
+        // "constraint thickness > 2mm" — cursor inside the expression
+        let source = reify_test_support::bracket_source();
+        let ctx = AnalysisContext::new(source, &test_uri());
+        let result = determine_context(source, Position::new(9, 27), &ctx);
+        assert!(
+            matches!(result, CursorContext::Expression { .. }),
+            "expected Expression in constraint, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn determine_context_expression_param_default() {
+        // "param x: Scalar = " — cursor after '=' in a param default
+        let source = "structure Foo {\n    param x: Scalar = \n}";
+        let ctx = AnalysisContext::new(source, &test_uri());
+        let result = determine_context(source, Position::new(1, 23), &ctx);
+        assert!(
+            matches!(result, CursorContext::Expression { .. }),
+            "expected Expression after param default '=', got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn determine_context_dot_access_after_dot() {
+        // "let x = part." — cursor immediately after the dot
+        let source = "structure Foo {\n    param a: Scalar = 1mm\n    sub part: Bar\n    let x = part.\n}";
+        let ctx = AnalysisContext::new(source, &test_uri());
+        let result = determine_context(source, Position::new(3, 18), &ctx);
+        assert!(
+            matches!(result, CursorContext::DotAccess),
+            "expected DotAccess after '.', got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn determine_context_dot_access_with_trailing_space() {
+        // "let x = part. " — cursor after dot + space
+        let source = "structure Foo {\n    param a: Scalar = 1mm\n    sub part: Bar\n    let x = part. \n}";
+        let ctx = AnalysisContext::new(source, &test_uri());
+        let result = determine_context(source, Position::new(3, 19), &ctx);
+        assert!(
+            matches!(result, CursorContext::DotAccess),
+            "expected DotAccess after '. ', got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn determine_context_type_position_after_colon_in_param() {
+        // "param x: " — cursor after ': ' in a param declaration
+        let source = "structure Foo {\n    param x: \n}";
+        let ctx = AnalysisContext::new(source, &test_uri());
+        let result = determine_context(source, Position::new(1, 13), &ctx);
+        assert!(
+            matches!(result, CursorContext::TypePosition),
+            "expected TypePosition after ':' in param, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn determine_context_type_position_after_colon_in_let() {
+        // "let x: " — cursor after ': ' in a let with type annotation
+        let source = "structure Foo {\n    let x: Int = 5\n}";
+        let ctx = AnalysisContext::new(source, &test_uri());
+        // Position right after "let x: " — col 11 = after "    let x: "
+        let result = determine_context(source, Position::new(1, 11), &ctx);
+        assert!(
+            matches!(result, CursorContext::TypePosition),
+            "expected TypePosition after ':' in let, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn determine_context_empty_source_is_top_level() {
+        let source = "";
+        let ctx = AnalysisContext::new(source, &test_uri());
+        let result = determine_context(source, Position::new(0, 0), &ctx);
+        assert!(
+            matches!(result, CursorContext::TopLevel),
+            "expected TopLevel for empty source, got {:?}",
+            result
         );
     }
 
