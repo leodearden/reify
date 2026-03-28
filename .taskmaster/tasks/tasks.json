@@ -12702,11 +12702,11 @@
         "description": "TraitDefBuilder::build() and CompiledTraitBuilder::build() in crates/reify-test-support/src/builders/trait_def.rs contain ~30 lines of identical hash computation logic (req_hashes, ref_hashes, type_param_hashes, default_hashes, combine_all chain). This is a DRY violation that creates a maintenance trap: any hash change must be applied in two places.\n\nExtract a module-private helper function:\n```rust\nfn compute_trait_content_hash(\n    name: &str,\n    required_members: &[TraitRequirement],\n    refinements: &[String],\n    type_params: &[TypeParam],\n    defaults: &[TraitDefault],\n) -> ContentHash\n```\n\nAlso extract small helpers for the match arms:\n- `fn requirement_kind_str(kind: &RequirementKind) -> String`\n- `fn default_kind_tag(kind: &DefaultKind) -> &'static str`\n\nBoth builders call the shared function. This ensures consistency and makes the subsequent hash-completeness fix (see dependent task) apply in one place.\n\nmemory_hints: search \"content_hash builder test support trait_def\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-28T00:26:43.173Z",
+        "updatedAt": "2026-03-28T00:46:01.587Z",
         "metadata": {
           "modules": [
             "crates/reify-test-support"
@@ -12864,7 +12864,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T00:45:59.988Z",
+      "lastModified": "2026-03-28T00:46:01.587Z",
       "taskCount": 640,
       "completedCount": 292,
       "tags": [
