@@ -2030,10 +2030,17 @@ describe('App keyboard help overlay', () => {
 });
 
 describe('App Claude error handling', () => {
+  let consoleSpy: ReturnType<typeof vi.spyOn> | undefined;
+
+  afterEach(() => {
+    consoleSpy?.mockRestore();
+    consoleSpy = undefined;
+  });
+
   it('logs error to console when subscribeToClaudeEvents fails', async () => {
     const subscribeError = new Error('subscribe failed');
     vi.mocked(bridge.subscribeToClaudeEvents).mockRejectedValue(subscribeError);
-    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     render(() => <App />);
 
@@ -2045,14 +2052,12 @@ describe('App Claude error handling', () => {
       '[claude] subscribeToClaudeEvents failed:',
       subscribeError,
     );
-
-    consoleSpy.mockRestore();
   });
 
   it('shows toast when claudeAbort fails', async () => {
     const abortError = new Error('abort failed');
     vi.mocked(bridge.claudeAbort).mockRejectedValue(abortError);
-    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     // Capture the handler passed to subscribeToClaudeEvents
     let claudeHandler: ((msg: any) => void) | undefined;
@@ -2093,8 +2098,6 @@ describe('App Claude error handling', () => {
       expect(toastEl.dataset.type).toBe('error');
       expect(toastEl.textContent).toContain('Abort failed: abort failed');
     });
-
-    consoleSpy.mockRestore();
   });
 });
 

@@ -1,0 +1,112 @@
+{
+  "task_id": "548",
+  "title": "Harden Claude error-handling test suite",
+  "files": [
+    "gui/src/__tests__/App.test.tsx",
+    "gui/src/__tests__/claudeBridge.test.ts"
+  ],
+  "modules": [
+    "gui/src/__tests__"
+  ],
+  "analysis": "Task 522 review identified 5 robustness issues in the Claude error-handling tests. All are test-only fixes \u2014 no production code changes needed.\n\nApp.test.tsx 'App Claude error handling' describe block (lines 2032-2099) has two tests:\n1. 'logs error to console when subscribeToClaudeEvents fails' (lines 2033-2050) \u2014 asserts console.error but never verifies the toast that App.tsx line 268 shows ('Claude assistant unavailable \u2014 chat features may not work'). The consoleSpy assertion at line 2044 is also outside waitFor despite the catch block executing asynchronously inside initApp(). Additionally, consoleSpy.mockRestore() at line 2049 is not in try/finally.\n2. 'shows toast when claudeAbort fails' (lines 2052-2098) \u2014 uses claudeHandler! non-null assertion at line 2071 without guarding that the mock was called. consoleSpy.mockRestore() at line 2097 is also not in try/finally.\n\nclaudeBridge.test.ts 'payload type field does not override mapped event type' (lines 371-391) only tests the text_delta variant. The discriminant override protection should be tested for at least one more event type.\n\nApproach: Fix issues in dependency order \u2014 spy cleanup first (structural), then timing/assertion fixes, then new coverage. The spy cleanup is best handled by scoping a describe-level afterEach for the 'App Claude error handling' block rather than try/finally in each test, matching the project's existing afterEach cleanup pattern.",
+  "prerequisites": [
+    {
+      "id": "pre-1",
+      "description": "Verify baseline: run existing App.test.tsx and claudeBridge.test.ts tests to confirm all pass before modifications",
+      "status": "done",
+      "commit": null,
+      "tests": [
+        "gui/src/__tests__/App.test.tsx",
+        "gui/src/__tests__/claudeBridge.test.ts"
+      ]
+    }
+  ],
+  "steps": [
+    {
+      "id": "step-1",
+      "type": "test",
+      "description": "Fix spy cleanup (Issue 4): Hoist consoleSpy to describe scope and add afterEach with mockRestore() in the 'App Claude error handling' block. Remove inline consoleSpy.mockRestore() calls from both tests. This prevents spy leaks if any assertion throws. Declare `let consoleSpy: ReturnType<typeof vi.spyOn>` at describe scope, assign in each test's setup, and restore in afterEach.",
+      "status": "done",
+      "commit": null
+    },
+    {
+      "id": "step-2",
+      "type": "test",
+      "description": "Fix timing issue (Issue 2): In 'logs error to console when subscribeToClaudeEvents fails', wrap the consoleSpy.toHaveBeenCalledWith assertion (currently at line 2044) inside a waitFor block. The catch block in App.tsx initApp() executes asynchronously \u2014 waiting for app-layout to render doesn't guarantee the catch has completed. Pattern: `await waitFor(() => { expect(consoleSpy).toHaveBeenCalledWith('[claude] subscribeToClaudeEvents failed:', subscribeError); });`",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-3",
+      "type": "test",
+      "description": "Add missing toast assertion (Issue 1): In 'logs error to console when subscribeToClaudeEvents fails', after the consoleSpy waitFor, add a second waitFor block that verifies the toast element appears with the correct message. Pattern (matching the abort-failure test): `await waitFor(() => { const toastEl = screen.getByTestId('toast'); expect(toastEl).toBeTruthy(); expect(toastEl.dataset.type).toBe('error'); expect(toastEl.textContent).toContain('Claude assistant unavailable'); });`",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-4",
+      "type": "test",
+      "description": "Add claudeHandler guard (Issue 3): In 'shows toast when claudeAbort fails', before the `claudeHandler!()` call at line 2071, add `await waitFor(() => expect(claudeHandler).toBeDefined());` to ensure the subscribeToClaudeEvents mock was actually called and captured the handler. Then use `claudeHandler!(...)` safely. This replaces the blind non-null assertion with a proper guard.",
+      "status": "pending",
+      "commit": null
+    },
+    {
+      "id": "step-5",
+      "type": "test",
+      "description": "Expand discriminant override test coverage (Issue 5): In claudeBridge.test.ts, add a second test case 'payload type field does not override mapped event type for claude-error'. Pattern: capture the claude-error handler, fire payload `{ id: 'x', message: 'oops', type: 'WRONG' }`, assert handler receives `{ type: 'error', id: 'x', message: 'oops' }` and explicitly verify `handler.mock.calls[0][0].type` is 'error' not 'WRONG'. This proves the discriminant protection works across multiple event variants, not just text_delta.",
+      "status": "pending",
+      "commit": null
+    }
+  ],
+  "design_decisions": [
+    {
+      "decision": "Use describe-scoped afterEach for consoleSpy cleanup instead of try/finally in each test",
+      "rationale": "The project already uses afterEach for cleanup (line 106-108 in App.test.tsx). A describe-scoped afterEach is cleaner than wrapping each test body in try/finally, and automatically handles spy restoration even if assertions throw. The consoleSpy variable is declared at describe scope and assigned per-test, with a conditional restore in afterEach (only if spy was assigned)."
+    },
+    {
+      "decision": "Wrap consoleSpy assertion in waitFor for the subscribe-fails test",
+      "rationale": "Although the test currently passes (likely due to microtask timing), the console.error call happens inside an async catch block within initApp(). The waitFor-for-app-layout check guarantees rendering progressed but doesn't guarantee the catch block completed. Wrapping in waitFor makes the test resilient to scheduler variations and matches the pattern used in the abort-failure test."
+    },
+    {
+      "decision": "Choose claude-error as the second discriminant override variant (not e.g. claude-done or claude-ready)",
+      "rationale": "claude-error is the most safety-critical variant for discriminant protection \u2014 a malicious payload with type:'WRONG' on an error event could suppress error handling. It also has a richer payload shape (id + message) than claude-done (just id) or claude-ready (no payload), making it a more thorough test. It pairs well with the existing text_delta test to cover both a content event and an error event."
+    },
+    {
+      "decision": "No production code changes needed \u2014 this is purely a test hardening task",
+      "rationale": "All five issues are test robustness problems: missing assertions, timing fragility, unsafe non-null assertions, and spy leak risk. The production code in App.tsx and bridge.ts is already correct."
+    },
+    {
+      "decision": "Order steps with spy cleanup first (step 1), then timing/assertion fixes (steps 2-4), then new coverage (step 5)",
+      "rationale": "Spy cleanup is a structural change to the describe block that affects both tests \u2014 doing it first avoids merge conflicts with subsequent steps. Steps 2-3 modify the same test and should be done sequentially. Step 5 is in a different file and is independent."
+    }
+  ],
+  "reuse": [
+    {
+      "what": "Toast assertion pattern (getByTestId + dataset.type + textContent)",
+      "where": "App.test.tsx lines 2090-2094 (abort-failure test)",
+      "how": "Copy the same 3-line toast assertion pattern into the subscribe-fails test, changing the expected message to 'Claude assistant unavailable'"
+    },
+    {
+      "what": "waitFor + consoleSpy pattern",
+      "where": "App.test.tsx lines 2082-2087 (abort-failure test)",
+      "how": "Same waitFor wrapper pattern for consoleSpy assertion, used in the subscribe-fails test to fix the timing issue"
+    },
+    {
+      "what": "Discriminant override test structure",
+      "where": "claudeBridge.test.ts lines 371-391 (existing text_delta test)",
+      "how": "Clone the test structure, change event name to 'claude-error', adjust payload to include id+message, and change expected type to 'error'"
+    },
+    {
+      "what": "afterEach cleanup pattern",
+      "where": "App.test.tsx lines 106-108 (top-level afterEach with cleanup())",
+      "how": "Add a nested afterEach inside the 'App Claude error handling' describe block for consoleSpy restoration, following the same pattern"
+    },
+    {
+      "what": "claudeHandler guard with waitFor",
+      "where": "Common testing-library pattern, similar to waitFor(() => expect(...).toBeTruthy()) used at lines 2066-2068",
+      "how": "Apply the same waitFor(() => expect(X).toBeDefined()) pattern to guard the claudeHandler capture before the non-null assertion"
+    }
+  ],
+  "_session_id": "548-d3e23b57",
+  "_created_at": "2026-03-28T04:46:22.355824+00:00"
+}
