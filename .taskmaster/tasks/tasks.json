@@ -13406,7 +13406,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-syntax/src/ts_parser.rs"
+          ],
+          "modules": [
+            "crates/reify-syntax/src"
+          ]
+        }
       },
       {
         "id": 651,
@@ -13417,7 +13425,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "gui/src/panels/PropertyEditor.tsx"
+          ],
+          "modules": [
+            "gui/src/panels"
+          ]
+        }
       },
       {
         "id": 652,
