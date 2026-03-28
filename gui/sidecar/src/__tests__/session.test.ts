@@ -324,9 +324,7 @@ describe('SidecarSession', () => {
     const prompt = callArgs[dashIdx + 1];
 
     expect(prompt).toContain('[Context]');
-    expect(prompt).toContain('Attached contexts:');
-    expect(prompt).toContain('file: lib.ri\nfn add(a, b) = a + b');
-    expect(prompt).toContain('file: util.ri\nfn clamp(v) = max(0, v)');
+    expect(prompt).toContain('Attached contexts:\nfile: lib.ri\nfn add(a, b) = a + b\n\nfile: util.ri\nfn clamp(v) = max(0, v)');
   });
 
   it('handleSendMessage includes all five context fields in prompt', async () => {
