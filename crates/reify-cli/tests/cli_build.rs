@@ -106,6 +106,10 @@ fn build_valid_bracket_exits_success() {
         "stdout should NOT contain 'VIOLATED' for valid bracket, got: {stdout}"
     );
     assert!(
+        stdout.contains("All constraints satisfied."),
+        "stdout should contain 'All constraints satisfied.', got: {stdout}"
+    );
+    assert!(
         output_path.exists(),
         "geometry file should be written on success"
     );
@@ -184,11 +188,9 @@ fn build_indeterminate_constraint_exits_success() {
         !stdout.contains("Some constraints violated"),
         "stdout should NOT contain violation summary, got: {stdout}"
     );
-    // Note: build path does not print constraint_summary_message (unlike check path),
-    // so we only verify absence of wrong summaries, not presence of correct one.
     assert!(
-        !stdout.contains("All constraints satisfied"),
-        "stdout should NOT contain 'All constraints satisfied' when indeterminate, got: {stdout}"
+        stdout.contains("No constraint violations (some indeterminate)."),
+        "stdout should contain 'No constraint violations (some indeterminate).', got: {stdout}"
     );
     assert!(
         output_path.exists(),
@@ -283,11 +285,9 @@ fn build_all_indeterminate_exits_success() {
         !stdout.contains("Some constraints violated"),
         "stdout should NOT contain 'Some constraints violated', got: {stdout}"
     );
-    // Note: build path does not print constraint_summary_message (unlike check path),
-    // so we only verify absence of wrong summaries, not presence of correct one.
     assert!(
-        !stdout.contains("All constraints satisfied"),
-        "stdout should NOT contain 'All constraints satisfied' when all indeterminate, got: {stdout}"
+        stdout.contains("No constraint violations (some indeterminate)."),
+        "stdout should contain 'No constraint violations (some indeterminate).', got: {stdout}"
     );
     assert!(
         output_path.exists(),
