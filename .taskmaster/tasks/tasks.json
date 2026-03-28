@@ -14543,7 +14543,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-constraints/src/solver.rs"
+          ],
+          "modules": [
+            "crates/reify-constraints/src"
+          ]
+        }
       },
       {
         "id": 708,
@@ -14554,7 +14562,17 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-constraints/src/solver.rs",
+            "crates/reify-constraints/tests/solver_integration.rs"
+          ],
+          "modules": [
+            "crates/reify-constraints/src",
+            "crates/reify-constraints/tests"
+          ]
+        }
       },
       {
         "id": 709,
