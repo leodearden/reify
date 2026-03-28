@@ -14690,7 +14690,16 @@
           "692"
         ],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-cli/tests/cli_check.rs",
+            "crates/reify-cli/tests/cli_build.rs"
+          ],
+          "modules": [
+            "crates/reify-cli/tests"
+          ]
+        }
       },
       {
         "id": 713,
@@ -14701,7 +14710,16 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-eval/src/lib.rs",
+            "crates/reify-eval/src/graph.rs"
+          ],
+          "modules": [
+            "crates/reify-eval/src"
+          ]
+        }
       },
       {
         "id": 714,
