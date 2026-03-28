@@ -955,11 +955,17 @@ fn componentwise_binop(
     if a.len() != b.len() {
         return Value::Undef;
     }
-    let results: Vec<Value> = a.iter().zip(b.iter()).map(|(x, y)| op(x, y)).collect();
-    if results.iter().any(|v| v.is_undef()) {
-        Value::Undef
-    } else {
-        wrap(results)
+    match a
+        .iter()
+        .zip(b.iter())
+        .map(|(x, y)| {
+            let r = op(x, y);
+            if r.is_undef() { None } else { Some(r) }
+        })
+        .collect::<Option<Vec<Value>>>()
+    {
+        Some(results) => wrap(results),
+        None => Value::Undef,
     }
 }
 
@@ -979,11 +985,16 @@ fn scale_components(
     if components.is_empty() {
         return Value::Undef;
     }
-    let results: Vec<Value> = components.iter().map(|c| op(c, scalar)).collect();
-    if results.iter().any(|v| v.is_undef()) {
-        Value::Undef
-    } else {
-        wrap(results)
+    match components
+        .iter()
+        .map(|c| {
+            let r = op(c, scalar);
+            if r.is_undef() { None } else { Some(r) }
+        })
+        .collect::<Option<Vec<Value>>>()
+    {
+        Some(results) => wrap(results),
+        None => Value::Undef,
     }
 }
 
