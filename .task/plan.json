@@ -1,0 +1,64 @@
+{
+  "task_id": "568",
+  "title": "Bridge.ts type hygiene: rename payload variable, use Omit<> casts, fix EventEntry type",
+  "files": [
+    "gui/src/bridge.ts",
+    "gui/src/__tests__/claudeBridge.test.ts"
+  ],
+  "modules": [
+    "gui/src"
+  ],
+  "analysis": "Task has 3 items. Items 1 (rename p\u2192payload) and 2 (use Omit<> casts with imported interfaces) are ALREADY IMPLEMENTED in the current code \u2014 all 6 handlers use `payload` and cast via `Omit<TextDelta, 'type'>` etc. Only item 3 remains: change `EventEntry` payload type from `Record<string, unknown>` to `unknown` on line 167 of bridge.ts. This is a pure type-level change \u2014 no runtime behavior changes. The rationale is that each handler independently casts `event.payload as Omit<X, 'type'>`, so the container type should not constrain the shape. Using `unknown` is more accurate (prevents accidental uncast property access) and more permissive (doesn't assume payload is an object). The existing test suite in claudeBridge.test.ts has comprehensive runtime coverage (all 7 event types, rollback, extra fields, type override). The compile-time assertions at the bottom of that file verify Omit<> shapes. We add one small type assertion to document the `unknown` payload contract, then make the 1-line change.",
+  "prerequisites": [],
+  "steps": [
+    {
+      "id": "step-1",
+      "type": "test",
+      "description": "Add compile-time type assertion in claudeBridge.test.ts verifying that event handlers in subscribeToClaudeEvents are compatible with `{ payload: unknown }` event shapes. Add a comment block documenting that EventEntry's payload type should be `unknown` (not `Record<string, unknown>`) because handlers cast independently. This assertion will pass with both the old and new types (since `as` works from both), but documents the intent and will catch future regressions if someone narrows EventEntry's payload type incorrectly.",
+      "status": "done",
+      "commit": "fcd0a131"
+    },
+    {
+      "id": "step-2",
+      "type": "impl",
+      "description": "Change EventEntry payload type on line 167 of bridge.ts from `Record<string, unknown>` to `unknown`. This single-line change: `type EventEntry = [string, (event: { payload: unknown }) => void];`. All existing Omit<> casts compile from `unknown` source since TypeScript `as` assertions work from `unknown` to any type.",
+      "status": "done",
+      "commit": "9e2c4d81"
+    },
+    {
+      "id": "step-3",
+      "type": "test",
+      "description": "Run full test suite (`vitest run` in gui/) and typecheck (`tsc --noEmit` in gui/) to verify no regressions. All 15+ existing claudeBridge tests must pass and all compile-time assertions must hold.",
+      "status": "done",
+      "commit": "068c0e6b"
+    }
+  ],
+  "design_decisions": [
+    {
+      "decision": "Use `unknown` instead of `Record<string, unknown>` for EventEntry payload",
+      "rationale": "Each of the 6 handlers immediately casts event.payload via `as Omit<X, 'type'>`. The container type should not impose structure on the payload since the cast is the sole source of type narrowing. `unknown` is the correct TypeScript type for 'any value that will be cast immediately'. `Record<string, unknown>` incorrectly asserts the payload is always an object with string keys, which is an unnecessary constraint that could mask bugs."
+    },
+    {
+      "decision": "Items 1 and 2 from task description are already implemented \u2014 no changes needed",
+      "rationale": "Current code already uses `payload` (not `p`) and `Omit<TextDelta, 'type'>` casts with imported interfaces from sidecar/src/types.ts. These were likely done as part of an earlier task. Only item 3 (EventEntry type) remains."
+    },
+    {
+      "decision": "Add type-level assertion rather than new runtime test",
+      "rationale": "The change is purely type-level \u2014 it has zero runtime impact. The existing 15+ runtime tests in claudeBridge.test.ts already provide comprehensive coverage of all 7 event types, rollback on failure, extra field filtering, and type override protection. A compile-time assertion better documents the type contract."
+    }
+  ],
+  "reuse": [
+    {
+      "what": "Existing Omit<> type assertions in claudeBridge.test.ts (lines 464-471)",
+      "where": "gui/src/__tests__/claudeBridge.test.ts",
+      "how": "The file already has `Equals<A,B>` type-level assertion infrastructure and 6 Omit<> payload shape assertions. The new EventEntry assertion follows the same pattern."
+    },
+    {
+      "what": "Imported interfaces from sidecar/src/types.ts",
+      "where": "gui/sidecar/src/types.ts",
+      "how": "TextDelta, ThinkingDelta, ToolCall, ToolResult, Done, ErrorMessage interfaces are already imported in bridge.ts and the test file. No new imports needed."
+    }
+  ],
+  "_session_id": "568-9e00f4f1",
+  "_created_at": "2026-03-28T04:46:11.050253+00:00"
+}
