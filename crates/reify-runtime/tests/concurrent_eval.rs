@@ -2018,7 +2018,15 @@ mod poison_recovery_extended {
         assert!(
             edit_result
                 .snapshot_values
-                .contains_key(&ValueCellId::new("T", "a"))
+                .contains_key(&ValueCellId::new("T", "a")),
+            "snapshot_values should contain T.a after poison recovery"
+        );
+        // T.b was in eval_set and seeded by simple_setup — verify it's also present
+        assert!(
+            edit_result
+                .snapshot_values
+                .contains_key(&ValueCellId::new("T", "b")),
+            "snapshot_values should contain T.b (seeded by simple_setup)"
         );
     }
 
@@ -2040,7 +2048,10 @@ mod poison_recovery_extended {
         );
         // Verify the recovered result has accessible (empty) node_results
         let edit_result = result.unwrap();
-        assert!(edit_result.node_results.is_empty());
+        assert!(
+            edit_result.node_results.is_empty(),
+            "node_results should be empty (no evaluations occurred) after poison recovery"
+        );
     }
 
     /// into_result() recovers from poisoned values RwLock.
@@ -2105,7 +2116,10 @@ mod poison_recovery_extended {
         );
         // Verify the recovered result has accessible (empty) node_results
         let edit_result = result.unwrap();
-        assert!(edit_result.node_results.is_empty());
+        assert!(
+            edit_result.node_results.is_empty(),
+            "node_results should be empty (no evaluations occurred) after poison recovery"
+        );
     }
 
     /// Verify that tracing::warn! is emitted when into_result() recovers from poisoned locks.
@@ -2195,9 +2209,14 @@ mod poison_evaluate {
         assert_eq!(outcome, EvalOutcome::Changed);
         // Verify snapshot_values were actually written despite poisoning
         let snap = adapter.snapshot_values();
+        assert!(
+            snap.contains_key(&ValueCellId::new("T", "b")),
+            "snapshot_values should contain T.b after poison recovery"
+        );
         assert_eq!(
             snap.get(&ValueCellId::new("T", "b")),
-            Some(&(Value::Real(20.0), DeterminacyState::Determined))
+            Some(&(Value::Real(20.0), DeterminacyState::Determined)),
+            "T.b snapshot should be (20.0, Determined) after evaluate"
         );
     }
 
@@ -2230,6 +2249,11 @@ mod poison_evaluate {
             NodeId::Value(ValueCellId::new("T", "b"))
         );
         assert_eq!(results[0].outcome, EvalOutcome::Changed);
+        assert_eq!(
+            results[0].value,
+            Value::Real(20.0),
+            "T.b should be a*2 = 10*2 = 20.0 after evaluate"
+        );
     }
 
     /// Verify that tracing::warn! is emitted when evaluate() recovers from poisoned locks.
