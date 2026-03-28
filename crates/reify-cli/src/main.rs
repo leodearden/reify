@@ -90,12 +90,12 @@ fn cmd_check(args: &[String]) -> ExitCode {
     let mut engine = reify_eval::Engine::new(Box::new(checker), None);
     let result = engine.check(&compiled);
 
-    let outcome =
-        report_constraint_results(&result.constraint_results, &mut std::io::stdout());
-
-    for diag in &result.diagnostics {
-        eprintln!("{}: {}", diag.severity, diag.message);
-    }
+    let outcome = report_eval_output(
+        &result.constraint_results,
+        &result.diagnostics,
+        &mut std::io::stdout(),
+        &mut std::io::stderr(),
+    );
 
     match outcome {
         ConstraintOutcome::AllSatisfied => {
