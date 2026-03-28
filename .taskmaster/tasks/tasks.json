@@ -5273,9 +5273,16 @@
           "milestone": "M11",
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "memory_hints": {
-            "entities": [],
+            "entities": [
+              "Field",
+              "Point3",
+              "Vector3",
+              "DimensionVector"
+            ],
             "queries": [
-              "resolution for: Field gradient: implementation"
+              "field gradient numerical central differences reify",
+              "Point Vector geometry types M10 milestone",
+              "stdlib analytical field operations"
             ]
           }
         },
