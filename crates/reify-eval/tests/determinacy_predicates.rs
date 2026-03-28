@@ -125,15 +125,8 @@ fn determined_false_for_provisional() {
 
     let cell_id = ValueCellId::new("S", "a");
 
-    // Build a DeterminacyPredicate(Determined, cell_a) expression.
-    let det_expr = CompiledExpr {
-        kind: CompiledExprKind::DeterminacyPredicate {
-            kind: DeterminacyPredicateKind::Determined,
-            cell: cell_id.clone(),
-        },
-        result_type: Type::Bool,
-        content_hash: ContentHash::of(&[99]),
-    };
+    // Build a DeterminacyPredicate(Determined, cell_a) expression using the canonical constructor.
+    let det_expr = CompiledExpr::determinacy_predicate(DeterminacyPredicateKind::Determined, cell_id.clone());
 
     // Inject Provisional state directly into a PersistentMap determinacy snapshot.
     let mut det_map: PersistentMap<ValueCellId, (Value, reify_types::DeterminacyState)> =
@@ -705,21 +698,9 @@ fn determinacy_predicate_hash_differs_from_lambda() {
     let cell_id = ValueCellId::new("S", "a");
     let kind = DeterminacyPredicateKind::Determined;
 
-    // Build a DeterminacyPredicate expr — the compiler computes its hash as:
-    //   ContentHash::of(&[17])
-    //     .combine(of_str("{:?} of kind"))   → "Determined"
-    //     .combine(of_str("{} of cell_id"))  → "S.a"
-    let det_expr = CompiledExpr {
-        kind: CompiledExprKind::DeterminacyPredicate {
-            kind,
-            cell: cell_id.clone(),
-        },
-        result_type: Type::Bool,
-        // Reproduce the compiler's hash formula (discriminator byte [17]):
-        content_hash: ContentHash::of(&[17])
-            .combine(ContentHash::of_str(&format!("{:?}", kind)))
-            .combine(ContentHash::of_str(&format!("{}", cell_id))),
-    };
+    // Build a DeterminacyPredicate expr using the canonical constructor.
+    // Hash formula: ContentHash::of(&[17, kind_byte]).combine(of_str(cell_id))
+    let det_expr = CompiledExpr::determinacy_predicate(kind, cell_id.clone());
 
     // Build a Lambda whose hash combine sequence matches the above when
     // using the same discriminator byte. Lambda hash formula:
@@ -856,15 +837,8 @@ fn determinacy_predicate_missing_cell_panics_in_debug() {
 
     let missing_cell = ValueCellId::new("S", "nonexistent");
 
-    // Build a DeterminacyPredicate(Determined, missing_cell).
-    let det_expr = CompiledExpr {
-        kind: CompiledExprKind::DeterminacyPredicate {
-            kind: DeterminacyPredicateKind::Determined,
-            cell: missing_cell.clone(),
-        },
-        result_type: Type::Bool,
-        content_hash: ContentHash::of(&[99]),
-    };
+    // Build a DeterminacyPredicate(Determined, missing_cell) using the canonical constructor.
+    let det_expr = CompiledExpr::determinacy_predicate(DeterminacyPredicateKind::Determined, missing_cell.clone());
 
     // Determinacy map does NOT contain missing_cell.
     let det_map: PersistentMap<ValueCellId, (Value, reify_types::DeterminacyState)> =
