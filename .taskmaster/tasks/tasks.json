@@ -13232,13 +13232,13 @@
         "description": "The error-case tests in type_alias_tests.rs (parse_type_alias_missing_name_no_panic, parse_type_alias_missing_equals_no_panic, parse_type_alias_empty_rhs_no_panic) use weak disjunctive assertions (`!has_type_alias || !errors.is_empty()`) that pass silently when the parser produces neither output nor errors. This means a parser that silently swallows malformed input without emitting any diagnostic would pass the tests.\n\nFix:\n1. In `missing_name` and `missing_equals` tests: add `assert!(!errors.is_empty(), \"expected parse errors for malformed input\");` to verify error emission, not just no-panic.\n2. In `empty_rhs` test: add fallback assertion outside the `if let` block ensuring either a TypeAlias or errors are present. Update the comment to match the actual invariant (may produce TypeAlias via tree-sitter recovery, not \"no valid TypeAlias emitted\").\n3. Review the 3 pre-existing malformed dimensional tests (lines 278-321) for the same weak-assertion pattern and strengthen if needed.\n\nMemory hints: search \"type alias parser tests\", get_entity \"TypeAliasDecl\".",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [
           "439"
         ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-28T01:12:27.227Z",
+        "updatedAt": "2026-03-28T09:04:27.495Z",
         "metadata": {
           "modules": [
             "crates/reify-syntax"
@@ -14621,7 +14621,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T09:04:27.464Z",
+      "lastModified": "2026-03-28T09:04:27.495Z",
       "taskCount": 710,
       "completedCount": 329,
       "tags": [
