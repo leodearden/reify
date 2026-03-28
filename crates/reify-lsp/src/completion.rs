@@ -118,21 +118,68 @@ fn starts_with_decl_keyword(trimmed: &str) -> bool {
 
 /// Compute completion items for the given position.
 ///
-/// Returns a flat list of all available completions (keywords, identifiers,
-/// types, built-in functions, structure names). Client-side filtering applies.
-pub fn compute_completions(source: &str, uri: &Url, _position: Position) -> Vec<CompletionItem> {
+/// Returns context-sensitive completions based on the cursor position:
+/// - TopLevel: top-level keywords, type names, structure names, builtins
+/// - StructureBody: body/expr keywords, scoped members, structures, builtins, types
+/// - Expression: expr keywords, members, builtins, structures, types
+/// - DotAccess: member names only
+/// - TypePosition: type names and structure names only
+pub fn compute_completions(source: &str, uri: &Url, position: Position) -> Vec<CompletionItem> {
     let mut items = Vec::new();
+    let ctx = AnalysisContext::new(source, uri);
+    let cursor_ctx = determine_context(source, position, &ctx);
 
-    // (a) Keywords
-    for kw in KEYWORDS {
+    match cursor_ctx {
+        CursorContext::TopLevel => {
+            push_keywords(&mut items, TOP_LEVEL_KEYWORDS);
+            push_builtins(&mut items);
+            push_type_names(&mut items);
+            push_structure_names(&mut items, &ctx);
+        }
+        CursorContext::StructureBody { ref structure_name } => {
+            push_keywords(&mut items, BODY_KEYWORDS);
+            push_keywords(&mut items, EXPR_KEYWORDS);
+            push_builtins(&mut items);
+            push_type_names(&mut items);
+            push_scoped_members(&mut items, &ctx, structure_name);
+            push_structure_names(&mut items, &ctx);
+        }
+        CursorContext::Expression {
+            ref structure_name, ..
+        } => {
+            push_keywords(&mut items, EXPR_KEYWORDS);
+            push_builtins(&mut items);
+            push_type_names(&mut items);
+            if let Some(name) = structure_name {
+                push_scoped_members(&mut items, &ctx, name);
+            } else {
+                push_all_members(&mut items, &ctx);
+            }
+            push_structure_names(&mut items, &ctx);
+        }
+        CursorContext::DotAccess => {
+            push_all_members(&mut items, &ctx);
+        }
+        CursorContext::TypePosition => {
+            push_type_names(&mut items);
+            push_structure_names(&mut items, &ctx);
+        }
+    }
+
+    items
+}
+
+fn push_keywords(items: &mut Vec<CompletionItem>, keywords: &[&str]) {
+    for kw in keywords {
         items.push(CompletionItem {
             label: kw.to_string(),
             kind: Some(CompletionItemKind::KEYWORD),
             ..Default::default()
         });
     }
+}
 
-    // (b) Built-in functions
+fn push_builtins(items: &mut Vec<CompletionItem>) {
     for func in BUILTIN_FUNCTIONS {
         items.push(CompletionItem {
             label: func.to_string(),
@@ -140,8 +187,9 @@ pub fn compute_completions(source: &str, uri: &Url, _position: Position) -> Vec<
             ..Default::default()
         });
     }
+}
 
-    // (c) Type names
+fn push_type_names(items: &mut Vec<CompletionItem>) {
     for ty in TYPE_NAMES {
         items.push(CompletionItem {
             label: ty.to_string(),
@@ -149,11 +197,9 @@ pub fn compute_completions(source: &str, uri: &Url, _position: Position) -> Vec<
             ..Default::default()
         });
     }
+}
 
-    // Context-dependent items from the source
-    let ctx = AnalysisContext::new(source, uri);
-
-    // (d) Value cell members as variables with type detail
+fn push_all_members(items: &mut Vec<CompletionItem>, ctx: &AnalysisContext) {
     for (name, _kind, cell_type) in ctx.member_names() {
         items.push(CompletionItem {
             label: name.to_string(),
@@ -162,8 +208,20 @@ pub fn compute_completions(source: &str, uri: &Url, _position: Position) -> Vec<
             ..Default::default()
         });
     }
+}
 
-    // (e) Structure names
+fn push_scoped_members(items: &mut Vec<CompletionItem>, ctx: &AnalysisContext, structure_name: &str) {
+    for (name, _kind, cell_type) in ctx.member_names_for_structure(structure_name) {
+        items.push(CompletionItem {
+            label: name.to_string(),
+            kind: Some(CompletionItemKind::VARIABLE),
+            detail: Some(cell_type.to_string()),
+            ..Default::default()
+        });
+    }
+}
+
+fn push_structure_names(items: &mut Vec<CompletionItem>, ctx: &AnalysisContext) {
     for (name, _params, _lets, _constraints, _kind) in ctx.structure_names() {
         items.push(CompletionItem {
             label: name.to_string(),
@@ -171,8 +229,6 @@ pub fn compute_completions(source: &str, uri: &Url, _position: Position) -> Vec<
             ..Default::default()
         });
     }
-
-    items
 }
 
 /// Reify language keywords (flat list for backward compatibility).
