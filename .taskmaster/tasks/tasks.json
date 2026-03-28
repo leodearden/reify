@@ -10978,7 +10978,7 @@
         "description": "The two new behavioral property tests in `gui/src/__tests__/claudeBridge.test.ts:280-318` only cover `done` (extra-field exclusion) and `text_delta` (type-override safety). The `tool_call` event has a structurally unique payload with a nested `tool_input: Record<string, unknown>` object — a future refactor could reintroduce the spread anti-pattern for complex events without any test catching it.\n\n**Fix**: Add an extra-field exclusion test for `claude-tool-call` that verifies nested payload + extra fields are handled correctly:\n```typescript\ncapturedHandler!({\n  payload: { id: 'tc1', tool_name: 'read', tool_input: { path: '/f' }, _debug: true }\n});\nexpect(handler).toHaveBeenCalledWith({\n  type: 'tool_call', id: 'tc1', tool_name: 'read', tool_input: { path: '/f' }\n});\n```\n\nMemory hints:\n- Search: \"claudeBridge test extra fields tool_call\"\n- Entities: claudeBridge.test.ts, subscribeToClaudeEvents",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -10990,7 +10990,8 @@
           "modules": [
             "gui/src/__tests__"
           ]
-        }
+        },
+        "updatedAt": "2026-03-28T04:15:49.469Z"
       },
       {
         "id": "542",
@@ -13175,7 +13176,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T04:15:47.112Z",
+      "lastModified": "2026-03-28T04:15:49.469Z",
       "taskCount": 654,
       "completedCount": 309,
       "tags": [
