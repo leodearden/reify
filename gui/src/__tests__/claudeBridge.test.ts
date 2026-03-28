@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // Mock Tauri API modules (must be before imports that use them)
 vi.mock('@tauri-apps/api/core', () => ({
@@ -368,6 +368,50 @@ describe('subscribeToClaudeEvents', () => {
     });
   });
 
+  it('extra unknown fields in tool_call with complex tool_input are not forwarded', async () => {
+    let capturedHandler: ((event: { payload: unknown }) => void) | undefined;
+    mockListen.mockImplementation(async (eventName, handler) => {
+      if (eventName === 'claude-tool-call') {
+        capturedHandler = handler as (event: { payload: unknown }) => void;
+      }
+      return vi.fn();
+    });
+
+    const handler = vi.fn();
+    await subscribeToClaudeEvents(handler);
+
+    const complexInput = {
+      path: '/main.ri',
+      operations: [{ type: 'insert', line: 5 }],
+      options: { backup: true, tags: ['draft'] },
+    };
+
+    // Simulate tool_call with deeply nested tool_input AND extra top-level fields
+    capturedHandler!({
+      payload: {
+        id: 'tc-complex',
+        tool_name: 'edit_file',
+        tool_input: complexInput,
+        _trace_id: 'abc-123',
+        _timestamp: 1711640000,
+      },
+    });
+
+    expect(handler).toHaveBeenCalledWith({
+      type: 'tool_call',
+      id: 'tc-complex',
+      tool_name: 'edit_file',
+      tool_input: complexInput,
+    });
+    // Verify the complex nested tool_input is preserved intact
+    const received = handler.mock.calls[0][0];
+    expect(received.tool_input.operations).toEqual([{ type: 'insert', line: 5 }]);
+    expect(received.tool_input.options).toEqual({ backup: true, tags: ['draft'] });
+    // Verify extra top-level fields are excluded
+    expect(received).not.toHaveProperty('_trace_id');
+    expect(received).not.toHaveProperty('_timestamp');
+  });
+
   it('payload type field does not override mapped event type', async () => {
     let capturedHandler: ((event: { payload: unknown }) => void) | undefined;
     mockListen.mockImplementation(async (eventName, handler) => {
@@ -386,8 +430,6 @@ describe('subscribeToClaudeEvents', () => {
     expect(handler).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'text_delta' }),
     );
-    // Explicitly verify type is NOT 'WRONG'
-    expect(handler.mock.calls[0][0].type).toBe('text_delta');
   });
 
   it('payload type field does not override mapped event type for claude-error', async () => {
@@ -408,8 +450,6 @@ describe('subscribeToClaudeEvents', () => {
     expect(handler).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'error', id: 'x', message: 'oops' }),
     );
-    // Explicitly verify type is 'error', NOT 'WRONG'
-    expect(handler.mock.calls[0][0].type).toBe('error');
   });
 
   describe('listener rollback on partial failure', () => {
@@ -662,6 +702,16 @@ describe('subscribeToClaudeEvents', () => {
         });
       });
     });
+
+    describe('claude-ready bypass', () => {
+      it('claude-ready fires unconditionally even with null payload', async () => {
+        const { setup } = captureListener('claude-ready');
+        const handler = vi.fn();
+        const listener = await setup(handler);
+        listener({ payload: null as unknown as Record<string, unknown> });
+        expect(handler).toHaveBeenCalledWith({ type: 'ready' });
+      });
+    });
   });
 });
 
@@ -694,6 +744,6 @@ type _AssertDonePayload = AssertTrue<Equals<Omit<Done, 'type'>, { id: string }>>
 type _AssertErrorMessagePayload = AssertTrue<Equals<Omit<ErrorMessage, 'type'>, { id: string; message: string }>>;
 
 // EventEntry's payload type is `unknown` (not `Record<string, unknown>`) because
-// each handler casts event.payload independently via `as Omit<X, 'type'>`.
+// each handler validates event.payload via validatePayload() before accessing fields.
 // `unknown` prevents accidental uncast property access and doesn't falsely
 // constrain the payload to be an object with string keys.

@@ -1,4 +1,4 @@
-import { createEffect, onCleanup } from 'solid-js';
+import { batch, createEffect, onCleanup } from 'solid-js';
 import { createStore } from 'solid-js/store';
 import { invoke } from '@tauri-apps/api/core';
 
@@ -50,6 +50,8 @@ export function createSelectionStore() {
     prevSelected = selected;
     prevHovered = hovered;
 
+    if (!selectionChanged && !hoverChanged) return;
+
     if (selectionChanged && !hoverChanged) {
       // Selection-only change — dispatch immediately
       sendSelection(selected, hovered);
@@ -81,17 +83,21 @@ export function createSelectionStore() {
   }
 
   function clearHighlights() {
-    setState('selectedEntity', null);
-    setState('highlightedParams', []);
+    batch(() => {
+      setState('selectedEntity', null);
+      setState('highlightedParams', []);
+    });
   }
 
   function clearIfRemoved(entityPath: string) {
-    if (state.selectedEntity === entityPath) {
-      selectEntity(null);
-    }
-    if (state.hoveredEntity === entityPath) {
-      hoverEntity(null);
-    }
+    batch(() => {
+      if (state.selectedEntity === entityPath) {
+        selectEntity(null);
+      }
+      if (state.hoveredEntity === entityPath) {
+        hoverEntity(null);
+      }
+    });
   }
 
   return { state, selectEntity, hoverEntity, setHighlightedParams, clearHighlights, clearIfRemoved };

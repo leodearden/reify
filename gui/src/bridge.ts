@@ -152,12 +152,31 @@ export async function claudeClearSession(): Promise<void> {
   return invoke('claude_clear_session');
 }
 
-/** Runtime guard: true for plain objects, false for null/undefined/primitives/arrays. */
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return v != null && typeof v === 'object' && !Array.isArray(v);
-}
-
 // ── Claude event subscription ───────────────────────────────────────
+
+/**
+ * Validate that a Tauri event payload is a non-null plain object with all
+ * required keys present and of type string.
+ * Returns the payload as a Record on success, or null on failure (with a console.warn).
+ */
+function validatePayload(
+  eventName: string,
+  payload: unknown,
+  requiredKeys: string[],
+): Record<string, unknown> | null {
+  if (payload == null || typeof payload !== 'object' || Array.isArray(payload)) {
+    console.warn(`${eventName}: payload is not a plain object`, payload);
+    return null;
+  }
+  const rec = payload as Record<string, unknown>;
+  for (const key of requiredKeys) {
+    if (typeof rec[key] !== 'string') {
+      console.warn(`${eventName}: invalid payload, expected ${key} to be a string`, rec);
+      return null;
+    }
+  }
+  return rec;
+}
 
 /**
  * Subscribe to all Claude sidecar events and map payloads to OutboundMessage.
@@ -173,59 +192,37 @@ export async function subscribeToClaudeEvents(
 
   const entries: EventEntry[] = [
     ['claude-text-delta', (event) => {
-      if (!isRecord(event.payload)) { console.warn('claude-text-delta: payload is not a plain object', event.payload); return; }
-      const p = event.payload;
-      if (typeof p.id !== 'string' || typeof p.content !== 'string') {
-        console.warn('claude-text-delta: invalid payload, expected {id: string, content: string}', p);
-        return;
-      }
-      handler({ type: 'text_delta', id: p.id, content: p.content });
+      const p = validatePayload('claude-text-delta', event.payload, ['id', 'content']);
+      if (!p) return;
+      handler({ type: 'text_delta', id: p.id as string, content: p.content as string });
     }],
     ['claude-thinking-delta', (event) => {
-      if (!isRecord(event.payload)) { console.warn('claude-thinking-delta: payload is not a plain object', event.payload); return; }
-      const p = event.payload;
-      if (typeof p.id !== 'string' || typeof p.content !== 'string') {
-        console.warn('claude-thinking-delta: invalid payload, expected {id: string, content: string}', p);
-        return;
-      }
-      handler({ type: 'thinking_delta', id: p.id, content: p.content });
+      const p = validatePayload('claude-thinking-delta', event.payload, ['id', 'content']);
+      if (!p) return;
+      handler({ type: 'thinking_delta', id: p.id as string, content: p.content as string });
     }],
     ['claude-tool-call', (event) => {
-      if (!isRecord(event.payload)) { console.warn('claude-tool-call: payload is not a plain object', event.payload); return; }
-      const p = event.payload;
-      if (typeof p.id !== 'string' || typeof p.tool_name !== 'string') {
-        console.warn('claude-tool-call: invalid payload, expected {id: string, tool_name: string}', p);
-        return;
-      }
-      const tool_input = isRecord(p.tool_input) ? p.tool_input : {};
-      handler({ type: 'tool_call', id: p.id, tool_name: p.tool_name, tool_input });
+      const p = validatePayload('claude-tool-call', event.payload, ['id', 'tool_name']);
+      if (!p) return;
+      const toolInput = (p.tool_input != null && typeof p.tool_input === 'object' && !Array.isArray(p.tool_input))
+        ? p.tool_input as Record<string, unknown>
+        : {};
+      handler({ type: 'tool_call', id: p.id as string, tool_name: p.tool_name as string, tool_input: toolInput });
     }],
     ['claude-tool-result', (event) => {
-      if (!isRecord(event.payload)) { console.warn('claude-tool-result: payload is not a plain object', event.payload); return; }
-      const p = event.payload;
-      if (typeof p.id !== 'string' || typeof p.tool_name !== 'string') {
-        console.warn('claude-tool-result: invalid payload, expected {id: string, tool_name: string}', p);
-        return;
-      }
-      handler({ type: 'tool_result', id: p.id, tool_name: p.tool_name, result: p.result });
+      const p = validatePayload('claude-tool-result', event.payload, ['id', 'tool_name']);
+      if (!p) return;
+      handler({ type: 'tool_result', id: p.id as string, tool_name: p.tool_name as string, result: p.result });
     }],
     ['claude-done', (event) => {
-      if (!isRecord(event.payload)) { console.warn('claude-done: payload is not a plain object', event.payload); return; }
-      const p = event.payload;
-      if (typeof p.id !== 'string') {
-        console.warn('claude-done: invalid payload, expected {id: string}', p);
-        return;
-      }
-      handler({ type: 'done', id: p.id });
+      const p = validatePayload('claude-done', event.payload, ['id']);
+      if (!p) return;
+      handler({ type: 'done', id: p.id as string });
     }],
     ['claude-error', (event) => {
-      if (!isRecord(event.payload)) { console.warn('claude-error: payload is not a plain object', event.payload); return; }
-      const p = event.payload;
-      if (typeof p.id !== 'string' || typeof p.message !== 'string') {
-        console.warn('claude-error: invalid payload, expected {id: string, message: string}', p);
-        return;
-      }
-      handler({ type: 'error', id: p.id, message: p.message });
+      const p = validatePayload('claude-error', event.payload, ['id', 'message']);
+      if (!p) return;
+      handler({ type: 'error', id: p.id as string, message: p.message as string });
     }],
     ['claude-ready', () => handler({ type: 'ready' })],
   ];
