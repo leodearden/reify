@@ -1,0 +1,56 @@
+{
+  "task_id": "570",
+  "title": "Harden claudeBridge tests: remove redundant assertion, add tool_call coverage",
+  "files": [
+    "gui/src/__tests__/claudeBridge.test.ts"
+  ],
+  "modules": [
+    "gui/src/__tests__"
+  ],
+  "analysis": "The test file gui/src/__tests__/claudeBridge.test.ts has two issues identified by the task 517 review (S5, S6):\n\n1. **S5 \u2014 Redundant assertion (line 390):** The test 'payload type field does not override mapped event type' (lines 371-391) has two assertions checking the same thing: `expect.objectContaining({ type: 'text_delta' })` (line 386) already verifies the type field is 'text_delta', making the explicit `expect(handler.mock.calls[0][0].type).toBe('text_delta')` (line 390) redundant. The objectContaining matcher would fail if type were 'WRONG', so the second check adds no value.\n\n2. **S6 \u2014 Complex tool_call extra-field test:** A basic extra-field exclusion test for tool_call already exists (lines 341-369) with simple `tool_input: { path: '/f' }` and one extra field `_debug: true`. However, tool_call is unique among events because its `tool_input` is `Record<string, unknown>` \u2014 an opaque nested structure. The existing test doesn't exercise complex nested tool_input (arrays, nested objects) alongside extra-field exclusion. Adding a test with structurally complex tool_input ensures the explicit field-picking in the handler correctly preserves deep nested structures while still stripping unknown top-level fields.\n\nNo implementation changes are needed \u2014 the bridge.ts handler already does explicit field extraction for all event types. These are test-only hardening changes.",
+  "prerequisites": [],
+  "steps": [
+    {
+      "id": "step-1",
+      "type": "test",
+      "description": "Remove redundant second assertion in 'payload type field does not override mapped event type' test: delete lines 389-390 (the comment and `expect(handler.mock.calls[0][0].type).toBe('text_delta')` assertion). The objectContaining check on line 386-388 already verifies type is 'text_delta'. Run tests to confirm they still pass.",
+      "status": "done",
+      "commit": "8211c849"
+    },
+    {
+      "id": "step-2",
+      "type": "test",
+      "description": "Add a new test 'extra unknown fields in tool_call payload are excluded with complex nested tool_input' that exercises structurally complex tool_input alongside extra-field exclusion. Use a tool_input with nested objects and arrays (e.g., { file: '/src/main.rs', edits: [{ line: 10, text: 'new code' }], options: { format: true, backup: false } }) plus multiple extra top-level fields (e.g., _debug: true, _trace_id: 'abc', timestamp: 99999). Assert that the handler receives exact { type: 'tool_call', id, tool_name, tool_input } with complex tool_input preserved intact and all extra top-level fields stripped. Place this test adjacent to the existing basic tool_call extra-field test (after line 369).",
+      "status": "done",
+      "commit": "551ed576"
+    }
+  ],
+  "design_decisions": [
+    {
+      "decision": "Only remove the redundant assertion from the text_delta type-override test, not the error variant at line 412",
+      "rationale": "The task (S5) specifically references the 'payload type field does not override mapped event type' test, not the 'for claude-error' variant. Keeping scope tight to what the review identified avoids unplanned changes."
+    },
+    {
+      "decision": "Add a NEW test rather than modifying the existing tool_call extra-field test at lines 341-369",
+      "rationale": "The existing test provides basic coverage (simple tool_input, single extra field). The new test is complementary, focusing on structurally complex tool_input (nested objects, arrays) with multiple extra fields \u2014 verifying that the Record<string, unknown> opaque pass-through works correctly alongside field exclusion. Keeping both tests preserves the simple regression case."
+    },
+    {
+      "decision": "No implementation steps needed \u2014 all changes are test-only",
+      "rationale": "The bridge.ts handler already correctly performs explicit field extraction for tool_call events (picks id, tool_name, tool_input; ignores everything else). These tests harden coverage of existing correct behavior."
+    }
+  ],
+  "reuse": [
+    {
+      "what": "captureListener helper function",
+      "where": "gui/src/__tests__/claudeBridge.test.ts lines 468-482",
+      "how": "Reuse the existing captureListener() helper in the payload validation guards describe block. However, the new test at step-2 should be placed in the main subscribeToClaudeEvents describe block (adjacent to line 369), so it should use the same inline mockListen.mockImplementation pattern used by the existing extra-field tests at lines 341-369 for consistency."
+    },
+    {
+      "what": "Existing extra-field test pattern",
+      "where": "gui/src/__tests__/claudeBridge.test.ts lines 341-369",
+      "how": "Follow the same structure: capture handler via mockListen, fire payload with extra fields, assert handler receives exact expected shape. The new test extends this pattern with more complex tool_input and multiple extra fields."
+    }
+  ],
+  "_session_id": "570-9e9ad370",
+  "_created_at": "2026-03-28T05:08:16.246074+00:00"
+}
