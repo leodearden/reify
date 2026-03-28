@@ -18,7 +18,7 @@ fn content_hash(path: &std::path::Path) -> String {
 ///      If the child emits anything to stdout, Cargo would misinterpret it.
 ///   2. Using Stdio::piped() creates a deadlock risk: the parent only drains
 ///      the pipe after try_wait() returns Some(status), but if the child writes
-///      >64KB to stdout, the pipe buffer fills, the child blocks, and try_wait()
+///      \>64KB to stdout, the pipe buffer fills, the child blocks, and try_wait()
 ///      returns Ok(None) indefinitely — a hard deadlock until the timeout fires.
 ///
 /// tree-sitter generate writes its useful diagnostics to stderr, which is
