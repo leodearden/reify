@@ -13816,7 +13816,17 @@
           "547"
         ],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "gui/src/errorClassifier.ts",
+            "gui/src/__tests__/errorClassifier.test.ts"
+          ],
+          "modules": [
+            "gui/src",
+            "gui/src/__tests__"
+          ]
+        }
       },
       {
         "id": 672,
@@ -13827,7 +13837,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-runtime/src/concurrent_eval.rs"
+          ],
+          "modules": [
+            "crates/reify-runtime/src"
+          ]
+        }
       },
       {
         "id": 673,
