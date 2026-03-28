@@ -277,47 +277,42 @@ type Energy = Force * Length
 #[test]
 fn parse_dimensional_type_missing_right_operand_no_panic() {
     // `type Foo = Force /` — EOF after operator, right operand missing.
-    // Should NOT panic. Should produce parse error(s), no valid TypeAlias emitted.
+    // Should NOT panic. Must produce parse error(s). Tree-sitter recovery may
+    // still produce a TypeAlias with a garbled type_expr name.
     let source = "type Foo = Force /";
     let (decls, errors) = parse_decls(source);
-    // We don't require a specific number of errors — just that it doesn't panic
-    // and does NOT produce a well-formed TypeAlias (or produces errors).
-    let has_type_alias = decls.iter().any(|d| matches!(d, Declaration::TypeAlias(_)));
     assert!(
-        !has_type_alias || !errors.is_empty(),
-        "expected either no TypeAlias or at least one error for malformed input, got decls={:?}, errors={:?}",
+        !errors.is_empty(),
+        "expected parse errors for malformed dimensional type (missing right operand), got none; decls={:?}",
         decls,
-        errors,
     );
 }
 
 #[test]
 fn parse_dimensional_type_missing_left_operand_no_panic() {
     // `type Foo = / Area` — operator without left operand.
-    // Should NOT panic. Should produce parse error(s).
+    // Should NOT panic. Must produce parse error(s). Tree-sitter recovery may
+    // still produce a TypeAlias with a garbled type_expr.
     let source = "type Foo = / Area";
     let (decls, errors) = parse_decls(source);
-    let has_type_alias = decls.iter().any(|d| matches!(d, Declaration::TypeAlias(_)));
     assert!(
-        !has_type_alias || !errors.is_empty(),
-        "expected either no TypeAlias or at least one error for malformed input, got decls={:?}, errors={:?}",
+        !errors.is_empty(),
+        "expected parse errors for malformed dimensional type (missing left operand), got none; decls={:?}",
         decls,
-        errors,
     );
 }
 
 #[test]
 fn parse_dimensional_type_missing_both_operands_no_panic() {
     // `type Foo = /` — only the operator, no operands at all.
-    // Should NOT panic. Should produce parse error(s).
+    // Should NOT panic. Must produce parse error(s). Tree-sitter recovery may
+    // still produce a TypeAlias with a garbled type_expr.
     let source = "type Foo = /";
     let (decls, errors) = parse_decls(source);
-    let has_type_alias = decls.iter().any(|d| matches!(d, Declaration::TypeAlias(_)));
     assert!(
-        !has_type_alias || !errors.is_empty(),
-        "expected either no TypeAlias or at least one error for malformed input, got decls={:?}, errors={:?}",
+        !errors.is_empty(),
+        "expected parse errors for malformed dimensional type (missing both operands), got none; decls={:?}",
         decls,
-        errors,
     );
 }
 
@@ -326,15 +321,19 @@ fn parse_dimensional_type_missing_both_operands_no_panic() {
 #[test]
 fn parse_type_alias_missing_name_no_panic() {
     // `type = Force` — name is absent.
-    // Should NOT panic. Should produce parse error(s), no valid TypeAlias emitted.
+    // Should NOT panic. Must produce parse error(s) and no valid TypeAlias.
     let source = "type = Force";
     let (decls, errors) = parse_decls(source);
+    assert!(
+        !errors.is_empty(),
+        "expected parse errors for malformed input (missing name), got none; decls={:?}",
+        decls,
+    );
     let has_type_alias = decls.iter().any(|d| matches!(d, Declaration::TypeAlias(_)));
     assert!(
-        !has_type_alias || !errors.is_empty(),
-        "expected either no TypeAlias or at least one error for malformed input, got decls={:?}, errors={:?}",
+        !has_type_alias,
+        "expected no TypeAlias for malformed input (missing name), got decls={:?}",
         decls,
-        errors,
     );
 }
 
@@ -343,15 +342,19 @@ fn parse_type_alias_missing_name_no_panic() {
 #[test]
 fn parse_type_alias_missing_equals_no_panic() {
     // `type Foo Force` — missing '=' between name and RHS.
-    // Should NOT panic. Should produce parse error(s), no valid TypeAlias emitted.
+    // Should NOT panic. Must produce parse error(s) and no valid TypeAlias.
     let source = "type Foo Force";
     let (decls, errors) = parse_decls(source);
+    assert!(
+        !errors.is_empty(),
+        "expected parse errors for malformed input (missing '='), got none; decls={:?}",
+        decls,
+    );
     let has_type_alias = decls.iter().any(|d| matches!(d, Declaration::TypeAlias(_)));
     assert!(
-        !has_type_alias || !errors.is_empty(),
-        "expected either no TypeAlias or at least one error for malformed input, got decls={:?}, errors={:?}",
+        !has_type_alias,
+        "expected no TypeAlias for malformed input (missing '='), got decls={:?}",
         decls,
-        errors,
     );
 }
 
@@ -360,26 +363,31 @@ fn parse_type_alias_missing_equals_no_panic() {
 #[test]
 fn parse_type_alias_empty_rhs_no_panic() {
     // `type Foo =` — RHS is empty (no type expression after '=').
-    // Should NOT panic. Tree-sitter error recovery produces a zero-width node
-    // that gets lowered to a TypeAlias with an empty-name type_expr.
+    // Should NOT panic. Tree-sitter error recovery may produce a TypeAlias with
+    // an empty-name type_expr (zero-width recovery node), OR errors, but not
+    // neither — the parser must not silently swallow malformed input.
     let source = "type Foo =";
     let (decls, errors) = parse_decls(source);
-    // Key invariant: no panic. The parser may produce a TypeAlias with an
-    // empty type_expr name (due to Tree-sitter's error recovery providing a
-    // zero-width node rather than None), or errors, or both.
     let ta = decls.iter().find_map(|d| match d {
         Declaration::TypeAlias(ta) => Some(ta),
         _ => None,
     });
     if let Some(ta) = ta {
-        // If a TypeAlias is produced, it should at least have the correct name
+        // If a TypeAlias is produced via recovery, it should have the correct name
         assert_eq!(ta.name, "Foo");
-        // Document that the type_expr has an empty name (zero-width recovery node)
+        // The recovered type_expr should have an empty name (zero-width node)
         assert!(
             ta.type_expr.name.is_empty() || !errors.is_empty(),
             "expected empty type_expr name or parse errors for empty RHS, got type_expr={:?}, errors={:?}",
             ta.type_expr,
             errors,
+        );
+    } else {
+        // If no TypeAlias is produced, errors must be present
+        assert!(
+            !errors.is_empty(),
+            "expected parse errors when no TypeAlias produced for empty RHS, got none; decls={:?}",
+            decls,
         );
     }
 }
