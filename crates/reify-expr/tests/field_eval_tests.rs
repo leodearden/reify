@@ -790,3 +790,116 @@ fn gradient_field_lambda_data_contract() {
         other => panic!("expected gradient Value::Field, got: {:?}", other),
     }
 }
+
+// ── Step 11: uncallable-lambda guard tests ──────────────────────────
+
+/// gradient() on a Sampled field (lambda=Undef) should return Undef.
+/// Sampled fields have no callable lambda — central differences cannot be computed.
+#[test]
+fn gradient_of_sampled_field_returns_undef() {
+    let domain = Type::point3(Type::Scalar {
+        dimension: DimensionVector::DIMENSIONLESS,
+    });
+    let codomain = Type::Scalar {
+        dimension: DimensionVector::DIMENSIONLESS,
+    };
+    let sampled_field = Value::Field {
+        domain_type: domain.clone(),
+        codomain_type: codomain.clone(),
+        source: FieldSourceKind::Sampled,
+        lambda: Box::new(Value::Undef),
+        inner_field: None,
+    };
+    let expr = make_call(
+        "gradient",
+        vec![CompiledExpr::literal(
+            sampled_field,
+            Type::Field {
+                domain: Box::new(domain),
+                codomain: Box::new(codomain),
+            },
+        )],
+        Type::Real,
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert!(
+        result.is_undef(),
+        "gradient(sampled field with Undef lambda) should be Undef, got: {:?}",
+        result
+    );
+}
+
+/// gradient() on an Imported field (lambda=Undef) should return Undef.
+/// Imported fields have no callable lambda — central differences cannot be computed.
+#[test]
+fn gradient_of_imported_field_returns_undef() {
+    let domain = Type::point3(Type::Scalar {
+        dimension: DimensionVector::DIMENSIONLESS,
+    });
+    let codomain = Type::Scalar {
+        dimension: DimensionVector::DIMENSIONLESS,
+    };
+    let imported_field = Value::Field {
+        domain_type: domain.clone(),
+        codomain_type: codomain.clone(),
+        source: FieldSourceKind::Imported,
+        lambda: Box::new(Value::Undef),
+        inner_field: None,
+    };
+    let expr = make_call(
+        "gradient",
+        vec![CompiledExpr::literal(
+            imported_field,
+            Type::Field {
+                domain: Box::new(domain),
+                codomain: Box::new(codomain),
+            },
+        )],
+        Type::Real,
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert!(
+        result.is_undef(),
+        "gradient(imported field with Undef lambda) should be Undef, got: {:?}",
+        result
+    );
+}
+
+/// gradient() on a Composed field with lambda=Undef should return Undef.
+/// This covers the case where a composed field lost its lambda (e.g., serialized/deserialized).
+#[test]
+fn gradient_of_field_with_undef_lambda_returns_undef() {
+    let domain = Type::point3(Type::Scalar {
+        dimension: DimensionVector::DIMENSIONLESS,
+    });
+    let codomain = Type::Scalar {
+        dimension: DimensionVector::DIMENSIONLESS,
+    };
+    let composed_field = Value::Field {
+        domain_type: domain.clone(),
+        codomain_type: codomain.clone(),
+        source: FieldSourceKind::Composed,
+        lambda: Box::new(Value::Undef),
+        inner_field: None,
+    };
+    let expr = make_call(
+        "gradient",
+        vec![CompiledExpr::literal(
+            composed_field,
+            Type::Field {
+                domain: Box::new(domain),
+                codomain: Box::new(codomain),
+            },
+        )],
+        Type::Real,
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert!(
+        result.is_undef(),
+        "gradient(composed field with Undef lambda) should be Undef, got: {:?}",
+        result
+    );
+}
