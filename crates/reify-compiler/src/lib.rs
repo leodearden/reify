@@ -3283,6 +3283,34 @@ fn compile_entity(
                         );
                     }
 
+                    // Warn about determinacy predicates in constraint expressions.
+                    // The DimensionalSolver evaluates them as Undef (no determinacy
+                    // context) → residual 10.0 → spurious Infeasible. The
+                    // SimpleConstraintChecker handles them correctly, but constraints
+                    // involving auto params may reach the solver path.
+                    {
+                        let mut has_det_pred = false;
+                        compiled_expr.walk(&mut |node| {
+                            if matches!(
+                                node.kind,
+                                CompiledExprKind::DeterminacyPredicate { .. }
+                            ) {
+                                has_det_pred = true;
+                            }
+                        });
+                        if has_det_pred {
+                            diagnostics.push(
+                                Diagnostic::warning(
+                                    "determinacy predicates in constraint expressions may produce incorrect results when constraints reach the solver; use them in where-guards or let-expressions instead".to_string(),
+                                )
+                                .with_label(DiagnosticLabel::new(
+                                    constraint.expr.span,
+                                    "determinacy predicate in constraint",
+                                )),
+                            );
+                        }
+                    }
+
                     let id = ConstraintNodeId::new(entity_name, constraint_index);
                     let cc = CompiledConstraint {
                         id,
@@ -4818,6 +4846,31 @@ fn compile_guarded_members(
                         .with_label(DiagnosticLabel::new(constraint.expr.span, "expected Bool")),
                     );
                 }
+
+                // Warn about determinacy predicates in constraint expressions.
+                {
+                    let mut has_det_pred = false;
+                    compiled_expr.walk(&mut |node| {
+                        if matches!(
+                            node.kind,
+                            CompiledExprKind::DeterminacyPredicate { .. }
+                        ) {
+                            has_det_pred = true;
+                        }
+                    });
+                    if has_det_pred {
+                        diagnostics.push(
+                            Diagnostic::warning(
+                                "determinacy predicates in constraint expressions may produce incorrect results when constraints reach the solver; use them in where-guards or let-expressions instead".to_string(),
+                            )
+                            .with_label(DiagnosticLabel::new(
+                                constraint.expr.span,
+                                "determinacy predicate in constraint",
+                            )),
+                        );
+                    }
+                }
+
                 let id = ConstraintNodeId::new(entity_name, *constraint_index);
                 group_constraints.push(CompiledConstraint {
                     id,
