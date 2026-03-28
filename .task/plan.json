@@ -54,7 +54,7 @@
       "id": "step-5",
       "type": "test",
       "description": "Expand discriminant override test coverage (Issue 5): In claudeBridge.test.ts, add a second test case 'payload type field does not override mapped event type for claude-error'. Pattern: capture the claude-error handler, fire payload `{ id: 'x', message: 'oops', type: 'WRONG' }`, assert handler receives `{ type: 'error', id: 'x', message: 'oops' }` and explicitly verify `handler.mock.calls[0][0].type` is 'error' not 'WRONG'. This proves the discriminant protection works across multiple event variants, not just text_delta.",
-      "status": "pending",
+      "status": "done",
       "commit": null
     }
   ],
