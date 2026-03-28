@@ -977,6 +977,48 @@ fn scale_components(
     }
 }
 
+/// Recursively negate a value.  Handles all negatable variants: Int, Real,
+/// Scalar, Complex, Tensor, Vector, and Matrix (canonicalized to nested Tensor).
+/// Point negation is explicitly undefined (spec 3.3.1).
+fn negate_value(v: Value) -> Value {
+    match v {
+        Value::Int(i) => i.checked_neg().map(Value::Int).unwrap_or(Value::Undef),
+        Value::Real(r) => Value::Real(-r),
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => Value::Scalar {
+            si_value: -si_value,
+            dimension,
+        },
+        Value::Complex { re, im, dimension } => Value::Complex {
+            re: -re,
+            im: -im,
+            dimension,
+        },
+        Value::Tensor(components) => {
+            let results: Vec<Value> = components.into_iter().map(negate_value).collect();
+            if results.iter().any(|x| x.is_undef()) {
+                Value::Undef
+            } else {
+                Value::Tensor(results)
+            }
+        }
+        Value::Vector(components) => {
+            let results: Vec<Value> = components.into_iter().map(negate_value).collect();
+            if results.iter().any(|x| x.is_undef()) {
+                Value::Undef
+            } else {
+                Value::Vector(results)
+            }
+        }
+        Value::Matrix(rows) => negate_value(Value::Matrix(rows).canonicalize_matrix()),
+        // Affine geometry: point negation is undefined (spec 3.3.1)
+        Value::Point(_) => Value::Undef,
+        _ => Value::Undef,
+    }
+}
+
 /// Check if a tensor slice represents rank-2 data (all elements are Tensor).
 /// Returns `true` if the first element is a Tensor; callers must verify `.all()`.
 fn is_rank2(slice: &[Value]) -> bool {
@@ -1775,7 +1817,7 @@ fn eval_unop(op: UnOp, operand: &CompiledExpr, ctx: &EvalContext) -> Value {
         return Value::Undef;
     }
     match op {
-        UnOp::Neg => -v,
+        UnOp::Neg => negate_value(v),
         UnOp::Not => match v {
             Value::Bool(b) => Value::Bool(!b),
             _ => Value::Undef,

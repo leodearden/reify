@@ -107,14 +107,14 @@ fn consolidated_debug_event_on_max_iters_reached() {
 
     // Constraints: each param in [10mm, 50mm]
     let mut constraints = Vec::new();
-    for (i, r) in refs.iter().enumerate() {
+    for i in 0..n_params {
         constraints.push((
             cnid("Part", (i * 2) as u32),
-            gt(r.clone(), literal(mm(10.0))),
+            gt(refs[i].clone(), literal(mm(10.0))),
         ));
         constraints.push((
             cnid("Part", (i * 2 + 1) as u32),
-            lt(r.clone(), literal(mm(50.0))),
+            lt(refs[i].clone(), literal(mm(50.0))),
         ));
     }
 
@@ -246,14 +246,14 @@ fn no_best_param_returns_no_progress_with_reason() {
     // and check that a warn was emitted. This is a conditional assertion because
     // argmin may handle the degenerate simplex gracefully (converging immediately
     // with the single-point simplex).
-    if let SolveResult::NoProgress { reason } = &result
-        && reason == "solver returned no solution"
-    {
-        let warns = warn_count.load(Ordering::Relaxed);
-        assert!(
-            warns > 0,
-            "get_best_param()==None path should emit a warn, got 0 warns"
-        );
+    if let SolveResult::NoProgress { reason } = &result {
+        if reason == "solver returned no solution" {
+            let warns = warn_count.load(Ordering::Relaxed);
+            assert!(
+                warns > 0,
+                "get_best_param()==None path should emit a warn, got 0 warns"
+            );
+        }
     }
 }
 

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::RwLock;
@@ -63,6 +64,8 @@ pub struct ServerState {
     pub documents: DocumentStore,
     /// Diagnostics last published for each URI (for test verification).
     last_published_diagnostics: HashMap<Url, Vec<Diagnostic>>,
+    /// Workspace root path, populated from `InitializeParams.root_uri`.
+    pub workspace_root: Option<PathBuf>,
 }
 
 impl ServerState {
@@ -100,6 +103,7 @@ impl ReifyLanguageServer {
             state: Arc::new(RwLock::new(ServerState {
                 documents: DocumentStore::new(),
                 last_published_diagnostics: HashMap::new(),
+                workspace_root: None,
             })),
             eval_state: Arc::new(Mutex::new(EvalState::new())),
             sink,
@@ -120,7 +124,17 @@ impl ReifyLanguageServer {
 
 #[tower_lsp::async_trait]
 impl LanguageServer for ReifyLanguageServer {
-    async fn initialize(&self, _: InitializeParams) -> Result<InitializeResult> {
+    async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
+        // Store workspace root from root_uri (preferred) or root_path (legacy).
+        let workspace_root = params
+            .root_uri
+            .as_ref()
+            .and_then(|uri| uri.to_file_path().ok());
+        {
+            let mut state = self.state.write().await;
+            state.workspace_root = workspace_root;
+        }
+
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(
@@ -254,9 +268,49 @@ impl LanguageServer for ReifyLanguageServer {
             Some(doc) => doc.text.clone(),
             None => return Ok(None),
         };
+        let workspace_root = state.workspace_root.clone();
         drop(state);
 
-        let location = crate::goto_def::compute_goto_definition(&text, &uri, position);
+        // Move all CPU-bound parsing and blocking filesystem I/O
+        // (ModuleResolver::resolve_import_path calls .exists(), and
+        // std::fs::read_to_string) to Tokio's blocking thread pool so the
+        // async worker thread stays free for other LSP requests.
+        let location = match tokio::task::spawn_blocking(move || {
+            if let Some(root) = workspace_root {
+                // Build a resolver closure using ModuleResolver for cross-file navigation.
+                // For stdlib_root, try the dev-mode path relative to workspace; fall back to
+                // a non-existent path (resolve_import_path will return Err, resolver returns None).
+                let stdlib_root = root.join("crates/reify-compiler/stdlib");
+                let resolver =
+                    reify_compiler::module_dag::ModuleResolver::new(root, stdlib_root);
+                let resolve_import = |import_path: &str| -> Option<(Url, String)> {
+                    let path = resolver.resolve_import_path(import_path).ok()?;
+                    let source = std::fs::read_to_string(&path).ok()?;
+                    let target_uri = Url::from_file_path(&path).ok()?;
+                    Some((target_uri, source))
+                };
+                crate::goto_def::compute_goto_definition_cross_file(
+                    &text,
+                    &uri,
+                    position,
+                    &resolve_import,
+                )
+            } else {
+                // No workspace root — fall back to single-file resolution.
+                crate::goto_def::compute_goto_definition(&text, &uri, position)
+            }
+        })
+        .await
+        {
+            Ok(loc) => loc,
+            Err(e) => {
+                // Log panics from the blocking task rather than silently dropping them.
+                // The client still gets Ok(None) ("definition not found") for graceful
+                // degradation, but the panic is visible in server logs for debugging.
+                tracing::error!("goto_definition blocking task failed: {e}");
+                None
+            }
+        };
         Ok(location.map(GotoDefinitionResponse::Scalar))
     }
 
@@ -524,6 +578,43 @@ mod tests {
         assert!(result.capabilities.hover_provider.is_some());
         assert!(result.capabilities.definition_provider.is_some());
         assert!(result.capabilities.completion_provider.is_some());
+    }
+
+    #[tokio::test]
+    async fn initialize_stores_workspace_root_from_root_uri() {
+        let (service, _socket) = test_service();
+        let server = service.inner();
+
+        let root_uri = Url::parse("file:///home/user/project").unwrap();
+        let params = InitializeParams {
+            root_uri: Some(root_uri),
+            ..Default::default()
+        };
+        server.initialize(params).await.unwrap();
+
+        let state = server.state().read().await;
+        let ws_root = state
+            .workspace_root
+            .as_ref()
+            .expect("workspace_root should be set after initialize with root_uri");
+        assert_eq!(ws_root, &std::path::PathBuf::from("/home/user/project"));
+    }
+
+    #[tokio::test]
+    async fn initialize_without_root_uri_leaves_workspace_root_none() {
+        let (service, _socket) = test_service();
+        let server = service.inner();
+
+        server
+            .initialize(InitializeParams::default())
+            .await
+            .unwrap();
+
+        let state = server.state().read().await;
+        assert!(
+            state.workspace_root.is_none(),
+            "workspace_root should be None when no root_uri provided"
+        );
     }
 
     #[tokio::test]
@@ -857,6 +948,304 @@ mod tests {
         assert!(
             state.documents.get(&uri).is_none(),
             "document should be removed after did_close"
+        );
+    }
+
+    #[tokio::test]
+    async fn goto_definition_resolves_imported_symbol_across_files() {
+        let (service, _socket) = test_service();
+        let server = service.inner();
+
+        // Create a temporary workspace with two .ri files
+        let tmp_dir = std::env::temp_dir().join(format!("reify-lsp-test-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+
+        // Write the target file: parts.ri
+        let parts_source = "structure Hole {\n    param diameter: Scalar = 10mm\n}";
+        std::fs::write(tmp_dir.join("parts.ri"), parts_source).unwrap();
+
+        // Initialize with workspace root
+        let root_uri = Url::from_file_path(&tmp_dir).unwrap();
+        server
+            .initialize(InitializeParams {
+                root_uri: Some(root_uri),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        // Open main.ri with an import
+        let main_source = "import parts.Hole\nstructure Assembly {\n    sub hole = Hole\n}";
+        let main_uri = Url::from_file_path(tmp_dir.join("main.ri")).unwrap();
+        server
+            .did_open(DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: main_uri.clone(),
+                    language_id: "reify".to_string(),
+                    version: 1,
+                    text: main_source.to_string(),
+                },
+            })
+            .await;
+
+        // Goto definition on 'Hole' in 'sub hole = Hole' (line 2, col 16)
+        let goto_result = server
+            .goto_definition(GotoDefinitionParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: main_uri.clone(),
+                    },
+                    position: Position::new(2, 16),
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            })
+            .await
+            .unwrap();
+
+        // Clean up temp directory
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+
+        // Verify the result points to parts.ri
+        let response = goto_result.expect("goto-def should return a result for imported symbol");
+        match response {
+            GotoDefinitionResponse::Scalar(loc) => {
+                assert!(
+                    loc.uri.path().ends_with("parts.ri"),
+                    "should point to parts.ri, got {}",
+                    loc.uri
+                );
+                assert_eq!(
+                    loc.range.start.line, 0,
+                    "should point to structure Hole on line 0"
+                );
+            }
+            other => panic!("expected Scalar location, got {other:?}"),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn concurrent_goto_definition_completes_without_stalling() {
+        let (service, _socket) = test_service();
+        let server = service.inner();
+
+        // Create a temporary workspace with multiple .ri files
+        let tmp_dir = std::env::temp_dir().join(format!(
+            "reify-lsp-concurrent-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+
+        // Write three target files
+        std::fs::write(
+            tmp_dir.join("parts.ri"),
+            "structure Hole {\n    param diameter: Scalar = 10mm\n}",
+        )
+        .unwrap();
+        std::fs::write(
+            tmp_dir.join("fasteners.ri"),
+            "structure Bolt {\n    param length: Scalar = 20mm\n}",
+        )
+        .unwrap();
+        std::fs::write(
+            tmp_dir.join("utils.ri"),
+            "structure Helper {\n    param size: Scalar = 5mm\n}",
+        )
+        .unwrap();
+
+        // Initialize with workspace root
+        let root_uri = Url::from_file_path(&tmp_dir).unwrap();
+        server
+            .initialize(InitializeParams {
+                root_uri: Some(root_uri),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        // Open main.ri with imports from all three files
+        // Line 0: import parts.Hole
+        // Line 1: import fasteners.Bolt
+        // Line 2: import utils.Helper
+        // Line 3: structure Assembly {
+        // Line 4:     sub h = Hole        ← 'Hole' at col 12
+        // Line 5:     sub b = Bolt        ← 'Bolt' at col 12
+        // Line 6:     sub helper = Helper  ← 'Helper' at col 17
+        // Line 7: }
+        let main_source = "\
+import parts.Hole
+import fasteners.Bolt
+import utils.Helper
+structure Assembly {
+    sub h = Hole
+    sub b = Bolt
+    sub helper = Helper
+}";
+        let main_uri = Url::from_file_path(tmp_dir.join("main.ri")).unwrap();
+        server
+            .did_open(DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: main_uri.clone(),
+                    language_id: "reify".to_string(),
+                    version: 1,
+                    text: main_source.to_string(),
+                },
+            })
+            .await;
+
+        // Fire 3 concurrent goto_definition requests.
+        // With spawn_blocking, these offload to the blocking thread pool and
+        // the single Tokio worker remains free to drive all futures concurrently.
+        let (r1, r2, r3) = tokio::join!(
+            server.goto_definition(GotoDefinitionParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: main_uri.clone(),
+                    },
+                    position: Position::new(4, 12), // 'Hole'
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            }),
+            server.goto_definition(GotoDefinitionParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: main_uri.clone(),
+                    },
+                    position: Position::new(5, 12), // 'Bolt'
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            }),
+            server.goto_definition(GotoDefinitionParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: main_uri.clone(),
+                    },
+                    position: Position::new(6, 17), // 'Helper'
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            }),
+        );
+
+        // Clean up temp directory
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+
+        // Assert all 3 completed and returned correct locations
+        let resp1 = r1
+            .unwrap()
+            .expect("request 1 should return a result");
+        let resp2 = r2
+            .unwrap()
+            .expect("request 2 should return a result");
+        let resp3 = r3
+            .unwrap()
+            .expect("request 3 should return a result");
+
+        match resp1 {
+            GotoDefinitionResponse::Scalar(loc) => {
+                assert!(
+                    loc.uri.path().ends_with("parts.ri"),
+                    "request 1 should point to parts.ri, got {}",
+                    loc.uri
+                );
+            }
+            other => panic!("expected Scalar for request 1, got {other:?}"),
+        }
+        match resp2 {
+            GotoDefinitionResponse::Scalar(loc) => {
+                assert!(
+                    loc.uri.path().ends_with("fasteners.ri"),
+                    "request 2 should point to fasteners.ri, got {}",
+                    loc.uri
+                );
+            }
+            other => panic!("expected Scalar for request 2, got {other:?}"),
+        }
+        match resp3 {
+            GotoDefinitionResponse::Scalar(loc) => {
+                assert!(
+                    loc.uri.path().ends_with("utils.ri"),
+                    "request 3 should point to utils.ri, got {}",
+                    loc.uri
+                );
+            }
+            other => panic!("expected Scalar for request 3, got {other:?}"),
+        }
+    }
+
+    // --- step-18: silent_error_swallow regression tests ---
+
+    #[tokio::test]
+    async fn goto_definition_unresolvable_symbol_returns_none_gracefully() {
+        // Regression test: goto_definition for an unknown symbol should return
+        // Ok(None) rather than panicking or returning an error — verifies that
+        // the spawn_blocking task handles failures gracefully.
+        let (service, _socket) = test_service();
+        let server = service.inner();
+
+        // Initialize without workspace root (single-file mode)
+        server
+            .initialize(InitializeParams::default())
+            .await
+            .unwrap();
+
+        // Open a document with an import but no target file
+        let source = "import nonexistent.Foo\nstructure S {\n    sub f = Foo\n}";
+        let uri = Url::parse("file:///test_unresolvable.ri").unwrap();
+        server
+            .did_open(DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: uri.clone(),
+                    language_id: "reify".to_string(),
+                    version: 1,
+                    text: source.to_string(),
+                },
+            })
+            .await;
+
+        // Goto definition on 'Foo' (line 2, col 12) — not locally defined
+        let goto_result = server
+            .goto_definition(GotoDefinitionParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier { uri },
+                    position: Position::new(2, 12),
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            })
+            .await;
+
+        // Must return Ok(None), not panic or error
+        let result = goto_result.expect("goto_definition should return Ok, not Err");
+        assert!(
+            result.is_none(),
+            "unresolvable symbol should return None, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn spawn_blocking_join_error_is_err_not_silent() {
+        // Verify that a JoinError from spawn_blocking is an Err that should be
+        // explicitly handled (logged) rather than silently dropped via unwrap_or.
+        // This test validates the error-handling contract: panics in blocking tasks
+        // produce recoverable JoinErrors that carry diagnostic information.
+        let result: std::result::Result<Option<String>, _> =
+            tokio::task::spawn_blocking(|| {
+                panic!("simulated panic in blocking task");
+            })
+            .await;
+
+        // JoinError must be Err, not silently mapped to Ok(None)
+        assert!(result.is_err(), "spawn_blocking panic should produce JoinError");
+        let err = result.unwrap_err();
+        assert!(err.is_panic(), "JoinError should indicate a panic");
+        // The error message should contain diagnostic info for logging
+        let err_msg = format!("{err}");
+        assert!(
+            !err_msg.is_empty(),
+            "JoinError should have a displayable message for logging"
         );
     }
 }

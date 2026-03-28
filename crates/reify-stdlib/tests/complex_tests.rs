@@ -237,8 +237,8 @@ fn conjugate_3_4i_negates_imaginary() {
 fn re_im_dimensionless_returns_real() {
     // re(Complex{3,4,DIMLESS}) -> Real(3.0), im(Complex{3,4,DIMLESS}) -> Real(4.0)
     let z = complex_val(3.0, 4.0, DimensionVector::DIMENSIONLESS);
-    let re = eval_builtin("re", std::slice::from_ref(&z));
-    let im = eval_builtin("im", std::slice::from_ref(&z));
+    let re = eval_builtin("re", &[z.clone()]);
+    let im = eval_builtin("im", &[z]);
     assert_real_approx(&re, 3.0);
     assert_real_approx(&im, 4.0);
 }
@@ -247,8 +247,8 @@ fn re_im_dimensionless_returns_real() {
 fn re_im_dimensioned_returns_scalar() {
     // re(Complex{3,4,LENGTH}) -> Scalar{3.0, LENGTH}, im -> Scalar{4.0, LENGTH}
     let z = complex_val(3.0, 4.0, DimensionVector::LENGTH);
-    let re = eval_builtin("re", std::slice::from_ref(&z));
-    let im = eval_builtin("im", std::slice::from_ref(&z));
+    let re = eval_builtin("re", &[z.clone()]);
+    let im = eval_builtin("im", &[z]);
     assert_scalar_approx(&re, 3.0, DimensionVector::LENGTH);
     assert_scalar_approx(&im, 4.0, DimensionVector::LENGTH);
 }
@@ -280,20 +280,20 @@ fn complex_impedance_workflow() {
     assert_complex_eq(&z, 50.0, -25.0, impedance);
 
     // re(Z) -> Scalar{50, impedance}
-    let re = eval_builtin("re", std::slice::from_ref(&z));
+    let re = eval_builtin("re", &[z.clone()]);
     assert_scalar_approx(&re, 50.0, impedance);
 
     // im(Z) -> Scalar{-25, impedance}
-    let im = eval_builtin("im", std::slice::from_ref(&z));
+    let im = eval_builtin("im", &[z.clone()]);
     assert_scalar_approx(&im, -25.0, impedance);
 
     // complex_magnitude(Z) = sqrt(50² + (-25)²) = sqrt(3125) ≈ 55.9017
-    let mag = eval_builtin("complex_magnitude", std::slice::from_ref(&z));
+    let mag = eval_builtin("complex_magnitude", &[z.clone()]);
     let expected_mag = (50.0_f64.powi(2) + 25.0_f64.powi(2)).sqrt();
     assert_scalar_approx(&mag, expected_mag, impedance);
 
     // phase(Z) = atan2(-25, 50) ≈ -0.4636 rad, returned as Scalar with ANGLE
-    let ph = eval_builtin("phase", std::slice::from_ref(&z));
+    let ph = eval_builtin("phase", &[z.clone()]);
     let expected_phase = (-25.0_f64).atan2(50.0);
     assert_scalar_approx(&ph, expected_phase, DimensionVector::ANGLE);
 
