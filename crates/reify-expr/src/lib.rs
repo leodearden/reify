@@ -120,12 +120,36 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             match function.name.as_str() {
                 "sample" if evaluated_args.len() == 2 => {
                     if let Value::Field { lambda, .. } = &evaluated_args[0] {
-                        apply_lambda(lambda, &evaluated_args[1..], ctx)
+                        match lambda.as_ref() {
+                            Value::Lambda { .. } => {
+                                apply_lambda(lambda, &evaluated_args[1..], ctx)
+                            }
+                            _ => {
+                                #[cfg(debug_assertions)]
+                                eprintln!(
+                                    "[reify-expr] sample: Field lambda is not a Lambda: {:?}",
+                                    lambda
+                                );
+                                Value::Undef
+                            }
+                        }
                     } else {
+                        #[cfg(debug_assertions)]
+                        eprintln!(
+                            "[reify-expr] sample: first argument is not a Field: {:?}",
+                            evaluated_args[0]
+                        );
                         Value::Undef
                     }
                 }
                 "gradient" | "divergence" | "curl" if evaluated_args.len() == 1 => {
+                    if !matches!(&evaluated_args[0], Value::Field { .. }) {
+                        #[cfg(debug_assertions)]
+                        eprintln!(
+                            "[reify-expr] {}: argument is not a Field: {:?}",
+                            function.name, evaluated_args[0]
+                        );
+                    }
                     // Stub: these field operations are not yet implemented.
                     // They require numeric differentiation infrastructure.
                     Value::Undef
