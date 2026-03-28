@@ -8849,11 +8849,11 @@
         "description": "Refactor negate_components, scale_components, and componentwise_binop in reify-expr/src/lib.rs to address 8 review findings from task 224:\n\n1. **Extract neg_scalar helper** (DRY): negate_components duplicates Int/Real/Scalar negation logic from eval_unop's UnOp::Neg arm. Extract a private `fn neg_scalar(v: Value) -> Value` called from both sites.\n\n2. **Align negate_components signature** (API consistency): Change from `Vec<Value>` to `&[Value]` to match sibling helpers componentwise_binop and scale_components. Callers own the vec so can pass `&components`.\n\n3. **Option-collect pattern** (perf): componentwise_binop and scale_components do two-pass collect-then-check. Use `Option<Vec<Value>>` collect pattern for single-pass with early exit on first Undef.\n\n4. **In-place mutation for negate_components** (perf): If keeping owned signature, mutate in place with early return on first failure instead of allocating a second Vec.\n\n5. **Early Undef guard in scale_components** (perf): Check if scalar is Undef before iterating components.\n\n6. **Empty components guard** (robustness): Add `if components.is_empty() { return Value::Undef; }` to componentwise_binop and scale_components. Empty Point/Vector is malformed per project convention against silent defaults.\n\nmemory_hints: search \"silent defaults noisy logic errors\" for project convention; search \"negate_components componentwise_binop\" for current implementation",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-28T19:32:43.151Z",
+        "updatedAt": "2026-03-28T20:09:50.108Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -15405,9 +15405,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T20:09:13.203Z",
+      "lastModified": "2026-03-28T20:09:50.108Z",
       "taskCount": 747,
-      "completedCount": 375,
+      "completedCount": 376,
       "tags": [
         "master"
       ]
