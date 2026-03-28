@@ -40,6 +40,15 @@ pub struct TauriToolContextBuilder {
 }
 
 impl TauriToolContextBuilder {
+    /// Set a shared selection state for the context.
+    ///
+    /// If not called, `build()` creates a fresh unshared `Arc<RwLock<SelectionInfo>>`
+    /// with empty fields.
+    pub fn with_selection(mut self, selection: Arc<RwLock<SelectionInfo>>) -> Self {
+        self.selection = Some(selection);
+        self
+    }
+
     /// Finalize the builder and create a [`TauriToolContext`].
     ///
     /// If no selection was provided, creates a fresh unshared `Arc<RwLock<SelectionInfo>>`
