@@ -13388,11 +13388,11 @@
         "description": "orient_quaternion uses as_f64() which silently strips physical dimensions — a LENGTH-dimensioned Scalar (e.g. 1 meter) is accepted as quaternion component w=1.0. This is inconsistent with orient_euler and orient_axis_angle which enforce dimension constraints via trig_input (rejecting non-ANGLE Scalars).\n\nFix: Add dimension validation before the as_f64() calls in orient_quaternion — reject any argument whose dimension() is not DIMENSIONLESS. Only bare Real, Int, or dimensionless Scalar values should be accepted as quaternion components.\n\nAlso update the existing test orient_quaternion_dimensioned_scalar_strips_dimension to assert is_undef() instead of asserting success, since the fix makes dimensioned inputs produce Undef.\n\nMemory hints: search \"orient_quaternion as_f64 dimension validation\", entities: eval_builtin, orient_quaternion, trig_input",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-28T09:04:27.531Z",
+        "updatedAt": "2026-03-28T16:40:43.023Z",
         "metadata": {
           "modules": [
             "crates/reify-stdlib"
@@ -15276,7 +15276,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T16:40:42.843Z",
+      "lastModified": "2026-03-28T16:40:43.024Z",
       "taskCount": 738,
       "completedCount": 358,
       "tags": [
