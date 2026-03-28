@@ -1,0 +1,98 @@
+{
+  "task_id": "569",
+  "title": "Add runtime payload validation in bridge.ts event handlers",
+  "files": [
+    "gui/src/bridge.ts",
+    "gui/src/__tests__/claudeBridge.test.ts"
+  ],
+  "modules": [
+    "gui/src"
+  ],
+  "analysis": "The 6 payload-bearing handlers in subscribeToClaudeEvents (lines 170-193 of bridge.ts) cast event.payload with compile-time-only `as` assertions. If the Rust sidecar emits null, undefined, or a structurally wrong payload, undefined values propagate silently into the handler callback. The fix adds: (1) a shared isRecord() helper to reject null/undefined/non-object/array payloads, (2) per-handler typeof checks on required string fields (id, content, tool_name, message), and (3) tool_input normalization in the tool_call handler to coerce null/array to {}. Existing happy-path tests in claudeBridge.test.ts already verify correct mapping; new tests cover the malformed-payload edge cases. The meshManager.ts validateMeshData pattern (console.warn + early return) is the project convention for runtime data guards.",
+  "prerequisites": [],
+  "steps": [
+    {
+      "id": "step-1",
+      "type": "test",
+      "description": "Write failing tests: null/undefined/non-object payloads silently dropped for all 6 payload-bearing handlers. For each of claude-text-delta, claude-thinking-delta, claude-tool-call, claude-tool-result, claude-done, claude-error: simulate event with payload=null, payload=undefined, payload='string', and payload=42. Assert handler() is never called. Group under a new describe('payload validation guards') block in claudeBridge.test.ts.",
+      "status": "done",
+      "commit": "2f71c03a"
+    },
+    {
+      "id": "step-2",
+      "type": "impl",
+      "description": "Add a private isRecord() helper to bridge.ts: `function isRecord(v: unknown): v is Record<string, unknown> { return v != null && typeof v === 'object' && !Array.isArray(v); }`. Add `if (!isRecord(event.payload)) return;` as the first line in all 6 payload-bearing handler callbacks. This makes step-1 tests pass while preserving all existing happy-path behavior.",
+      "status": "done",
+      "commit": "b8664b8c"
+    },
+    {
+      "id": "step-3",
+      "type": "test",
+      "description": "Write failing tests: missing or wrong-type required string fields \u2192 handler not called. Test cases: (a) text_delta with id=123 (number instead of string), (b) text_delta with missing content field, (c) thinking_delta with content=null, (d) tool_call with tool_name missing, (e) tool_result with tool_name=42, (f) done with id=undefined, (g) error with message=[] (array instead of string), (h) error with missing id. Each should call handler 0 times.",
+      "status": "done",
+      "commit": "1cff8bc9"
+    },
+    {
+      "id": "step-4",
+      "type": "impl",
+      "description": "Refactor the 6 handler callbacks to validate required string fields before constructing the OutboundMessage. For each handler: destructure from event.payload, check `typeof field !== 'string'` for each required string field, return early if any check fails. Handlers: text_delta needs id+content, thinking_delta needs id+content, tool_call needs id+tool_name, tool_result needs id+tool_name, done needs id, error needs id+message. Add console.warn on validation failure for debuggability (following meshManager pattern).",
+      "status": "done",
+      "commit": "3d951802"
+    },
+    {
+      "id": "step-5",
+      "type": "test",
+      "description": "Write failing tests for tool_input normalization in tool_call handler: (a) tool_input=null \u2192 handler called with tool_input={}, (b) tool_input=[1,2,3] (array) \u2192 handler called with tool_input={}, (c) tool_input=undefined \u2192 handler called with tool_input={}, (d) tool_input='string' \u2192 handler called with tool_input={}. Verify that valid tool_input={path:'/f'} still passes through unchanged (existing test covers this but add explicit assertion).",
+      "status": "done",
+      "commit": "6f6663c8"
+    },
+    {
+      "id": "step-6",
+      "type": "impl",
+      "description": "In the tool_call handler, after field validation, normalize tool_input: `const tool_input = isRecord(p.tool_input) ? (p.tool_input as Record<string, unknown>) : {};`. This coerces null, undefined, arrays, and primitives to an empty object. Run full test suite to verify all existing happy-path tests plus new validation tests pass.",
+      "status": "done",
+      "commit": "8c948caf"
+    }
+  ],
+  "design_decisions": [
+    {
+      "decision": "Use silent return (not throw) for malformed payloads",
+      "rationale": "Event handlers should be resilient \u2014 throwing would crash the listener loop and prevent subsequent valid events from being processed. The task description says 'undefined values propagate silently' is the bug; the fix is to drop the malformed event, not crash."
+    },
+    {
+      "decision": "Add console.warn on validation failure",
+      "rationale": "Follows the existing meshManager.ts pattern (console.warn for invalid data). Silent drops without logging would make debugging harder. The warn is lightweight and only fires on actual malformed events."
+    },
+    {
+      "decision": "Normalize tool_input to {} instead of rejecting the entire tool_call event",
+      "rationale": "A tool_call event with a valid id and tool_name but null tool_input still carries useful information (the tool was called). Normalizing to {} is safer than dropping the entire event. The UI can still show the tool call happened."
+    },
+    {
+      "decision": "Shared isRecord() helper instead of inline typeof checks",
+      "rationale": "All 6 handlers need the same null/undefined/array/primitive rejection for the payload object. A shared helper avoids duplication and ensures consistent behavior. Kept private to bridge.ts (not exported) since it's an implementation detail."
+    },
+    {
+      "decision": "Validate all required string fields, not just id",
+      "rationale": "The task says 'optionally validate required string fields'. Since we're adding guards anyway, validating all required strings (content, tool_name, message) provides comprehensive protection. The cost is minimal \u2014 one typeof check per field."
+    }
+  ],
+  "reuse": [
+    {
+      "what": "Existing claudeBridge.test.ts test infrastructure",
+      "where": "gui/src/__tests__/claudeBridge.test.ts",
+      "how": "Reuse the same mock setup (vi.mock for @tauri-apps/api/core and @tauri-apps/api/event), the capturedHandler pattern for simulating events, and the ALL_EVENT_NAMES constant. New tests follow the exact same pattern as existing handler-mapping tests."
+    },
+    {
+      "what": "console.warn validation pattern from meshManager",
+      "where": "gui/src/viewport/meshManager.ts lines 52-65",
+      "how": "Follow the same pattern: validate, console.warn with descriptive message, return early. This is the established project convention for runtime data guards."
+    },
+    {
+      "what": "Existing OutboundMessage type definitions",
+      "where": "gui/sidecar/src/types.ts",
+      "how": "The type interfaces (TextDelta, ToolCall, etc.) define the required fields \u2014 validation checks mirror these interface definitions exactly. No new types needed."
+    }
+  ],
+  "_session_id": "569-f51ad10c",
+  "_created_at": "2026-03-28T04:49:36.875557+00:00"
+}
