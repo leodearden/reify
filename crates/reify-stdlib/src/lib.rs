@@ -4279,6 +4279,22 @@ mod tests {
     }
 
     #[test]
+    fn orient_basis_inf_component_returns_undef() {
+        // Inf in a basis vector must be rejected — magnitude would be Inf, not ≈1.
+        let x = Value::Tensor(vec![
+            Value::Real(f64::INFINITY),
+            Value::Real(0.0),
+            Value::Real(0.0),
+        ]);
+        let y = Value::Tensor(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
+        let z = Value::Tensor(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
+        assert!(
+            eval_builtin("orient_basis", &[x, y, z]).is_undef(),
+            "Inf component should be rejected"
+        );
+    }
+
+    #[test]
     fn dot_mixed_component_dimensions_returns_undef() {
         // A Tensor with mixed dimensions is not a valid physical vector
         let a = Value::Tensor(vec![
