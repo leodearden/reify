@@ -475,4 +475,49 @@ mod tests {
             "should NOT contain id fallback when label is present"
         );
     }
+
+    #[test]
+    fn report_eval_output_writes_constraints_to_out_and_diagnostics_to_err() {
+        let constraints = vec![
+            make_entry("Bracket", 0, Some("stress_limit"), Satisfaction::Satisfied),
+            make_entry("Bracket", 1, Some("size_bound"), Satisfaction::Violated),
+        ];
+        let diagnostics = vec![
+            reify_types::Diagnostic::warning("some msg"),
+            reify_types::Diagnostic::error("bad thing"),
+        ];
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let outcome = report_eval_output(&constraints, &diagnostics, &mut out, &mut err);
+
+        let out_str = String::from_utf8(out).unwrap();
+        let err_str = String::from_utf8(err).unwrap();
+
+        // (a) out buffer contains constraint status lines
+        assert!(
+            out_str.contains("OK stress_limit"),
+            "out should contain constraint OK line, got: {}",
+            out_str
+        );
+        assert!(
+            out_str.contains("VIOLATED size_bound"),
+            "out should contain constraint VIOLATED line, got: {}",
+            out_str
+        );
+
+        // (b) err buffer contains diagnostic lines
+        assert!(
+            err_str.contains("warning: some msg"),
+            "err should contain warning diagnostic, got: {}",
+            err_str
+        );
+        assert!(
+            err_str.contains("error: bad thing"),
+            "err should contain error diagnostic, got: {}",
+            err_str
+        );
+
+        // (c) correct outcome
+        assert_eq!(outcome, ConstraintOutcome::SomeViolated);
+    }
 }
