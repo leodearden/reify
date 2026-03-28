@@ -9929,7 +9929,19 @@
           ],
           "modules": [
             "crates/reify-eval/src"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "edit_param",
+              "structure_controlling",
+              "ValueCellKind"
+            ],
+            "queries": [
+              "guard re-elaboration ordering edit_param solver values",
+              "auto param solver resolution guard deactivation",
+              "edit_param block A block B guard phases"
+            ]
+          }
         }
       },
       {
