@@ -816,6 +816,82 @@ fn negate_matrix_returns_negated_rank2_tensor() {
     );
 }
 
+/// Negating a Tensor with mixed Int and Real elements returns a Tensor
+/// with each element negated according to its variant.
+#[test]
+fn negate_tensor_mixed_int_real() {
+    let operand = CompiledExpr::literal(
+        Value::Tensor(vec![Value::Int(1), Value::Real(2.5), Value::Int(-3)]),
+        Type::tensor(1, 3, Type::Real),
+    );
+    let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::tensor(1, 3, Type::Real));
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Tensor(vec![Value::Int(-1), Value::Real(-2.5), Value::Int(3)])
+    );
+}
+
+/// Negating a Matrix of Scalar (Length) elements canonicalizes to a rank-2
+/// Tensor with negated Scalar values preserving their dimensions.
+#[test]
+fn negate_matrix_of_scalars_preserves_dimension() {
+    let operand = CompiledExpr::literal(
+        Value::Matrix(vec![
+            vec![
+                Value::Scalar {
+                    si_value: 0.001,
+                    dimension: DimensionVector::LENGTH,
+                },
+                Value::Scalar {
+                    si_value: 0.002,
+                    dimension: DimensionVector::LENGTH,
+                },
+            ],
+            vec![
+                Value::Scalar {
+                    si_value: 0.003,
+                    dimension: DimensionVector::LENGTH,
+                },
+                Value::Scalar {
+                    si_value: 0.004,
+                    dimension: DimensionVector::LENGTH,
+                },
+            ],
+        ]),
+        Type::matrix(2, 2, Type::length()),
+    );
+    let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::tensor(2, 2, Type::length()));
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Tensor(vec![
+            Value::Tensor(vec![
+                Value::Scalar {
+                    si_value: -0.001,
+                    dimension: DimensionVector::LENGTH,
+                },
+                Value::Scalar {
+                    si_value: -0.002,
+                    dimension: DimensionVector::LENGTH,
+                },
+            ]),
+            Value::Tensor(vec![
+                Value::Scalar {
+                    si_value: -0.003,
+                    dimension: DimensionVector::LENGTH,
+                },
+                Value::Scalar {
+                    si_value: -0.004,
+                    dimension: DimensionVector::LENGTH,
+                },
+            ]),
+        ])
+    );
+}
+
 // ─── step-1 (task 398): Value::Point / Value::Vector addition ───
 
 /// Value::Vector + Value::Vector → Value::Vector (component-wise).
