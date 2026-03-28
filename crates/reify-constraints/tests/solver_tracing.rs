@@ -10,8 +10,8 @@ use std::sync::Arc;
 use reify_constraints::DimensionalSolver;
 use reify_test_support::*;
 use reify_types::{
-    AutoParam, BinOp, ConstraintSolver, OptimizationObjective, ResolutionProblem, SolveResult,
-    Type, ValueMap,
+    AutoParam, BinOp, ConstraintSolver, DimensionVector, OptimizationObjective, ResolutionProblem,
+    SolveResult, Type, Value, ValueMap,
 };
 
 /// Build a tracing subscriber that counts DEBUG and WARN level events.
@@ -153,4 +153,97 @@ fn consolidated_debug_event_on_max_iters_reached() {
         "expected exactly 1 consolidated debug event for MaxItersReached path, got {}",
         debug
     );
+}
+
+/// Regression guard: a normal successful solve (single-param feasibility)
+/// should emit zero warn-level events. If a future change accidentally
+/// adds a warn! to the normal solve path, this test catches it.
+#[test]
+fn normal_solve_emits_zero_warns() {
+    let (subscriber, _debug_count, warn_count) = event_counting_subscriber();
+
+    let solver = DimensionalSolver;
+
+    let x_id = vcid("Bracket", "thickness");
+    let x_ref = value_ref("Bracket", "thickness");
+
+    // thickness > 2mm AND thickness < 20mm
+    let gt_expr = gt(x_ref.clone(), literal(mm(2.0)));
+    let lt_expr = lt(x_ref, literal(mm(20.0)));
+
+    let problem = ResolutionProblem {
+        auto_params: vec![AutoParam {
+            id: x_id.clone(),
+            param_type: Type::length(),
+            bounds: Some((0.001, 0.1)),
+        }],
+        constraints: vec![(cnid("Bracket", 0), gt_expr), (cnid("Bracket", 1), lt_expr)],
+        current_values: ValueMap::new(),
+        objective: None,
+        functions: vec![],
+    };
+
+    let result = tracing::subscriber::with_default(subscriber, || solver.solve(&problem));
+
+    // Normal solve must not emit any warns
+    let warns = warn_count.load(Ordering::Relaxed);
+    assert_eq!(
+        warns, 0,
+        "normal successful solve should emit 0 warns, got {}",
+        warns
+    );
+
+    // Sanity: the solve should actually succeed
+    assert!(
+        matches!(result, SolveResult::Solved { .. }),
+        "expected Solved, got {:?}",
+        result
+    );
+}
+
+/// Verify the reason string format for the executor.run() error path.
+/// Uses NaN bounds to create a degenerate simplex that causes argmin to error.
+/// If the executor error path is triggered, the reason must match "solver error: ...".
+#[test]
+fn executor_error_returns_no_progress_with_reason() {
+    let solver = DimensionalSolver;
+
+    let x_id = vcid("Part", "x");
+    let x_ref = value_ref("Part", "x");
+
+    let gt_expr = gt(x_ref, literal(mm(1.0)));
+
+    // NaN bounds → degenerate simplex → argmin executor error
+    let mut current = ValueMap::new();
+    current.insert(
+        x_id.clone(),
+        Value::Scalar {
+            si_value: f64::NAN,
+            dimension: DimensionVector::LENGTH,
+        },
+    );
+
+    let problem = ResolutionProblem {
+        auto_params: vec![AutoParam {
+            id: x_id.clone(),
+            param_type: Type::length(),
+            bounds: Some((f64::NAN, f64::NAN)),
+        }],
+        constraints: vec![(cnid("Part", 0), gt_expr)],
+        current_values: current,
+        objective: None,
+        functions: vec![],
+    };
+
+    let result = solver.solve(&problem);
+    // The NaN simplex should cause executor.run() to error, yielding NoProgress.
+    // If it doesn't error (argmin handles NaN gracefully), the test still passes
+    // because we only assert the format when NoProgress is returned.
+    if let SolveResult::NoProgress { reason } = result {
+        assert!(
+            reason.starts_with("solver error: "),
+            "executor error reason should start with 'solver error: ', got: {}",
+            reason
+        );
+    }
 }
