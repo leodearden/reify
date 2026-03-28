@@ -3468,19 +3468,7 @@ mod tests {
     /// Helper: parse source, find the port_body node, call lower_port_body
     /// directly (bypassing check_and_lower!), and return the errors.
     fn lower_port_body_directly(source: &str) -> Vec<ParseError> {
-        let mut ts_parser = tree_sitter::Parser::new();
-        ts_parser
-            .set_language(&tree_sitter_reify::language().into())
-            .expect("Error loading Reify grammar");
-        let tree = ts_parser.parse(source, None).expect("Failed to parse");
-        let root = tree.root_node();
-
-        let body_node = find_node_by_kind(root, "port_body")
-            .expect("no port_body node found in parse tree");
-
-        let mut lowering = Lowering::new(source);
-        lowering.lower_port_body(body_node);
-        lowering.errors
+        lower_node_directly(source, "port_body", |l, n| { l.lower_port_body(n); })
     }
 
     #[test]
@@ -3552,19 +3540,7 @@ mod tests {
     /// Helper: parse source, find the constraint_definition node, call
     /// lower_constraint_def directly, and return the errors.
     fn lower_constraint_def_directly(source: &str) -> Vec<ParseError> {
-        let mut ts_parser = tree_sitter::Parser::new();
-        ts_parser
-            .set_language(&tree_sitter_reify::language().into())
-            .expect("Error loading Reify grammar");
-        let tree = ts_parser.parse(source, None).expect("Failed to parse");
-        let root = tree.root_node();
-
-        let constraint_node = find_node_by_kind(root, "constraint_definition")
-            .expect("no constraint_definition node found in parse tree");
-
-        let mut lowering = Lowering::new(source);
-        lowering.lower_constraint_def(constraint_node);
-        lowering.errors
+        lower_node_directly(source, "constraint_definition", |l, n| { l.lower_constraint_def(n); })
     }
 
     #[test]
