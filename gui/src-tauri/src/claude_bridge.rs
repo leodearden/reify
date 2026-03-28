@@ -275,10 +275,11 @@ impl SidecarHandle {
                             let selection_clone = Arc::clone(&mcp.selection);
                             let stdin_clone = Arc::clone(&stdin_for_reader);
                             tokio::spawn(async move {
-                                let ctx = crate::mcp_context::TauriToolContext::new_with_selection(
+                                let ctx = crate::mcp_context::TauriToolContext::builder(
                                     engine_clone,
-                                    selection_clone,
-                                );
+                                )
+                                .with_selection(selection_clone)
+                                .build();
                                 let result = crate::mcp_context::mcp_tool_call_impl(
                                     &tool_name, tool_input, &ctx,
                                 );
