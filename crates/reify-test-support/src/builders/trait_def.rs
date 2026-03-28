@@ -4,6 +4,68 @@ use reify_compiler::{
     CompiledTrait, DefaultKind, RequirementKind, TraitDefault, TraitRequirement,
 };
 
+/// Returns a hash-friendly string representation for a `DefaultKind` variant.
+fn default_kind_str(kind: &DefaultKind) -> String {
+    match kind {
+        DefaultKind::Param { cell_type, default_decl } => format!("Param:{}:{}", cell_type, default_decl.content_hash),
+        DefaultKind::Let(decl) => format!("Let:{}", decl.content_hash),
+        DefaultKind::Constraint(decl) => format!("Constraint:{}", decl.content_hash),
+    }
+}
+
+/// Returns a hash-friendly string representation for a `RequirementKind`.
+fn requirement_kind_str(kind: &RequirementKind) -> String {
+    match kind {
+        RequirementKind::Param(ty) => format!("Param:{}", ty),
+        RequirementKind::Let(ty) => format!("Let:{}", ty),
+        RequirementKind::Sub(s) => format!("Sub:{}", s),
+    }
+}
+
+/// Computes the content hash for a trait definition from its components.
+///
+/// This is the shared implementation used by both `TraitDefBuilder` and
+/// `CompiledTraitBuilder` to ensure they produce identical hashes for
+/// identical inputs.
+fn compute_trait_content_hash(
+    name: &str,
+    required_members: &[TraitRequirement],
+    refinements: &[String],
+    type_params: &[TypeParam],
+    defaults: &[TraitDefault],
+) -> ContentHash {
+    let name_hash = ContentHash::of_str(name);
+    let req_hashes = required_members.iter().map(|r| {
+        let kind_str = requirement_kind_str(&r.kind);
+        ContentHash::of_str(&format!("{}:{}", r.name, kind_str))
+    });
+    let ref_hashes = refinements.iter().map(|r| ContentHash::of_str(r));
+    let type_param_hashes = type_params.iter().map(|p| {
+        let mut s = p.name.clone();
+        for b in &p.bounds {
+            s.push_str(&format!(":bound:{}", b.trait_ref.name));
+        }
+        if let Some(ref ty) = p.default {
+            s.push_str(&format!(":default:{}", ty));
+        }
+        ContentHash::of_str(&s)
+    });
+    let default_hashes = defaults.iter().map(|d| {
+        let kind_str = default_kind_str(&d.kind);
+        ContentHash::of_str(&format!(
+            "{}:{}",
+            d.name.as_deref().unwrap_or(""),
+            kind_str
+        ))
+    });
+    let all_hashes = std::iter::once(name_hash)
+        .chain(req_hashes)
+        .chain(ref_hashes)
+        .chain(type_param_hashes)
+        .chain(default_hashes);
+    ContentHash::combine_all(all_hashes)
+}
+
 /// Builder for `CompiledTrait`.
 ///
 /// Follows the same fluent pattern as `TopologyTemplateBuilder`.
@@ -62,40 +124,13 @@ impl TraitDefBuilder {
     }
 
     pub fn build(self) -> CompiledTrait {
-        let content_hash = {
-            let name_hash = ContentHash::of_str(&self.name);
-            let req_hashes = self.required_members.iter().map(|r| {
-                let kind_str = match &r.kind {
-                    RequirementKind::Param(ty) => format!("Param:{}", ty),
-                    RequirementKind::Let(ty) => format!("Let:{}", ty),
-                    RequirementKind::Sub(s) => format!("Sub:{}", s),
-                };
-                ContentHash::of_str(&format!("{}:{}", r.name, kind_str))
-            });
-            let ref_hashes = self.refinements.iter().map(|r| ContentHash::of_str(r));
-            let type_param_hashes = self
-                .type_params
-                .iter()
-                .map(|p| ContentHash::of_str(&p.name));
-            let default_hashes = self.defaults.iter().map(|d| {
-                let kind_tag = match &d.kind {
-                    DefaultKind::Param { .. } => "Param",
-                    DefaultKind::Let(_) => "Let",
-                    DefaultKind::Constraint(_) => "Constraint",
-                };
-                ContentHash::of_str(&format!(
-                    "{}:{}",
-                    d.name.as_deref().unwrap_or(""),
-                    kind_tag
-                ))
-            });
-            let all_hashes = std::iter::once(name_hash)
-                .chain(req_hashes)
-                .chain(ref_hashes)
-                .chain(type_param_hashes)
-                .chain(default_hashes);
-            ContentHash::combine_all(all_hashes)
-        };
+        let content_hash = compute_trait_content_hash(
+            &self.name,
+            &self.required_members,
+            &self.refinements,
+            &self.type_params,
+            &self.defaults,
+        );
 
         CompiledTrait {
             name: self.name,
@@ -176,41 +211,13 @@ impl CompiledTraitBuilder {
     }
 
     pub fn build(self) -> CompiledTrait {
-        // Comprehensive hashing aligned with TraitDefBuilder's approach
-        let content_hash = {
-            let name_hash = ContentHash::of_str(&self.name);
-            let req_hashes = self.required_members.iter().map(|r| {
-                let kind_str = match &r.kind {
-                    RequirementKind::Param(ty) => format!("Param:{}", ty),
-                    RequirementKind::Let(ty) => format!("Let:{}", ty),
-                    RequirementKind::Sub(s) => format!("Sub:{}", s),
-                };
-                ContentHash::of_str(&format!("{}:{}", r.name, kind_str))
-            });
-            let ref_hashes = self.refinements.iter().map(|r| ContentHash::of_str(r));
-            let type_param_hashes = self
-                .type_params
-                .iter()
-                .map(|p| ContentHash::of_str(&p.name));
-            let default_hashes = self.defaults.iter().map(|d| {
-                let kind_tag = match &d.kind {
-                    DefaultKind::Param { .. } => "Param",
-                    DefaultKind::Let(_) => "Let",
-                    DefaultKind::Constraint(_) => "Constraint",
-                };
-                ContentHash::of_str(&format!(
-                    "{}:{}",
-                    d.name.as_deref().unwrap_or(""),
-                    kind_tag
-                ))
-            });
-            let all_hashes = std::iter::once(name_hash)
-                .chain(req_hashes)
-                .chain(ref_hashes)
-                .chain(type_param_hashes)
-                .chain(default_hashes);
-            ContentHash::combine_all(all_hashes)
-        };
+        let content_hash = compute_trait_content_hash(
+            &self.name,
+            &self.required_members,
+            &self.refinements,
+            &self.type_params,
+            &self.defaults,
+        );
 
         CompiledTrait {
             name: self.name,
@@ -229,6 +236,87 @@ impl CompiledTraitBuilder {
 mod tests {
     use super::*;
     use reify_types::DimensionVector;
+
+    #[test]
+    fn compute_trait_content_hash_minimal() {
+        let hash = compute_trait_content_hash("X", &[], &[], &[], &[]);
+        assert_ne!(hash, ContentHash(0), "name-only hash must be non-zero");
+    }
+
+    #[test]
+    fn compute_trait_content_hash_differs_by_name() {
+        let h1 = compute_trait_content_hash("A", &[], &[], &[], &[]);
+        let h2 = compute_trait_content_hash("B", &[], &[], &[], &[]);
+        assert_ne!(h1, h2, "different names must produce different hashes");
+    }
+
+    #[test]
+    fn compute_trait_content_hash_matches_builder() {
+        let from_builder = TraitDefBuilder::new("X").build().content_hash;
+        let from_fn = compute_trait_content_hash("X", &[], &[], &[], &[]);
+        assert_eq!(
+            from_builder, from_fn,
+            "extracted function must match TraitDefBuilder output"
+        );
+    }
+
+    #[test]
+    fn default_kind_str_covers_all_variants() {
+        let param_str = default_kind_str(&DefaultKind::Param {
+            cell_type: Type::Real,
+            default_decl: reify_syntax::ParamDecl {
+                name: "x".to_string(),
+                doc: None,
+                type_expr: None,
+                default: None,
+                where_clause: None,
+                span: SourceSpan::new(0, 0),
+                content_hash: ContentHash::of_str("x"),
+            },
+        });
+        assert_eq!(param_str, format!("Param:Real:{}", ContentHash::of_str("x")));
+
+        let let_hash = ContentHash::of_str("y");
+        let let_str = default_kind_str(&DefaultKind::Let(reify_syntax::LetDecl {
+            name: "y".to_string(),
+            is_pub: false,
+            doc: None,
+            type_expr: None,
+            value: reify_syntax::Expr {
+                kind: reify_syntax::ExprKind::BoolLiteral(true),
+                span: SourceSpan::new(0, 0),
+            },
+            where_clause: None,
+            span: SourceSpan::new(0, 0),
+            content_hash: let_hash,
+        }));
+        assert_eq!(let_str, format!("Let:{}", let_hash));
+
+        let constraint_hash = ContentHash::of_str("c");
+        let constraint_str = default_kind_str(&DefaultKind::Constraint(reify_syntax::ConstraintDecl {
+            label: Some("c".to_string()),
+            expr: reify_syntax::Expr {
+                kind: reify_syntax::ExprKind::BoolLiteral(true),
+                span: SourceSpan::new(0, 0),
+            },
+            where_clause: None,
+            span: SourceSpan::new(0, 0),
+            content_hash: constraint_hash,
+        }));
+        assert_eq!(constraint_str, format!("Constraint:{}", constraint_hash));
+    }
+
+    #[test]
+    fn requirement_kind_str_covers_all_variants() {
+        let param_str = requirement_kind_str(&RequirementKind::Param(Type::Real));
+        assert_eq!(param_str, "Param:Real");
+
+        let let_str = requirement_kind_str(&RequirementKind::Let(Type::Int));
+        assert_eq!(let_str, "Let:Int");
+
+        let sub_str = requirement_kind_str(&RequirementKind::Sub("MountPoint".to_string()));
+        assert_eq!(sub_str, "Sub:MountPoint");
+    }
 
     // step-1: failing test for TraitDefBuilder minimal
     #[test]
@@ -403,6 +491,227 @@ mod tests {
     }
 
     #[test]
+    fn trait_def_content_hash_differs_by_param_cell_type() {
+        let ct1 = TraitDefBuilder::new("Rigid")
+            .add_default(
+                Some("d"),
+                DefaultKind::Param {
+                    cell_type: Type::Real,
+                    default_decl: reify_syntax::ParamDecl {
+                        name: "d".to_string(),
+                        doc: None,
+                        type_expr: None,
+                        default: None,
+                        where_clause: None,
+                        span: SourceSpan::new(0, 0),
+                        content_hash: ContentHash::of_str("d"),
+                    },
+                },
+            )
+            .build();
+        let ct2 = TraitDefBuilder::new("Rigid")
+            .add_default(
+                Some("d"),
+                DefaultKind::Param {
+                    cell_type: Type::Int,
+                    default_decl: reify_syntax::ParamDecl {
+                        name: "d".to_string(),
+                        doc: None,
+                        type_expr: None,
+                        default: None,
+                        where_clause: None,
+                        span: SourceSpan::new(0, 0),
+                        content_hash: ContentHash::of_str("d"),
+                    },
+                },
+            )
+            .build();
+        assert_ne!(
+            ct1.content_hash, ct2.content_hash,
+            "same Param default but different cell_type (Real vs Int) must produce different content_hash"
+        );
+    }
+
+    #[test]
+    fn trait_def_content_hash_differs_by_let_expr() {
+        let ct1 = TraitDefBuilder::new("Rigid")
+            .add_default(
+                Some("x"),
+                DefaultKind::Let(reify_syntax::LetDecl {
+                    name: "x".to_string(),
+                    is_pub: false,
+                    doc: None,
+                    type_expr: None,
+                    value: reify_syntax::Expr {
+                        kind: reify_syntax::ExprKind::BoolLiteral(true),
+                        span: SourceSpan::new(0, 0),
+                    },
+                    where_clause: None,
+                    span: SourceSpan::new(0, 0),
+                    content_hash: ContentHash::of_str("a"),
+                }),
+            )
+            .build();
+        let ct2 = TraitDefBuilder::new("Rigid")
+            .add_default(
+                Some("x"),
+                DefaultKind::Let(reify_syntax::LetDecl {
+                    name: "x".to_string(),
+                    is_pub: false,
+                    doc: None,
+                    type_expr: None,
+                    value: reify_syntax::Expr {
+                        kind: reify_syntax::ExprKind::BoolLiteral(false),
+                        span: SourceSpan::new(0, 0),
+                    },
+                    where_clause: None,
+                    span: SourceSpan::new(0, 0),
+                    content_hash: ContentHash::of_str("b"),
+                }),
+            )
+            .build();
+        assert_ne!(
+            ct1.content_hash, ct2.content_hash,
+            "same Let default name but different LetDecl content_hash must produce different content_hash"
+        );
+    }
+
+    #[test]
+    fn trait_def_content_hash_differs_by_constraint_expr() {
+        let ct1 = TraitDefBuilder::new("Rigid")
+            .add_default(
+                Some("c"),
+                DefaultKind::Constraint(reify_syntax::ConstraintDecl {
+                    label: Some("c".to_string()),
+                    expr: reify_syntax::Expr {
+                        kind: reify_syntax::ExprKind::BoolLiteral(true),
+                        span: SourceSpan::new(0, 0),
+                    },
+                    where_clause: None,
+                    span: SourceSpan::new(0, 0),
+                    content_hash: ContentHash::of_str("a"),
+                }),
+            )
+            .build();
+        let ct2 = TraitDefBuilder::new("Rigid")
+            .add_default(
+                Some("c"),
+                DefaultKind::Constraint(reify_syntax::ConstraintDecl {
+                    label: Some("c".to_string()),
+                    expr: reify_syntax::Expr {
+                        kind: reify_syntax::ExprKind::BoolLiteral(false),
+                        span: SourceSpan::new(0, 0),
+                    },
+                    where_clause: None,
+                    span: SourceSpan::new(0, 0),
+                    content_hash: ContentHash::of_str("b"),
+                }),
+            )
+            .build();
+        assert_ne!(
+            ct1.content_hash, ct2.content_hash,
+            "same Constraint default name but different ConstraintDecl content_hash must produce different content_hash"
+        );
+    }
+
+    #[test]
+    fn trait_def_content_hash_differs_by_type_param_bounds() {
+        use reify_types::{TraitBound, TraitRef};
+        let ct1 = TraitDefBuilder::new("Container")
+            .type_param(TypeParam {
+                name: "T".to_string(),
+                bounds: vec![TraitBound {
+                    trait_ref: TraitRef {
+                        name: "Rigid".to_string(),
+                        type_args: vec![],
+                    },
+                }],
+                default: None,
+            })
+            .build();
+        let ct2 = TraitDefBuilder::new("Container")
+            .type_param(TypeParam {
+                name: "T".to_string(),
+                bounds: vec![TraitBound {
+                    trait_ref: TraitRef {
+                        name: "Flexible".to_string(),
+                        type_args: vec![],
+                    },
+                }],
+                default: None,
+            })
+            .build();
+        assert_ne!(
+            ct1.content_hash, ct2.content_hash,
+            "same TypeParam name but different bounds (Rigid vs Flexible) must produce different content_hash"
+        );
+    }
+
+    #[test]
+    fn trait_def_content_hash_differs_by_type_param_default() {
+        let ct1 = TraitDefBuilder::new("Container")
+            .type_param(TypeParam {
+                name: "T".to_string(),
+                bounds: vec![],
+                default: Some(Type::Real),
+            })
+            .build();
+        let ct2 = TraitDefBuilder::new("Container")
+            .type_param(TypeParam {
+                name: "T".to_string(),
+                bounds: vec![],
+                default: Some(Type::Int),
+            })
+            .build();
+        assert_ne!(
+            ct1.content_hash, ct2.content_hash,
+            "same TypeParam name with no bounds but different defaults (Real vs Int) must produce different content_hash"
+        );
+    }
+
+    #[test]
+    fn trait_def_content_hash_differs_by_param_default_expr() {
+        let ct1 = TraitDefBuilder::new("Rigid")
+            .add_default(
+                Some("d"),
+                DefaultKind::Param {
+                    cell_type: Type::Real,
+                    default_decl: reify_syntax::ParamDecl {
+                        name: "d".to_string(),
+                        doc: None,
+                        type_expr: None,
+                        default: None,
+                        where_clause: None,
+                        span: SourceSpan::new(0, 0),
+                        content_hash: ContentHash::of_str("expr_a"),
+                    },
+                },
+            )
+            .build();
+        let ct2 = TraitDefBuilder::new("Rigid")
+            .add_default(
+                Some("d"),
+                DefaultKind::Param {
+                    cell_type: Type::Real,
+                    default_decl: reify_syntax::ParamDecl {
+                        name: "d".to_string(),
+                        doc: None,
+                        type_expr: None,
+                        default: None,
+                        where_clause: None,
+                        span: SourceSpan::new(0, 0),
+                        content_hash: ContentHash::of_str("expr_b"),
+                    },
+                },
+            )
+            .build();
+        assert_ne!(
+            ct1.content_hash, ct2.content_hash,
+            "same Param default with same cell_type but different default_decl content_hash must produce different content_hash"
+        );
+    }
+
+    #[test]
     fn trait_def_content_hash_differs_by_default() {
         let ct1 = TraitDefBuilder::new("Rigid").build();
         let ct2 = TraitDefBuilder::new("Rigid")
@@ -521,6 +830,88 @@ mod trait_builder_tests {
         assert_ne!(
             t1.content_hash, t2.content_hash,
             "with vs without refinement must produce different content_hash"
+        );
+    }
+
+    /// Both builders must produce identical content_hash for identical inputs.
+    /// This is the core invariant the refactoring must preserve.
+    #[test]
+    fn cross_builder_hash_equivalence() {
+        // Minimal case: name only
+        let from_def = TraitDefBuilder::new("Rigid").build();
+        let from_compiled = CompiledTraitBuilder::new("Rigid").build();
+        assert_eq!(
+            from_def.content_hash, from_compiled.content_hash,
+            "name-only: both builders must produce same hash"
+        );
+
+        // With a Param requirement
+        let from_def = TraitDefBuilder::new("Rigid")
+            .requirement("val", RequirementKind::Param(Type::Real))
+            .build();
+        let from_compiled = CompiledTraitBuilder::new("Rigid")
+            .require_param("val", Type::Real)
+            .build();
+        assert_eq!(
+            from_def.content_hash, from_compiled.content_hash,
+            "with Param requirement: both builders must produce same hash"
+        );
+
+        // With a refinement
+        let from_def = TraitDefBuilder::new("Rigid")
+            .refinement("Base")
+            .build();
+        let from_compiled = CompiledTraitBuilder::new("Rigid")
+            .refinement("Base")
+            .build();
+        assert_eq!(
+            from_def.content_hash, from_compiled.content_hash,
+            "with refinement: both builders must produce same hash"
+        );
+
+        // With a type param (bounds only)
+        use reify_types::{TraitBound, TraitRef};
+        let param = || TypeParam {
+            name: "T".to_string(),
+            bounds: vec![TraitBound {
+                trait_ref: TraitRef {
+                    name: "Rigid".to_string(),
+                    type_args: vec![],
+                },
+            }],
+            default: None,
+        };
+        let from_def = TraitDefBuilder::new("Container")
+            .type_param(param())
+            .build();
+        let from_compiled = CompiledTraitBuilder::new("Container")
+            .type_param(param())
+            .build();
+        assert_eq!(
+            from_def.content_hash, from_compiled.content_hash,
+            "with type_param: both builders must produce same hash"
+        );
+
+        // With a type param that has bounds AND a default
+        let param_with_default = || TypeParam {
+            name: "T".to_string(),
+            bounds: vec![TraitBound {
+                trait_ref: TraitRef {
+                    name: "Rigid".to_string(),
+                    type_args: vec![],
+                },
+            }],
+            default: Some(Type::Real),
+        };
+        let from_def = TraitDefBuilder::new("Container")
+            .type_param(param_with_default())
+            .build();
+        let from_compiled = CompiledTraitBuilder::new("Container")
+            .type_param(param_with_default())
+            .build();
+        assert_eq!(
+            from_def.content_hash, from_compiled.content_hash,
+            "with type_param (bounds+default): both builders must produce same hash"
         );
     }
 

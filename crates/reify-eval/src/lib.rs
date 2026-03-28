@@ -1047,6 +1047,44 @@ impl Engine {
                         version: VersionId(version_id),
                         payload: Some(EventPayload::Duration(start.elapsed())),
                     });
+                } else if cell.kind == ValueCellKind::Param && cell.default_expr.is_none() {
+                    // Param with no default: Undef with DeterminacyState::Undetermined
+                    let node_id = NodeId::Value(cell.id.clone());
+                    let start = Instant::now();
+                    self.journal.record(EvalEvent {
+                        timestamp: start,
+                        node_id: node_id.clone(),
+                        kind: EventKind::Started,
+                        version: VersionId(version_id),
+                        payload: None,
+                    });
+
+                    values.insert(cell.id.clone(), reify_types::Value::Undef);
+                    snapshot.values.insert(
+                        cell.id.clone(),
+                        (reify_types::Value::Undef, DeterminacyState::Undetermined),
+                    );
+
+                    // Record in cache
+                    let trace = DependencyTrace::default();
+                    let cached_result = CachedResult::Value(
+                        reify_types::Value::Undef,
+                        DeterminacyState::Undetermined,
+                    );
+                    let outcome = self.cache.record_evaluation(
+                        node_id.clone(),
+                        cached_result,
+                        VersionId(version_id),
+                        trace,
+                    );
+
+                    self.journal.record(EvalEvent {
+                        timestamp: Instant::now(),
+                        node_id,
+                        kind: EventKind::Completed { outcome },
+                        version: VersionId(version_id),
+                        payload: Some(EventPayload::Duration(start.elapsed())),
+                    });
                 }
             }
 

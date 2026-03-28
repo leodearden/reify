@@ -39,12 +39,11 @@ if ! cargo test --workspace --quiet 2>&1; then
     exit 1
 fi
 
-# ── GUI: install deps + regenerate lockfile ──────────────────────────
-# package-lock.json is gitignored to avoid merge conflicts — regenerate from package.json
+# ── GUI: install deps from lockfile ──────────────────────────────────
 if [ -d "$ROOT/gui" ]; then
     echo "  install: gui"
-    if ! (cd "$ROOT/gui" && npm install --prefer-offline); then
-        echo "pre-commit: npm install failed in gui/. Check package.json."
+    if ! (cd "$ROOT/gui" && npm ci); then
+        echo "pre-commit: npm ci failed in gui/. Check package-lock.json."
         exit 1
     fi
 
