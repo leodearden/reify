@@ -12834,7 +12834,20 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "source": "reconciliation-stage2",
+          "memory_hints": {
+            "entities": [
+              ".task/plan.json",
+              "task-517"
+            ],
+            "queries": [
+              "plan.json tracked git cleanup task-517 commit 14ae324a",
+              ".task directory contamination main branch"
+            ]
+          }
+        }
       },
       {
         "id": 638,
