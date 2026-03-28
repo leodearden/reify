@@ -12574,6 +12574,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 621,
+        "title": "Use double-newline separator for attached_contexts in sidecar prompt builder",
+        "description": "In gui/sidecar/src/session.ts line 95, `context.attached_contexts.join('\\n')` uses a single newline to join items that are themselves multi-line (e.g. `file: lib.ri\\nfn add(a, b) = a + b`). This makes item boundaries indistinguishable from internal newlines, producing an ambiguous blob for the LLM.\n\nFix: Change `context.attached_contexts.join('\\n')` to `context.attached_contexts.join('\\n\\n')` to match the outer `contextParts.join('\\n\\n')` pattern and give each attached context block a clear visual boundary.\n\nUpdate the `attached_contexts` test in session.test.ts to assert the exact joined multi-entry string (pinning the separator) rather than just checking each item independently via `toContain`.\n\nSource: Review suggestions #2, #4, #9, #12 from task 605 triage.\n\nmemory_hints: search \"attached_contexts separator prompt building\", entities: session.ts",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -12586,7 +12597,7 @@
       ],
       "created": "2026-03-28T00:09:42.347Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-28T00:10:05.400Z"
+      "updated": "2026-03-28T00:10:10.908Z"
     }
   }
 }
