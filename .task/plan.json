@@ -345,22 +345,22 @@
       "id": "step-44",
       "type": "impl",
       "description": "Bulk-restore 8 merge artifact files from main to eliminate artifacts accumulated since the last bulk-restore (step-37). Restore via `git checkout main -- <file>` for each of: (a) .taskmaster/tasks/tasks.json, (b) crates/reify-expr/src/lib.rs (missing rank-2 tensor validation: is_rank2, validate_rank2_tensors, jagged validation), (c) crates/reify-expr/tests/matrix_eval_tests.rs (missing rank-2 matrix tests), (d) crates/reify-types/src/value.rs (missing Neg trait impl, neg_components, ~93 lines of tests), (e) gui/src-tauri/src/tests/claude_bridge_tests.rs (missing selection threading test), (f) gui/src-tauri/src/tests/mcp_dispatch_tests.rs (missing dispatch_get_selection_returns_both_fields test), (g) gui/src/__tests__/claudeBridge.test.ts (EventEntry payload artifact), (h) gui/src/bridge.ts (EventEntry payload artifact). Do NOT restore crates/reify-test-support/src/builders/module.rs \u2014 it has an intentional `units: Vec::new()` change required by the CompiledModule struct modification in task 208. After restore, the branch should differ from main in exactly 4 files: the 3 reify-compiler files + the test-support builder.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "8a69e572"
     },
     {
       "id": "step-45",
       "type": "impl",
       "description": "Merge latest main (146 commits ahead of merge base 883817c8) into the task branch. Since step-44 restored all artifact files to match main, there should be no conflicts in those files. The only potential merge conflicts are in the 4 intentional files (reify-compiler src/lib.rs, tests/unit_registry_tests.rs, tests/determinacy_compile_tests.rs, and reify-test-support builders/module.rs). Main is unlikely to have touched these since no other task targets reify-compiler. The merge updates the merge base to satisfy the reviewer's freshness check. The 146 main commits are predominantly task status auto-commits, plus: Value::neg refactor, rank-2 tensor add/sub, MCP selection threading, EventEntry payload refactor.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "eee83e0d"
     },
     {
       "id": "step-46",
       "type": "test",
       "description": "Post-restore full verification for round 12: (a) Run `git diff main --name-only` and confirm exactly 4 files differ: crates/reify-compiler/src/lib.rs, crates/reify-compiler/tests/unit_registry_tests.rs, crates/reify-compiler/tests/determinacy_compile_tests.rs, crates/reify-test-support/src/builders/module.rs. (b) Run cargo check --all \u2014 must pass. (c) Run cargo clippy --all-targets \u2014 must pass cleanly with no errors (pre-existing warnings in out-of-scope modules are acceptable). (d) Run cargo test --all \u2014 all tests must pass. This is the definitive resolution of the round-12 post_merge_verify blocking issue.",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "eee83e0d"
     }
   ],
   "design_decisions": [
