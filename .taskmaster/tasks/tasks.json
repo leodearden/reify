@@ -11459,9 +11459,15 @@
             "tree-sitter-reify"
           ],
           "memory_hints": {
-            "entities": [],
+            "entities": [
+              "build.rs",
+              "tree-sitter-reify",
+              "tree-sitter generate"
+            ],
             "queries": [
-              "resolution for: build.rs robustness: verify all outputs, content hash staleness, timeout, remove redundant rerun"
+              "build.rs auto-generation robustness staleness detection",
+              "tree-sitter-reify build output verification content hash",
+              "git worktree mtime unreliable cargo rerun-if-changed"
             ]
           }
         },
