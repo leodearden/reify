@@ -372,7 +372,7 @@ mod tests {
         let result = report_constraint_results(&entries, &mut buf);
         let output = String::from_utf8(buf).unwrap();
 
-        assert!(result, "should return true when all satisfied");
+        assert_eq!(result, ConstraintOutcome::AllSatisfied, "should return AllSatisfied when all satisfied");
         assert!(output.contains("OK stress_limit"));
         assert!(output.contains("OK size_bound"));
         assert!(!output.contains("VIOLATED"));
@@ -388,7 +388,7 @@ mod tests {
         let result = report_constraint_results(&entries, &mut buf);
         let output = String::from_utf8(buf).unwrap();
 
-        assert!(!result, "should return false when any violated");
+        assert_eq!(result, ConstraintOutcome::SomeViolated, "should return SomeViolated when any violated");
         assert!(output.contains("OK max_force"));
         assert!(output.contains("VIOLATED clearance"));
     }
@@ -402,7 +402,7 @@ mod tests {
         let result = report_constraint_results(&entries, &mut buf);
         let output = String::from_utf8(buf).unwrap();
 
-        assert!(result, "indeterminate should not cause false return");
+        assert_eq!(result, ConstraintOutcome::SomeIndeterminate(1), "indeterminate should return SomeIndeterminate with count");
         assert!(output.contains("INDETERMINATE load"));
     }
 
