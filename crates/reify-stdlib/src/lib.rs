@@ -5469,6 +5469,20 @@ mod tests {
         );
     }
 
+    #[test]
+    fn complex_magnitude_nan_component_returns_undef() {
+        // A NaN component propagates through hypot and sanitize_value catches it.
+        let z = Value::Complex {
+            re: f64::NAN,
+            im: 1.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            eval_builtin("complex_magnitude", &[z]).is_undef(),
+            "complex_magnitude with NaN component must return Undef"
+        );
+    }
+
     // --- non-numeric args → Undef ---
 
     #[test]
