@@ -298,6 +298,50 @@ fn test_try_wait_error_path_kills_child() {
 }
 
 #[test]
+fn test_err_arm_extraction_not_fooled_by_format_braces() {
+    // Synthetic source where child.kill()/child.wait() appear AFTER a format string with '}'.
+    // This demonstrates the fragility of the naive .find('}') approach.
+    let source = r#"
+        match child.try_wait() {
+            Ok(Some(status)) => { return Ok(()); }
+            Ok(None) => { /* polling */ }
+            Err(e) => {
+                return Err(format!("Error: '{}'", e));
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+    "#;
+
+    // The naive .find('}') approach finds the '}' inside the format string,
+    // not the arm's closing brace.
+    let err_start = source.find("Err(e) =>").unwrap();
+    let err_section = &source[err_start..];
+    let naive_end = err_section.find('}').unwrap();
+    let naive_slice = &err_section[..=naive_end];
+
+    // The naive approach misses child.kill() and child.wait() because they
+    // appear after the format string's '}'.
+    assert!(
+        !naive_slice.contains("child.kill()"),
+        "naive .find('}}') should NOT capture child.kill() — it stops at format string brace"
+    );
+
+    // The window approach captures the full arm.
+    let window = find_err_arm_window(source, 300).expect("should find Err(e) arm");
+    assert!(
+        window.contains("child.kill()"),
+        "window approach should capture child.kill(). Window: {}",
+        window
+    );
+    assert!(
+        window.contains("child.wait()"),
+        "window approach should capture child.wait(). Window: {}",
+        window
+    );
+}
+
+#[test]
 fn test_subprocess_timeout_kills_hung_process() {
     use std::time::Instant;
 
