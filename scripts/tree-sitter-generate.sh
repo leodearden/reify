@@ -48,7 +48,15 @@ if [ "$STALE" = false ]; then
     exit 0
 fi
 
-tree-sitter generate
+GEN_EXIT=0
+timeout 60 tree-sitter generate || GEN_EXIT=$?
+if [ "$GEN_EXIT" -eq 124 ]; then
+    echo "ERROR: tree-sitter generate timed out after 60s" >&2
+    exit 1
+elif [ "$GEN_EXIT" -ne 0 ]; then
+    echo "ERROR: tree-sitter generate failed (exit code $GEN_EXIT)" >&2
+    exit 1
+fi
 
 # Verify expected outputs exist.
 for f in src/parser.c src/grammar.json src/node-types.json; do
