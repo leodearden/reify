@@ -10869,7 +10869,7 @@
         "description": "The frontend `QUANTITY_RE` rejects `'5 mm'` (whitespace between number and unit), but the backend `parse_value_string` accepts it because it does `strip_suffix(unit)` then `num_str.trim()`. The original task spec listed `'5 mm'` as accepted, but the implementation chose to reject it. Need a deliberate design decision.",
         "details": "## Context\n\n- Frontend regex: `/^-?(\\d+\\.?\\d*|\\.\\d+)([eE][+-]?\\d+)?(mm|cm|deg|rad|m)$/` — no whitespace allowed\n- Backend `parse_value_string` (engine.rs:416-417): `s.strip_suffix(unit)` → `num_str.trim()` — whitespace accepted\n- Tree-sitter grammar uses `token.immediate` (no whitespace), but that applies to `.ri` source parsing, not the IPC `parse_value_string` path\n\n## Options\n\n1. **Accept whitespace** — relax regex to allow `\\s*` before unit, matching backend behavior. More forgiving UX.\n2. **Reject whitespace** (current) — stricter, consistent with `.ri` grammar. Document the intentional frontend-is-stricter policy.\n\n### Files\n- `gui/src/panels/PropertyEditor.tsx` (QUANTITY_RE)\n- `gui/src/__tests__/PropertyEditor.test.tsx` (whitespace test cases)\n\n### memory_hints\n- `search(query=\"PropertyEditor whitespace quantity literal design decision\", project_id=\"reify\")`\n- `search(query=\"parse_value_string unit whitespace\", project_id=\"reify\")`",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -10883,7 +10883,8 @@
             "gui/src/panels",
             "gui/src/__tests__"
           ]
-        }
+        },
+        "updatedAt": "2026-03-28T01:13:39.537Z"
       },
       {
         "id": "539",
@@ -13040,7 +13041,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T01:13:33.985Z",
+      "lastModified": "2026-03-28T01:13:39.538Z",
       "taskCount": 650,
       "completedCount": 301,
       "tags": [
