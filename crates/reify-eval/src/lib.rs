@@ -1047,44 +1047,6 @@ impl Engine {
                         version: VersionId(version_id),
                         payload: Some(EventPayload::Duration(start.elapsed())),
                     });
-                } else if cell.kind == ValueCellKind::Param && cell.default_expr.is_none() {
-                    // Param with no default: Undef with DeterminacyState::Undetermined
-                    let node_id = NodeId::Value(cell.id.clone());
-                    let start = Instant::now();
-                    self.journal.record(EvalEvent {
-                        timestamp: start,
-                        node_id: node_id.clone(),
-                        kind: EventKind::Started,
-                        version: VersionId(version_id),
-                        payload: None,
-                    });
-
-                    values.insert(cell.id.clone(), reify_types::Value::Undef);
-                    snapshot.values.insert(
-                        cell.id.clone(),
-                        (reify_types::Value::Undef, DeterminacyState::Undetermined),
-                    );
-
-                    // Record in cache
-                    let trace = DependencyTrace::default();
-                    let cached_result = CachedResult::Value(
-                        reify_types::Value::Undef,
-                        DeterminacyState::Undetermined,
-                    );
-                    let outcome = self.cache.record_evaluation(
-                        node_id.clone(),
-                        cached_result,
-                        VersionId(version_id),
-                        trace,
-                    );
-
-                    self.journal.record(EvalEvent {
-                        timestamp: Instant::now(),
-                        node_id,
-                        kind: EventKind::Completed { outcome },
-                        version: VersionId(version_id),
-                        payload: Some(EventPayload::Duration(start.elapsed())),
-                    });
                 }
             }
 
@@ -1726,13 +1688,6 @@ impl Engine {
                                     .insert(mid.clone(), (val, DeterminacyState::Determined));
                             }
                         } else {
-                            // Skip Auto cells — their values are managed by
-                            // the solver, not by guard activation state.
-                            if let Some(node) = graph.value_cells.get(mid)
-                                && node.kind == ValueCellKind::Auto
-                            {
-                                continue;
-                            }
                             values.insert(mid.clone(), Value::Undef);
                             new_snapshot.values.insert(
                                 mid.clone(),
@@ -1756,13 +1711,6 @@ impl Engine {
                                     .insert(mid.clone(), (val, DeterminacyState::Determined));
                             }
                         } else {
-                            // Skip Auto cells — their values are managed by
-                            // the solver, not by guard activation state.
-                            if let Some(node) = graph.value_cells.get(mid)
-                                && node.kind == ValueCellKind::Auto
-                            {
-                                continue;
-                            }
                             values.insert(mid.clone(), Value::Undef);
                             new_snapshot.values.insert(
                                 mid.clone(),
@@ -1987,13 +1935,7 @@ impl Engine {
                                     .insert(member_id.clone(), (val, DeterminacyState::Determined));
                             }
                         } else {
-                            // Deactivate: set to Undef — but skip Auto cells,
-                            // whose values are managed by the solver, not guards.
-                            if let Some(node) = new_snapshot.graph.value_cells.get(member_id)
-                                && node.kind == ValueCellKind::Auto
-                            {
-                                continue;
-                            }
+                            // Deactivate: set to Undef
                             values.insert(member_id.clone(), Value::Undef);
                             new_snapshot.values.insert(
                                 member_id.clone(),
@@ -2020,13 +1962,7 @@ impl Engine {
                                     .insert(member_id.clone(), (val, DeterminacyState::Determined));
                             }
                         } else {
-                            // Deactivate: set to Undef — but skip Auto cells,
-                            // whose values are managed by the solver, not guards.
-                            if let Some(node) = new_snapshot.graph.value_cells.get(member_id)
-                                && node.kind == ValueCellKind::Auto
-                            {
-                                continue;
-                            }
+                            // Deactivate: set to Undef
                             values.insert(member_id.clone(), Value::Undef);
                             new_snapshot.values.insert(
                                 member_id.clone(),

@@ -121,57 +121,31 @@ fn check_indeterminate_constraint_exits_success() {
         "reify check should exit 0 when constraints are indeterminate (not violated).\nstdout: {stdout}\nstderr: {stderr}"
     );
     assert!(
-        stdout.contains("INDETERMINATE"),
-        "stdout should contain 'INDETERMINATE', got: {stdout}"
+        stdout.contains("OK"),
+        "stdout should contain 'OK' for the satisfied constraint (thickness > 2mm), got: {stdout}"
     );
     assert!(
-        stdout.contains("OK"),
-        "stdout should contain 'OK' for the satisfied thickness constraint, got: {stdout}"
+        stdout.contains("INDETERMINATE"),
+        "stdout should contain 'INDETERMINATE', got: {stdout}"
     );
     assert!(
         !stdout.contains("VIOLATED"),
         "stdout should NOT contain 'VIOLATED', got: {stdout}"
     );
     assert!(
-        !stdout.contains("Some constraints violated"),
-        "stdout should NOT contain 'Some constraints violated', got: {stdout}"
+        stdout.contains("No constraints violated"),
+        "stdout should contain 'No constraints violated', got: {stdout}"
     );
     assert!(
-        stdout.contains("No constraint violations (some indeterminate)"),
-        "stdout should contain 'No constraint violations (some indeterminate)', got: {stdout}"
-    );
-    assert!(
-        !stdout.contains("All constraints satisfied"),
-        "stdout should NOT contain 'All constraints satisfied' when indeterminate, got: {stdout}"
+        stdout.contains("indeterminate"),
+        "stdout should contain 'indeterminate', got: {stdout}"
     );
 }
 
 #[test]
-fn check_nonexistent_file_exits_failure() {
+fn check_violated_with_indeterminate_exits_failure() {
     let output = Command::new(env!("CARGO_BIN_EXE_reify"))
-        .args(["check", "nonexistent_file_that_does_not_exist.ri"])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .expect("failed to execute reify binary");
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    assert!(
-        !output.status.success(),
-        "reify check should exit non-zero for missing file.\nstderr: {stderr}"
-    );
-    assert!(
-        stderr.contains("Error reading"),
-        "stderr should contain error message about reading, got: {stderr}"
-    );
-}
-
-#[test]
-fn check_violated_and_indeterminate_exits_failure() {
-    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
-        .args(["check", &fixture_path("bracket_violated_indeterminate.ri")])
+        .args(["check", &fixture_path("bracket_violated_with_indeterminate.ri")])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -183,7 +157,7 @@ fn check_violated_and_indeterminate_exits_failure() {
 
     assert!(
         !output.status.success(),
-        "reify check should exit non-zero when VIOLATED present even with INDETERMINATE.\nstdout: {stdout}\nstderr: {stderr}"
+        "reify check should exit non-zero when constraints are violated.\nstdout: {stdout}\nstderr: {stderr}"
     );
     assert!(
         stdout.contains("VIOLATED"),
@@ -194,8 +168,8 @@ fn check_violated_and_indeterminate_exits_failure() {
         "stdout should contain 'INDETERMINATE', got: {stdout}"
     );
     assert!(
-        stdout.contains("Some constraints violated"),
-        "stdout should contain 'Some constraints violated', got: {stdout}"
+        stdout.contains("Some constraints violated."),
+        "stdout should contain violation summary, got: {stdout}"
     );
 }
 
@@ -222,18 +196,40 @@ fn check_all_indeterminate_exits_success() {
     );
     assert!(
         !stdout.contains("OK"),
-        "stdout should NOT contain 'OK' when all constraints are indeterminate, got: {stdout}"
+        "stdout should NOT contain 'OK' (no satisfied constraints), got: {stdout}"
     );
     assert!(
         !stdout.contains("VIOLATED"),
         "stdout should NOT contain 'VIOLATED', got: {stdout}"
     );
     assert!(
-        stdout.contains("No constraint violations (some indeterminate)"),
-        "stdout should contain 'No constraint violations (some indeterminate)', got: {stdout}"
+        stdout.contains("No constraints violated"),
+        "stdout should contain 'No constraints violated', got: {stdout}"
     );
     assert!(
-        !stdout.contains("All constraints satisfied"),
-        "stdout should NOT contain 'All constraints satisfied' when all indeterminate, got: {stdout}"
+        stdout.contains("indeterminate"),
+        "stdout should contain 'indeterminate', got: {stdout}"
+    );
+}
+
+#[test]
+fn check_nonexistent_file_exits_failure() {
+    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
+        .args(["check", "nonexistent_file_that_does_not_exist.ri"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .expect("failed to execute reify binary");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        !output.status.success(),
+        "reify check should exit non-zero for missing file.\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("Error reading"),
+        "stderr should contain error message about reading, got: {stderr}"
     );
 }

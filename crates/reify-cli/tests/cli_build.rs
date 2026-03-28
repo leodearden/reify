@@ -165,6 +165,10 @@ fn build_indeterminate_constraint_exits_success() {
         "reify build should exit 0 when constraints are indeterminate (not violated).\nstdout: {stdout}\nstderr: {stderr}"
     );
     assert!(
+        stdout.contains("OK"),
+        "stdout should contain 'OK' for the satisfied constraint (thickness > 2mm), got: {stdout}"
+    );
+    assert!(
         stdout.contains("INDETERMINATE"),
         "stdout should contain 'INDETERMINATE', got: {stdout}"
     );
@@ -177,18 +181,16 @@ fn build_indeterminate_constraint_exits_success() {
         "stdout should NOT contain 'VIOLATED', got: {stdout}"
     );
     assert!(
-        stdout.contains("OK"),
-        "stdout should contain 'OK' for the satisfied thickness constraint, got: {stdout}"
-    );
-    assert!(
         !stdout.contains("Some constraints violated"),
         "stdout should NOT contain violation summary, got: {stdout}"
     );
-    // Note: build path does not print constraint_summary_message (unlike check path),
-    // so we only verify absence of wrong summaries, not presence of correct one.
     assert!(
-        !stdout.contains("All constraints satisfied"),
-        "stdout should NOT contain 'All constraints satisfied' when indeterminate, got: {stdout}"
+        stdout.contains("No constraints violated"),
+        "stdout should contain 'No constraints violated', got: {stdout}"
+    );
+    assert!(
+        stdout.contains("indeterminate"),
+        "stdout should contain 'indeterminate', got: {stdout}"
     );
     assert!(
         output_path.exists(),
@@ -197,13 +199,13 @@ fn build_indeterminate_constraint_exits_success() {
 }
 
 #[test]
-fn build_violated_and_indeterminate_exits_failure() {
+fn build_violated_with_indeterminate_exits_failure() {
     let dir = tempfile::tempdir().expect("failed to create temp dir");
     let output_path = dir.path().join("out.step");
     let output = Command::new(env!("CARGO_BIN_EXE_reify"))
         .args([
             "build",
-            &fixture_path("bracket_violated_indeterminate.ri"),
+            &fixture_path("bracket_violated_with_indeterminate.ri"),
             "-o",
             output_path.to_str().unwrap(),
         ])
@@ -218,7 +220,7 @@ fn build_violated_and_indeterminate_exits_failure() {
 
     assert!(
         !output.status.success(),
-        "reify build should exit non-zero when VIOLATED present even with INDETERMINATE.\nstdout: {stdout}\nstderr: {stderr}"
+        "reify build should exit non-zero when constraints are violated.\nstdout: {stdout}\nstderr: {stderr}"
     );
     assert!(
         stdout.contains("VIOLATED"),
@@ -229,10 +231,10 @@ fn build_violated_and_indeterminate_exits_failure() {
         "stdout should contain 'INDETERMINATE', got: {stdout}"
     );
     assert!(
-        stdout.contains("Some constraints violated"),
-        "stdout should contain 'Some constraints violated', got: {stdout}"
+        stdout.contains("Some constraints violated."),
+        "stdout should contain violation summary, got: {stdout}"
     );
-    // Geometry file should still be written even when constraints are violated
+    // Geometry file should still be written even with violations
     assert!(
         output_path.exists(),
         "geometry file should still be written even with constraint violations"
@@ -268,26 +270,24 @@ fn build_all_indeterminate_exits_success() {
         "stdout should contain 'INDETERMINATE', got: {stdout}"
     );
     assert!(
-        stdout.contains("Wrote"),
-        "stdout should contain 'Wrote', got: {stdout}"
-    );
-    assert!(
         !stdout.contains("OK"),
-        "stdout should NOT contain 'OK' when all constraints are indeterminate, got: {stdout}"
+        "stdout should NOT contain 'OK' (no satisfied constraints), got: {stdout}"
     );
     assert!(
         !stdout.contains("VIOLATED"),
         "stdout should NOT contain 'VIOLATED', got: {stdout}"
     );
     assert!(
-        !stdout.contains("Some constraints violated"),
-        "stdout should NOT contain 'Some constraints violated', got: {stdout}"
+        stdout.contains("No constraints violated"),
+        "stdout should contain 'No constraints violated', got: {stdout}"
     );
-    // Note: build path does not print constraint_summary_message (unlike check path),
-    // so we only verify absence of wrong summaries, not presence of correct one.
     assert!(
-        !stdout.contains("All constraints satisfied"),
-        "stdout should NOT contain 'All constraints satisfied' when all indeterminate, got: {stdout}"
+        stdout.contains("indeterminate"),
+        "stdout should contain 'indeterminate', got: {stdout}"
+    );
+    assert!(
+        stdout.contains("Wrote"),
+        "stdout should contain 'Wrote', got: {stdout}"
     );
     assert!(
         output_path.exists(),

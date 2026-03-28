@@ -220,6 +220,14 @@ fn test_no_redundant_rerun_if_changed() {
     );
 }
 
+/// Find the Err(e) arm in source code and return a window of characters from that point.
+/// This avoids fragile brace-counting that can be fooled by braces inside string literals.
+fn find_err_arm_window(source: &str, window: usize) -> Option<&str> {
+    let start = source.find("Err(e) =>")?;
+    let end = (start + window).min(source.len());
+    Some(&source[start..end])
+}
+
 /// Duplicates run_with_timeout logic from build.rs for testability.
 /// Returns Ok(()) on success, Err(message) on failure or timeout.
 fn run_with_timeout(cmd: &str, args: &[&str], timeout_secs: u64) -> Result<(), String> {
@@ -271,29 +279,66 @@ fn test_try_wait_error_path_kills_child() {
     let build_rs = std::fs::read_to_string("build.rs")
         .expect("should be able to read build.rs from tree-sitter-reify crate root");
 
-    // Extract the Err(e) arm of try_wait — it's the block after `Err(e) =>`
-    // within the run_with_timeout function.
-    let err_arm_start = build_rs
-        .find("Err(e) =>")
+    // Extract a 300-char window after `Err(e) =>` — this captures the full ~220-char arm
+    // without fragile brace-counting that can be fooled by braces inside format strings.
+    let err_arm = find_err_arm_window(&build_rs, 300)
         .expect("build.rs should contain an Err(e) arm in try_wait match");
-    let err_arm_section = &build_rs[err_arm_start..];
-    // Take enough of the section to capture the full arm (up to the next `}`)
-    let err_arm_end = err_arm_section
-        .find('}')
-        .expect("Err(e) arm should have a closing brace");
-    let err_arm = &err_arm_section[..=err_arm_end];
 
     assert!(
         err_arm.contains("child.kill()"),
         "Err(e) arm of try_wait() must contain child.kill() to prevent orphan processes. \
-         Found: {}",
+         Window: {}",
         err_arm
     );
     assert!(
         err_arm.contains("child.wait()"),
         "Err(e) arm of try_wait() must contain child.wait() to reap the child process. \
-         Found: {}",
+         Window: {}",
         err_arm
+    );
+}
+
+#[test]
+fn test_err_arm_extraction_not_fooled_by_format_braces() {
+    // Synthetic source where child.kill()/child.wait() appear AFTER a format string with '}'.
+    // This demonstrates the fragility of the naive .find('}') approach.
+    let source = r#"
+        match child.try_wait() {
+            Ok(Some(status)) => { return Ok(()); }
+            Ok(None) => { /* polling */ }
+            Err(e) => {
+                return Err(format!("Error: '{}'", e));
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+    "#;
+
+    // The naive .find('}') approach finds the '}' inside the format string,
+    // not the arm's closing brace.
+    let err_start = source.find("Err(e) =>").unwrap();
+    let err_section = &source[err_start..];
+    let naive_end = err_section.find('}').unwrap();
+    let naive_slice = &err_section[..=naive_end];
+
+    // The naive approach misses child.kill() and child.wait() because they
+    // appear after the format string's '}'.
+    assert!(
+        !naive_slice.contains("child.kill()"),
+        "naive .find('}}') should NOT capture child.kill() — it stops at format string brace"
+    );
+
+    // The window approach captures the full arm.
+    let window = find_err_arm_window(source, 300).expect("should find Err(e) arm");
+    assert!(
+        window.contains("child.kill()"),
+        "window approach should capture child.kill(). Window: {}",
+        window
+    );
+    assert!(
+        window.contains("child.wait()"),
+        "window approach should capture child.wait(). Window: {}",
+        window
     );
 }
 

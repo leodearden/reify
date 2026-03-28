@@ -436,15 +436,20 @@ mod tests {
 }"#;
         let ctx = AnalysisContext::new(source, &test_uri());
         let members = ctx.member_names();
-        let names: Vec<&str> = members.iter().map(|(n, _, _)| *n).collect();
-        assert!(
-            names.contains(&"cond"),
-            "should include top-level param 'cond', got: {names:?}"
-        );
-        assert!(
-            names.contains(&"guarded_x"),
-            "should include guarded-group param 'guarded_x', got: {names:?}"
-        );
+
+        let cond = members
+            .iter()
+            .find(|(n, _, _)| *n == "cond")
+            .expect("should include top-level param 'cond'");
+        assert_eq!(cond.1, ValueCellKind::Param, "cond should be a Param");
+        assert_eq!(*cond.2, Type::Bool, "cond should have Bool type");
+
+        let guarded = members
+            .iter()
+            .find(|(n, _, _)| *n == "guarded_x")
+            .expect("should include guarded-group param 'guarded_x'");
+        assert_eq!(guarded.1, ValueCellKind::Param, "guarded_x should be a Param");
+        assert_eq!(*guarded.2, Type::length(), "guarded_x should have length type");
     }
 
     #[test]
@@ -459,19 +464,27 @@ mod tests {
 }"#;
         let ctx = AnalysisContext::new(source, &test_uri());
         let members = ctx.member_names();
-        let names: Vec<&str> = members.iter().map(|(n, _, _)| *n).collect();
-        assert!(
-            names.contains(&"cond"),
-            "should include top-level param 'cond', got: {names:?}"
-        );
-        assert!(
-            names.contains(&"when_true"),
-            "should include where-branch param 'when_true', got: {names:?}"
-        );
-        assert!(
-            names.contains(&"when_false"),
-            "should include else-branch param 'when_false', got: {names:?}"
-        );
+
+        let cond = members
+            .iter()
+            .find(|(n, _, _)| *n == "cond")
+            .expect("should include top-level param 'cond'");
+        assert_eq!(cond.1, ValueCellKind::Param, "cond should be a Param");
+        assert_eq!(*cond.2, Type::Bool, "cond should have Bool type");
+
+        let when_true = members
+            .iter()
+            .find(|(n, _, _)| *n == "when_true")
+            .expect("should include where-branch param 'when_true'");
+        assert_eq!(when_true.1, ValueCellKind::Param, "when_true should be a Param");
+        assert_eq!(*when_true.2, Type::length(), "when_true should have length type");
+
+        let when_false = members
+            .iter()
+            .find(|(n, _, _)| *n == "when_false")
+            .expect("should include else-branch param 'when_false'");
+        assert_eq!(when_false.1, ValueCellKind::Param, "when_false should be a Param");
+        assert_eq!(*when_false.2, Type::length(), "when_false should have length type");
     }
 
     // --- structure_names tests ---
@@ -665,6 +678,12 @@ mod tests {
             .expect("guarded_x inside where block should be found");
         assert_eq!(info.name, "guarded_x");
         assert_eq!(info.kind, ValueCellKind::Param);
+        assert_eq!(*info.cell_type, Type::length(), "guarded_x should have length type");
+        let decl_text = &source[info.span.start as usize..info.span.end as usize];
+        assert!(
+            decl_text.contains("guarded_x") && decl_text.contains("5mm"),
+            "span should cover full param declaration, got: {decl_text:?}"
+        );
     }
 
     #[test]
@@ -684,6 +703,12 @@ mod tests {
             .expect("deep_x inside nested where blocks should be found");
         assert_eq!(info.name, "deep_x");
         assert_eq!(info.kind, ValueCellKind::Param);
+        assert_eq!(*info.cell_type, Type::length(), "deep_x should have length type");
+        let decl_text = &source[info.span.start as usize..info.span.end as usize];
+        assert!(
+            decl_text.contains("deep_x") && decl_text.contains("1mm"),
+            "span should cover full param declaration, got: {decl_text:?}"
+        );
     }
 
     #[test]
@@ -702,6 +727,12 @@ mod tests {
             .expect("fallback inside else block should be found");
         assert_eq!(info.name, "fallback");
         assert_eq!(info.kind, ValueCellKind::Let);
+        assert_eq!(*info.cell_type, Type::Int, "fallback (literal 2) should have Int type");
+        let decl_text = &source[info.span.start as usize..info.span.end as usize];
+        assert!(
+            decl_text.contains("fallback"),
+            "span should cover the let declaration, got: {decl_text:?}"
+        );
     }
 
     // --- decl_name field tests ---

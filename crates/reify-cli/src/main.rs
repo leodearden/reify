@@ -90,19 +90,26 @@ fn cmd_check(args: &[String]) -> ExitCode {
     let mut engine = reify_eval::Engine::new(Box::new(checker), None);
     let result = engine.check(&compiled);
 
-    let all_satisfied =
+    let outcome =
         report_constraint_results(&result.constraint_results, &mut std::io::stdout());
 
     for diag in &result.diagnostics {
         eprintln!("{}: {}", diag.severity, diag.message);
     }
 
-    println!("{}", constraint_summary_message(&result.constraint_results, all_satisfied));
-
-    if all_satisfied {
-        ExitCode::SUCCESS
-    } else {
-        ExitCode::FAILURE
+    match outcome {
+        ConstraintOutcome::AllSatisfied => {
+            println!("All constraints satisfied.");
+            ExitCode::SUCCESS
+        }
+        ConstraintOutcome::SomeIndeterminate(n) => {
+            println!("No constraints violated ({n} indeterminate).");
+            ExitCode::SUCCESS
+        }
+        ConstraintOutcome::SomeViolated => {
+            println!("Some constraints violated.");
+            ExitCode::FAILURE
+        }
     }
 }
 
@@ -155,7 +162,7 @@ fn cmd_build(args: &[String]) -> ExitCode {
     }
 
     // Report constraint status
-    let all_satisfied =
+    let outcome =
         report_constraint_results(&result.constraint_results, &mut std::io::stdout());
 
     match result.geometry_output {
@@ -165,11 +172,16 @@ fn cmd_build(args: &[String]) -> ExitCode {
                 return ExitCode::FAILURE;
             }
             println!("Wrote {} ({} bytes)", output_path, data.len());
-            if all_satisfied {
-                ExitCode::SUCCESS
-            } else {
-                println!("Some constraints violated.");
-                ExitCode::FAILURE
+            match outcome {
+                ConstraintOutcome::AllSatisfied => ExitCode::SUCCESS,
+                ConstraintOutcome::SomeIndeterminate(n) => {
+                    println!("No constraints violated ({n} indeterminate).");
+                    ExitCode::SUCCESS
+                }
+                ConstraintOutcome::SomeViolated => {
+                    println!("Some constraints violated.");
+                    ExitCode::FAILURE
+                }
             }
         }
         None => {
@@ -254,31 +266,20 @@ fn cmd_lsp() -> ExitCode {
     }
 }
 
-/// Return the appropriate summary message for constraint results.
-///
-/// - If `no_violations` is false, returns "Some constraints violated."
-/// - If `no_violations` is true but some entries are `Indeterminate`, returns
-///   "No constraint violations (some indeterminate)."
-/// - Otherwise (all truly satisfied), returns "All constraints satisfied."
-fn constraint_summary_message(
-    results: &[reify_eval::ConstraintCheckEntry],
-    no_violations: bool,
-) -> &'static str {
-    if !no_violations {
-        "Some constraints violated."
-    } else if results
-        .iter()
-        .any(|e| e.satisfaction == Satisfaction::Indeterminate)
-    {
-        "No constraint violations (some indeterminate)."
-    } else {
-        "All constraints satisfied."
-    }
+/// Outcome of constraint checking.
+#[derive(Debug, PartialEq)]
+enum ConstraintOutcome {
+    /// Every constraint evaluated to `Satisfied`.
+    AllSatisfied,
+    /// No constraints violated, but some were `Indeterminate` (undef inputs).
+    SomeIndeterminate(usize),
+    /// At least one constraint evaluated to `Violated`.
+    SomeViolated,
 }
 
 /// Report constraint check results to the given writer.
 ///
-/// Returns `true` if all constraints are satisfied, `false` otherwise.
+/// Returns a [`ConstraintOutcome`] indicating the overall result.
 /// Each entry is printed as `  {STATUS} {label}` where label falls back to the
 /// constraint id's Display representation when `entry.label` is `None`.
 ///
@@ -287,29 +288,39 @@ fn constraint_summary_message(
 /// from `auto` parameters not yet resolved by the solver. Treating these as
 /// violations would block evaluations that are otherwise valid and break the
 /// incremental evaluation engine. Only explicit `Violated` results cause
-/// `all_satisfied` to be `false`.
+/// a `SomeViolated` outcome.
 fn report_constraint_results(
     results: &[reify_eval::ConstraintCheckEntry],
     out: &mut impl std::io::Write,
-) -> bool {
-    let mut all_satisfied = true;
+) -> ConstraintOutcome {
+    let mut violated = false;
+    let mut indeterminate_count: usize = 0;
     for entry in results {
         let status = match entry.satisfaction {
             Satisfaction::Satisfied => "OK",
             Satisfaction::Violated => {
-                all_satisfied = false;
+                violated = true;
                 "VIOLATED"
             }
-            // Indeterminate does not set all_satisfied=false — undef inputs
+            // Indeterminate does not count as violated — undef inputs
             // (auto params, partial evaluation) are not violations.
             // Undef propagates as quiet-NaN semantics.
-            Satisfaction::Indeterminate => "INDETERMINATE",
+            Satisfaction::Indeterminate => {
+                indeterminate_count += 1;
+                "INDETERMINATE"
+            }
         };
         let id_str = format!("{}", entry.id);
         let label = entry.label.as_deref().unwrap_or(&id_str);
         let _ = writeln!(out, "  {} {}", status, label);
     }
-    all_satisfied
+    if violated {
+        ConstraintOutcome::SomeViolated
+    } else if indeterminate_count > 0 {
+        ConstraintOutcome::SomeIndeterminate(indeterminate_count)
+    } else {
+        ConstraintOutcome::AllSatisfied
+    }
 }
 
 fn cmd_mcp_server(args: &[String]) -> ExitCode {
@@ -394,7 +405,7 @@ mod tests {
         let result = report_constraint_results(&entries, &mut buf);
         let output = String::from_utf8(buf).unwrap();
 
-        assert!(result, "should return true when all satisfied");
+        assert_eq!(result, ConstraintOutcome::AllSatisfied, "should return AllSatisfied when all satisfied");
         assert!(output.contains("OK stress_limit"));
         assert!(output.contains("OK size_bound"));
         assert!(!output.contains("VIOLATED"));
@@ -410,7 +421,7 @@ mod tests {
         let result = report_constraint_results(&entries, &mut buf);
         let output = String::from_utf8(buf).unwrap();
 
-        assert!(!result, "should return false when any violated");
+        assert_eq!(result, ConstraintOutcome::SomeViolated, "should return SomeViolated when any violated");
         assert!(output.contains("OK max_force"));
         assert!(output.contains("VIOLATED clearance"));
     }
@@ -424,7 +435,7 @@ mod tests {
         let result = report_constraint_results(&entries, &mut buf);
         let output = String::from_utf8(buf).unwrap();
 
-        assert!(result, "indeterminate should not cause false return");
+        assert_eq!(result, ConstraintOutcome::SomeIndeterminate(1), "indeterminate should return SomeIndeterminate with count");
         assert!(output.contains("INDETERMINATE load"));
     }
 
@@ -463,35 +474,5 @@ mod tests {
             !output.contains("Axle#constraint"),
             "should NOT contain id fallback when label is present"
         );
-    }
-
-    #[test]
-    fn summary_message_all_satisfied() {
-        let entries = vec![
-            make_entry("Bracket", 0, Some("stress_limit"), Satisfaction::Satisfied),
-            make_entry("Bracket", 1, Some("size_bound"), Satisfaction::Satisfied),
-        ];
-        let msg = constraint_summary_message(&entries, true);
-        assert_eq!(msg, "All constraints satisfied.");
-    }
-
-    #[test]
-    fn summary_message_indeterminate_no_violations() {
-        let entries = vec![
-            make_entry("Beam", 0, Some("load"), Satisfaction::Satisfied),
-            make_entry("Beam", 1, Some("deflection"), Satisfaction::Indeterminate),
-        ];
-        let msg = constraint_summary_message(&entries, true);
-        assert_eq!(msg, "No constraint violations (some indeterminate).");
-    }
-
-    #[test]
-    fn summary_message_violated() {
-        let entries = vec![
-            make_entry("Part", 0, Some("max_force"), Satisfaction::Violated),
-            make_entry("Part", 1, Some("clearance"), Satisfaction::Indeterminate),
-        ];
-        let msg = constraint_summary_message(&entries, false);
-        assert_eq!(msg, "Some constraints violated.");
     }
 }
