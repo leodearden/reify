@@ -52,6 +52,19 @@ expected_hash=$(sha256sum "$TS_DIR/grammar.js" | awk '{print $1}')
 assert "stamp hash matches grammar.js sha256" \
     test "$stamp_content" = "$expected_hash"
 
+# ── Test 2: staleness check skips generation when up to date ───────
+echo ""
+echo "--- Test 2: skip generation when grammar.js unchanged ---"
+
+# After Test 1, stamp is fresh and outputs exist. Run again.
+output2=$("$GENERATE_SCRIPT" 2>&1)
+
+assert "second run prints 'up to date'" \
+    bash -c "echo '$output2' | grep -q 'up to date'"
+
+assert "second run does NOT print 'generated parser files'" \
+    bash -c "! echo '$output2' | grep -q 'generated parser files'"
+
 # ── Summary ────────────────────────────────────────────────────────
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
