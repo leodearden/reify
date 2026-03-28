@@ -2081,11 +2081,20 @@ mod tests {
         };
 
         let result = solver.solve(&problem);
-        assert!(
-            matches!(result, SolveResult::Solved { .. }),
-            "feasible initial point with objective should return Solved, got {:?}",
-            result
-        );
+        match result {
+            SolveResult::Solved { values } => {
+                let si = values.get(&x_id).unwrap().as_f64().unwrap();
+                assert!(
+                    si < 0.008,
+                    "optimizer should drive x toward 5mm lower bound, got {} m (expected < 8mm)",
+                    si
+                );
+            }
+            other => panic!(
+                "feasible initial point with objective should return Solved, got {:?}",
+                other
+            ),
+        }
     }
 
     /// Running the solver through TerminationReason extraction must not panic
