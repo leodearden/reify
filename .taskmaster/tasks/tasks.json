@@ -10436,7 +10436,7 @@
         "description": "The bridge unit tests (`gui/src/__tests__/claudeBridge.test.ts`) only cover the happy path for invoke wrappers. There are no tests verifying that `claudeSendMessage`, `claudeAbort`, or `claudeClearSession` propagate rejections from `invoke`. In `App.tsx`, callers use `.catch` on the returned promise; if the wrappers accidentally swallow errors, those `.catch` handlers silently never fire.\n\n**Fix**: Add a test for each invoke wrapper that mocks `invoke` to reject and asserts the wrapper's returned promise also rejects:\n```typescript\nmockInvoke.mockRejectedValue(new Error('IPC failed'));\nawait expect(claudeAbort()).rejects.toThrow('IPC failed');\n```\n\nMemory hints:\n- Search: \"claudeBridge.test invoke reject propagation\"\n- Entities: claudeSendMessage, claudeAbort, claudeClearSession, bridge.ts",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -10448,7 +10448,8 @@
           "modules": [
             "gui/src/__tests__"
           ]
-        }
+        },
+        "updatedAt": "2026-03-28T10:19:59.703Z"
       },
       {
         "id": "521",
@@ -12805,9 +12806,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T10:16:21.647Z",
+      "lastModified": "2026-03-28T10:19:59.703Z",
       "taskCount": 636,
-      "completedCount": 298,
+      "completedCount": 299,
       "tags": [
         "master"
       ]
