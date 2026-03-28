@@ -12174,11 +12174,19 @@
             "gui/src-tauri/src/tests"
           ],
           "memory_hints": {
-            "entities": [],
+            "entities": [
+              "selectionStore",
+              "TauriToolContext",
+              "ClaudeMessageContext",
+              "update_selection"
+            ],
             "queries": [
-              "resolution for: Add test coverage for selection sync path (frontend invoke + Rust constructors + dispatch)"
+              "selectionStore test invoke mock selection sync",
+              "TauriToolContext test coverage with_event_emitter_and_selection",
+              "claude bridge selection arc threading test"
             ]
-          }
+          },
+          "reconciliation_note": "STAGE-2 2026-03-28: Task is blocked with no listed dependencies. Block reason undocumented. Check if worktree issue (like task 369) or upstream dependency. May need unblocking."
         },
         "updatedAt": "2026-03-27T23:46:43.435Z"
       },
