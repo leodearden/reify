@@ -354,6 +354,29 @@ mod tests {
         assert!(names.contains(&"volume"));
     }
 
+    // --- member_names guarded-group regression tests ---
+
+    #[test]
+    fn member_names_includes_guarded_group_members() {
+        let source = r#"structure S {
+    param cond : Bool = true
+    where cond {
+        param guarded_x : Scalar = 5mm
+    }
+}"#;
+        let ctx = AnalysisContext::new(source, &test_uri());
+        let members = ctx.member_names();
+        let names: Vec<&str> = members.iter().map(|(n, _, _)| *n).collect();
+        assert!(
+            names.contains(&"cond"),
+            "should include top-level param 'cond', got: {names:?}"
+        );
+        assert!(
+            names.contains(&"guarded_x"),
+            "should include guarded-group param 'guarded_x', got: {names:?}"
+        );
+    }
+
     // --- structure_names tests ---
 
     #[test]
