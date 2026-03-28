@@ -977,28 +977,45 @@ fn scale_components(
     }
 }
 
-/// Negate each component of a component list, wrapping with the given constructor.
-/// Returns `Value::Undef` if any component cannot be negated.
-fn negate_components(components: Vec<Value>, wrap: fn(Vec<Value>) -> Value) -> Value {
-    let results: Vec<Value> = components
-        .into_iter()
-        .map(|c| match c {
-            Value::Int(i) => i.checked_neg().map(Value::Int).unwrap_or(Value::Undef),
-            Value::Real(r) => Value::Real(-r),
-            Value::Scalar {
-                si_value,
-                dimension,
-            } => Value::Scalar {
-                si_value: -si_value,
-                dimension,
-            },
-            _ => Value::Undef,
-        })
-        .collect();
-    if results.iter().any(|x| x.is_undef()) {
-        Value::Undef
-    } else {
-        wrap(results)
+/// Recursively negate a value.  Handles all negatable variants: Int, Real,
+/// Scalar, Complex, Tensor, Vector, and Matrix (canonicalized to nested Tensor).
+/// Point negation is explicitly undefined (spec 3.3.1).
+fn negate_value(v: Value) -> Value {
+    match v {
+        Value::Int(i) => i.checked_neg().map(Value::Int).unwrap_or(Value::Undef),
+        Value::Real(r) => Value::Real(-r),
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => Value::Scalar {
+            si_value: -si_value,
+            dimension,
+        },
+        Value::Complex { re, im, dimension } => Value::Complex {
+            re: -re,
+            im: -im,
+            dimension,
+        },
+        Value::Tensor(components) => {
+            let results: Vec<Value> = components.into_iter().map(negate_value).collect();
+            if results.iter().any(|x| x.is_undef()) {
+                Value::Undef
+            } else {
+                Value::Tensor(results)
+            }
+        }
+        Value::Vector(components) => {
+            let results: Vec<Value> = components.into_iter().map(negate_value).collect();
+            if results.iter().any(|x| x.is_undef()) {
+                Value::Undef
+            } else {
+                Value::Vector(results)
+            }
+        }
+        Value::Matrix(_) => negate_value(v.canonicalize_matrix()),
+        // Affine geometry: point negation is undefined (spec 3.3.1)
+        Value::Point(_) => Value::Undef,
+        _ => Value::Undef,
     }
 }
 
@@ -1721,29 +1738,7 @@ fn eval_unop(op: UnOp, operand: &CompiledExpr, ctx: &EvalContext) -> Value {
         return Value::Undef;
     }
     match op {
-        UnOp::Neg => match v {
-            Value::Int(i) => Value::Int(-i),
-            Value::Real(r) => Value::Real(-r),
-            Value::Scalar {
-                si_value,
-                dimension,
-            } => Value::Scalar {
-                si_value: -si_value,
-                dimension,
-            },
-            Value::Complex { re, im, dimension } => Value::Complex {
-                re: -re,
-                im: -im,
-                dimension,
-            },
-            // Negate all components of a Tensor
-            Value::Tensor(components) => negate_components(components, Value::Tensor),
-            // Affine geometry: negate all components of a Vector
-            Value::Vector(components) => negate_components(components, Value::Vector),
-            // Affine geometry: point negation is undefined (spec 3.3.1)
-            Value::Point(_) => Value::Undef,
-            _ => Value::Undef,
-        },
+        UnOp::Neg => negate_value(v),
         UnOp::Not => match v {
             Value::Bool(b) => Value::Bool(!b),
             _ => Value::Undef,
