@@ -14821,7 +14821,15 @@
           "726"
         ],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-test-support/src/builders/trait_def.rs"
+          ],
+          "modules": [
+            "crates/reify-test-support/src/builders"
+          ]
+        }
       },
       {
         "id": 720,
@@ -14832,7 +14840,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "gui/src/__tests__/claudeBridge.test.ts"
+          ],
+          "modules": [
+            "gui/src/__tests__"
+          ]
+        }
       },
       {
         "id": 721,
