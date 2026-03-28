@@ -4295,6 +4295,13 @@ mod tests {
         let _ = frame.infer_type();
     }
 
+    #[test]
+    #[should_panic(expected = "infer_type() cannot infer Transform")]
+    fn value_transform_infer_type_panics() {
+        let transform = make_transform(make_orientation_identity(), make_vector3_length());
+        let _ = transform.infer_type();
+    }
+
     // ── Value::Transform tests (step-3) ──────────────────────────────────────
 
     fn make_vector3_length() -> Value {
