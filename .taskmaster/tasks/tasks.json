@@ -11679,7 +11679,7 @@
         "description": "Two test improvements in gui/src/__tests__/claudeBridge.test.ts:\n\n1. Remove redundant second assertion in 'payload type field does not override mapped event type' test (line 317) — the objectContaining check already verifies the type field\n2. Add extra-field exclusion test for claude-tool-call event — it has a structurally complex payload (tool_input: Record<string, unknown>) not covered by the existing representative tests on text_delta and done\n\nSource: test analyst reviewer (S5, S6) from task 517 review.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -11692,7 +11692,7 @@
             "gui/src/__tests__"
           ]
         },
-        "updatedAt": "2026-03-28T05:05:56.773Z"
+        "updatedAt": "2026-03-28T09:04:27.032Z"
       },
       {
         "id": "571",
@@ -11700,7 +11700,7 @@
         "description": "In report_constraints (crates/reify-cli/src/main.rs), Satisfaction::Indeterminate does not set all_satisfied = false, meaning indeterminate constraints are treated as success. This was an intentional decision but is not documented in the code. Add a comment explaining the choice, and add a CLI integration test that exercises Indeterminate constraints — verifying exit code is 0 and INDETERMINATE text appears on stdout (not stderr).\n\nMemory hints: search \"Indeterminate constraint semantics intentional\", entity: report_constraints",
         "details": "Locations:\n- crates/reify-cli/src/main.rs:49 — add comment on the Indeterminate match arm\n- crates/reify-cli/tests/cli_check.rs — add test with fixture producing Indeterminate constraints\n- May need a new fixture file under crates/reify-cli/tests/fixtures/\n\nThe decision \"A build with only indeterminate constraints exits 0 and does not block the build\" is already recorded in project memory. This task is about making the code self-documenting and adding regression test coverage.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -11715,7 +11715,7 @@
             "crates/reify-cli/tests"
           ]
         },
-        "updatedAt": "2026-03-28T05:06:47.814Z"
+        "updatedAt": "2026-03-28T09:04:27.064Z"
       },
       {
         "id": "572",
@@ -14621,7 +14621,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T09:04:26.999Z",
+      "lastModified": "2026-03-28T09:04:27.064Z",
       "taskCount": 710,
       "completedCount": 329,
       "tags": [
