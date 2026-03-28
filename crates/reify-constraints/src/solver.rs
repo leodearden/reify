@@ -632,6 +632,17 @@ impl ConstraintSolver for DimensionalSolver {
             // while chasing an objective, fall back to the initial feasible values
             // rather than reporting a false Infeasible.
             if let Some(fallback) = initial_fallback_values {
+                // Validate that the objective is numeric at the initial point
+                // before promoting to Solved. The trial_values ValueMap was built
+                // from the same initial point and is still in scope.
+                if let Some(obj) = &problem.objective
+                    && eval_objective(obj, &trial_values, &problem.functions).is_none()
+                {
+                    return SolveResult::NoProgress {
+                        reason: "objective expression evaluated to undefined at fallback point"
+                            .to_string(),
+                    };
+                }
                 tracing::debug!(
                     n_params,
                     final_max_residual,
