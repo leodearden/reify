@@ -13360,6 +13360,19 @@
         ],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 670,
+        "title": "Add error-path integration tests for App.tsx and Editor.tsx errorMessage call sites",
+        "description": "Review finding from task 547: Several error paths using errorMessage() lack integration test coverage.\n\n1. Editor.tsx save error test (line ~330 in Editor.test.tsx) asserts only 'Failed to save file' but doesn't verify the actual error message content ('disk full') is propagated. Tighten to assert `stringContaining('disk full')`.\n2. Add test for `new Error('')` (empty message) to errorClassifier.test.ts to document the edge case behavior.\n3. Add at least one representative App.tsx error-path test — e.g., mock bridgeSetParameter to reject with `new Error('param error')` and assert toast contains 'param error'. This covers 5 untested error paths (claudeSendMessage, claudeAbort, bridgeSetParameter, pickSavePath, bridgeExportGeometry).\n\nMemory hints: search \"errorMessage utility App.tsx Editor.tsx error path test coverage\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          547
+        ],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -13372,7 +13385,7 @@
       ],
       "created": "2026-03-28T04:42:58.909Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-28T04:42:58.926Z"
+      "updated": "2026-03-28T04:43:07.656Z"
     }
   }
 }
