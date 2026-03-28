@@ -539,6 +539,87 @@ async fn from_parts_with_mcp_intercepts_reify_tool_calls() {
     drop(stdout_writer);
 }
 
+#[tokio::test]
+async fn from_parts_with_mcp_threads_selection_into_tool_result() {
+    use crate::engine::EngineSession;
+    use reify_constraints::SimpleConstraintChecker;
+    use reify_test_support::MockGeometryKernel;
+    use std::sync::Arc;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let engine = Arc::new(std::sync::Mutex::new(session));
+
+    let (stdin_writer, mut stdin_reader) = tokio::io::duplex(4096);
+    let (mut stdout_writer, stdout_reader) = tokio::io::duplex(4096);
+    let reader = BufReader::new(stdout_reader);
+    let state = Arc::new(tokio::sync::Mutex::new(SidecarState::Ready));
+
+    let events = Arc::new(std::sync::Mutex::new(vec![]));
+    let events_clone = Arc::clone(&events);
+
+    // Pre-populate selection with concrete values
+    let selection = Arc::new(std::sync::RwLock::new(reify_mcp::SelectionInfo {
+        selected_entity: Some("Bracket".to_string()),
+        hovered_entity: Some("Bracket.width".to_string()),
+    }));
+    let _handle = SidecarHandle::from_parts_with_mcp(
+        stdin_writer,
+        reader,
+        state,
+        engine,
+        move |name: String, payload: serde_json::Value| {
+            events_clone.lock().unwrap().push((name, payload));
+        },
+        selection,
+    );
+
+    // Inject a reify_get_selection tool_call
+    let tool_call =
+        r#"{"type":"tool_call","id":"msg-sel","tool_name":"reify_get_selection","tool_input":{}}"#;
+    stdout_writer
+        .write_all(format!("{}\n", tool_call).as_bytes())
+        .await
+        .unwrap();
+
+    for _ in 0..100 {
+        tokio::task::yield_now().await;
+    }
+
+    // Verify tool_result contains the pre-populated selection data
+    let mut buf = vec![0u8; 4096];
+    let n = stdin_reader.read(&mut buf).await.unwrap_or(0);
+    assert!(
+        n > 0,
+        "Expected tool_result to be written back to sidecar stdin"
+    );
+    let written = std::str::from_utf8(&buf[..n]).unwrap();
+    let json_val: serde_json::Value =
+        serde_json::from_str(written.trim()).unwrap_or(serde_json::json!(null));
+    assert_eq!(
+        json_val["type"], "tool_result",
+        "Expected tool_result type, got: {}",
+        written
+    );
+    assert_eq!(json_val["tool_name"], "reify_get_selection");
+
+    let selection_result = &json_val["result"];
+    assert_eq!(
+        selection_result["selected_entity"], "Bracket",
+        "Selection should contain pre-populated selected_entity, got: {}",
+        json_val
+    );
+    assert_eq!(
+        selection_result["hovered_entity"], "Bracket.width",
+        "Selection should contain pre-populated hovered_entity, got: {}",
+        json_val
+    );
+
+    drop(stdout_writer);
+}
+
 // --- AppState sidecar field tests (step-21) ---
 
 #[test]
