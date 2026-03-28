@@ -1,0 +1,82 @@
+{
+  "task_id": "521",
+  "title": "Add rAF flush helper and intermediate-state tests for Claude integration tests",
+  "files": [
+    "gui/src/__tests__/claudeIntegration.test.ts"
+  ],
+  "modules": [
+    "gui/src/__tests__"
+  ],
+  "analysis": "All four items described in the task are already implemented on main and all 5 tests pass:\n\n1. `flushRaf()` helper exists at module scope (lines 16-19) \u2014 drains rafCallbacks via splice+forEach.\n2. Test 'text-delta events update responseText via rAF flush without done event' (lines 160-203) fires two text-delta events, asserts responseText is empty before flush, calls flushRaf(), then asserts 'Hello world' is present and message is NOT complete.\n3. `afterAll` block (lines 51-55) restores origRAF and origCancelRAF globals.\n4. The done-event test (line 138) calls flushRaf() before asserting mid-state, explicitly exercising the rAF path before the done event fires.\n\nNo code changes are required. The executor should verify tests pass and mark the task done.",
+  "prerequisites": [],
+  "steps": [
+    {
+      "id": "step-1",
+      "type": "test",
+      "description": "Verify flushRaf() helper exists and drains rafCallbacks array \u2014 already present at lines 16-19 of claudeIntegration.test.ts",
+      "status": "done",
+      "commit": "9b257ee2"
+    },
+    {
+      "id": "step-2",
+      "type": "test",
+      "description": "Verify test 'text-delta events update responseText via rAF flush without done event' exists \u2014 tests rAF batching path independently: sends deltas, asserts buffered state, flushes, asserts applied state, confirms message not complete",
+      "status": "done",
+      "commit": "9b257ee2"
+    },
+    {
+      "id": "step-3",
+      "type": "test",
+      "description": "Verify afterAll block restores globalThis.requestAnimationFrame and globalThis.cancelAnimationFrame from origRAF/origCancelRAF \u2014 already present at lines 51-55",
+      "status": "done",
+      "commit": "9b257ee2"
+    },
+    {
+      "id": "step-4",
+      "type": "test",
+      "description": "Verify the done-event test ('claude events flow through subscribeToClaudeEvents into store state') calls flushRaf() at line 138 before asserting mid-state responseText, documenting the rAF dependency",
+      "status": "done",
+      "commit": "9b257ee2"
+    },
+    {
+      "id": "step-5",
+      "type": "impl",
+      "description": "Run full test suite (npx vitest run src/__tests__/claudeIntegration.test.ts) to confirm all 5 tests pass \u2014 no implementation changes needed",
+      "status": "done",
+      "commit": "9b257ee2"
+    }
+  ],
+  "design_decisions": [
+    {
+      "decision": "No code changes required \u2014 task already fully implemented on main",
+      "rationale": "git diff main shows no changes to claudeIntegration.test.ts. All four task items (flushRaf helper, rAF-only test, afterAll cleanup, explicit flushRaf in done-event test) are present and all 5 tests pass. The task was likely completed by a prior agent and merged."
+    },
+    {
+      "decision": "flushRaf uses splice(0) to atomically drain the callback array",
+      "rationale": "splice(0) removes and returns all elements in one operation, preventing double-execution if a callback itself schedules more work via requestAnimationFrame."
+    },
+    {
+      "decision": "afterAll conditionally restores globals only if originals existed",
+      "rationale": "In JSDOM/happy-dom test environments, requestAnimationFrame may not exist natively (origRAF would be undefined). The conditional guard prevents setting globals to undefined."
+    }
+  ],
+  "reuse": [
+    {
+      "what": "rAF polyfill + flushRaf pattern",
+      "where": "gui/src/__tests__/claudeStore.test.ts uses identical pattern in beforeEach",
+      "how": "Both test files define rafCallbacks array, rAF polyfill, and flush helper. The integration test defines them at module scope; the unit test in beforeEach."
+    },
+    {
+      "what": "Tauri event capture pattern",
+      "where": "gui/src/__tests__/claudeIntegration.test.ts lines 111-115",
+      "how": "mockListen captures handlers by event name into a Record, allowing tests to simulate Tauri events by calling capturedHandlers[eventName]({payload})"
+    },
+    {
+      "what": "createClaudeStore factory with onSend/onAbort callbacks",
+      "where": "gui/src/stores/claudeStore.ts",
+      "how": "Store is created with callback injection for bridge integration, same pattern used in both unit and integration tests"
+    }
+  ],
+  "_session_id": "521-bcc2d576",
+  "_created_at": "2026-03-28T10:26:59.199973+00:00"
+}
