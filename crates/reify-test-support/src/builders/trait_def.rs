@@ -827,7 +827,7 @@ mod trait_builder_tests {
             "with refinement: both builders must produce same hash"
         );
 
-        // With a type param
+        // With a type param (bounds only)
         use reify_types::{TraitBound, TraitRef};
         let param = || TypeParam {
             name: "T".to_string(),
@@ -848,6 +848,28 @@ mod trait_builder_tests {
         assert_eq!(
             from_def.content_hash, from_compiled.content_hash,
             "with type_param: both builders must produce same hash"
+        );
+
+        // With a type param that has bounds AND a default
+        let param_with_default = || TypeParam {
+            name: "T".to_string(),
+            bounds: vec![TraitBound {
+                trait_ref: TraitRef {
+                    name: "Rigid".to_string(),
+                    type_args: vec![],
+                },
+            }],
+            default: Some(Type::Real),
+        };
+        let from_def = TraitDefBuilder::new("Container")
+            .type_param(param_with_default())
+            .build();
+        let from_compiled = CompiledTraitBuilder::new("Container")
+            .type_param(param_with_default())
+            .build();
+        assert_eq!(
+            from_def.content_hash, from_compiled.content_hash,
+            "with type_param (bounds+default): both builders must produce same hash"
         );
     }
 
