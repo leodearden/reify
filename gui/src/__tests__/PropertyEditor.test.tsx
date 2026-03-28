@@ -368,6 +368,8 @@ describe('PropertyEditor blur-commit', () => {
     fireEvent.input(el, { target: { value: input } });
     fireEvent.blur(el);
     expect(onSetParam).toHaveBeenCalledWith('c1', expected);
+    // After blur-commit, input reverts to prop value (mock doesn't propagate the change)
+    expect(el.value).toBe('50');
     expect(el.hasAttribute('data-invalid')).toBe(false);
   });
 
