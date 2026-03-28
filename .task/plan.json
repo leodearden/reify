@@ -40,7 +40,7 @@
       "id": "step-3",
       "type": "test",
       "description": "Add missing toast assertion (Issue 1): In 'logs error to console when subscribeToClaudeEvents fails', after the consoleSpy waitFor, add a second waitFor block that verifies the toast element appears with the correct message. Pattern (matching the abort-failure test): `await waitFor(() => { const toastEl = screen.getByTestId('toast'); expect(toastEl).toBeTruthy(); expect(toastEl.dataset.type).toBe('error'); expect(toastEl.textContent).toContain('Claude assistant unavailable'); });`",
-      "status": "pending",
+      "status": "done",
       "commit": null
     },
     {

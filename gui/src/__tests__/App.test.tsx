@@ -2054,6 +2054,17 @@ describe('App Claude error handling', () => {
         subscribeError,
       );
     });
+
+    // Verify the toast DOM element appears with the correct error message
+    await waitFor(() => {
+      const toasts = screen.getAllByTestId('toast');
+      const claudeToast = toasts.find((t) =>
+        t.textContent?.includes('Claude assistant unavailable'),
+      );
+      expect(claudeToast).toBeTruthy();
+      expect(claudeToast!.dataset.type).toBe('error');
+      expect(claudeToast!.textContent).toContain('chat features may not work');
+    });
   });
 
   it('shows toast when claudeAbort fails', async () => {
