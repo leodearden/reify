@@ -48,8 +48,8 @@
       "id": "step-5",
       "type": "test",
       "description": "Run full GUI test suite (`npx vitest run` in gui/) to verify no regressions \u2014 all existing App.test.tsx and Editor.test.tsx tests must still pass",
-      "status": "pending",
-      "commit": null
+      "status": "done",
+      "commit": "e0d35cf3"
     }
   ],
   "design_decisions": [
