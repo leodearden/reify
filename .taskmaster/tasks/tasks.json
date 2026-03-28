@@ -13983,13 +13983,13 @@
         "description": "Value::Transform { .. } => Type::Transform(3) in crates/reify-types/src/value.rs:569 silently hardcodes 3D in infer_type(), the exact same problem that was fixed for Frame in task 380. Apply the same fix: replace with a panic matching the established message pattern, and add a literal_transform() builder in crates/reify-test-support/src/builders/expr.rs alongside literal_frame().\n\nmemory_hints: search \"silent defaults noisy errors convention\", entity \"Value::Transform\", get_task 380",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [
           "380"
         ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-28T15:23:53.452Z",
+        "updatedAt": "2026-03-28T15:46:07.647Z",
         "metadata": {
           "modules": [
             "crates/reify-test-support",
@@ -15247,9 +15247,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T15:42:45.050Z",
+      "lastModified": "2026-03-28T15:46:07.647Z",
       "taskCount": 738,
-      "completedCount": 350,
+      "completedCount": 351,
       "tags": [
         "master"
       ]
